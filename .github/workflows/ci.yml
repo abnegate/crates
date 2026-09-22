@@ -24,8 +24,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          components: rustfmt
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -39,8 +37,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          components: clippy
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -204,8 +200,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # docs.rs builds with nightly and --cfg docsrs, and `feature(doc_cfg)` is
-      # a hard error on any other channel, so this job has to mirror it.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -217,5 +211,8 @@ jobs:
           shared-key: docs
           cache-on-failure: true
 
+      # docs.rs builds with nightly and --cfg docsrs, and `feature(doc_cfg)` is
+      # a hard error on any other channel. `+nightly` is the only thing that
+      # beats rust-toolchain.toml.
       - name: Build documentation
-        run: cargo doc --workspace --all-features --no-deps
+        run: cargo +nightly doc --workspace --all-features --no-deps
