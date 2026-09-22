@@ -1,0 +1,7 @@
+[workspace]
+changelog_update = true
+semver_check = true
+git_tag_name = "{{ package }}-v{{ version }}"
+# Trusted Publishing cannot create a crate name that does not exist yet, so the
+# first version of each crate is published by hand. Lifted after that.
+release = false
