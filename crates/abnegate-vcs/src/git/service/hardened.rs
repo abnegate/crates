@@ -564,9 +564,13 @@ impl GitService {
         Ok(output.stdout)
     }
 
-    /// Create and check out a new branch, refusing a name already taken.
+    /// Create and check out a new branch, refusing a name already taken, and
+    /// one that is a symbolic ref with [`GitError::SymbolicBranch`].
     pub async fn create_branch(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         Self::verify_config(path).await?;
+        if Self::is_symbolic(path, &branch.reference()).await? {
+            return Err(GitError::SymbolicBranch(branch.clone()));
+        }
         let check_output = Self::output(
             Self::hardened()
                 .args(["show-ref", "--verify", "--quiet", &branch.reference()])
@@ -1891,6 +1895,49 @@ mod branch_tests {
                 .await,
             Err(GitError::BranchExists(taken)) if taken == branch("feature/one")
         ));
+    }
+
+    /// A new branch whose name is already a link to a branch that does not
+    /// exist is refused: `show-ref` does not see such a link, and creating
+    /// the branch would write through it and make the branch it names.
+    #[tokio::test]
+    async fn a_new_branch_whose_name_is_a_link_is_refused_and_makes_nothing() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+        git(
+            repository.path(),
+            &[
+                "symbolic-ref",
+                "refs/heads/feature/one",
+                "refs/heads/feature/elsewhere",
+            ],
+        );
+        let listed = git(
+            repository.path(),
+            &["for-each-ref", "--format=%(refname) %(objectname)"],
+        );
+        let service = GitService::new();
+
+        let created = service
+            .create_branch(repository.path(), &branch("feature/one"))
+            .await;
+
+        assert_eq!(
+            git(
+                repository.path(),
+                &["for-each-ref", "--format=%(refname) %(objectname)"],
+            ),
+            listed,
+            "a ref was made through the link"
+        );
+        assert!(
+            matches!(created, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("feature/one")),
+            "{created:?}"
+        );
+        assert_eq!(
+            git(repository.path(), &["symbolic-ref", "--no-recurse", "HEAD"]),
+            "refs/heads/main"
+        );
     }
 
     #[tokio::test]
