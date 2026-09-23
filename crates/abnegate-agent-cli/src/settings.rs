@@ -78,17 +78,24 @@ pub struct CliSettings {
     pub line_limit: usize,
     /// Set in the child's environment on top of what it is given from the
     /// host, so an explicit value always wins. Every value is treated as a
-    /// secret and scrubbed from whatever the run writes down.
+    /// secret and scrubbed from whatever the run writes down; a setting that
+    /// is not secret belongs in `variables`.
     pub environment: BTreeMap<String, SecretValue>,
+    /// Set in the child's environment like `environment`, which wins over
+    /// them, but never scrubbed: flags such as `DISABLE_AUTOUPDATER=1`,
+    /// whose values would otherwise be redacted wherever they appear.
+    pub variables: BTreeMap<String, String>,
     /// Give the child the host's whole environment, less the agent's
     /// [scrubbed](crate::AgentKind::scrubbed) variables, instead of
     /// [`INHERITED_VARIABLES`] alone.
     ///
     /// Off by default: the agent runs tools the model chooses, and anything
     /// in its environment is theirs to read. Without it the child is also
-    /// given the agent's own [key variable](crate::AgentKind::variable)
-    /// when the credential is [inherited](Credential::Inherited), and each
-    /// host variable an attached MCP server refers to.
+    /// given the agent's own [configuration](crate::AgentKind::configuration)
+    /// variables, its [sign-in](crate::AgentKind::credentials) variables when
+    /// the credential is [inherited](Credential::Inherited), and each host
+    /// variable an attached MCP server refers to. Anything else it needs,
+    /// such as a proxy or a certificate bundle, is set explicitly.
     pub inherit_environment: bool,
     /// Extra flags passed through verbatim, after the streaming flags and
     /// before the model. Nothing here is checked against the agent, except
@@ -140,6 +147,7 @@ impl Default for CliSettings {
             output_limit: DEFAULT_OUTPUT_LIMIT,
             line_limit: DEFAULT_LINE_LIMIT,
             environment: BTreeMap::new(),
+            variables: BTreeMap::new(),
             inherit_environment: false,
             arguments: Vec::new(),
             schema: None,
@@ -191,6 +199,11 @@ impl CliSettings {
         value: impl Into<SecretValue>,
     ) -> Self {
         self.environment.insert(variable.into(), value.into());
+        self
+    }
+
+    pub fn with_variable(mut self, variable: impl Into<String>, value: impl Into<String>) -> Self {
+        self.variables.insert(variable.into(), value.into());
         self
     }
 
@@ -287,6 +300,7 @@ mod tests {
         assert!(settings.working_directory.is_none());
         assert_eq!(settings.timeout, DEFAULT_TIMEOUT);
         assert!(settings.environment.is_empty());
+        assert!(settings.variables.is_empty());
         assert!(!settings.inherit_environment);
         assert!(settings.arguments.is_empty());
         assert!(settings.schema.is_none());
@@ -361,6 +375,7 @@ mod tests {
             .with_working_directory("/w")
             .with_log("/var/log/agents")
             .with_journal_limit(4096)
+            .with_variable("DISABLE_AUTOUPDATER", "1")
             .inherit_environment();
 
         assert_eq!(settings.arguments, ["--json-schema", "{}", "--verbose"]);
@@ -373,6 +388,13 @@ mod tests {
         assert_eq!(settings.log, Some(PathBuf::from("/var/log/agents")));
         assert!(settings.inherit_environment);
         assert_eq!(settings.journal_limit, 4096);
+        assert_eq!(
+            settings
+                .variables
+                .get("DISABLE_AUTOUPDATER")
+                .map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]

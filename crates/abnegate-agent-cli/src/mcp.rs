@@ -17,5 +17,6 @@ mod transport;
 
 pub use crate::mcp::attachment::McpAttachment;
 pub use crate::mcp::config::McpConfig;
+pub(crate) use crate::mcp::placeholders::expand;
 pub use crate::mcp::server::McpServer;
 pub use crate::mcp::transport::McpTransport;

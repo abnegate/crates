@@ -79,6 +79,30 @@ impl AgentKind {
         }
     }
 
+    /// Variables naming where the agent keeps its configuration, settings
+    /// and sign-in, which it is always given from the host, so it reads the
+    /// same user's configuration the host would.
+    pub fn configuration(self) -> &'static [&'static str] {
+        match self {
+            Self::Claude => &["CLAUDE_CONFIG_DIR"],
+            Self::Codex => &["CODEX_HOME"],
+        }
+    }
+
+    /// Variables the agent may sign in with, which it is given from the host
+    /// when its credential is [inherited](abnegate_llm::Credential::Inherited).
+    pub fn credentials(self) -> &'static [&'static str] {
+        match self {
+            Self::Claude => &[
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+            ],
+            Self::Codex => &["OPENAI_API_KEY", "OPENAI_BASE_URL"],
+        }
+    }
+
     /// Variables the agent sets for the commands it runs, which make a copy
     /// of it started from inside one of those commands refuse to run or
     /// behave as a nested session. They are removed from what the child
@@ -441,6 +465,14 @@ mod tests {
             agent.interpret("not json at all", &mut events);
             agent.interpret("", &mut events);
             assert!(events.is_empty(), "{agent} reacted to noise");
+        }
+    }
+
+    #[test]
+    fn each_agent_signs_in_with_its_own_key_variable_among_others() {
+        for agent in [AgentKind::Claude, AgentKind::Codex] {
+            assert!(agent.credentials().contains(&agent.variable()), "{agent}");
+            assert_eq!(agent.configuration().len(), 1, "{agent}");
         }
     }
 

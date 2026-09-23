@@ -1202,6 +1202,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         for name in &names {
             assert!(
                 INHERITED_VARIABLES.contains(&name.as_str())
+                    || AgentKind::Claude.configuration().contains(&name.as_str())
                     || shell.contains(&name.as_str())
                     || ["LINEAR_ISSUE_ID", "ANTHROPIC_API_KEY"].contains(&name.as_str()),
                 "the child was handed {name} from the host: {names:?}"

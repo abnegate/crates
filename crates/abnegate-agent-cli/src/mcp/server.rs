@@ -10,6 +10,7 @@ use serde_json::Value;
 use serde_json::json;
 
 use crate::mcp::placeholders::Placeholders;
+use crate::mcp::placeholders::whole_reference;
 use crate::mcp::transport::McpTransport;
 
 const PREFIX: &str = "mcp__";
@@ -55,9 +56,13 @@ impl McpServer {
     }
 
     /// Whether `name`, and every tool this server names, holds only
-    /// letters, digits, `_` and `-`, and so is safe in `--allowedTools`.
+    /// letters, digits, `_` and `-`, and so is safe in `--allowedTools`, and
+    /// `name` holds no `__`, which the CLI reads as the end of a server's
+    /// name, so that one server's rule can never cover another's tools.
     pub fn nameable(&self, name: &str) -> bool {
-        valid_name(name) && self.tools.iter().all(|tool| valid_name(tool))
+        valid_name(name)
+            && !name.contains(SEPARATOR)
+            && self.tools.iter().all(|tool| valid_name(tool))
     }
 
     /// The `--allowedTools` entries for this server under `name`.
@@ -176,19 +181,15 @@ fn masked(values: &BTreeMap<String, SecretValue>) -> Value {
         .iter()
         .map(|(key, value)| {
             let value = value.expose();
-            let shown = if reference(value) { value } else { REDACTED };
+            let shown = if whole_reference(value) {
+                value
+            } else {
+                REDACTED
+            };
             (key.clone(), json!(shown))
         })
         .collect::<Map<String, Value>>()
         .into()
-}
-
-fn reference(value: &str) -> bool {
-    value
-        .trim()
-        .strip_prefix("${")
-        .and_then(|rest| rest.strip_suffix('}'))
-        .is_some_and(|name| !name.contains("${") && !name.contains('}'))
 }
 
 #[cfg(test)]
@@ -199,7 +200,6 @@ mod tests {
     use serde_json::json;
 
     use super::McpServer;
-    use super::reference;
     use crate::mcp::placeholders::Placeholders;
     use crate::mcp::transport::McpTransport;
 
@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn a_json_blob_in_the_environment_is_written_verbatim() {
+    fn a_json_blob_of_references_moves_out_of_the_entry_to_be_expanded() {
         let headers = "{\"CF-Access-Client-Id\": \"${CF_ACCESS_CLIENT_ID}\", \"CF-Access-Client-Secret\": \"${CF_ACCESS_CLIENT_SECRET}\"}";
         let server = McpServer {
             command: Some("uvx".to_string()),
@@ -352,13 +352,23 @@ mod tests {
             ]),
             ..McpServer::default()
         };
+        let mut placeholders = Placeholders::default();
 
-        let entry = server.entry(&mut Placeholders::default());
+        let entry = server.entry(&mut placeholders);
+
         assert_eq!(
             entry["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN"],
             "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"
         );
-        assert_eq!(entry["env"]["GRAFANA_EXTRA_HEADERS"], headers);
+        assert_eq!(entry["env"]["GRAFANA_EXTRA_HEADERS"], "${ABNEGATE_MCP_0}");
+        assert_eq!(
+            placeholders
+                .templates
+                .get("ABNEGATE_MCP_0")
+                .map(SecretValue::expose),
+            Some(headers)
+        );
+        assert!(placeholders.references.contains("CF_ACCESS_CLIENT_SECRET"));
     }
 
     #[test]
@@ -369,10 +379,18 @@ mod tests {
             ..http()
         };
 
-        let entry = server.entry(&mut Placeholders::default());
+        let mut placeholders = Placeholders::default();
+        let entry = server.entry(&mut placeholders);
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], "https://example.com/mcp");
-        assert_eq!(entry["headers"]["Authorization"], "Bearer ${TOKEN}");
+        assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_0}");
+        assert_eq!(
+            placeholders
+                .templates
+                .get("ABNEGATE_MCP_0")
+                .map(SecretValue::expose),
+            Some("Bearer ${TOKEN}")
+        );
         assert!(entry.get("command").is_none());
         assert!(entry.get("args").is_none());
         assert!(entry.get("env").is_none());
@@ -501,17 +519,6 @@ mod tests {
             assert!(!view.to_string().contains("sk-ant-api03-AAAA"), "{view}");
         }
         assert_eq!(stdio.redacted()["args"][0], "--api-key");
-    }
-
-    #[test]
-    fn only_a_single_whole_reference_counts_as_one() {
-        assert!(reference("${TOKEN}"));
-        assert!(reference("  ${TOKEN}  "));
-        assert!(!reference("Bearer ${TOKEN}"));
-        assert!(!reference("${A}${B}"));
-        assert!(!reference("${A}-${B}"));
-        assert!(!reference("literal"));
-        assert!(!reference("${"));
     }
 
     #[test]

@@ -102,11 +102,13 @@ impl McpConfig {
         file.as_file_mut().flush()?;
         let Placeholders {
             environment,
+            templates,
             references,
         } = placeholders;
         Ok(Some(McpAttachment {
             file,
             environment,
+            templates,
             references,
         }))
     }
