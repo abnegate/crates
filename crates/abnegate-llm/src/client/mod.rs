@@ -19,6 +19,7 @@ pub(crate) use crate::client::pool::Pool;
 
 use crate::client::events::EventDecoder;
 use crate::error::LlmError;
+use crate::provider::CompletionRequest;
 use crate::reasoning::Effort;
 use crate::wire::ChatRequest;
 use crate::wire::ChatResponse;
@@ -187,6 +188,7 @@ impl LlmClient {
             max_tokens: Some(options.reserved),
             stream: Some(stream),
             stop: (!self.stop.is_empty()).then_some(self.stop.as_slice()),
+            response_format: None,
         }
     }
 
@@ -224,11 +226,32 @@ impl LlmClient {
         tools: Option<&[ToolDefinition]>,
         options: RequestOptions,
     ) -> Result<ChatResponse, LlmError> {
-        self.complete(self.request(model, messages, tools, options, false))
+        self.execute(self.request(model, messages, tools, options, false))
             .await
     }
 
-    async fn complete(&self, request: ChatRequest<'_>) -> Result<ChatResponse, LlmError> {
+    /// Make a chat completion request exactly as a
+    /// [`CompletionProvider`](crate::CompletionProvider) was asked for it,
+    /// with its response format and any temperature override.
+    pub async fn chat_with_request(
+        &self,
+        request: CompletionRequest<'_>,
+    ) -> Result<ChatResponse, LlmError> {
+        let mut chat = self.request(
+            request.model,
+            request.messages,
+            request.tools,
+            request.options,
+            false,
+        );
+        chat.response_format = request.response_format;
+        if let Some(temperature) = request.temperature {
+            chat.temperature = Some(temperature);
+        }
+        self.execute(chat).await
+    }
+
+    async fn execute(&self, request: ChatRequest<'_>) -> Result<ChatResponse, LlmError> {
         let timeout = self.config.timeout;
         tokio::time::timeout(timeout, async {
             let response = self.dispatch(request).await?;

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use crate::provider::completion::CompletionProvider;
+use crate::provider::completion_provider::CompletionProvider;
 
 const MANTISSA_BITS: u32 = 53;
 

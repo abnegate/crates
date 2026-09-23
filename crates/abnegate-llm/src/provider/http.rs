@@ -8,11 +8,12 @@ use async_trait::async_trait;
 use crate::client::LlmClient;
 use crate::client::LlmConfig;
 use crate::provider::capabilities::Capabilities;
-use crate::provider::completion::{
-    Completion, CompletionProvider, CompletionRequest, ProviderKind,
-};
+use crate::provider::completion::Completion;
+use crate::provider::completion_provider::CompletionProvider;
 use crate::provider::credential::Credential;
 use crate::provider::error::ProviderError;
+use crate::provider::kind::ProviderKind;
+use crate::provider::request::CompletionRequest;
 
 /// Wraps [`LlmClient`] so an HTTP route and a coding agent can sit behind the
 /// same handle.
@@ -93,12 +94,7 @@ impl CompletionProvider for HttpProvider {
     async fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, ProviderError> {
         let response = self
             .client
-            .chat_with_options(
-                request.model,
-                request.messages,
-                request.tools,
-                request.options,
-            )
+            .chat_with_request(request)
             .await
             .map_err(|source| ProviderError::http(&self.name, source))?;
 
@@ -108,12 +104,9 @@ impl CompletionProvider for HttpProvider {
                 ProviderError::agent(&self.name, "the provider returned no choices")
             })?;
 
-        Ok(Completion {
-            provider: self.name.clone(),
-            message: choice.message,
-            usage,
-            finish_reason: choice.finish_reason,
-        })
+        Ok(Completion::new(self.name.clone(), choice.message)
+            .with_usage(usage)
+            .with_finish_reason(choice.finish_reason))
     }
 }
 
@@ -122,16 +115,63 @@ mod tests {
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_partial_json;
     use wiremock::matchers::method;
 
     use super::HttpProvider;
     use crate::client::RequestOptions;
+    use crate::modality::ResponseFormat;
     use crate::provider::capabilities::Capabilities;
-    use crate::provider::completion::{CompletionProvider, CompletionRequest, ProviderKind};
+    use crate::provider::completion_provider::CompletionProvider;
     use crate::provider::credential::Credential;
+    use crate::provider::kind::ProviderKind;
+    use crate::provider::request::CompletionRequest;
     use crate::wire::Message;
 
     const ECHOED_KEY: &str = "sk-proj-4f9c2a7e1b3d5f6a8c0e2b4d6f8a1c3e";
+
+    #[tokio::test]
+    async fn a_response_format_and_temperature_reach_the_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(serde_json::json!({
+                "temperature": 0.0,
+                "max_tokens": 32,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": { "schema": { "type": "object" } }
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "message": { "role": "assistant", "content": "{\"beats\":3}" },
+                    "finish_reason": "stop"
+                }],
+                "usage": { "prompt_tokens": 5, "completion_tokens": 2 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider =
+            HttpProvider::connect("gateway", server.uri(), &Credential::Inherited, "qwen3");
+        let messages = [Message::user("hello")];
+        let format = ResponseFormat::Json {
+            schema: Some(serde_json::json!({ "type": "object" })),
+        };
+
+        let completion = provider
+            .complete(
+                CompletionRequest::new("qwen3", &messages, RequestOptions { reserved: 32 })
+                    .with_response_format(&format)
+                    .with_temperature(0.0),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(completion.message.content.as_deref(), Some("{\"beats\":3}"));
+        assert_eq!(completion.usage.map(|usage| usage.total_tokens), Some(7));
+    }
 
     #[tokio::test]
     async fn a_rejection_body_echoing_the_key_never_reaches_the_error() {
@@ -151,12 +191,11 @@ mod tests {
         let messages = [Message::user("hello")];
 
         let error = provider
-            .complete(CompletionRequest {
-                model: "gpt-4",
-                messages: &messages,
-                tools: None,
-                options: RequestOptions { reserved: 16 },
-            })
+            .complete(CompletionRequest::new(
+                "gpt-4",
+                &messages,
+                RequestOptions { reserved: 16 },
+            ))
             .await
             .expect_err("a 401 is a failure");
 

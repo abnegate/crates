@@ -1,8 +1,12 @@
 use serde::Serialize;
+use serde::Serializer;
 
+use crate::modality::ResponseFormat;
 use crate::wire::message::Message;
 use crate::wire::tool_choice::ToolChoice;
 use crate::wire::tool_definition::ToolDefinition;
+
+const SCHEMA_NAME: &str = "response";
 
 /// A chat completion request.
 ///
@@ -25,14 +29,78 @@ pub struct ChatRequest<'a> {
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<&'a [String]>,
+    /// Sent in the OpenAI shape: `json_schema` with the schema when there is
+    /// one, `json_object` when there is not, and `text` for prose.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "response_format"
+    )]
+    pub response_format: Option<&'a ResponseFormat>,
+}
+
+fn response_format<S: Serializer>(
+    format: &Option<&ResponseFormat>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let body = match format {
+        Some(ResponseFormat::Json {
+            schema: Some(schema),
+        }) => serde_json::json!({
+            "type": "json_schema",
+            "json_schema": { "name": SCHEMA_NAME, "schema": schema }
+        }),
+        Some(ResponseFormat::Json { schema: None }) => serde_json::json!({ "type": "json_object" }),
+        Some(ResponseFormat::Text) | None => serde_json::json!({ "type": "text" }),
+    };
+    body.serialize(serializer)
 }
 
 #[cfg(test)]
 mod tests {
     use super::ChatRequest;
+    use crate::modality::ResponseFormat;
     use crate::wire::message::Message;
     use crate::wire::tool_choice::ToolChoice;
     use crate::wire::tool_definition::ToolDefinition;
+
+    #[test]
+    fn a_response_format_is_sent_in_the_openai_shape() {
+        let messages = [Message::user("Hello")];
+        let schema = ResponseFormat::Json {
+            schema: Some(serde_json::json!({ "type": "object" })),
+        };
+        let object = ResponseFormat::Json { schema: None };
+        let body = |format| {
+            serde_json::to_value(ChatRequest {
+                model: "gpt-4",
+                messages: &messages,
+                tools: None,
+                tool_choice: None,
+                temperature: None,
+                max_tokens: None,
+                stream: None,
+                stop: None,
+                response_format: format,
+            })
+            .unwrap()
+        };
+
+        let structured = body(Some(&schema));
+        assert_eq!(structured["response_format"]["type"], "json_schema");
+        assert_eq!(
+            structured["response_format"]["json_schema"]["schema"]["type"],
+            "object"
+        );
+        assert_eq!(
+            body(Some(&object))["response_format"]["type"],
+            "json_object"
+        );
+        assert_eq!(
+            body(Some(&ResponseFormat::Text))["response_format"]["type"],
+            "text"
+        );
+        assert!(body(None).get("response_format").is_none());
+    }
 
     #[test]
     fn a_request_carries_its_model_body_and_sampling() {
@@ -46,6 +114,7 @@ mod tests {
             max_tokens: Some(1000),
             stream: Some(false),
             stop: None,
+            response_format: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -66,6 +135,7 @@ mod tests {
             max_tokens: None,
             stream: None,
             stop: None,
+            response_format: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -93,6 +163,7 @@ mod tests {
             max_tokens: Some(2048),
             stream: Some(false),
             stop: None,
+            response_format: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -118,6 +189,7 @@ mod tests {
             max_tokens: None,
             stream: None,
             stop: None,
+            response_format: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();

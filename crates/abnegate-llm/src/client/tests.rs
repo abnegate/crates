@@ -35,6 +35,7 @@ fn request<'a>(model: &'a str, messages: &'a [Message]) -> ChatRequest<'a> {
         max_tokens: Some(4096),
         stream: None,
         stop: None,
+        response_format: None,
     }
 }
 

@@ -1,63 +1,9 @@
-//! The contract every completion provider satisfies.
-
-use std::fmt;
-
-use async_trait::async_trait;
-
-use crate::client::RequestOptions;
-use crate::provider::capabilities::Capabilities;
-use crate::provider::error::ProviderError;
 use crate::wire::Message;
-use crate::wire::ToolDefinition;
 use crate::wire::Usage;
-
-/// How a provider reaches the model behind it.
-///
-/// A caller that must know the difference — a budget that only applies to
-/// metered HTTP, a workspace that only a CLI agent can edit — reads this
-/// rather than matching on the provider's name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderKind {
-    /// An OpenAI-compatible HTTP endpoint.
-    Http,
-    /// A coding agent CLI driven as a child process.
-    Cli,
-    /// A router whose arms reach their models in more than one way.
-    Mixed,
-}
-
-impl ProviderKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Http => "http",
-            Self::Cli => "cli",
-            Self::Mixed => "mixed",
-        }
-    }
-}
-
-impl fmt::Display for ProviderKind {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-/// One completion to run.
-///
-/// Borrowed for the same reason [`ChatRequest`](crate::ChatRequest) is: the
-/// agent loop already owns the conversation and the tool definitions, and a
-/// provider that took them by value would clone the whole history once per
-/// turn.
-#[derive(Debug, Clone, Copy)]
-pub struct CompletionRequest<'a> {
-    pub model: &'a str,
-    pub messages: &'a [Message],
-    pub tools: Option<&'a [ToolDefinition]>,
-    pub options: RequestOptions,
-}
 
 /// One completion's result, normalised across provider kinds.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Completion {
     /// The provider that actually produced this, which under a fallback chain
     /// is not necessarily the one the caller configured first.
@@ -67,35 +13,40 @@ pub struct Completion {
     pub finish_reason: Option<String>,
 }
 
-/// A source of chat completions.
-///
-/// [`Router`](super::Router) implements this over a set of providers, so a
-/// consumer holds one handle and never learns whether it is talking to a single
-/// model, an A/B split, or a fallback chain.
-#[async_trait]
-pub trait CompletionProvider: fmt::Debug + Send + Sync {
-    /// A stable identifier used in logs, metrics, and [`Completion::provider`].
-    fn name(&self) -> &str;
-
-    fn kind(&self) -> ProviderKind;
-
-    /// What this provider supports beyond returning a completion.
-    fn capabilities(&self) -> Capabilities {
-        Capabilities::NONE
+impl Completion {
+    pub fn new(provider: impl Into<String>, message: Message) -> Self {
+        Self {
+            provider: provider.into(),
+            message,
+            usage: None,
+            finish_reason: None,
+        }
     }
 
-    async fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, ProviderError>;
+    pub fn with_usage(mut self, usage: impl Into<Option<Usage>>) -> Self {
+        self.usage = usage.into();
+        self
+    }
+
+    pub fn with_finish_reason(mut self, finish_reason: impl Into<Option<String>>) -> Self {
+        self.finish_reason = finish_reason.into();
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ProviderKind;
+    use super::*;
 
     #[test]
-    fn a_provider_kind_renders_its_own_label() {
-        assert_eq!(ProviderKind::Http.to_string(), "http");
-        assert_eq!(ProviderKind::Cli.to_string(), "cli");
-        assert_eq!(ProviderKind::Mixed.to_string(), "mixed");
-        assert_ne!(ProviderKind::Http, ProviderKind::Cli);
+    fn a_completion_carries_what_it_was_given() {
+        let completion = Completion::new("gateway", Message::assistant("hi"))
+            .with_usage(Usage::new(3, 4))
+            .with_finish_reason("stop".to_string());
+
+        assert_eq!(completion.provider, "gateway");
+        assert_eq!(completion.message.content.as_deref(), Some("hi"));
+        assert_eq!(completion.usage.map(|usage| usage.total_tokens), Some(7));
+        assert_eq!(completion.finish_reason.as_deref(), Some("stop"));
     }
 }

@@ -4,11 +4,20 @@ use crate::wire::choice::Choice;
 use crate::wire::usage::Usage;
 
 /// A chat completion response.
+///
+/// Only `choices` carries the answer. The envelope fields default when an
+/// OpenAI-compatible server leaves them out, rather than failing a reply that
+/// is otherwise complete.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct ChatResponse {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub object: String,
+    #[serde(default)]
     pub created: i64,
+    #[serde(default)]
     pub model: String,
     pub choices: Vec<Choice>,
     pub usage: Option<Usage>,
@@ -49,6 +58,23 @@ mod tests {
             Some("Hello!".to_string())
         );
         assert_eq!(response.usage.unwrap().total_tokens, 30);
+    }
+
+    #[test]
+    fn a_response_without_its_envelope_still_reads() {
+        let json = r#"{
+            "choices": [{
+                "message": { "role": "assistant", "content": "Hello!" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 3 }
+        }"#;
+
+        let response: ChatResponse = serde_json::from_str(json).unwrap();
+        assert!(response.id.is_empty());
+        assert_eq!(response.created, 0);
+        assert_eq!(response.choices[0].index, 0);
+        assert_eq!(response.usage.unwrap().prompt_tokens, 3);
     }
 
     #[test]

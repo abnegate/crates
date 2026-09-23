@@ -38,6 +38,8 @@
 //!   transcription traits.
 //! - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter
 //!   catalogues through one [`catalog::ModelProvider`] trait.
+//! - `testing`: [`provider::testing::StubProvider`], a completion provider
+//!   whose answers a test decides, for crates that route or wrap providers.
 //! - `download`: resumable GGUF downloads that only splice a resume onto the
 //!   same upstream file and verify a SHA-256 when one is given.
 
@@ -65,14 +67,14 @@ pub use crate::cost::{
 pub use crate::error::LlmError;
 pub use crate::hardware::{GpuType, MachineProfile, ModelRecommendation, RecommendedModels};
 pub use crate::modality::{
-    AiClient, AiError, AudioProvider, AudioProviderConfig, AudioResponse, EmbeddingProvider,
-    EmbeddingProviderConfig, Exchange, ImageEditRequest, ImageProvider, ImageProviderConfig,
-    ImageRequest, ImageResponse, Model3DFormat, Model3DProvider, Model3DProviderConfig,
-    Model3DRequest, Model3DResponse, MusicRequest, ProviderConfig, ResponseFormat, SfxRequest,
-    TextProvider, TextProviderConfig, TextRequest, TextResponse, TranscriptionProvider,
-    TranscriptionProviderConfig, TranscriptionResponse, TranscriptionSegment, VideoProvider,
-    VideoProviderConfig, VideoRequest, VideoResponse, VoiceInfo, VoiceProvider,
-    VoiceProviderConfig, VoiceRequest,
+    AiClient, AiError, AudioProvider, AudioProviderConfig, AudioResponse, CompletionBridge,
+    EmbeddingProvider, EmbeddingProviderConfig, Exchange, ImageEditRequest, ImageProvider,
+    ImageProviderConfig, ImageRequest, ImageResponse, Model3DFormat, Model3DProvider,
+    Model3DProviderConfig, Model3DRequest, Model3DResponse, MusicRequest, ProviderConfig,
+    ResponseFormat, SfxRequest, StructuredResponse, TextProvider, TextProviderConfig, TextRequest,
+    TextResponse, TranscriptionProvider, TranscriptionProviderConfig, TranscriptionResponse,
+    TranscriptionSegment, VideoProvider, VideoProviderConfig, VideoRequest, VideoResponse,
+    VoiceInfo, VoiceProvider, VoiceProviderConfig, VoiceRequest,
 };
 pub use crate::provider::{
     Capabilities, Completion, CompletionProvider, CompletionRequest, Credential, ExitStatus,

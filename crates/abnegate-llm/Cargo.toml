@@ -28,6 +28,7 @@ catalog = ["dep:once_cell", "dep:regex", "dep:scraper", "dep:urlencoding"]
 download = []
 google = []
 openai = ["dep:base64"]
+testing = []
 
 [dependencies]
 abnegate-http = { path = "../abnegate-http", version = "0.1.0" }

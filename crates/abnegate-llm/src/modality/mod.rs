@@ -1,6 +1,15 @@
 //! One trait per modality, their request and response types, the
 //! configuration that names a provider for each, and the vendor-native
 //! clients.
+//!
+//! [`TextProvider`] is the text modality's contract: a system and a user
+//! prompt in, prose or a schema-shaped [`StructuredResponse`] out. It is the
+//! contract the vendor-native clients in [`vendor`] satisfy.
+//! [`CompletionProvider`](crate::CompletionProvider) is the conversation
+//! contract an OpenAI-compatible endpoint, a [`Router`](crate::Router) or a
+//! coding agent satisfies, and [`CompletionBridge`] adapts any of those into
+//! a `TextProvider`, so an [`AiClient`] can run on a local model server or a
+//! fallback chain as readily as on a vendor API.
 
 pub mod config;
 pub mod vendor;
@@ -9,6 +18,7 @@ mod ai_client;
 mod ai_error;
 mod audio_provider;
 mod audio_response;
+mod completion_bridge;
 mod embedding_provider;
 mod exchange;
 mod image_edit_request;
@@ -40,6 +50,7 @@ pub use crate::modality::ai_client::AiClient;
 pub use crate::modality::ai_error::AiError;
 pub use crate::modality::audio_provider::AudioProvider;
 pub use crate::modality::audio_response::AudioResponse;
+pub use crate::modality::completion_bridge::CompletionBridge;
 pub use crate::modality::config::{
     AudioProviderConfig, EmbeddingProviderConfig, ImageProviderConfig, Model3DProviderConfig,
     ProviderConfig, TextProviderConfig, TranscriptionProviderConfig, VideoProviderConfig,

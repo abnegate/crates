@@ -6,10 +6,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::provider::capabilities::Capabilities;
-use crate::provider::completion::{
-    Completion, CompletionProvider, CompletionRequest, ProviderKind,
-};
+use crate::provider::completion::Completion;
+use crate::provider::completion_provider::CompletionProvider;
 use crate::provider::error::ProviderError;
+use crate::provider::kind::ProviderKind;
+use crate::provider::request::CompletionRequest;
 use crate::provider::selection::{SelectionStrategy, Weighted};
 
 const DEFAULT_NAME: &str = "router";
@@ -272,10 +273,11 @@ mod tests {
     use super::Router;
     use crate::client::RequestOptions;
     use crate::provider::capabilities::Capabilities;
-    use crate::provider::completion::{
-        Completion, CompletionProvider, CompletionRequest, ProviderKind,
-    };
+    use crate::provider::completion::Completion;
+    use crate::provider::completion_provider::CompletionProvider;
     use crate::provider::error::ProviderError;
+    use crate::provider::kind::ProviderKind;
+    use crate::provider::request::CompletionRequest;
     use crate::provider::selection::{SelectionStrategy, Weighted};
     use crate::provider::testing::StubProvider;
     use crate::wire::Message;
@@ -285,12 +287,11 @@ mod tests {
     const RESERVED: u32 = 512;
 
     fn request(messages: &[Message]) -> CompletionRequest<'_> {
-        CompletionRequest {
-            model: "test-model",
+        CompletionRequest::new(
+            "test-model",
             messages,
-            tools: None,
-            options: RequestOptions { reserved: RESERVED },
-        }
+            RequestOptions { reserved: RESERVED },
+        )
     }
 
     async fn answer(router: &Router, sample: f64) -> Result<Completion, ProviderError> {
@@ -584,12 +585,8 @@ mod tests {
 
         router
             .complete_with_sample(
-                CompletionRequest {
-                    model: "qwen3",
-                    messages: &messages,
-                    tools: Some(&tools),
-                    options: RequestOptions { reserved: 4096 },
-                },
+                CompletionRequest::new("qwen3", &messages, RequestOptions { reserved: 4096 })
+                    .with_tools(&tools),
                 0.0,
             )
             .await
@@ -608,11 +605,7 @@ mod tests {
         let router = Router::fallback(vec![
             StubProvider::failing("first", "connection reset").shared(),
             StubProvider::answering("second", "from second")
-                .with_usage(Usage {
-                    prompt_tokens: 11,
-                    completion_tokens: 22,
-                    total_tokens: 33,
-                })
+                .with_usage(Usage::new(11, 22))
                 .shared(),
         ]);
 
