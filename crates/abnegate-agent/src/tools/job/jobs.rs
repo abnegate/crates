@@ -16,6 +16,7 @@ use super::{
     EXCLUDE_PATH, JobCommand, JobExited, JobStarted, JobStatus, JobTail, KILL_TIMEOUT,
     MAX_CHARACTER_BYTES, UNAVAILABLE, excluded, log_directory, log_path, mint, missing,
 };
+use crate::tools::process::Group;
 use crate::tools::{Session, ToolContext};
 
 pub(super) static JOBS: LazyLock<DashMap<String, Job>> = LazyLock::new(DashMap::new);
@@ -178,6 +179,7 @@ impl Jobs {
             .stdin(Stdio::null())
             .stdout(Stdio::from(file))
             .stderr(Stdio::from(errors))
+            .process_group(0)
             .kill_on_drop(true);
         process.env_clear();
         for (key, value) in &context.env {
@@ -189,6 +191,7 @@ impl Jobs {
             .spawn()
             .map_err(|error| format!("Failed to start the job: {error}"))?;
         let pid = child.id().unwrap_or_default();
+        let group = Group::led_by(child.id());
 
         let (sender, state) = watch::channel(JobStatus::Running);
         let (kill, killed) = oneshot::channel();
@@ -201,7 +204,7 @@ impl Jobs {
                 kill,
             },
         );
-        tokio::spawn(supervise(child, log.clone(), limits, killed, sender));
+        tokio::spawn(supervise(child, group, log.clone(), limits, killed, sender));
 
         Ok(JobStarted {
             id,
@@ -216,8 +219,13 @@ impl Jobs {
 /// Polled in order, not at random: a child that exits in the same tick as its
 /// deadline elapses has exited, and reporting that as a kill would hand the
 /// model a failure it did not have.
+///
+/// However it ends, the whole group goes with it: whatever the job left
+/// running would otherwise keep writing into a log that is about to be
+/// discarded.
 async fn supervise(
     mut child: Child,
+    mut group: Group,
     log: PathBuf,
     limits: Limits,
     kill: oneshot::Receiver<()>,
@@ -236,8 +244,9 @@ async fn supervise(
             _ = flood => JobStatus::Flooded,
         }
     };
+    group.kill();
     if !matches!(outcome, JobStatus::Exited(_)) {
-        let _ = child.kill().await;
+        let _ = child.wait().await;
     }
     state.send_replace(outcome);
 }

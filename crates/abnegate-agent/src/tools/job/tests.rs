@@ -808,3 +808,61 @@ fn a_job_that_was_killed_serialises_without_an_exit_code() {
         "a killed job round-trips without inventing an exit code"
     );
 }
+
+/// The first line of a job's log, once the job has written one.
+async fn first_line(session: Session, id: &str) -> String {
+    for _ in 0..POLL_LIMIT {
+        let tail = Jobs::read(session, id, 0, 500)
+            .await
+            .expect("its own session reads it");
+        if let Some((line, _)) = tail.output.split_once('\n') {
+            return line.to_string();
+        }
+        tokio::time::sleep(POLL).await;
+    }
+    panic!("{id} never wrote a line");
+}
+
+async fn gone(pid: u32) -> bool {
+    for _ in 0..POLL_LIMIT {
+        if !alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(POLL).await;
+    }
+    false
+}
+
+/// Killing a job used to kill `sh` alone, and whatever `sh` had started
+/// kept running, writing into a log the teardown had already unlinked.
+#[tokio::test]
+async fn killing_a_job_kills_everything_it_started() {
+    let cwd = directory();
+    let session = task();
+    let started = spawned(session, "sleep 30 & echo $!; wait", cwd.path()).await;
+    let sleeper: u32 = first_line(session, &started.id)
+        .await
+        .parse()
+        .expect("the job wrote its child's pid");
+    assert!(alive(sleeper), "the child started");
+
+    assert_eq!(Jobs::kill_session(session).await, 1);
+
+    assert!(gone(sleeper).await, "sleep {sleeper} outlived its job");
+}
+
+#[tokio::test]
+async fn a_job_that_ends_takes_what_it_left_running_with_it() {
+    let cwd = directory();
+    let session = task();
+    let started = spawned(session, "sleep 30 & echo $!", cwd.path()).await;
+    let sleeper: u32 = first_line(session, &started.id)
+        .await
+        .parse()
+        .expect("the job wrote its child's pid");
+
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
+    assert!(gone(sleeper).await, "sleep {sleeper} outlived its job");
+
+    Jobs::kill_session(session).await;
+}
