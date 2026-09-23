@@ -88,7 +88,8 @@ impl GitService {
     /// `start_point` is a remote-tracking ref: git would write it into the
     /// configuration every worktree of the clone shares. A worktree already
     /// standing there is replaced or refused as [`Self::create_worktree`]
-    /// replaces or refuses one.
+    /// replaces or refuses one, and a `branch` that is a symbolic ref is
+    /// refused with [`GitError::SymbolicBranch`] before anything changes.
     pub async fn create_worktree_on_branch(
         &self,
         path: &Path,
@@ -97,6 +98,9 @@ impl GitService {
         start_point: &BranchName,
     ) -> GitResult<()> {
         Self::verify_config(path).await?;
+        if Self::is_symbolic(path, branch.reference()).await? {
+            return Err(GitError::SymbolicBranch(branch.clone()));
+        }
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
 
@@ -410,6 +414,57 @@ mod tests {
             !git(&clone, &["config", "--local", "--list"]).contains("branch.task/one."),
             "the worktree's branch recorded an upstream"
         );
+    }
+
+    /// A worktree is not put on a branch that is a link: `-B` would reset
+    /// the branch the link names to the start point.
+    #[tokio::test]
+    async fn a_worktree_is_not_put_on_a_branch_that_is_a_link() {
+        let fixture = Fixture::new();
+        let kept = git(
+            &fixture.repository,
+            &["commit-tree", "-p", "HEAD", "-m", "work", "HEAD^{tree}"],
+        );
+        git(
+            &fixture.repository,
+            &["update-ref", "refs/heads/task/other", &kept],
+        );
+        git(
+            &fixture.repository,
+            &[
+                "symbolic-ref",
+                "refs/heads/task/one",
+                "refs/heads/task/other",
+            ],
+        );
+        let worktree = fixture.at("repository-worktrees/one");
+
+        let created = GitService::new()
+            .create_worktree_on_branch(
+                &fixture.repository,
+                &worktree,
+                &branch("task/one"),
+                &branch("main"),
+            )
+            .await;
+
+        assert_eq!(
+            git(
+                &fixture.repository,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/task/other"
+                ],
+            ),
+            kept,
+            "the branch the link names was reset"
+        );
+        assert!(
+            matches!(created, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("task/one")),
+            "{created:?}"
+        );
+        assert!(!worktree.exists(), "a worktree was added");
     }
 
     #[tokio::test]

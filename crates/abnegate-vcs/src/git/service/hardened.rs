@@ -52,6 +52,9 @@ impl GitService {
     }
 
     /// Resume the task branch from a fresh clone without rewriting its history.
+    /// A task branch that is a symbolic ref is refused with
+    /// [`GitError::SymbolicBranch`]: every move of it would land on the ref
+    /// it names.
     pub async fn prepare_branch(
         &self,
         path: &Path,
@@ -60,6 +63,9 @@ impl GitService {
     ) -> GitResult<()> {
         Self::verify_config(path).await?;
         let reference = branch.reference();
+        if Self::is_symbolic(path, &reference).await? {
+            return Err(GitError::SymbolicBranch(branch.clone()));
+        }
         let remote = format!("{REMOTE_TRACKING}{branch}");
         let exists = Self::output(
             Self::hardened()
@@ -125,9 +131,58 @@ impl GitService {
         Self::finish(&mut command).await
     }
 
+    /// Whether `reference` is a symbolic ref, dangling or not.
+    pub(super) async fn is_symbolic(path: &Path, reference: impl AsRef<OsStr>) -> GitResult<bool> {
+        let read = Self::output(
+            Self::hardened()
+                .args(["symbolic-ref", "--quiet"])
+                .arg(reference)
+                .current_dir(path),
+        )
+        .await?;
+        match read.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(GitError::CommandFailed(
+                "Cannot read the task branch".to_string(),
+            )),
+        }
+    }
+
+    /// Refuse a checkout whose HEAD names a branch that is itself a symbolic
+    /// ref, with [`GitError::SymbolicBranch`]: git moves that branch through
+    /// the link, onto whatever ref it names. A detached HEAD is its own ref.
+    async fn refuse_linked_head(path: &Path) -> GitResult<()> {
+        let head = Self::output(
+            Self::hardened()
+                .args(["symbolic-ref", "--quiet", "--no-recurse", "HEAD"])
+                .current_dir(path)
+                .stdout(Stdio::piped()),
+        )
+        .await?;
+        match head.status.code() {
+            Some(0) => {}
+            Some(1) => return Ok(()),
+            _ => {
+                return Err(GitError::CommandFailed(
+                    "Cannot read the checkout's HEAD".to_string(),
+                ));
+            }
+        }
+        let reference = head.stdout.strip_suffix(b"\n").unwrap_or(&head.stdout);
+        if !Self::is_symbolic(path, native(reference)).await? {
+            return Ok(());
+        }
+        let name = String::from_utf8_lossy(reference);
+        Err(GitError::SymbolicBranch(BranchName::parse(
+            name.strip_prefix(HEADS).unwrap_or(&name),
+        )?))
+    }
+
     /// Move `branch` to a name of its own, `<branch>.abandoned.<time>`, in one
     /// ref transaction that neither overwrites a ref already there nor
-    /// deletes the branch if it moved since it was read. `branch -m` would
+    /// deletes the branch if it moved since it was read, and that deletes a
+    /// branch which became a symbolic ref as the link alone. `branch -m` would
     /// also move the branch's section of the configuration, and git does that
     /// by renaming a rewritten file over it, through a link wherever
     /// `.git/config` is one, even when there is no section to move.
@@ -157,7 +212,7 @@ impl GitService {
         );
         let moved = Self::fed(
             Self::hardened()
-                .args(["update-ref", "--stdin"])
+                .args(["update-ref", "--no-deref", "--stdin"])
                 .current_dir(path),
             transaction.as_bytes(),
         )
@@ -540,9 +595,13 @@ impl GitService {
         Ok(output.stdout)
     }
 
-    /// Create and check out a new branch, refusing a name already taken.
+    /// Create and check out a new branch, refusing a name already taken, and
+    /// one that is a symbolic ref with [`GitError::SymbolicBranch`].
     pub async fn create_branch(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         Self::verify_config(path).await?;
+        if Self::is_symbolic(path, branch.reference()).await? {
+            return Err(GitError::SymbolicBranch(branch.clone()));
+        }
         let check_output = Self::output(
             Self::hardened()
                 .args(["show-ref", "--verify", "--quiet", &branch.reference()])
@@ -648,9 +707,12 @@ impl GitService {
         Ok(None)
     }
 
-    /// Commit what is staged, and say which commit it became.
+    /// Commit what is staged, and say which commit it became. A checkout on a
+    /// branch that is a symbolic ref is refused with
+    /// [`GitError::SymbolicBranch`].
     pub async fn commit(&self, path: &Path, message: &str) -> GitResult<CommitSha> {
         Self::verify_config(path).await?;
+        Self::refuse_linked_head(path).await?;
         let staged = Self::output(
             Self::hardened()
                 .args(DIFF_PREFIX)
@@ -704,7 +766,8 @@ impl GitService {
     /// authentication, and say which commit was pushed. The commit is resolved
     /// before the push and the push names it rather than `HEAD`, so what the
     /// caller is told was pushed is what the remote received even if something
-    /// moves HEAD meanwhile.
+    /// moves HEAD meanwhile. The remote-tracking ref is then written as
+    /// itself, never through a link standing in its place.
     pub async fn push_with_token(
         &self,
         path: &Path,
@@ -732,6 +795,7 @@ impl GitService {
             tracking
                 .args([
                     "update-ref",
+                    "--no-deref",
                     &format!("{REMOTE_TRACKING}{branch}"),
                     commit.as_str(),
                 ])
@@ -774,9 +838,13 @@ impl GitService {
 
     /// Switch to an existing local branch. Anything that is not one -- a tag,
     /// a commit, a remote branch of the same name, a file -- is refused rather
-    /// than detached onto, tracked or restored.
+    /// than detached onto, tracked or restored, and a branch that is a
+    /// symbolic ref is refused with [`GitError::SymbolicBranch`].
     pub async fn checkout(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         Self::verify_config(path).await?;
+        if Self::is_symbolic(path, branch.reference()).await? {
+            return Err(GitError::SymbolicBranch(branch.clone()));
+        }
         let output = Self::output(
             Self::hardened()
                 .args(SWITCH)
@@ -815,15 +883,15 @@ fn changed_paths(listing: &[u8]) -> Vec<String> {
     paths
 }
 
-/// A path git printed, byte for byte, so a name that is not UTF-8 still names
-/// the file git reads.
+/// A path or ref name git printed, byte for byte, so a name that is not
+/// UTF-8 still names what git reads.
 #[cfg(unix)]
 fn native(bytes: &[u8]) -> PathBuf {
     PathBuf::from(OsStr::from_bytes(bytes))
 }
 
-/// A path git printed. Git keeps paths in UTF-8 wherever the platform's own
-/// are not bytes.
+/// A path or ref name git printed. Git keeps names in UTF-8 wherever the
+/// platform's own are not bytes.
 #[cfg(not(unix))]
 fn native(bytes: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
@@ -1606,6 +1674,235 @@ mod publication_tests {
         );
         linked.assert_untouched();
     }
+
+    /// A base clone with a worktree on `task/other` holding a commit of its
+    /// own, which a task branch that is a link can name.
+    struct Held {
+        base: PathBuf,
+        worktree: PathBuf,
+        commit: String,
+    }
+
+    impl Held {
+        async fn new(root: &Path) -> Self {
+            let remote = root.join("remote");
+            std::fs::create_dir(&remote).unwrap();
+            crate::worktree::fixtures::remote(&remote);
+            let base = root.join("base");
+            crate::worktree::fixtures::clone(&remote, &base);
+            let worktree = root.join("other");
+            crate::worktree::add(&base, &worktree, "origin/HEAD").unwrap();
+            GitService::new()
+                .prepare_branch(&worktree, &branch("task/other"), false)
+                .await
+                .unwrap();
+            git(&worktree, &["commit", "-q", "--allow-empty", "-m", "work"]);
+            let commit = git(&worktree, &["rev-parse", "HEAD"]);
+            Self {
+                base,
+                worktree,
+                commit,
+            }
+        }
+
+        /// Point `task/one` at `target` as a symbolic ref.
+        fn link(&self, target: &str) {
+            git(&self.base, &["symbolic-ref", "refs/heads/task/one", target]);
+        }
+
+        /// Panic unless `task/other` and the worktree on it are where they
+        /// were left.
+        fn assert_untouched(&self) {
+            assert_eq!(
+                git(
+                    &self.base,
+                    &[
+                        "for-each-ref",
+                        "--format=%(objectname)",
+                        "refs/heads/task/other"
+                    ],
+                ),
+                self.commit,
+                "the branch another worktree has checked out was moved"
+            );
+            assert_eq!(
+                git(&self.worktree, &["symbolic-ref", "HEAD"]),
+                "refs/heads/task/other"
+            );
+            assert_eq!(
+                git(&self.worktree, &["rev-parse", "HEAD"]),
+                self.commit,
+                "the worktree on the branch was moved"
+            );
+        }
+    }
+
+    /// A task branch a finished run left as a link to the branch another
+    /// worktree has checked out is refused: setting it aside and creating it
+    /// again would both go through the link and rewind that branch.
+    #[tokio::test]
+    async fn a_task_branch_linked_to_another_worktree_s_branch_is_refused_and_moves_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let held = Held::new(root.path()).await;
+        held.link("refs/heads/task/other");
+        let second = root.path().join("second");
+        crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
+        let service = GitService::new();
+
+        let prepared = service
+            .prepare_branch(&second, &branch("task/one"), false)
+            .await;
+
+        held.assert_untouched();
+        let refusal = prepared.unwrap_err();
+        assert!(
+            matches!(refusal, GitError::SymbolicBranch(ref refused) if *refused == branch("task/one")),
+            "{refusal:?}"
+        );
+        assert!(
+            !refusal.to_string().contains("task/other"),
+            "the refusal names the task branch and never what the link points at: {refusal}"
+        );
+        assert_eq!(
+            git(&held.base, &["symbolic-ref", "refs/heads/task/one"]),
+            "refs/heads/task/other",
+            "the link is left as it was"
+        );
+        assert_eq!(service.current_branch(&second).await.unwrap(), "HEAD");
+    }
+
+    /// A link to a branch that does not exist is not a branch `show-ref`
+    /// sees, so it is refused before that check: creating the task branch
+    /// would write through it and make the branch it names.
+    #[tokio::test]
+    async fn a_task_branch_linked_to_a_missing_branch_is_refused_and_makes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let held = Held::new(root.path()).await;
+        held.link("refs/heads/task/elsewhere");
+        let second = root.path().join("second");
+        crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
+        let service = GitService::new();
+
+        let prepared = service
+            .prepare_branch(&second, &branch("task/one"), false)
+            .await;
+
+        assert_eq!(
+            git(
+                &held.base,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "refs/heads/task/elsewhere"
+                ],
+            ),
+            "",
+            "the branch the link names was made"
+        );
+        assert!(
+            matches!(prepared, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("task/one")),
+            "{prepared:?}"
+        );
+        assert_eq!(service.current_branch(&second).await.unwrap(), "HEAD");
+        held.assert_untouched();
+    }
+
+    /// Setting aside a task branch that became a link between the check and
+    /// the move takes the link alone, and never the branch it names.
+    #[tokio::test]
+    async fn setting_aside_a_link_moves_the_link_and_never_the_branch_it_names() {
+        let root = tempfile::tempdir().unwrap();
+        let held = Held::new(root.path()).await;
+        held.link("refs/heads/task/other");
+
+        let aside = GitService::set_aside(&held.base, &branch("task/one"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(
+                &held.base,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/heads/task/"
+                ],
+            ),
+            format!(
+                "{} {commit}\nrefs/heads/task/other {commit}",
+                aside.reference(),
+                commit = held.commit
+            ),
+            "the link was set aside and the branch it names was kept"
+        );
+        held.assert_untouched();
+    }
+
+    /// The remote-tracking ref a push records is written as itself: a link
+    /// left there would otherwise carry the pushed commit onto the branch it
+    /// names.
+    #[tokio::test]
+    async fn a_push_records_its_tracking_ref_and_leaves_what_a_link_there_names() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        crate::worktree::fixtures::remote(&remote);
+        let first = root.path().join("first");
+        let service = GitService::new();
+        service
+            .clone_repository(&local(&remote), &first, None)
+            .await
+            .unwrap();
+        let start = git(&first, &["rev-parse", "HEAD"]);
+        service
+            .prepare_branch(&first, &branch("task/one"), false)
+            .await
+            .unwrap();
+        git(&first, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        git(&first, &["branch", "task/other", &start]);
+        git(
+            &first,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/task/one",
+                "refs/heads/task/other",
+            ],
+        );
+
+        let pushed = service
+            .push_with_token(&first, &branch("task/one"), &local(&remote), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(
+                &first,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/task/other"
+                ],
+            ),
+            start,
+            "the pushed commit landed on the branch the link named"
+        );
+        assert_eq!(
+            git(
+                &first,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname) %(symref)",
+                    "refs/remotes/origin/task/one"
+                ],
+            ),
+            pushed.as_str(),
+            "the remote-tracking ref records the pushed commit as itself"
+        );
+        assert_eq!(
+            git(&remote, &["rev-parse", "refs/heads/task/one"]),
+            pushed.as_str()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1636,6 +1933,167 @@ mod branch_tests {
                 .await,
             Err(GitError::BranchExists(taken)) if taken == branch("feature/one")
         ));
+    }
+
+    /// A new branch whose name is already a link to a branch that does not
+    /// exist is refused: `show-ref` does not see such a link, and creating
+    /// the branch would write through it and make the branch it names.
+    #[tokio::test]
+    async fn a_new_branch_whose_name_is_a_link_is_refused_and_makes_nothing() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+        git(
+            repository.path(),
+            &[
+                "symbolic-ref",
+                "refs/heads/feature/one",
+                "refs/heads/feature/elsewhere",
+            ],
+        );
+        let listed = git(
+            repository.path(),
+            &["for-each-ref", "--format=%(refname) %(objectname)"],
+        );
+        let service = GitService::new();
+
+        let created = service
+            .create_branch(repository.path(), &branch("feature/one"))
+            .await;
+
+        assert_eq!(
+            git(
+                repository.path(),
+                &["for-each-ref", "--format=%(refname) %(objectname)"],
+            ),
+            listed,
+            "a ref was made through the link"
+        );
+        assert!(
+            matches!(created, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("feature/one")),
+            "{created:?}"
+        );
+        assert_eq!(
+            git(repository.path(), &["symbolic-ref", "--no-recurse", "HEAD"]),
+            "refs/heads/main"
+        );
+    }
+
+    /// Switching onto a branch that is a link would leave the checkout on
+    /// the link, and every commit made there would land on the branch the
+    /// link names.
+    #[tokio::test]
+    async fn checking_out_a_branch_that_is_a_link_is_refused_and_stays_put() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+        git(repository.path(), &["branch", "other"]);
+        git(
+            repository.path(),
+            &["symbolic-ref", "refs/heads/feature/one", "refs/heads/other"],
+        );
+        let service = GitService::new();
+
+        let switched = service
+            .checkout(repository.path(), &branch("feature/one"))
+            .await;
+
+        assert_eq!(
+            git(repository.path(), &["symbolic-ref", "--no-recurse", "HEAD"]),
+            "refs/heads/main",
+            "the checkout moved onto the link"
+        );
+        assert!(
+            matches!(switched, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("feature/one")),
+            "{switched:?}"
+        );
+    }
+
+    /// A branch that became a link after the checkout went onto it is not
+    /// committed to: the commit would land on the branch the link names.
+    #[tokio::test]
+    async fn committing_on_a_branch_that_became_a_link_is_refused_and_moves_nothing() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+        let service = GitService::new();
+        service
+            .create_branch(repository.path(), &branch("feature/one"))
+            .await
+            .unwrap();
+        let start = git(repository.path(), &["rev-parse", "HEAD"]);
+        git(repository.path(), &["branch", "other"]);
+        git(
+            repository.path(),
+            &["symbolic-ref", "refs/heads/feature/one", "refs/heads/other"],
+        );
+        std::fs::write(repository.path().join("work.txt"), "work\n").unwrap();
+        service.stage_all(repository.path()).await.unwrap();
+
+        let committed = service.commit(repository.path(), "work").await;
+
+        assert_eq!(
+            git(
+                repository.path(),
+                &["for-each-ref", "--format=%(objectname)", "refs/heads/other"],
+            ),
+            start,
+            "the commit landed on the branch the link names"
+        );
+        assert!(
+            matches!(committed, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("feature/one")),
+            "{committed:?}"
+        );
+    }
+
+    /// HEAD's branch is read byte for byte, so a link whose name is not
+    /// UTF-8 is still seen as one. The refs live in a reftable, since a file
+    /// system may refuse such a name for a file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn committing_on_a_link_whose_name_is_not_utf8_is_refused_and_moves_nothing() {
+        use std::os::unix::ffi::OsStrExt;
+        let repository = tempfile::tempdir().unwrap();
+        git(
+            repository.path(),
+            &["init", "-q", "-b", "main", "--ref-format=reftable"],
+        );
+        git(
+            repository.path(),
+            &["commit", "-q", "--allow-empty", "-m", "fixture"],
+        );
+        let start = git(repository.path(), &["rev-parse", "HEAD"]);
+        git(repository.path(), &["branch", "other"]);
+        let name = OsStr::from_bytes(b"refs/heads/feature/\xff");
+        for arguments in [
+            [
+                OsStr::new("symbolic-ref"),
+                name,
+                OsStr::new("refs/heads/other"),
+            ],
+            [OsStr::new("symbolic-ref"), OsStr::new("HEAD"), name],
+        ] {
+            let status = std::process::Command::new("git")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .args(arguments)
+                .current_dir(repository.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "{arguments:?}");
+        }
+        std::fs::write(repository.path().join("work.txt"), "work\n").unwrap();
+        let service = GitService::new();
+        service.stage_all(repository.path()).await.unwrap();
+
+        let committed = service.commit(repository.path(), "work").await;
+
+        assert_eq!(
+            git(
+                repository.path(),
+                &["for-each-ref", "--format=%(objectname)", "refs/heads/other"],
+            ),
+            start,
+            "the commit landed on the branch the link names"
+        );
+        assert!(committed.is_err(), "{committed:?}");
     }
 
     #[tokio::test]

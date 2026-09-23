@@ -228,6 +228,15 @@ impl GitService {
         Self::verify_sole(path, ORIGIN_FETCH, FETCH_REFSPEC.as_bytes()).await
     }
 
+    /// Refuse `branch` when its remote-tracking ref is a symbolic ref: a fetch
+    /// naming that ref writes through the link, onto whatever ref it names.
+    async fn refuse_linked_tracking(path: &Path, branch: &BranchName) -> GitResult<()> {
+        match Self::is_symbolic(path, format!("{REMOTE_TRACKING}{branch}")).await? {
+            true => Err(GitError::SymbolicBranch(branch.clone())),
+            false => Ok(()),
+        }
+    }
+
     /// Refuse a managed clone whose own configuration gives `key` any value
     /// but `value`, no value, or that value more than once.
     async fn verify_sole(path: &Path, key: &str, value: &[u8]) -> GitResult<()> {
@@ -261,11 +270,13 @@ impl GitService {
     }
 
     /// Fetch one branch from `origin` into a managed clone, refusing one
-    /// configured as [`Self::fetch_all`] refuses it.
+    /// configured as [`Self::fetch_all`] refuses it, and a branch whose
+    /// remote-tracking ref is a symbolic ref with [`GitError::SymbolicBranch`].
     pub async fn fetch_branch(&self, path: &Path, url: &str, branch: &BranchName) -> GitResult<()> {
         tracing::debug!(repository = ?path, %branch, "Fetching branch");
 
         Self::verify_remote(path, url).await?;
+        Self::refuse_linked_tracking(path, branch).await?;
         let output = Self::output(&mut Self::fetching(path, branch)).await?;
 
         if !output.status.success() {
@@ -301,11 +312,13 @@ impl GitService {
     }
 
     /// Fetch `branch` and advance a managed clone's working tree to it,
-    /// refusing a clone configured as [`Self::fetch_all`] refuses it.
+    /// refusing a clone configured as [`Self::fetch_all`] refuses it, and a
+    /// branch [`Self::fetch_branch`] refuses.
     async fn pull(&self, path: &Path, url: &str, branch: &BranchName) -> GitResult<()> {
         tracing::debug!(repository = ?path, %branch, "Pulling latest changes");
 
         Self::verify_remote(path, url).await?;
+        Self::refuse_linked_tracking(path, branch).await?;
         let output = Self::output(&mut Self::fetching(path, branch)).await?;
 
         if !output.status.success() {
@@ -325,9 +338,14 @@ impl GitService {
     ///
     /// Assumes the refs are already fetched, and discards anything the working
     /// tree holds: only a managed clone may be reset this way. Both steps are
-    /// local, so they run hardened, after the clone's configuration is checked.
+    /// local, so they run hardened, after the clone's configuration is checked
+    /// and a `branch` that is a symbolic ref is refused with
+    /// [`GitError::SymbolicBranch`].
     async fn checkout_reset(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         Self::verify_config(path).await?;
+        if Self::is_symbolic(path, branch.reference()).await? {
+            return Err(GitError::SymbolicBranch(branch.clone()));
+        }
         let output = Self::output(&mut Self::checking_out(path, branch)).await?;
 
         if !output.status.success() {
@@ -688,6 +706,113 @@ mod managed_tests {
             git(&target, &["log", "--oneline"]).contains("second commit"),
             "the pull brought the new commit"
         );
+    }
+
+    /// A managed clone whose default branch became a link is not brought
+    /// forward: `checkout -B` and `reset --hard` would reset the branch the
+    /// link names to the remote's.
+    #[tokio::test]
+    async fn a_managed_clone_whose_default_branch_is_a_link_is_not_brought_forward() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .await
+            .unwrap();
+        let kept = git(
+            &target,
+            &["commit-tree", "-p", "HEAD", "-m", "work", "HEAD^{tree}"],
+        );
+        git(&target, &["update-ref", "refs/heads/task/other", &kept]);
+        git(
+            &target,
+            &["symbolic-ref", "refs/heads/main", "refs/heads/task/other"],
+        );
+        second_commit(source.path());
+
+        let synced = service
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .await;
+
+        assert_eq!(
+            git(
+                &target,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/task/other"
+                ],
+            ),
+            kept,
+            "the branch the link names was reset to the remote's"
+        );
+        assert!(
+            matches!(synced, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("main")),
+            "{synced:?}"
+        );
+    }
+
+    /// A branch whose remote-tracking ref became a link is not fetched: a
+    /// fetch naming that ref writes the remote's commit through the link,
+    /// onto the branch it names.
+    #[tokio::test]
+    async fn a_branch_whose_tracking_ref_is_a_link_is_not_fetched() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .await
+            .unwrap();
+        let kept = git(
+            &target,
+            &["commit-tree", "-p", "HEAD", "-m", "work", "HEAD^{tree}"],
+        );
+        git(&target, &["update-ref", "refs/heads/task/other", &kept]);
+        git(
+            &target,
+            &["update-ref", "--no-deref", "-d", "refs/remotes/origin/main"],
+        );
+        git(
+            &target,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/main",
+                "refs/heads/task/other",
+            ],
+        );
+        second_commit(source.path());
+
+        let fetched = service
+            .fetch_branch(&target, &origin(source.path()), &branch("main"))
+            .await;
+        let pulled = service
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .await;
+
+        assert_eq!(
+            git(
+                &target,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/task/other"
+                ],
+            ),
+            kept,
+            "the remote's commit was written onto the branch the link names"
+        );
+        for outcome in [fetched, pulled] {
+            assert!(
+                matches!(outcome, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("main")),
+                "{outcome:?}"
+            );
+        }
     }
 
     #[tokio::test]

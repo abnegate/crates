@@ -22,6 +22,9 @@ pub enum GitError {
     #[error("Branch already exists: {0}")]
     BranchExists(BranchName),
 
+    #[error("Refusing to write the branch {0} through a symbolic ref")]
+    SymbolicBranch(BranchName),
+
     #[error(transparent)]
     Parse(#[from] ParseError),
 
