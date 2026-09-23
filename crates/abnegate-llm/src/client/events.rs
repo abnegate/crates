@@ -18,6 +18,9 @@ const MAXIMUM_LINE_BYTES: usize = 16 * 1024 * 1024;
 /// [`LlmError::Stream`] rather than read as an empty chunk.
 pub(crate) struct EventDecoder {
     buffer: Vec<u8>,
+    /// How much of `buffer` is known to hold no newline, so a line that
+    /// arrives over many reads is searched once rather than once per read.
+    scanned: usize,
     limit: usize,
     finished: bool,
 }
@@ -32,6 +35,7 @@ impl EventDecoder {
     pub(crate) fn with_limit(limit: usize) -> Self {
         Self {
             buffer: Vec::new(),
+            scanned: 0,
             limit,
             finished: false,
         }
@@ -52,13 +56,15 @@ impl EventDecoder {
         self.buffer.extend_from_slice(bytes);
 
         let mut consumed = 0;
-        while let Some(offset) = self.buffer[consumed..]
+        let mut searched = self.scanned;
+        while let Some(offset) = self.buffer[searched..]
             .iter()
             .position(|byte| *byte == b'\n')
         {
-            let end = consumed + offset;
+            let end = searched + offset;
             let line = self.buffer[consumed..end].to_vec();
             consumed = end + 1;
+            searched = consumed;
             self.decode(&line, &mut decoded);
             if self.finished {
                 self.buffer.clear();
@@ -66,6 +72,7 @@ impl EventDecoder {
             }
         }
         self.buffer.drain(..consumed);
+        self.scanned = self.buffer.len();
 
         if self.buffer.len() > self.limit {
             self.finished = true;
@@ -122,6 +129,9 @@ impl EventDecoder {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
     use super::EventDecoder;
     use crate::error::LlmError;
 
@@ -242,5 +252,27 @@ mod tests {
         assert!(matches!(decoded[0], Err(LlmError::Json(_))));
         assert_eq!(content(&decoded[1]), Some("hi"));
         assert!(!decoder.is_finished());
+    }
+
+    #[test]
+    fn a_long_line_arriving_in_small_reads_is_scanned_once() {
+        let mut decoder = EventDecoder::default();
+        let padding = "x".repeat(8 * 1024 * 1024);
+        let event = format!("data: {{\"choices\":[],\"model\":\"{padding}\"}}\n\n");
+
+        let started = Instant::now();
+        let decoded: Vec<_> = event
+            .as_bytes()
+            .chunks(16 * 1024)
+            .flat_map(|chunk| decoder.push(chunk))
+            .collect();
+        let elapsed = started.elapsed();
+
+        assert_eq!(decoded.len(), 1);
+        assert!(decoded[0].is_ok(), "{:?}", decoded[0].as_ref().err());
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "an 8 MiB line took {elapsed:?}"
+        );
     }
 }
