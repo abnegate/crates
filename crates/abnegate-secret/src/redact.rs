@@ -80,6 +80,7 @@ const ESCAPE: u8 = b'\\';
 
 const PEM_BEGIN: &str = "-----BEGIN ";
 const PEM_END: &str = "-----END ";
+const PEM_DASHES: &str = "-----";
 const PEM_PRIVATE: &str = "PRIVATE KEY";
 
 const URL_SCHEME_SEPARATOR: &[u8] = b"://";
@@ -154,16 +155,18 @@ fn secret_at(text: &str, index: usize, userinfo: &mut Option<usize>) -> Option<u
 /// The block closes only on an END line for the label it opened with, and only
 /// on one that is the whole line: an END line for another label, or one with
 /// text after it, must not leave the rest of the key standing.
+///
+/// The label is read only as far as the dashes that close it or the end of
+/// its line, whichever comes first. Either comes no later than the next BEGIN
+/// marker, so repeated markers are each read once.
 fn private_key_at(text: &str, index: usize) -> Option<usize> {
-    if !text.as_bytes()[index..].starts_with(PEM_BEGIN.as_bytes()) {
+    let rest = text.get(index..)?;
+    let label = rest.strip_prefix(PEM_BEGIN)?;
+    let dashes = label.find(PEM_DASHES).unwrap_or(label.len());
+    let label = label[..dashes].lines().next()?;
+    if !label.contains(PEM_PRIVATE) {
         return None;
     }
-    let rest = &text[index..];
-    let line = rest.find('\n').unwrap_or(rest.len());
-    if !rest[..line].contains(PEM_PRIVATE) {
-        return None;
-    }
-    let label = rest[PEM_BEGIN.len()..line].trim_end_matches('\r');
     let closing = format!("{PEM_END}{label}");
     let end = closes_at(rest, &closing).map_or(rest.len(), |at| {
         rest[at..]
@@ -173,12 +176,14 @@ fn private_key_at(text: &str, index: usize) -> Option<usize> {
     Some(index + end)
 }
 
-/// Where `closing` occurs as a complete line, rather than as a prefix of one.
+/// Where `closing`, and the dashes that close its label, occur as a complete
+/// line rather than as a prefix of one.
 fn closes_at(text: &str, closing: &str) -> Option<usize> {
     let mut from = 0;
     while let Some(offset) = text[from..].find(closing) {
         let at = from + offset;
         let after = &text[at + closing.len()..];
+        let after = after.strip_prefix(PEM_DASHES).unwrap_or(after);
         if after.is_empty() || after.starts_with('\n') || after.starts_with('\r') {
             return Some(at);
         }
@@ -624,6 +629,38 @@ mod shapes_that_carry_no_prefix {
     }
 
     #[test]
+    fn a_private_key_is_redacted_whatever_follows_its_begin_marker() {
+        for key in [
+            concat!(
+                "-----BEGIN RSA PRIVATE",
+                " KEY----- exported by example\n",
+                "MIIEowIBAAKCAQEAx4fW1pQ8mJ7kR2vLnT5cYdB3sHgKqZ0uWpXvNfE1aOiCjMlP\n",
+                "-----END RSA PRIVATE KEY-----"
+            ),
+            concat!(
+                "-----BEGIN RSA PRIVATE",
+                " KEY\r\n",
+                "MIIEowIBAAKCAQEAx4fW1pQ8mJ7kR2vLnT5cYdB3sHgKqZ0uWpXvNfE1aOiCjMlP\r\n",
+                "-----END RSA PRIVATE KEY"
+            ),
+        ] {
+            assert_eq!(redact(key), REDACTED);
+        }
+    }
+
+    #[test]
+    fn a_private_key_closes_at_its_own_end_marker_among_repeated_begin_markers() {
+        let text = concat!(
+            "-----BEGIN -----BEGIN EC PRIVATE",
+            " KEY-----\n",
+            "MHcCAQEEIBkg4LVWM9nuwNSkbEGmRe3cTpy4H3fYyjtBZqTg1sh8oAoGCCqGSM49\n",
+            "-----END EC PRIVATE KEY-----\n",
+            "done"
+        );
+        assert_eq!(redact(text), format!("-----BEGIN {REDACTED}\ndone"));
+    }
+
+    #[test]
     fn a_pgp_private_key_block_does_not_survive() {
         let key = concat!(
             "-----BEGIN PGP PRIVATE",
@@ -975,6 +1012,21 @@ mod tests {
             elapsed < LINEAR_BUDGET,
             "a megabyte of colons after a scheme took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn repeated_private_key_markers_are_scanned_once() {
+        for marker in ["-----BEGIN ", "-----BEGIN PRIVATE KEY "] {
+            let text = marker.repeat(1024 * 1024 / marker.len());
+            let started = Instant::now();
+            let _ = redact(&text);
+            let elapsed = started.elapsed();
+
+            assert!(
+                elapsed < LINEAR_BUDGET,
+                "a megabyte of {marker:?} took {elapsed:?}"
+            );
+        }
     }
 
     #[test]
