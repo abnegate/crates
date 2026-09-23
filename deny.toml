@@ -1,8 +1,11 @@
+[graph]
+all-features = true
+
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "all"
-yanked = "warn"
+yanked = "deny"
 ignore = []
 
 [licenses]
@@ -15,7 +18,6 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "CC0-1.0",
 ]
 confidence-threshold = 0.8
@@ -38,7 +40,8 @@ license-files = [
 
 [bans]
 multiple-versions = "warn"
-wildcards = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
 highlight = "all"
 
 [sources]
