@@ -2,10 +2,8 @@ mod parameters;
 
 pub(super) use parameters::RunCommandParameters;
 
-use abnegate_exec::Proxy;
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tokio::process::Command;
 use tokio::time::Duration;
 
 use super::{
@@ -22,15 +20,20 @@ use crate::tools::{
 /// Programs [`RunCommandTool`] may spawn, resolved on the child's `PATH`.
 ///
 /// Matched against the whole `command`, never its last path segment: an agent
-/// may write a file into `cwd`, so a basename match would admit `./cargo` and
-/// then run whatever that file is.
-const ALLOWED_COMMANDS: &[&str] = &[
-    "cargo", "rustc", "npm", "npx", "yarn", "pnpm", "node", "deno", "bun", "make", "cmake",
-    "gradle", "mvn", "maven", "go", "python", "python3", "pip", "pip3", "poetry", "uv", "ruby",
-    "gem", "bundle", "rake", "dotnet", "msbuild", "git", "gh", "hub", "ls", "cat", "head", "tail",
-    "grep", "find", "wc", "sort", "uniq", "diff", "tree", "file", "stat", "pwd", "which",
-    "whereis", "pytest", "jest", "mocha", "rspec", "phpunit", "echo", "printf", "date", "env",
-    "true", "false", "test", "curl", "wget", "jq", "yq", "docker",
+/// may write a file into the working directory, so a basename match would
+/// admit `./cargo` and then run whatever that file is.
+///
+/// No interpreter (`python`, `node`, `ruby`, `deno`, `bun`, a shell), no
+/// `env` and no `docker`: each of those runs whatever code its arguments
+/// name, which would make the list a formality. What is left still runs
+/// code from the tree - a build script, a test, a git hook - so the list
+/// narrows which program starts, not what it can do.
+pub(super) const ALLOWED_COMMANDS: &[&str] = &[
+    "cargo", "rustc", "npm", "npx", "yarn", "pnpm", "make", "cmake", "gradle", "mvn", "maven",
+    "go", "pip", "pip3", "poetry", "uv", "gem", "bundle", "rake", "dotnet", "msbuild", "git", "gh",
+    "hub", "ls", "cat", "head", "tail", "grep", "find", "wc", "sort", "uniq", "diff", "tree",
+    "file", "stat", "pwd", "which", "whereis", "pytest", "jest", "mocha", "rspec", "phpunit",
+    "echo", "printf", "date", "true", "false", "test", "curl", "wget", "jq", "yq",
 ];
 
 /// Shell syntax an argument may not carry, because an argument is handed to the
@@ -116,7 +119,7 @@ impl Tool for RunCommandTool {
 
         if !ALLOWED_COMMANDS.contains(&parameters.command.as_str()) {
             return Err(ToolError::Execution(format!(
-                "Command '{}' is not in the allowed list. Name a program, not a path: cargo, npm, git, python, etc.",
+                "Command '{}' is not in the allowed list. Name a program, not a path: cargo, npm, git, etc.",
                 parameters.command
             )));
         }
@@ -140,13 +143,8 @@ impl Tool for RunCommandTool {
             return background(&command, context).await;
         }
 
-        let mut process = Command::new(&parameters.command);
+        let mut process = process::command(&parameters.command, context);
         process.args(&parameters.arguments).current_dir(&cwd);
-        process.env_clear();
-        for (key, value) in &context.env {
-            process.env(key, value);
-        }
-        Proxy::from_env().apply(&mut process);
 
         let limit = parameters
             .timeout_seconds

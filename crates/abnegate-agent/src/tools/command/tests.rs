@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-use super::run::RunCommandParameters;
+use super::run::{ALLOWED_COMMANDS, RunCommandParameters};
 use super::shell::{RunShellParameters, total_sleep};
 use super::*;
 use crate::test_support::{PROXY_TEST_CHILD, captured_logs};
@@ -24,6 +24,27 @@ fn create_test_context() -> ToolContext {
 
 fn logs(checkout: &Path) -> PathBuf {
     job::log_directory(checkout, &crate::Application::default())
+}
+
+/// The environment a child sees, as `run_command` and `run_shell` start it.
+///
+/// `env` runs any command it is handed, so it is not on `run_command`'s list;
+/// the environment `run_command` builds is read through the one function both
+/// tools and background jobs start their children with.
+async fn environments(context: &ToolContext) -> [String; 2] {
+    let command = crate::tools::process::run(
+        crate::tools::process::command("env", context),
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    .expect("env runs");
+    assert!(command.status.success(), "{command:?}");
+    let shell = RunShellTool
+        .execute(json!({"command": "env"}), context)
+        .await
+        .unwrap();
+    assert!(shell.success, "{shell:?}");
+    [command.stdout, shell.output.unwrap()]
 }
 
 /// Both shelling tools hand the child only what the context names.
@@ -46,19 +67,10 @@ async fn shelling_tools_give_the_child_only_the_context_environment() {
         std::env::var("PATH").unwrap_or_default(),
     )]);
 
-    let command = RunCommandTool
-        .execute(json!({"command": "env"}), &context)
-        .await
-        .unwrap();
-    let shell = RunShellTool
-        .execute(json!({"command": "env"}), &context)
-        .await
-        .unwrap();
+    let outputs = environments(&context).await;
     unsafe { std::env::remove_var(MARKER) };
 
-    for result in [command, shell] {
-        assert!(result.success, "{result:?}");
-        let output = result.output.unwrap();
+    for output in outputs {
         assert!(output.contains("PATH="), "the tool did not run: {output}");
         assert!(
             !output.contains(MARKER),
@@ -116,17 +128,7 @@ async fn proxy_overrides_command_and_shell_environment() {
         ("no_proxy".to_string(), "*".to_string()),
         (PROXY_URL_ENV.to_string(), "".to_string()),
     ]);
-    let command = RunCommandTool
-        .execute(json!({"command": "env"}), &context)
-        .await
-        .unwrap();
-    let shell = RunShellTool
-        .execute(json!({"command": "env"}), &context)
-        .await
-        .unwrap();
-    for result in [command, shell] {
-        assert!(result.success, "{result:?}");
-        let output = result.output.unwrap();
+    for output in environments(&context).await {
         for key in [
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -360,7 +362,7 @@ async fn test_run_command_allowed_commands() {
     let tool = RunCommandTool;
     let context = create_test_context();
 
-    let allowed = ["cargo", "npm", "git", "python", "go", "ls", "cat"];
+    let allowed = ["cargo", "npm", "git", "go", "ls", "cat"];
     for command in allowed {
         let result = tool
             .execute(
@@ -1468,4 +1470,29 @@ async fn a_shell_call_that_leaves_a_child_behind_returns_and_takes_the_child_wit
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(gone, "sleep {pid} outlived the call");
+}
+
+/// Each of these runs whatever code its arguments hand it, so leaving one on
+/// the list made the list a formality: `env sh -c ...`, `python -c ...`,
+/// `docker run ...`.
+#[tokio::test]
+async fn a_program_that_runs_any_code_it_is_given_is_not_on_the_list() {
+    const EXECUTORS: &[&str] = &[
+        "env", "sh", "bash", "zsh", "python", "python3", "node", "ruby", "perl", "deno", "bun",
+        "docker",
+    ];
+    for program in EXECUTORS {
+        assert!(!ALLOWED_COMMANDS.contains(program), "{program} is allowed");
+        let error = RunCommandTool
+            .execute(
+                json!({"command": program, "args": ["-c", "true"]}),
+                &create_test_context(),
+            )
+            .await
+            .expect_err("the program is refused");
+        assert!(
+            error.to_string().contains("not in the allowed list"),
+            "{program}: {error}"
+        );
+    }
 }

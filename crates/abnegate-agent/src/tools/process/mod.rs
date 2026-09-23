@@ -16,7 +16,9 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout, timeout_at};
 
-use super::ToolError;
+use abnegate_exec::Proxy;
+
+use super::{ToolContext, ToolError};
 
 /// Most bytes kept from the start of each stream, and again from its end.
 pub(crate) const MAX_CAPTURE_BYTES: usize = 64 * 1024;
@@ -34,6 +36,18 @@ pub(crate) const GROUP_GRACE: Duration = Duration::from_secs(1);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 const READ_BUFFER_BYTES: usize = 8 * 1024;
+
+/// `program`, set to see the context's environment and nothing else, with the
+/// process-wide proxy policy applied last so no tool can route around it.
+pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
+    let mut command = Command::new(program);
+    command.env_clear();
+    for (key, value) in &context.env {
+        command.env(key, value);
+    }
+    Proxy::from_env().apply(&mut command);
+    command
+}
 
 /// Run `command` in a process group of its own until it exits or `limit`
 /// passes, reading both of its streams as it goes.

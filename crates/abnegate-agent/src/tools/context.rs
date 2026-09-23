@@ -9,6 +9,14 @@ const DEFAULT_MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Where and how a tool call runs.
+///
+/// Confinement to [`working_directory`](Self::working_directory) is the file
+/// tools' alone. `run_command` holds a command to its allow-list and its
+/// arguments to no shell syntax, but the programs on that list build, test
+/// and hook code from the tree, so a call to it is arbitrary execution on the
+/// host. What gates it is its [`Tier::Host`](super::Tier::Host): the loop puts
+/// it to the user through [`AgentCallback::approve`](crate::AgentCallback)
+/// before it runs.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     /// The root file tools stay beneath and commands run in by default.

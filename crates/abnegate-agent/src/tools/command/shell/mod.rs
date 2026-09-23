@@ -2,11 +2,9 @@ mod parameters;
 
 pub(super) use parameters::RunShellParameters;
 
-use abnegate_exec::Proxy;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::borrow::Cow;
-use tokio::process::Command;
 use tokio::time::Duration;
 
 use super::{
@@ -222,16 +220,11 @@ impl Tool for RunShellTool {
                 .clamp(1, MAX_SHELL_TIMEOUT_SECONDS),
         );
 
-        let mut process = Command::new(SHELL);
+        let mut process = process::command(SHELL, context);
         process
             .arg(SHELL_COMMAND_FLAG)
             .arg(&parameters.command)
             .current_dir(&cwd);
-        process.env_clear();
-        for (key, value) in &context.env {
-            process.env(key, value);
-        }
-        Proxy::from_env().apply(&mut process);
 
         let output = process::run(process, limit).await?;
         let (stdout, stderr) = (output.stdout, output.stderr);

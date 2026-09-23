@@ -1,4 +1,3 @@
-use abnegate_exec::Proxy;
 use dashmap::DashMap;
 use std::future::Future;
 use std::io::SeekFrom;
@@ -17,7 +16,7 @@ use super::{
     MAX_CHARACTER_BYTES, UNAVAILABLE, excluded, log_directory, log_path, mint, missing,
 };
 use crate::Application;
-use crate::tools::process::Group;
+use crate::tools::process::{self, Group};
 use crate::tools::{Session, ToolContext};
 
 pub(super) static JOBS: LazyLock<DashMap<String, Job>> = LazyLock::new(DashMap::new);
@@ -173,7 +172,7 @@ impl Jobs {
             .try_clone()
             .map_err(|error| format!("Cannot create the job log: {error}"))?;
 
-        let mut process = Command::new(&command.program);
+        let mut process = process::command(&command.program, context);
         process
             .args(&command.arguments)
             .current_dir(command.directory.as_deref().unwrap_or(checkout))
@@ -182,12 +181,6 @@ impl Jobs {
             .stderr(Stdio::from(errors))
             .process_group(0)
             .kill_on_drop(true);
-        process.env_clear();
-        for (key, value) in &context.env {
-            process.env(key, value);
-        }
-        Proxy::from_env().apply(&mut process);
-
         let child = process
             .spawn()
             .map_err(|error| format!("Failed to start the job: {error}"))?;
