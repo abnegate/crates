@@ -41,13 +41,23 @@ pub const LINE_BREAK: &str = " ⏎ ";
 ///
 /// A command, a message body or a patch arrives with newlines and runs of
 /// whitespace that would push the part worth reading off the card. Runs of
-/// blank space within a line go and so do blank lines; the lines left keep one
-/// `\n` between them, for a [`Preview`](super::Preview) to draw as
+/// spaces and tabs within a line go and so do blank lines; the lines left keep
+/// one `\n` between them, for a [`Preview`](super::Preview) to draw as
 /// [`LINE_BREAK`], because what separates two commands is the part of a
 /// preview a reader is deciding on.
+///
+/// Only `\n`, with the `\r` of a `\r\n` pair, breaks a line. Any other line
+/// terminator or Unicode space is kept as itself for the preview to escape:
+/// collapsing it into a space would show one line where the file holds two,
+/// or an ordinary space where it holds something else.
 pub(crate) fn collapse(text: &str) -> String {
     text.lines()
-        .map(|line| line.split_whitespace().collect::<Vec<&str>>().join(" "))
+        .map(|line| {
+            line.split([' ', '\t'])
+                .filter(|word| !word.is_empty())
+                .collect::<Vec<&str>>()
+                .join(" ")
+        })
         .filter(|line| !line.is_empty())
         .collect::<Vec<String>>()
         .join("\n")
@@ -93,6 +103,26 @@ mod tests {
     fn blank_space_inside_a_line_still_collapses() {
         assert_eq!(collapse("cargo    test   --all"), "cargo test --all");
         assert_eq!(collapse("  one\n\n\ntwo  "), "one\ntwo");
+    }
+
+    /// Only `\n`, or the `\r\n` pair around it, breaks a line, and only spaces
+    /// and tabs collapse, so every other terminator and Unicode space is left
+    /// for the preview to show as what it is.
+    #[test]
+    fn only_a_line_feed_breaks_a_line_and_only_spaces_and_tabs_collapse() {
+        assert_eq!(collapse("one\r\ntwo"), "one\ntwo");
+        assert_eq!(collapse("one\t \ttwo"), "one two");
+        for character in [
+            '\r', '\u{b}', '\u{c}', '\u{85}', '\u{a0}', '\u{2028}', '\u{3000}',
+        ] {
+            let text = format!("one{character}two");
+            assert_eq!(collapse(&text), text, "{character:?}");
+            assert_eq!(
+                collapse(&format!("one{character}")),
+                format!("one{character}"),
+                "{character:?}"
+            );
+        }
     }
 
     #[test]

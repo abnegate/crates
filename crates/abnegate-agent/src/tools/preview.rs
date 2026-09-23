@@ -28,9 +28,10 @@ static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
 /// [`truncated`](Self::truncated) is set, so a call padded to push its payload
 /// out of view reads as a call that was cut, never as the whole of what it
 /// does. A control, format or invisible character in the call is shown as its
-/// `\u{…}` escape, as is any `⟦`, `⟧` or `⏎` it carries, so the call can
-/// neither redraw the card it is shown on nor forge the marks the preview
-/// draws. The [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always
+/// `\u{…}` escape, as is any whitespace but a plain space or a `\n`, and any
+/// `⟦`, `⟧` or `⏎` it carries, so the call can neither redraw the card it is
+/// shown on, pass one character off as another, nor forge the marks the
+/// preview draws. The [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always
 /// holds every argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preview {
@@ -95,13 +96,19 @@ impl Preview {
 /// Whether `character` reaches the card as its [`char::escape_unicode`].
 ///
 /// A control or invisible character would let the call move the cursor, erase
-/// or reorder what the reader is shown, and the glyphs the preview draws its
-/// own marks with would let it forge them, so none of them is shown as itself.
+/// or reorder what the reader is shown, a line or paragraph separator or a
+/// Unicode space would pass for a plain space, and the glyphs the preview
+/// draws its own marks with would let it forge them, so none of them is shown
+/// as itself.
 fn escaped(character: char) -> bool {
     match character {
         RETURN | CUT_OPEN | CUT_CLOSE => true,
         _ if character.is_ascii() => character.is_ascii_control(),
-        _ => character.is_control() || INVISIBLE.is_match(character.encode_utf8(&mut [0; 4])),
+        _ => {
+            character.is_control()
+                || character.is_whitespace()
+                || INVISIBLE.is_match(character.encode_utf8(&mut [0; 4]))
+        }
     }
 }
 
