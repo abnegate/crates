@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// How an [`Agent`](super::Agent) runs a turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]

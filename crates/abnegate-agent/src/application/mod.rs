@@ -1,9 +1,9 @@
 mod error;
 
-pub use error::ApplicationError;
-
 use std::fmt;
 use std::str::FromStr;
+
+pub use error::ApplicationError;
 
 /// The application name a default [`Application`] carries.
 pub const DEFAULT_APPLICATION: &str = "abnegate";

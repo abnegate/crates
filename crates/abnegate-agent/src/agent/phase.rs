@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Current phase of the agent execution
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

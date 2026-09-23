@@ -1,5 +1,6 @@
 use nix::errno::Errno;
-use nix::sys::signal::{Signal, killpg};
+use nix::sys::signal::Signal;
+use nix::sys::signal::killpg;
 use nix::unistd::Pid;
 
 /// A child started as the leader of its own process group, and everything it

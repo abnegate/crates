@@ -1,21 +1,33 @@
 mod parameters;
 
-use async_trait::async_trait;
-use serde_json::{Value, json};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use tokio::time::{Instant, timeout_at};
 
-use super::walk::{Visit, WALK_TIME_LIMIT, Walk};
-use super::{confine, resolve};
-use crate::tools::beneath::{self, Access};
-use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
+use async_trait::async_trait;
 use parameters::SearchCodeParameters;
+use serde_json::Value;
+use serde_json::json;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::BufReader;
+use tokio::process::Command;
+use tokio::time::Instant;
+use tokio::time::timeout_at;
+
+use super::confine;
+use super::resolve;
+use super::walk::Visit;
+use super::walk::WALK_TIME_LIMIT;
+use super::walk::Walk;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolResult;
+use crate::tools::beneath;
+use crate::tools::beneath::Access;
 
 pub(super) const SEARCH_MAX_RESULTS: usize = 100;
 

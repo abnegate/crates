@@ -1,8 +1,17 @@
-use abnegate_llm::{Message, Role, ToolDefinition};
 use std::collections::HashSet;
 
+use abnegate_llm::Message;
+use abnegate_llm::Role;
+use abnegate_llm::ToolDefinition;
+
+use super::ContextBreakdown;
+use super::ContextSource;
+use super::ContextStatus;
+use super::ContextUsage;
+use super::Entry;
+use super::Policy;
+use super::Summary;
 use super::compact::summary_message;
-use super::{ContextBreakdown, ContextSource, ContextStatus, ContextUsage, Entry, Policy, Summary};
 
 /// Tokens every message spends on framing, whatever it carries.
 const MESSAGE_FRAMING_TOKENS: u64 = 8;
@@ -132,8 +141,11 @@ pub fn estimate(
 
 #[cfg(test)]
 mod tests {
-    use super::{MESSAGE_FRAMING_TOKENS, message_cost, tokens};
     use abnegate_llm::Message;
+
+    use super::MESSAGE_FRAMING_TOKENS;
+    use super::message_cost;
+    use super::tokens;
 
     /// The estimate rounds up: a partial token still costs a token. The
     /// claudear estimator this replaced rounded down, so a short message

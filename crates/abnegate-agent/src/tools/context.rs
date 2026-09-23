@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::{EnvironmentPolicy, Session};
+use super::EnvironmentPolicy;
+use super::Session;
 use crate::Application;
 
 const DEFAULT_MAX_FILE_SIZE: usize = 10 * 1024 * 1024;

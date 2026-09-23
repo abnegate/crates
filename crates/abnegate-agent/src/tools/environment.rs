@@ -1,5 +1,6 @@
-use abnegate_secret::SecretValue;
 use std::collections::BTreeMap;
+
+use abnegate_secret::SecretValue;
 use tokio::process::Command;
 
 /// The names a default [`EnvironmentPolicy`] copies from this process.

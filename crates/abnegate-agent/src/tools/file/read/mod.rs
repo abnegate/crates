@@ -1,13 +1,20 @@
 mod parameters;
 
-use async_trait::async_trait;
-use serde_json::{Value, json};
 use std::io::Read;
 use std::path::Path;
 
-use crate::tools::beneath::{self, Access};
-use crate::tools::{MAX_TOOL_OUTPUT_CHARACTERS, Tool, ToolContext, ToolError, ToolResult};
+use async_trait::async_trait;
 use parameters::ReadFileParameters;
+use serde_json::Value;
+use serde_json::json;
+
+use crate::tools::MAX_TOOL_OUTPUT_CHARACTERS;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolResult;
+use crate::tools::beneath;
+use crate::tools::beneath::Access;
 
 /// A page of file text, the same budget every tool spends on output it pages
 /// for itself.

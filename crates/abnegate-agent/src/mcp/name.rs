@@ -1,5 +1,7 @@
-use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+
+use sha2::Digest;
+use sha2::Sha256;
 
 /// What stands between a server's name and its tool's in a qualified name.
 ///

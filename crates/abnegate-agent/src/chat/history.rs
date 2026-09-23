@@ -1,8 +1,12 @@
-use abnegate_llm::Role;
-use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 
-use super::{Entry, Summary};
+use abnegate_llm::Role;
+use sha2::Digest;
+use sha2::Sha256;
+
+use super::Entry;
+use super::Summary;
 
 /// A conversation as loaded from the store.
 #[derive(Debug, Clone, Default)]
@@ -107,9 +111,12 @@ pub fn validate(history: &History, summary: &Summary) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use abnegate_llm::GeneratedImage;
+    use abnegate_llm::ImageUrl;
+    use abnegate_llm::Message;
+
     use super::*;
     use crate::chat::ReplayMessage;
-    use abnegate_llm::{GeneratedImage, ImageUrl, Message};
 
     #[test]
     fn storage_roundtrip_preserves_multimodal_messages() {

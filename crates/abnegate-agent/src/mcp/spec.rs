@@ -1,7 +1,9 @@
-use abnegate_secret::SecretValue;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+use abnegate_secret::SecretValue;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::tools::EnvironmentPolicy;
 

@@ -1,7 +1,10 @@
 use std::cell::RefCell;
 use std::future::Future;
 use std::io;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::Once;
+
 use tracing_subscriber::fmt::MakeWriter;
 
 /// Set in a test's own child process, naming the test the child should run,

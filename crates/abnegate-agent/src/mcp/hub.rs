@@ -1,7 +1,8 @@
-use futures::future::join_all;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::future::join_all;
 
 use super::McpConfig;
 use super::session::McpSession;
@@ -103,14 +104,24 @@ impl Default for McpHub {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::mcp::{McpServerSpec, register};
-    use crate::tools::{Tier, ToolContext, ToolRegistry};
-    use rmcp::handler::server::wrapper::Parameters;
-    use rmcp::{ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router};
-    use serde::Deserialize;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    use rmcp::ServerHandler;
+    use rmcp::ServiceExt;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::schemars;
+    use rmcp::tool;
+    use rmcp::tool_handler;
+    use rmcp::tool_router;
+    use serde::Deserialize;
+
+    use super::*;
+    use crate::mcp::McpServerSpec;
+    use crate::mcp::register;
+    use crate::tools::Tier;
+    use crate::tools::ToolContext;
+    use crate::tools::ToolRegistry;
 
     #[derive(Clone, Default)]
     struct Echo;

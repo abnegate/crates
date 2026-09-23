@@ -1,8 +1,12 @@
-use std::path::{Path, PathBuf};
-use std::process::{Command as Process, Stdio};
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command as Process;
+use std::process::Stdio;
 use std::time::Duration;
+
 use tempfile::TempDir;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
+use tokio::sync::watch;
 use uuid::Uuid;
 
 use super::entry::Job;
@@ -10,7 +14,8 @@ use super::jobs::JOBS;
 use super::limits::Limits;
 use super::*;
 use crate::test_support::captured_logs;
-use crate::tools::{Session, ToolContext};
+use crate::tools::Session;
+use crate::tools::ToolContext;
 
 const POLL: Duration = Duration::from_millis(20);
 const POLL_LIMIT: usize = 500;

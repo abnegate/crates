@@ -1,23 +1,37 @@
 mod parameters;
 
-pub(super) use parameters::RunShellParameters;
+use std::borrow::Cow;
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
-use std::borrow::Cow;
+pub(super) use parameters::RunShellParameters;
+use serde_json::Value;
+use serde_json::json;
 use tokio::time::Duration;
 
-use super::{
-    BACKGROUND_PARAMETER, MAX_OUTPUT_PARAMETER, MAX_SHELL_TIMEOUT_SECONDS, background,
-    background_property, call_limit, clamp_output_characters, max_output_property, run_preview,
-    working_directory,
-};
-use crate::tools::job::{JobCommand, SHELL, SHELL_COMMAND_FLAG, WAIT_FOR};
+use super::BACKGROUND_PARAMETER;
+use super::MAX_OUTPUT_PARAMETER;
+use super::MAX_SHELL_TIMEOUT_SECONDS;
+use super::background;
+use super::background_property;
+use super::call_limit;
+use super::clamp_output_characters;
+use super::max_output_property;
+use super::run_preview;
+use super::working_directory;
+use crate::tools::REASON_PARAMETER;
+use crate::tools::TIMEOUT_SLACK;
+use crate::tools::Tier;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolResult;
+use crate::tools::job::JobCommand;
+use crate::tools::job::SHELL;
+use crate::tools::job::SHELL_COMMAND_FLAG;
+use crate::tools::job::WAIT_FOR;
 use crate::tools::process;
-use crate::tools::{
-    REASON_PARAMETER, TIMEOUT_SLACK, Tier, Tool, ToolContext, ToolError, ToolResult,
-    reason_property, trim_middle,
-};
+use crate::tools::reason_property;
+use crate::tools::trim_middle;
 
 /// Run a command through a real shell, with no allow-list.
 ///
@@ -209,10 +223,10 @@ impl Tool for RunShellTool {
             )));
         }
 
-        let cwd = working_directory(context, parameters.working_directory.as_deref())?;
+        let directory = working_directory(context, parameters.working_directory.as_deref())?;
 
         if parameters.background {
-            let command = JobCommand::shell(&parameters.command).within(&cwd);
+            let command = JobCommand::shell(&parameters.command).within(&directory);
             return background(&command, context).await;
         }
 
@@ -222,7 +236,7 @@ impl Tool for RunShellTool {
         process
             .arg(SHELL_COMMAND_FLAG)
             .arg(&parameters.command)
-            .current_dir(&cwd);
+            .current_dir(&directory);
 
         let output = process::run(process, limit).await?;
         let (stdout, stderr) = (output.stdout, output.stderr);

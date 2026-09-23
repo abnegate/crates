@@ -1,7 +1,8 @@
 use abnegate_llm::ToolCall;
 
 use super::AgentPhase;
-use crate::tools::{Tier, ToolResult};
+use crate::tools::Tier;
+use crate::tools::ToolResult;
 
 /// Progress reports from a running [`Agent`](super::Agent), and the one
 /// decision it asks its caller to make.

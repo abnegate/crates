@@ -1,5 +1,6 @@
 use abnegate_llm::ToolCall;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// One tool call and what it returned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,8 +16,9 @@ pub struct ToolCallResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use abnegate_llm::FunctionCall;
+
+    use super::*;
 
     #[test]
     fn test_tool_call_result_failed() {

@@ -29,17 +29,23 @@ mod store;
 mod stored;
 mod summary;
 
-pub use crate::context::ContextSource as Source;
 pub use capacity::Capacity;
 pub use entry::Entry;
 pub use error::Error;
 pub use evidence::Evidence;
-pub use guard::{Guard, keep_alive};
-pub use history::{History, fingerprint, validate};
+pub use guard::Guard;
+pub use guard::keep_alive;
+pub use history::History;
+pub use history::fingerprint;
+pub use history::validate;
 pub use lease::Lease;
 pub use new_entry::NewEntry;
-pub use replay::{ReplayMessage, VERSION};
-pub use resolver::{DEFAULT_CONTEXT, Resolver};
+pub use replay::ReplayMessage;
+pub use replay::VERSION;
+pub use resolver::DEFAULT_CONTEXT;
+pub use resolver::Resolver;
 pub use store::ContextStore;
 pub use stored::StoredMessage;
 pub use summary::Summary;
+
+pub use crate::context::ContextSource as Source;

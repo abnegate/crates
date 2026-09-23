@@ -1,10 +1,15 @@
+use std::path::Path;
+use std::path::PathBuf;
+
 use async_trait::async_trait;
-use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
-use super::{Session, SessionError, SessionStore, SessionSummary};
+use super::Session;
+use super::SessionError;
+use super::SessionStore;
+use super::SessionSummary;
 use crate::Application;
 
 const SESSIONS_DIRECTORY: &str = "sessions";
@@ -151,9 +156,10 @@ impl SessionStore for FileSessionStore {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
     use crate::agent::AgentState;
-    use tempfile::TempDir;
 
     fn create_test_session(prompt: &str, title: &str) -> Session {
         let state = AgentState::new(prompt, None);

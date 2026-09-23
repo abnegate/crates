@@ -1,19 +1,33 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
+
 use tempfile::tempdir;
 
+use super::ApplyPatchTool;
+use super::ListFilesTool;
+use super::ReadFileTool;
+use super::SearchCodeTool;
+use super::WriteFileTool;
 use super::list::LIST_FILES_CAP;
 use super::patch::ApplyPatchParameters;
-use super::read::{FILE_PAGE_CHARACTERS, page_text, select_lines};
-use super::search::{SEARCH_MAX_RESULTS, search_tree};
+use super::read::FILE_PAGE_CHARACTERS;
+use super::read::page_text;
+use super::read::select_lines;
+use super::search::SEARCH_MAX_RESULTS;
+use super::search::search_tree;
 use super::write::WriteFileParameters;
-use super::{ApplyPatchTool, ListFilesTool, ReadFileTool, SearchCodeTool, WriteFileTool};
 use crate::test_support::captured_logs;
-use crate::tools::{Session, Tier, Tool, ToolContext};
+use crate::tools::Session;
+use crate::tools::Tier;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
 
 const ATTEMPTS: usize = 2_000;
 /// Roughly the gap between a tool's check and the open that follows it, so

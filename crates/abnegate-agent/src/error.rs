@@ -6,7 +6,9 @@ use crate::application::ApplicationError;
 use crate::chat;
 use crate::context::ContextError;
 #[cfg(feature = "mcp")]
-use crate::mcp::{McpConfigError, McpError};
+use crate::mcp::McpConfigError;
+#[cfg(feature = "mcp")]
+use crate::mcp::McpError;
 use crate::session::SessionError;
 use crate::tools::ToolError;
 
@@ -47,8 +49,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use uuid::Uuid;
+
+    use super::*;
 
     #[test]
     fn test_llm_error_display() {

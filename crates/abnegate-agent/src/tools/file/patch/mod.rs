@@ -1,17 +1,24 @@
 mod hunk;
 mod parameters;
 
-pub(super) use parameters::ApplyPatchParameters;
-
-use async_trait::async_trait;
-use serde_json::{Value, json};
 use std::io::Read;
 use std::path::Path;
 
-use crate::tools::beneath::{self, Access};
-use crate::tools::{
-    REASON_PARAMETER, Tier, Tool, ToolContext, ToolError, ToolResult, excerpt, reason_property,
-};
+use async_trait::async_trait;
+pub(super) use parameters::ApplyPatchParameters;
+use serde_json::Value;
+use serde_json::json;
+
+use crate::tools::REASON_PARAMETER;
+use crate::tools::Tier;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolResult;
+use crate::tools::beneath;
+use crate::tools::beneath::Access;
+use crate::tools::excerpt;
+use crate::tools::reason_property;
 
 /// How much of a patch's first hunk an approval preview quotes.
 const PATCH_HUNK_CHARACTERS: usize = 80;

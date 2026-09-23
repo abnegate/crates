@@ -22,15 +22,18 @@ mod tail;
 #[cfg(test)]
 mod tests;
 
-pub use command::{JobCommand, SHELL, SHELL_COMMAND_FLAG};
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+
+pub use command::JobCommand;
+pub use command::SHELL;
+pub use command::SHELL_COMMAND_FLAG;
 pub use exited::JobExited;
 pub use jobs::Jobs;
 pub use started::JobStarted;
 pub use status::JobStatus;
 pub use tail::JobTail;
-
-use std::path::{Path, PathBuf};
-use std::time::Duration;
 use uuid::Uuid;
 
 use crate::Application;

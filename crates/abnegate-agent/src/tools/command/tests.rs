@@ -1,13 +1,20 @@
+use std::path::Path;
+use std::path::PathBuf;
+
 use abnegate_exec::PROXY_URL_ENV;
 use serde_json::json;
-use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-use super::run::{ALLOWED_COMMANDS, RunCommandParameters};
-use super::shell::{RunShellParameters, total_sleep};
+use super::run::ALLOWED_COMMANDS;
+use super::run::RunCommandParameters;
+use super::shell::RunShellParameters;
+use super::shell::total_sleep;
 use super::*;
-use crate::test_support::{CHILD_TEST, captured_logs};
-use crate::tools::{MAX_TOOL_MESSAGE_CHARACTERS, Session, Tool};
+use crate::test_support::CHILD_TEST;
+use crate::test_support::captured_logs;
+use crate::tools::MAX_TOOL_MESSAGE_CHARACTERS;
+use crate::tools::Session;
+use crate::tools::Tool;
 
 fn create_test_context() -> ToolContext {
     ToolContext {
@@ -1546,4 +1553,42 @@ fn a_call_limit_is_held_between_a_second_and_the_shell_maximum() {
             > std::time::Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS),
         "the outer bound must not pre-empt the longest call"
     );
+}
+
+/// The model-facing keys are a wire format: the Rust fields behind them are
+/// spelled out in full, and the schema and the parser must keep agreeing on
+/// the short keys models were prompted with.
+#[test]
+fn the_shell_schemas_keep_their_wire_keys() {
+    for (tool, keys) in [
+        (
+            &RunCommandTool as &dyn Tool,
+            &["command", "args", "cwd", "timeout_secs", "max_output_chars"][..],
+        ),
+        (
+            &RunShellTool,
+            &["command", "cwd", "timeout_secs", "max_output_chars"][..],
+        ),
+    ] {
+        let schema = tool.parameters_schema();
+        for key in keys {
+            assert!(
+                schema["properties"].get(*key).is_some(),
+                "{} lost {key}",
+                tool.name()
+            );
+        }
+    }
+    let parsed: RunCommandParameters = serde_json::from_value(json!({
+        "command": "git",
+        "args": ["status"],
+        "cwd": "sub",
+        "timeout_secs": 5,
+        "max_output_chars": 900
+    }))
+    .unwrap();
+    assert_eq!(parsed.arguments, ["status"]);
+    assert_eq!(parsed.working_directory.as_deref(), Some("sub"));
+    assert_eq!(parsed.timeout_seconds, Some(5));
+    assert_eq!(parsed.max_output_characters, Some(900));
 }

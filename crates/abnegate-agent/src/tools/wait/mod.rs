@@ -2,13 +2,24 @@
 
 mod parameters;
 
-use async_trait::async_trait;
-use serde_json::{Value, json};
 use std::time::Duration;
 
-use super::job::{JobExited, Jobs, MAX_JOB_LIFETIME, TAIL_JOB, WAIT_FOR};
-use super::{TIMEOUT_SLACK, Tier, Tool, ToolContext, ToolError, ToolResult};
+use async_trait::async_trait;
 use parameters::WaitForParameters;
+use serde_json::Value;
+use serde_json::json;
+
+use super::TIMEOUT_SLACK;
+use super::Tier;
+use super::Tool;
+use super::ToolContext;
+use super::ToolError;
+use super::ToolResult;
+use super::job::JobExited;
+use super::job::Jobs;
+use super::job::MAX_JOB_LIFETIME;
+use super::job::TAIL_JOB;
+use super::job::WAIT_FOR;
 
 const ID_PARAMETER: &str = "id";
 const TIMEOUT_PARAMETER: &str = "timeout_secs";
@@ -108,10 +119,14 @@ impl Tool for WaitForTool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::tools::job::{UNAVAILABLE, parse_started};
-    use crate::tools::{EnvironmentPolicy, RunShellTool, Session};
     use uuid::Uuid;
+
+    use super::*;
+    use crate::tools::EnvironmentPolicy;
+    use crate::tools::RunShellTool;
+    use crate::tools::Session;
+    use crate::tools::job::UNAVAILABLE;
+    use crate::tools::job::parse_started;
 
     fn context(session: Session, directory: &std::path::Path) -> ToolContext {
         let mut context = ToolContext::default().within(directory);

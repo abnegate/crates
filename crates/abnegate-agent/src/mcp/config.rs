@@ -1,7 +1,10 @@
-use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
-use super::{McpConfigError, McpServerSpec};
+use serde_json::Value;
+
+use super::McpConfigError;
+use super::McpServerSpec;
 
 /// The prefix [`McpConfig::from_env`] reads its variables under.
 pub const DEFAULT_PREFIX: &str = "ABNEGATE";
@@ -231,8 +234,9 @@ fn command_on_path(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     fn shell() -> McpServerSpec {
         McpServerSpec::new("shell", "sh", Vec::<String>::new())

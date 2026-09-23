@@ -1,4 +1,5 @@
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 
 /// Parameter name, listed in both `properties` and `required`.
 pub const REASON_PARAMETER: &str = "reason";

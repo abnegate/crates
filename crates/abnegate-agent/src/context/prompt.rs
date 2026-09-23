@@ -1,6 +1,8 @@
-use abnegate_llm::{Message, Role};
 use std::borrow::Cow;
 use std::fmt::Write;
+
+use abnegate_llm::Message;
+use abnegate_llm::Role;
 
 use super::estimate::message_cost;
 
@@ -101,8 +103,10 @@ pub fn trim_history(history: &[Message], budget: u64) -> &[Message] {
 
 #[cfg(test)]
 mod tests {
+    use abnegate_llm::FunctionCall;
+    use abnegate_llm::ToolCall;
+
     use super::*;
-    use abnegate_llm::{FunctionCall, ToolCall};
 
     const SYSTEM: &str = "\
 You are a code assistant. Answer questions about the codebase using the provided code context.

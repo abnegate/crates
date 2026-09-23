@@ -1,5 +1,6 @@
-use nix::fcntl::OFlag;
 use std::fs::OpenOptions;
+
+use nix::fcntl::OFlag;
 
 /// What the caller intends to do with the descriptor it asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

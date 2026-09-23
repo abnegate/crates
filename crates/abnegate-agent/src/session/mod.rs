@@ -7,13 +7,14 @@ mod file;
 mod store;
 mod summary;
 
+use chrono::DateTime;
+use chrono::Utc;
 pub use error::SessionError;
 pub use file::FileSessionStore;
+use serde::Deserialize;
+use serde::Serialize;
 pub use store::SessionStore;
 pub use summary::SessionSummary;
-
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agent::AgentState;

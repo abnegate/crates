@@ -10,24 +10,39 @@ mod access;
 mod name;
 mod target;
 
-pub(crate) use access::Access;
-
-use nix::errno::Errno;
-use nix::fcntl::{AtFlags, OFlag, openat, readlinkat, renameat};
-use nix::sys::stat::{Mode, SFlag, fchmod, fstatat, mkdirat};
-use nix::unistd::{UnlinkatFlags, unlinkat};
 use std::collections::VecDeque;
-use std::ffi::{OsStr, OsString};
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::ffi::OsStr;
+use std::ffi::OsString;
+use std::fs;
+use std::fs::File;
+use std::io;
+use std::io::Write;
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Component, Path};
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Component;
+use std::path::Path;
+
+pub(crate) use access::Access;
+use name::Name;
+use nix::errno::Errno;
+use nix::fcntl::AtFlags;
+use nix::fcntl::OFlag;
+use nix::fcntl::openat;
+use nix::fcntl::readlinkat;
+use nix::fcntl::renameat;
+use nix::sys::stat::Mode;
+use nix::sys::stat::SFlag;
+use nix::sys::stat::fchmod;
+use nix::sys::stat::fstatat;
+use nix::sys::stat::mkdirat;
+use nix::unistd::UnlinkatFlags;
+use nix::unistd::unlinkat;
+use target::Target;
 use uuid::Uuid;
 
-use super::{ToolContext, ToolError};
-use name::Name;
-use target::Target;
+use super::ToolContext;
+use super::ToolError;
 
 /// `openat2` answers `EXDEV` when `RESOLVE_BENEATH` would be broken, so the
 /// walk answers the same and one mapping covers both resolutions.
@@ -195,7 +210,9 @@ fn resolve(root: &Path, path: &Path, target: Target, create: bool) -> Result<Own
 /// by a name that another process could still change.
 #[cfg(target_os = "linux")]
 fn kernel_resolved(root: &Path, path: &Path, access: Access) -> Option<Result<OwnedFd, Errno>> {
-    use nix::fcntl::{OpenHow, ResolveFlag, openat2};
+    use nix::fcntl::OpenHow;
+    use nix::fcntl::ResolveFlag;
+    use nix::fcntl::openat2;
 
     let root = match directory(root) {
         Ok(root) => root,

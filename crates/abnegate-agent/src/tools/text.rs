@@ -66,20 +66,22 @@ fn trim_marker(dropped: usize) -> String {
 /// out of the budget, which makes a second pass over already-trimmed text a
 /// no-op.
 pub(crate) fn trim_middle(text: &str, max_characters: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= max_characters {
+    let characters: Vec<char> = text.chars().collect();
+    if characters.len() <= max_characters {
         return text.to_string();
     }
     // The widest the marker can get, so head + marker + tail always fits.
-    let reserved = trim_marker(chars.len()).chars().count();
+    let reserved = trim_marker(characters.len()).chars().count();
     let kept = max_characters.saturating_sub(reserved);
     let head = kept / 2;
     let tail = kept - head;
     format!(
         "{}{}{}",
-        chars[..head].iter().collect::<String>(),
-        trim_marker(chars.len() - kept),
-        chars[chars.len() - tail..].iter().collect::<String>()
+        characters[..head].iter().collect::<String>(),
+        trim_marker(characters.len() - kept),
+        characters[characters.len() - tail..]
+            .iter()
+            .collect::<String>()
     )
 }
 

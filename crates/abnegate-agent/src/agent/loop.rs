@@ -1,17 +1,32 @@
-use abnegate_llm::{LlmClient, Message, RequestOptions, Role, ToolCall};
-use futures::future::join_all;
 use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
+
+use abnegate_llm::LlmClient;
+use abnegate_llm::Message;
+use abnegate_llm::RequestOptions;
+use abnegate_llm::Role;
+use abnegate_llm::ToolCall;
+use futures::future::join_all;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use super::{
-    AgentCallback, AgentConfig, AgentError, AgentPhase, AgentState, AgentStep, ToolCallResult,
-};
-use crate::context::{self, ContextSource, Entry, Policy};
-use crate::tools::{ToolContext, ToolError, ToolRegistry, ToolResult};
+use super::AgentCallback;
+use super::AgentConfig;
+use super::AgentError;
+use super::AgentPhase;
+use super::AgentState;
+use super::AgentStep;
+use super::ToolCallResult;
+use crate::context;
+use crate::context::ContextSource;
+use crate::context::Entry;
+use crate::context::Policy;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolRegistry;
+use crate::tools::ToolResult;
 
 /// Prefix of a tool call id minted for a call the provider left unnamed or
 /// named the same as an earlier one.

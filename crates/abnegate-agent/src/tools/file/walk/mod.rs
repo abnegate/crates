@@ -1,12 +1,16 @@
 mod visit;
 
-pub(super) use visit::Visit;
-
 use std::collections::HashSet;
-use std::fs::{self, DirEntry, FileType};
+use std::fs;
+use std::fs::DirEntry;
+use std::fs::FileType;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
+
+pub(super) use visit::Visit;
 
 use crate::tools::ToolError;
 
@@ -122,8 +126,9 @@ impl Walk {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::os::unix::fs::symlink;
+
+    use super::*;
 
     fn names(root: &Path) -> (Vec<String>, Option<&'static str>) {
         let mut walk = Walk::new(WALK_TIME_LIMIT);

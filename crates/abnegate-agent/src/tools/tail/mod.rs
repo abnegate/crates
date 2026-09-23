@@ -7,12 +7,22 @@
 mod parameters;
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
-
-use super::command::{MAX_OUTPUT_PARAMETER, clamp_output_characters, max_output_property};
-use super::job::{JobStatus, JobTail, Jobs, TAIL_JOB};
-use super::{Tier, Tool, ToolContext, ToolError, ToolResult};
 use parameters::TailJobParameters;
+use serde_json::Value;
+use serde_json::json;
+
+use super::Tier;
+use super::Tool;
+use super::ToolContext;
+use super::ToolError;
+use super::ToolResult;
+use super::command::MAX_OUTPUT_PARAMETER;
+use super::command::clamp_output_characters;
+use super::command::max_output_property;
+use super::job::JobStatus;
+use super::job::JobTail;
+use super::job::Jobs;
+use super::job::TAIL_JOB;
 
 const ID_PARAMETER: &str = "id";
 const SINCE_PARAMETER: &str = "since";
@@ -102,13 +112,17 @@ impl Tool for TailJobTool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::tools::job::{UNAVAILABLE, parse_started};
-    use crate::tools::{RunShellTool, Session};
     use std::path::Path;
     use std::time::Duration;
+
     use tempfile::TempDir;
     use uuid::Uuid;
+
+    use super::*;
+    use crate::tools::RunShellTool;
+    use crate::tools::Session;
+    use crate::tools::job::UNAVAILABLE;
+    use crate::tools::job::parse_started;
 
     const POLL: Duration = Duration::from_millis(20);
     const POLL_LIMIT: usize = 500;
@@ -117,9 +131,9 @@ mod tests {
         TempDir::new().expect("a temporary working directory")
     }
 
-    fn context(cwd: &Path, session: Session) -> ToolContext {
+    fn context(directory: &Path, session: Session) -> ToolContext {
         ToolContext {
-            working_directory: cwd.to_path_buf(),
+            working_directory: directory.to_path_buf(),
             session,
             unrestricted: true,
             ..ToolContext::default()

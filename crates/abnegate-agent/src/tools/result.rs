@@ -1,7 +1,10 @@
 use abnegate_secret::sanitize_owned;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use super::text::{ERROR_PREFIX, MAX_TOOL_MESSAGE_CHARACTERS, trim_middle};
+use super::text::ERROR_PREFIX;
+use super::text::MAX_TOOL_MESSAGE_CHARACTERS;
+use super::text::trim_middle;
 
 /// What a tool call produced, success or failure, as the model will read it.
 #[derive(Debug, Clone, Serialize, Deserialize)]

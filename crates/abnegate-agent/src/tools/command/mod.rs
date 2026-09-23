@@ -5,18 +5,27 @@ mod shell;
 #[cfg(test)]
 mod tests;
 
-pub use run::RunCommandTool;
-pub use shell::{MAX_SLEEP_SECONDS, RunShellTool};
-
-use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::file::{confine, resolve};
-use super::job::{self, JobCommand, Jobs, WAIT_FOR};
-use super::{
-    MAX_PREVIEW_CHARACTERS, MAX_TOOL_OUTPUT_CHARACTERS, ToolContext, ToolError, ToolResult, excerpt,
-};
+pub use run::RunCommandTool;
+use serde_json::Value;
+use serde_json::json;
+pub use shell::MAX_SLEEP_SECONDS;
+pub use shell::RunShellTool;
+
+use super::MAX_PREVIEW_CHARACTERS;
+use super::MAX_TOOL_OUTPUT_CHARACTERS;
+use super::ToolContext;
+use super::ToolError;
+use super::ToolResult;
+use super::excerpt;
+use super::file::confine;
+use super::file::resolve;
+use super::job;
+use super::job::JobCommand;
+use super::job::Jobs;
+use super::job::WAIT_FOR;
 
 pub(super) const MAX_OUTPUT_PARAMETER: &str = "max_output_chars";
 const BACKGROUND_PARAMETER: &str = "background";
@@ -37,7 +46,7 @@ const MIN_SHELL_OUTPUT_CHARACTERS: usize = 500;
 /// more, so the constant stays the ceiling on what one call can cost.
 pub(super) fn clamp_output_characters(requested: Option<u64>) -> usize {
     match requested {
-        Some(chars) => chars.clamp(
+        Some(characters) => characters.clamp(
             MIN_SHELL_OUTPUT_CHARACTERS as u64,
             MAX_SHELL_OUTPUT_CHARACTERS as u64,
         ) as usize,
@@ -114,10 +123,10 @@ async fn background(command: &JobCommand, context: &ToolContext) -> Result<ToolR
 ///
 /// The command is what the reader is deciding on, so it keeps the whole budget
 /// and the directory is appended after it rather than put in front of it.
-fn run_preview(line: &str, cwd: Option<&str>) -> String {
+fn run_preview(line: &str, directory: Option<&str>) -> String {
     let command = excerpt(line, MAX_PREVIEW_CHARACTERS);
-    match cwd {
-        Some(cwd) => format!("Run `{command}` in {cwd}."),
+    match directory {
+        Some(directory) => format!("Run `{command}` in {directory}."),
         None => format!("Run `{command}`."),
     }
 }

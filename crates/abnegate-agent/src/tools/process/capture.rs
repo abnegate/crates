@@ -1,5 +1,6 @@
-use abnegate_exec::executor::OutputLimiter;
 use std::collections::VecDeque;
+
+use abnegate_exec::executor::OutputLimiter;
 
 /// One stream of a command's output, held to a fixed size however much the
 /// command writes.

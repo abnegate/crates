@@ -40,14 +40,19 @@ mod session;
 mod spec;
 mod tool;
 
-pub use config::{DEFAULT_PREFIX, McpConfig};
+pub use config::DEFAULT_PREFIX;
+pub use config::McpConfig;
 pub use config_error::McpConfigError;
 pub use error::McpError;
 pub use format::format_call_result;
-pub use guidance::{Guidance, guidance, guidance_for_tools};
+pub use guidance::Guidance;
+pub use guidance::guidance;
+pub use guidance::guidance_for_tools;
 pub use hub::McpHub;
-pub use name::{
-    MAX_TOOL_NAME_CHARACTERS, SEPARATOR, qualified_tool_name, unique_qualified_tool_name,
-};
-pub use register::{register, with_defaults_and_mcp};
+pub use name::MAX_TOOL_NAME_CHARACTERS;
+pub use name::SEPARATOR;
+pub use name::qualified_tool_name;
+pub use name::unique_qualified_tool_name;
+pub use register::register;
+pub use register::with_defaults_and_mcp;
 pub use spec::McpServerSpec;

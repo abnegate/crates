@@ -4,21 +4,26 @@ mod capture;
 mod finished;
 mod group;
 
+use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::PoisonError;
+use std::time::Duration;
+
+use abnegate_exec::Proxy;
 pub(crate) use capture::Capture;
 pub(crate) use finished::Finished;
 pub(crate) use group::Group;
-
-use std::process::Stdio;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::time::Instant;
+use tokio::time::timeout;
+use tokio::time::timeout_at;
 
-use abnegate_exec::Proxy;
-
-use super::{ToolContext, ToolError};
+use super::ToolContext;
+use super::ToolError;
 
 /// Most bytes kept from the start of each stream, and again from its end.
 pub(crate) const MAX_CAPTURE_BYTES: usize = 64 * 1024;
@@ -160,9 +165,10 @@ async fn drain(mut pipe: impl AsyncRead + Unpin, capture: Arc<Mutex<Capture>>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
+
+    use super::*;
 
     fn shell(line: &str) -> Command {
         let mut command = Command::new("sh");

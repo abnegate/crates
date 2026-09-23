@@ -1,10 +1,13 @@
-use reqwest::Client;
-use serde_json::Value;
 use std::time::Duration;
 
+use reqwest::Client;
+use serde_json::Value;
+
+use super::Capacity;
+use super::Error;
+use super::Source;
 use super::route::Route;
 use super::routes::Routes;
-use super::{Capacity, Error, Source};
 
 /// Fallback allocation when a deployment has not reported native capacity.
 /// Production callers supply validated typed configuration through
@@ -387,11 +390,16 @@ fn normalize(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_json;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+
     use super::super::parameters::Parameters;
     use super::*;
-    use serde_json::json;
-    use wiremock::matchers::{body_json, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn fixture(parameters: Value, running: Value, shown: Value) -> (MockServer, Resolver) {
         let server = MockServer::start().await;

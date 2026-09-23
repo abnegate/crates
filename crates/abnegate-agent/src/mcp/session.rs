@@ -1,20 +1,27 @@
-use abnegate_exec::Proxy;
-use rmcp::model::{CallToolRequestParams, CallToolResult, Tool as RemoteTool};
-use rmcp::service::RunningService;
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
-use rmcp::{RoleClient, ServiceExt};
-use serde_json::json;
 use std::collections::HashSet;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+
+use abnegate_exec::Proxy;
+use rmcp::RoleClient;
+use rmcp::ServiceExt;
+use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResult;
+use rmcp::model::Tool as RemoteTool;
+use rmcp::service::RunningService;
+use rmcp::transport::ConfigureCommandExt;
+use rmcp::transport::TokioChildProcess;
+use serde_json::json;
 use tokio::io::AsyncReadExt;
-use tokio::process::{ChildStderr, Command};
+use tokio::process::ChildStderr;
+use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use super::McpError;
+use super::McpServerSpec;
 use super::name::unique_qualified_tool_name;
 use super::tool::McpTool;
-use super::{McpError, McpServerSpec};
 use crate::tools::Tool;
 use crate::tools::process::Group;
 
@@ -184,11 +191,13 @@ async fn log_stderr(server: String, mut stderr: ChildStderr) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::test_support::CHILD_TEST;
+    use std::collections::BTreeMap;
+
     use abnegate_exec::PROXY_URL_ENV;
     use abnegate_secret::SecretValue;
-    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::test_support::CHILD_TEST;
 
     /// Set on this test's own child process, where the server under test
     /// would inherit it if nothing stopped it.

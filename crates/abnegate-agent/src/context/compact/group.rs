@@ -1,7 +1,9 @@
-use abnegate_llm::Role;
 use std::collections::HashSet;
 
-use crate::context::{ContextError, Entry};
+use abnegate_llm::Role;
+
+use crate::context::ContextError;
+use crate::context::Entry;
 
 /// A message together with the tool results that answer it, which compaction
 /// takes or leaves as one.

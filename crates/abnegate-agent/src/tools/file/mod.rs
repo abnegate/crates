@@ -9,16 +9,19 @@ mod tests;
 mod walk;
 mod write;
 
+use std::ffi::OsStr;
+use std::path::Component;
+use std::path::Path;
+use std::path::PathBuf;
+
 pub use list::ListFilesTool;
 pub use patch::ApplyPatchTool;
 pub use read::ReadFileTool;
 pub use search::SearchCodeTool;
 pub use write::WriteFileTool;
 
-use std::ffi::OsStr;
-use std::path::{Component, Path, PathBuf};
-
-use super::{ToolContext, ToolError};
+use super::ToolContext;
+use super::ToolError;
 
 /// Refuse a resolved path that leaves `context.working_directory`.
 ///

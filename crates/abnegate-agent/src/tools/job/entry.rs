@@ -1,5 +1,7 @@
 use std::path::PathBuf;
-use tokio::sync::{oneshot, watch};
+
+use tokio::sync::oneshot;
+use tokio::sync::watch;
 
 use super::JobStatus;
 use crate::tools::Session;

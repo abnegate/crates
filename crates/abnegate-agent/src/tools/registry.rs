@@ -1,15 +1,25 @@
-use abnegate_llm::ToolDefinition;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use abnegate_llm::ToolDefinition;
+use serde_json::Value;
+
+use super::ApplyPatchTool;
+use super::ListFilesTool;
+use super::ReadFileTool;
+use super::RunCommandTool;
+use super::RunShellTool;
+use super::SearchCodeTool;
+use super::Tier;
+use super::Tool;
+use super::ToolContext;
+use super::ToolError;
+use super::ToolResult;
+use super::WriteFileTool;
 use super::tail::TailJobTool;
-use super::text::{MAX_PREVIEW_CHARACTERS, excerpt};
+use super::text::MAX_PREVIEW_CHARACTERS;
+use super::text::excerpt;
 use super::wait::WaitForTool;
-use super::{
-    ApplyPatchTool, ListFilesTool, ReadFileTool, RunCommandTool, RunShellTool, SearchCodeTool,
-    Tier, Tool, ToolContext, ToolError, ToolResult, WriteFileTool,
-};
 
 /// The tools an agent may call, by name.
 pub struct ToolRegistry {
@@ -173,10 +183,14 @@ impl Default for ToolRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::tools::job::{TAIL_JOB, WAIT_FOR};
-    use crate::tools::{LINE_BREAK, REASON_DESCRIPTION, REASON_PARAMETER};
     use std::collections::HashSet;
+
+    use super::*;
+    use crate::tools::LINE_BREAK;
+    use crate::tools::REASON_DESCRIPTION;
+    use crate::tools::REASON_PARAMETER;
+    use crate::tools::job::TAIL_JOB;
+    use crate::tools::job::WAIT_FOR;
 
     /// A preview a reader approves has to say what will run. `sh -c` runs one
     /// command per line, so two lines joined by a space showed them a single

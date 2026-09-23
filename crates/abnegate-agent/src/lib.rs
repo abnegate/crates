@@ -64,15 +64,38 @@ pub mod template;
 mod test_support;
 pub mod tools;
 
-pub use crate::agent::{
-    Agent, AgentCallback, AgentConfig, AgentError, AgentPhase, AgentState, AgentStep, NoOpCallback,
-    ToolCallResult,
-};
-pub use crate::application::{Application, ApplicationError, DEFAULT_APPLICATION};
-pub use crate::error::{Error, Result};
+pub use crate::agent::Agent;
+pub use crate::agent::AgentCallback;
+pub use crate::agent::AgentConfig;
+pub use crate::agent::AgentError;
+pub use crate::agent::AgentPhase;
+pub use crate::agent::AgentState;
+pub use crate::agent::AgentStep;
+pub use crate::agent::NoOpCallback;
+pub use crate::agent::ToolCallResult;
+pub use crate::application::Application;
+pub use crate::application::ApplicationError;
+pub use crate::application::DEFAULT_APPLICATION;
+pub use crate::error::Error;
+pub use crate::error::Result;
 #[cfg(feature = "mcp")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
-pub use crate::mcp::{McpConfig, McpHub, McpServerSpec};
-pub use crate::session::{FileSessionStore, Session, SessionStore, SessionSummary};
-pub use crate::template::{TemplateContext, TemplateError, TemplateRenderer};
-pub use crate::tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
+pub use crate::mcp::McpConfig;
+#[cfg(feature = "mcp")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
+pub use crate::mcp::McpHub;
+#[cfg(feature = "mcp")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
+pub use crate::mcp::McpServerSpec;
+pub use crate::session::FileSessionStore;
+pub use crate::session::Session;
+pub use crate::session::SessionStore;
+pub use crate::session::SessionSummary;
+pub use crate::template::TemplateContext;
+pub use crate::template::TemplateError;
+pub use crate::template::TemplateRenderer;
+pub use crate::tools::Tool;
+pub use crate::tools::ToolContext;
+pub use crate::tools::ToolError;
+pub use crate::tools::ToolRegistry;
+pub use crate::tools::ToolResult;

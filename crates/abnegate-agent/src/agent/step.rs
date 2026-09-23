@@ -1,9 +1,12 @@
 use abnegate_llm::Message;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::DateTime;
+use chrono::Utc;
+use serde::Deserialize;
+use serde::Serialize;
 use uuid::Uuid;
 
-use super::{AgentPhase, ToolCallResult};
+use super::AgentPhase;
+use super::ToolCallResult;
 
 /// One model round of a run: what the model said, or the tools it called and
 /// what they returned.
@@ -49,9 +52,11 @@ impl AgentStep {
 
 #[cfg(test)]
 mod tests {
+    use abnegate_llm::FunctionCall;
+    use abnegate_llm::ToolCall;
+
     use super::*;
     use crate::agent::ToolCallResult;
-    use abnegate_llm::{FunctionCall, ToolCall};
 
     #[test]
     fn test_agent_step_new() {

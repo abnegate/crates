@@ -1,16 +1,23 @@
-use async_trait::async_trait;
-use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject};
-use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+
+use async_trait::async_trait;
+use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResult;
+use rmcp::model::JsonObject;
+use serde_json::Value;
 use tokio::time::timeout;
 
 use super::format::format_call_result;
 use super::session::McpSession;
-use crate::tools::{
-    MAX_TOOL_OUTPUT_CHARACTERS, TIMEOUT_SLACK, Tier, Tool, ToolContext, ToolError, ToolResult,
-    trim_middle,
-};
+use crate::tools::MAX_TOOL_OUTPUT_CHARACTERS;
+use crate::tools::TIMEOUT_SLACK;
+use crate::tools::Tier;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolResult;
+use crate::tools::trim_middle;
 
 const MAX_MCP_OUTPUT_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS;
 
@@ -135,9 +142,10 @@ fn json_object(parameters: Value) -> Result<JsonObject, ToolError> {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::ContentBlock;
+
     use super::*;
     use crate::mcp::format::UNTRUSTED_MARKER;
-    use rmcp::model::ContentBlock;
 
     #[test]
     fn errored_call_result_keeps_the_untrusted_marker() {

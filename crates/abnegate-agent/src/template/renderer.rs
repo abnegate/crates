@@ -1,9 +1,12 @@
-use regex::{Captures, Regex};
-use serde_json::Value;
 use std::cell::RefCell;
 use std::sync::LazyLock;
 
-use super::{TemplateContext, TemplateError};
+use regex::Captures;
+use regex::Regex;
+use serde_json::Value;
+
+use super::TemplateContext;
+use super::TemplateError;
 
 /// `{{#if key}}…{{/if}}`: kept when the key holds a truthy value.
 static CONDITIONAL: LazyLock<Regex> = LazyLock::new(|| {
@@ -166,9 +169,11 @@ fn truthy(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde_json::json;
     use std::collections::HashMap;
+
+    use serde_json::json;
+
+    use super::*;
 
     /// The context an issue tracker would render a fix prompt from.
     fn issue(context: &str) -> TemplateContext {
