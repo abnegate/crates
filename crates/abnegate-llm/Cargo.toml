@@ -25,7 +25,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 anthropic = []
 catalog = ["dep:once_cell", "dep:regex", "dep:scraper", "dep:urlencoding"]
-download = ["catalog"]
+download = []
 google = ["dep:url"]
 openai = ["dep:base64"]
 

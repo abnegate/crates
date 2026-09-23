@@ -42,13 +42,17 @@
 //!   transcription traits.
 //! - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter
 //!   catalogues through one [`catalog::ModelProvider`] trait.
-//! - `download`: resumable chunked GGUF downloads.
+//! - `download`: resumable GGUF downloads that only splice a resume onto the
+//!   same upstream file and verify a SHA-256 when one is given.
 
 #[cfg(feature = "catalog")]
 #[cfg_attr(docsrs, doc(cfg(feature = "catalog")))]
 pub mod catalog;
 mod client;
 pub mod cost;
+#[cfg(feature = "download")]
+#[cfg_attr(docsrs, doc(cfg(feature = "download")))]
+pub mod download;
 mod error;
 pub mod hardware;
 pub mod history;

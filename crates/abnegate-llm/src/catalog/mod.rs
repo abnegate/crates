@@ -23,8 +23,6 @@
 
 mod capability;
 mod details;
-#[cfg(feature = "download")]
-mod download;
 mod entry;
 mod error;
 mod gpt4all;
@@ -35,8 +33,6 @@ mod ollama;
 mod openrouter;
 mod page;
 mod parse;
-#[cfg(feature = "download")]
-mod progress;
 mod provider;
 mod query;
 mod refine;
@@ -48,9 +44,6 @@ mod text;
 
 pub use capability::ModelCapability;
 pub use details::ModelDetails;
-#[cfg(feature = "download")]
-#[cfg_attr(docsrs, doc(cfg(feature = "download")))]
-pub use download::download_gguf;
 pub use entry::ModelEntry;
 pub use error::CatalogError;
 pub use gpt4all::DEFAULT_GPT4ALL_MODELS_URL;
@@ -72,9 +65,6 @@ pub use page::ModelPage;
 pub use parse::extract_model_family;
 pub use parse::extract_param_size;
 pub use parse::extract_quantization;
-#[cfg(feature = "download")]
-#[cfg_attr(docsrs, doc(cfg(feature = "download")))]
-pub use progress::DownloadProgress;
 pub use provider::ModelProvider;
 pub use provider::provider;
 pub use provider::provider_with_proxy;
