@@ -26,12 +26,12 @@ const MINIMUM_POLL_INTERVAL_MILLISECONDS: u64 = 1;
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 120;
 const MAXIMUM_REQUEST_TIMEOUT_SECONDS: u64 = 600;
 
-fn env_truthy(name: &str, default: bool) -> bool {
+fn environment_flag(name: &str, default: bool) -> bool {
     truthy(env::var(name).ok(), default)
 }
 
-fn env_u64(name: &str, default: u64, min: u64, max: u64) -> u64 {
-    bounded(env::var(name).ok(), default, min, max)
+fn environment_number(name: &str, default: u64, minimum: u64, maximum: u64) -> u64 {
+    bounded(env::var(name).ok(), default, minimum, maximum)
 }
 
 /// Reading the value is the operating system's job; deciding what it means is
@@ -48,7 +48,7 @@ fn truthy(value: Option<String>, default: bool) -> bool {
 }
 
 /// A setting that is present but blank is not a setting.
-fn env_text(name: &str) -> Option<String> {
+fn environment_text(name: &str) -> Option<String> {
     text(env::var(name).ok())
 }
 
@@ -62,11 +62,11 @@ fn token(value: Option<String>) -> Option<SecretValue> {
     text(value).map(SecretValue::new)
 }
 
-fn bounded(value: Option<String>, default: u64, min: u64, max: u64) -> u64 {
+fn bounded(value: Option<String>, default: u64, minimum: u64, maximum: u64) -> u64 {
     value
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
-        .clamp(min, max)
+        .clamp(minimum, maximum)
 }
 
 /// Direct image generation settings loaded from `COMFYUI_*` environment variables.
@@ -102,7 +102,6 @@ pub struct Config {
     /// Ceiling on any one HTTP request. Generation and training are bounded by
     /// their own deadlines, not by this.
     pub request_timeout_seconds: u64,
-
     pub generation_timeout_seconds: u64,
     pub video_generation_timeout_seconds: u64,
     pub audio_generation_timeout_seconds: u64,
@@ -250,13 +249,13 @@ impl Config {
             .unwrap_or_else(|_| "/app/comfyui/models".to_string())
             .into();
         Self {
-            enabled: env_truthy("COMFYUI_ENABLED", false),
+            enabled: environment_flag("COMFYUI_ENABLED", false),
             base_url: env::var("COMFYUI_BASE_URL")
                 .unwrap_or_else(|_| "http://comfyui:8188".to_string())
                 .trim_end_matches('/')
                 .to_string(),
             api_token: token(env::var("COMFYUI_API_TOKEN").ok()),
-            token_header: env_text("COMFYUI_TOKEN_HEADER")
+            token_header: environment_text("COMFYUI_TOKEN_HEADER")
                 .unwrap_or_else(|| TOKEN_HEADER.to_string()),
             workflow_path: Some(
                 env::var("COMFYUI_WORKFLOW_PATH")
@@ -299,49 +298,69 @@ impl Config {
             artifact_root: env::var("ARTIFACT_ROOT")
                 .unwrap_or_else(|_| "/app/artifacts".to_string())
                 .into(),
-            classifier_model: env_text("COMFYUI_CLASSIFIER_MODEL")
+            classifier_model: environment_text("COMFYUI_CLASSIFIER_MODEL")
                 .unwrap_or_else(|| "auto".to_string()),
-            classifier_timeout_seconds: env_u64("COMFYUI_CLASSIFIER_TIMEOUT_SECS", 3, 1, 30),
-            caption_model: env_text("COMFYUI_CAPTION_MODEL").unwrap_or_default(),
-            caption_timeout_seconds: env_u64("COMFYUI_CAPTION_TIMEOUT_SECS", 60, 5, 600),
-            request_timeout_seconds: env_u64(
+            classifier_timeout_seconds: environment_number(
+                "COMFYUI_CLASSIFIER_TIMEOUT_SECS",
+                3,
+                1,
+                30,
+            ),
+            caption_model: environment_text("COMFYUI_CAPTION_MODEL").unwrap_or_default(),
+            caption_timeout_seconds: environment_number("COMFYUI_CAPTION_TIMEOUT_SECS", 60, 5, 600),
+            request_timeout_seconds: environment_number(
                 "COMFYUI_REQUEST_TIMEOUT_SECS",
                 DEFAULT_REQUEST_TIMEOUT_SECONDS,
                 MINIMUM_TIMEOUT_SECONDS,
                 MAXIMUM_REQUEST_TIMEOUT_SECONDS,
             ),
 
-            generation_timeout_seconds: env_u64("COMFYUI_GENERATION_TIMEOUT_SECS", 300, 10, 3600),
-            video_generation_timeout_seconds: env_u64(
+            generation_timeout_seconds: environment_number(
+                "COMFYUI_GENERATION_TIMEOUT_SECS",
+                300,
+                10,
+                3600,
+            ),
+            video_generation_timeout_seconds: environment_number(
                 "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECS",
                 600,
                 10,
                 3600,
             ),
-            audio_generation_timeout_seconds: env_u64(
+            audio_generation_timeout_seconds: environment_number(
                 "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECS",
                 600,
                 10,
                 3600,
             ),
-            upscale_generation_timeout_seconds: env_u64(
+            upscale_generation_timeout_seconds: environment_number(
                 "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECS",
                 600,
                 10,
                 3600,
             ),
-            poll_interval_milliseconds: env_u64("COMFYUI_POLL_INTERVAL_MS", 500, 50, 5000),
-            vision_model: env_text(variable)
+            poll_interval_milliseconds: environment_number(
+                "COMFYUI_POLL_INTERVAL_MS",
+                500,
+                50,
+                5000,
+            ),
+            vision_model: environment_text(variable)
                 .map(PathBuf::from)
                 .or_else(|| Some(models_directory.join("vision/u2net.onnx")))
                 .filter(|path| path.is_file()),
             models_directory,
-            train_command: env_text("COMFYUI_TRAIN_COMMAND"),
-            train_timeout_seconds: env_u64("COMFYUI_TRAIN_TIMEOUT_SECS", 3600, 60, 14400),
-            ffmpeg: env_text("COMFYUI_FFMPEG").unwrap_or_else(|| "ffmpeg".to_string()),
-            ffprobe: env_text("COMFYUI_FFPROBE").unwrap_or_else(|| "ffprobe".to_string()),
-            frame_fps: env_u64("COMFYUI_TRAIN_FRAME_FPS", 4, 1, 30) as u32,
-            frame_limit: env_u64("COMFYUI_TRAIN_FRAME_LIMIT", 48, 1, 400) as u32,
+            train_command: environment_text("COMFYUI_TRAIN_COMMAND"),
+            train_timeout_seconds: environment_number(
+                "COMFYUI_TRAIN_TIMEOUT_SECS",
+                3600,
+                60,
+                14400,
+            ),
+            ffmpeg: environment_text("COMFYUI_FFMPEG").unwrap_or_else(|| "ffmpeg".to_string()),
+            ffprobe: environment_text("COMFYUI_FFPROBE").unwrap_or_else(|| "ffprobe".to_string()),
+            frame_fps: environment_number("COMFYUI_TRAIN_FRAME_FPS", 4, 1, 30) as u32,
+            frame_limit: environment_number("COMFYUI_TRAIN_FRAME_LIMIT", 48, 1, 400) as u32,
             contract: Contract::default(),
         }
     }

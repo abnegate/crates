@@ -30,7 +30,7 @@ use uuid::Uuid;
 pub(crate) const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_config.json");
 /// Smallest body taken for trained weights. ComfyUI answers a missing file
 /// with a 200 error page, so size is what tells the two apart.
-pub(crate) const MIN_WEIGHT_BYTES: usize = 10_000;
+pub(crate) const MINIMUM_WEIGHT_BYTES: usize = 10_000;
 const MANIFEST_VERSION: u32 = 1;
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const TRAIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -333,7 +333,7 @@ async fn download(
         .bytes()
         .await
         .map_err(|error| TrainError::Failed(error.to_string()))?;
-    if bytes.len() < MIN_WEIGHT_BYTES {
+    if bytes.len() < MINIMUM_WEIGHT_BYTES {
         return Err(TrainError::Failed(
             "ComfyUI returned a LoRA that is too small to be trained weights".into(),
         ));

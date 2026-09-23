@@ -97,8 +97,8 @@ pub mod video;
 
 pub use caption::{CaptionImage, CaptionRequest, Captioner, Draft, data_url};
 pub use client::{
-    Client, Error, GeneratedImage, MAX_SOURCE_IMAGE_BYTES, MAX_SOURCE_VIDEO_BYTES, SourceImage,
-    SourceVideo, build_ace_step_workflow, build_flux_schnell_img2img_workflow,
+    Client, Error, GeneratedImage, MAXIMUM_SOURCE_IMAGE_BYTES, MAXIMUM_SOURCE_VIDEO_BYTES,
+    SourceImage, SourceVideo, build_ace_step_workflow, build_flux_schnell_img2img_workflow,
     build_flux_schnell_workflow, build_upscale_image_workflow, build_upscale_video_workflow,
     build_wan_i2v_workflow, build_wan_t2v_workflow,
 };

@@ -25,7 +25,7 @@ use crate::config::Config;
 
 const SUBJECT_TOKENS: u32 = 40;
 const DESCRIPTION_TOKENS: u32 = 80;
-const MAX_CAPTION_WORDS: usize = 18;
+const MAXIMUM_CAPTION_WORDS: usize = 18;
 /// A word in at least this share of the descriptions is invariant, so it is identity.
 /// Set low on purpose: leaking identity costs more than dropping a little context.
 const INVARIANT_SHARE: f32 = 0.34;
@@ -248,7 +248,7 @@ pub(crate) fn content_words(value: &str) -> impl Iterator<Item = String> + '_ {
 /// Drop the comma clauses that carry identity, keeping the ones about the shot.
 fn strip_words(description: &str, banned: &HashSet<String>) -> String {
     let mut kept: Vec<&str> = Vec::new();
-    let mut budget = MAX_CAPTION_WORDS;
+    let mut budget = MAXIMUM_CAPTION_WORDS;
     for clause in description.split(',').map(str::trim) {
         if clause.is_empty() || content_words(clause).any(|word| banned.contains(&word)) {
             continue;
@@ -392,7 +392,7 @@ mod tests {
             capped, clause,
             "a clause that does not fit is dropped whole"
         );
-        assert!(capped.split_whitespace().count() <= MAX_CAPTION_WORDS);
+        assert!(capped.split_whitespace().count() <= MAXIMUM_CAPTION_WORDS);
     }
 
     #[tokio::test]

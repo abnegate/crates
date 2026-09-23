@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::http::CANCEL_TIMEOUT;
 use crate::http::POLL_TIMEOUT;
 use crate::recipe::TrainingModel;
-use crate::train::MIN_WEIGHT_BYTES;
+use crate::train::MINIMUM_WEIGHT_BYTES;
 use crate::train::PACKAGED_TRAIN_CONFIG;
 use crate::train::{Contract, Run};
 use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
@@ -609,7 +609,7 @@ impl<'a> Probe<'a> {
             return None;
         }
         let bytes = response.bytes().await.ok()?;
-        (bytes.len() >= MIN_WEIGHT_BYTES).then(|| bytes.to_vec())
+        (bytes.len() >= MINIMUM_WEIGHT_BYTES).then(|| bytes.to_vec())
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -1319,7 +1319,7 @@ mod tests {
                             format!("filename=\"{name}\"").as_str(),
                         )
                         .insert_header("content-type", served)
-                        .set_body_bytes(vec![3u8; MIN_WEIGHT_BYTES + 1]),
+                        .set_body_bytes(vec![3u8; MINIMUM_WEIGHT_BYTES + 1]),
                 )
                 .mount(&server)
                 .await;
@@ -1334,7 +1334,7 @@ mod tests {
 
             assert_eq!(
                 bytes.map(|bytes| bytes.len()),
-                Some(MIN_WEIGHT_BYTES + 1),
+                Some(MINIMUM_WEIGHT_BYTES + 1),
                 "{served} must be fetched"
             );
         }
@@ -1354,7 +1354,7 @@ mod tests {
                         format!("filename=\"{name}\"").as_str(),
                     )
                     .insert_header("content-type", "text/html")
-                    .set_body_bytes(vec![3u8; MIN_WEIGHT_BYTES + 1]),
+                    .set_body_bytes(vec![3u8; MINIMUM_WEIGHT_BYTES + 1]),
             )
             .mount(&server)
             .await;

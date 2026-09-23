@@ -3,7 +3,7 @@ use crate::media::MediaType;
 use std::fmt;
 use uuid::Uuid;
 
-pub const MAX_SOURCE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAXIMUM_SOURCE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct SourceImage {
@@ -27,7 +27,7 @@ impl SourceImage {
     pub fn new(bytes: impl Into<bytes::Bytes>, mime: &str) -> Result<Self, Error> {
         let mime = normalize_source_mime(mime)?;
         let bytes = bytes.into();
-        if bytes.is_empty() || bytes.len() > MAX_SOURCE_IMAGE_BYTES {
+        if bytes.is_empty() || bytes.len() > MAXIMUM_SOURCE_IMAGE_BYTES {
             return Err(Error::Configuration("source image is empty or too large"));
         }
         Ok(Self {

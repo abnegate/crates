@@ -8,9 +8,9 @@ mod source_video;
 
 pub use error::Error;
 pub use generated_image::GeneratedImage;
-pub use source_image::MAX_SOURCE_IMAGE_BYTES;
+pub use source_image::MAXIMUM_SOURCE_IMAGE_BYTES;
 pub use source_image::SourceImage;
-pub use source_video::MAX_SOURCE_VIDEO_BYTES;
+pub use source_video::MAXIMUM_SOURCE_VIDEO_BYTES;
 pub use source_video::SourceVideo;
 
 use reqwest::Client as HttpClient;
