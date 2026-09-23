@@ -261,6 +261,7 @@ pub(crate) async fn run_with(
     if !config.enabled {
         return Err(TrainError::Disabled);
     }
+    config.validate()?;
     let run = Run::new(&config.contract);
     match execute(client, config, model, work, output, image_count, &run).await {
         Ok(()) => Ok(run),
@@ -1019,7 +1020,11 @@ pub(crate) async fn cleanup_with(client: &reqwest::Client, config: &Config, run:
         return;
     }
     cleanup_local(config, run);
+    if config.validate().is_err() {
+        return;
+    }
     let graph = json!({
+
         "1": {
             "class_type": config.contract.cleanup_training_run_node,
             "inputs": { "folder": run.folder, "artifact": run.artifact }
@@ -1677,6 +1682,27 @@ mod tests {
             "{}",
             failure.error
         );
+    }
+
+    #[tokio::test]
+    async fn a_zero_training_budget_is_refused_before_anything_is_sent() {
+        let server = MockServer::start().await;
+        let config = Config {
+            train_timeout_seconds: 0,
+            ..config(&server)
+        };
+        let work = dataset();
+        let error = run(
+            &config,
+            &base(),
+            work.path(),
+            &work.path().join("out.safetensors"),
+            2,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TrainError::Configuration(_)), "{error}");
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

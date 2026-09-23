@@ -6,6 +6,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
@@ -261,13 +263,15 @@ impl Client {
     /// A client sharing `client`'s connections, for a caller that already
     /// holds one for the same ComfyUI.
     pub(crate) fn with_http(config: Config, client: HttpClient) -> Result<Self, Error> {
+        config.validate()?;
+
         if config.base_url.trim().is_empty() {
             return Err(Error::Configuration("COMFYUI_BASE_URL is empty"));
         }
         sanitize_weight_filename(&config.checkpoint).map_err(|_| {
             Error::Configuration("COMFYUI_CHECKPOINT must be a checkpoint filename")
         })?;
-        let catalog = RecipeCatalog::load(Some(config.workflow_path.as_path()))?;
+        let catalog = RecipeCatalog::load(config.workflow_path.as_deref())?;
         let client = Self {
             config,
             client,
@@ -323,9 +327,9 @@ impl Client {
                 return Err(Error::Configuration(message));
             }
         }
-        let video_workflow = load_video_workflow(&self.config.video_workflow_path)?;
+        let video_workflow = load_video_workflow(self.config.video_workflow_path.as_deref())?;
         validate_video_workflow(&video_workflow)?;
-        let i2v_workflow = load_i2v_workflow(&self.config.video_workflow_path)?;
+        let i2v_workflow = load_i2v_workflow(self.config.video_workflow_path.as_deref())?;
         validate_i2v_workflow(&i2v_workflow)?;
         Ok((video_workflow, i2v_workflow))
     }
@@ -334,7 +338,7 @@ impl Client {
         sanitize_weight_filename(&self.config.audio_checkpoint).map_err(|_| {
             Error::Configuration("COMFYUI_AUDIO_CHECKPOINT must be a checkpoint filename")
         })?;
-        let workflow = load_audio_workflow(&self.config.audio_workflow_path)?;
+        let workflow = load_audio_workflow(self.config.audio_workflow_path.as_deref())?;
         validate_audio_workflow(&workflow)?;
         Ok(workflow)
     }
@@ -479,7 +483,7 @@ impl Client {
         if cancel.try_recv().is_ok() {
             return Err(Error::Cancelled);
         }
-        let workflow = load_upscale_workflow(&self.config.upscale_workflow_path)?;
+        let workflow = load_upscale_workflow(self.config.upscale_workflow_path.as_deref())?;
         let deadline = tokio::time::Instant::now()
             + Duration::from_secs(self.config.upscale_generation_timeout_seconds);
         let _ = progress.send("Uploading source image...".to_string());
@@ -522,7 +526,7 @@ impl Client {
         if cancel.try_recv().is_ok() {
             return Err(Error::Cancelled);
         }
-        let workflow = load_upscale_video_workflow(&self.config.upscale_workflow_path)?;
+        let workflow = load_upscale_video_workflow(self.config.upscale_workflow_path.as_deref())?;
         let deadline = tokio::time::Instant::now()
             + Duration::from_secs(self.config.upscale_generation_timeout_seconds);
         let _ = progress.send("Uploading source video...".to_string());
@@ -904,15 +908,25 @@ pub fn build_flux_schnell_img2img_workflow(
         })
 }
 
-fn load_workflow_file(path: &std::path::Path) -> Result<Value, Error> {
+fn load_workflow_file(path: &Path) -> Result<Value, Error> {
     let contents = std::fs::read_to_string(path)
         .map_err(|_| Error::Configuration("COMFYUI_WORKFLOW_PATH is not readable"))?;
     serde_json::from_str(&contents)
         .map_err(|_| Error::Configuration("COMFYUI_WORKFLOW_PATH is not valid JSON"))
 }
 
-fn load_video_workflow(path: &std::path::Path) -> Result<Value, Error> {
-    if path.is_file() {
+fn configured_file(path: Option<&Path>) -> Option<&Path> {
+    path.filter(|path| path.is_file())
+}
+
+fn sibling_file(path: Option<&Path>, name: &str) -> Option<PathBuf> {
+    path.and_then(Path::parent)
+        .map(|directory| directory.join(name))
+        .filter(|sibling| sibling.is_file())
+}
+
+fn load_video_workflow(path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = configured_file(path) {
         return load_workflow_file(path)
             .map_err(|_| Error::Configuration("video workflow path is not readable"));
     }
@@ -920,11 +934,8 @@ fn load_video_workflow(path: &std::path::Path) -> Result<Value, Error> {
         .map_err(|_| Error::Configuration("packaged video workflow is not valid JSON"))
 }
 
-fn load_i2v_workflow(text_to_video_path: &std::path::Path) -> Result<Value, Error> {
-    let sibling = text_to_video_path
-        .parent()
-        .map(|directory| directory.join("wan2.2-ti2v-5b-i2v-api.json"));
-    if let Some(path) = sibling.filter(|path| path.is_file()) {
+fn load_i2v_workflow(text_to_video_path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = sibling_file(text_to_video_path, "wan2.2-ti2v-5b-i2v-api.json") {
         return load_workflow_file(&path)
             .map_err(|_| Error::Configuration("image-to-video workflow path is not readable"));
     }
@@ -932,8 +943,8 @@ fn load_i2v_workflow(text_to_video_path: &std::path::Path) -> Result<Value, Erro
         .map_err(|_| Error::Configuration("packaged image-to-video workflow is not valid JSON"))
 }
 
-fn load_audio_workflow(path: &std::path::Path) -> Result<Value, Error> {
-    if path.is_file() {
+fn load_audio_workflow(path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = configured_file(path) {
         return load_workflow_file(path)
             .map_err(|_| Error::Configuration("audio workflow path is not readable"));
     }
@@ -978,8 +989,8 @@ pub fn build_ace_step_workflow(prompt: &str, checkpoint: &str, seed: u64) -> Res
 const UPSCALE_IMAGE_OUTPUT_NODE: &str = "4";
 const UPSCALE_VIDEO_OUTPUT_NODE: &str = "5";
 
-fn load_upscale_workflow(path: &std::path::Path) -> Result<Value, Error> {
-    if path.is_file() {
+fn load_upscale_workflow(path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = configured_file(path) {
         return load_workflow_file(path)
             .map_err(|_| Error::Configuration("upscale workflow path is not readable"));
     }
@@ -987,11 +998,8 @@ fn load_upscale_workflow(path: &std::path::Path) -> Result<Value, Error> {
         .map_err(|_| Error::Configuration("packaged upscale workflow is not valid JSON"))
 }
 
-fn load_upscale_video_workflow(image_path: &std::path::Path) -> Result<Value, Error> {
-    let sibling = image_path
-        .parent()
-        .map(|directory| directory.join("upscale-video-api.json"));
-    if let Some(path) = sibling.filter(|path| path.is_file()) {
+fn load_upscale_video_workflow(image_path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = sibling_file(image_path, "upscale-video-api.json") {
         return load_workflow_file(&path)
             .map_err(|_| Error::Configuration("video upscale workflow path is not readable"));
     }
@@ -1555,6 +1563,17 @@ mod tests {
     }
 
     #[test]
+    fn a_client_that_would_poll_in_a_busy_loop_is_refused() {
+        assert!(matches!(
+            Client::new(Config {
+                poll_interval_milliseconds: 0,
+                ..Default::default()
+            }),
+            Err(Error::Configuration(message)) if message.contains("COMFYUI_POLL_INTERVAL_MS")
+        ));
+    }
+
+    #[test]
     fn image_client_accepts_empty_audio_checkpoint() {
         Client::new(Config {
             audio_checkpoint: String::new(),
@@ -2110,8 +2129,19 @@ mod tests {
     fn the_packaged_upscale_graphs_load_when_no_file_is_configured() {
         // An operator who never sets COMFYUI_UPSCALE_WORKFLOW_PATH still gets a
         // working pair, and the clip graph is found beside the image one.
-        let missing = std::path::Path::new("/nonexistent/upscale-image-api.json");
+        let missing = Some(Path::new("/nonexistent/upscale-image-api.json"));
+        for unset in [missing, None] {
+            assert_eq!(
+                load_upscale_workflow(unset).unwrap()["1"]["class_type"],
+                json!("LoadImage")
+            );
+            assert_eq!(
+                load_upscale_video_workflow(unset).unwrap()["1"]["class_type"],
+                json!("LoadVideo")
+            );
+        }
         let image = load_upscale_workflow(missing).unwrap();
+
         assert_eq!(image["1"]["class_type"], json!("LoadImage"));
         assert_eq!(
             image[UPSCALE_IMAGE_OUTPUT_NODE]["class_type"],

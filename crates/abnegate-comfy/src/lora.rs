@@ -32,6 +32,8 @@ pub enum TrainError {
     Disabled,
     #[error("invalid training request: {0}")]
     Invalid(&'static str),
+    #[error("invalid training configuration: {0}")]
+    Configuration(&'static str),
     #[error("training failed: {0}")]
     Failed(String),
 }
@@ -278,11 +280,13 @@ async fn train_with_pipeline(
     if config.train_command.is_none() && !config.enabled {
         return Err(TrainError::Disabled);
     }
+    config.validate()?;
+
     let filename = final_filename(&request.name)?;
     if request.images.is_empty() {
         return Err(TrainError::Invalid("training needs images"));
     }
-    let catalog = RecipeCatalog::load(Some(config.workflow_path.as_path()))
+    let catalog = RecipeCatalog::load(config.workflow_path.as_deref())
         .map_err(|_| TrainError::Invalid("recipe catalog is missing"))?;
     let recipe = catalog
         .get(&request.base)
@@ -1774,6 +1778,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_configuration_that_would_poll_in_a_busy_loop_is_refused() {
+        let root = root();
+        let config = Config {
+            models_directory: root.clone(),
+            train_command: Some("true".into()),
+            poll_interval_milliseconds: 0,
+            ..Default::default()
+        };
+        let error = rejected(&config, request("my-style", "flux-schnell", Some("ohwx"))).await;
+        assert!(matches!(error, TrainError::Configuration(_)), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn training_needs_images() {
         let root = root();
         let config = Config {
@@ -2962,7 +2980,7 @@ mod tests {
             serde_json::to_vec(&catalog).unwrap(),
         )
         .unwrap();
-        config.workflow_path = workflows.join("flux1-schnell-fp8-api.json");
+        config.workflow_path = Some(workflows.join("flux1-schnell-fp8-api.json"));
 
         let error = train_with_screening(
             &config,

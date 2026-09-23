@@ -96,7 +96,7 @@ pub mod video;
 
 pub use caption::{CaptionImage, CaptionRequest, Captioner, Draft, data_url};
 pub use client::{Client, Error, GeneratedImage, SourceImage, SourceVideo};
-pub use config::Config;
+pub use config::{Config, ConfigError};
 pub use dataset::{Concern, Finding, inspect};
 pub use inventory::{InventoryItem, WeightSidecar, scan};
 pub use lora::{

@@ -1,8 +1,15 @@
 //! Settings read from `COMFYUI_*` environment variables.
 
+mod error;
+
+pub use error::ConfigError;
+
 use crate::train::Contract;
 use abnegate_secret::SecretValue;
+use reqwest::header::HeaderName;
+use reqwest::header::HeaderValue;
 use std::env;
+use std::path::PathBuf;
 
 /// Default header that carries [`Config::api_token`], the one the proxy in
 /// front of a token-protected ComfyUI checks.
@@ -14,6 +21,8 @@ pub const VISION_MODEL_VARIABLE: &str = "ABNEGATE_VISION_MODEL";
 
 /// Floor on every timeout, since a zero timeout fails a request before it is sent.
 pub(crate) const MINIMUM_TIMEOUT_SECONDS: u64 = 1;
+/// Floor on the poll interval, since a zero interval polls ComfyUI in a busy loop.
+const MINIMUM_POLL_INTERVAL_MILLISECONDS: u64 = 1;
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 120;
 const MAXIMUM_REQUEST_TIMEOUT_SECONDS: u64 = 600;
 
@@ -68,17 +77,22 @@ pub struct Config {
     pub api_token: Option<SecretValue>,
     /// Header [`Config::api_token`] is sent in.
     pub token_header: String,
-    pub workflow_path: std::path::PathBuf,
+    /// Image graph whose directory may overlay the packaged recipes. `None`
+    /// uses the recipes and graphs packaged with the crate.
+    pub workflow_path: Option<PathBuf>,
     pub checkpoint: String,
-    pub video_workflow_path: std::path::PathBuf,
+    /// `None` uses the packaged text-to-video graph.
+    pub video_workflow_path: Option<PathBuf>,
     pub video_unet: String,
     pub video_clip: String,
     pub video_vae: String,
-    pub audio_workflow_path: std::path::PathBuf,
+    /// `None` uses the packaged text-to-audio graph.
+    pub audio_workflow_path: Option<PathBuf>,
     pub audio_checkpoint: String,
-    pub upscale_workflow_path: std::path::PathBuf,
+    /// `None` uses the packaged upscale graphs.
+    pub upscale_workflow_path: Option<PathBuf>,
     pub upscale_model: String,
-    pub artifact_root: std::path::PathBuf,
+    pub artifact_root: PathBuf,
     pub classifier_model: String,
     pub classifier_timeout_seconds: u64,
     /// Vision model that captions LoRA training images. Empty disables captioning.
@@ -94,7 +108,7 @@ pub struct Config {
     pub upscale_generation_timeout_seconds: u64,
     pub poll_interval_milliseconds: u64,
     /// ComfyUI models root (`checkpoints/`, `loras/`, `diffusion_models/`, ...).
-    pub models_directory: std::path::PathBuf,
+    pub models_directory: PathBuf,
     /// Optional command used to train a LoRA. Empty runs the packaged training
     /// graph on ComfyUI.
     pub train_command: Option<String>,
@@ -111,7 +125,7 @@ pub struct Config {
     pub frame_limit: u32,
     /// U2-Net weights that locate the subject of a training image. `None`
     /// crops photos on their centre and video frames on whatever moved.
-    pub vision_model: Option<std::path::PathBuf>,
+    pub vision_model: Option<PathBuf>,
     /// Node and namespace names the training graphs and training command are
     /// built with.
     pub contract: Contract,
@@ -124,19 +138,15 @@ impl Default for Config {
             base_url: "http://comfyui:8188".to_string(),
             api_token: None,
             token_header: TOKEN_HEADER.to_string(),
-            workflow_path: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("comfyui/workflows/flux1-schnell-fp8-api.json"),
+            workflow_path: None,
             checkpoint: "flux1-schnell-fp8.safetensors".to_string(),
-            video_workflow_path: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("comfyui/workflows/wan2.2-ti2v-5b-api.json"),
+            video_workflow_path: None,
             video_unet: "wan2.2_ti2v_5B_fp16.safetensors".to_string(),
             video_clip: "umt5_xxl_fp8_e4m3fn_scaled.safetensors".to_string(),
             video_vae: "wan2.2_vae.safetensors".to_string(),
-            audio_workflow_path: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("comfyui/workflows/ace-step-v1-3.5b-api.json"),
+            audio_workflow_path: None,
             audio_checkpoint: "ace_step_v1_3.5b.safetensors".to_string(),
-            upscale_workflow_path: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("comfyui/workflows/upscale-image-api.json"),
+            upscale_workflow_path: None,
             upscale_model: "RealESRGAN_x4plus.safetensors".to_string(),
             artifact_root: "/app/artifacts".into(),
             classifier_model: "auto".to_string(),
@@ -149,7 +159,7 @@ impl Default for Config {
             audio_generation_timeout_seconds: 600,
             upscale_generation_timeout_seconds: 600,
             poll_interval_milliseconds: 500,
-            models_directory: std::path::PathBuf::from("/app/comfyui/models"),
+            models_directory: PathBuf::from("/app/comfyui/models"),
             train_command: None,
             train_timeout_seconds: 3600,
             ffmpeg: "ffmpeg".to_string(),
@@ -169,10 +179,73 @@ impl Config {
         Self::from_env_with_vision_model(VISION_MODEL_VARIABLE)
     }
 
+    /// Refuses settings that would fail every request, poll ComfyUI in a busy
+    /// loop, or send a token no proxy could read. [`Client::new`](crate::Client::new),
+    /// [`lora::train`](crate::lora::train) and [`train::run`](crate::train::run)
+    /// call it first.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.poll_interval_milliseconds < MINIMUM_POLL_INTERVAL_MILLISECONDS {
+            return Err(ConfigError::new(
+                "COMFYUI_POLL_INTERVAL_MS must be at least one millisecond",
+            ));
+        }
+        for (seconds, message) in [
+            (
+                self.request_timeout_seconds,
+                "COMFYUI_REQUEST_TIMEOUT_SECS must be at least one second",
+            ),
+            (
+                self.generation_timeout_seconds,
+                "COMFYUI_GENERATION_TIMEOUT_SECS must be at least one second",
+            ),
+            (
+                self.video_generation_timeout_seconds,
+                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECS must be at least one second",
+            ),
+            (
+                self.audio_generation_timeout_seconds,
+                "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECS must be at least one second",
+            ),
+            (
+                self.upscale_generation_timeout_seconds,
+                "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECS must be at least one second",
+            ),
+            (
+                self.caption_timeout_seconds,
+                "COMFYUI_CAPTION_TIMEOUT_SECS must be at least one second",
+            ),
+            (
+                self.classifier_timeout_seconds,
+                "COMFYUI_CLASSIFIER_TIMEOUT_SECS must be at least one second",
+            ),
+            (
+                self.train_timeout_seconds,
+                "COMFYUI_TRAIN_TIMEOUT_SECS must be at least one second",
+            ),
+        ] {
+            if seconds < MINIMUM_TIMEOUT_SECONDS {
+                return Err(ConfigError::new(message));
+            }
+        }
+        if HeaderName::from_bytes(self.token_header.as_bytes()).is_err() {
+            return Err(ConfigError::new(
+                "COMFYUI_TOKEN_HEADER is not a valid header name",
+            ));
+        }
+        if let Some(token) = &self.api_token
+            && HeaderValue::from_str(token.expose()).is_err()
+        {
+            return Err(ConfigError::new(
+                "COMFYUI_API_TOKEN is not a valid header value",
+            ));
+        }
+        Ok(())
+    }
+
     /// [`Config::from_env`], taking the U2-Net weights path from `variable`
     /// instead, for a deployment that already names it something else.
     pub fn from_env_with_vision_model(variable: &str) -> Self {
-        let models_directory: std::path::PathBuf = env::var("COMFYUI_MODELS_DIR")
+        let models_directory: PathBuf = env::var("COMFYUI_MODELS_DIR")
             .unwrap_or_else(|_| "/app/comfyui/models".to_string())
             .into();
         Self {
@@ -184,28 +257,42 @@ impl Config {
             api_token: token(env::var("COMFYUI_API_TOKEN").ok()),
             token_header: env_text("COMFYUI_TOKEN_HEADER")
                 .unwrap_or_else(|| TOKEN_HEADER.to_string()),
-            workflow_path: env::var("COMFYUI_WORKFLOW_PATH")
-                .unwrap_or_else(|_| "/app/comfyui/workflows/flux1-schnell-fp8-api.json".to_string())
-                .into(),
+            workflow_path: Some(
+                env::var("COMFYUI_WORKFLOW_PATH")
+                    .unwrap_or_else(|_| {
+                        "/app/comfyui/workflows/flux1-schnell-fp8-api.json".to_string()
+                    })
+                    .into(),
+            ),
             checkpoint: env::var("COMFYUI_CHECKPOINT")
                 .unwrap_or_else(|_| "flux1-schnell-fp8.safetensors".to_string()),
-            video_workflow_path: env::var("COMFYUI_VIDEO_WORKFLOW_PATH")
-                .unwrap_or_else(|_| "/app/comfyui/workflows/wan2.2-ti2v-5b-api.json".to_string())
-                .into(),
+            video_workflow_path: Some(
+                env::var("COMFYUI_VIDEO_WORKFLOW_PATH")
+                    .unwrap_or_else(|_| {
+                        "/app/comfyui/workflows/wan2.2-ti2v-5b-api.json".to_string()
+                    })
+                    .into(),
+            ),
             video_unet: env::var("COMFYUI_VIDEO_UNET")
                 .unwrap_or_else(|_| "wan2.2_ti2v_5B_fp16.safetensors".to_string()),
             video_clip: env::var("COMFYUI_VIDEO_CLIP")
                 .unwrap_or_else(|_| "umt5_xxl_fp8_e4m3fn_scaled.safetensors".to_string()),
             video_vae: env::var("COMFYUI_VIDEO_VAE")
                 .unwrap_or_else(|_| "wan2.2_vae.safetensors".to_string()),
-            audio_workflow_path: env::var("COMFYUI_AUDIO_WORKFLOW_PATH")
-                .unwrap_or_else(|_| "/app/comfyui/workflows/ace-step-v1-3.5b-api.json".to_string())
-                .into(),
+            audio_workflow_path: Some(
+                env::var("COMFYUI_AUDIO_WORKFLOW_PATH")
+                    .unwrap_or_else(|_| {
+                        "/app/comfyui/workflows/ace-step-v1-3.5b-api.json".to_string()
+                    })
+                    .into(),
+            ),
             audio_checkpoint: env::var("COMFYUI_AUDIO_CHECKPOINT")
                 .unwrap_or_else(|_| "ace_step_v1_3.5b.safetensors".to_string()),
-            upscale_workflow_path: env::var("COMFYUI_UPSCALE_WORKFLOW_PATH")
-                .unwrap_or_else(|_| "/app/comfyui/workflows/upscale-image-api.json".to_string())
-                .into(),
+            upscale_workflow_path: Some(
+                env::var("COMFYUI_UPSCALE_WORKFLOW_PATH")
+                    .unwrap_or_else(|_| "/app/comfyui/workflows/upscale-image-api.json".to_string())
+                    .into(),
+            ),
             upscale_model: env::var("COMFYUI_UPSCALE_MODEL")
                 .unwrap_or_else(|_| "RealESRGAN_x4plus.safetensors".to_string()),
             artifact_root: env::var("ARTIFACT_ROOT")
@@ -244,7 +331,7 @@ impl Config {
             ),
             poll_interval_milliseconds: env_u64("COMFYUI_POLL_INTERVAL_MS", 500, 50, 5000),
             vision_model: env_text(variable)
-                .map(std::path::PathBuf::from)
+                .map(PathBuf::from)
                 .or_else(|| Some(models_directory.join("vision/u2net.onnx")))
                 .filter(|path| path.is_file()),
             models_directory,
@@ -264,23 +351,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn audio_defaults_cover_dev_and_container_paths() {
-        let development = Config::default();
-        assert!(
-            development
-                .audio_workflow_path
-                .ends_with("comfyui/workflows/ace-step-v1-3.5b-api.json"),
-            "dev default must resolve the packaged graph, got {:?}",
-            development.audio_workflow_path
-        );
-        assert_eq!(development.audio_checkpoint, "ace_step_v1_3.5b.safetensors");
-        assert_eq!(development.audio_generation_timeout_seconds, 600);
-
-        if env::var_os("COMFYUI_AUDIO_WORKFLOW_PATH").is_none() {
-            let container = Config::from_env();
+    fn the_defaults_name_no_path_on_the_machine_that_built_the_crate() {
+        let defaults = Config::default();
+        for path in [
+            &defaults.workflow_path,
+            &defaults.video_workflow_path,
+            &defaults.audio_workflow_path,
+            &defaults.upscale_workflow_path,
+        ] {
             assert_eq!(
-                container.audio_workflow_path,
-                std::path::PathBuf::from("/app/comfyui/workflows/ace-step-v1-3.5b-api.json")
+                path, &None,
+                "a default must fall back to the packaged graph"
+            );
+        }
+        assert_eq!(defaults.audio_checkpoint, "ace_step_v1_3.5b.safetensors");
+        assert_eq!(defaults.audio_generation_timeout_seconds, 600);
+    }
+
+    #[test]
+    fn the_environment_defaults_to_the_container_graphs() {
+        if env::var_os("COMFYUI_AUDIO_WORKFLOW_PATH").is_none() {
+            assert_eq!(
+                Config::from_env().audio_workflow_path,
+                Some(PathBuf::from(
+                    "/app/comfyui/workflows/ace-step-v1-3.5b-api.json"
+                ))
             );
         }
     }
@@ -365,8 +460,62 @@ mod tests {
         };
         assert_eq!(
             Config::from_env_with_vision_model("CARGO").vision_model,
-            Some(std::path::PathBuf::from(cargo))
+            Some(PathBuf::from(cargo))
         );
+    }
+
+    #[test]
+    fn the_defaults_are_valid() {
+        assert_eq!(Config::default().validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_zero_poll_interval_is_refused_rather_than_polled_in_a_busy_loop() {
+        let config = Config {
+            poll_interval_milliseconds: 0,
+            ..Config::default()
+        };
+        assert!(config.validate().is_err());
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .message()
+                .contains("COMFYUI_POLL_INTERVAL_MS")
+        );
+    }
+
+    #[test]
+    fn a_zero_timeout_is_refused_rather_than_failing_every_request() {
+        let zeroed: [fn(&mut Config); 8] = [
+            |config| config.request_timeout_seconds = 0,
+            |config| config.generation_timeout_seconds = 0,
+            |config| config.video_generation_timeout_seconds = 0,
+            |config| config.audio_generation_timeout_seconds = 0,
+            |config| config.upscale_generation_timeout_seconds = 0,
+            |config| config.caption_timeout_seconds = 0,
+            |config| config.classifier_timeout_seconds = 0,
+            |config| config.train_timeout_seconds = 0,
+        ];
+        for zero in zeroed {
+            let mut config = Config::default();
+            zero(&mut config);
+            assert!(config.validate().is_err(), "{config:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_token_or_header_a_proxy_could_not_read_is_refused() {
+        let header = Config {
+            token_header: "Not A Header".into(),
+            ..Config::default()
+        };
+        assert!(header.validate().is_err());
+        let token = Config {
+            api_token: Some(SecretValue::new("line\nbreak")),
+            ..Config::default()
+        };
+        assert!(token.validate().is_err());
     }
 
     #[test]

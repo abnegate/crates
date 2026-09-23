@@ -149,7 +149,9 @@ impl<'a> Selection<'a> {
         output: &Path,
         captions: &HashMap<String, String>,
     ) -> Option<Self> {
+        config.validate().ok()?;
         run.validate(&config.contract).ok()?;
+
         let settings: Settings = serde_json::from_str(PACKAGED_TRAIN_CONFIG).ok()?;
         let adapter = format!("{}.safetensors", run.artifact);
         artifact(&adapter, &run.artifact, &config.contract.artifact_prefix)?;
