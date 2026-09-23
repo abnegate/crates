@@ -9,13 +9,17 @@
 //! batching and confirmation read a call's consequences from the tool itself.
 //! File tools stay beneath the working directory, resolving each path once
 //! against a descriptor for the root so a symlink swapped in after the check
-//! is never followed; commands run with only the environment the
-//! [`ToolContext`] names.
+//! is never followed. Commands run in a process group of their own, killed
+//! whole when they finish or overrun, and see only the allowlisted
+//! environment the [`ToolContext`] names.
 //!
 //! [`Agent`] runs the loop: ask the model, run the tools it calls, feed their
-//! results back, until it answers. Each request goes through
-//! [`context::prepare`], which folds consumed history into a checkpoint when
-//! the model's context would overflow, without ever editing the history.
+//! results back, until it answers. A call whose tier needs confirming runs
+//! only once [`AgentCallback::approve`] allows it, which by default it does
+//! not, and every call is held to its tool's own timeout. Each request goes
+//! through [`context::prepare`], which folds consumed history into a
+//! checkpoint when the model's context would overflow, without ever editing
+//! the history.
 //!
 //! [`chat`] is the storage boundary a multi-turn chat session needs, leased so
 //! only one response is ever live per chat; [`session`] saves and reloads agent
@@ -38,11 +42,26 @@
 //!     ToolContext::default(),
 //! );
 //!
+//! // NoOpCallback approves nothing that needs confirming: the model can read,
+//! // list and search, and any write or command it asks for is refused.
 //! let state = agent.run("List the files in src.", &NoOpCallback).await?;
 //! println!("{:?}", state.final_response);
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Coming from claudear
+//!
+//! The prompt helpers here replace claudear's, and differ from them on
+//! purpose:
+//!
+//! - [`context::estimate`] counts four bytes a token rounded up, not down,
+//!   and charges each message 8 tokens of framing rather than 20.
+//! - [`TemplateRenderer::render`] renders a key the context does not hold as
+//!   nothing, where claudear left `{{key}}` in the prompt;
+//!   [`TemplateRenderer::render_strict`] refuses such a template instead.
+//! - `{{#if key}}` is false for an empty string as well as a missing key, and
+//!   keys may contain `-`.
 //!
 //! # Features
 //!
