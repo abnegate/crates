@@ -98,6 +98,11 @@ const LOCK_EXTENSION: &str = "lock";
 /// Core settings git chose for the file system when it made the clone.
 const CARRIED_CORE: [&str; 4] = ["filemode", "ignorecase", "precomposeunicode", "symlinks"];
 
+/// Pinned settings a fetch into a managed clone leaves to the caller's own
+/// configuration, because pinning them would blank the credential helper and
+/// proxy the caller set up.
+const LEFT_TO_CALLER: [&str; 2] = ["credential.helper=", "http.proxy="];
+
 /// Repository formats a clone was made in, and the values each may take:
 /// without them git cannot read its own objects or refs.
 const CARRIED_EXTENSIONS: [(&str, &[&str]); 2] = [

@@ -19,9 +19,11 @@
 //! of it shares its configuration and hooks, and a run works in one, so it is
 //! held to the same check before it is fetched, checked out, reset or given a
 //! worktree, and every one of those commands carries the same pins; the local
-//! ones also ignore the host's configuration. The pins override the caller's
-//! configuration as well, so a managed fetch uses no credential helper, proxy
-//! or redirect the caller configured, only what the environment supplies.
+//! ones also ignore the host's configuration. A managed fetch leaves off only
+//! the pins that would blank the caller's credential helper and proxy: the
+//! clone is the caller's own and its configuration is checked against the
+//! allowlist immediately before every fetch, so the caller's global helper
+//! and proxy stay usable. The hardened commands keep every pin.
 
 mod authentication;
 mod diff_summary;

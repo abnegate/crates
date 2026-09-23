@@ -43,19 +43,26 @@ impl GitService {
     }
 
     /// A git invocation that reaches a managed clone's configured remote with
-    /// the caller's own environment, so a local path or an SSH remote that
-    /// environment reaches still works, under every pin a hardened command
-    /// carries.
+    /// the caller's own environment, so a local path, an SSH remote, a
+    /// credential helper or a proxy the caller set up still works.
     ///
     /// The clone's hooks and configuration are shared by every worktree of it,
     /// and a run works in one, so a hook a run left would otherwise run as the
-    /// host on the next fetch; [`Self::verify_config`], run first, refuses a key
-    /// no pin reaches. The pins override the caller's own configuration too: a
-    /// credential helper, proxy or redirect policy the caller configured is not
-    /// used, and a remote is reached with what the environment itself supplies.
+    /// host on the next fetch. Every pin a hardened command carries is applied
+    /// but the two in [`LEFT_TO_CALLER`]: a managed clone is the caller's own,
+    /// and [`Self::verify_config`] checks its configuration against the
+    /// allowlist immediately before every fetch, so a helper or proxy the
+    /// clone's configuration names is refused there while the caller's global
+    /// ones stay usable. The hardened commands keep every pin.
     pub(super) fn managed_remote(path: &Path) -> Command {
         let mut command = Self::managed_command(Some(path));
-        command.args(PINS);
+        let (pins, _) = PINS.as_chunks::<2>();
+        for pin in pins
+            .iter()
+            .filter(|[_, setting]| !LEFT_TO_CALLER.contains(setting))
+        {
+            command.args(pin);
+        }
         command
     }
 
@@ -398,6 +405,14 @@ mod managed_tests {
 
     fn origin(path: &Path) -> String {
         format!("file://{}", path.display())
+    }
+
+    fn arguments(command: &Command) -> Vec<String> {
+        command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
     }
 
     #[test]
@@ -1065,15 +1080,11 @@ mod managed_tests {
         assert!(head.exists(), "an accepted clone's remote head is set");
     }
 
+    /// A checkout or reset carries every pin. A fetch carries every pin but
+    /// the two that would blank the caller's own credential helper and proxy,
+    /// and nothing more.
     #[test]
     fn every_command_that_fetches_into_checks_out_or_resets_a_managed_clone_carries_the_pins() {
-        fn arguments(command: &Command) -> Vec<String> {
-            command
-                .as_std()
-                .get_args()
-                .map(|argument| argument.to_string_lossy().into_owned())
-                .collect()
-        }
         fn configured_globally(command: &Command) -> bool {
             command
                 .as_std()
@@ -1092,23 +1103,90 @@ mod managed_tests {
             GitService::resetting(path, &main),
         ];
         let pins = PINS.map(String::from);
+        let remote_pins: Vec<String> = PINS
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|[_, setting]| !matches!(*setting, "credential.helper=" | "http.proxy="))
+            .flatten()
+            .map(|pin| pin.to_string())
+            .collect();
+        assert_eq!(
+            remote_pins.len(),
+            PINS.len() - 4,
+            "a hardened command pins both: {PINS:?}"
+        );
 
-        for command in remote.iter().chain(&local) {
-            let arguments = arguments(command);
-            assert!(arguments.starts_with(&pins), "{arguments:?}");
-        }
         for command in &remote {
+            let arguments = arguments(command);
+            assert!(arguments.starts_with(&remote_pins), "{arguments:?}");
+            assert_ne!(
+                arguments[remote_pins.len()],
+                "-c",
+                "no pin beyond that set: {arguments:?}"
+            );
+            assert!(
+                arguments.contains(&"http.followRedirects=false".to_string()),
+                "{arguments:?}"
+            );
             assert!(
                 !configured_globally(command),
-                "a fetch keeps the caller's own configuration: {:?}",
-                arguments(command)
+                "a fetch keeps the caller's own configuration: {arguments:?}"
             );
         }
         for command in &local {
+            let arguments = arguments(command);
+            assert!(arguments.starts_with(&pins), "{arguments:?}");
             assert!(
                 configured_globally(command),
-                "a checkout or reset ignores the host's configuration: {:?}",
-                arguments(command)
+                "a checkout or reset ignores the host's configuration: {arguments:?}"
+            );
+        }
+    }
+
+    /// A managed clone is the caller's own, so a fetch into it keeps the
+    /// credential helper and proxy the caller configured globally rather than
+    /// blanking them with a pin. Both are resolved under exactly the options
+    /// `fetch_all` runs git with.
+    #[test]
+    fn a_fetch_into_a_managed_clone_keeps_the_caller_s_credential_helper_and_proxy() {
+        let clone = TempDir::new().unwrap();
+        repository(clone.path());
+        let caller = TempDir::new().unwrap();
+        let global = caller.path().join("gitconfig");
+        std::fs::write(
+            &global,
+            "[credential]\n\thelper = fixture-helper\n[http]\n\tproxy = http://proxy.test:3128\n",
+        )
+        .unwrap();
+        let fetch = arguments(&GitService::fetching_all(clone.path()));
+        let options = &fetch[..fetch
+            .iter()
+            .position(|argument| argument == "fetch")
+            .unwrap()];
+
+        for blanking in ["credential.helper=", "http.proxy="] {
+            assert!(
+                !options.contains(&blanking.to_string()),
+                "{blanking}: {options:?}"
+            );
+        }
+        for (key, value) in [
+            ("credential.helper", "fixture-helper"),
+            ("http.proxy", "http://proxy.test:3128"),
+        ] {
+            let resolved = std::process::Command::new("git")
+                .args(options)
+                .args(["config", "--get-all", key])
+                .env("GIT_CONFIG_GLOBAL", &global)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .current_dir(clone.path())
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&resolved.stdout),
+                format!("{value}\n"),
+                "{key}"
             );
         }
     }
