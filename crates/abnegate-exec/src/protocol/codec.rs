@@ -17,31 +17,33 @@ use crate::error::ProtocolError;
 /// Maximum line length to prevent memory exhaustion
 const MAX_LINE_LENGTH: usize = 16 * 1024 * 1024;
 
+const NEWLINE: u8 = b'\n';
+
 /// NDJSON codec that serializes/deserializes JSON messages with newline delimiters.
 ///
 /// Each message is encoded as a single JSON object followed by `\n`.
-/// Decoding reads lines and parses them as JSON.
+/// Decoding reads lines and parses them as JSON, skipping blank lines.
 pub struct NdjsonCodec<T> {
     /// Maximum allowed line length
     max_length: usize,
-    /// Marker for the message type
-    _phantom: PhantomData<T>,
+    /// How much of the buffer is already known to hold no newline, so a line
+    /// arriving in many reads is scanned once rather than once per read
+    scanned: usize,
+    message: PhantomData<T>,
 }
 
 impl<T> NdjsonCodec<T> {
     /// Create a new NDJSON codec with default max line length
     pub fn new() -> Self {
-        Self {
-            max_length: MAX_LINE_LENGTH,
-            _phantom: PhantomData,
-        }
+        Self::with_max_length(MAX_LINE_LENGTH)
     }
 
     /// Create a new NDJSON codec with custom max line length
     pub fn with_max_length(max_length: usize) -> Self {
         Self {
             max_length,
-            _phantom: PhantomData,
+            scanned: 0,
+            message: PhantomData,
         }
     }
 }
@@ -56,7 +58,8 @@ impl<T> Clone for NdjsonCodec<T> {
     fn clone(&self) -> Self {
         Self {
             max_length: self.max_length,
-            _phantom: PhantomData,
+            scanned: self.scanned,
+            message: PhantomData,
         }
     }
 }
@@ -65,44 +68,44 @@ impl<T: DeserializeOwned> Decoder for NdjsonCodec<T> {
     type Item = T;
     type Error = ProtocolError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let newline_pos = src.iter().position(|&b| b == b'\n');
-
-        match newline_pos {
-            Some(pos) => {
-                if pos > self.max_length {
-                    src.advance(pos + 1);
+    fn decode(&mut self, source: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        loop {
+            self.scanned = self.scanned.min(source.len());
+            let Some(offset) = source[self.scanned..]
+                .iter()
+                .position(|byte| *byte == NEWLINE)
+            else {
+                self.scanned = source.len();
+                if source.len() > self.max_length {
                     return Err(ProtocolError::LineTooLong {
-                        length: pos,
+                        length: source.len(),
                         max: self.max_length,
                     });
                 }
+                return Ok(None);
+            };
 
-                let line = src.split_to(pos);
-                src.advance(1);
+            let length = self.scanned + offset;
+            self.scanned = 0;
+            let line = source.split_to(length);
+            source.advance(1);
 
-                if line.is_empty() {
-                    return Ok(None);
-                }
-
-                let message: T =
-                    serde_json::from_slice(&line).map_err(|source| ProtocolError::JsonParse {
-                        source,
-                        length: line.len(),
-                    })?;
-
-                Ok(Some(message))
+            if length > self.max_length {
+                return Err(ProtocolError::LineTooLong {
+                    length,
+                    max: self.max_length,
+                });
             }
-            None => {
-                if src.len() > self.max_length {
-                    return Err(ProtocolError::LineTooLong {
-                        length: src.len(),
-                        max: self.max_length,
-                    });
-                }
-
-                Ok(None)
+            if line.is_empty() {
+                continue;
             }
+
+            return serde_json::from_slice(&line).map(Some).map_err(|cause| {
+                ProtocolError::JsonParse {
+                    source: cause,
+                    length,
+                }
+            });
         }
     }
 }
@@ -110,12 +113,12 @@ impl<T: DeserializeOwned> Decoder for NdjsonCodec<T> {
 impl<T: Serialize> Encoder<T> for NdjsonCodec<T> {
     type Error = ProtocolError;
 
-    fn encode(&mut self, item: T, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: T, destination: &mut BytesMut) -> Result<(), Self::Error> {
         let json = serde_json::to_string(&item).map_err(ProtocolError::JsonSerialize)?;
 
-        dst.reserve(json.len() + 1);
-        dst.put_slice(json.as_bytes());
-        dst.put_u8(b'\n');
+        destination.reserve(json.len() + 1);
+        destination.put_slice(json.as_bytes());
+        destination.put_u8(NEWLINE);
 
         Ok(())
     }
@@ -133,12 +136,12 @@ mod tests {
     #[test]
     fn test_decode_single_message() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from(
+        let mut buffer = BytesMut::from(
             r#"{"type":"Hello","protocol_version":"1.0","capabilities":[]}"#.as_bytes(),
         );
-        buf.extend_from_slice(b"\n");
+        buffer.extend_from_slice(b"\n");
 
-        let result = codec.decode(&mut buf).unwrap();
+        let result = codec.decode(&mut buffer).unwrap();
         assert!(result.is_some());
 
         match result.unwrap() {
@@ -150,43 +153,43 @@ mod tests {
             _ => panic!("Wrong message type"),
         }
 
-        assert!(buf.is_empty());
+        assert!(buffer.is_empty());
     }
 
     #[test]
     fn test_decode_partial_message() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from(r#"{"type":"Hello","protocol_version":"1.0""#.as_bytes());
+        let mut buffer = BytesMut::from(r#"{"type":"Hello","protocol_version":"1.0""#.as_bytes());
 
-        let result = codec.decode(&mut buf).unwrap();
+        let result = codec.decode(&mut buffer).unwrap();
         assert!(result.is_none());
 
-        buf.extend_from_slice(r#","capabilities":[]}"#.as_bytes());
-        buf.extend_from_slice(b"\n");
+        buffer.extend_from_slice(r#","capabilities":[]}"#.as_bytes());
+        buffer.extend_from_slice(b"\n");
 
-        let result = codec.decode(&mut buf).unwrap();
+        let result = codec.decode(&mut buffer).unwrap();
         assert!(result.is_some());
     }
 
     #[test]
     fn test_decode_multiple_messages() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from(
+        let mut buffer = BytesMut::from(
             r#"{"type":"Ping","id":"1"}
 {"type":"Ping","id":"2"}
 "#
             .as_bytes(),
         );
 
-        let msg1 = codec.decode(&mut buf).unwrap().unwrap();
-        let msg2 = codec.decode(&mut buf).unwrap().unwrap();
+        let first = codec.decode(&mut buffer).unwrap().unwrap();
+        let second = codec.decode(&mut buffer).unwrap().unwrap();
 
-        match msg1 {
+        match first {
             InboundMessage::Ping { id } => assert_eq!(id, "1"),
             _ => panic!("Wrong message type"),
         }
 
-        match msg2 {
+        match second {
             InboundMessage::Ping { id } => assert_eq!(id, "2"),
             _ => panic!("Wrong message type"),
         }
@@ -195,52 +198,52 @@ mod tests {
     #[test]
     fn test_decode_many_messages_sequentially() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::new();
+        let mut buffer = BytesMut::new();
 
-        for i in 0..100 {
-            buf.extend_from_slice(format!(r#"{{"type":"Ping","id":"{}"}}"#, i).as_bytes());
-            buf.extend_from_slice(b"\n");
+        for index in 0..100 {
+            buffer.extend_from_slice(format!(r#"{{"type":"Ping","id":"{}"}}"#, index).as_bytes());
+            buffer.extend_from_slice(b"\n");
         }
 
-        for i in 0..100 {
-            let msg = codec.decode(&mut buf).unwrap().unwrap();
-            match msg {
-                InboundMessage::Ping { id } => assert_eq!(id, i.to_string()),
+        for index in 0..100 {
+            let message = codec.decode(&mut buffer).unwrap().unwrap();
+            match message {
+                InboundMessage::Ping { id } => assert_eq!(id, index.to_string()),
                 _ => panic!("Wrong message type"),
             }
         }
 
-        assert!(buf.is_empty());
+        assert!(buffer.is_empty());
     }
 
     #[test]
     fn test_encode_message() {
         let mut codec: NdjsonCodec<OutboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::new();
+        let mut buffer = BytesMut::new();
 
-        let msg = OutboundMessage::Pong {
+        let message = OutboundMessage::Pong {
             id: "test".to_string(),
         };
 
-        codec.encode(msg, &mut buf).unwrap();
+        codec.encode(message, &mut buffer).unwrap();
 
-        let s = String::from_utf8(buf.to_vec()).unwrap();
-        assert!(s.ends_with('\n'));
-        assert!(s.contains(r#""type":"Pong""#));
-        assert!(s.contains(r#""id":"test""#));
+        let text = String::from_utf8(buffer.to_vec()).unwrap();
+        assert!(text.ends_with('\n'));
+        assert!(text.contains(r#""type":"Pong""#));
+        assert!(text.contains(r#""id":"test""#));
     }
 
     #[test]
     fn test_encode_multiple_messages() {
         let mut codec: NdjsonCodec<OutboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::new();
+        let mut buffer = BytesMut::new();
 
         codec
             .encode(
                 OutboundMessage::Pong {
                     id: "1".to_string(),
                 },
-                &mut buf,
+                &mut buffer,
             )
             .unwrap();
         codec
@@ -248,7 +251,7 @@ mod tests {
                 OutboundMessage::Pong {
                     id: "2".to_string(),
                 },
-                &mut buf,
+                &mut buffer,
             )
             .unwrap();
         codec
@@ -256,12 +259,12 @@ mod tests {
                 OutboundMessage::Pong {
                     id: "3".to_string(),
                 },
-                &mut buf,
+                &mut buffer,
             )
             .unwrap();
 
-        let s = String::from_utf8(buf.to_vec()).unwrap();
-        let lines: Vec<&str> = s.lines().collect();
+        let text = String::from_utf8(buffer.to_vec()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 3);
     }
 
@@ -307,43 +310,42 @@ mod tests {
             },
         ];
 
-        for msg in messages {
-            let mut buf = BytesMut::new();
-            assert!(codec.encode(msg, &mut buf).is_ok());
-            assert!(!buf.is_empty());
-            assert!(buf.last() == Some(&b'\n'));
+        for message in messages {
+            let mut buffer = BytesMut::new();
+            assert!(codec.encode(message, &mut buffer).is_ok());
+            assert!(!buffer.is_empty());
+            assert!(buffer.last() == Some(&b'\n'));
         }
     }
 
     #[test]
     fn test_decode_empty_line() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from("\n".as_bytes());
+        let mut buffer = BytesMut::from("\n".as_bytes());
 
-        let result = codec.decode(&mut buf).unwrap();
+        let result = codec.decode(&mut buffer).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_decode_multiple_empty_lines() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from("\n\n\n".as_bytes());
+        let mut buffer = BytesMut::from("\n\n\n".as_bytes());
 
-        assert!(codec.decode(&mut buf).unwrap().is_none());
-        assert!(codec.decode(&mut buf).unwrap().is_none());
-        assert!(codec.decode(&mut buf).unwrap().is_none());
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+        assert!(buffer.is_empty());
     }
 
+    /// A framed reader takes `None` to mean "read more", so a blank line that
+    /// answered `None` left the message after it waiting for bytes that might
+    /// never come.
     #[test]
-    fn test_decode_message_after_empty_lines() {
+    fn an_empty_line_does_not_hold_back_the_message_after_it() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from("\n\n{\"type\":\"Ping\",\"id\":\"1\"}\n".as_bytes());
+        let mut buffer = BytesMut::from("\n\n{\"type\":\"Ping\",\"id\":\"1\"}\n".as_bytes());
 
-        assert!(codec.decode(&mut buf).unwrap().is_none());
-        assert!(codec.decode(&mut buf).unwrap().is_none());
-
-        let msg = codec.decode(&mut buf).unwrap().unwrap();
-        match msg {
+        let message = codec.decode(&mut buffer).unwrap().unwrap();
+        match message {
             InboundMessage::Ping { id } => assert_eq!(id, "1"),
             _ => panic!("Wrong message type"),
         }
@@ -352,9 +354,9 @@ mod tests {
     #[test]
     fn test_decode_invalid_json() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from("not valid json\n".as_bytes());
+        let mut buffer = BytesMut::from("not valid json\n".as_bytes());
 
-        let result = codec.decode(&mut buf);
+        let result = codec.decode(&mut buffer);
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -391,36 +393,36 @@ mod tests {
     #[test]
     fn test_decode_truncated_json() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from("{\"type\":\"Ping\"\n".as_bytes());
+        let mut buffer = BytesMut::from("{\"type\":\"Ping\"\n".as_bytes());
 
-        let result = codec.decode(&mut buf);
+        let result = codec.decode(&mut buffer);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_decode_wrong_type() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from("{\"type\":\"InvalidType\",\"foo\":\"bar\"}\n".as_bytes());
+        let mut buffer = BytesMut::from("{\"type\":\"InvalidType\",\"foo\":\"bar\"}\n".as_bytes());
 
-        let result = codec.decode(&mut buf);
+        let result = codec.decode(&mut buffer);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_decode_missing_required_fields() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from("{\"type\":\"RunStart\"}\n".as_bytes());
+        let mut buffer = BytesMut::from("{\"type\":\"RunStart\"}\n".as_bytes());
 
-        let result = codec.decode(&mut buf);
+        let result = codec.decode(&mut buffer);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_line_too_long() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(10);
-        let mut buf = BytesMut::from("this line is way too long\n".as_bytes());
+        let mut buffer = BytesMut::from("this line is way too long\n".as_bytes());
 
-        let result = codec.decode(&mut buf);
+        let result = codec.decode(&mut buffer);
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -438,19 +440,19 @@ mod tests {
         let json = r#"{"type":"Ping","id":"test"}"#;
         assert!(json.len() < 100);
 
-        let mut buf = BytesMut::from(format!("{}\n", json).as_bytes());
-        let result = codec.decode(&mut buf);
+        let mut buffer = BytesMut::from(format!("{}\n", json).as_bytes());
+        let result = codec.decode(&mut buffer);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_buffer_growing_without_newline() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(50);
-        let mut buf = BytesMut::new();
+        let mut buffer = BytesMut::new();
 
-        buf.extend_from_slice("a".repeat(60).as_bytes());
+        buffer.extend_from_slice("a".repeat(60).as_bytes());
 
-        let result = codec.decode(&mut buf);
+        let result = codec.decode(&mut buffer);
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -466,7 +468,7 @@ mod tests {
     fn test_roundtrip() {
         let mut encoder: NdjsonCodec<OutboundMessage> = NdjsonCodec::new();
         let mut decoder: NdjsonCodec<OutboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::new();
+        let mut buffer = BytesMut::new();
 
         let original = OutboundMessage::RunExit {
             job_id: "test-job".to_string(),
@@ -475,8 +477,8 @@ mod tests {
             duration_ms: 1234,
         };
 
-        encoder.encode(original.clone(), &mut buf).unwrap();
-        let decoded = decoder.decode(&mut buf).unwrap().unwrap();
+        encoder.encode(original.clone(), &mut buffer).unwrap();
+        let decoded = decoder.decode(&mut buffer).unwrap().unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -530,10 +532,10 @@ mod tests {
         for original in messages {
             let mut encoder: NdjsonCodec<OutboundMessage> = NdjsonCodec::new();
             let mut decoder: NdjsonCodec<OutboundMessage> = NdjsonCodec::new();
-            let mut buf = BytesMut::new();
+            let mut buffer = BytesMut::new();
 
-            encoder.encode(original.clone(), &mut buf).unwrap();
-            let decoded = decoder.decode(&mut buf).unwrap().unwrap();
+            encoder.encode(original.clone(), &mut buffer).unwrap();
+            let decoded = decoder.decode(&mut buffer).unwrap().unwrap();
 
             assert_eq!(original, decoded);
         }
@@ -542,10 +544,10 @@ mod tests {
     #[test]
     fn test_decode_unicode_content() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::from(r#"{"type":"Ping","id":"测试🎉"}"#.as_bytes());
-        buf.extend_from_slice(b"\n");
+        let mut buffer = BytesMut::from(r#"{"type":"Ping","id":"测试🎉"}"#.as_bytes());
+        buffer.extend_from_slice(b"\n");
 
-        let result = codec.decode(&mut buf).unwrap().unwrap();
+        let result = codec.decode(&mut buffer).unwrap().unwrap();
         match result {
             InboundMessage::Ping { id } => {
                 assert_eq!(id, "测试🎉");
@@ -557,32 +559,61 @@ mod tests {
     #[test]
     fn test_encode_unicode_content() {
         let mut codec: NdjsonCodec<OutboundMessage> = NdjsonCodec::new();
-        let mut buf = BytesMut::new();
+        let mut buffer = BytesMut::new();
 
-        let msg = OutboundMessage::Pong {
+        let message = OutboundMessage::Pong {
             id: "Привет мир 🌍".to_string(),
         };
 
-        codec.encode(msg, &mut buf).unwrap();
+        codec.encode(message, &mut buffer).unwrap();
 
-        let s = String::from_utf8(buf.to_vec()).unwrap();
-        assert!(s.contains("Привет") || s.contains("\\u"));
+        let text = String::from_utf8(buffer.to_vec()).unwrap();
+        assert!(text.contains("Привет") || text.contains("\\u"));
+    }
+
+    #[test]
+    fn a_partial_line_is_scanned_once() {
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
+        let mut buffer = BytesMut::from(r#"{"type":"Ping","#.as_bytes());
+
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+        assert_eq!(codec.scanned, buffer.len());
+
+        buffer.extend_from_slice(br#""id":"1"}"#);
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+        assert_eq!(codec.scanned, buffer.len());
+
+        buffer.extend_from_slice(b"\n");
+        assert!(codec.decode(&mut buffer).unwrap().is_some());
+        assert_eq!(codec.scanned, 0);
+    }
+
+    #[test]
+    fn a_buffer_emptied_between_reads_is_scanned_from_its_start() {
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
+        let mut buffer = BytesMut::from("partial".as_bytes());
+        assert!(codec.decode(&mut buffer).unwrap().is_none());
+
+        let mut fresh = BytesMut::from("{\"type\":\"Ping\",\"id\":\"1\"}\n".as_bytes());
+
+        assert!(codec.decode(&mut BytesMut::new()).unwrap().is_none());
+        assert!(codec.decode(&mut fresh).unwrap().is_some());
     }
 
     #[test]
     fn test_codec_clone() {
-        let codec1: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(1000);
-        let codec2 = codec1.clone();
+        let first: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(1000);
+        let second = first.clone();
 
-        assert_eq!(codec1.max_length, codec2.max_length);
+        assert_eq!(first.max_length, second.max_length);
     }
 
     #[test]
     fn test_codec_default() {
-        let codec1: NdjsonCodec<InboundMessage> = NdjsonCodec::default();
-        let codec2: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
+        let first: NdjsonCodec<InboundMessage> = NdjsonCodec::default();
+        let second: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
 
-        assert_eq!(codec1.max_length, codec2.max_length);
+        assert_eq!(first.max_length, second.max_length);
     }
 
     #[test]
@@ -594,9 +625,9 @@ mod tests {
             r#"{{"type":"RunStdin","job_id":"j1","data":"{}"}}"#,
             large_data
         );
-        let mut buf = BytesMut::from(format!("{}\n", json).as_bytes());
+        let mut buffer = BytesMut::from(format!("{}\n", json).as_bytes());
 
-        let result = codec.decode(&mut buf);
+        let result = codec.decode(&mut buffer);
         assert!(result.is_ok());
 
         match result.unwrap().unwrap() {
@@ -611,19 +642,19 @@ mod tests {
     fn test_incremental_decode() {
         let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
         let full_message = r#"{"type":"Ping","id":"test123"}"#;
-        let mut buf = BytesMut::new();
+        let mut buffer = BytesMut::new();
 
-        for (i, ch) in full_message.bytes().enumerate() {
-            buf.extend_from_slice(&[ch]);
+        for (index, byte) in full_message.bytes().enumerate() {
+            buffer.extend_from_slice(&[byte]);
 
-            if i < full_message.len() - 1 {
-                assert!(codec.decode(&mut buf).unwrap().is_none());
+            if index < full_message.len() - 1 {
+                assert!(codec.decode(&mut buffer).unwrap().is_none());
             }
         }
 
-        buf.extend_from_slice(b"\n");
+        buffer.extend_from_slice(b"\n");
 
-        let result = codec.decode(&mut buf).unwrap().unwrap();
+        let result = codec.decode(&mut buffer).unwrap().unwrap();
         match result {
             InboundMessage::Ping { id } => assert_eq!(id, "test123"),
             _ => panic!("Wrong message type"),
