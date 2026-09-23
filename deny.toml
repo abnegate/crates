@@ -23,13 +23,10 @@ exceptions = [
     { crate = "cssparser", allow = ["MPL-2.0"] },
     { crate = "cssparser-macros", allow = ["MPL-2.0"] },
     { crate = "dtoa-short", allow = ["MPL-2.0"] },
-    { crate = "libfuzzer-sys", allow = ["MIT", "Apache-2.0", "NCSA"] },
     { crate = "option-ext", allow = ["MPL-2.0"] },
     { crate = "quoted_printable", allow = ["0BSD"] },
     { crate = "selectors", allow = ["MPL-2.0"] },
     { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
-    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
-    { crate = "xxhash-rust", allow = ["BSL-1.0"] },
 ]
 
 [[licenses.clarify]]
