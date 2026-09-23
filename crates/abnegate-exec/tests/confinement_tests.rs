@@ -17,6 +17,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -192,10 +193,10 @@ fn exit_code(messages: &[OutboundMessage]) -> Option<i32> {
 
 fn seatbelt_profile(confinement: &Confinement) -> String {
     let invocation = confinement.invocation(Some(Backend::Seatbelt)).unwrap();
-    assert_eq!(invocation.program, PathBuf::from("/usr/bin/sandbox-exec"));
-    assert_eq!(invocation.arguments[0], "-p");
-    assert_eq!(invocation.arguments[2], "--");
-    invocation.arguments[1].clone()
+    assert_eq!(invocation.program(), Path::new("/usr/bin/sandbox-exec"));
+    assert_eq!(invocation.arguments()[0], "-p");
+    assert_eq!(invocation.arguments()[2], "--");
+    invocation.arguments()[1].clone()
 }
 
 #[test]
@@ -365,23 +366,21 @@ fn test_confinement_rejects_a_relative_root() {
 
 fn bubblewrap_invocation(confinement: &Confinement) -> Invocation {
     let invocation = confinement.invocation(Some(Backend::Bubblewrap)).unwrap();
-    assert_eq!(invocation.program, PathBuf::from("/usr/bin/bwrap"));
+    assert_eq!(invocation.program(), Path::new("/usr/bin/bwrap"));
     invocation
 }
 
 fn bubblewrap_arguments(confinement: &Confinement) -> Vec<String> {
-    bubblewrap_invocation(confinement).arguments
+    bubblewrap_invocation(confinement).arguments().to_vec()
 }
 
-/// The environment bubblewrap sets for the command: it clears its own, then
-/// applies each `--setenv NAME VALUE` read from the descriptor.
+/// The environment bubblewrap sets for the command: its arguments open with
+/// `--clearenv`, then it applies each `--setenv NAME VALUE` read from the
+/// descriptor.
 fn bubblewrap_command_environment(invocation: &Invocation) -> BTreeMap<String, String> {
-    let (clear, pairs) = invocation
-        .descriptor_arguments
-        .split_first()
-        .expect("bubblewrap reads the environment from its descriptor");
-    assert_eq!(clear, "--clearenv");
-    pairs
+    assert_eq!(invocation.arguments()[0], "--clearenv");
+    invocation
+        .descriptor_arguments()
         .chunks(3)
         .map(|option| {
             assert_eq!(option[0], "--setenv", "{option:?}");
@@ -402,8 +401,9 @@ fn test_bubblewrap_arguments_unshare_everything() {
     let arguments = bubblewrap_arguments(&confinement(&workspace.root, vec![]));
 
     assert_eq!(
-        arguments[..10],
+        arguments[..11],
         [
+            "--clearenv",
             "--die-with-parent",
             "--new-session",
             "--unshare-all",
@@ -457,7 +457,7 @@ fn test_bubblewrap_invocation_sets_the_environment_and_working_directory() {
         environment.get("LC_ALL").map(String::as_str),
         Some("C.UTF-8")
     );
-    assert!(window(&invocation.arguments, &["--chdir", &root]));
+    assert!(window(invocation.arguments(), &["--chdir", &root]));
 }
 
 #[test]
@@ -473,13 +473,13 @@ fn test_bubblewrap_arguments_never_carry_an_environment_value() {
 
     assert!(
         invocation
-            .arguments
+            .arguments()
             .iter()
             .all(|argument| !argument.contains(SECRET)),
         "an argument vector is readable by every user on the host: {:?}",
-        invocation.arguments
+        invocation.arguments()
     );
-    assert!(!invocation.arguments.contains(&"--setenv".to_string()));
+    assert!(!invocation.arguments().contains(&"--setenv".to_string()));
     assert_eq!(
         bubblewrap_command_environment(&invocation)
             .get("APP_MASTER_KEY")
@@ -503,9 +503,9 @@ fn test_bubblewrap_itself_starts_without_any_caller_controlled_variable() {
     let invocation = bubblewrap_invocation(&confinement);
 
     assert!(
-        invocation.environment.is_empty(),
+        invocation.environment().is_empty(),
         "{:?}",
-        invocation.environment.keys()
+        invocation.environment().keys()
     );
     assert!(bubblewrap_command_environment(&invocation).contains_key("LD_PRELOAD"));
 }
@@ -729,6 +729,95 @@ async fn test_confined_command_cannot_read_outside_its_roots() {
     assert!(
         !stdout(&messages).contains(SECRET.trim()),
         "the sandbox leaked a file outside its read roots"
+    );
+}
+
+/// The names the sandbox sets for every command itself.
+const SANDBOX_OWN: [&str; 7] = ["HOME", "TMPDIR", "TMP", "TEMP", "PATH", "LANG", "LC_ALL"];
+
+/// A caller outside this crate runs the host invocation through its public
+/// spawn, and the command sees what it asked for and nothing of the caller's.
+#[tokio::test]
+async fn test_the_public_spawn_hands_the_command_its_environment_and_none_of_the_callers() {
+    if !sandbox(ConfinementMode::SingleCommand).await {
+        return;
+    }
+    let workspace = workspace();
+    let invocation = Confinement::new("/usr/bin/env", vec![], &workspace.root)
+        .with_roots(&request(&workspace.root))
+        .with_environment(HashMap::from([(
+            "REQUESTED".to_string(),
+            "value".to_string(),
+        )]))
+        .host_invocation()
+        .unwrap();
+
+    let output = invocation
+        .spawn(|command| {
+            command
+                .current_dir(&workspace.root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+        })
+        .unwrap()
+        .wait_with_output()
+        .await
+        .unwrap();
+    let environment = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = environment.lines().collect();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(lines.contains(&"REQUESTED=value"), "{environment}");
+    let caller = std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
+    for (name, value) in caller {
+        assert!(
+            SANDBOX_OWN.contains(&name.as_str())
+                || !lines.contains(&format!("{name}={value}").as_str()),
+            "the caller's {name} reached the confined command"
+        );
+    }
+}
+
+/// Bubblewrap's arguments open with `--clearenv`, so a caller that runs them
+/// without the descriptor, and without clearing its own environment, still
+/// hands the command none of it.
+#[tokio::test]
+async fn test_a_caller_that_skips_the_descriptor_hands_bubblewrap_no_environment() {
+    const LEAKED: &str = "ABNEGATE_EXEC_CALLER_SECRET";
+    if HOST_BACKEND != Some(Backend::Bubblewrap) || !sandbox(ConfinementMode::SingleCommand).await {
+        return;
+    }
+    let workspace = workspace();
+    let invocation = Confinement::new("/usr/bin/env", vec![], &workspace.root)
+        .with_roots(&request(&workspace.root))
+        .host_invocation()
+        .unwrap();
+
+    let output = tokio::process::Command::new(invocation.program())
+        .args(invocation.arguments())
+        .env(LEAKED, "hunter2")
+        .current_dir(&workspace.root)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    let environment = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !environment.contains(LEAKED),
+        "the caller's environment reached the confined command: {environment}"
     );
 }
 

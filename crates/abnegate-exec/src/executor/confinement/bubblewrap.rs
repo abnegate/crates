@@ -7,8 +7,12 @@ use super::resolved::Resolved;
 const READ_TREES: [&str; 4] = ["/usr", "/bin", "/lib", "/lib64"];
 const LOADER_FILES: [&str; 3] = ["/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/localtime"];
 
+/// The options that confine the command, opening with `--clearenv`, so a
+/// caller that runs them without the descriptor still hands the command none
+/// of its own environment.
 pub(super) fn arguments(resolved: &Resolved) -> Result<Vec<String>, ConfinementError> {
     let mut arguments: Vec<String> = [
+        "--clearenv",
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
@@ -60,11 +64,10 @@ pub(super) fn arguments(resolved: &Resolved) -> Result<Vec<String>, ConfinementE
 
 /// The options that hand the command its environment. They carry every
 /// value, so they reach bubblewrap through a descriptor rather than its argv,
-/// and replace an environment bubblewrap is started without.
+/// read after the `--clearenv` that opens [`arguments`].
 pub(super) fn environment_arguments(environment: &BTreeMap<String, String>) -> Vec<String> {
-    let mut arguments = vec!["--clearenv".to_string()];
-    for (name, value) in environment {
-        arguments.extend(["--setenv".to_string(), name.clone(), value.clone()]);
-    }
-    arguments
+    environment
+        .iter()
+        .flat_map(|(name, value)| ["--setenv".to_string(), name.clone(), value.clone()])
+        .collect()
 }

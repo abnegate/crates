@@ -149,23 +149,25 @@ impl Confinement {
         let backend = backend.ok_or(ConfinementError::UnsupportedPlatform)?;
         backend.require(self.mode)?;
         let resolved = self.resolve()?;
+        let program = PathBuf::from(backend.executable());
         match backend {
-            Backend::Seatbelt => Ok(Invocation {
-                program: PathBuf::from(backend.executable()),
-                arguments: seatbelt::arguments(&resolved)?,
-                environment: resolved.environment,
-                descriptor_arguments: Vec::new(),
-            }),
-            Backend::Bubblewrap => Ok(Invocation {
-                program: PathBuf::from(backend.executable()),
-                arguments: bubblewrap::arguments(&resolved)?,
-                environment: BTreeMap::new(),
-                descriptor_arguments: bubblewrap::environment_arguments(&resolved.environment),
-            }),
+            Backend::Seatbelt => Ok(Invocation::new(
+                program,
+                seatbelt::arguments(&resolved)?,
+                resolved.environment,
+                Vec::new(),
+            )),
+            Backend::Bubblewrap => Ok(Invocation::new(
+                program,
+                bubblewrap::arguments(&resolved)?,
+                BTreeMap::new(),
+                bubblewrap::environment_arguments(&resolved.environment),
+            )),
         }
     }
 
-    /// Translate into an invocation for the backend of the running host.
+    /// Translate into an invocation for the backend of the running host, to
+    /// run with [`Invocation::spawn`].
     pub fn host_invocation(&self) -> Result<Invocation, ConfinementError> {
         self.invocation(HOST_BACKEND)
     }
