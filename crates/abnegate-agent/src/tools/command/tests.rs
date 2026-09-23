@@ -4,18 +4,18 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-use super::run::RunCommandParams;
-use super::shell::{RunShellParams, total_sleep};
+use super::run::RunCommandParameters;
+use super::shell::{RunShellParameters, total_sleep};
 use super::*;
 use crate::test_support::{PROXY_TEST_CHILD, captured_logs};
-use crate::tools::{DEFAULT_APPLICATION, MAX_TOOL_MESSAGE_CHARS, Session, Tool};
+use crate::tools::{DEFAULT_APPLICATION, MAX_TOOL_MESSAGE_CHARACTERS, Session, Tool};
 
 fn create_test_context() -> ToolContext {
     ToolContext {
-        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+        working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
         env: HashMap::new(),
         max_file_size: 1024 * 1024,
-        command_timeout: 30,
+        command_timeout: std::time::Duration::from_secs(30),
         unrestricted: false,
         session: Session::Detached,
         application: DEFAULT_APPLICATION.to_string(),
@@ -223,7 +223,7 @@ async fn an_allowed_name_on_a_path_is_not_an_allowed_program() {
     std::fs::set_permissions(&impostor, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let context = ToolContext {
-        cwd: directory.path().canonicalize().unwrap(),
+        working_directory: directory.path().canonicalize().unwrap(),
         env: HashMap::from([(
             "PATH".to_string(),
             std::env::var("PATH").unwrap_or_default(),
@@ -422,7 +422,7 @@ fn test_run_command_tool_definition() {
 
 #[test]
 fn run_command_params_read_the_reason() {
-    let params: RunCommandParams = serde_json::from_value(json!({
+    let parameters: RunCommandParameters = serde_json::from_value(json!({
         "command": "cargo",
         "args": ["test"],
         "reason": "Check the suite still passes before committing."
@@ -430,7 +430,7 @@ fn run_command_params_read_the_reason() {
     .unwrap();
 
     assert_eq!(
-        params.reason.as_deref(),
+        parameters.reason.as_deref(),
         Some("Check the suite still passes before committing.")
     );
 }
@@ -469,14 +469,14 @@ async fn run_command_without_a_reason_still_runs() {
 
 #[test]
 fn run_shell_params_read_the_reason() {
-    let params: RunShellParams = serde_json::from_value(json!({
+    let parameters: RunShellParameters = serde_json::from_value(json!({
         "command": "cargo test 2>&1 | tail -40",
         "reason": "Check the suite still passes before committing."
     }))
     .unwrap();
 
     assert_eq!(
-        params.reason.as_deref(),
+        parameters.reason.as_deref(),
         Some("Check the suite still passes before committing.")
     );
 }
@@ -595,7 +595,7 @@ async fn a_shell_call_may_not_block_on_sleep_past_the_cap() {
     let message = error.to_string();
     assert!(message.contains("300"), "{message}");
     assert!(
-        message.contains(&MAX_SLEEP_SECS.to_string()),
+        message.contains(&MAX_SLEEP_SECONDS.to_string()),
         "the refusal names the cap it enforces: {message}"
     );
 }
@@ -627,7 +627,7 @@ fn the_shell_schema_states_the_sleep_cap() {
         .to_string();
 
     assert!(
-        described.contains(&MAX_SLEEP_SECS.to_string()),
+        described.contains(&MAX_SLEEP_SECONDS.to_string()),
         "{described}"
     );
     assert!(described.contains("sleep"), "{described}");
@@ -683,7 +683,7 @@ fn huge_output_context(body: &str) -> (tempfile::TempDir, ToolContext) {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("huge.txt"), body).unwrap();
     let mut context = shell_test_context();
-    context.cwd = directory.path().to_path_buf();
+    context.working_directory = directory.path().to_path_buf();
     (directory, context)
 }
 
@@ -691,7 +691,7 @@ fn huge_output_context(body: &str) -> (tempfile::TempDir, ToolContext) {
 async fn run_shell_output_keeps_its_tail_through_to_message() {
     let body = format!(
         "HEAD_MARKER{}TAIL_MARKER",
-        "x".repeat(MAX_SHELL_OUTPUT_CHARS * 4)
+        "x".repeat(MAX_SHELL_OUTPUT_CHARACTERS * 4)
     );
     let (_dir, context) = huge_output_context(&body);
 
@@ -707,7 +707,7 @@ async fn run_shell_output_keeps_its_tail_through_to_message() {
         "the transcript cut threw away the end of the output: {message}"
     );
     assert!(
-        message.chars().count() <= MAX_TOOL_MESSAGE_CHARS,
+        message.chars().count() <= MAX_TOOL_MESSAGE_CHARACTERS,
         "{}",
         message.chars().count()
     );
@@ -715,30 +715,37 @@ async fn run_shell_output_keeps_its_tail_through_to_message() {
 
 #[test]
 fn max_output_chars_clamps_into_range() {
-    assert_eq!(clamp_output_chars(None), MAX_SHELL_OUTPUT_CHARS);
-    assert_eq!(clamp_output_chars(Some(2_000)), 2_000);
+    assert_eq!(clamp_output_characters(None), MAX_SHELL_OUTPUT_CHARACTERS);
+    assert_eq!(clamp_output_characters(Some(2_000)), 2_000);
     assert_eq!(
-        clamp_output_chars(Some(MAX_SHELL_OUTPUT_CHARS as u64 * 100)),
-        MAX_SHELL_OUTPUT_CHARS,
+        clamp_output_characters(Some(MAX_SHELL_OUTPUT_CHARACTERS as u64 * 100)),
+        MAX_SHELL_OUTPUT_CHARACTERS,
         "the knob must never raise the ceiling"
     );
-    assert_eq!(clamp_output_chars(Some(u64::MAX)), MAX_SHELL_OUTPUT_CHARS);
-    assert_eq!(clamp_output_chars(Some(0)), MIN_SHELL_OUTPUT_CHARS);
+    assert_eq!(
+        clamp_output_characters(Some(u64::MAX)),
+        MAX_SHELL_OUTPUT_CHARACTERS
+    );
+    assert_eq!(
+        clamp_output_characters(Some(0)),
+        MIN_SHELL_OUTPUT_CHARACTERS
+    );
 }
 
 #[test]
 fn params_read_an_optional_max_output_chars() {
-    let command: RunCommandParams =
+    let command: RunCommandParameters =
         serde_json::from_value(json!({"command": "cargo", "max_output_chars": 2_000})).unwrap();
-    assert_eq!(command.max_output_chars, Some(2_000));
+    assert_eq!(command.max_output_characters, Some(2_000));
 
-    let shell: RunShellParams =
+    let shell: RunShellParameters =
         serde_json::from_value(json!({"command": "cargo test", "max_output_chars": 2_000}))
             .unwrap();
-    assert_eq!(shell.max_output_chars, Some(2_000));
+    assert_eq!(shell.max_output_characters, Some(2_000));
 
-    let without: RunShellParams = serde_json::from_value(json!({"command": "cargo test"})).unwrap();
-    assert_eq!(without.max_output_chars, None);
+    let without: RunShellParameters =
+        serde_json::from_value(json!({"command": "cargo test"})).unwrap();
+    assert_eq!(without.max_output_characters, None);
 }
 
 /// The knob clamps every number it is given, but only after serde has
@@ -752,24 +759,30 @@ fn the_schema_refuses_the_negative_max_output_chars_the_parser_cannot_read() {
         RunCommandTool.parameters_schema(),
         RunShellTool.parameters_schema(),
     ] {
-        assert_eq!(schema["properties"][MAX_OUTPUT_PARAM]["minimum"], json!(0));
+        assert_eq!(
+            schema["properties"][MAX_OUTPUT_PARAMETER]["minimum"],
+            json!(0)
+        );
     }
 
     assert!(
-        serde_json::from_value::<RunCommandParams>(
+        serde_json::from_value::<RunCommandParameters>(
             json!({"command": "cargo", "max_output_chars": -1})
         )
         .is_err(),
         "a negative would have to clamp rather than fail, so the schema must exclude it"
     );
     assert!(
-        serde_json::from_value::<RunShellParams>(
+        serde_json::from_value::<RunShellParameters>(
             json!({"command": "cargo test", "max_output_chars": -1})
         )
         .is_err(),
         "a negative would have to clamp rather than fail, so the schema must exclude it"
     );
-    assert_eq!(clamp_output_chars(Some(0)), MIN_SHELL_OUTPUT_CHARS);
+    assert_eq!(
+        clamp_output_characters(Some(0)),
+        MIN_SHELL_OUTPUT_CHARACTERS
+    );
 }
 
 #[test]
@@ -778,13 +791,16 @@ fn shell_schemas_offer_max_output_chars_without_requiring_it() {
         RunCommandTool.parameters_schema(),
         RunShellTool.parameters_schema(),
     ] {
-        assert_eq!(schema["properties"][MAX_OUTPUT_PARAM]["type"], "integer");
+        assert_eq!(
+            schema["properties"][MAX_OUTPUT_PARAMETER]["type"],
+            "integer"
+        );
         assert!(
             !schema["required"]
                 .as_array()
                 .expect("required array")
                 .iter()
-                .any(|name| name.as_str() == Some(MAX_OUTPUT_PARAM))
+                .any(|name| name.as_str() == Some(MAX_OUTPUT_PARAMETER))
         );
     }
 }
@@ -794,7 +810,7 @@ async fn run_shell_spends_only_the_requested_max_output_chars() {
     const REQUESTED: usize = 2_000;
     let body = format!(
         "HEAD_MARKER{}TAIL_MARKER",
-        "x".repeat(MAX_SHELL_OUTPUT_CHARS * 4)
+        "x".repeat(MAX_SHELL_OUTPUT_CHARACTERS * 4)
     );
     let (_dir, context) = huge_output_context(&body);
 
@@ -818,7 +834,7 @@ async fn run_shell_spends_only_the_requested_max_output_chars() {
 async fn run_shell_cannot_raise_the_cap_above_the_constant() {
     let body = format!(
         "HEAD_MARKER{}TAIL_MARKER",
-        "x".repeat(MAX_SHELL_OUTPUT_CHARS * 4)
+        "x".repeat(MAX_SHELL_OUTPUT_CHARACTERS * 4)
     );
     let (_dir, context) = huge_output_context(&body);
 
@@ -832,8 +848,8 @@ async fn run_shell_cannot_raise_the_cap_above_the_constant() {
         .to_message();
 
     let chars = message.chars().count();
-    assert!(chars <= MAX_SHELL_OUTPUT_CHARS, "{chars}");
-    assert!(chars > MAX_SHELL_OUTPUT_CHARS - 100, "{chars}");
+    assert!(chars <= MAX_SHELL_OUTPUT_CHARACTERS, "{chars}");
+    assert!(chars > MAX_SHELL_OUTPUT_CHARACTERS - 100, "{chars}");
     assert!(message.contains("TAIL_MARKER"), "{message}");
 }
 
@@ -845,7 +861,7 @@ async fn run_command_honours_a_smaller_max_output_chars() {
     std::fs::write(directory.path().join("huge.txt"), &body).unwrap();
 
     let mut context = create_test_context();
-    context.cwd = directory.path().to_path_buf();
+    context.working_directory = directory.path().to_path_buf();
 
     let message = RunCommandTool
         .execute(
@@ -873,7 +889,7 @@ async fn a_failed_command_pays_for_the_error_prefix_out_of_the_requested_cap() {
     std::fs::write(directory.path().join("huge.txt"), &body).unwrap();
 
     let mut context = create_test_context();
-    context.cwd = directory.path().to_path_buf();
+    context.working_directory = directory.path().to_path_buf();
 
     let result = RunCommandTool
         .execute(
@@ -912,7 +928,7 @@ async fn run_command_trims_huge_stdout() {
     std::fs::write(directory.path().join("huge.txt"), &body).unwrap();
 
     let mut context = create_test_context();
-    context.cwd = directory.path().to_path_buf();
+    context.working_directory = directory.path().to_path_buf();
 
     let result = RunCommandTool
         .execute(
@@ -927,7 +943,7 @@ async fn run_command_trims_huge_stdout() {
     assert!(output.contains("HEAD_MARKER"), "{output}");
     assert!(output.contains("TAIL_MARKER"), "{output}");
     assert!(output.contains("characters trimmed"), "{output}");
-    assert!(output.chars().count() <= MAX_SHELL_OUTPUT_CHARS);
+    assert!(output.chars().count() <= MAX_SHELL_OUTPUT_CHARACTERS);
     assert!(output.chars().count() < body.chars().count());
 }
 
@@ -946,7 +962,7 @@ async fn run_command_trims_huge_error_payload() {
     .unwrap();
 
     let mut context = create_test_context();
-    context.cwd = directory.path().to_path_buf();
+    context.working_directory = directory.path().to_path_buf();
 
     let result = RunCommandTool
         .execute(
@@ -959,7 +975,7 @@ async fn run_command_trims_huge_error_payload() {
     assert!(!result.success);
     let error = result.error.unwrap();
     assert!(error.contains("characters trimmed"), "{error}");
-    assert!(error.chars().count() <= MAX_SHELL_OUTPUT_CHARS);
+    assert!(error.chars().count() <= MAX_SHELL_OUTPUT_CHARACTERS);
     assert!(
         error.contains("HEAD_LEFT") || error.contains("Command exited"),
         "{error}"
@@ -974,7 +990,7 @@ fn background_context() -> (tempfile::TempDir, ToolContext, Session) {
     let directory = tempfile::tempdir().expect("a temporary working directory");
     let session = Session::Chat(uuid::Uuid::new_v4());
     let mut context = shell_test_context();
-    context.cwd = directory.path().to_path_buf();
+    context.working_directory = directory.path().to_path_buf();
     context.session = session;
     (directory, context, session)
 }
@@ -1032,7 +1048,7 @@ async fn the_sleep_cap_does_not_tell_a_backgrounded_call_to_background_itself() 
     let error = RunShellTool
         .execute(
             json!({
-                "command": format!("sleep {}", MAX_SLEEP_SECS + 60),
+                "command": format!("sleep {}", MAX_SLEEP_SECONDS + 60),
                 "background": true,
                 "reason": "Wait for the deploy."
             }),
@@ -1043,11 +1059,11 @@ async fn the_sleep_cap_does_not_tell_a_backgrounded_call_to_background_itself() 
 
     let message = error.to_string();
     assert!(
-        !message.contains(&format!("{BACKGROUND_PARAM}: true")),
+        !message.contains(&format!("{BACKGROUND_PARAMETER}: true")),
         "the call had already done that: {message}"
     );
     assert!(
-        message.contains(WAIT_FOR) && message.contains(&MAX_SLEEP_SECS.to_string()),
+        message.contains(WAIT_FOR) && message.contains(&MAX_SLEEP_SECONDS.to_string()),
         "the refusal still says what the cap is and what to do instead: {message}"
     );
     assert!(
@@ -1143,7 +1159,10 @@ async fn a_backgrounded_shell_call_may_not_block_on_sleep_past_the_cap() {
 
     let message = error.to_string();
     assert!(message.contains("300"), "{message}");
-    assert!(message.contains(&MAX_SLEEP_SECS.to_string()), "{message}");
+    assert!(
+        message.contains(&MAX_SLEEP_SECONDS.to_string()),
+        "{message}"
+    );
     assert!(
         !logs(directory.path()).exists(),
         "the refusal came before anything was spawned"
@@ -1225,7 +1244,7 @@ async fn a_directory_outside_the_tree_moves_the_child_and_not_the_log() {
     let (_root, checkout, elsewhere) = neighbours();
     let session = Session::Chat(uuid::Uuid::new_v4());
     let mut context = shell_test_context();
-    context.cwd = checkout.clone();
+    context.working_directory = checkout.clone();
     context.session = session;
     let call = json!({
         "command": "pwd",
@@ -1280,7 +1299,7 @@ async fn a_directory_outside_the_tree_moves_the_child_and_not_the_log() {
 async fn a_directory_outside_the_tree_is_refused_the_same_way_in_both_modes() {
     let (_root, checkout, elsewhere) = neighbours();
     let mut context = create_test_context();
-    context.cwd = checkout.clone();
+    context.working_directory = checkout.clone();
     context.session = Session::Task(uuid::Uuid::new_v4());
     context.env.insert(
         "PATH".to_string(),
@@ -1323,7 +1342,7 @@ async fn a_directory_outside_the_tree_is_refused_the_same_way_in_both_modes() {
 async fn a_detached_context_cannot_start_a_background_job() {
     let directory = tempfile::tempdir().expect("a temporary working directory");
     let mut context = shell_test_context();
-    context.cwd = directory.path().to_path_buf();
+    context.working_directory = directory.path().to_path_buf();
 
     let shell = RunShellTool
         .execute(json!({"command": "true", "background": true}), &context)
@@ -1345,17 +1364,17 @@ fn both_shell_schemas_offer_background_and_describe_it_the_same_way() {
     let shell = RunShellTool.parameters_schema();
     let command = RunCommandTool.parameters_schema();
 
-    let described = shell["properties"][BACKGROUND_PARAM]["description"]
+    let described = shell["properties"][BACKGROUND_PARAMETER]["description"]
         .as_str()
         .expect("run_shell describes background");
     assert_eq!(
-        command["properties"][BACKGROUND_PARAM]["description"]
+        command["properties"][BACKGROUND_PARAMETER]["description"]
             .as_str()
             .expect("run_command describes background"),
         described
     );
     assert_eq!(
-        shell["properties"][BACKGROUND_PARAM]["type"],
+        shell["properties"][BACKGROUND_PARAMETER]["type"],
         json!("boolean")
     );
     assert_eq!(
@@ -1369,7 +1388,7 @@ fn both_shell_schemas_offer_background_and_describe_it_the_same_way() {
             !schema["required"]
                 .as_array()
                 .unwrap()
-                .contains(&json!(BACKGROUND_PARAM)),
+                .contains(&json!(BACKGROUND_PARAMETER)),
             "background is optional"
         );
     }
@@ -1377,8 +1396,8 @@ fn both_shell_schemas_offer_background_and_describe_it_the_same_way() {
 
 #[test]
 fn params_default_to_the_foreground() {
-    let shell: RunShellParams = serde_json::from_value(json!({"command": "true"})).unwrap();
-    let command: RunCommandParams = serde_json::from_value(json!({"command": "true"})).unwrap();
+    let shell: RunShellParameters = serde_json::from_value(json!({"command": "true"})).unwrap();
+    let command: RunCommandParameters = serde_json::from_value(json!({"command": "true"})).unwrap();
 
     assert!(!shell.background);
     assert!(!command.background);
@@ -1393,7 +1412,7 @@ fn a_long_wait_is_pointed_at_a_background_job_rather_than_another_call() {
         .unwrap()
         .to_string();
 
-    assert!(described.contains(BACKGROUND_PARAM), "{described}");
+    assert!(described.contains(BACKGROUND_PARAMETER), "{described}");
     assert!(described.contains(WAIT_FOR), "{described}");
     assert!(!described.contains("later call"), "{described}");
 }
@@ -1409,7 +1428,7 @@ async fn the_sleep_refusal_points_at_a_background_job_rather_than_another_call()
         .expect_err("a sleep past the cap is refused");
 
     let message = error.to_string();
-    assert!(message.contains(BACKGROUND_PARAM), "{message}");
+    assert!(message.contains(BACKGROUND_PARAMETER), "{message}");
     assert!(message.contains(WAIT_FOR), "{message}");
     assert!(!message.contains("later call"), "{message}");
 }

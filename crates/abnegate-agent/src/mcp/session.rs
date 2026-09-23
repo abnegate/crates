@@ -54,12 +54,12 @@ impl McpSession {
         let mut command = Command::new(&spec.command);
         command.kill_on_drop(true);
         let transport = TokioChildProcess::new(command.configure(|process| {
-            process.args(&spec.args);
-            for (key, value) in &spec.env {
+            process.args(&spec.arguments);
+            for (key, value) in &spec.environment {
                 process.env(key, value);
             }
             Proxy::from_env().apply(process);
-            if let Some(cwd) = &spec.cwd {
+            if let Some(cwd) = &spec.working_directory {
                 process.current_dir(cwd);
             }
         }))
@@ -161,20 +161,20 @@ mod tests {
         let spec = McpServerSpec {
             name: "environment".to_string(),
             command: "sh".to_string(),
-            args: vec![
+            arguments: vec![
                 "-c".to_string(),
                 "env > \"$1\"; exec cat > /dev/null".to_string(),
                 "sh".to_string(),
                 path.to_string_lossy().into_owned(),
             ],
-            env: HashMap::from([
+            environment: HashMap::from([
                 ("HTTPS_PROXY".to_string(), "http://wrong:8888".to_string()),
                 ("http_proxy".to_string(), "http://wrong:8888".to_string()),
                 ("NO_PROXY".to_string(), "*".to_string()),
                 ("no_proxy".to_string(), "*".to_string()),
                 (PROXY_URL_ENV.to_string(), "".to_string()),
             ]),
-            cwd: None,
+            working_directory: None,
             disabled: false,
         };
         let result = McpSession::connect_with_timeout(&spec, Duration::from_millis(500)).await;

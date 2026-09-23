@@ -7,10 +7,10 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 use super::list::LIST_FILES_CAP;
-use super::patch::ApplyPatchParams;
-use super::read::{FILE_PAGE_CHARS, page_text};
+use super::patch::ApplyPatchParameters;
+use super::read::{FILE_PAGE_CHARACTERS, page_text};
 use super::search::{SEARCH_MAX_RESULTS, search_directory};
-use super::write::WriteFileParams;
+use super::write::WriteFileParameters;
 use super::{ApplyPatchTool, ListFilesTool, ReadFileTool, SearchCodeTool, WriteFileTool};
 use crate::test_support::captured_logs;
 use crate::tools::{DEFAULT_APPLICATION, Session, Tier, Tool, ToolContext};
@@ -32,10 +32,10 @@ fn create_test_context(directory: &Path) -> ToolContext {
         .canonicalize()
         .unwrap_or_else(|_| directory.to_path_buf());
     ToolContext {
-        cwd,
+        working_directory: cwd,
         env: std::collections::HashMap::new(),
         max_file_size: 1024 * 1024,
-        command_timeout: 30,
+        command_timeout: std::time::Duration::from_secs(30),
         unrestricted: false,
         session: Session::Detached,
         application: DEFAULT_APPLICATION.to_string(),
@@ -103,7 +103,7 @@ fn page_text_caps_and_continues_by_character() {
     assert_eq!(page, "αααα");
     assert_eq!(total, 10);
     assert_eq!(next, Some(4));
-    let (rest, _, next) = page_text(&content, 4, FILE_PAGE_CHARS).unwrap();
+    let (rest, _, next) = page_text(&content, 4, FILE_PAGE_CHARACTERS).unwrap();
     assert_eq!(rest, "α".repeat(6));
     assert_eq!(next, None);
     assert!(page_text(&content, 0, 0).is_err());
@@ -113,7 +113,7 @@ fn page_text_caps_and_continues_by_character() {
 #[tokio::test]
 async fn read_file_pages_large_content_and_continues() {
     let directory = tempdir().unwrap();
-    let total = FILE_PAGE_CHARS + 123;
+    let total = FILE_PAGE_CHARACTERS + 123;
     let content = "α".repeat(total);
     fs::write(directory.path().join("large.txt"), &content).unwrap();
 
@@ -131,15 +131,15 @@ async fn read_file_pages_large_content_and_continues() {
     assert!(result.success);
     let output = result.output.unwrap();
     let (page, footer) = output.rsplit_once('\n').expect("truncation footer");
-    assert_eq!(page.chars().count(), FILE_PAGE_CHARS);
+    assert_eq!(page.chars().count(), FILE_PAGE_CHARACTERS);
     assert_eq!(
         footer,
-        format!("[truncated; total={total} offset=0 next={FILE_PAGE_CHARS}]")
+        format!("[truncated; total={total} offset=0 next={FILE_PAGE_CHARACTERS}]")
     );
 
     let continued = tool
         .execute(
-            serde_json::json!({"path": "large.txt", "offset": FILE_PAGE_CHARS}),
+            serde_json::json!({"path": "large.txt", "offset": FILE_PAGE_CHARACTERS}),
             &context,
         )
         .await
@@ -319,7 +319,7 @@ async fn read_file_accepts_its_own_file_under_a_symlinked_cwd() {
     symlinked(root.path(), "link", &real);
 
     let mut context = create_test_context(root.path());
-    context.cwd = root.path().join("link");
+    context.working_directory = root.path().join("link");
 
     let result = ReadFileTool
         .execute(serde_json::json!({"path": "inside.txt"}), &context)
@@ -516,7 +516,7 @@ fn the_search_walk_does_not_follow_a_symlink_out_of_cwd() {
     fs::write(inside.path().join("own.sh"), "open sesame please\n").unwrap();
     symlinked(inside.path(), "hop", outside.path());
     let context = create_test_context(inside.path());
-    let root = context.cwd.clone();
+    let root = context.working_directory.clone();
 
     let mut results = Vec::new();
     search_directory(
@@ -550,7 +550,7 @@ fn the_search_walk_does_not_read_a_symlink_to_a_file_out_of_cwd() {
     fs::write(inside.path().join("own.rs"), "open sesame please\n").unwrap();
     symlinked(inside.path(), "hop.rs", &secret);
     let context = create_test_context(inside.path());
-    let root = context.cwd.clone();
+    let root = context.working_directory.clone();
 
     let mut results = Vec::new();
     search_directory(
@@ -977,7 +977,7 @@ async fn apply_patch_replace_all_and_hunks() {
 
 #[test]
 fn write_file_params_read_the_reason() {
-    let params: WriteFileParams = serde_json::from_value(serde_json::json!({
+    let parameters: WriteFileParameters = serde_json::from_value(serde_json::json!({
         "path": "src/main.rs",
         "content": "fn main() {}\n",
         "reason": "Create the binary entry point the crate is missing."
@@ -985,7 +985,7 @@ fn write_file_params_read_the_reason() {
     .unwrap();
 
     assert_eq!(
-        params.reason.as_deref(),
+        parameters.reason.as_deref(),
         Some("Create the binary entry point the crate is missing.")
     );
 }
@@ -1036,7 +1036,7 @@ async fn write_file_without_a_reason_still_writes() {
 
 #[test]
 fn apply_patch_params_read_the_reason() {
-    let params: ApplyPatchParams = serde_json::from_value(serde_json::json!({
+    let parameters: ApplyPatchParameters = serde_json::from_value(serde_json::json!({
         "path": "src/main.rs",
         "old_string": "foo",
         "new_string": "bar",
@@ -1045,7 +1045,7 @@ fn apply_patch_params_read_the_reason() {
     .unwrap();
 
     assert_eq!(
-        params.reason.as_deref(),
+        parameters.reason.as_deref(),
         Some("Rename the helper the caller now expects.")
     );
 }
@@ -1219,7 +1219,7 @@ fn beside(outside: &Path) -> PathBuf {
 /// `cwd/keep/leaf.rs` holding `INSIDE`, and the swapper aimed at it.
 #[cfg(unix)]
 fn swapped(context: &ToolContext, outside: &Path, stop: &Arc<AtomicBool>) -> JoinHandle<()> {
-    let keep = context.cwd.join(KEEP);
+    let keep = context.working_directory.join(KEEP);
     fs::create_dir(&keep).expect("a directory inside cwd");
     let entry = keep.join(LEAF);
     fs::write(&entry, INSIDE).expect("a file inside cwd");
@@ -1313,8 +1313,8 @@ async fn search_code_never_reads_an_entry_swapped_out_of_cwd() {
     for _ in 0..ATTEMPTS {
         let mut results = Vec::new();
         let _ = search_directory(
-            &context.cwd,
-            &context.cwd,
+            &context.working_directory,
+            &context.working_directory,
             SECRET,
             true,
             &mut results,

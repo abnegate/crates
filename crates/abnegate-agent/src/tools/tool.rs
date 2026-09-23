@@ -18,7 +18,11 @@ pub trait Tool: Send + Sync {
     /// JSON Schema for the call's arguments.
     fn parameters_schema(&self) -> Value;
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError>;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError>;
 
     /// How long a caller should let this tool run before abandoning it.
     ///

@@ -225,14 +225,14 @@ impl Agent {
                                 (tool_call, result, start.elapsed().as_millis() as u64)
                             }))
                             .await;
-                            for (tool_call, result, duration_ms) in executed {
+                            for (tool_call, result, duration_milliseconds) in executed {
                                 self.record_tool(
                                     state,
                                     callback,
                                     &mut tool_results,
                                     tool_call,
                                     result,
-                                    duration_ms,
+                                    duration_milliseconds,
                                 );
                             }
                         }
@@ -295,7 +295,7 @@ impl Agent {
         tool_results: &mut Vec<ToolCallResult>,
         tool_call: &ToolCall,
         result: ToolResult,
-        duration_ms: u64,
+        duration_milliseconds: u64,
     ) {
         callback.on_tool_result(&tool_call.function.name, &result);
         let output = result.to_message();
@@ -303,22 +303,23 @@ impl Agent {
             call: tool_call.clone(),
             result: output.clone(),
             success: result.success,
-            duration_ms,
+            duration_milliseconds,
         });
         state.add_message(Message::tool_result(&tool_call.id, output));
     }
 
     async fn execute_tool(&self, tool_call: &ToolCall) -> ToolResult {
-        let params: serde_json::Value = match serde_json::from_str(&tool_call.function.arguments) {
-            Ok(params) => params,
-            Err(error) => {
-                return ToolResult::error(format!("Invalid tool arguments: {error}"));
-            }
-        };
+        let parameters: serde_json::Value =
+            match serde_json::from_str(&tool_call.function.arguments) {
+                Ok(parameters) => parameters,
+                Err(error) => {
+                    return ToolResult::error(format!("Invalid tool arguments: {error}"));
+                }
+            };
 
         match self
             .tools
-            .execute(&tool_call.function.name, params, &self.context)
+            .execute(&tool_call.function.name, parameters, &self.context)
             .await
         {
             Ok(result) => result,

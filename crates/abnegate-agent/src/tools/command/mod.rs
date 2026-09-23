@@ -6,7 +6,7 @@ mod shell;
 mod tests;
 
 pub use run::RunCommandTool;
-pub use shell::{MAX_SLEEP_SECS, RunShellTool};
+pub use shell::{MAX_SLEEP_SECONDS, RunShellTool};
 
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -14,32 +14,33 @@ use std::path::PathBuf;
 use super::file::{confine, resolve};
 use super::job::{self, JobCommand, Jobs, WAIT_FOR};
 use super::{
-    MAX_PREVIEW_CHARS, MAX_TOOL_OUTPUT_CHARS, ToolContext, ToolError, ToolResult, excerpt,
+    MAX_PREVIEW_CHARACTERS, MAX_TOOL_OUTPUT_CHARACTERS, ToolContext, ToolError, ToolResult, excerpt,
 };
 
-pub(super) const MAX_OUTPUT_PARAM: &str = "max_output_chars";
-const BACKGROUND_PARAM: &str = "background";
+pub(super) const MAX_OUTPUT_PARAMETER: &str = "max_output_chars";
+const BACKGROUND_PARAMETER: &str = "background";
 
 /// Cap on returned output, so one noisy command cannot fill the context
 /// window. Spends the shared tool budget, which the transcript cap sits above,
 /// so what the tool keeps is what the model is given even once the exit-code
 /// line and the `Error: ` prefix are wrapped around it.
-const MAX_SHELL_OUTPUT_CHARS: usize = MAX_TOOL_OUTPUT_CHARS;
+const MAX_SHELL_OUTPUT_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS;
 
 /// Floor for a caller-supplied cap, below which neither end of the output
 /// holds enough to diagnose anything.
-const MIN_SHELL_OUTPUT_CHARS: usize = 500;
+const MIN_SHELL_OUTPUT_CHARACTERS: usize = 500;
 
 /// Resolve `max_output_chars` against the built-in cap.
 ///
 /// Reduce-only: a caller may spend fewer characters than the default, never
 /// more, so the constant stays the ceiling on what one call can cost.
-pub(super) fn clamp_output_chars(requested: Option<u64>) -> usize {
+pub(super) fn clamp_output_characters(requested: Option<u64>) -> usize {
     match requested {
-        Some(chars) => {
-            chars.clamp(MIN_SHELL_OUTPUT_CHARS as u64, MAX_SHELL_OUTPUT_CHARS as u64) as usize
-        }
-        None => MAX_SHELL_OUTPUT_CHARS,
+        Some(chars) => chars.clamp(
+            MIN_SHELL_OUTPUT_CHARACTERS as u64,
+            MAX_SHELL_OUTPUT_CHARACTERS as u64,
+        ) as usize,
+        None => MAX_SHELL_OUTPUT_CHARACTERS,
     }
 }
 
@@ -50,8 +51,8 @@ pub(super) fn max_output_property() -> Value {
         "minimum": 0,
         "description": format!(
             "Cap returned output at this many characters, keeping head and tail. Default \
-             {MAX_SHELL_OUTPUT_CHARS}; larger values clamp down, values under \
-             {MIN_SHELL_OUTPUT_CHARS} clamp up."
+             {MAX_SHELL_OUTPUT_CHARACTERS}; larger values clamp down, values under \
+             {MIN_SHELL_OUTPUT_CHARACTERS} clamp up."
         )
     })
 }
@@ -68,7 +69,7 @@ fn background_property() -> Value {
 }
 
 /// Longest a single shell command may run, whatever it asks for.
-pub(super) const MAX_SHELL_TIMEOUT_SECS: u64 = 900;
+pub(super) const MAX_SHELL_TIMEOUT_SECONDS: u64 = 900;
 
 /// Where the command runs, resolved and confined the way every other
 /// model-supplied path in these tools is.
@@ -79,9 +80,9 @@ pub(super) const MAX_SHELL_TIMEOUT_SECS: u64 = 900;
 /// cannot drift on what a directory is allowed to be.
 fn working_directory(context: &ToolContext, directory: Option<&str>) -> Result<PathBuf, ToolError> {
     let Some(directory) = directory else {
-        return Ok(context.cwd.clone());
+        return Ok(context.working_directory.clone());
     };
-    let resolved = resolve(&context.cwd.join(directory));
+    let resolved = resolve(&context.working_directory.join(directory));
     confine(&resolved, context)?;
     Ok(resolved)
 }
@@ -104,7 +105,7 @@ async fn background(command: &JobCommand, context: &ToolContext) -> Result<ToolR
 /// The command is what the reader is deciding on, so it keeps the whole budget
 /// and the directory is appended after it rather than put in front of it.
 fn run_preview(line: &str, cwd: Option<&str>) -> String {
-    let command = excerpt(line, MAX_PREVIEW_CHARS);
+    let command = excerpt(line, MAX_PREVIEW_CHARACTERS);
     match cwd {
         Some(cwd) => format!("Run `{command}` in {cwd}."),
         None => format!("Run `{command}`."),

@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 /// Parameter name, listed in both `properties` and `required`.
-pub const REASON_PARAM: &str = "reason";
+pub const REASON_PARAMETER: &str = "reason";
 
 /// Written once here so no tool's copy of it can fork from another's.
 ///
@@ -10,7 +10,7 @@ pub const REASON_PARAM: &str = "reason";
 /// section of the prompt instead of seven times here.
 pub const REASON_DESCRIPTION: &str = "Why this call is needed, in one sentence. The user sees it.";
 
-/// The schema fragment every side-effecting tool puts under [`REASON_PARAM`].
+/// The schema fragment every side-effecting tool puts under [`REASON_PARAMETER`].
 ///
 /// `required` is a lever on model behaviour, not a precondition: nothing
 /// validates it at dispatch, so the matching field stays optional and its

@@ -2,11 +2,10 @@ use serde::Deserialize;
 
 /// The arguments a call to the tool carries.
 #[derive(Debug, Deserialize)]
-pub(crate) struct WriteFileParams {
+pub(crate) struct ListFilesParameters {
     pub(crate) path: String,
-    pub(crate) content: String,
     #[serde(default)]
-    pub(crate) append: bool,
+    pub(crate) recursive: bool,
     #[serde(default)]
-    pub(crate) reason: Option<String>,
+    pub(crate) pattern: Option<String>,
 }

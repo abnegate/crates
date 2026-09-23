@@ -19,7 +19,7 @@ use std::path::{Component, Path, PathBuf};
 
 use super::{ToolContext, ToolError};
 
-/// Refuse a resolved path that leaves `context.cwd`.
+/// Refuse a resolved path that leaves `context.working_directory`.
 ///
 /// The comparison is against the *canonical* `cwd`: a caller's `cwd` may itself
 /// contain a symlink (`/var` -> `/private/var` on macOS), and a resolved path
@@ -29,9 +29,9 @@ pub(crate) fn confine(resolved: &Path, context: &ToolContext) -> Result<(), Tool
         return Ok(());
     }
     let root = context
-        .cwd
+        .working_directory
         .canonicalize()
-        .unwrap_or_else(|_| context.cwd.clone());
+        .unwrap_or_else(|_| context.working_directory.clone());
     if resolved.starts_with(&root) {
         Ok(())
     } else {

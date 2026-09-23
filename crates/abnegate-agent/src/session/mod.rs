@@ -18,26 +18,29 @@ use uuid::Uuid;
 
 use crate::agent::AgentState;
 
-/// A stored session
+/// A saved run: its [`AgentState`] under a title, with the directory it
+/// worked in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
-    /// Session ID
+    /// The run's own id, so a session and its state never disagree.
     pub id: Uuid,
-    /// Title/summary of the session
     pub title: String,
-    /// The agent state
     pub state: AgentState,
-    /// When the session was created
     pub created_at: DateTime<Utc>,
-    /// When the session was last updated
+    /// Moved forward by [`update`](Self::update), never by saving.
     pub updated_at: DateTime<Utc>,
-    /// Project directory this session is associated with
-    pub project_dir: Option<String>,
+    /// The project the run worked in, when it had one.
+    #[serde(alias = "project_dir")]
+    pub project_directory: Option<String>,
 }
 
 impl Session {
-    /// Create a new session from an agent state
-    pub fn new(state: AgentState, title: impl Into<String>, project_dir: Option<String>) -> Self {
+    /// A session for `state`, created and updated now.
+    pub fn new(
+        state: AgentState,
+        title: impl Into<String>,
+        project_directory: Option<String>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: state.id,
@@ -45,11 +48,11 @@ impl Session {
             state,
             created_at: now,
             updated_at: now,
-            project_dir,
+            project_directory,
         }
     }
 
-    /// Update the session with a new state
+    /// Replace the state and move `updated_at` forward.
     pub fn update(&mut self, state: AgentState) {
         self.state = state;
         self.updated_at = Utc::now();
@@ -71,7 +74,7 @@ mod tests {
 
         assert_eq!(session.id, state.id);
         assert_eq!(session.title, "Test Session");
-        assert_eq!(session.project_dir, Some("/tmp/project".to_string()));
+        assert_eq!(session.project_directory, Some("/tmp/project".to_string()));
         assert!(!session.state.finished);
     }
 
@@ -114,7 +117,7 @@ mod tests {
 
         assert_eq!(session.id, state.id);
         assert_eq!(session.title, "No Project");
-        assert!(session.project_dir.is_none());
+        assert!(session.project_directory.is_none());
     }
 
     #[test]
@@ -187,7 +190,7 @@ mod tests {
 
         assert_eq!(cloned.id, session.id);
         assert_eq!(cloned.title, session.title);
-        assert_eq!(cloned.project_dir, session.project_dir);
+        assert_eq!(cloned.project_directory, session.project_directory);
         assert_eq!(cloned.created_at, session.created_at);
     }
 
@@ -203,7 +206,7 @@ mod tests {
 
         assert_eq!(deserialized.id, session.id);
         assert_eq!(deserialized.title, session.title);
-        assert_eq!(deserialized.project_dir, session.project_dir);
+        assert_eq!(deserialized.project_directory, session.project_directory);
         assert!(deserialized.state.finished);
         assert_eq!(deserialized.state.final_response, Some("Done".to_string()));
     }
@@ -289,13 +292,13 @@ mod tests {
         );
 
         assert_eq!(
-            session.project_dir,
+            session.project_directory,
             Some("/path/with spaces/and-dashes/under_scores".to_string())
         );
 
         let json = serde_json::to_string(&session).unwrap();
         let deserialized: Session = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.project_dir, session.project_dir);
+        assert_eq!(deserialized.project_directory, session.project_directory);
     }
 
     #[test]

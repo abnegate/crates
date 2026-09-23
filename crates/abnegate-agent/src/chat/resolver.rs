@@ -333,8 +333,8 @@ fn provider_reasoning(info: &Value) -> bool {
     }
     info.get("supported_openai_params")
         .and_then(Value::as_array)
-        .is_some_and(|params| {
-            params.iter().any(|param| {
+        .is_some_and(|parameters| {
+            parameters.iter().any(|param| {
                 matches!(
                     param.as_str(),
                     Some("reasoning_effort" | "thinking" | "reasoning")

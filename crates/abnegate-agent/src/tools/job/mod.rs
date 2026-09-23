@@ -17,7 +17,7 @@ mod exited;
 mod jobs;
 mod limits;
 mod started;
-mod state;
+mod status;
 mod tail;
 #[cfg(test)]
 mod tests;
@@ -26,7 +26,7 @@ pub use command::JobCommand;
 pub use exited::JobExited;
 pub use jobs::Jobs;
 pub use started::JobStarted;
-pub use state::JobState;
+pub use status::JobStatus;
 pub use tail::JobTail;
 
 use std::path::{Path, PathBuf};
@@ -46,7 +46,8 @@ pub const WAIT_FOR: &str = "wait_for";
 ///
 /// The same cap a foreground shell command is held to: backgrounding is a way
 /// to stop blocking the loop, not a way to buy a longer command.
-pub const MAX_JOB_LIFETIME: Duration = Duration::from_secs(super::command::MAX_SHELL_TIMEOUT_SECS);
+pub const MAX_JOB_LIFETIME: Duration =
+    Duration::from_secs(super::command::MAX_SHELL_TIMEOUT_SECONDS);
 
 /// Ceiling on a job's log file, past which the job is killed and reported as
 /// flooded rather than truncated and reported as fine.
@@ -76,7 +77,7 @@ const JOB_LOG_EXTENSION: &str = "log";
 /// Distinguishes a job id from a run id at a glance, and keeps it short enough
 /// to carry between calls.
 const JOB_ID_PREFIX: &str = "job_";
-const JOB_ID_HEX_CHARS: usize = 12;
+const JOB_ID_HEX_CHARACTERS: usize = 12;
 
 const STARTED_PREFIX: &str = "Started ";
 
@@ -117,7 +118,7 @@ fn missing(id: &str) -> String {
 /// Mint a job id: `job_` and twelve lowercase hex characters.
 pub fn mint() -> String {
     let hex = Uuid::new_v4().simple().to_string();
-    format!("{JOB_ID_PREFIX}{}", &hex[..JOB_ID_HEX_CHARS])
+    format!("{JOB_ID_PREFIX}{}", &hex[..JOB_ID_HEX_CHARACTERS])
 }
 
 /// Where the log for `id` belongs, under the session's own working tree.
@@ -176,7 +177,7 @@ pub fn parse_receipt(output: &str) -> Option<JobStarted> {
 
 fn is_job_id(candidate: &str) -> bool {
     candidate.strip_prefix(JOB_ID_PREFIX).is_some_and(|hex| {
-        hex.len() == JOB_ID_HEX_CHARS
+        hex.len() == JOB_ID_HEX_CHARACTERS
             && hex
                 .chars()
                 .all(|character| matches!(character, '0'..='9' | 'a'..='f'))

@@ -1,4 +1,4 @@
-mod params;
+mod parameters;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::{confine, descendable};
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
-use params::ListFilesParams;
+use parameters::ListFilesParameters;
 
 pub(super) const LIST_FILES_CAP: usize = 200;
 
@@ -52,16 +52,20 @@ impl Tool for ListFilesTool {
         })
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let params: ListFilesParams = serde_json::from_value(params)
-            .map_err(|error| ToolError::InvalidParams(error.to_string()))?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let parameters: ListFilesParameters = serde_json::from_value(parameters)
+            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
-        let full_path = context.cwd.join(&params.path);
+        let full_path = context.working_directory.join(&parameters.path);
 
         if !full_path.exists() {
             return Err(ToolError::Execution(format!(
                 "Path does not exist: {}",
-                params.path
+                parameters.path
             )));
         }
 
@@ -124,8 +128,8 @@ impl Tool for ListFilesTool {
         collect_files(
             &full_path,
             &full_path,
-            params.recursive,
-            &params.pattern,
+            parameters.recursive,
+            &parameters.pattern,
             &mut files,
             &mut total,
             context,

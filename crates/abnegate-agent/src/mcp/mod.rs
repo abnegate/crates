@@ -20,7 +20,7 @@
 //! [`McpConfig::from_env`] does the same under [`DEFAULT_PREFIX`].
 //!
 //! Children inherit this process's environment and overlay
-//! [`McpServerSpec::env`]. When `ABNEGATE_EXEC_PROXY_URL` is set, the proxy
+//! [`McpServerSpec::environment`]. When `ABNEGATE_EXEC_PROXY_URL` is set, the proxy
 //! variables it implies are then applied on top, so a server cannot route
 //! around it. Configure only trusted executables.
 //!

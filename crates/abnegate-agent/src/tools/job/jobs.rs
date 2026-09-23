@@ -13,7 +13,7 @@ use tokio::sync::{oneshot, watch};
 use super::entry::Job;
 use super::limits::Limits;
 use super::{
-    EXCLUDE_PATH, JobCommand, JobExited, JobStarted, JobState, JobTail, KILL_TIMEOUT,
+    EXCLUDE_PATH, JobCommand, JobExited, JobStarted, JobStatus, JobTail, KILL_TIMEOUT,
     MAX_CHARACTER_BYTES, UNAVAILABLE, excluded, log_directory, log_path, mint, missing,
 };
 use crate::tools::{Session, ToolContext};
@@ -44,7 +44,7 @@ impl Jobs {
         session: Session,
         id: &str,
         since: u64,
-        max_chars: usize,
+        max_characters: usize,
     ) -> Result<JobTail, String> {
         if session == Session::Detached {
             return Err(UNAVAILABLE.to_string());
@@ -68,9 +68,9 @@ impl Jobs {
         if file.seek(SeekFrom::Start(since)).await.is_err() {
             return Ok(unread);
         }
-        let mut buffer = Vec::with_capacity(max_chars);
+        let mut buffer = Vec::with_capacity(max_characters);
         if file
-            .take(max_chars as u64)
+            .take(max_characters as u64)
             .read_to_end(&mut buffer)
             .await
             .is_err()
@@ -153,7 +153,7 @@ impl Jobs {
         if session == Session::Detached {
             return Err(UNAVAILABLE.to_string());
         }
-        let checkout = context.cwd.as_path();
+        let checkout = context.working_directory.as_path();
         let directory = log_directory(checkout, &context.application);
 
         tokio::fs::create_dir_all(&directory)
@@ -190,7 +190,7 @@ impl Jobs {
             .map_err(|error| format!("Failed to start the job: {error}"))?;
         let pid = child.id().unwrap_or_default();
 
-        let (sender, state) = watch::channel(JobState::Running);
+        let (sender, state) = watch::channel(JobStatus::Running);
         let (kill, killed) = oneshot::channel();
         JOBS.insert(
             id.clone(),
@@ -221,22 +221,22 @@ async fn supervise(
     log: PathBuf,
     limits: Limits,
     kill: oneshot::Receiver<()>,
-    state: watch::Sender<JobState>,
+    state: watch::Sender<JobStatus>,
 ) {
     let outcome = {
         let flood = flooded(&log, limits.log_bytes, limits.log_check);
         tokio::select! {
             biased;
             status = child.wait() => match status {
-                Ok(status) => status.code().map_or(JobState::Killed, JobState::Exited),
-                Err(_) => JobState::Killed,
+                Ok(status) => status.code().map_or(JobStatus::Killed, JobStatus::Exited),
+                Err(_) => JobStatus::Killed,
             },
-            _ = kill => JobState::Killed,
-            _ = tokio::time::sleep(limits.lifetime) => JobState::Killed,
-            _ = flood => JobState::Flooded,
+            _ = kill => JobStatus::Killed,
+            _ = tokio::time::sleep(limits.lifetime) => JobStatus::Killed,
+            _ = flood => JobStatus::Flooded,
         }
     };
-    if !matches!(outcome, JobState::Exited(_)) {
+    if !matches!(outcome, JobStatus::Exited(_)) {
         let _ = child.kill().await;
     }
     state.send_replace(outcome);
@@ -280,14 +280,14 @@ async fn discard(log: &Path) {
 }
 
 /// Resolves once the job has stopped, immediately if it already had.
-async fn ended(mut state: watch::Receiver<JobState>) -> JobState {
+async fn ended(mut state: watch::Receiver<JobStatus>) -> JobStatus {
     loop {
         let current = *state.borrow_and_update();
         if current.settled() {
             return current;
         }
         if state.changed().await.is_err() {
-            return JobState::Killed;
+            return JobStatus::Killed;
         }
     }
 }

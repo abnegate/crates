@@ -1,17 +1,16 @@
 use abnegate_llm::ToolCall;
 use serde::{Deserialize, Serialize};
 
-/// Result of a tool call
+/// One tool call and what it returned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallResult {
-    /// The tool call from the LLM
     pub call: ToolCall,
-    /// The result of executing the tool
+    /// The text the model was given back, as
+    /// [`ToolResult::to_message`](crate::tools::ToolResult::to_message) put it.
     pub result: String,
-    /// Whether the tool executed successfully
     pub success: bool,
-    /// Duration of the tool execution
-    pub duration_ms: u64,
+    #[serde(alias = "duration_ms")]
+    pub duration_milliseconds: u64,
 }
 
 #[cfg(test)]
@@ -34,7 +33,7 @@ mod tests {
             call: tool_call,
             result: "Error: command not found".to_string(),
             success: false,
-            duration_ms: 50,
+            duration_milliseconds: 50,
         };
 
         assert!(!result.success);
@@ -56,7 +55,7 @@ mod tests {
             call: tool_call,
             result: "success".to_string(),
             success: true,
-            duration_ms: 100,
+            duration_milliseconds: 100,
         };
 
         let json = serde_json::to_string(&result).unwrap();
@@ -64,6 +63,6 @@ mod tests {
 
         assert_eq!(deserialized.call.id, "call_test");
         assert!(deserialized.success);
-        assert_eq!(deserialized.duration_ms, 100);
+        assert_eq!(deserialized.duration_milliseconds, 100);
     }
 }

@@ -37,13 +37,13 @@ pub(crate) fn open(context: &ToolContext, path: &Path, access: Access) -> Result
     if context.unrestricted {
         return access
             .options()
-            .open(context.cwd.join(path))
+            .open(context.working_directory.join(path))
             .map_err(|error| failed("open file", error));
     }
 
     resolve(
-        &context.cwd,
-        under(&context.cwd, path),
+        &context.working_directory,
+        under(&context.working_directory, path),
         Target::File(access),
         false,
     )
@@ -54,13 +54,13 @@ pub(crate) fn open(context: &ToolContext, path: &Path, access: Access) -> Result
 
 pub(crate) fn create_dir_all(context: &ToolContext, path: &Path) -> Result<(), ToolError> {
     if context.unrestricted {
-        return fs::create_dir_all(context.cwd.join(path))
+        return fs::create_dir_all(context.working_directory.join(path))
             .map_err(|error| failed("create directory", error));
     }
 
     resolve(
-        &context.cwd,
-        under(&context.cwd, path),
+        &context.working_directory,
+        under(&context.working_directory, path),
         Target::Directory,
         true,
     )

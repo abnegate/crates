@@ -328,7 +328,10 @@ mod tests {
         store.save(&session).await.unwrap();
         let loaded = store.load(session.id).await.unwrap();
 
-        assert_eq!(loaded.project_dir, Some("/path/to/project".to_string()));
+        assert_eq!(
+            loaded.project_directory,
+            Some("/path/to/project".to_string())
+        );
     }
 
     #[tokio::test]

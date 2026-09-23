@@ -1,4 +1,4 @@
-mod params;
+mod parameters;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -6,12 +6,12 @@ use std::io::Read;
 use std::path::Path;
 
 use crate::tools::beneath::{self, Access};
-use crate::tools::{MAX_TOOL_OUTPUT_CHARS, Tool, ToolContext, ToolError, ToolResult};
-use params::ReadFileParams;
+use crate::tools::{MAX_TOOL_OUTPUT_CHARACTERS, Tool, ToolContext, ToolError, ToolResult};
+use parameters::ReadFileParameters;
 
 /// A page of file text, the same budget every tool spends on output it pages
 /// for itself.
-pub(super) const FILE_PAGE_CHARS: usize = MAX_TOOL_OUTPUT_CHARS;
+pub(super) const FILE_PAGE_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS;
 
 /// Read a file's contents
 pub struct ReadFileTool;
@@ -55,11 +55,15 @@ impl Tool for ReadFileTool {
         })
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let params: ReadFileParams = serde_json::from_value(params)
-            .map_err(|error| ToolError::InvalidParams(error.to_string()))?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let parameters: ReadFileParameters = serde_json::from_value(parameters)
+            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
-        let mut file = beneath::open(context, Path::new(&params.path), Access::Read)?;
+        let mut file = beneath::open(context, Path::new(&parameters.path), Access::Read)?;
 
         let metadata = file
             .metadata()
@@ -77,18 +81,18 @@ impl Tool for ReadFileTool {
         file.read_to_string(&mut content)
             .map_err(|error| ToolError::Execution(format!("Cannot read file: {error}")))?;
 
-        let selected = if params.start_line.is_some() || params.end_line.is_some() {
+        let selected = if parameters.start_line.is_some() || parameters.end_line.is_some() {
             let lines: Vec<&str> = content.lines().collect();
-            let start = params.start_line.unwrap_or(1).saturating_sub(1);
-            let end = params.end_line.unwrap_or(lines.len()).min(lines.len());
+            let start = parameters.start_line.unwrap_or(1).saturating_sub(1);
+            let end = parameters.end_line.unwrap_or(lines.len()).min(lines.len());
 
             lines[start..end].join("\n")
         } else {
             content
         };
 
-        let offset = params.offset.unwrap_or(0);
-        let limit = params.limit.unwrap_or(FILE_PAGE_CHARS);
+        let offset = parameters.offset.unwrap_or(0);
+        let limit = parameters.limit.unwrap_or(FILE_PAGE_CHARACTERS);
         let (page, total, next) = page_text(&selected, offset, limit)?;
         Ok(ToolResult::success(format_file_page(
             page, total, offset, next,
@@ -103,11 +107,13 @@ pub(super) fn page_text(
 ) -> Result<(String, usize, Option<usize>), ToolError> {
     let total = content.chars().count();
     if limit == 0 || offset > total {
-        return Err(ToolError::InvalidParams(
+        return Err(ToolError::InvalidParameters(
             "File page offset or length is invalid.".into(),
         ));
     }
-    let count = limit.min(FILE_PAGE_CHARS).min(total.saturating_sub(offset));
+    let count = limit
+        .min(FILE_PAGE_CHARACTERS)
+        .min(total.saturating_sub(offset));
     let page: String = content.chars().skip(offset).take(count).collect();
     let end = offset + count;
     Ok((page, total, (end < total).then_some(end)))

@@ -4,7 +4,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ToolError {
     #[error("Invalid parameters: {0}")]
-    InvalidParams(String),
+    InvalidParameters(String),
     #[error("Execution failed: {0}")]
     Execution(String),
     #[error("IO error: {0}")]

@@ -1,6 +1,6 @@
-mod params;
+mod parameters;
 
-pub(super) use params::RunShellParams;
+pub(super) use parameters::RunShellParameters;
 
 use abnegate_exec::Proxy;
 use async_trait::async_trait;
@@ -11,12 +11,13 @@ use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 
 use super::{
-    BACKGROUND_PARAM, MAX_OUTPUT_PARAM, MAX_SHELL_TIMEOUT_SECS, background, background_property,
-    clamp_output_chars, max_output_property, run_preview, working_directory,
+    BACKGROUND_PARAMETER, MAX_OUTPUT_PARAMETER, MAX_SHELL_TIMEOUT_SECONDS, background,
+    background_property, clamp_output_characters, max_output_property, run_preview,
+    working_directory,
 };
 use crate::tools::job::{JobCommand, WAIT_FOR};
 use crate::tools::{
-    REASON_PARAM, Tier, Tool, ToolContext, ToolError, ToolResult, reason_property, trim_middle,
+    REASON_PARAMETER, Tier, Tool, ToolContext, ToolError, ToolResult, reason_property, trim_middle,
 };
 
 /// Run a command through a real shell, with no allow-list.
@@ -34,7 +35,7 @@ pub struct RunShellTool;
 /// A run that has produced nothing for this long is announced as stalled, so a
 /// longer sleep reads as a wedged run rather than a waiting one. Waiting past
 /// it belongs between calls, where the loop can still see what is happening.
-pub const MAX_SLEEP_SECS: u64 = 60;
+pub const MAX_SLEEP_SECONDS: u64 = 60;
 
 /// Where one command in a line ends and the next begins, plus the grouping
 /// characters a `sleep` can sit behind.
@@ -110,13 +111,13 @@ fn sleep_refusal(seconds: f64, backgrounded: bool) -> String {
         )
     } else {
         (
-            Cow::Owned(format!("Start it with {BACKGROUND_PARAM}: true and")),
+            Cow::Owned(format!("Start it with {BACKGROUND_PARAMETER}: true and")),
             ".",
         )
     };
     format!(
         "This command sleeps for {seconds} seconds, and a call may block on sleep for at most \
-         {MAX_SLEEP_SECS}. {remedy} wait for it with {WAIT_FOR}{tail}"
+         {MAX_SLEEP_SECONDS}. {remedy} wait for it with {WAIT_FOR}{tail}"
     )
 }
 
@@ -135,9 +136,12 @@ impl Tool for RunShellTool {
         Tier::Host
     }
 
-    fn preview(&self, params: &Value) -> Option<String> {
-        let params: RunShellParams = serde_json::from_value(params.clone()).ok()?;
-        Some(run_preview(&params.command, params.cwd.as_deref()))
+    fn preview(&self, parameters: &Value) -> Option<String> {
+        let parameters: RunShellParameters = serde_json::from_value(parameters.clone()).ok()?;
+        Some(run_preview(
+            &parameters.command,
+            parameters.working_directory.as_deref(),
+        ))
     }
 
     fn parameters_schema(&self) -> Value {
@@ -148,8 +152,8 @@ impl Tool for RunShellTool {
                     "type": "string",
                     "description": format!(
                         "Shell command to run, e.g. 'cargo test 2>&1 | tail -40'. It may not \
-                         block on sleep for more than {MAX_SLEEP_SECS} seconds: to wait longer, \
-                         start it with {BACKGROUND_PARAM}: true and wait for it with \
+                         block on sleep for more than {MAX_SLEEP_SECONDS} seconds: to wait longer, \
+                         start it with {BACKGROUND_PARAMETER}: true and wait for it with \
                          {WAIT_FOR}."
                     )
                 },
@@ -161,63 +165,67 @@ impl Tool for RunShellTool {
                     "type": "integer",
                     "description": "Wall-clock limit in seconds. Default 120, maximum 900."
                 },
-                BACKGROUND_PARAM: background_property(),
-                MAX_OUTPUT_PARAM: max_output_property(),
-                REASON_PARAM: reason_property()
+                BACKGROUND_PARAMETER: background_property(),
+                MAX_OUTPUT_PARAMETER: max_output_property(),
+                REASON_PARAMETER: reason_property()
             },
-            "required": ["command", REASON_PARAM]
+            "required": ["command", REASON_PARAMETER]
         })
     }
 
     fn timeout(&self, _context: &ToolContext) -> Duration {
         // Loose enough never to pre-empt the per-call limit enforced below.
-        Duration::from_secs(MAX_SHELL_TIMEOUT_SECS + 30)
+        Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS + 30)
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let params: RunShellParams = serde_json::from_value(params)
-            .map_err(|error| ToolError::InvalidParams(error.to_string()))?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let parameters: RunShellParameters = serde_json::from_value(parameters)
+            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
         tracing::debug!(
             tool = self.name(),
-            reason_given = params
+            reason_given = parameters
                 .reason
                 .as_deref()
                 .is_some_and(|why| !why.trim().is_empty()),
             "Running tool"
         );
 
-        if params.command.trim().is_empty() {
-            return Err(ToolError::InvalidParams("Command is empty".to_string()));
+        if parameters.command.trim().is_empty() {
+            return Err(ToolError::InvalidParameters("Command is empty".to_string()));
         }
 
-        if let Some(seconds) = total_sleep(&params.command)
-            && seconds > MAX_SLEEP_SECS as f64
+        if let Some(seconds) = total_sleep(&parameters.command)
+            && seconds > MAX_SLEEP_SECONDS as f64
         {
             return Err(ToolError::Execution(sleep_refusal(
                 seconds,
-                params.background,
+                parameters.background,
             )));
         }
 
-        let cwd = working_directory(context, params.cwd.as_deref())?;
+        let cwd = working_directory(context, parameters.working_directory.as_deref())?;
 
-        if params.background {
-            let command = JobCommand::shell(&params.command).within(&cwd);
+        if parameters.background {
+            let command = JobCommand::shell(&parameters.command).within(&cwd);
             return background(&command, context).await;
         }
 
         let limit = Duration::from_secs(
-            params
-                .timeout_secs
+            parameters
+                .timeout_seconds
                 .unwrap_or(120)
-                .clamp(1, MAX_SHELL_TIMEOUT_SECS),
+                .clamp(1, MAX_SHELL_TIMEOUT_SECONDS),
         );
 
         let mut process = Command::new("sh");
         process
             .arg("-c")
-            .arg(&params.command)
+            .arg(&parameters.command)
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -268,7 +276,7 @@ impl Tool for RunShellTool {
         // should read the compiler error rather than conclude the tool broke.
         Ok(ToolResult::success(trim_middle(
             report.trim_end(),
-            clamp_output_chars(params.max_output_chars),
+            clamp_output_characters(parameters.max_output_characters),
         )))
     }
 }

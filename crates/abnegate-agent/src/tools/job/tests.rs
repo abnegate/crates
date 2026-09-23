@@ -59,7 +59,7 @@ fn directory() -> TempDir {
 
 fn context(session: Session, cwd: &Path) -> ToolContext {
     ToolContext {
-        cwd: cwd.to_path_buf(),
+        working_directory: cwd.to_path_buf(),
         env: environment(),
         session,
         ..ToolContext::default()
@@ -72,7 +72,7 @@ async fn spawned(session: Session, line: &str, cwd: &Path) -> JobStarted {
         .expect("the job starts")
 }
 
-async fn settles(session: Session, id: &str) -> JobState {
+async fn settles(session: Session, id: &str) -> JobStatus {
     for _ in 0..POLL_LIMIT {
         let tail = Jobs::read(session, id, 0, 1)
             .await
@@ -246,7 +246,7 @@ async fn a_log_past_its_ceiling_kills_the_job_and_reports_flooding() {
     .await
     .expect("the job starts");
 
-    assert_eq!(settles(session, &started.id).await, JobState::Flooded);
+    assert_eq!(settles(session, &started.id).await, JobStatus::Flooded);
     assert!(
         !alive(started.pid),
         "a flooded job is killed, not left writing"
@@ -280,7 +280,7 @@ async fn a_job_outliving_its_lifetime_is_killed() {
     .await
     .expect("the job starts");
 
-    assert_eq!(settles(session, &started.id).await, JobState::Killed);
+    assert_eq!(settles(session, &started.id).await, JobStatus::Killed);
     assert!(!alive(started.pid), "a job past its lifetime is killed");
 
     Jobs::kill_session(session).await;
@@ -291,7 +291,7 @@ async fn a_job_that_had_already_ended_still_settles() {
     let cwd = directory();
     let session = task();
     let started = spawned(session, "exit 7", cwd.path()).await;
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(7));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(7));
 
     let claim = Jobs::settled(session, &started.id).expect("the job is claimable");
     let exited = tokio::time::timeout(Duration::from_secs(5), claim)
@@ -445,7 +445,7 @@ async fn a_child_that_never_reports_its_end_does_not_hold_the_teardown() {
     tokio::fs::write(&log, "wedged")
         .await
         .expect("the job wrote something before wedging");
-    let (reports, state) = watch::channel(JobState::Running);
+    let (reports, state) = watch::channel(JobStatus::Running);
     let (kill, killed) = oneshot::channel();
     JOBS.insert(
         id.clone(),
@@ -482,7 +482,7 @@ async fn a_child_that_never_reports_its_end_does_not_hold_the_teardown() {
     assert!(killed.await.is_ok(), "the kill itself was still sent");
     assert_eq!(
         *reports.borrow(),
-        JobState::Running,
+        JobStatus::Running,
         "nothing ever reported the child's end, which is the case under test"
     );
 }
@@ -511,7 +511,7 @@ async fn a_directory_the_command_names_moves_the_child_and_nothing_else() {
     )
     .await
     .expect("the job starts");
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
 
     assert_eq!(
         started.log_path,
@@ -554,7 +554,7 @@ async fn a_chat_job_writes_nothing_to_the_repository_exclude() {
 
     let session = chat();
     let started = spawned(session, "exit 0", cwd.path()).await;
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
 
     assert_eq!(
         std::fs::read_to_string(&exclude).unwrap_or_default(),
@@ -618,7 +618,7 @@ async fn a_working_directory_that_is_not_a_checkout_is_left_alone() {
     let session = task();
     let started = spawned(session, "exit 0", cwd.path()).await;
 
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
     assert!(
         !cwd.path().join(".git").exists(),
         "nothing invents a checkout to exclude from"
@@ -641,7 +641,7 @@ async fn a_read_only_exclude_costs_the_caller_nothing() {
 
     let session = task();
     let started = spawned(session, "exit 0", cwd.path()).await;
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
     assert_eq!(
         std::fs::read_to_string(&exclude).expect("the exclude reads"),
         "# fixed\n",
@@ -678,7 +678,7 @@ async fn the_exclude_path_comes_from_git_not_from_a_joined_git_directory() {
 
     let session = task();
     let started = spawned(session, "exit 0", &linked).await;
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
 
     assert_eq!(
         excluded_lines(&exclude_path(&linked)),
@@ -695,11 +695,11 @@ async fn the_exclude_path_comes_from_git_not_from_a_joined_git_directory() {
 
 #[test]
 fn a_state_is_spelled_the_way_a_tail_reports_it() {
-    assert_eq!(JobState::Running.to_string(), "running");
-    assert_eq!(JobState::Exited(0).to_string(), "exited 0");
-    assert_eq!(JobState::Exited(137).to_string(), "exited 137");
-    assert_eq!(JobState::Killed.to_string(), "killed");
-    assert_eq!(JobState::Flooded.to_string(), "flooded");
+    assert_eq!(JobStatus::Running.to_string(), "running");
+    assert_eq!(JobStatus::Exited(0).to_string(), "exited 0");
+    assert_eq!(JobStatus::Exited(137).to_string(), "exited 137");
+    assert_eq!(JobStatus::Killed.to_string(), "killed");
+    assert_eq!(JobStatus::Flooded.to_string(), "flooded");
 }
 
 #[test]
@@ -767,7 +767,11 @@ fn output_that_announced_no_job_parses_as_none() {
 fn a_minted_id_is_the_shape_the_parser_accepts() {
     let id = mint();
     assert!(id.starts_with(JOB_ID_PREFIX), "{id}");
-    assert_eq!(id.len(), JOB_ID_PREFIX.len() + JOB_ID_HEX_CHARS, "{id}");
+    assert_eq!(
+        id.len(),
+        JOB_ID_PREFIX.len() + JOB_ID_HEX_CHARACTERS,
+        "{id}"
+    );
     assert_ne!(id, mint(), "each job gets its own id");
 
     let started = JobStarted {

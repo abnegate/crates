@@ -1,4 +1,4 @@
-mod params;
+mod parameters;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -9,7 +9,7 @@ use std::path::Path;
 use super::{confine, descendable, resolve};
 use crate::tools::beneath::{self, Access};
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
-use params::SearchCodeParams;
+use parameters::SearchCodeParameters;
 
 pub(super) const SEARCH_MAX_RESULTS: usize = 100;
 
@@ -69,28 +69,32 @@ impl Tool for SearchCodeTool {
         })
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let params: SearchCodeParams = serde_json::from_value(params)
-            .map_err(|error| ToolError::InvalidParams(error.to_string()))?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let parameters: SearchCodeParameters = serde_json::from_value(parameters)
+            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
-        let search_path = resolve(&match &params.path {
-            Some(path) => context.cwd.join(path),
-            None => context.cwd.clone(),
+        let search_path = resolve(&match &parameters.path {
+            Some(path) => context.working_directory.join(path),
+            None => context.working_directory.clone(),
         });
         confine(&search_path, context)?;
-        let max_results = params
+        let max_results = parameters
             .max_results
             .unwrap_or(SEARCH_MAX_RESULTS)
             .min(SEARCH_MAX_RESULTS);
 
-        if let Some(result) = search_ripgrep(&params, &search_path, max_results).await {
+        if let Some(result) = search_ripgrep(&parameters, &search_path, max_results).await {
             return Ok(result);
         }
 
-        let pattern = if params.case_sensitive {
-            params.pattern.clone()
+        let pattern = if parameters.case_sensitive {
+            parameters.pattern.clone()
         } else {
-            params.pattern.to_lowercase()
+            parameters.pattern.to_lowercase()
         };
 
         let mut results = Vec::new();
@@ -98,7 +102,7 @@ impl Tool for SearchCodeTool {
             &search_path,
             &search_path,
             &pattern,
-            params.case_sensitive,
+            parameters.case_sensitive,
             &mut results,
             max_results,
             context,
@@ -228,7 +232,7 @@ pub(super) fn search_directory(
 }
 
 async fn search_ripgrep(
-    params: &SearchCodeParams,
+    parameters: &SearchCodeParameters,
     search_path: &Path,
     max_results: usize,
 ) -> Option<ToolResult> {
@@ -253,13 +257,13 @@ async fn search_ripgrep(
         .arg("!build/**")
         .arg("--glob")
         .arg("!__pycache__/**");
-    if !params.case_sensitive {
+    if !parameters.case_sensitive {
         command.arg("-i");
     }
     if max_results > 0 {
         command.arg("-m").arg(max_results.to_string());
     }
-    command.arg("--").arg(&params.pattern).arg(search_path);
+    command.arg("--").arg(&parameters.pattern).arg(search_path);
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
 

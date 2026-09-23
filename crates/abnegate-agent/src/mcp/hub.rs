@@ -170,7 +170,7 @@ mod tests {
                 "echo_ping",
                 serde_json::json!({ "message": "hi" }),
                 &ToolContext {
-                    command_timeout: 5,
+                    command_timeout: Duration::from_secs(5),
                     ..ToolContext::default()
                 },
             )
@@ -296,8 +296,8 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let context = ToolContext {
-            cwd: directory.path().canonicalize().unwrap(),
-            command_timeout: 5,
+            working_directory: directory.path().canonicalize().unwrap(),
+            command_timeout: Duration::from_secs(5),
             ..ToolContext::default()
         };
         let result = registry
@@ -335,9 +335,9 @@ mod tests {
             servers: vec![McpServerSpec {
                 name: "missing".to_string(),
                 command: "/definitely/not/a/real/mcp-server-xyz".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-                cwd: Some(PathBuf::from("/tmp")),
+                arguments: vec![],
+                environment: HashMap::new(),
+                working_directory: Some(PathBuf::from("/tmp")),
                 disabled: false,
             }],
             ..McpConfig::default()
@@ -361,9 +361,9 @@ mod tests {
         McpServerSpec {
             name: name.to_string(),
             command: "/bin/sleep".to_string(),
-            args: vec!["60".to_string()],
-            env: HashMap::new(),
-            cwd: None,
+            arguments: vec!["60".to_string()],
+            environment: HashMap::new(),
+            working_directory: None,
             disabled: false,
         }
     }

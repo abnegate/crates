@@ -1,6 +1,6 @@
-mod params;
+mod parameters;
 
-pub(super) use params::RunCommandParams;
+pub(super) use parameters::RunCommandParameters;
 
 use abnegate_exec::Proxy;
 use async_trait::async_trait;
@@ -10,13 +10,13 @@ use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 
 use super::{
-    BACKGROUND_PARAM, MAX_OUTPUT_PARAM, background, background_property, clamp_output_chars,
-    max_output_property, run_preview, working_directory,
+    BACKGROUND_PARAMETER, MAX_OUTPUT_PARAMETER, background, background_property,
+    clamp_output_characters, max_output_property, run_preview, working_directory,
 };
 use crate::tools::job::JobCommand;
 use crate::tools::{
-    ERROR_PREFIX, REASON_PARAM, Tier, Tool, ToolContext, ToolError, ToolResult, reason_property,
-    trim_middle,
+    ERROR_PREFIX, REASON_PARAMETER, Tier, Tool, ToolContext, ToolError, ToolResult,
+    reason_property, trim_middle,
 };
 
 /// Programs [`RunCommandTool`] may spawn, resolved on the child's `PATH`.
@@ -54,18 +54,18 @@ impl Tool for RunCommandTool {
         Tier::Host
     }
 
-    fn preview(&self, params: &Value) -> Option<String> {
-        let params: RunCommandParams = serde_json::from_value(params.clone()).ok()?;
-        let line = std::iter::once(params.command)
-            .chain(params.args)
+    fn preview(&self, parameters: &Value) -> Option<String> {
+        let parameters: RunCommandParameters = serde_json::from_value(parameters.clone()).ok()?;
+        let line = std::iter::once(parameters.command)
+            .chain(parameters.arguments)
             .collect::<Vec<String>>()
             .join(" ");
-        Some(run_preview(&line, params.cwd.as_deref()))
+        Some(run_preview(&line, parameters.working_directory.as_deref()))
     }
 
     fn timeout(&self, context: &ToolContext) -> Duration {
         // Loose enough never to pre-empt the per-call limit applied below.
-        Duration::from_secs(context.command_timeout + 30)
+        context.command_timeout + Duration::from_secs(30)
     }
 
     fn parameters_schema(&self) -> Value {
@@ -89,35 +89,39 @@ impl Tool for RunCommandTool {
                     "type": "integer",
                     "description": "Timeout in seconds (default: 300)"
                 },
-                BACKGROUND_PARAM: background_property(),
-                MAX_OUTPUT_PARAM: max_output_property(),
-                REASON_PARAM: reason_property()
+                BACKGROUND_PARAMETER: background_property(),
+                MAX_OUTPUT_PARAMETER: max_output_property(),
+                REASON_PARAMETER: reason_property()
             },
-            "required": ["command", REASON_PARAM]
+            "required": ["command", REASON_PARAMETER]
         })
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let params: RunCommandParams = serde_json::from_value(params)
-            .map_err(|error| ToolError::InvalidParams(error.to_string()))?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let parameters: RunCommandParameters = serde_json::from_value(parameters)
+            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
         tracing::debug!(
             tool = self.name(),
-            reason_given = params
+            reason_given = parameters
                 .reason
                 .as_deref()
                 .is_some_and(|why| !why.trim().is_empty()),
             "Running tool"
         );
 
-        if !ALLOWED_COMMANDS.contains(&params.command.as_str()) {
+        if !ALLOWED_COMMANDS.contains(&parameters.command.as_str()) {
             return Err(ToolError::Execution(format!(
                 "Command '{}' is not in the allowed list. Name a program, not a path: cargo, npm, git, python, etc.",
-                params.command
+                parameters.command
             )));
         }
 
-        for argument in &params.args {
+        for argument in &parameters.arguments {
             if let Some(pattern) = SHELL_METACHARACTERS
                 .iter()
                 .find(|pattern| argument.contains(*pattern))
@@ -128,16 +132,17 @@ impl Tool for RunCommandTool {
             }
         }
 
-        let cwd = working_directory(context, params.cwd.as_deref())?;
+        let cwd = working_directory(context, parameters.working_directory.as_deref())?;
 
-        if params.background {
-            let command = JobCommand::new(&params.command, params.args.clone()).within(&cwd);
+        if parameters.background {
+            let command =
+                JobCommand::new(&parameters.command, parameters.arguments.clone()).within(&cwd);
             return background(&command, context).await;
         }
 
-        let mut process = Command::new(&params.command);
+        let mut process = Command::new(&parameters.command);
         process
-            .args(&params.args)
+            .args(&parameters.arguments)
             .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -149,8 +154,9 @@ impl Tool for RunCommandTool {
         }
         Proxy::from_env().apply(&mut process);
 
-        let timeout_duration =
-            Duration::from_secs(params.timeout_secs.unwrap_or(context.command_timeout));
+        let timeout_duration = parameters
+            .timeout_seconds
+            .map_or(context.command_timeout, Duration::from_secs);
 
         let output = match timeout(timeout_duration, process.output()).await {
             Ok(result) => result
@@ -185,10 +191,10 @@ impl Tool for RunCommandTool {
             result = "(no output)".to_string();
         }
 
-        let output_chars = clamp_output_chars(params.max_output_chars);
+        let output_characters = clamp_output_characters(parameters.max_output_characters);
 
         if output.status.success() {
-            Ok(ToolResult::success(trim_middle(&result, output_chars)))
+            Ok(ToolResult::success(trim_middle(&result, output_characters)))
         } else {
             let code = output
                 .status
@@ -199,7 +205,7 @@ impl Tool for RunCommandTool {
             // has to cover that too.
             Ok(ToolResult::error(trim_middle(
                 &format!("Command exited with code {}\n\n{}", code, result),
-                output_chars.saturating_sub(ERROR_PREFIX.chars().count()),
+                output_characters.saturating_sub(ERROR_PREFIX.chars().count()),
             )))
         }
     }

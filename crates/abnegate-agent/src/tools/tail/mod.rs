@@ -4,18 +4,18 @@
 //! file: an offset is a seek, a line number is a scan of everything before it,
 //! and a cursor the reader cannot place is one the tool has to reject.
 
-mod params;
+mod parameters;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::command::{MAX_OUTPUT_PARAM, clamp_output_chars, max_output_property};
-use super::job::{JobState, JobTail, Jobs, TAIL_JOB};
+use super::command::{MAX_OUTPUT_PARAMETER, clamp_output_characters, max_output_property};
+use super::job::{JobStatus, JobTail, Jobs, TAIL_JOB};
 use super::{Tier, Tool, ToolContext, ToolError, ToolResult};
-use params::TailJobParams;
+use parameters::TailJobParameters;
 
-const ID_PARAM: &str = "id";
-const SINCE_PARAM: &str = "since";
+const ID_PARAMETER: &str = "id";
+const SINCE_PARAMETER: &str = "since";
 
 /// Read what a background job has written so far.
 pub struct TailJobTool;
@@ -33,7 +33,7 @@ fn report(tail: JobTail) -> ToolResult {
     slice.push_str(&footer);
 
     match tail.state {
-        JobState::Flooded => ToolResult::error(slice),
+        JobStatus::Flooded => ToolResult::error(slice),
         _ => ToolResult::success(slice),
     }
 }
@@ -58,11 +58,11 @@ impl Tool for TailJobTool {
         json!({
             "type": "object",
             "properties": {
-                ID_PARAM: {
+                ID_PARAMETER: {
                     "type": "string",
                     "description": "Job id from a background run_shell or run_command."
                 },
-                SINCE_PARAM: {
+                SINCE_PARAMETER: {
                     "type": "integer",
                     // Parsed into a u64, so a negative fails the call rather
                     // than being read as a seek from the end.
@@ -72,22 +72,26 @@ impl Tool for TailJobTool {
                          from the start."
                     )
                 },
-                MAX_OUTPUT_PARAM: max_output_property()
+                MAX_OUTPUT_PARAMETER: max_output_property()
             },
-            "required": [ID_PARAM],
+            "required": [ID_PARAMETER],
             "additionalProperties": false
         })
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let params: TailJobParams = serde_json::from_value(params)
-            .map_err(|error| ToolError::InvalidParams(error.to_string()))?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let parameters: TailJobParameters = serde_json::from_value(parameters)
+            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
         let tail = Jobs::read(
             context.session,
-            &params.id,
-            params.since.unwrap_or_default(),
-            clamp_output_chars(params.max_output_chars),
+            &parameters.id,
+            parameters.since.unwrap_or_default(),
+            clamp_output_characters(parameters.max_output_characters),
         )
         .await
         .map_err(ToolError::Execution)?;
@@ -115,7 +119,7 @@ mod tests {
 
     fn context(cwd: &Path, session: Session) -> ToolContext {
         ToolContext {
-            cwd: cwd.to_path_buf(),
+            working_directory: cwd.to_path_buf(),
             session,
             unrestricted: true,
             ..ToolContext::default()
@@ -146,7 +150,7 @@ mod tests {
 
     async fn tail(id: &str, since: u64, context: &ToolContext) -> ToolResult {
         TailJobTool
-            .execute(json!({ ID_PARAM: id, SINCE_PARAM: since }), context)
+            .execute(json!({ ID_PARAMETER: id, SINCE_PARAMETER: since }), context)
             .await
             .expect("its own session reads it")
     }
@@ -210,7 +214,7 @@ mod tests {
 
         let stranger = context(directory.path(), chat());
         let error = TailJobTool
-            .execute(json!({ ID_PARAM: job.clone() }), &stranger)
+            .execute(json!({ ID_PARAMETER: job.clone() }), &stranger)
             .await
             .expect_err("another session cannot read it");
 
@@ -233,7 +237,7 @@ mod tests {
 
         let detached = context(directory.path(), Session::Detached);
         let error = TailJobTool
-            .execute(json!({ ID_PARAM: job.clone() }), &detached)
+            .execute(json!({ ID_PARAMETER: job.clone() }), &detached)
             .await
             .expect_err("a detached context has no session to key a job to");
 
@@ -248,7 +252,7 @@ mod tests {
     fn a_flooded_job_is_reported_flooded_and_is_not_a_success() {
         let result = report(JobTail {
             output: "building\n".to_string(),
-            state: JobState::Flooded,
+            state: JobStatus::Flooded,
             next: 9,
         });
 
@@ -261,10 +265,10 @@ mod tests {
     #[test]
     fn every_other_state_reaches_the_footer_the_job_spells_it_with() {
         for (state, spelling) in [
-            (JobState::Running, "running"),
-            (JobState::Exited(0), "exited 0"),
-            (JobState::Exited(101), "exited 101"),
-            (JobState::Killed, "killed"),
+            (JobStatus::Running, "running"),
+            (JobStatus::Exited(0), "exited 0"),
+            (JobStatus::Exited(101), "exited 101"),
+            (JobStatus::Killed, "killed"),
         ] {
             let result = report(JobTail {
                 output: String::new(),
@@ -286,7 +290,7 @@ mod tests {
     fn a_slice_and_its_footer_are_kept_on_separate_lines() {
         let unterminated = report(JobTail {
             output: "no newline".to_string(),
-            state: JobState::Running,
+            state: JobStatus::Running,
             next: 10,
         });
 
@@ -301,24 +305,27 @@ mod tests {
         let schema = TailJobTool.parameters_schema();
         let properties = schema["properties"].as_object().expect("properties");
 
-        assert_eq!(schema["required"].as_array().unwrap(), &[json!(ID_PARAM)]);
+        assert_eq!(
+            schema["required"].as_array().unwrap(),
+            &[json!(ID_PARAMETER)]
+        );
         assert_eq!(schema["additionalProperties"], json!(false));
         assert_eq!(
-            properties[ID_PARAM]["description"],
+            properties[ID_PARAMETER]["description"],
             json!("Job id from a background run_shell or run_command.")
         );
-        assert_eq!(properties[SINCE_PARAM]["minimum"], json!(0));
-        assert_eq!(properties[SINCE_PARAM]["type"], json!("integer"));
+        assert_eq!(properties[SINCE_PARAMETER]["minimum"], json!(0));
+        assert_eq!(properties[SINCE_PARAMETER]["type"], json!("integer"));
         assert_eq!(
-            properties[SINCE_PARAM]["description"],
+            properties[SINCE_PARAMETER]["description"],
             json!(
                 "Byte offset returned as `next` by a previous tail_job. Omit to read from the \
                  start."
             )
         );
-        assert!(properties.contains_key(MAX_OUTPUT_PARAM));
+        assert!(properties.contains_key(MAX_OUTPUT_PARAMETER));
         assert!(
-            !properties.contains_key(crate::tools::REASON_PARAM),
+            !properties.contains_key(crate::tools::REASON_PARAMETER),
             "a read states no reason"
         );
     }
@@ -332,7 +339,7 @@ mod tests {
         assert!(!TailJobTool.ends_turn());
         assert!(
             TailJobTool
-                .preview(&json!({ ID_PARAM: "job_9f3c1a7b2e04" }))
+                .preview(&json!({ ID_PARAMETER: "job_9f3c1a7b2e04" }))
                 .is_none()
         );
     }
@@ -348,7 +355,7 @@ mod tests {
 
         let result = TailJobTool
             .execute(
-                json!({ ID_PARAM: job.clone(), MAX_OUTPUT_PARAM: 1 }),
+                json!({ ID_PARAMETER: job.clone(), MAX_OUTPUT_PARAMETER: 1 }),
                 &context,
             )
             .await

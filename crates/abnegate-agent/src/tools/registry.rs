@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::tail::TailJobTool;
-use super::text::{MAX_PREVIEW_CHARS, excerpt};
+use super::text::{MAX_PREVIEW_CHARACTERS, excerpt};
 use super::{
     ApplyPatchTool, ListFilesTool, ReadFileTool, RunCommandTool, RunShellTool, SearchCodeTool,
     Tier, Tool, ToolContext, ToolError, ToolResult, WriteFileTool,
@@ -74,14 +74,14 @@ impl ToolRegistry {
     pub async fn execute(
         &self,
         name: &str,
-        params: Value,
+        parameters: Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let tool = self
             .tools
             .get(name)
             .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
-        tool.execute(params, context).await
+        tool.execute(parameters, context).await
     }
 
     pub fn names(&self) -> Vec<&str> {
@@ -107,9 +107,9 @@ impl ToolRegistry {
     /// What a named call will do, bounded so one enormous argument cannot turn
     /// an approval card into a wall of text.
     pub fn preview(&self, name: &str, arguments: &str) -> Option<String> {
-        let params: Value = serde_json::from_str(arguments).ok()?;
-        let rendered = self.tools.get(name)?.preview(&params)?;
-        Some(excerpt(&rendered, MAX_PREVIEW_CHARS))
+        let parameters: Value = serde_json::from_str(arguments).ok()?;
+        let rendered = self.tools.get(name)?.preview(&parameters)?;
+        Some(excerpt(&rendered, MAX_PREVIEW_CHARACTERS))
     }
 
     /// Take the tools out, for folding one registry into another.
@@ -141,7 +141,7 @@ impl Default for ToolRegistry {
 mod tests {
     use super::*;
     use crate::tools::job::TAIL_JOB;
-    use crate::tools::{LINE_BREAK, REASON_DESCRIPTION, REASON_PARAM};
+    use crate::tools::{LINE_BREAK, REASON_DESCRIPTION, REASON_PARAMETER};
     use std::collections::HashSet;
 
     /// A preview a reader approves has to say what will run. `sh -c` runs one
@@ -257,7 +257,7 @@ mod tests {
     fn every_side_effecting_schema_lists_reason_as_a_property_and_as_required() {
         for tool in side_effecting_tools() {
             let schema = tool.parameters_schema();
-            let property = &schema["properties"][REASON_PARAM];
+            let property = &schema["properties"][REASON_PARAMETER];
             assert_eq!(property["type"], "string", "{}", tool.name());
             assert_eq!(
                 property["description"],
@@ -272,8 +272,8 @@ mod tests {
             assert!(
                 required
                     .iter()
-                    .any(|name| name.as_str() == Some(REASON_PARAM)),
-                "{} does not require {REASON_PARAM}",
+                    .any(|name| name.as_str() == Some(REASON_PARAMETER)),
+                "{} does not require {REASON_PARAMETER}",
                 tool.name()
             );
         }
@@ -284,7 +284,7 @@ mod tests {
         let descriptions: HashSet<String> = side_effecting_tools()
             .iter()
             .map(|tool| {
-                tool.parameters_schema()["properties"][REASON_PARAM]["description"]
+                tool.parameters_schema()["properties"][REASON_PARAMETER]["description"]
                     .as_str()
                     .unwrap_or_else(|| panic!("{} has no reason description", tool.name()))
                     .to_string()

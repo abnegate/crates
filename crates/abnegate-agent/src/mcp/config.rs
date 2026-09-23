@@ -222,8 +222,8 @@ mod tests {
         let config = McpConfig::from_json_str(
             r#"{
                 "mcpServers": {
-                    "magents": {
-                        "command": "magents",
+                    "notes": {
+                        "command": "notes-server",
                         "args": ["mcp"]
                     },
                     "docs": {
@@ -237,28 +237,28 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.servers.len(), 2);
-        let magents = config
+        let notes = config
             .servers
             .iter()
-            .find(|server| server.name == "magents")
+            .find(|server| server.name == "notes")
             .unwrap();
-        assert_eq!(magents.args, ["mcp"]);
+        assert_eq!(notes.arguments, ["mcp"]);
         let docs = config
             .servers
             .iter()
             .find(|server| server.name == "docs")
             .unwrap();
-        assert_eq!(docs.env.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(docs.environment.get("FOO").map(String::as_str), Some("bar"));
     }
 
     #[test]
     fn parses_bare_server_map() {
         let config = McpConfig::from_json_str(
-            r#"{ "magents": { "command": "/opt/homebrew/bin/magents", "args": ["mcp"] } }"#,
+            r#"{ "notes": { "command": "/opt/homebrew/bin/notes-server", "args": ["mcp"] } }"#,
         )
         .unwrap();
         assert_eq!(config.servers.len(), 1);
-        assert_eq!(config.servers[0].command, "/opt/homebrew/bin/magents");
+        assert_eq!(config.servers[0].command, "/opt/homebrew/bin/notes-server");
     }
 
     #[test]
@@ -268,7 +268,7 @@ mod tests {
                 "mcpServers": {
                     "off": { "command": "x", "disabled": true },
                     "remote": { "url": "http://localhost:3000/mcp" },
-                    "ok": { "command": "magents", "args": ["mcp"] }
+                    "ok": { "command": "notes-server", "args": ["mcp"] }
                 }
             }"#,
         )
@@ -283,11 +283,11 @@ mod tests {
         let path = directory.path().join("mcp.json");
         std::fs::write(
             &path,
-            r#"{ "mcpServers": { "magents": { "command": "magents", "args": ["mcp"] } } }"#,
+            r#"{ "mcpServers": { "notes": { "command": "notes-server", "args": ["mcp"] } } }"#,
         )
         .unwrap();
         let config = McpConfig::from_file(&path).unwrap();
-        assert_eq!(config.servers[0].name, "magents");
+        assert_eq!(config.servers[0].name, "notes");
     }
 
     #[test]

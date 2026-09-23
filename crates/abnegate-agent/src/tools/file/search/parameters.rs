@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 /// The arguments a call to the tool carries.
 #[derive(Debug, Deserialize)]
-pub(crate) struct SearchCodeParams {
+pub(crate) struct SearchCodeParameters {
     pub(crate) pattern: String,
     pub(crate) path: Option<String>,
     #[serde(default)]
