@@ -25,6 +25,7 @@ mod text;
 mod tier;
 mod tool;
 mod vision;
+mod wait;
 
 pub use crate::application::DEFAULT_APPLICATION;
 pub use abnegate_secret::sanitize;
@@ -45,5 +46,6 @@ pub use tier::{CONFIRMED_FROM, Tier};
 pub(crate) use tool::TIMEOUT_SLACK;
 pub use tool::Tool;
 pub use vision::is_vision_url;
+pub use wait::WaitForTool;
 
 pub(crate) use text::{ERROR_PREFIX, trim_middle};
