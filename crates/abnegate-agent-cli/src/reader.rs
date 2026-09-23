@@ -142,7 +142,7 @@ impl Reader {
             .map(|(_, kind)| (*kind).to_string());
         tracing::warn!(agent = %self.agent, %overlong, kind, "dropped an event too long to read");
         self.journal
-            .append(
+            .append_line(
                 Record::StdoutDropped,
                 json!({ "line_number": self.count, "limit": overlong.limit, "type": kind }),
             )
@@ -155,7 +155,7 @@ impl Reader {
         if self.journal.enabled() {
             let logged = self.scrubber.scrub(&line);
             self.journal
-                .append(
+                .append_line(
                     Record::StdoutLine,
                     json!({ "line_number": self.count, "line": logged }),
                 )

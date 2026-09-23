@@ -24,6 +24,9 @@ pub enum Record {
     /// settled the run.
     Stopped,
     Completed,
+    /// The journal reached its limit, and the lines printed after this are
+    /// not recorded.
+    Truncated,
 }
 
 impl Record {
@@ -44,6 +47,7 @@ impl Record {
             Self::TimedOut => "subprocess_timed_out",
             Self::Stopped => "subprocess_terminated_after_early_failure",
             Self::Completed => "process_completed",
+            Self::Truncated => "journal_truncated",
         }
     }
 }
@@ -76,6 +80,7 @@ mod tests {
             Record::TimedOut,
             Record::Stopped,
             Record::Completed,
+            Record::Truncated,
         ];
         let mut names: Vec<&str> = records.iter().map(|record| record.as_str()).collect();
         for name in &names {

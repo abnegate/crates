@@ -134,7 +134,7 @@ impl CliProvider {
             .as_deref()
             .and_then(|root| ExecutionLogFiles::create(root, self.agent.as_str(), label));
         let journal = match &files {
-            Some(files) => Journal::open(&files.events, label).await,
+            Some(files) => Journal::open(&files.events, label, self.settings.journal_limit).await,
             None => Journal::disabled(),
         };
         let logged: Vec<_> = arguments

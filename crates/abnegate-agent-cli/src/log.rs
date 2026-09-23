@@ -10,6 +10,7 @@ mod files;
 mod journal;
 mod record;
 mod sink;
+mod writer;
 
 use std::path::PathBuf;
 

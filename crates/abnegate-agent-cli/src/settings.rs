@@ -21,6 +21,10 @@ pub const DEFAULT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 /// One event is a JSON object holding at most a turn's worth of text.
 pub const DEFAULT_LINE_LIMIT: usize = 1024 * 1024;
 
+/// Room for every line of a long session, and a bound on a runaway one's
+/// share of the disk.
+pub const DEFAULT_JOURNAL_LIMIT: u64 = 64 * 1024 * 1024;
+
 /// The host variables a child is given unless it
 /// [inherits the whole environment](CliSettings::inherit_environment): where
 /// to find programs, whose home it runs in, where temporary files go, and
@@ -114,6 +118,9 @@ pub struct CliSettings {
     pub mcp: McpConfig,
     /// Where each run keeps its [execution logs](crate::log). `None` keeps none.
     pub log: Option<PathBuf>,
+    /// Bytes of a run's journal the lines it printed may fill, past which
+    /// they are no longer recorded.
+    pub journal_limit: u64,
     /// A stderr line this returns true for settles the run as failed, in the
     /// line's own words, and the agent is stopped: an agent retrying against
     /// a rate limit is stopped instead of waited on until the timeout. Stdout
@@ -139,6 +146,7 @@ impl Default for CliSettings {
             read_only: false,
             mcp: McpConfig::default(),
             log: None,
+            journal_limit: DEFAULT_JOURNAL_LIMIT,
             tripwire: None,
         }
     }
@@ -238,6 +246,11 @@ impl CliSettings {
         self
     }
 
+    pub fn with_journal_limit(mut self, limit: u64) -> Self {
+        self.journal_limit = limit;
+        self
+    }
+
     pub fn with_tripwire(
         mut self,
         tripwire: impl Fn(&str) -> bool + Send + Sync + 'static,
@@ -256,6 +269,7 @@ mod tests {
     use abnegate_secret::SecretValue;
 
     use super::CliSettings;
+    use super::DEFAULT_JOURNAL_LIMIT;
     use super::DEFAULT_LINE_LIMIT;
     use super::DEFAULT_OUTPUT_LIMIT;
     use super::DEFAULT_TIMEOUT;
@@ -279,6 +293,7 @@ mod tests {
         assert!(!settings.read_only);
         assert!(settings.mcp.is_empty());
         assert!(settings.log.is_none());
+        assert_eq!(settings.journal_limit, DEFAULT_JOURNAL_LIMIT);
         assert!(settings.tripwire.is_none());
     }
 
@@ -343,6 +358,7 @@ mod tests {
             .with_instructions("Be terse.")
             .with_working_directory("/w")
             .with_log("/var/log/agents")
+            .with_journal_limit(4096)
             .inherit_environment();
 
         assert_eq!(settings.arguments, ["--json-schema", "{}", "--verbose"]);
@@ -354,6 +370,7 @@ mod tests {
         assert_eq!(settings.working_directory, Some(PathBuf::from("/w")));
         assert_eq!(settings.log, Some(PathBuf::from("/var/log/agents")));
         assert!(settings.inherit_environment);
+        assert_eq!(settings.journal_limit, 4096);
     }
 
     #[test]

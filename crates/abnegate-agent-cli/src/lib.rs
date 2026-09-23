@@ -103,8 +103,8 @@ pub use crate::parser::claude::{
 pub use crate::provider::CliProvider;
 pub use crate::question::BlockingQuestion;
 pub use crate::settings::{
-    CliSettings, DEFAULT_LINE_LIMIT, DEFAULT_OUTPUT_LIMIT, DEFAULT_TIMEOUT, INHERITED_VARIABLES,
-    READ_ONLY_OPTIONS, READ_ONLY_SWITCHES, READ_ONLY_TOOLS,
+    CliSettings, DEFAULT_JOURNAL_LIMIT, DEFAULT_LINE_LIMIT, DEFAULT_OUTPUT_LIMIT, DEFAULT_TIMEOUT,
+    INHERITED_VARIABLES, READ_ONLY_OPTIONS, READ_ONLY_SWITCHES, READ_ONLY_TOOLS,
 };
 pub use crate::stdout_parse_result::StdoutParseResult;
 pub use crate::stream::{ApiContentBlock, ApiDelta, ApiStreamEvent};

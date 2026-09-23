@@ -131,7 +131,7 @@ impl Diagnostics {
         self.raw.write(b"\n").await;
         if self.journal.enabled() {
             self.journal
-                .append(
+                .append_line(
                     Record::StderrLine,
                     json!({ "line_number": self.count, "line": scrubbed }),
                 )
