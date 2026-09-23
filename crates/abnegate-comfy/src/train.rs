@@ -1,5 +1,9 @@
 //! HTTP client that runs packaged LoRA training graphs on ComfyUI.
 
+mod contract;
+
+pub use contract::Contract;
+
 use crate::config::Config;
 use crate::http::CANCEL_TIMEOUT;
 use crate::http::POLL_TIMEOUT;
@@ -12,7 +16,8 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -47,66 +52,6 @@ pub const ARTIFACT_PREFIX: &str = "zone-lora-";
 /// Default namespace of the input folder a quality probe stages its sample in.
 pub const PROBE_PREFIX: &str = "zone-probe-";
 
-/// The names a training run shares with the ComfyUI node pack that executes it
-/// and with an external training command. The nodes refuse a run namespace
-/// they do not recognise, so these have to match the deployment.
-///
-/// Defaults match Zone's node pack and training script, the deployment this crate was built for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Contract {
-    /// `class_type` of the node that trains the adapter.
-    pub train_lora_node: String,
-    /// `class_type` of the node that deletes a run's dataset and weights.
-    pub cleanup_training_run_node: String,
-    /// `class_type` of the node that loads a staged dataset and its manifest.
-    pub load_train_dataset_node: String,
-    /// `class_type` of the node that measures a model's loss on a dataset.
-    pub probe_loss_node: String,
-    /// `class_type` of the node that moves a trained checkpoint to where a
-    /// LoRA loader finds it.
-    pub stage_training_artifact_node: String,
-    /// Namespace of the input folder a run stages its dataset in.
-    pub folder_prefix: String,
-    /// Namespace of the weights a run writes.
-    pub artifact_prefix: String,
-    /// Namespace of the input folder a quality probe stages its sample in.
-    pub probe_prefix: String,
-    /// Prefix of the variables handed to [`Config::train_command`]: the
-    /// command reads the dataset from `<prefix>_DIR` and writes the adapter to
-    /// `<prefix>_OUTPUT`.
-    pub environment_prefix: String,
-    /// Prefix of `<prefix>_INPUT`, the ComfyUI input directory handed to
-    /// [`Config::train_command`].
-    pub input_environment_prefix: String,
-}
-
-impl Default for Contract {
-    fn default() -> Self {
-        Self {
-            train_lora_node: TRAIN_LORA_NODE.to_string(),
-            cleanup_training_run_node: CLEANUP_TRAINING_RUN_NODE.to_string(),
-            load_train_dataset_node: LOAD_TRAIN_DATASET_NODE.to_string(),
-            probe_loss_node: PROBE_LOSS_NODE.to_string(),
-            stage_training_artifact_node: STAGE_TRAINING_ARTIFACT_NODE.to_string(),
-            folder_prefix: FOLDER_PREFIX.to_string(),
-            artifact_prefix: ARTIFACT_PREFIX.to_string(),
-            probe_prefix: PROBE_PREFIX.to_string(),
-            environment_prefix: ENVIRONMENT_PREFIX.to_string(),
-            input_environment_prefix: INPUT_ENVIRONMENT_PREFIX.to_string(),
-        }
-    }
-}
-
-impl Contract {
-    pub(crate) fn variable(&self, name: &str) -> String {
-        format!("{}_{name}", self.environment_prefix)
-    }
-
-    pub(crate) fn input_variable(&self) -> String {
-        format!("{}_INPUT", self.input_environment_prefix)
-    }
-}
-
 #[derive(Debug, Deserialize)]
 pub struct TrainConfig {
     passes_per_image: u32,
@@ -138,8 +83,10 @@ impl Run {
         }
     }
 
-    /// Refuses names that are not a v4 UUID under `contract`'s namespaces.
+    /// Refuses names that are not a v4 UUID under `contract`'s namespaces,
+    /// and any name at all under a contract that fails [`Contract::validate`].
     pub fn validate(&self, contract: &Contract) -> Result<(), TrainError> {
+        contract.validate()?;
         validate_run_name(&self.folder, &contract.folder_prefix)?;
         validate_run_name(&self.artifact, &contract.artifact_prefix)
     }
@@ -736,6 +683,11 @@ fn pairs(model: &TrainingModel, work: &Path) -> Result<Vec<Pair>, TrainError> {
 
 fn stage_local(work: &Path, input: &Path, run: &Run) -> Result<(), TrainError> {
     let input = require_directory(input, "ComfyUI input directory")?;
+    if !is_single_component(&run.folder) {
+        return Err(TrainError::Invalid(
+            "training namespace is not a single directory name",
+        ));
+    }
     let destination = input.join(&run.folder);
     if fs::symlink_metadata(&destination).is_ok() {
         return Err(TrainError::Failed(
@@ -1105,6 +1057,16 @@ fn require_child_directory(
         return Err(TrainError::Invalid(label));
     }
     Ok(path)
+}
+
+/// Whether `name` joins onto a directory as exactly one entry inside it.
+pub(crate) fn is_single_component(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    !name.contains(['/', '\\'])
+        && matches!(
+            (components.next(), components.next()),
+            (Some(Component::Normal(_)), None)
+        )
 }
 
 fn copy_new(source: &Path, destination: &Path) -> Result<(), TrainError> {
@@ -1682,6 +1644,80 @@ mod tests {
             "{}",
             failure.error
         );
+    }
+
+    fn escaping() -> Contract {
+        Contract {
+            folder_prefix: "../escape-".into(),
+            ..Contract::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_contract_that_names_a_path_outside_comfyui_is_refused_before_anything_is_sent() {
+        let server = MockServer::start().await;
+        let config = Config {
+            contract: escaping(),
+            ..config(&server)
+        };
+        let work = dataset();
+        let error = run(
+            &config,
+            &base(),
+            work.path(),
+            &work.path().join("out.safetensors"),
+            2,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TrainError::Configuration(_)), "{error}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cleanup_under_an_invalid_contract_touches_nothing() {
+        let server = MockServer::start().await;
+        let config = Config {
+            contract: escaping(),
+            ..config(&server)
+        };
+        cleanup(&config, &Run::new(&config.contract)).await;
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_staging_never_creates_a_directory_outside_the_input_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("input");
+        fs::create_dir(&input).unwrap();
+        let escaped = format!("escaped-{}", Uuid::new_v4());
+        let run = Run {
+            folder: format!("../{escaped}"),
+            artifact: format!("{ARTIFACT_PREFIX}{}", Uuid::new_v4()),
+        };
+        let work = dataset();
+        assert!(stage_local(work.path(), &input, &run).is_err());
+        assert!(
+            !root.path().join(&escaped).exists(),
+            "staging created a directory beside the input directory"
+        );
+    }
+
+    #[test]
+    fn only_a_plain_name_is_a_single_component() {
+        assert!(is_single_component("zone-run"));
+        for name in [
+            "",
+            ".",
+            "..",
+            "../run",
+            "nested/run",
+            "run/",
+            "back\\slash",
+            "/run",
+        ] {
+            assert!(!is_single_component(name), "{name:?} was accepted");
+        }
     }
 
     #[tokio::test]

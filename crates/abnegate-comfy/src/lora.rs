@@ -1792,6 +1792,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_contract_that_names_a_path_outside_comfyui_is_refused() {
+        let (_root, mut config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
+        config.contract.artifact_prefix = "../escape-".into();
+        let error = rejected(&config, identity("escaping")).await;
+        assert!(matches!(error, TrainError::Configuration(_)), "{error}");
+        assert!(training_entries(&config).is_empty());
+    }
+
+    #[tokio::test]
     async fn training_needs_images() {
         let root = root();
         let config = Config {

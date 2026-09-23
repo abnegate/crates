@@ -874,7 +874,11 @@ fn subsample(
     let input = input(config)?;
     let source = child_directory(&input, folder)?;
     let name = format!("{}{}", contract.probe_prefix, Uuid::new_v4());
+    if !crate::train::is_single_component(&name) {
+        return None;
+    }
     let destination = input.join(&name);
+
     if fs::symlink_metadata(&destination).is_ok() {
         return None;
     }
@@ -1235,6 +1239,39 @@ mod tests {
         };
         assert!(input(&config).is_none());
         assert!(produced(&config).is_none());
+    }
+
+    #[test]
+    fn a_sample_is_never_staged_outside_the_input_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let models = root.path().join("models");
+        let input = root.path().join("input");
+        fs::create_dir(&models).unwrap();
+        fs::create_dir(&input).unwrap();
+        let run = run();
+        let source = input.join(&run.folder).join("targets");
+        fs::create_dir_all(&source).unwrap();
+        for index in 0..5u8 {
+            fs::write(source.join(format!("{index:04}.png")), [index]).unwrap();
+        }
+        let captions = (0..5)
+            .map(|index| (format!("{index:04}.png"), format!("instruction {index}")))
+            .collect();
+        let config = Config {
+            models_directory: models,
+            contract: Contract {
+                probe_prefix: "../outside-".into(),
+                ..Contract::default()
+            },
+            ..Default::default()
+        };
+        assert!(subsample(&config, &flux(), &run.folder, &captions, 4).is_none());
+        let stray: Vec<_> = fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("outside-"))
+            .collect();
+        assert!(stray.is_empty(), "a sample was staged at {stray:?}");
     }
 
     #[cfg(unix)]

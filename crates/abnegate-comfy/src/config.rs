@@ -239,7 +239,7 @@ impl Config {
                 "COMFYUI_API_TOKEN is not a valid header value",
             ));
         }
-        Ok(())
+        self.contract.validate()
     }
 
     /// [`Config::from_env`], taking the U2-Net weights path from `variable`
@@ -502,6 +502,13 @@ mod tests {
             zero(&mut config);
             assert!(config.validate().is_err(), "{config:?} was accepted");
         }
+    }
+
+    #[test]
+    fn a_contract_that_could_name_a_path_outside_comfyui_is_refused() {
+        let mut config = Config::default();
+        config.contract.folder_prefix = "../escape-".into();
+        assert!(config.validate().is_err());
     }
 
     #[test]
