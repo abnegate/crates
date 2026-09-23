@@ -1,4 +1,5 @@
 use super::*;
+use crate::git::WorktreeEntry;
 use tokio::io::AsyncWriteExt;
 
 impl GitService {
@@ -59,15 +60,14 @@ impl GitService {
             let _ = Self::finish(&mut prune).await;
             let listed = Self::output(
                 Self::hardened()
-                    .args(["worktree", "list", "--porcelain"])
+                    .args(["worktree", "list", "--porcelain", "-z"])
                     .current_dir(path)
                     .stdout(Stdio::piped()),
             )
             .await?;
-            let holder = format!("branch {reference}");
-            if String::from_utf8_lossy(&listed.stdout)
-                .lines()
-                .any(|line| line == holder)
+            if WorktreeEntry::parse(&listed.stdout)
+                .iter()
+                .any(|entry| entry.branch.as_deref() == Some(reference.as_str()))
             {
                 return Err(GitError::CommandFailed(
                     "An earlier run's worktree still holds this task's branch with work that was \

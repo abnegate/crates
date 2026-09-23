@@ -22,6 +22,7 @@ mod group;
 mod hardening;
 mod remote_head;
 mod service;
+mod worktree_entry;
 
 pub use crate::git::diff_summary::DiffSummary;
 pub use crate::git::error::GitError;
@@ -33,3 +34,4 @@ pub use crate::git::remote_head::RemoteHead;
 pub use crate::git::service::GitService;
 #[cfg(test)]
 pub(crate) use crate::git::service::fixtures;
+pub(crate) use crate::git::worktree_entry::WorktreeEntry;
