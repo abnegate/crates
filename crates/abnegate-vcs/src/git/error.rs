@@ -58,7 +58,10 @@ pub enum GitError {
     #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
     UnsafeWorktree(PathBuf),
 
-    #[error("Refusing to stage beside the nested repository at {}", .0.display())]
+    /// A nested repository standing where the index records a gitlink. Its
+    /// path is the one the index holds, which a run can choose, so it is
+    /// shown escaped.
+    #[error("Refusing to stage beside the nested repository at {0:?}")]
     NestedRepository(PathBuf),
 
     #[error("IO error: {0}")]

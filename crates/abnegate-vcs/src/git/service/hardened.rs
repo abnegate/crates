@@ -2816,6 +2816,34 @@ mod configuration_tests {
         );
     }
 
+    /// The path of a nested repository comes from the index, where a run can
+    /// record any name, so a refusal carries it escaped.
+    #[tokio::test]
+    async fn a_refusal_naming_a_nested_repository_carries_no_control_character() {
+        let repository = repository();
+        let head = git(repository.path(), &["rev-parse", "HEAD"]);
+        let name = "nested\nplanted\u{1b}[2J";
+        git(
+            repository.path(),
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{head},{name}"),
+            ],
+        );
+        std::fs::create_dir_all(repository.path().join(name).join(".git")).unwrap();
+
+        let refusal = GitService::new().stage_all(repository.path()).await;
+
+        assert!(
+            matches!(refusal, Err(GitError::NestedRepository(_))),
+            "{refusal:?}"
+        );
+        let shown = refusal.unwrap_err().to_string();
+        assert!(!shown.chars().any(char::is_control), "{shown:?}");
+    }
+
     /// A diff far past the limit is torn down once enough has been read, rather
     /// than buffered whole, so a run cannot make the host hold gigabytes.
     #[tokio::test]

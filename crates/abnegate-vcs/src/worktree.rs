@@ -366,7 +366,7 @@ pub fn remove(repository: &Path, path: &Path) -> std::io::Result<()> {
     if let Some(name) = on
         && let Err(error) = delete_branch(repository, &name)
     {
-        tracing::warn!(branch = %name, %error, "Removed a worktree but could not delete its branch");
+        tracing::debug!(branch = ?name, %error, "Removed a worktree but could not delete its branch");
     }
     Ok(())
 }
