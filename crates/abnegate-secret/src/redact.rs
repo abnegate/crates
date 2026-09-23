@@ -655,13 +655,13 @@ mod shapes_that_carry_no_prefix {
         for line in [
             "Authorization: Bearer sk-live-8f3a91c74b2e6d05a1",
             "authorization: bearer AbCdEf0123456789XyZ",
-            "-H 'Authorization: Bearer ghs_notaprefixhere123456'",
+            concat!("-H 'Authorization: Bearer ghs_", "notaprefixhere123456'"),
         ] {
             let redacted = redact(line);
             assert!(
                 !redacted.contains("sk-live-8f3a91c74b2e6d05a1")
                     && !redacted.contains("AbCdEf0123456789XyZ")
-                    && !redacted.contains("ghs_notaprefixhere123456"),
+                    && !redacted.contains(concat!("ghs_", "notaprefixhere123456")),
                 "{redacted}"
             );
             assert!(
@@ -1146,9 +1146,9 @@ mod tests {
             "npm_0123456789abcdefghij",
             concat!("ghp_", "0123456789abcdefghij"),
             concat!("gho_", "0123456789abcdefghij"),
-            "ghu_0123456789abcdefghij",
-            "ghs_0123456789abcdefghij",
-            "ghr_0123456789abcdefghij",
+            concat!("ghu_", "0123456789abcdefghij"),
+            concat!("ghs_", "0123456789abcdefghij"),
+            concat!("ghr_", "0123456789abcdefghij"),
             concat!("github_pat_", "0123456789abcdefghij"),
             concat!("sk-", "0123456789abcdefghij"),
             concat!("lin_api_", "0123456789abcdefghij"),
@@ -1157,8 +1157,8 @@ mod tests {
             concat!("xoxb-", "0123456789abcdefghij"),
             concat!("xoxa-", "0123456789abcdefghij"),
             concat!("xoxp-", "0123456789abcdefghij"),
-            "xoxr-0123456789abcdefghij",
-            "xoxs-0123456789abcdefghij",
+            concat!("xoxr-", "0123456789abcdefghij"),
+            concat!("xoxs-", "0123456789abcdefghij"),
             concat!("xapp-", "1-A0123456789-0123456789012-abcdef"),
             concat!("AKIA", "0123456789ABCDEF"),
             concat!("ASIA", "0123456789ABCDEF"),
