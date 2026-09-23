@@ -121,7 +121,6 @@ impl CommandExecutor {
         // A job that asked to be confined never runs unconfined: an unproven
         // sandbox fails the spawn instead of falling back.
         let inherited = self.config.environment.inherited();
-        let started_at = Instant::now();
         let spawned = match confinement {
             Some(request) => {
                 Confinement::probe(request.mode()).await?;
@@ -142,6 +141,7 @@ impl CommandExecutor {
             }
         };
         let mut child = spawned.map_err(ExecutorError::SpawnFailed)?;
+        let started_at = Instant::now();
 
         let pid = child.id().ok_or_else(|| {
             ExecutorError::SpawnFailed(std::io::Error::other("Process has no PID"))
@@ -223,6 +223,7 @@ impl Default for CommandExecutor {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::Path;
     use std::path::PathBuf;
 
     use base64::Engine;
@@ -231,6 +232,8 @@ mod tests {
     use crate::executor::ConfinementMode;
     use crate::executor::EnvironmentPolicy;
     use crate::executor::GRACE_PERIOD;
+    use crate::executor::sandbox;
+    use crate::executor::sandbox::REQUIRE_CONFINEMENT;
     use crate::protocol::ConfinementRequest;
     use crate::protocol::ErrorCode;
     use crate::protocol::LogLevel;
@@ -359,6 +362,25 @@ mod tests {
         }
     }
 
+    /// Run `command` confined to `root`, which it may read and write.
+    fn confined(job_id: &str, root: &Path, command: &str) -> InboundMessage {
+        InboundMessage::RunStart {
+            job_id: job_id.to_string(),
+            workspace: root.to_path_buf(),
+            command: command.to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            timeout_ms: Some(15_000),
+            max_output_bytes: None,
+            working_dir: None,
+            confinement: Some(Box::new(ConfinementRequest {
+                read_roots: vec![root.to_path_buf()],
+                write_roots: vec![root.to_path_buf()],
+                process_tree: None,
+            })),
+        }
+    }
+
     fn limited(request: InboundMessage, limit: usize) -> InboundMessage {
         let InboundMessage::RunStart {
             job_id,
@@ -388,9 +410,10 @@ mod tests {
     }
 
     /// Re-run the test `name` in a child test process whose environment is
-    /// `PATH` plus `environment`, so a test can shape the executor's own
-    /// environment without mutating this process's. Returns whether this call
-    /// was the parent, which has nothing left to do once the child passes.
+    /// `PATH` and [`REQUIRE_CONFINEMENT`] plus `environment`, so a test can
+    /// shape the executor's own environment, or start with no sandbox verdict
+    /// cached, without touching this process. Returns whether this call was
+    /// the parent, which has nothing left to do once the child passes.
     async fn delegated_to_child(name: &str, environment: &[(&str, &str)]) -> bool {
         if std::env::var(CHILD).as_deref() == Ok(name) {
             return false;
@@ -400,6 +423,7 @@ mod tests {
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env(CHILD, name)
+            .envs(std::env::var_os(REQUIRE_CONFINEMENT).map(|value| (REQUIRE_CONFINEMENT, value)))
             .envs(environment.iter().copied())
             .output()
             .await
@@ -514,29 +538,15 @@ mod tests {
         {
             return;
         }
-        if Confinement::probe(ConfinementMode::SingleCommand)
-            .await
-            .is_err()
-        {
+        if !sandbox::proven(ConfinementMode::SingleCommand).await {
             return;
         }
         let workspace = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(workspace.path()).unwrap();
-        let request = InboundMessage::RunStart {
-            job_id: "confined-environment".to_string(),
-            workspace: root.clone(),
-            command: "/usr/bin/env".to_string(),
-            args: vec![],
-            env: HashMap::from([("LAYERED".to_string(), "request".to_string())]),
-            timeout_ms: Some(15_000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: Some(Box::new(ConfinementRequest {
-                read_roots: vec![root.clone()],
-                write_roots: vec![root.clone()],
-                process_tree: None,
-            })),
-        };
+        let mut request = confined("confined-environment", &root, "/usr/bin/env");
+        if let InboundMessage::RunStart { env, .. } = &mut request {
+            env.insert("LAYERED".to_string(), "request".to_string());
+        }
 
         let output = environment_of(&CommandExecutor::new(), &request).await;
         let lines: Vec<&str> = output.lines().collect();
@@ -548,6 +558,46 @@ mod tests {
             "the sandbox's own HOME outranks the executor's: {output}"
         );
         assert!(!output.contains(MARKER), "{output}");
+    }
+
+    /// The first confined job waits for the sandbox to be proven, and none of
+    /// that wait belongs to the job: its timeout and reported duration count
+    /// from the spawn. Runs in a child process, where no verdict is cached.
+    #[tokio::test]
+    async fn the_first_confined_job_is_not_charged_for_proving_the_sandbox() {
+        const NAME: &str = "executor::command::tests::the_first_confined_job_is_not_charged_for_proving_the_sandbox";
+        if delegated_to_child(NAME, &[]).await {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let (sender, receiver) = mpsc::channel(100);
+        let before = Instant::now();
+
+        let spawned = CommandExecutor::new()
+            .spawn(&confined("first-confined", &root, "/usr/bin/true"), sender)
+            .await;
+        let spawning = before.elapsed();
+
+        let handle = match spawned {
+            Ok(handle) => handle,
+            Err(ExecutorError::ConfinementUnavailable(error)) => {
+                assert!(
+                    !sandbox::required(ConfinementMode::SingleCommand),
+                    "{REQUIRE_CONFINEMENT} is set, but this host cannot prove its sandbox: {error}"
+                );
+                return;
+            }
+            Err(error) => panic!("{error}"),
+        };
+        let run = finish(receiver).await;
+        let clock = handle.started_at.duration_since(before);
+
+        assert_eq!(run.exit(), Some((Some(0), None)), "{:?}", run.messages);
+        assert!(
+            clock >= spawning / 2,
+            "the job's clock started {clock:?} into a {spawning:?} spawn, before the sandbox was proven"
+        );
     }
 
     #[tokio::test]
@@ -767,6 +817,40 @@ mod tests {
             gone(handle.pid).await,
             "a consumer that stopped reading kept a timed-out child alive"
         );
+    }
+
+    /// The group is released just before its leader is reaped, so by the
+    /// time any ending is reported no handle to it -- such as the one a
+    /// registry holds -- can signal an identifier that is free for reuse.
+    #[tokio::test]
+    async fn every_ending_releases_the_group_before_it_is_reported() {
+        let executor = CommandExecutor::with_config(
+            ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
+        );
+        let mut timed_out = shell("released-timeout", "sleep 30");
+        if let InboundMessage::RunStart { timeout_ms, .. } = &mut timed_out {
+            *timeout_ms = Some(200);
+        }
+        let endings = [
+            (shell("released-exit", "exit 0"), false),
+            (timed_out, false),
+            (shell("released-cancel", "sleep 30"), true),
+        ];
+
+        for (request, cancelled) in endings {
+            let (sender, receiver) = mpsc::channel(100);
+            let handle = executor.spawn(&request, sender).await.unwrap();
+            if cancelled {
+                handle.cancel();
+            }
+            let run = finish(receiver).await;
+
+            assert!(
+                handle.process_group.is_released(),
+                "{:?}",
+                run.messages.last()
+            );
+        }
     }
 
     #[tokio::test]

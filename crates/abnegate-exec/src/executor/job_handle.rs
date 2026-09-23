@@ -18,7 +18,8 @@ pub struct JobHandle {
     /// Handle to send data to stdin
     pub stdin: Option<StdinHandle>,
 
-    /// Start time
+    /// When the child was spawned, which the job's timeout and reported
+    /// duration count from
     pub started_at: Instant,
 
     /// Cancelling this stops the job: its process group is sent SIGTERM, then

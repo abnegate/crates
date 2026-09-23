@@ -6,6 +6,10 @@
 //! - The unsupported-platform path
 //! - Fail-closed spawning when confinement cannot be established
 //! - Real confined execution on hosts that can prove their sandbox
+//!
+//! A real-sandbox test skips itself on a host that cannot prove its sandbox,
+//! or lacks a tool it drives, unless `ABNEGATE_EXEC_REQUIRE_CONFINEMENT` is
+//! set, as in CI, where that host fails instead.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -13,6 +17,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -39,6 +44,51 @@ use tokio::sync::mpsc;
 
 const SECRET: &str = "secret\n";
 const GRANTED: &str = "granted\n";
+const REQUIRE_CONFINEMENT: &str = "ABNEGATE_EXEC_REQUIRE_CONFINEMENT";
+const NETWORK_CLIENTS: [&str; 3] = ["/usr/bin/nc", "/bin/nc", "/usr/bin/curl"];
+
+fn confinement_required() -> bool {
+    std::env::var_os(REQUIRE_CONFINEMENT).is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// Whether the host's backend holds `mode` at all. Bubblewrap cannot bound a
+/// tree, so a tree test skips there even where confinement is required.
+fn claimed(mode: ConfinementMode) -> bool {
+    HOST_BACKEND.is_some_and(|backend| match mode {
+        ConfinementMode::ProcessTree => backend.enforces_execute_roots(),
+        _ => true,
+    })
+}
+
+/// Whether a test that runs a command in the host's real sandbox, in `mode`,
+/// can go ahead; where confinement is required, a sandbox the host claims but
+/// cannot prove fails the test instead.
+async fn sandbox(mode: ConfinementMode) -> bool {
+    match Confinement::probe(mode).await {
+        Ok(()) => true,
+        Err(error) => {
+            assert!(
+                !(confinement_required() && claimed(mode)),
+                "{REQUIRE_CONFINEMENT} is set, but this host cannot prove its sandbox for {mode:?}: {error}"
+            );
+            false
+        }
+    }
+}
+
+/// The first of `candidates` installed on this host; where confinement is
+/// required, a host with none of them fails the test instead of skipping it.
+fn installed(candidates: &[&'static str]) -> Option<&'static str> {
+    let found = candidates
+        .iter()
+        .copied()
+        .find(|candidate| Path::new(candidate).is_file());
+    assert!(
+        found.is_some() || !confinement_required(),
+        "{REQUIRE_CONFINEMENT} is set, but none of {candidates:?} is installed"
+    );
+    found
+}
 
 struct Workspace {
     _base: TempDir,
@@ -143,10 +193,10 @@ fn exit_code(messages: &[OutboundMessage]) -> Option<i32> {
 
 fn seatbelt_profile(confinement: &Confinement) -> String {
     let invocation = confinement.invocation(Some(Backend::Seatbelt)).unwrap();
-    assert_eq!(invocation.program, PathBuf::from("/usr/bin/sandbox-exec"));
-    assert_eq!(invocation.arguments[0], "-p");
-    assert_eq!(invocation.arguments[2], "--");
-    invocation.arguments[1].clone()
+    assert_eq!(invocation.program(), Path::new("/usr/bin/sandbox-exec"));
+    assert_eq!(invocation.arguments()[0], "-p");
+    assert_eq!(invocation.arguments()[2], "--");
+    invocation.arguments()[1].clone()
 }
 
 #[test]
@@ -316,23 +366,21 @@ fn test_confinement_rejects_a_relative_root() {
 
 fn bubblewrap_invocation(confinement: &Confinement) -> Invocation {
     let invocation = confinement.invocation(Some(Backend::Bubblewrap)).unwrap();
-    assert_eq!(invocation.program, PathBuf::from("/usr/bin/bwrap"));
+    assert_eq!(invocation.program(), Path::new("/usr/bin/bwrap"));
     invocation
 }
 
 fn bubblewrap_arguments(confinement: &Confinement) -> Vec<String> {
-    bubblewrap_invocation(confinement).arguments
+    bubblewrap_invocation(confinement).arguments().to_vec()
 }
 
-/// The environment bubblewrap sets for the command: it clears its own, then
-/// applies each `--setenv NAME VALUE` read from the descriptor.
+/// The environment bubblewrap sets for the command: its arguments open with
+/// `--clearenv`, then it applies each `--setenv NAME VALUE` read from the
+/// descriptor.
 fn bubblewrap_command_environment(invocation: &Invocation) -> BTreeMap<String, String> {
-    let (clear, pairs) = invocation
-        .descriptor_arguments
-        .split_first()
-        .expect("bubblewrap reads the environment from its descriptor");
-    assert_eq!(clear, "--clearenv");
-    pairs
+    assert_eq!(invocation.arguments()[0], "--clearenv");
+    invocation
+        .descriptor_arguments()
         .chunks(3)
         .map(|option| {
             assert_eq!(option[0], "--setenv", "{option:?}");
@@ -353,8 +401,9 @@ fn test_bubblewrap_arguments_unshare_everything() {
     let arguments = bubblewrap_arguments(&confinement(&workspace.root, vec![]));
 
     assert_eq!(
-        arguments[..10],
+        arguments[..11],
         [
+            "--clearenv",
             "--die-with-parent",
             "--new-session",
             "--unshare-all",
@@ -408,7 +457,7 @@ fn test_bubblewrap_invocation_sets_the_environment_and_working_directory() {
         environment.get("LC_ALL").map(String::as_str),
         Some("C.UTF-8")
     );
-    assert!(window(&invocation.arguments, &["--chdir", &root]));
+    assert!(window(invocation.arguments(), &["--chdir", &root]));
 }
 
 #[test]
@@ -424,13 +473,13 @@ fn test_bubblewrap_arguments_never_carry_an_environment_value() {
 
     assert!(
         invocation
-            .arguments
+            .arguments()
             .iter()
             .all(|argument| !argument.contains(SECRET)),
         "an argument vector is readable by every user on the host: {:?}",
-        invocation.arguments
+        invocation.arguments()
     );
-    assert!(!invocation.arguments.contains(&"--setenv".to_string()));
+    assert!(!invocation.arguments().contains(&"--setenv".to_string()));
     assert_eq!(
         bubblewrap_command_environment(&invocation)
             .get("APP_MASTER_KEY")
@@ -454,9 +503,9 @@ fn test_bubblewrap_itself_starts_without_any_caller_controlled_variable() {
     let invocation = bubblewrap_invocation(&confinement);
 
     assert!(
-        invocation.environment.is_empty(),
+        invocation.environment().is_empty(),
         "{:?}",
-        invocation.environment.keys()
+        invocation.environment().keys()
     );
     assert!(bubblewrap_command_environment(&invocation).contains_key("LD_PRELOAD"));
 }
@@ -623,6 +672,26 @@ async fn test_probe_result_is_cached() {
     assert_eq!(first, second);
 }
 
+/// CI sets the switch where the sandbox must work, so a regression that breaks
+/// the probe fails there instead of skipping every real-sandbox test.
+#[tokio::test]
+async fn test_a_host_that_requires_confinement_proves_it() {
+    if !confinement_required() {
+        return;
+    }
+
+    assert_eq!(
+        Confinement::probe(ConfinementMode::SingleCommand).await,
+        Ok(())
+    );
+    if claimed(ConfinementMode::ProcessTree) {
+        assert_eq!(
+            Confinement::probe(ConfinementMode::ProcessTree).await,
+            Ok(())
+        );
+    }
+}
+
 async fn run_confined(request: &InboundMessage) -> Vec<OutboundMessage> {
     let (sender, mut receiver) = mpsc::channel(1000);
     CommandExecutor::new().spawn(request, sender).await.unwrap();
@@ -631,10 +700,7 @@ async fn run_confined(request: &InboundMessage) -> Vec<OutboundMessage> {
 
 #[tokio::test]
 async fn test_confined_command_reads_a_granted_root() {
-    if Confinement::probe(ConfinementMode::SingleCommand)
-        .await
-        .is_err()
-    {
+    if !sandbox(ConfinementMode::SingleCommand).await {
         return;
     }
 
@@ -652,10 +718,7 @@ async fn test_confined_command_reads_a_granted_root() {
 
 #[tokio::test]
 async fn test_confined_command_cannot_read_outside_its_roots() {
-    if Confinement::probe(ConfinementMode::SingleCommand)
-        .await
-        .is_err()
-    {
+    if !sandbox(ConfinementMode::SingleCommand).await {
         return;
     }
 
@@ -666,6 +729,95 @@ async fn test_confined_command_cannot_read_outside_its_roots() {
     assert!(
         !stdout(&messages).contains(SECRET.trim()),
         "the sandbox leaked a file outside its read roots"
+    );
+}
+
+/// The names the sandbox sets for every command itself.
+const SANDBOX_OWN: [&str; 7] = ["HOME", "TMPDIR", "TMP", "TEMP", "PATH", "LANG", "LC_ALL"];
+
+/// A caller outside this crate runs the host invocation through its public
+/// spawn, and the command sees what it asked for and nothing of the caller's.
+#[tokio::test]
+async fn test_the_public_spawn_hands_the_command_its_environment_and_none_of_the_callers() {
+    if !sandbox(ConfinementMode::SingleCommand).await {
+        return;
+    }
+    let workspace = workspace();
+    let invocation = Confinement::new("/usr/bin/env", vec![], &workspace.root)
+        .with_roots(&request(&workspace.root))
+        .with_environment(HashMap::from([(
+            "REQUESTED".to_string(),
+            "value".to_string(),
+        )]))
+        .host_invocation()
+        .unwrap();
+
+    let output = invocation
+        .spawn(|command| {
+            command
+                .current_dir(&workspace.root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+        })
+        .unwrap()
+        .wait_with_output()
+        .await
+        .unwrap();
+    let environment = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = environment.lines().collect();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(lines.contains(&"REQUESTED=value"), "{environment}");
+    let caller = std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
+    for (name, value) in caller {
+        assert!(
+            SANDBOX_OWN.contains(&name.as_str())
+                || !lines.contains(&format!("{name}={value}").as_str()),
+            "the caller's {name} reached the confined command"
+        );
+    }
+}
+
+/// Bubblewrap's arguments open with `--clearenv`, so a caller that runs them
+/// without the descriptor, and without clearing its own environment, still
+/// hands the command none of it.
+#[tokio::test]
+async fn test_a_caller_that_skips_the_descriptor_hands_bubblewrap_no_environment() {
+    const LEAKED: &str = "ABNEGATE_EXEC_CALLER_SECRET";
+    if HOST_BACKEND != Some(Backend::Bubblewrap) || !sandbox(ConfinementMode::SingleCommand).await {
+        return;
+    }
+    let workspace = workspace();
+    let invocation = Confinement::new("/usr/bin/env", vec![], &workspace.root)
+        .with_roots(&request(&workspace.root))
+        .host_invocation()
+        .unwrap();
+
+    let output = tokio::process::Command::new(invocation.program())
+        .args(invocation.arguments())
+        .env(LEAKED, "hunter2")
+        .current_dir(&workspace.root)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    let environment = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !environment.contains(LEAKED),
+        "the caller's environment reached the confined command: {environment}"
     );
 }
 
@@ -719,16 +871,10 @@ async fn attempt_connection(root: &Path, client: &str, confined: bool) -> (bool,
 
 #[tokio::test]
 async fn test_confinement_blocks_a_connection_that_otherwise_succeeds() {
-    if Confinement::probe(ConfinementMode::SingleCommand)
-        .await
-        .is_err()
-    {
+    if !sandbox(ConfinementMode::SingleCommand).await {
         return;
     }
-    let Some(client) = ["/usr/bin/nc", "/bin/nc", "/usr/bin/curl"]
-        .into_iter()
-        .find(|candidate| Path::new(candidate).is_file())
-    else {
+    let Some(client) = installed(&NETWORK_CLIENTS) else {
         return;
     };
 
@@ -1060,10 +1206,7 @@ async fn test_the_tree_probe_proves_or_refuses_the_tree_claim() {
 
 #[tokio::test]
 async fn test_a_confined_tree_really_forks() {
-    if Confinement::probe(ConfinementMode::ProcessTree)
-        .await
-        .is_err()
-    {
+    if !sandbox(ConfinementMode::ProcessTree).await {
         return;
     }
 
@@ -1099,10 +1242,7 @@ async fn test_a_confined_tree_really_forks() {
 /// the backend that cannot deliver it, which is the more dangerous of the two.
 #[tokio::test]
 async fn test_single_command_mode_bounds_a_second_process_or_refuses_it() {
-    if Confinement::probe(ConfinementMode::SingleCommand)
-        .await
-        .is_err()
-    {
+    if !sandbox(ConfinementMode::SingleCommand).await {
         return;
     }
 
@@ -1148,10 +1288,7 @@ async fn test_single_command_mode_bounds_a_second_process_or_refuses_it() {
 
 #[tokio::test]
 async fn test_a_confined_tree_cannot_execute_outside_its_execute_roots() {
-    if Confinement::probe(ConfinementMode::ProcessTree)
-        .await
-        .is_err()
-    {
+    if !sandbox(ConfinementMode::ProcessTree).await {
         return;
     }
     let workspace = workspace();
@@ -1205,16 +1342,10 @@ async fn test_a_confined_tree_cannot_execute_outside_its_execute_roots() {
 /// that reaches for the listener is a forked descendant.
 #[tokio::test]
 async fn test_a_confined_tree_blocks_a_grandchild_connection_that_otherwise_succeeds() {
-    if Confinement::probe(ConfinementMode::ProcessTree)
-        .await
-        .is_err()
-    {
+    if !sandbox(ConfinementMode::ProcessTree).await {
         return;
     }
-    let Some(client) = ["/usr/bin/nc", "/bin/nc", "/usr/bin/curl"]
-        .into_iter()
-        .find(|candidate| Path::new(candidate).is_file())
-    else {
+    let Some(client) = installed(&NETWORK_CLIENTS) else {
         return;
     };
     let client_directory = Path::new(client).parent().unwrap().to_path_buf();
@@ -1320,16 +1451,10 @@ __attribute__((constructor)) static void planted(void) {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn test_a_preloaded_library_never_runs_in_the_bubblewrap_host() {
-    if Confinement::probe(ConfinementMode::SingleCommand)
-        .await
-        .is_err()
-    {
+    if !sandbox(ConfinementMode::SingleCommand).await {
         return;
     }
-    let Some(compiler) = ["/usr/bin/cc", "/usr/bin/gcc"]
-        .into_iter()
-        .find(|candidate| Path::new(candidate).is_file())
-    else {
+    let Some(compiler) = installed(&["/usr/bin/cc", "/usr/bin/gcc"]) else {
         return;
     };
 

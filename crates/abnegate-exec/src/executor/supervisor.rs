@@ -1,4 +1,6 @@
+use std::io;
 use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -24,10 +26,12 @@ use super::process_group::ProcessGroup;
 /// A run is its process group: when the child exits, or is stopped, every
 /// process left in its group is killed before the run is reported, and the
 /// child is reaped only after that, so its group's id cannot have been reused
-/// by then. A run ends in exactly one terminal message -- `RunExit` when the
-/// child exits, `RunError` when it times out, is cancelled, or cannot be
-/// watched -- sent after the output that reached its pipes, and never before
-/// `RunStarted` has been delivered. Enforcement never waits on the consumer.
+/// by then. The group is released just before the reap, so no handle to it
+/// can signal that id once it is free. A run ends in exactly one terminal
+/// message -- `RunExit` when the child exits, `RunError` when it times out, is
+/// cancelled, or cannot be watched -- sent after the output that reached its
+/// pipes, and never before `RunStarted` has been delivered. Enforcement never
+/// waits on the consumer.
 pub(super) struct Supervisor {
     pub(super) job_id: String,
     pub(super) sender: mpsc::Sender<OutboundMessage>,
@@ -84,7 +88,7 @@ impl Supervisor {
                     drained = drain(streams, self.grace_period) => Some(drained),
                     () = cancellation.cancelled() => None,
                 };
-                let status = child.wait().await;
+                let status = self.reap(&mut child).await;
                 match (drained, status) {
                     (None, _) => self.report_cancelled().await,
                     (Some(finished), Ok(status)) => {
@@ -151,16 +155,21 @@ impl Supervisor {
         let _ = self.process_group.terminate();
         let _ = tokio::time::timeout(self.grace_period, exit.wait()).await;
         let _ = self.process_group.kill();
-        let _ = child.wait().await;
+        let _ = self.reap(child).await;
     }
 
     /// Kill the group, reap the child and stop reading its output.
     async fn abandon(&self, child: &mut Child, streams: Vec<JoinHandle<()>>) {
         let _ = self.process_group.kill();
-        let _ = child.wait().await;
+        let _ = self.reap(child).await;
         for stream in streams {
             stream.abort();
         }
+    }
+
+    async fn reap(&self, child: &mut Child) -> io::Result<ExitStatus> {
+        self.process_group.release();
+        child.wait().await
     }
 
     async fn delivered_start(&mut self) {

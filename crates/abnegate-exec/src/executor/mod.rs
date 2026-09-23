@@ -16,6 +16,8 @@ mod output_kind;
 mod output_limiter;
 mod output_stream;
 mod process_group;
+#[cfg(test)]
+pub(crate) mod sandbox;
 mod session;
 #[cfg(test)]
 pub(crate) mod sleeper;

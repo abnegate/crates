@@ -3,6 +3,11 @@
 //! On Unix systems, we create a new process group for each spawned command,
 //! allowing us to send signals to the entire process tree when cancelling.
 
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::PoisonError;
+
 use nix::errno::Errno;
 use nix::sys::signal::Signal;
 use nix::sys::signal::kill;
@@ -25,10 +30,15 @@ const LOWEST_GROUP: u32 = 2;
 /// that the pid really leads a group. Signal a group only while its leader is
 /// unreaped, or while it is known to still have members: once it is empty its
 /// id may belong to an unrelated group.
+///
+/// Clones share one handle. The executor releases a job's group just before
+/// it reaps the leader, and from then on no clone -- such as the one a
+/// [`JobRegistry`](crate::job::JobRegistry) holds -- signals anything.
 #[derive(Debug, Clone)]
 pub struct ProcessGroup {
     /// Process group ID (same as the leader process PID)
     pgid: i32,
+    released: Arc<Mutex<bool>>,
 }
 
 impl TryFrom<u32> for ProcessGroup {
@@ -40,7 +50,10 @@ impl TryFrom<u32> for ProcessGroup {
             .filter(|_| pid >= LOWEST_GROUP)
             .filter(|pgid| *pgid != getpgrp().as_raw())
             .ok_or(ExecutorError::InvalidProcessGroup(pid))?;
-        Ok(Self { pgid })
+        Ok(Self {
+            pgid,
+            released: Arc::new(Mutex::new(false)),
+        })
     }
 }
 
@@ -77,12 +90,33 @@ impl ProcessGroup {
 
     /// Check if the process group is still running.
     ///
-    /// Returns true if any process in the group is still alive.
+    /// Returns true if any process in the group is still alive, and false
+    /// once the group has been released.
     pub fn is_alive(&self) -> bool {
-        kill(Pid::from_raw(-self.pgid), None).is_ok()
+        !*self.released() && kill(Pid::from_raw(-self.pgid), None).is_ok()
+    }
+
+    /// Stop every clone of this handle signalling the group, once any signal
+    /// already on its way has been sent. Call it just before reaping the
+    /// leader, after which the group's identifier can name an unrelated group.
+    pub(crate) fn release(&self) {
+        *self.released() = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_released(&self) -> bool {
+        *self.released()
+    }
+
+    fn released(&self) -> MutexGuard<'_, bool> {
+        self.released.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn signal(&self, signal: Signal) -> Result<(), ExecutorError> {
+        let released = self.released();
+        if *released {
+            return Ok(());
+        }
         match kill(Pid::from_raw(-self.pgid), signal) {
             Ok(()) | Err(Errno::ESRCH) => Ok(()),
             Err(error) => Err(ExecutorError::ProcessGroupFailed(format!(
@@ -166,6 +200,29 @@ mod tests {
         sleeper.wait();
 
         assert!(!group.is_alive());
+    }
+
+    /// A released group's identifier may already name an unrelated group,
+    /// which the sleeper stands in for: only the test's own SIGTERM may reach
+    /// it, through a clone released by the original.
+    #[test]
+    fn a_released_group_signals_nothing() {
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+        let clone = group.clone();
+
+        group.release();
+
+        assert!(clone.is_released());
+        assert!(!clone.is_alive());
+        clone.kill().unwrap();
+        clone.terminate().unwrap();
+        kill(Pid::from_raw(-group.pgid()), Signal::SIGTERM).unwrap();
+        assert_eq!(
+            sleeper.wait(),
+            Some(Signal::SIGTERM as i32),
+            "a released group was signalled"
+        );
     }
 
     #[test]
