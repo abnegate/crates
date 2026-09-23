@@ -577,7 +577,6 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
-    use abnegate_exec::executor::ProcessGroup;
     use abnegate_llm::Completion;
     use abnegate_llm::CompletionProvider;
     use abnegate_llm::CompletionRequest;
@@ -1764,15 +1763,34 @@ echo '{"type":"result","subtype":"success","is_error":false}'
             pid = started => pid,
         };
 
-        let group = ProcessGroup::new(leader);
         let started = Instant::now();
-        while group.is_alive() && started.elapsed() < Duration::from_secs(5) {
+        while !running(leader).is_empty() && started.elapsed() < Duration::from_secs(5) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
-            !group.is_alive(),
-            "the agent's group outlived the cancelled run"
+            running(leader).is_empty(),
+            "the agent's group outlived the cancelled run: {:?}",
+            running(leader)
         );
+    }
+
+    /// The members of process group `group` still running. A killed leader
+    /// the runtime has yet to reap lingers as a zombie, which still counts as
+    /// a member to a signal but runs nothing.
+    fn running(group: u32) -> Vec<String> {
+        let output = std::process::Command::new("ps")
+            .args(["-A", "-o", "pid=,pgid=,stat="])
+            .output()
+            .expect("a process listing");
+        let group = group.to_string();
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let (pid, pgid, state) = (fields.next()?, fields.next()?, fields.next()?);
+                (pgid == group && !state.starts_with('Z')).then(|| pid.to_string())
+            })
+            .collect()
     }
 
     #[tokio::test]
