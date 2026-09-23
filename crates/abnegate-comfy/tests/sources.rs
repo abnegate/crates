@@ -1,5 +1,8 @@
+use abnegate_comfy::Client;
 use abnegate_comfy::Config;
-use abnegate_comfy::client::{Client, Error, SourceImage, SourceVideo};
+use abnegate_comfy::Error;
+use abnegate_comfy::SourceImage;
+use abnegate_comfy::SourceVideo;
 
 #[test]
 fn empty_sources_are_rejected_before_upload() {
@@ -35,18 +38,16 @@ fn source_types_are_canonicalized_and_unknown_types_are_rejected() {
 
 #[test]
 fn invalid_client_configuration_is_rejected_before_catalog_or_network_access() {
+    let mut blank = Config::default();
+    blank.base_url = "   ".to_string();
     assert!(matches!(
-        Client::new(Config {
-            base_url: "   ".to_string(),
-            ..Config::default()
-        }),
+        Client::new(blank),
         Err(Error::Configuration("COMFYUI_BASE_URL is empty"))
     ));
+    let mut pathful = Config::default();
+    pathful.checkpoint = "../model.safetensors".to_string();
     assert!(matches!(
-        Client::new(Config {
-            checkpoint: "../model.safetensors".to_string(),
-            ..Config::default()
-        }),
+        Client::new(pathful),
         Err(Error::Configuration(
             "COMFYUI_CHECKPOINT must be a checkpoint filename"
         ))

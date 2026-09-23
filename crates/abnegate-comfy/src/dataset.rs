@@ -112,6 +112,7 @@ const POSES: &[&[&str]] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Concern {
     TooFew,
     LowVariety,
@@ -120,6 +121,7 @@ pub enum Concern {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub struct Finding {
     pub concern: Concern,
     pub detail: String,

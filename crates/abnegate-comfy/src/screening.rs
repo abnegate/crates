@@ -57,6 +57,7 @@ const FINGERPRINT_HEIGHT: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Rejection {
     Duplicate,
     Blurred,
@@ -67,6 +68,7 @@ pub enum Rejection {
 /// partition the caller's slice: an image restored to keep the set at its floor
 /// appears in `keep`, not in `drop`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub struct Verdict {
     pub keep: Vec<usize>,
     pub drop: Vec<(usize, Rejection)>,

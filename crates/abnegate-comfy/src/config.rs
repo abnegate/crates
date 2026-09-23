@@ -71,6 +71,7 @@ fn bounded(value: Option<String>, default: u64, min: u64, max: u64) -> u64 {
 
 /// Direct image generation settings loaded from `COMFYUI_*` environment variables.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Config {
     pub enabled: bool,
     pub base_url: String,

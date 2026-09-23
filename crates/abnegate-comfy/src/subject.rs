@@ -117,6 +117,7 @@ impl Subject {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
     Decode(#[from] decode::Error),

@@ -7,7 +7,7 @@
 #![cfg(feature = "saliency")]
 
 use abnegate_comfy::Config;
-use abnegate_comfy::config::VISION_MODEL_VARIABLE;
+use abnegate_comfy::VISION_MODEL_VARIABLE;
 use abnegate_comfy::subject::{CENTRE, Subject};
 use std::path::PathBuf;
 
@@ -16,10 +16,9 @@ fn configured() -> Config {
         .map(PathBuf::from)
         .filter(|path| path.is_file())
         .unwrap_or_else(|| panic!("{VISION_MODEL_VARIABLE} must name the U2-Net weights"));
-    Config {
-        vision_model: Some(path),
-        ..Default::default()
-    }
+    let mut config = Config::default();
+    config.vision_model = Some(path);
+    config
 }
 
 /// A pale field with one dark disc, so the expected subject is unambiguous.
@@ -178,10 +177,8 @@ fn a_tripod_clip_is_framed_on_its_subject_rather_than_on_the_middle() {
         mirror: false,
         limit: 48,
     };
-    let blind = Config {
-        vision_model: None,
-        ..config.clone()
-    };
+    let mut blind = config.clone();
+    blind.vision_model = None;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -219,7 +216,7 @@ fn a_tripod_clip_is_framed_on_its_subject_rather_than_on_the_middle() {
 }
 
 /// The worst-framed frame of a clip, as the share of it the subject covers.
-fn thinnest(clip: &abnegate_comfy::Clip) -> f64 {
+fn thinnest(clip: &abnegate_comfy::video::Clip) -> f64 {
     use base64::Engine;
     clip.frames
         .iter()

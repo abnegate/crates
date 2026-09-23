@@ -33,6 +33,7 @@ const PACKAGED_UPSCALE_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/upscale-video-api.json");
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("ComfyUI is disabled")]
     Disabled,
