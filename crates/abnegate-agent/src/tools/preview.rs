@@ -44,9 +44,9 @@ static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
 /// reads `\u{8}` is shown as those characters, and one that reads
 /// `⟨U+0008⟩` has its fences escaped, so everything between a `⟨` and a `⟩`
 /// on the card is a character the preview escaped. Blank space is drawn as
-/// it was rendered, never squeezed here: a tool collapses the free text it
-/// shows, a command or the content of a write, and leaves the words, paths
-/// and arguments of the call as they are. The
+/// it was rendered, never squeezed here: only the content of a write or an
+/// edit reaches it collapsed, and a command, a word, a path or an argument
+/// reaches it as it is. The
 /// [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always holds
 /// every argument.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -424,9 +424,45 @@ mod tests {
         assert_eq!(
             preview(
                 "run_shell",
-                serde_json::json!({"command": "cargo    test", "cwd": "my   crates"}),
+                serde_json::json!({"command": "cargo test", "cwd": "my   crates"}),
             ),
             "Run `cargo test` in 'my   crates'."
+        );
+    }
+
+    /// A shell command was collapsed like free text, so blank space `sh`
+    /// reads - inside quotes, at the start of a line, on a line of its own -
+    /// was squeezed or dropped, and `echo 'a   b'` read as `echo 'a b'`.
+    #[test]
+    fn a_shell_preview_shows_the_command_byte_for_byte() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        let preview = |command: &str| {
+            let preview = registry
+                .preview(
+                    "run_shell",
+                    &serde_json::json!({"command": command}).to_string(),
+                )
+                .expect("a shell call previews the line it will run");
+            assert!(!preview.truncated, "{}", preview.text);
+            preview.text
+        };
+
+        let wide = preview("echo 'a   b'");
+        let narrow = preview("echo 'a b'");
+        assert_eq!(wide, "Run `echo 'a   b'`.");
+        assert_eq!(narrow, "Run `echo 'a b'`.");
+        assert_ne!(wide, narrow);
+
+        assert_eq!(preview("cargo    test"), "Run `cargo    test`.");
+        assert_eq!(preview("echo\ta"), "Run `echo⟨U+0009⟩a`.");
+        assert_eq!(
+            preview("  cd /srv\n\n  rm -rf app  "),
+            format!("Run `  cd /srv{LINE_BREAK}{LINE_BREAK}⟨U+0020⟩ rm -rf app  `.")
+        );
+        assert_ne!(
+            preview("cd /srv\n\nrm -rf app"),
+            preview("cd /srv\nrm -rf app")
         );
     }
 

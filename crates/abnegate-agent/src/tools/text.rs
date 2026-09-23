@@ -51,10 +51,10 @@ static BLANK: LazyLock<Regex> =
 /// What opens and closes a span [`quote`] draws.
 const QUOTE: char = '"';
 
-/// Collapse the blank space in `text`.
+/// Collapse the blank space in `text`, the content of a write or an edit.
 ///
-/// A command, a message body or a patch arrives with newlines and runs of
-/// whitespace that would push the part worth reading off the card. A run of
+/// Content arrives with newlines and runs of whitespace, indentation above
+/// all, that would push the part worth reading off the card. A run of
 /// spaces and tabs inside a line becomes one space, one at either end of a
 /// line goes, and so do blank lines; the lines left keep one `\n` between
 /// them, for a [`Preview`](super::Preview) to draw as [`LINE_BREAK`], because
@@ -67,7 +67,7 @@ const QUOTE: char = '"';
 /// line continued by the next, `echo first \ ` as a command of its own, and a
 /// blank line after a `\` as the end of the command, while `rm -rf ~/tmp\  ~`
 /// names two paths where `rm -rf ~/tmp\ ~` names one, so squeezing any of
-/// them showed the reader a call other than the one that runs.
+/// them in a script showed the reader a script other than the one written.
 ///
 /// Only `\n` breaks a line. Every other line terminator and Unicode space,
 /// the `\r` of a `\r\n` pair among them, is kept as itself for the preview to

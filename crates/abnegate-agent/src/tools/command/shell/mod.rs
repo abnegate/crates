@@ -25,7 +25,6 @@ use crate::tools::Tool;
 use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolResult;
-use crate::tools::collapse;
 use crate::tools::job::JobCommand;
 use crate::tools::job::SHELL;
 use crate::tools::job::SHELL_COMMAND_FLAG;
@@ -153,12 +152,15 @@ impl Tool for RunShellTool {
         Tier::Host
     }
 
-    /// The command with its blank space collapsed, and the directory it runs
-    /// in as it is.
+    /// The command byte for byte as `sh` reads it, blank space and blank
+    /// lines included, and the directory it runs in. The card is already held
+    /// to [`MAX_PREVIEW_CHARACTERS`](crate::tools::MAX_PREVIEW_CHARACTERS),
+    /// so squeezing would shorten nothing it needs and hide what the shell
+    /// reads.
     fn preview(&self, parameters: &Value) -> Option<String> {
         let parameters: RunShellParameters = serde_json::from_value(parameters.clone()).ok()?;
         Some(run_preview(
-            &collapse(&parameters.command),
+            &parameters.command,
             parameters.working_directory.as_deref(),
         ))
     }
