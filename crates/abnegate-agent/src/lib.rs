@@ -74,5 +74,5 @@ pub use crate::error::{Error, Result};
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub use crate::mcp::{McpConfig, McpHub, McpServerSpec};
 pub use crate::session::{FileSessionStore, Session, SessionStore, SessionSummary};
-pub use crate::template::{TemplateContext, TemplateRenderer};
+pub use crate::template::{TemplateContext, TemplateError, TemplateRenderer};
 pub use crate::tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
