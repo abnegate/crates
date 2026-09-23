@@ -1,13 +1,19 @@
+use std::io::Write as _;
+use std::net::TcpListener;
+use std::net::TcpStream;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use sha2::Digest;
 use sha2::Sha256;
 use tempfile::tempdir;
 use tokio::fs;
+use tokio::runtime::Runtime;
 use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::Request;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::header;
 use wiremock::matchers::header_exists;
@@ -17,6 +23,12 @@ use super::*;
 
 const BODY: &[u8] = b"gguf-body";
 const ENTITY_TAG: &str = "\"v1\"";
+const LARGE_BODY_BYTES: usize = 8 << 20;
+const FIRST_CHUNK_BYTES: usize = 12 << 10;
+const HEAD_END: &[u8] = b"\r\n\r\n";
+const HELD_BACK: Duration = Duration::from_millis(200);
+const POLL: Duration = Duration::from_millis(1);
+const WAIT: Duration = Duration::from_secs(5);
 
 fn checksum_of(bytes: &[u8]) -> Checksum {
     Checksum::new(Sha256::digest(bytes).into())
@@ -43,6 +55,124 @@ async fn stored_guard(part: &Path, url: &str) -> Option<String> {
     Validator::load(part, url)
         .await
         .and_then(|validator| validator.if_range().map(str::to_string))
+}
+
+fn large_body() -> Arc<Vec<u8>> {
+    Arc::new(
+        (0..LARGE_BODY_BYTES)
+            .map(|index| (index.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect(),
+    )
+}
+
+/// Serves `body` from its own thread. The first request gets its head, then
+/// nothing until `release` is signalled, then `sent` bytes and a closed
+/// connection; every later request is answered in full. Reports each
+/// request's resume offset.
+fn flaky_server(
+    body: Arc<Vec<u8>>,
+    sent: usize,
+) -> (String, mpsc::Receiver<Option<usize>>, mpsc::Sender<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/model.gguf", listener.local_addr().unwrap());
+    let (requests, offsets) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    std::thread::spawn(move || {
+        let connections = listener.incoming().map_while(Result::ok).enumerate();
+        for (index, mut socket) in connections {
+            let offset = requested_offset(&mut socket);
+            let _ = requests.send(offset);
+            let length = body.len();
+            let start = offset.unwrap_or(0);
+            let status = match offset {
+                Some(_) => format!(
+                    "206 Partial Content\r\ncontent-range: bytes {start}-{}/{length}",
+                    length - 1
+                ),
+                None => "200 OK".to_string(),
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\netag: {ENTITY_TAG}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                length - start
+            );
+            let _ = socket.write_all(head.as_bytes());
+            let end = if index == 0 {
+                let _ = released.recv();
+                start + sent
+            } else {
+                length
+            };
+            let _ = socket.write_all(&body[start..end]);
+        }
+    });
+    (url, offsets, release)
+}
+
+fn requested_offset(socket: &mut TcpStream) -> Option<usize> {
+    let mut head = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    while !head
+        .windows(HEAD_END.len())
+        .any(|window| window == HEAD_END)
+    {
+        let read = socket.read(&mut buffer).ok()?;
+        if read == 0 {
+            return None;
+        }
+        head.extend_from_slice(&buffer[..read]);
+    }
+    String::from_utf8_lossy(&head).lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if !name.eq_ignore_ascii_case("range") {
+            return None;
+        }
+        value
+            .trim()
+            .strip_prefix("bytes=")?
+            .strip_suffix('-')?
+            .parse()
+            .ok()
+    })
+}
+
+fn one_blocking_thread() -> Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap()
+}
+
+/// Download from a [`flaky_server`] while the runtime's one blocking thread
+/// is tied up for [`HELD_BACK`] from just before the failing body is
+/// released, so any write the download merely started is still pending
+/// when it returns.
+async fn download_with_writes_held_back(
+    url: &str,
+    target: &Path,
+    release: mpsc::Sender<()>,
+) -> Result<(), DownloadError> {
+    let validator = Validator::path(&part_path(target));
+    let hold = async {
+        tokio::time::timeout(WAIT, async {
+            while !validator.exists() {
+                tokio::time::sleep(POLL).await;
+            }
+        })
+        .await
+        .expect("the download stored its validator");
+        drop(tokio::task::spawn_blocking(|| {
+            std::thread::sleep(HELD_BACK)
+        }));
+        release.send(()).unwrap();
+    };
+    let progress = Arc::new(DownloadProgress::new());
+    let (result, ()) = tokio::join!(download_gguf(url, target, None, progress), hold);
+    result
+}
+
+fn part_length(part: &Path) -> u64 {
+    std::fs::metadata(part).unwrap().len()
 }
 
 async fn download(
@@ -487,4 +617,91 @@ async fn a_second_download_to_the_same_file_is_refused_while_the_first_runs() {
     assert!(progress.failed.load(Ordering::Relaxed));
     first.await.unwrap().unwrap();
     assert_eq!(fs::read(&target).await.unwrap(), BODY);
+}
+
+#[test]
+fn a_failed_download_has_finished_writing_when_it_returns() {
+    let (url, _, release) = flaky_server(large_body(), FIRST_CHUNK_BYTES);
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+    let part = part_path(&target);
+    let runtime = one_blocking_thread();
+
+    let result = runtime.block_on(download_with_writes_held_back(&url, &target, release));
+    let returned = part_length(&part);
+    drop(runtime);
+    let settled = part_length(&part);
+
+    assert!(matches!(result, Err(DownloadError::Http(_))), "{result:?}");
+    assert_eq!(
+        returned, settled,
+        "a write landed on the part file after the download returned"
+    );
+    assert_eq!(returned, FIRST_CHUNK_BYTES as u64);
+    assert!(!TransferLock::path(&part).exists());
+}
+
+#[test]
+fn a_download_retried_straight_after_a_failure_resumes_where_the_part_ends() {
+    let body = large_body();
+    let (url, offsets, release) = flaky_server(Arc::clone(&body), FIRST_CHUNK_BYTES);
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+    let failing = one_blocking_thread();
+    let retrying = one_blocking_thread();
+
+    let first = failing.block_on(download_with_writes_held_back(&url, &target, release));
+    let progress = Arc::new(DownloadProgress::new());
+    let second = retrying.block_on(download_gguf(&url, &target, None, progress));
+    drop(failing);
+
+    assert!(matches!(first, Err(DownloadError::Http(_))), "{first:?}");
+    second.unwrap();
+    assert_eq!(
+        offsets.try_iter().collect::<Vec<_>>(),
+        [None, Some(FIRST_CHUNK_BYTES)],
+        "the retry did not resume from the end of the part file"
+    );
+    assert!(
+        std::fs::read(&target).unwrap() == *body,
+        "the resumed file is not the upstream file"
+    );
+}
+
+#[tokio::test]
+async fn a_part_that_holds_more_than_was_received_is_not_installed() {
+    let server = MockServer::start().await;
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+    let part = part_path(&target);
+    let stray = part.clone();
+    Mock::given(method("GET"))
+        .respond_with(move |_: &Request| {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&stray)
+                .and_then(|mut file| file.write_all(b"XX"))
+                .unwrap();
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 4-8/9")
+                .set_body_bytes(b"-body".to_vec())
+        })
+        .mount(&server)
+        .await;
+    partial(&target, b"gguf", Some(ENTITY_TAG), &server.uri()).await;
+
+    let (result, _) = download(&server, &target, None).await;
+
+    assert!(
+        matches!(
+            result,
+            Err(DownloadError::Incomplete {
+                expected: 9,
+                received: 11
+            })
+        ),
+        "{result:?}"
+    );
+    assert!(!target.exists());
+    assert_eq!(fs::read(&part).await.unwrap(), b"ggufXX-body");
 }

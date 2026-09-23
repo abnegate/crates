@@ -10,7 +10,7 @@ pub enum DownloadError {
     Status(u16),
     #[error("filesystem error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("the server sent {received} of {expected} bytes")]
+    #[error("the download holds {received} of its {expected} bytes")]
     Incomplete { expected: u64, received: u64 },
     #[error("the downloaded file's SHA-256 is {actual}, not the expected {expected}")]
     Checksum { expected: String, actual: String },

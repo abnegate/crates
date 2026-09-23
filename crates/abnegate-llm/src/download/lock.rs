@@ -2,6 +2,9 @@ use std::fs::File;
 use std::fs::TryLockError;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use tokio::task::JoinHandle;
 
 use crate::download::error::DownloadError;
 
@@ -48,6 +51,28 @@ impl TransferLock {
                 return Ok(Self { path, _file: file });
             }
         }
+    }
+
+    /// Run `operation` on a blocking thread that keeps the lock until the
+    /// operation returns.
+    ///
+    /// A blocking operation cannot be stopped, so it runs on when its handle
+    /// is dropped; sharing the lock keeps every other transfer off the
+    /// `.part` file until it has finished.
+    pub(crate) fn hold<Output, Operation>(
+        self: &Arc<Self>,
+        operation: Operation,
+    ) -> JoinHandle<Output>
+    where
+        Operation: FnOnce() -> Output + Send + 'static,
+        Output: Send + 'static,
+    {
+        let lock = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let output = operation();
+            drop(lock);
+            output
+        })
     }
 }
 
@@ -98,6 +123,26 @@ mod tests {
         );
         drop(first);
         assert!(!TransferLock::path(&part).exists());
+        TransferLock::acquire(&part).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_held_operation_keeps_the_lock_until_it_returns() {
+        let directory = tempdir().unwrap();
+        let part = directory.path().join("model.gguf.part");
+        let lock = Arc::new(TransferLock::acquire(&part).await.unwrap());
+        let (release, released) = std::sync::mpsc::channel::<()>();
+
+        let operation = lock.hold(move || released.recv());
+        drop(lock);
+        let during = TransferLock::acquire(&part).await;
+        release.send(()).unwrap();
+        operation.await.unwrap().unwrap();
+
+        assert!(
+            matches!(during, Err(DownloadError::InProgress)),
+            "{during:?}"
+        );
         TransferLock::acquire(&part).await.unwrap();
     }
 
