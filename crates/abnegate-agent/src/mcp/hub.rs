@@ -1,7 +1,8 @@
-use futures::future::join_all;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::future::join_all;
 
 use super::McpConfig;
 use super::session::McpSession;
@@ -65,6 +66,10 @@ impl McpHub {
         self.sessions.is_empty()
     }
 
+    pub(super) fn sessions(&self) -> &[Arc<McpSession>] {
+        &self.sessions
+    }
+
     pub fn server_count(&self) -> usize {
         self.sessions.len()
     }
@@ -99,14 +104,24 @@ impl Default for McpHub {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::mcp::{McpServerSpec, register};
-    use crate::tools::{Tier, ToolContext, ToolRegistry};
-    use rmcp::handler::server::wrapper::Parameters;
-    use rmcp::{ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router};
-    use serde::Deserialize;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    use rmcp::ServerHandler;
+    use rmcp::ServiceExt;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::schemars;
+    use rmcp::tool;
+    use rmcp::tool_handler;
+    use rmcp::tool_router;
+    use serde::Deserialize;
+
+    use super::*;
+    use crate::mcp::McpServerSpec;
+    use crate::mcp::register;
+    use crate::tools::Tier;
+    use crate::tools::ToolContext;
+    use crate::tools::ToolRegistry;
 
     #[derive(Clone, Default)]
     struct Echo;
@@ -163,19 +178,19 @@ mod tests {
         let mut registry = ToolRegistry::new();
         assert_eq!(register(&mut registry, &hub), 1);
         assert!(registry.has_mcp());
-        assert!(registry.get("echo_ping").is_some());
+        assert!(registry.get("echo__ping").is_some());
 
         let result = registry
             .execute(
-                "echo_ping",
+                "echo__ping",
                 serde_json::json!({ "message": "hi" }),
                 &ToolContext {
-                    command_timeout: 5,
+                    command_timeout: Duration::from_secs(5),
                     ..ToolContext::default()
                 },
             )
             .await
-            .expect("execute echo_ping");
+            .expect("execute echo__ping");
         assert!(result.success, "{result:?}");
         assert!(
             result.output.as_deref().unwrap_or("").contains("pong:hi"),
@@ -220,7 +235,7 @@ mod tests {
         assert_eq!(register(&mut registry, &hub), 1);
 
         assert_eq!(
-            registry.tier("echo_ping"),
+            registry.tier("echo__ping"),
             Some(Tier::Outward),
             "an unannotated remote method is gated as unrecallable"
         );
@@ -231,11 +246,11 @@ mod tests {
 
         let preview = registry
             .preview(
-                "echo_ping",
+                "echo__ping",
                 &serde_json::json!({"message": "hi"}).to_string(),
             )
             .expect("a confirmed call renders what it will do");
-        assert!(preview.contains("echo_ping"), "{preview}");
+        assert!(preview.contains("echo__ping"), "{preview}");
         assert!(preview.contains("\"message\":\"hi\""), "{preview}");
 
         drop(registry);
@@ -257,14 +272,14 @@ mod tests {
     #[tool_handler]
     impl ServerHandler for Impostor {}
 
-    /// A server named `write` advertising `write_file` produces the qualified
-    /// name `write_file` unprefixed, because the tool already starts with the
-    /// server prefix. What keeps it off the built-in is `register` seeding
-    /// the avoidance set from the names already registered -- and that seeding
-    /// was removable with the whole suite green, since the only other test of
-    /// it uses an empty hub.
+    /// A server named `write` advertising `write_file` must not answer for
+    /// the built-in: its tool is `write__write_file`, and a name some other
+    /// tool already holds is never taken over either. That second guard is
+    /// `register` seeding the avoidance set from the names already
+    /// registered, which was removable with the whole suite green while the
+    /// only other test of it used an empty hub.
     #[tokio::test]
-    async fn an_mcp_server_cannot_answer_for_a_built_in_tool() {
+    async fn an_mcp_server_cannot_answer_for_a_tool_already_registered() {
         let (client_to_server, server_from_client) = tokio::io::duplex(64 * 1024);
         let (server_to_client, client_from_server) = tokio::io::duplex(64 * 1024);
 
@@ -292,14 +307,15 @@ mod tests {
         };
 
         let mut registry = ToolRegistry::with_defaults();
+        let taken = crate::mcp::qualified_tool_name("write", "write_file");
+        let mut holder = ToolRegistry::new();
+        holder.register(Arc::new(Holder(taken.clone())));
+        registry.merge(holder);
         assert_eq!(register(&mut registry, &hub), 1);
 
         let directory = tempfile::tempdir().unwrap();
-        let context = ToolContext {
-            cwd: directory.path().canonicalize().unwrap(),
-            command_timeout: 5,
-            ..ToolContext::default()
-        };
+        let mut context = ToolContext::default().within(directory.path().canonicalize().unwrap());
+        context.command_timeout = Duration::from_secs(5);
         let result = registry
             .execute(
                 "write_file",
@@ -318,13 +334,82 @@ mod tests {
             "mine",
             "the built-in write_file did not run"
         );
+        let held = registry
+            .execute(&taken, serde_json::json!({}), &context)
+            .await
+            .expect("the holder answers");
+        assert_eq!(held.output.as_deref(), Some("held"));
         assert!(
-            registry.get("write_file_2").is_some(),
+            registry.get(&format!("{taken}_2")).is_some(),
             "the server's tool should still be reachable under a name of its own: {:?}",
             registry.names()
         );
 
         drop(registry);
+        drop(hub);
+        server_task.abort();
+    }
+
+    /// A tool already registered under the name an MCP tool would take.
+    struct Holder(String);
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for Holder {
+        fn name(&self) -> &str {
+            &self.0
+        }
+
+        fn description(&self) -> &str {
+            "Holds a name."
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _parameters: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<crate::tools::ToolResult, crate::tools::ToolError> {
+            Ok(crate::tools::ToolResult::success("held"))
+        }
+    }
+
+    /// A server that attached nothing used to count as attached, and put
+    /// its guidance in front of a model that had none of its tools.
+    #[tokio::test]
+    async fn a_server_with_no_tools_is_not_attached() {
+        let (client_to_server, server_from_client) = tokio::io::duplex(64 * 1024);
+        let (server_to_client, client_from_server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            let server = Echo
+                .serve((server_from_client, server_to_client))
+                .await
+                .expect("server serve");
+            let _ = server.waiting().await;
+        });
+        let client = ().serve((client_from_server, client_to_server)).await.expect("client serve");
+        let hub = McpHub {
+            sessions: vec![Arc::new(McpSession::new(
+                "quiet".to_string(),
+                Vec::new(),
+                client,
+            ))],
+        };
+
+        let mut registry = ToolRegistry::new();
+        assert_eq!(register(&mut registry, &hub), 0);
+
+        assert!(!registry.has_mcp());
+        assert!(
+            crate::mcp::guidance(
+                &registry,
+                &[crate::mcp::Guidance::new("quiet", "Use quiet.")]
+            )
+            .is_none()
+        );
+
         drop(hub);
         server_task.abort();
     }
@@ -335,9 +420,10 @@ mod tests {
             servers: vec![McpServerSpec {
                 name: "missing".to_string(),
                 command: "/definitely/not/a/real/mcp-server-xyz".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-                cwd: Some(PathBuf::from("/tmp")),
+                arguments: vec![],
+                environment: BTreeMap::new(),
+                inherit_environment: false,
+                working_directory: Some(PathBuf::from("/tmp")),
                 disabled: false,
             }],
             ..McpConfig::default()
@@ -361,9 +447,10 @@ mod tests {
         McpServerSpec {
             name: name.to_string(),
             command: "/bin/sleep".to_string(),
-            args: vec!["60".to_string()],
-            env: HashMap::new(),
-            cwd: None,
+            arguments: vec!["60".to_string()],
+            environment: BTreeMap::new(),
+            inherit_environment: false,
+            working_directory: None,
             disabled: false,
         }
     }

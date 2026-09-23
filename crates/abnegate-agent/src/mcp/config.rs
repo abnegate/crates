@@ -1,7 +1,10 @@
-use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
-use super::{McpConfigError, McpServerSpec};
+use serde_json::Value;
+
+use super::McpConfigError;
+use super::McpServerSpec;
 
 /// The prefix [`McpConfig::from_env`] reads its variables under.
 pub const DEFAULT_PREFIX: &str = "ABNEGATE";
@@ -14,6 +17,7 @@ const CONFIG_FILE: &str = "mcp.json";
 
 /// The MCP servers to attach for one agent run.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct McpConfig {
     pub servers: Vec<McpServerSpec>,
     /// Whether [`fallback`](Self::fallback) may attach a server when none is
@@ -31,6 +35,14 @@ impl Default for McpConfig {
 }
 
 impl McpConfig {
+    /// Exactly `servers`, with auto-connect on.
+    pub fn new(servers: Vec<McpServerSpec>) -> Self {
+        Self {
+            servers,
+            ..Self::default()
+        }
+    }
+
     /// Load from the environment under [`DEFAULT_PREFIX`].
     pub fn from_env() -> Self {
         Self::with_prefix(DEFAULT_PREFIX)
@@ -167,6 +179,18 @@ impl McpConfig {
 
     /// Attach `spec` when nothing else is configured, auto-connect is on, and
     /// its command is on `PATH`.
+    ///
+    /// For an application that ships a companion server of its own and wants
+    /// it attached unless the user has configured servers themselves:
+    ///
+    /// ```
+    /// use abnegate_agent::{McpConfig, McpServerSpec};
+    ///
+    /// let config = McpConfig::with_prefix("ACME")
+    ///     .fallback(McpServerSpec::new("notes", "notes-server", ["mcp"]));
+    ///
+    /// assert!(config.servers.iter().all(|server| !server.disabled));
+    /// ```
     pub fn fallback(mut self, spec: McpServerSpec) -> Self {
         if self.auto_connect && self.servers.is_empty() && command_on_path(&spec.command) {
             self.servers.push(spec);
@@ -210,8 +234,9 @@ fn command_on_path(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     fn shell() -> McpServerSpec {
         McpServerSpec::new("shell", "sh", Vec::<String>::new())
@@ -222,8 +247,8 @@ mod tests {
         let config = McpConfig::from_json_str(
             r#"{
                 "mcpServers": {
-                    "magents": {
-                        "command": "magents",
+                    "notes": {
+                        "command": "notes-server",
                         "args": ["mcp"]
                     },
                     "docs": {
@@ -237,28 +262,33 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.servers.len(), 2);
-        let magents = config
+        let notes = config
             .servers
             .iter()
-            .find(|server| server.name == "magents")
+            .find(|server| server.name == "notes")
             .unwrap();
-        assert_eq!(magents.args, ["mcp"]);
+        assert_eq!(notes.arguments, ["mcp"]);
         let docs = config
             .servers
             .iter()
             .find(|server| server.name == "docs")
             .unwrap();
-        assert_eq!(docs.env.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(
+            docs.environment
+                .get("FOO")
+                .map(abnegate_secret::SecretValue::expose),
+            Some("bar")
+        );
     }
 
     #[test]
     fn parses_bare_server_map() {
         let config = McpConfig::from_json_str(
-            r#"{ "magents": { "command": "/opt/homebrew/bin/magents", "args": ["mcp"] } }"#,
+            r#"{ "notes": { "command": "/opt/homebrew/bin/notes-server", "args": ["mcp"] } }"#,
         )
         .unwrap();
         assert_eq!(config.servers.len(), 1);
-        assert_eq!(config.servers[0].command, "/opt/homebrew/bin/magents");
+        assert_eq!(config.servers[0].command, "/opt/homebrew/bin/notes-server");
     }
 
     #[test]
@@ -268,7 +298,7 @@ mod tests {
                 "mcpServers": {
                     "off": { "command": "x", "disabled": true },
                     "remote": { "url": "http://localhost:3000/mcp" },
-                    "ok": { "command": "magents", "args": ["mcp"] }
+                    "ok": { "command": "notes-server", "args": ["mcp"] }
                 }
             }"#,
         )
@@ -283,11 +313,11 @@ mod tests {
         let path = directory.path().join("mcp.json");
         std::fs::write(
             &path,
-            r#"{ "mcpServers": { "magents": { "command": "magents", "args": ["mcp"] } } }"#,
+            r#"{ "mcpServers": { "notes": { "command": "notes-server", "args": ["mcp"] } } }"#,
         )
         .unwrap();
         let config = McpConfig::from_file(&path).unwrap();
-        assert_eq!(config.servers[0].name, "magents");
+        assert_eq!(config.servers[0].name, "notes");
     }
 
     #[test]

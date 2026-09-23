@@ -1,22 +1,41 @@
-use abnegate_exec::Proxy;
-use dashmap::DashMap;
 use std::future::Future;
 use std::io::SeekFrom;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::LazyLock;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
-use tokio::sync::{oneshot, watch};
 
+use dashmap::DashMap;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Child;
+use tokio::process::Command;
+use tokio::sync::oneshot;
+use tokio::sync::watch;
+
+use super::EXCLUDE_PATH;
+use super::JobCommand;
+use super::JobExited;
+use super::JobStarted;
+use super::JobStatus;
+use super::JobTail;
+use super::KILL_TIMEOUT;
+use super::MAX_CHARACTER_BYTES;
+use super::UNAVAILABLE;
 use super::entry::Job;
+use super::excluded;
 use super::limits::Limits;
-use super::{
-    EXCLUDE_PATH, JobCommand, JobExited, JobStarted, JobState, JobTail, KILL_TIMEOUT,
-    MAX_CHARACTER_BYTES, UNAVAILABLE, excluded, log_directory, log_path, mint, missing,
-};
-use crate::tools::{Session, ToolContext};
+use super::log_directory;
+use super::log_path;
+use super::mint;
+use super::missing;
+use crate::Application;
+use crate::tools::Session;
+use crate::tools::ToolContext;
+use crate::tools::process;
+use crate::tools::process::Group;
 
 pub(super) static JOBS: LazyLock<DashMap<String, Job>> = LazyLock::new(DashMap::new);
 
@@ -44,7 +63,7 @@ impl Jobs {
         session: Session,
         id: &str,
         since: u64,
-        max_chars: usize,
+        max_characters: usize,
     ) -> Result<JobTail, String> {
         if session == Session::Detached {
             return Err(UNAVAILABLE.to_string());
@@ -68,9 +87,9 @@ impl Jobs {
         if file.seek(SeekFrom::Start(since)).await.is_err() {
             return Ok(unread);
         }
-        let mut buffer = Vec::with_capacity(max_chars);
+        let mut buffer = Vec::with_capacity(max_characters);
         if file
-            .take(max_chars as u64)
+            .take(max_characters as u64)
             .read_to_end(&mut buffer)
             .await
             .is_err()
@@ -153,7 +172,7 @@ impl Jobs {
         if session == Session::Detached {
             return Err(UNAVAILABLE.to_string());
         }
-        let checkout = context.cwd.as_path();
+        let checkout = context.working_directory.as_path();
         let directory = log_directory(checkout, &context.application);
 
         tokio::fs::create_dir_all(&directory)
@@ -171,26 +190,22 @@ impl Jobs {
             .try_clone()
             .map_err(|error| format!("Cannot create the job log: {error}"))?;
 
-        let mut process = Command::new(&command.program);
+        let mut process = process::command(&command.program, context);
         process
             .args(&command.arguments)
             .current_dir(command.directory.as_deref().unwrap_or(checkout))
             .stdin(Stdio::null())
             .stdout(Stdio::from(file))
             .stderr(Stdio::from(errors))
+            .process_group(0)
             .kill_on_drop(true);
-        process.env_clear();
-        for (key, value) in &context.env {
-            process.env(key, value);
-        }
-        Proxy::from_env().apply(&mut process);
-
         let child = process
             .spawn()
             .map_err(|error| format!("Failed to start the job: {error}"))?;
         let pid = child.id().unwrap_or_default();
+        let group = Group::led_by(child.id());
 
-        let (sender, state) = watch::channel(JobState::Running);
+        let (sender, state) = watch::channel(JobStatus::Running);
         let (kill, killed) = oneshot::channel();
         JOBS.insert(
             id.clone(),
@@ -201,7 +216,7 @@ impl Jobs {
                 kill,
             },
         );
-        tokio::spawn(supervise(child, log.clone(), limits, killed, sender));
+        tokio::spawn(supervise(child, group, log.clone(), limits, killed, sender));
 
         Ok(JobStarted {
             id,
@@ -216,28 +231,34 @@ impl Jobs {
 /// Polled in order, not at random: a child that exits in the same tick as its
 /// deadline elapses has exited, and reporting that as a kill would hand the
 /// model a failure it did not have.
+///
+/// However it ends, the whole group goes with it: whatever the job left
+/// running would otherwise keep writing into a log that is about to be
+/// discarded.
 async fn supervise(
     mut child: Child,
+    mut group: Group,
     log: PathBuf,
     limits: Limits,
     kill: oneshot::Receiver<()>,
-    state: watch::Sender<JobState>,
+    state: watch::Sender<JobStatus>,
 ) {
     let outcome = {
         let flood = flooded(&log, limits.log_bytes, limits.log_check);
         tokio::select! {
             biased;
             status = child.wait() => match status {
-                Ok(status) => status.code().map_or(JobState::Killed, JobState::Exited),
-                Err(_) => JobState::Killed,
+                Ok(status) => status.code().map_or(JobStatus::Killed, JobStatus::Exited),
+                Err(_) => JobStatus::Killed,
             },
-            _ = kill => JobState::Killed,
-            _ = tokio::time::sleep(limits.lifetime) => JobState::Killed,
-            _ = flood => JobState::Flooded,
+            _ = kill => JobStatus::Killed,
+            _ = tokio::time::sleep(limits.lifetime) => JobStatus::Killed,
+            _ = flood => JobStatus::Flooded,
         }
     };
-    if !matches!(outcome, JobState::Exited(_)) {
-        let _ = child.kill().await;
+    group.kill();
+    if !matches!(outcome, JobStatus::Exited(_)) {
+        let _ = child.wait().await;
     }
     state.send_replace(outcome);
 }
@@ -280,14 +301,14 @@ async fn discard(log: &Path) {
 }
 
 /// Resolves once the job has stopped, immediately if it already had.
-async fn ended(mut state: watch::Receiver<JobState>) -> JobState {
+async fn ended(mut state: watch::Receiver<JobStatus>) -> JobStatus {
     loop {
         let current = *state.borrow_and_update();
         if current.settled() {
             return current;
         }
         if state.changed().await.is_err() {
-            return JobState::Killed;
+            return JobStatus::Killed;
         }
     }
 }
@@ -302,7 +323,7 @@ async fn ended(mut state: watch::Receiver<JobState>) -> JobState {
 /// checkout would otherwise write into a repository it does not own. Every
 /// failure — not a checkout, no git, an unwritable file — is a silent skip,
 /// because a background job is worth more to the caller than a tidy diff.
-async fn exclude(checkout: &Path, application: &str) {
+async fn exclude(checkout: &Path, application: &Application) {
     let Ok(resolved) = Command::new("git")
         .arg("rev-parse")
         .arg("--git-path")

@@ -1,9 +1,12 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::{Command as Process, Stdio};
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command as Process;
+use std::process::Stdio;
 use std::time::Duration;
+
 use tempfile::TempDir;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
+use tokio::sync::watch;
 use uuid::Uuid;
 
 use super::entry::Job;
@@ -11,7 +14,8 @@ use super::jobs::JOBS;
 use super::limits::Limits;
 use super::*;
 use crate::test_support::captured_logs;
-use crate::tools::{DEFAULT_APPLICATION, Session, ToolContext};
+use crate::tools::Session;
+use crate::tools::ToolContext;
 
 const POLL: Duration = Duration::from_millis(20);
 const POLL_LIMIT: usize = 500;
@@ -19,15 +23,15 @@ const POLL_LIMIT: usize = 500;
 /// The directory the log directory sits in, which a teardown takes too when
 /// the logs were the only thing in it.
 fn ours(cwd: &Path) -> PathBuf {
-    application_directory(cwd, DEFAULT_APPLICATION)
+    application_directory(cwd, &crate::Application::default())
 }
 
 fn logs(cwd: &Path) -> PathBuf {
-    log_directory(cwd, DEFAULT_APPLICATION)
+    log_directory(cwd, &crate::Application::default())
 }
 
 fn excluded_line() -> String {
-    excluded(DEFAULT_APPLICATION)
+    excluded(&crate::Application::default())
 }
 
 fn job() -> JobStarted {
@@ -46,11 +50,8 @@ fn chat() -> Session {
     Session::Chat(Uuid::new_v4())
 }
 
-fn environment() -> HashMap<String, String> {
-    HashMap::from([(
-        "PATH".to_string(),
-        std::env::var("PATH").unwrap_or_default(),
-    )])
+fn environment() -> crate::tools::EnvironmentPolicy {
+    crate::tools::EnvironmentPolicy::empty().with("PATH", std::env::var("PATH").unwrap_or_default())
 }
 
 fn directory() -> TempDir {
@@ -59,8 +60,8 @@ fn directory() -> TempDir {
 
 fn context(session: Session, cwd: &Path) -> ToolContext {
     ToolContext {
-        cwd: cwd.to_path_buf(),
-        env: environment(),
+        working_directory: cwd.to_path_buf(),
+        environment: environment(),
         session,
         ..ToolContext::default()
     }
@@ -72,7 +73,7 @@ async fn spawned(session: Session, line: &str, cwd: &Path) -> JobStarted {
         .expect("the job starts")
 }
 
-async fn settles(session: Session, id: &str) -> JobState {
+async fn settles(session: Session, id: &str) -> JobStatus {
     for _ in 0..POLL_LIMIT {
         let tail = Jobs::read(session, id, 0, 1)
             .await
@@ -246,7 +247,7 @@ async fn a_log_past_its_ceiling_kills_the_job_and_reports_flooding() {
     .await
     .expect("the job starts");
 
-    assert_eq!(settles(session, &started.id).await, JobState::Flooded);
+    assert_eq!(settles(session, &started.id).await, JobStatus::Flooded);
     assert!(
         !alive(started.pid),
         "a flooded job is killed, not left writing"
@@ -280,7 +281,7 @@ async fn a_job_outliving_its_lifetime_is_killed() {
     .await
     .expect("the job starts");
 
-    assert_eq!(settles(session, &started.id).await, JobState::Killed);
+    assert_eq!(settles(session, &started.id).await, JobStatus::Killed);
     assert!(!alive(started.pid), "a job past its lifetime is killed");
 
     Jobs::kill_session(session).await;
@@ -291,7 +292,7 @@ async fn a_job_that_had_already_ended_still_settles() {
     let cwd = directory();
     let session = task();
     let started = spawned(session, "exit 7", cwd.path()).await;
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(7));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(7));
 
     let claim = Jobs::settled(session, &started.id).expect("the job is claimable");
     let exited = tokio::time::timeout(Duration::from_secs(5), claim)
@@ -316,7 +317,7 @@ async fn three_reads_walk_the_log_with_no_gap_and_no_overlap() {
     settles(session, &started.id).await;
     assert_eq!(
         started.log_path,
-        log_path(cwd.path(), DEFAULT_APPLICATION, &started.id).to_string_lossy(),
+        log_path(cwd.path(), &crate::Application::default(), &started.id).to_string_lossy(),
         "the receipt names the log the reader opens"
     );
 
@@ -438,14 +439,14 @@ async fn a_child_that_never_reports_its_end_does_not_hold_the_teardown() {
     let cwd = directory();
     let session = task();
     let id = mint();
-    let log = log_path(cwd.path(), DEFAULT_APPLICATION, &id);
+    let log = log_path(cwd.path(), &crate::Application::default(), &id);
     tokio::fs::create_dir_all(logs(cwd.path()))
         .await
         .expect("the log directory is created");
     tokio::fs::write(&log, "wedged")
         .await
         .expect("the job wrote something before wedging");
-    let (reports, state) = watch::channel(JobState::Running);
+    let (reports, state) = watch::channel(JobStatus::Running);
     let (kill, killed) = oneshot::channel();
     JOBS.insert(
         id.clone(),
@@ -482,7 +483,7 @@ async fn a_child_that_never_reports_its_end_does_not_hold_the_teardown() {
     assert!(killed.await.is_ok(), "the kill itself was still sent");
     assert_eq!(
         *reports.borrow(),
-        JobState::Running,
+        JobStatus::Running,
         "nothing ever reported the child's end, which is the case under test"
     );
 }
@@ -511,11 +512,11 @@ async fn a_directory_the_command_names_moves_the_child_and_nothing_else() {
     )
     .await
     .expect("the job starts");
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
 
     assert_eq!(
         started.log_path,
-        log_path(&checkout, DEFAULT_APPLICATION, &started.id).to_string_lossy(),
+        log_path(&checkout, &crate::Application::default(), &started.id).to_string_lossy(),
         "the log belongs to the session's tree, whatever directory the command named"
     );
     let ran_in = Jobs::read(session, &started.id, 0, 500)
@@ -554,7 +555,7 @@ async fn a_chat_job_writes_nothing_to_the_repository_exclude() {
 
     let session = chat();
     let started = spawned(session, "exit 0", cwd.path()).await;
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
 
     assert_eq!(
         std::fs::read_to_string(&exclude).unwrap_or_default(),
@@ -618,7 +619,7 @@ async fn a_working_directory_that_is_not_a_checkout_is_left_alone() {
     let session = task();
     let started = spawned(session, "exit 0", cwd.path()).await;
 
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
     assert!(
         !cwd.path().join(".git").exists(),
         "nothing invents a checkout to exclude from"
@@ -641,7 +642,7 @@ async fn a_read_only_exclude_costs_the_caller_nothing() {
 
     let session = task();
     let started = spawned(session, "exit 0", cwd.path()).await;
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
     assert_eq!(
         std::fs::read_to_string(&exclude).expect("the exclude reads"),
         "# fixed\n",
@@ -678,7 +679,7 @@ async fn the_exclude_path_comes_from_git_not_from_a_joined_git_directory() {
 
     let session = task();
     let started = spawned(session, "exit 0", &linked).await;
-    assert_eq!(settles(session, &started.id).await, JobState::Exited(0));
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
 
     assert_eq!(
         excluded_lines(&exclude_path(&linked)),
@@ -695,11 +696,11 @@ async fn the_exclude_path_comes_from_git_not_from_a_joined_git_directory() {
 
 #[test]
 fn a_state_is_spelled_the_way_a_tail_reports_it() {
-    assert_eq!(JobState::Running.to_string(), "running");
-    assert_eq!(JobState::Exited(0).to_string(), "exited 0");
-    assert_eq!(JobState::Exited(137).to_string(), "exited 137");
-    assert_eq!(JobState::Killed.to_string(), "killed");
-    assert_eq!(JobState::Flooded.to_string(), "flooded");
+    assert_eq!(JobStatus::Running.to_string(), "running");
+    assert_eq!(JobStatus::Exited(0).to_string(), "exited 0");
+    assert_eq!(JobStatus::Exited(137).to_string(), "exited 137");
+    assert_eq!(JobStatus::Killed.to_string(), "killed");
+    assert_eq!(JobStatus::Flooded.to_string(), "flooded");
 }
 
 #[test]
@@ -767,7 +768,11 @@ fn output_that_announced_no_job_parses_as_none() {
 fn a_minted_id_is_the_shape_the_parser_accepts() {
     let id = mint();
     assert!(id.starts_with(JOB_ID_PREFIX), "{id}");
-    assert_eq!(id.len(), JOB_ID_PREFIX.len() + JOB_ID_HEX_CHARS, "{id}");
+    assert_eq!(
+        id.len(),
+        JOB_ID_PREFIX.len() + JOB_ID_HEX_CHARACTERS,
+        "{id}"
+    );
     assert_ne!(id, mint(), "each job gets its own id");
 
     let started = JobStarted {
@@ -783,7 +788,7 @@ fn a_log_lives_under_the_session_working_directory() {
     assert_eq!(
         log_path(
             Path::new("/tmp/work"),
-            DEFAULT_APPLICATION,
+            &crate::Application::default(),
             "job_9f3c1a7b2e04"
         ),
         PathBuf::from("/tmp/work/.abnegate/jobs/job_9f3c1a7b2e04.log")
@@ -803,4 +808,83 @@ fn a_job_that_was_killed_serialises_without_an_exit_code() {
         killed,
         "a killed job round-trips without inventing an exit code"
     );
+}
+
+/// The first line of a job's log, once the job has written one.
+async fn first_line(session: Session, id: &str) -> String {
+    for _ in 0..POLL_LIMIT {
+        let tail = Jobs::read(session, id, 0, 500)
+            .await
+            .expect("its own session reads it");
+        if let Some((line, _)) = tail.output.split_once('\n') {
+            return line.to_string();
+        }
+        tokio::time::sleep(POLL).await;
+    }
+    panic!("{id} never wrote a line");
+}
+
+async fn gone(pid: u32) -> bool {
+    for _ in 0..POLL_LIMIT {
+        if !alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(POLL).await;
+    }
+    false
+}
+
+/// Killing a job used to kill `sh` alone, and whatever `sh` had started
+/// kept running, writing into a log the teardown had already unlinked.
+#[tokio::test]
+async fn killing_a_job_kills_everything_it_started() {
+    let cwd = directory();
+    let session = task();
+    let started = spawned(session, "sleep 30 & echo $!; wait", cwd.path()).await;
+    let sleeper: u32 = first_line(session, &started.id)
+        .await
+        .parse()
+        .expect("the job wrote its child's pid");
+    assert!(alive(sleeper), "the child started");
+
+    assert_eq!(Jobs::kill_session(session).await, 1);
+
+    assert!(gone(sleeper).await, "sleep {sleeper} outlived its job");
+}
+
+#[tokio::test]
+async fn a_job_that_ends_takes_what_it_left_running_with_it() {
+    let cwd = directory();
+    let session = task();
+    let started = spawned(session, "sleep 30 & echo $!", cwd.path()).await;
+    let sleeper: u32 = first_line(session, &started.id)
+        .await
+        .parse()
+        .expect("the job wrote its child's pid");
+
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
+    assert!(gone(sleeper).await, "sleep {sleeper} outlived its job");
+
+    Jobs::kill_session(session).await;
+}
+
+/// The application directory is always one hidden name directly inside the
+/// checkout: the names that used to lead elsewhere (`./x` became `../x`, an
+/// empty one the checkout itself) are no longer applications at all.
+#[test]
+fn the_application_directory_is_one_hidden_name_inside_the_checkout() {
+    let checkout = Path::new("/tmp/work");
+    for name in ["abnegate", "zone", "my-app_2"] {
+        let application = crate::Application::new(name).unwrap();
+        let directory = application_directory(checkout, &application);
+        assert_eq!(directory.parent(), Some(checkout), "{name}");
+        assert_eq!(
+            directory.file_name().and_then(|name| name.to_str()),
+            Some(format!(".{name}").as_str())
+        );
+        assert_eq!(excluded(&application), format!(".{name}/"));
+    }
+    for name in ["./x", "", "../x", "a/b"] {
+        assert!(crate::Application::new(name).is_err(), "{name:?}");
+    }
 }

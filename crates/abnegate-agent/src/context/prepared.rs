@@ -1,6 +1,7 @@
 use abnegate_llm::Message;
 
-use super::{ContextUsage, Summary};
+use super::ContextUsage;
+use super::Summary;
 
 /// What [`prepare`](super::prepare) hands back: the messages to send, their
 /// usage, and the checkpoint they were projected through.

@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+
 use thiserror::Error;
 
 /// Why an MCP configuration could not be read.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum McpConfigError {
     #[error("invalid MCP config: {0}")]
     Invalid(String),

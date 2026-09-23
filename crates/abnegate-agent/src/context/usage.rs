@@ -1,6 +1,9 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use super::{ContextBreakdown, ContextSource, ContextStatus};
+use super::ContextBreakdown;
+use super::ContextSource;
+use super::ContextStatus;
 
 /// How much of a model's context a request spends, and what that leaves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

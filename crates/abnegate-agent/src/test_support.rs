@@ -1,12 +1,15 @@
 use std::cell::RefCell;
 use std::future::Future;
 use std::io;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::Once;
+
 use tracing_subscriber::fmt::MakeWriter;
 
 /// Set in a test's own child process, naming the test the child should run,
 /// so a test that needs a pristine process environment can re-run itself.
-pub(crate) const PROXY_TEST_CHILD: &str = "ABNEGATE_AGENT_PROXY_TEST_CHILD";
+pub(crate) const CHILD_TEST: &str = "ABNEGATE_AGENT_CHILD_TEST";
 
 /// One subscriber for the whole binary, because a scoped one is not
 /// reliable here: `tracing` caches each callsite's interest globally, and a

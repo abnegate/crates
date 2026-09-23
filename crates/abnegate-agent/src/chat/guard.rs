@@ -1,11 +1,14 @@
-use chrono::Utc;
 use std::sync::Arc;
 use std::time::Duration;
+
+use chrono::Utc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
-use super::{ContextStore, Error, Lease};
+use super::ContextStore;
+use super::Error;
+use super::Lease;
 
 /// An independently scheduled renewal, unaffected by blocked websocket sends or tools.
 /// Dropping the guard stops renewal; callers release explicitly after durable completion.
@@ -130,17 +133,24 @@ pub fn keep_alive(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::chat::{Evidence, History, NewEntry, ReplayMessage, StoredMessage, Summary};
-    use crate::test_support::captured_logs;
-    use async_trait::async_trait;
-    use chrono::TimeDelta;
-    use serde_json::Value;
     use std::collections::VecDeque;
     use std::future::pending;
     use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use chrono::TimeDelta;
+    use serde_json::Value;
     use tokio::time::Instant;
     use uuid::Uuid;
+
+    use super::*;
+    use crate::chat::Evidence;
+    use crate::chat::History;
+    use crate::chat::NewEntry;
+    use crate::chat::ReplayMessage;
+    use crate::chat::StoredMessage;
+    use crate::chat::Summary;
+    use crate::test_support::captured_logs;
 
     const LIFETIME: Duration = Duration::from_secs(30);
     /// Longer than any timeline here, so a loop that stops making progress

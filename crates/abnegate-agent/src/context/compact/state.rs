@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// The structured record a summarizer returns, and the only shape it may.
 #[derive(Debug, Default, Serialize, Deserialize)]

@@ -1,5 +1,7 @@
-use serde_json::{Map, Value};
 use std::collections::HashMap;
+
+use serde_json::Map;
+use serde_json::Value;
 
 /// The values a template is rendered against, by key.
 ///
@@ -72,8 +74,9 @@ impl From<Map<String, Value>> for TemplateContext {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn a_json_object_becomes_a_context_of_its_fields() {

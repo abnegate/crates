@@ -1,7 +1,11 @@
+use abnegate_llm::ToolCall;
+
 use super::AgentPhase;
+use crate::tools::Tier;
 use crate::tools::ToolResult;
 
-/// Progress reports from a running [`Agent`](super::Agent).
+/// Progress reports from a running [`Agent`](super::Agent), and the one
+/// decision it asks its caller to make.
 pub trait AgentCallback: Send + Sync {
     /// The agent moved to another phase.
     fn on_phase_change(&self, phase: AgentPhase, message: Option<&str>);
@@ -14,4 +18,21 @@ pub trait AgentCallback: Send + Sync {
 
     /// The agent produced its answer.
     fn on_response(&self, response: &str);
+
+    /// Whether `call`, whose tool declares `tier`, may run.
+    ///
+    /// Asked before every call, after [`on_tool_call`](Self::on_tool_call).
+    /// A refused call does not run and the model is told it was refused.
+    ///
+    /// The default refuses every tier that is
+    /// [confirmed](Tier::confirmed) - host writes, commands, anything
+    /// outward - and allows the rest, so an agent nobody is watching can read
+    /// but not act. An application that offers such tools implements this to
+    /// put the call to its user, using
+    /// [`ToolRegistry::preview`](crate::ToolRegistry::preview) to show what it
+    /// will do.
+    fn approve(&self, call: &ToolCall, tier: Tier) -> bool {
+        let _ = call;
+        !tier.confirmed()
+    }
 }

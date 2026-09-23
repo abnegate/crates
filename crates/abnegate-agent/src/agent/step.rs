@@ -1,28 +1,31 @@
 use abnegate_llm::Message;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::DateTime;
+use chrono::Utc;
+use serde::Deserialize;
+use serde::Serialize;
 use uuid::Uuid;
 
-use super::{AgentPhase, ToolCallResult};
+use super::AgentPhase;
+use super::ToolCallResult;
 
-/// A step in the agent's execution
+/// One model round of a run: what the model said, or the tools it called and
+/// what they returned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStep {
-    /// Unique ID for this step
     pub id: Uuid,
-    /// The phase of this step
+    /// The phase the round was in when it was recorded.
     pub phase: AgentPhase,
-    /// The message that was sent/received
+    /// The model's reply, when the round ended in text rather than tool calls.
     pub message: Option<Message>,
-    /// Tool calls made in this step
+    /// Every call the round made, in the order the model made them.
     pub tool_calls: Option<Vec<ToolCallResult>>,
-    /// Timestamp when this step started
     pub started_at: DateTime<Utc>,
-    /// Timestamp when this step completed
+    /// Unset while the round is still running.
     pub completed_at: Option<DateTime<Utc>>,
 }
 
 impl AgentStep {
+    /// A round starting now in `phase`.
     pub fn new(phase: AgentPhase) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -34,11 +37,13 @@ impl AgentStep {
         }
     }
 
+    /// The round with the model's reply attached.
     pub fn with_message(mut self, message: Message) -> Self {
         self.message = Some(message);
         self
     }
 
+    /// The round, stamped as finished now.
     pub fn complete(mut self) -> Self {
         self.completed_at = Some(Utc::now());
         self
@@ -47,9 +52,11 @@ impl AgentStep {
 
 #[cfg(test)]
 mod tests {
+    use abnegate_llm::FunctionCall;
+    use abnegate_llm::ToolCall;
+
     use super::*;
     use crate::agent::ToolCallResult;
-    use abnegate_llm::{FunctionCall, ToolCall};
 
     #[test]
     fn test_agent_step_new() {
@@ -87,7 +94,7 @@ mod tests {
             call: tool_call,
             result: "file contents".to_string(),
             success: true,
-            duration_ms: 150,
+            duration_milliseconds: 150,
         };
 
         let mut step = AgentStep::new(AgentPhase::Acting);

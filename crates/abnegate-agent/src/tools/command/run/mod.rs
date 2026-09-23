@@ -1,36 +1,51 @@
-mod params;
+mod parameters;
 
-pub(super) use params::RunCommandParams;
-
-use abnegate_exec::Proxy;
 use async_trait::async_trait;
-use serde_json::{Value, json};
-use std::process::Stdio;
-use tokio::process::Command;
-use tokio::time::{Duration, timeout};
+pub(super) use parameters::RunCommandParameters;
+use serde_json::Value;
+use serde_json::json;
+use tokio::time::Duration;
 
-use super::{
-    BACKGROUND_PARAM, MAX_OUTPUT_PARAM, background, background_property, clamp_output_chars,
-    max_output_property, run_preview, working_directory,
-};
+use super::BACKGROUND_PARAMETER;
+use super::MAX_OUTPUT_PARAMETER;
+use super::MAX_SHELL_TIMEOUT_SECONDS;
+use super::background;
+use super::background_property;
+use super::call_limit;
+use super::clamp_output_characters;
+use super::max_output_property;
+use super::run_preview;
+use super::working_directory;
+use crate::tools::ERROR_PREFIX;
+use crate::tools::REASON_PARAMETER;
+use crate::tools::TIMEOUT_SLACK;
+use crate::tools::Tier;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolResult;
 use crate::tools::job::JobCommand;
-use crate::tools::{
-    ERROR_PREFIX, REASON_PARAM, Tier, Tool, ToolContext, ToolError, ToolResult, reason_property,
-    trim_middle,
-};
+use crate::tools::process;
+use crate::tools::reason_property;
+use crate::tools::trim_middle;
 
 /// Programs [`RunCommandTool`] may spawn, resolved on the child's `PATH`.
 ///
 /// Matched against the whole `command`, never its last path segment: an agent
-/// may write a file into `cwd`, so a basename match would admit `./cargo` and
-/// then run whatever that file is.
-const ALLOWED_COMMANDS: &[&str] = &[
-    "cargo", "rustc", "npm", "npx", "yarn", "pnpm", "node", "deno", "bun", "make", "cmake",
-    "gradle", "mvn", "maven", "go", "python", "python3", "pip", "pip3", "poetry", "uv", "ruby",
-    "gem", "bundle", "rake", "dotnet", "msbuild", "git", "gh", "hub", "ls", "cat", "head", "tail",
-    "grep", "find", "wc", "sort", "uniq", "diff", "tree", "file", "stat", "pwd", "which",
-    "whereis", "pytest", "jest", "mocha", "rspec", "phpunit", "echo", "printf", "date", "env",
-    "true", "false", "test", "curl", "wget", "jq", "yq", "docker",
+/// may write a file into the working directory, so a basename match would
+/// admit `./cargo` and then run whatever that file is.
+///
+/// No interpreter (`python`, `node`, `ruby`, `deno`, `bun`, a shell), no
+/// `env` and no `docker`: each of those runs whatever code its arguments
+/// name, which would make the list a formality. What is left still runs
+/// code from the tree - a build script, a test, a git hook - so the list
+/// narrows which program starts, not what it can do.
+pub(super) const ALLOWED_COMMANDS: &[&str] = &[
+    "cargo", "rustc", "npm", "npx", "yarn", "pnpm", "make", "cmake", "gradle", "mvn", "maven",
+    "go", "pip", "pip3", "poetry", "uv", "gem", "bundle", "rake", "dotnet", "msbuild", "git", "gh",
+    "hub", "ls", "cat", "head", "tail", "grep", "find", "wc", "sort", "uniq", "diff", "tree",
+    "file", "stat", "pwd", "which", "whereis", "pytest", "jest", "mocha", "rspec", "phpunit",
+    "echo", "printf", "date", "true", "false", "test", "curl", "wget", "jq", "yq",
 ];
 
 /// Shell syntax an argument may not carry, because an argument is handed to the
@@ -54,18 +69,17 @@ impl Tool for RunCommandTool {
         Tier::Host
     }
 
-    fn preview(&self, params: &Value) -> Option<String> {
-        let params: RunCommandParams = serde_json::from_value(params.clone()).ok()?;
-        let line = std::iter::once(params.command)
-            .chain(params.args)
+    fn preview(&self, parameters: &Value) -> Option<String> {
+        let parameters: RunCommandParameters = serde_json::from_value(parameters.clone()).ok()?;
+        let line = std::iter::once(parameters.command)
+            .chain(parameters.arguments)
             .collect::<Vec<String>>()
             .join(" ");
-        Some(run_preview(&line, params.cwd.as_deref()))
+        Some(run_preview(&line, parameters.working_directory.as_deref()))
     }
 
-    fn timeout(&self, context: &ToolContext) -> Duration {
-        // Loose enough never to pre-empt the per-call limit applied below.
-        Duration::from_secs(context.command_timeout + 30)
+    fn timeout(&self, _context: &ToolContext) -> Duration {
+        Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS) + TIMEOUT_SLACK
     }
 
     fn parameters_schema(&self) -> Value {
@@ -87,37 +101,44 @@ impl Tool for RunCommandTool {
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 300)"
+                    "description": format!(
+                        "Wall-clock limit in seconds. Defaults to the configured command \
+                         timeout; at most {MAX_SHELL_TIMEOUT_SECONDS}."
+                    )
                 },
-                BACKGROUND_PARAM: background_property(),
-                MAX_OUTPUT_PARAM: max_output_property(),
-                REASON_PARAM: reason_property()
+                BACKGROUND_PARAMETER: background_property(),
+                MAX_OUTPUT_PARAMETER: max_output_property(),
+                REASON_PARAMETER: reason_property()
             },
-            "required": ["command", REASON_PARAM]
+            "required": ["command", REASON_PARAMETER]
         })
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let params: RunCommandParams = serde_json::from_value(params)
-            .map_err(|error| ToolError::InvalidParams(error.to_string()))?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let parameters: RunCommandParameters = serde_json::from_value(parameters)
+            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
         tracing::debug!(
             tool = self.name(),
-            reason_given = params
+            reason_given = parameters
                 .reason
                 .as_deref()
                 .is_some_and(|why| !why.trim().is_empty()),
             "Running tool"
         );
 
-        if !ALLOWED_COMMANDS.contains(&params.command.as_str()) {
+        if !ALLOWED_COMMANDS.contains(&parameters.command.as_str()) {
             return Err(ToolError::Execution(format!(
-                "Command '{}' is not in the allowed list. Name a program, not a path: cargo, npm, git, python, etc.",
-                params.command
+                "Command '{}' is not in the allowed list. Name a program, not a path: cargo, npm, git, etc.",
+                parameters.command
             )));
         }
 
-        for argument in &params.args {
+        for argument in &parameters.arguments {
             if let Some(pattern) = SHELL_METACHARACTERS
                 .iter()
                 .find(|pattern| argument.contains(*pattern))
@@ -128,43 +149,20 @@ impl Tool for RunCommandTool {
             }
         }
 
-        let cwd = working_directory(context, params.cwd.as_deref())?;
+        let directory = working_directory(context, parameters.working_directory.as_deref())?;
 
-        if params.background {
-            let command = JobCommand::new(&params.command, params.args.clone()).within(&cwd);
+        if parameters.background {
+            let command = JobCommand::new(&parameters.command, parameters.arguments.clone())
+                .within(&directory);
             return background(&command, context).await;
         }
 
-        let mut process = Command::new(&params.command);
-        process
-            .args(&params.args)
-            .current_dir(&cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        let mut process = process::command(&parameters.command, context);
+        process.args(&parameters.arguments).current_dir(&directory);
 
-        process.env_clear();
-        for (key, value) in &context.env {
-            process.env(key, value);
-        }
-        Proxy::from_env().apply(&mut process);
-
-        let timeout_duration =
-            Duration::from_secs(params.timeout_secs.unwrap_or(context.command_timeout));
-
-        let output = match timeout(timeout_duration, process.output()).await {
-            Ok(result) => result
-                .map_err(|error| ToolError::Execution(format!("Failed to execute: {error}")))?,
-            Err(_) => {
-                return Err(ToolError::Execution(format!(
-                    "Command timed out after {} seconds",
-                    timeout_duration.as_secs()
-                )));
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let limit = call_limit(parameters.timeout_seconds, context.command_timeout);
+        let output = process::run(process, limit).await?;
+        let (stdout, stderr) = (output.stdout, output.stderr);
 
         let mut result = String::new();
 
@@ -185,10 +183,10 @@ impl Tool for RunCommandTool {
             result = "(no output)".to_string();
         }
 
-        let output_chars = clamp_output_chars(params.max_output_chars);
+        let output_characters = clamp_output_characters(parameters.max_output_characters);
 
         if output.status.success() {
-            Ok(ToolResult::success(trim_middle(&result, output_chars)))
+            Ok(ToolResult::success(trim_middle(&result, output_characters)))
         } else {
             let code = output
                 .status
@@ -199,7 +197,7 @@ impl Tool for RunCommandTool {
             // has to cover that too.
             Ok(ToolResult::error(trim_middle(
                 &format!("Command exited with code {}\n\n{}", code, result),
-                output_chars.saturating_sub(ERROR_PREFIX.chars().count()),
+                output_characters.saturating_sub(ERROR_PREFIX.chars().count()),
             )))
         }
     }

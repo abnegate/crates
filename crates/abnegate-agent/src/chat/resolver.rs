@@ -1,10 +1,13 @@
-use reqwest::Client;
-use serde_json::Value;
 use std::time::Duration;
 
+use reqwest::Client;
+use serde_json::Value;
+
+use super::Capacity;
+use super::Error;
+use super::Source;
 use super::route::Route;
 use super::routes::Routes;
-use super::{Capacity, Source};
 
 /// Fallback allocation when a deployment has not reported native capacity.
 /// Production callers supply validated typed configuration through
@@ -39,22 +42,34 @@ pub struct Resolver {
 }
 
 impl Resolver {
-    pub fn new(host: &str, key: &str, ollama: &str) -> Self {
+    /// A resolver falling back to [`DEFAULT_CONTEXT`] when a deployment
+    /// reports no capacity.
+    pub fn new(host: &str, key: &str, ollama: &str) -> Result<Self, Error> {
         Self::with_context(host, key, ollama, Some(DEFAULT_CONTEXT))
     }
 
-    pub fn with_context(host: &str, key: &str, ollama: &str, configured: Option<u64>) -> Self {
-        Self {
-            client: Client::builder()
-                .connect_timeout(METADATA_TIMEOUT)
-                .timeout(METADATA_TIMEOUT)
-                .build()
-                .expect("Valid metadata HTTP client"),
+    /// A resolver falling back to `configured` when a deployment reports no
+    /// capacity, or to nothing when that is unset or zero.
+    ///
+    /// Fails only when no HTTP client can be built on this host, such as
+    /// when its TLS backend cannot load.
+    pub fn with_context(
+        host: &str,
+        key: &str,
+        ollama: &str,
+        configured: Option<u64>,
+    ) -> Result<Self, Error> {
+        let client = Client::builder()
+            .connect_timeout(METADATA_TIMEOUT)
+            .timeout(METADATA_TIMEOUT)
+            .build()?;
+        Ok(Self {
+            client,
             host: host.trim_end_matches('/').into(),
             key: key.into(),
             ollama: ollama.trim_end_matches('/').into(),
             configured: configured.filter(|value| *value > 0),
-        }
+        })
     }
 
     pub async fn resolve(&self, model: &str) -> Capacity {
@@ -333,8 +348,8 @@ fn provider_reasoning(info: &Value) -> bool {
     }
     info.get("supported_openai_params")
         .and_then(Value::as_array)
-        .is_some_and(|params| {
-            params.iter().any(|param| {
+        .is_some_and(|parameters| {
+            parameters.iter().any(|param| {
                 matches!(
                     param.as_str(),
                     Some("reasoning_effort" | "thinking" | "reasoning")
@@ -375,11 +390,16 @@ fn normalize(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_json;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+
     use super::super::parameters::Parameters;
     use super::*;
-    use serde_json::json;
-    use wiremock::matchers::{body_json, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn fixture(parameters: Value, running: Value, shown: Value) -> (MockServer, Resolver) {
         let server = MockServer::start().await;
@@ -404,7 +424,8 @@ mod tests {
             .mount(&server)
             .await;
         let resolver =
-            Resolver::with_context(&server.uri(), "key", &server.uri(), Some(DEFAULT_CONTEXT));
+            Resolver::with_context(&server.uri(), "key", &server.uri(), Some(DEFAULT_CONTEXT))
+                .unwrap();
         (server, resolver)
     }
 
@@ -514,7 +535,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
             .mount(&server)
             .await;
-        let resolver = Resolver::with_context(&server.uri(), "key", &server.uri(), None);
+        let resolver = Resolver::with_context(&server.uri(), "key", &server.uri(), None).unwrap();
         let capacity = resolver.resolve("alias").await;
         assert_eq!(capacity.limit, None);
         assert_eq!(capacity.ollama, None);
@@ -534,7 +555,7 @@ mod tests {
     async fn provider_alias_never_inherits_ollama_metadata_or_options() {
         let server = MockServer::start().await;
         Mock::given(path("/v2/model/info")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"model_name":"alias","litellm_params":{"model":"openai/remote"},"model_info":{"max_input_tokens":128000}}]}))).mount(&server).await;
-        let resolver = Resolver::new(&server.uri(), "key", &server.uri());
+        let resolver = Resolver::new(&server.uri(), "key", &server.uri()).unwrap();
         let capacity = resolver.resolve("alias").await;
         assert_eq!(capacity.limit, Some(128000));
         assert_eq!(capacity.ollama, None);
@@ -603,7 +624,8 @@ mod tests {
             .await;
         Mock::given(path("/api/show")).and(body_json(json!({"model":"custom:1b"})))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"model_info":{"general.architecture":"custom","custom.context_length":65536}}))).mount(&server).await;
-        let resolver = Resolver::with_context(&server.uri(), "key", &server.uri(), Some(32768));
+        let resolver =
+            Resolver::with_context(&server.uri(), "key", &server.uri(), Some(32768)).unwrap();
         let capacity = resolver.resolve("custom:1b").await;
         assert_eq!(capacity.limit, Some(65536));
         assert_eq!(capacity.source, Source::Provider);
@@ -639,7 +661,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let resolver = Resolver::new(&server.uri(), "key", &server.uri());
+        let resolver = Resolver::new(&server.uri(), "key", &server.uri()).unwrap();
         let capacity = resolver.resolve("alias").await;
         assert!(capacity.reasoning);
         assert_eq!(capacity.ollama, None);

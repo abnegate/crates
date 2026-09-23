@@ -2,6 +2,7 @@ use abnegate_llm::LlmError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ContextError {
     #[error("Context capacity exceeded: {used} estimated input tokens; budget {budget}. {reason}")]
     Capacity {

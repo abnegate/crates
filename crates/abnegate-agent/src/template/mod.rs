@@ -6,7 +6,9 @@
 //! written rather than expanding it.
 
 mod context;
+mod error;
 mod renderer;
 
 pub use context::TemplateContext;
+pub use error::TemplateError;
 pub use renderer::TemplateRenderer;

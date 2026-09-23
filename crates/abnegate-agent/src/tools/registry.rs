@@ -1,14 +1,25 @@
-use abnegate_llm::ToolDefinition;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use abnegate_llm::ToolDefinition;
+use serde_json::Value;
+
+use super::ApplyPatchTool;
+use super::ListFilesTool;
+use super::ReadFileTool;
+use super::RunCommandTool;
+use super::RunShellTool;
+use super::SearchCodeTool;
+use super::Tier;
+use super::Tool;
+use super::ToolContext;
+use super::ToolError;
+use super::ToolResult;
+use super::WriteFileTool;
 use super::tail::TailJobTool;
-use super::text::{MAX_PREVIEW_CHARS, excerpt};
-use super::{
-    ApplyPatchTool, ListFilesTool, ReadFileTool, RunCommandTool, RunShellTool, SearchCodeTool,
-    Tier, Tool, ToolContext, ToolError, ToolResult, WriteFileTool,
-};
+use super::text::MAX_PREVIEW_CHARACTERS;
+use super::text::excerpt;
+use super::wait::WaitForTool;
 
 /// The tools an agent may call, by name.
 pub struct ToolRegistry {
@@ -25,7 +36,11 @@ impl ToolRegistry {
         }
     }
 
-    /// The file tools, `run_command` and `tail_job`.
+    /// The file tools, `run_command`, and `tail_job` and `wait_for` to follow
+    /// what it starts in the background.
+    ///
+    /// Writing files and running commands are [`Tier::Host`] calls, which
+    /// the loop runs only once its callback approves them.
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
         registry.register(Arc::new(ReadFileTool));
@@ -35,6 +50,21 @@ impl ToolRegistry {
         registry.register(Arc::new(SearchCodeTool));
         registry.register(Arc::new(RunCommandTool));
         registry.register(Arc::new(TailJobTool));
+        registry.register(Arc::new(WaitForTool));
+        registry
+    }
+
+    /// The default tools no call to which needs confirming: reading,
+    /// listing and searching files, and following background jobs.
+    pub fn read_only() -> Self {
+        let mut registry = Self::new();
+        for tool in Self::with_defaults()
+            .tools
+            .into_values()
+            .filter(|tool| !tool.tier().confirmed())
+        {
+            registry.register(tool);
+        }
         registry
     }
 
@@ -74,14 +104,14 @@ impl ToolRegistry {
     pub async fn execute(
         &self,
         name: &str,
-        params: Value,
+        parameters: Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let tool = self
             .tools
             .get(name)
             .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
-        tool.execute(params, context).await
+        tool.execute(parameters, context).await
     }
 
     pub fn names(&self) -> Vec<&str> {
@@ -107,19 +137,31 @@ impl ToolRegistry {
     /// What a named call will do, bounded so one enormous argument cannot turn
     /// an approval card into a wall of text.
     pub fn preview(&self, name: &str, arguments: &str) -> Option<String> {
-        let params: Value = serde_json::from_str(arguments).ok()?;
-        let rendered = self.tools.get(name)?.preview(&params)?;
-        Some(excerpt(&rendered, MAX_PREVIEW_CHARS))
+        let parameters: Value = serde_json::from_str(arguments).ok()?;
+        let rendered = self.tools.get(name)?.preview(&parameters)?;
+        Some(excerpt(&rendered, MAX_PREVIEW_CHARACTERS))
     }
 
-    /// Take the tools out, for folding one registry into another.
-    pub fn into_tools(self) -> Vec<Arc<dyn Tool>> {
-        self.tools.into_values().collect()
+    /// Fold `other` into this registry: its tools, replacing any here of the
+    /// same name, and the MCP servers they came from.
+    pub fn merge(&mut self, other: ToolRegistry) {
+        self.tools.extend(other.tools);
+        for server in other.mcp_servers {
+            if !self.mcp_servers.contains(&server) {
+                self.mcp_servers.push(server);
+            }
+        }
     }
 
     /// Whether any MCP server's tools are registered.
     pub fn has_mcp(&self) -> bool {
         !self.mcp_servers.is_empty()
+    }
+
+    /// The MCP servers whose tools are registered, in the order they
+    /// attached.
+    pub fn mcp_servers(&self) -> &[String] {
+        &self.mcp_servers
     }
 
     /// Record that a server's tools were attached, once per server.
@@ -131,18 +173,24 @@ impl ToolRegistry {
     }
 }
 
+/// The [`read_only`](ToolRegistry::read_only) tools: a registry built by
+/// default is one that cannot act on the host.
 impl Default for ToolRegistry {
     fn default() -> Self {
-        Self::with_defaults()
+        Self::read_only()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::tools::job::TAIL_JOB;
-    use crate::tools::{LINE_BREAK, REASON_DESCRIPTION, REASON_PARAM};
     use std::collections::HashSet;
+
+    use super::*;
+    use crate::tools::LINE_BREAK;
+    use crate::tools::REASON_DESCRIPTION;
+    use crate::tools::REASON_PARAMETER;
+    use crate::tools::job::TAIL_JOB;
+    use crate::tools::job::WAIT_FOR;
 
     /// A preview a reader approves has to say what will run. `sh -c` runs one
     /// command per line, so two lines joined by a space showed them a single
@@ -184,7 +232,8 @@ mod tests {
         assert!(names.contains(&"search_code"));
         assert!(names.contains(&"run_command"));
         assert!(names.contains(&TAIL_JOB));
-        assert_eq!(names.len(), 7);
+        assert!(names.contains(&WAIT_FOR));
+        assert_eq!(names.len(), 8);
     }
 
     /// `with_host_tools` is `with_defaults` plus a shell, so one registration
@@ -211,6 +260,46 @@ mod tests {
         );
     }
 
+    /// Receipts and schemas tell the model to wait with `wait_for`, and
+    /// nothing registered a tool by that name.
+    #[test]
+    fn every_tool_a_receipt_points_at_is_registered() {
+        let registry = ToolRegistry::with_defaults();
+        assert!(registry.get(WAIT_FOR).is_some());
+        assert!(registry.get(TAIL_JOB).is_some());
+    }
+
+    /// `default()` handed out the whole host-tier set, so a registry nobody
+    /// chose could write files and run commands.
+    #[test]
+    fn a_default_registry_needs_no_confirmation_for_anything() {
+        let registry = ToolRegistry::default();
+        assert!(!registry.names().is_empty());
+        for name in registry.names() {
+            assert!(!registry.tier(name).unwrap().confirmed(), "{name}");
+        }
+        for name in ["read_file", "list_files", "search_code", TAIL_JOB, WAIT_FOR] {
+            assert!(registry.get(name).is_some(), "{name}");
+        }
+        for name in ["write_file", "apply_patch", "run_command"] {
+            assert!(registry.get(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_merged_registry_keeps_the_servers_its_tools_came_from() {
+        let mut from = ToolRegistry::read_only();
+        from.mcp_servers.push("docs".to_string());
+        let mut into = ToolRegistry::new();
+        into.mcp_servers.push("notes".to_string());
+
+        into.merge(from);
+
+        assert_eq!(into.mcp_servers(), ["notes", "docs"]);
+        assert!(into.has_mcp());
+        assert!(into.get("read_file").is_some());
+    }
+
     #[test]
     fn test_tool_registry_get() {
         let registry = ToolRegistry::with_defaults();
@@ -224,7 +313,7 @@ mod tests {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
 
-        assert_eq!(definitions.len(), 7);
+        assert_eq!(definitions.len(), 8);
 
         for definition in &definitions {
             assert_eq!(definition.tool_type, "function");
@@ -257,7 +346,7 @@ mod tests {
     fn every_side_effecting_schema_lists_reason_as_a_property_and_as_required() {
         for tool in side_effecting_tools() {
             let schema = tool.parameters_schema();
-            let property = &schema["properties"][REASON_PARAM];
+            let property = &schema["properties"][REASON_PARAMETER];
             assert_eq!(property["type"], "string", "{}", tool.name());
             assert_eq!(
                 property["description"],
@@ -272,8 +361,8 @@ mod tests {
             assert!(
                 required
                     .iter()
-                    .any(|name| name.as_str() == Some(REASON_PARAM)),
-                "{} does not require {REASON_PARAM}",
+                    .any(|name| name.as_str() == Some(REASON_PARAMETER)),
+                "{} does not require {REASON_PARAMETER}",
                 tool.name()
             );
         }
@@ -284,7 +373,7 @@ mod tests {
         let descriptions: HashSet<String> = side_effecting_tools()
             .iter()
             .map(|tool| {
-                tool.parameters_schema()["properties"][REASON_PARAM]["description"]
+                tool.parameters_schema()["properties"][REASON_PARAMETER]["description"]
                     .as_str()
                     .unwrap_or_else(|| panic!("{} has no reason description", tool.name()))
                     .to_string()

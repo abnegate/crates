@@ -1,16 +1,25 @@
-use async_trait::async_trait;
-use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject};
-use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+
+use async_trait::async_trait;
+use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResult;
+use rmcp::model::JsonObject;
+use serde_json::Value;
 use tokio::time::timeout;
 
 use super::format::format_call_result;
 use super::session::McpSession;
-use crate::tools::{Tier, Tool, ToolContext, ToolError, ToolResult};
+use crate::tools::MAX_TOOL_OUTPUT_CHARACTERS;
+use crate::tools::TIMEOUT_SLACK;
+use crate::tools::Tier;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolResult;
+use crate::tools::trim_middle;
 
-const MAX_MCP_OUTPUT_CHARS: usize = 8_000;
-const TRUNCATION_MARKER: &str = "\n[truncated]";
+const MAX_MCP_OUTPUT_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS;
 
 /// One tool advertised by a connected MCP server.
 pub struct McpTool {
@@ -63,12 +72,18 @@ impl Tool for McpTool {
         Tier::Outward
     }
 
+    /// The call's own limit, the configured command timeout, with room to
+    /// report it.
+    fn timeout(&self, context: &ToolContext) -> Duration {
+        context.command_timeout + TIMEOUT_SLACK
+    }
+
     /// The method and the arguments it was given.
     ///
     /// A remote method has no catalog entry for a reader to recognise it by,
     /// so the call itself is the whole of what there is to show them.
-    fn preview(&self, params: &Value) -> Option<String> {
-        let arguments = params
+    fn preview(&self, parameters: &Value) -> Option<String> {
+        let arguments = parameters
             .as_object()
             .filter(|object| !object.is_empty())
             .and_then(|object| serde_json::to_string(object).ok());
@@ -78,19 +93,24 @@ impl Tool for McpTool {
         })
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let arguments = json_object(params)?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let arguments = json_object(parameters)?;
         let request =
             CallToolRequestParams::new(self.remote_name.clone()).with_arguments(arguments);
 
         let call = self.session.call(request);
-        let result = match timeout(Duration::from_secs(context.command_timeout), call).await {
+        let result = match timeout(context.command_timeout, call).await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => return Ok(ToolResult::error(error.to_string())),
             Err(_) => {
                 return Ok(ToolResult::error(format!(
                     "MCP tool '{}' timed out after {} seconds",
-                    self.qualified_name, context.command_timeout
+                    self.qualified_name,
+                    context.command_timeout.as_secs()
                 )));
             }
         };
@@ -99,8 +119,10 @@ impl Tool for McpTool {
     }
 }
 
+/// The call's result as the model reads it, keeping the start and the end of
+/// a long one: an error a server reports last is the part worth reading.
 fn tool_result_from_call(result: &CallToolResult) -> ToolResult {
-    let output = truncate_chars(&format_call_result(result), MAX_MCP_OUTPUT_CHARS);
+    let output = trim_middle(&format_call_result(result), MAX_MCP_OUTPUT_CHARACTERS);
     if result.is_error.unwrap_or(false) {
         ToolResult::error(output)
     } else {
@@ -108,18 +130,11 @@ fn tool_result_from_call(result: &CallToolResult) -> ToolResult {
     }
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    match text.char_indices().nth(max_chars) {
-        Some((index, _)) => format!("{}{TRUNCATION_MARKER}", &text[..index]),
-        None => text.to_string(),
-    }
-}
-
-fn json_object(params: Value) -> Result<JsonObject, ToolError> {
-    match params {
+fn json_object(parameters: Value) -> Result<JsonObject, ToolError> {
+    match parameters {
         Value::Object(map) => Ok(map),
         Value::Null => Ok(JsonObject::new()),
-        other => Err(ToolError::InvalidParams(format!(
+        other => Err(ToolError::InvalidParameters(format!(
             "MCP tool arguments must be a JSON object, got {other}"
         ))),
     }
@@ -127,9 +142,10 @@ fn json_object(params: Value) -> Result<JsonObject, ToolError> {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::ContentBlock;
+
     use super::*;
     use crate::mcp::format::UNTRUSTED_MARKER;
-    use rmcp::model::ContentBlock;
 
     #[test]
     fn errored_call_result_keeps_the_untrusted_marker() {
@@ -141,8 +157,10 @@ mod tests {
         assert!(error.starts_with(UNTRUSTED_MARKER), "{error}");
     }
 
+    /// The cut used to keep only the head, which dropped the end of a long
+    /// result - where a server reports what went wrong.
     #[test]
-    fn huge_call_result_is_capped_before_tool_result() {
+    fn huge_call_result_keeps_its_head_and_tail() {
         let text = format!("HEAD_MCP{}TAIL_MCP", "m".repeat(20_000));
         let result = tool_result_from_call(&CallToolResult::success(vec![ContentBlock::text(
             text.clone(),
@@ -151,22 +169,21 @@ mod tests {
         let output = result.output.expect("success output");
         assert!(output.starts_with(UNTRUSTED_MARKER), "{output}");
         assert!(output.contains("HEAD_MCP"), "{output}");
-        assert!(!output.contains("TAIL_MCP"), "{output}");
-        assert!(output.contains("[truncated]"), "{output}");
-        assert!(output.chars().count() <= MAX_MCP_OUTPUT_CHARS + 32);
-        assert!(output.chars().count() < text.chars().count());
+        assert!(output.ends_with("TAIL_MCP"), "{output}");
+        assert!(output.contains("characters trimmed"), "{output}");
+        assert!(output.chars().count() <= MAX_MCP_OUTPUT_CHARACTERS);
     }
 
     #[test]
     fn huge_error_call_result_is_capped() {
         let result = tool_result_from_call(&CallToolResult::error(vec![ContentBlock::text(
-            "e".repeat(20_000),
+            format!("{}the actual failure", "e".repeat(20_000)),
         )]));
         assert!(!result.success);
         let error = result.error.expect("error payload");
         assert!(error.starts_with(UNTRUSTED_MARKER), "{error}");
-        assert!(error.contains("eeee"));
-        assert!(error.contains("[truncated]"));
-        assert!(error.chars().count() <= MAX_MCP_OUTPUT_CHARS + 32);
+        assert!(error.ends_with("the actual failure"), "{error}");
+        assert!(error.contains("characters trimmed"));
+        assert!(error.chars().count() <= MAX_MCP_OUTPUT_CHARACTERS);
     }
 }

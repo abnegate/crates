@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A page of an evidence record or of the evidence catalog.
 #[derive(Debug, Clone, Serialize, Deserialize)]

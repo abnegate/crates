@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A background job that is no longer running. No exit code means it was killed
 /// rather than allowed to finish.

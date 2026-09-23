@@ -3,6 +3,7 @@ use thiserror::Error;
 /// An MCP client failure. Connecting is best-effort: one bad server does not
 /// take the others down.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum McpError {
     #[error("failed to start MCP server '{server}': {source}")]
     Spawn {

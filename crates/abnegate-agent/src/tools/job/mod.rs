@@ -17,21 +17,26 @@ mod exited;
 mod jobs;
 mod limits;
 mod started;
-mod state;
+mod status;
 mod tail;
 #[cfg(test)]
 mod tests;
 
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+
 pub use command::JobCommand;
+pub use command::SHELL;
+pub use command::SHELL_COMMAND_FLAG;
 pub use exited::JobExited;
 pub use jobs::Jobs;
 pub use started::JobStarted;
-pub use state::JobState;
+pub use status::JobStatus;
 pub use tail::JobTail;
-
-use std::path::{Path, PathBuf};
-use std::time::Duration;
 use uuid::Uuid;
+
+use crate::Application;
 
 pub const TAIL_JOB: &str = "tail_job";
 
@@ -46,7 +51,8 @@ pub const WAIT_FOR: &str = "wait_for";
 ///
 /// The same cap a foreground shell command is held to: backgrounding is a way
 /// to stop blocking the loop, not a way to buy a longer command.
-pub const MAX_JOB_LIFETIME: Duration = Duration::from_secs(super::command::MAX_SHELL_TIMEOUT_SECS);
+pub const MAX_JOB_LIFETIME: Duration =
+    Duration::from_secs(super::command::MAX_SHELL_TIMEOUT_SECONDS);
 
 /// Ceiling on a job's log file, past which the job is killed and reported as
 /// flooded rather than truncated and reported as fine.
@@ -76,7 +82,7 @@ const JOB_LOG_EXTENSION: &str = "log";
 /// Distinguishes a job id from a run id at a glance, and keeps it short enough
 /// to carry between calls.
 const JOB_ID_PREFIX: &str = "job_";
-const JOB_ID_HEX_CHARS: usize = 12;
+const JOB_ID_HEX_CHARACTERS: usize = 12;
 
 const STARTED_PREFIX: &str = "Started ";
 
@@ -96,18 +102,18 @@ const MAX_CHARACTER_BYTES: usize = 4;
 const EXCLUDE_PATH: &str = "info/exclude";
 
 /// The directory the tools keep their own files in, inside a working tree.
-pub fn application_directory(checkout: &Path, application: &str) -> PathBuf {
-    checkout.join(format!(".{application}"))
+pub fn application_directory(checkout: &Path, application: &Application) -> PathBuf {
+    checkout.join(application.directory())
 }
 
 /// Where job logs live under the session's own working tree.
-pub fn log_directory(checkout: &Path, application: &str) -> PathBuf {
+pub fn log_directory(checkout: &Path, application: &Application) -> PathBuf {
     application_directory(checkout, application).join(JOB_LOG_DIRECTORY)
 }
 
 /// The line that keeps a task run's job logs out of its diff.
-fn excluded(application: &str) -> String {
-    format!(".{application}/")
+fn excluded(application: &Application) -> String {
+    format!("{}/", application.directory())
 }
 
 fn missing(id: &str) -> String {
@@ -117,11 +123,11 @@ fn missing(id: &str) -> String {
 /// Mint a job id: `job_` and twelve lowercase hex characters.
 pub fn mint() -> String {
     let hex = Uuid::new_v4().simple().to_string();
-    format!("{JOB_ID_PREFIX}{}", &hex[..JOB_ID_HEX_CHARS])
+    format!("{JOB_ID_PREFIX}{}", &hex[..JOB_ID_HEX_CHARACTERS])
 }
 
 /// Where the log for `id` belongs, under the session's own working tree.
-pub fn log_path(checkout: &Path, application: &str, id: &str) -> PathBuf {
+pub fn log_path(checkout: &Path, application: &Application, id: &str) -> PathBuf {
     log_directory(checkout, application).join(format!("{id}.{JOB_LOG_EXTENSION}"))
 }
 
@@ -176,7 +182,7 @@ pub fn parse_receipt(output: &str) -> Option<JobStarted> {
 
 fn is_job_id(candidate: &str) -> bool {
     candidate.strip_prefix(JOB_ID_PREFIX).is_some_and(|hex| {
-        hex.len() == JOB_ID_HEX_CHARS
+        hex.len() == JOB_ID_HEX_CHARACTERS
             && hex
                 .chars()
                 .all(|character| matches!(character, '0'..='9' | 'a'..='f'))

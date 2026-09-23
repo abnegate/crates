@@ -19,6 +19,8 @@ mod phase;
 mod result;
 mod state;
 mod step;
+#[cfg(test)]
+mod tests;
 
 pub use callback::AgentCallback;
 pub use config::AgentConfig;

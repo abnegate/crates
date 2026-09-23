@@ -1,20 +1,27 @@
 mod hunk;
-mod params;
+mod parameters;
 
-pub(super) use params::ApplyPatchParams;
-
-use async_trait::async_trait;
-use serde_json::{Value, json};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Read;
 use std::path::Path;
 
-use crate::tools::beneath::{self, Access};
-use crate::tools::{
-    REASON_PARAM, Tier, Tool, ToolContext, ToolError, ToolResult, excerpt, reason_property,
-};
+use async_trait::async_trait;
+pub(super) use parameters::ApplyPatchParameters;
+use serde_json::Value;
+use serde_json::json;
+
+use crate::tools::REASON_PARAMETER;
+use crate::tools::Tier;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolResult;
+use crate::tools::beneath;
+use crate::tools::beneath::Access;
+use crate::tools::excerpt;
+use crate::tools::reason_property;
 
 /// How much of a patch's first hunk an approval preview quotes.
-const PATCH_HUNK_CHARS: usize = 80;
+const PATCH_HUNK_CHARACTERS: usize = 80;
 
 /// Replace exact text in an existing file without rewriting the rest.
 pub struct ApplyPatchTool;
@@ -33,11 +40,11 @@ impl Tool for ApplyPatchTool {
         Tier::Host
     }
 
-    fn preview(&self, params: &Value) -> Option<String> {
-        let params: ApplyPatchParams = serde_json::from_value(params.clone()).ok()?;
-        let hunks = params.hunks().ok()?;
-        let first = excerpt(&hunks[0].old_string, PATCH_HUNK_CHARS);
-        let scope = match params.replace_all {
+    fn preview(&self, parameters: &Value) -> Option<String> {
+        let parameters: ApplyPatchParameters = serde_json::from_value(parameters.clone()).ok()?;
+        let hunks = parameters.hunks().ok()?;
+        let first = excerpt(&hunks[0].old_string, PATCH_HUNK_CHARACTERS);
+        let scope = match parameters.replace_all {
             true => "every occurrence of ",
             false => "",
         };
@@ -47,7 +54,7 @@ impl Tool for ApplyPatchTool {
         };
         Some(format!(
             "Edit {}: replace {scope}\"{first}\"{rest}.",
-            params.path
+            parameters.path
         ))
     }
 
@@ -83,27 +90,31 @@ impl Tool for ApplyPatchTool {
                     "type": "boolean",
                     "description": "Replace every occurrence of each old_string (default false)"
                 },
-                REASON_PARAM: reason_property()
+                REASON_PARAMETER: reason_property()
             },
-            "required": ["path", REASON_PARAM]
+            "required": ["path", REASON_PARAMETER]
         })
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let params: ApplyPatchParams = serde_json::from_value(params)
-            .map_err(|error| ToolError::InvalidParams(error.to_string()))?;
-        let hunks = params.hunks()?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let parameters: ApplyPatchParameters = serde_json::from_value(parameters)
+            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
+        let hunks = parameters.hunks()?;
 
         tracing::debug!(
             tool = self.name(),
-            reason_given = params
+            reason_given = parameters
                 .reason
                 .as_deref()
                 .is_some_and(|why| !why.trim().is_empty()),
             "Running tool"
         );
 
-        let normalized_path = params.path.replace('\\', "/");
+        let normalized_path = parameters.path.replace('\\', "/");
         if !context.unrestricted
             && (normalized_path.contains("..")
                 || normalized_path.starts_with('/')
@@ -115,7 +126,8 @@ impl Tool for ApplyPatchTool {
             ));
         }
 
-        let mut file = beneath::open(context, Path::new(&params.path), Access::Update)?;
+        let path = Path::new(&parameters.path);
+        let mut file = beneath::open(context, path, Access::Read)?;
 
         let metadata = file
             .metadata()
@@ -139,18 +151,18 @@ impl Tool for ApplyPatchTool {
                 return Err(ToolError::Execution(format!(
                     "Hunk {} did not match any text in {}. Read the file and copy the exact text to replace.",
                     index + 1,
-                    params.path
+                    parameters.path
                 )));
             }
-            if matches > 1 && !params.replace_all {
+            if matches > 1 && !parameters.replace_all {
                 return Err(ToolError::Execution(format!(
                     "Hunk {} matched {} times in {}. Include more surrounding context so the match is unique, or set replace_all=true.",
                     index + 1,
                     matches,
-                    params.path
+                    parameters.path
                 )));
             }
-            content = if params.replace_all {
+            content = if parameters.replace_all {
                 content.replace(&hunk.old_string, &hunk.new_string)
             } else {
                 content.replacen(&hunk.old_string, &hunk.new_string, 1)
@@ -158,15 +170,13 @@ impl Tool for ApplyPatchTool {
             replacements.push(matches);
         }
 
-        file.set_len(0)
-            .and_then(|()| file.seek(SeekFrom::Start(0)))
-            .and_then(|_| file.write_all(content.as_bytes()))
-            .map_err(|error| ToolError::Execution(format!("Cannot write file: {error}")))?;
+        drop(file);
+        beneath::replace(context, path, content.as_bytes())?;
 
         let total: usize = replacements.iter().sum();
         Ok(ToolResult::success(format!(
             "Updated {} ({} replacement{})",
-            params.path,
+            parameters.path,
             total,
             if total == 1 { "" } else { "s" }
         )))

@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Why a conversation store refused or failed an operation.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("This chat already has an active response")]
     Busy,
@@ -17,4 +18,6 @@ pub enum Error {
     Backend(String),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error("HTTP client failed: {0}")]
+    Http(#[from] reqwest::Error),
 }

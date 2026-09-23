@@ -2,16 +2,20 @@ use abnegate_llm::LlmError;
 use thiserror::Error;
 
 use crate::agent::AgentError;
+use crate::application::ApplicationError;
 use crate::chat;
 use crate::context::ContextError;
 #[cfg(feature = "mcp")]
-use crate::mcp::{McpConfigError, McpError};
+use crate::mcp::McpConfigError;
+#[cfg(feature = "mcp")]
+use crate::mcp::McpError;
 use crate::session::SessionError;
 use crate::tools::ToolError;
 
 /// Any failure this crate reports, for a caller that composes several of its
 /// modules and wants one error to return.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("LLM error: {0}")]
     Llm(#[from] LlmError),
@@ -19,6 +23,8 @@ pub enum Error {
     Tool(#[from] ToolError),
     #[error("Agent error: {0}")]
     Agent(#[from] AgentError),
+    #[error("Application error: {0}")]
+    Application(#[from] ApplicationError),
     #[error("Context error: {0}")]
     Context(#[from] ContextError),
     #[error("Session error: {0}")]
@@ -43,8 +49,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use uuid::Uuid;
+
+    use super::*;
 
     #[test]
     fn test_llm_error_display() {
@@ -68,9 +75,12 @@ mod tests {
     }
 
     #[test]
-    fn test_cancelled_error() {
-        let error: Error = AgentError::Cancelled.into();
-        assert_eq!(error.to_string(), "Agent error: Agent was cancelled");
+    fn test_empty_error() {
+        let error: Error = AgentError::Empty.into();
+        assert_eq!(
+            error.to_string(),
+            "Agent error: The model answered with nothing usable too many times in a row"
+        );
     }
 
     #[test]
@@ -137,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_result_type_err() {
-        let result: Result<i32> = Err(AgentError::Cancelled.into());
+        let result: Result<i32> = Err(AgentError::Empty.into());
         assert!(result.is_err());
     }
 

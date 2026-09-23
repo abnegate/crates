@@ -1,11 +1,19 @@
+use std::time::Duration;
+
 use abnegate_llm::ToolDefinition;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::time::Duration;
 
-use super::{Tier, ToolContext, ToolError, ToolResult};
+use super::Tier;
+use super::ToolContext;
+use super::ToolError;
+use super::ToolResult;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What a tool that enforces its own limit adds to it for the outer bound,
+/// so the outer bound never pre-empts the inner one.
+pub(crate) const TIMEOUT_SLACK: Duration = Duration::from_secs(30);
 
 /// Something the agent can call.
 #[async_trait]
@@ -18,7 +26,11 @@ pub trait Tool: Send + Sync {
     /// JSON Schema for the call's arguments.
     fn parameters_schema(&self) -> Value;
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError>;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError>;
 
     /// How long a caller should let this tool run before abandoning it.
     ///

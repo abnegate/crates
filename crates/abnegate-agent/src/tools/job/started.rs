@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A background job, as reported to a client and read back by the chat layer
 /// from the spawn receipt.

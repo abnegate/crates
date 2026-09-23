@@ -1,7 +1,11 @@
-use super::{AgentCallback, AgentPhase};
+use super::AgentCallback;
+use super::AgentPhase;
 use crate::tools::ToolResult;
 
 /// A callback for a caller that does not track progress.
+///
+/// Keeps the default [`approve`](AgentCallback::approve): nobody is there to
+/// confirm a call, so every confirmed tier is refused.
 pub struct NoOpCallback;
 
 impl AgentCallback for NoOpCallback {

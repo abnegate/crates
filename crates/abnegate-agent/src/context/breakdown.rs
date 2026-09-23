@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Estimated input tokens, by what spent them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

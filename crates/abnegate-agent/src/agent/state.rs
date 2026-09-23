@@ -1,47 +1,48 @@
 use abnegate_llm::Message;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::DateTime;
+use chrono::Utc;
+use serde::Deserialize;
+use serde::Serialize;
 use uuid::Uuid;
 
-use super::{AgentPhase, AgentStep};
+use super::AgentPhase;
+use super::AgentStep;
 use crate::context::Summary;
 
-/// The current state of an agent execution
+/// Everything a run has said and done, enough to save it and continue it later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentState {
-    /// Unique ID for this execution
     pub id: Uuid,
-    /// Current phase
     pub phase: AgentPhase,
-    /// All messages in the conversation
+    /// The conversation as sent to the model. Append-only: compaction folds
+    /// history into [`summary`](Self::summary) and never edits these.
     #[serde(with = "abnegate_llm::history")]
     pub messages: Vec<Message>,
-    /// Separate checkpoint; canonical messages are append-only.
+    /// The checkpoint standing in for compacted history, if any.
     #[serde(default)]
     pub summary: Option<Summary>,
-    /// Prefix already presented to the model. Newly appended tool output is protected.
+    /// How many of `messages` the model has already been shown. Tool output
+    /// appended after this is protected from compaction.
     #[serde(default)]
     pub consumed: usize,
-    /// All steps taken
     pub steps: Vec<AgentStep>,
-    /// Current iteration count
+    /// Model rounds spent in the current turn, counted against
+    /// [`AgentConfig::max_iterations`](super::AgentConfig::max_iterations).
     pub iteration: usize,
-    /// Total tokens used
+    /// Tokens the provider reported spending, across every turn.
     pub tokens_used: u32,
-    /// Whether the agent has finished
     pub finished: bool,
-    /// Final response (if finished)
+    /// The answer that ended the turn, once there is one.
     pub final_response: Option<String>,
-    /// Error message (if failed)
+    /// Why the turn failed, when it did.
     pub error: Option<String>,
-    /// When the execution started
     pub started_at: DateTime<Utc>,
-    /// When the execution finished
     pub finished_at: Option<DateTime<Utc>>,
 }
 
 impl AgentState {
-    /// Create a new agent state with an initial user message
+    /// A run opening on `user_message`, behind `system_prompt` when one is
+    /// given.
     pub fn new(user_message: impl Into<String>, system_prompt: Option<String>) -> Self {
         let mut messages = Vec::new();
 
@@ -68,17 +69,17 @@ impl AgentState {
         }
     }
 
-    /// Add a step to the execution
+    /// Record a finished round.
     pub fn add_step(&mut self, step: AgentStep) {
         self.steps.push(step);
     }
 
-    /// Add a message to the conversation
+    /// Append to the conversation.
     pub fn add_message(&mut self, message: Message) {
         self.messages.push(message);
     }
 
-    /// Mark the agent as complete with a response
+    /// End the turn on `response`.
     pub fn complete(&mut self, response: impl Into<String>) {
         self.phase = AgentPhase::Complete;
         self.finished = true;
@@ -86,7 +87,7 @@ impl AgentState {
         self.finished_at = Some(Utc::now());
     }
 
-    /// Mark the agent as failed with an error
+    /// End the turn on a failure.
     pub fn fail(&mut self, error: impl Into<String>) {
         self.phase = AgentPhase::Error;
         self.finished = true;
@@ -94,7 +95,8 @@ impl AgentState {
         self.finished_at = Some(Utc::now());
     }
 
-    /// Get the progress percentage (based on iterations)
+    /// How far through `max_iterations` the turn is, as a percentage that
+    /// only reaches 100 once the turn has finished.
     pub fn progress_percent(&self, max_iterations: usize) -> u8 {
         if self.finished {
             return 100;
@@ -108,9 +110,12 @@ impl AgentState {
 
 #[cfg(test)]
 mod tests {
+    use abnegate_llm::FunctionCall;
+    use abnegate_llm::Role;
+    use abnegate_llm::ToolCall;
+
     use super::*;
     use crate::agent::ToolCallResult;
-    use abnegate_llm::{FunctionCall, Role, ToolCall};
 
     #[test]
     fn test_agent_state_new() {
@@ -358,7 +363,7 @@ mod tests {
             call: tool_call,
             result: "success".to_string(),
             success: true,
-            duration_ms: 100,
+            duration_milliseconds: 100,
         }]);
         state.add_step(step);
 

@@ -1,19 +1,33 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
+
 use tempfile::tempdir;
 
+use super::ApplyPatchTool;
+use super::ListFilesTool;
+use super::ReadFileTool;
+use super::SearchCodeTool;
+use super::WriteFileTool;
 use super::list::LIST_FILES_CAP;
-use super::patch::ApplyPatchParams;
-use super::read::{FILE_PAGE_CHARS, page_text};
-use super::search::{SEARCH_MAX_RESULTS, search_directory};
-use super::write::WriteFileParams;
-use super::{ApplyPatchTool, ListFilesTool, ReadFileTool, SearchCodeTool, WriteFileTool};
+use super::patch::ApplyPatchParameters;
+use super::read::FILE_PAGE_CHARACTERS;
+use super::read::page_text;
+use super::read::select_lines;
+use super::search::SEARCH_MAX_RESULTS;
+use super::search::search_tree;
+use super::write::WriteFileParameters;
 use crate::test_support::captured_logs;
-use crate::tools::{DEFAULT_APPLICATION, Session, Tier, Tool, ToolContext};
+use crate::tools::Session;
+use crate::tools::Tier;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
 
 const ATTEMPTS: usize = 2_000;
 /// Roughly the gap between a tool's check and the open that follows it, so
@@ -32,13 +46,13 @@ fn create_test_context(directory: &Path) -> ToolContext {
         .canonicalize()
         .unwrap_or_else(|_| directory.to_path_buf());
     ToolContext {
-        cwd,
-        env: std::collections::HashMap::new(),
+        working_directory: cwd,
+        environment: crate::tools::EnvironmentPolicy::empty(),
         max_file_size: 1024 * 1024,
-        command_timeout: 30,
+        command_timeout: std::time::Duration::from_secs(30),
         unrestricted: false,
         session: Session::Detached,
-        application: DEFAULT_APPLICATION.to_string(),
+        application: crate::Application::default(),
     }
 }
 
@@ -96,6 +110,39 @@ async fn test_read_file_with_line_range() {
     assert!(!output.contains("Line 4"));
 }
 
+/// A model picks the range, and one that starts past the end of a short file
+/// used to slice `lines[9..2]` and take the whole run down with it.
+#[tokio::test]
+async fn read_file_refuses_a_line_range_that_starts_past_the_end() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join("short.txt"), "one\ntwo").unwrap();
+    let context = create_test_context(directory.path());
+
+    for range in [
+        serde_json::json!({"path": "short.txt", "start_line": 10}),
+        serde_json::json!({"path": "short.txt", "start_line": 10, "end_line": 12}),
+        serde_json::json!({"path": "short.txt", "start_line": 2, "end_line": 1}),
+    ] {
+        let error = ReadFileTool
+            .execute(range.clone(), &context)
+            .await
+            .expect_err("a range with no lines in it is refused");
+        assert!(
+            matches!(error, crate::tools::ToolError::InvalidParameters(_)),
+            "{range}: {error}"
+        );
+        assert!(error.to_string().contains("2 lines"), "{range}: {error}");
+    }
+}
+
+#[test]
+fn a_line_range_is_inclusive_and_clamps_its_end_to_the_file() {
+    assert_eq!(select_lines("a\nb\nc", Some(2), Some(9)).unwrap(), "b\nc");
+    assert_eq!(select_lines("a\nb\nc", Some(3), None).unwrap(), "c");
+    assert_eq!(select_lines("a\nb\nc", Some(4), None).unwrap(), "");
+    assert!(select_lines("a\nb", Some(4), None).is_err());
+}
+
 #[test]
 fn page_text_caps_and_continues_by_character() {
     let content = "α".repeat(10);
@@ -103,7 +150,7 @@ fn page_text_caps_and_continues_by_character() {
     assert_eq!(page, "αααα");
     assert_eq!(total, 10);
     assert_eq!(next, Some(4));
-    let (rest, _, next) = page_text(&content, 4, FILE_PAGE_CHARS).unwrap();
+    let (rest, _, next) = page_text(&content, 4, FILE_PAGE_CHARACTERS).unwrap();
     assert_eq!(rest, "α".repeat(6));
     assert_eq!(next, None);
     assert!(page_text(&content, 0, 0).is_err());
@@ -113,7 +160,7 @@ fn page_text_caps_and_continues_by_character() {
 #[tokio::test]
 async fn read_file_pages_large_content_and_continues() {
     let directory = tempdir().unwrap();
-    let total = FILE_PAGE_CHARS + 123;
+    let total = FILE_PAGE_CHARACTERS + 123;
     let content = "α".repeat(total);
     fs::write(directory.path().join("large.txt"), &content).unwrap();
 
@@ -131,15 +178,15 @@ async fn read_file_pages_large_content_and_continues() {
     assert!(result.success);
     let output = result.output.unwrap();
     let (page, footer) = output.rsplit_once('\n').expect("truncation footer");
-    assert_eq!(page.chars().count(), FILE_PAGE_CHARS);
+    assert_eq!(page.chars().count(), FILE_PAGE_CHARACTERS);
     assert_eq!(
         footer,
-        format!("[truncated; total={total} offset=0 next={FILE_PAGE_CHARS}]")
+        format!("[truncated; total={total} offset=0 next={FILE_PAGE_CHARACTERS}]")
     );
 
     let continued = tool
         .execute(
-            serde_json::json!({"path": "large.txt", "offset": FILE_PAGE_CHARS}),
+            serde_json::json!({"path": "large.txt", "offset": FILE_PAGE_CHARACTERS}),
             &context,
         )
         .await
@@ -319,7 +366,7 @@ async fn read_file_accepts_its_own_file_under_a_symlinked_cwd() {
     symlinked(root.path(), "link", &real);
 
     let mut context = create_test_context(root.path());
-    context.cwd = root.path().join("link");
+    context.working_directory = root.path().join("link");
 
     let result = ReadFileTool
         .execute(serde_json::json!({"path": "inside.txt"}), &context)
@@ -478,6 +525,104 @@ async fn list_files_does_not_follow_a_symlink_out_of_cwd() {
     assert!(!output.contains("id_rsa"), "the walk left cwd: {output}");
 }
 
+/// Run `tool` on a thread of its own and give up on it after `limit`.
+///
+/// A walk that never ends also never yields, so a timeout on the same
+/// runtime would never get to fire: the waiting has to happen elsewhere.
+fn finishes_within(
+    tool: Arc<dyn Tool>,
+    parameters: serde_json::Value,
+    context: ToolContext,
+    limit: Duration,
+) -> Option<crate::tools::ToolResult> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let result = runtime.block_on(tool.execute(parameters, &context));
+        let _ = sender.send(result);
+    });
+    receiver
+        .recv_timeout(limit)
+        .ok()
+        .map(|result| result.expect("the tool answers"))
+}
+
+/// `a` and `b` both point back at the directory holding them, so a walk that
+/// follows links has two ways down at every level and never reaches the
+/// bottom. It used to do exactly that, on the runtime thread, where not even
+/// the tool timeout could stop it.
+#[cfg(unix)]
+#[test]
+fn a_walk_through_links_that_loop_back_ends() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join("own.rs"), "open sesame please\n").unwrap();
+    std::os::unix::fs::symlink(".", directory.path().join("a")).unwrap();
+    std::os::unix::fs::symlink(".", directory.path().join("b")).unwrap();
+    let context = create_test_context(directory.path());
+
+    let listed = finishes_within(
+        Arc::new(ListFilesTool),
+        serde_json::json!({"path": ".", "recursive": true}),
+        context.clone(),
+        Duration::from_secs(10),
+    )
+    .expect("listing a tree that loops back ends");
+    let listing = listed.output.unwrap();
+    assert!(listing.contains("own.rs"), "{listing}");
+    assert!(
+        !listing.contains("a/"),
+        "the walk followed a link: {listing}"
+    );
+
+    let started = Instant::now();
+    let (found, stopped) = search_tree(
+        &context.working_directory,
+        "open sesame please",
+        true,
+        SEARCH_MAX_RESULTS,
+        &context,
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(stopped, None);
+}
+
+/// A working directory reached through a link (`/var` is `/private/var` on
+/// macOS, so every temporary directory is one) is resolved before the walk,
+/// and each file the walk opens is named by its resolved path. The opener
+/// stripped only the root as given, so every one of those paths looked like
+/// an escape and the fallback search found nothing at all.
+#[cfg(unix)]
+#[test]
+fn the_search_walk_finds_files_under_a_working_directory_reached_through_a_link() {
+    let directory = tempdir().unwrap();
+    let real = directory.path().join("real");
+    fs::create_dir(&real).unwrap();
+    fs::write(real.join("own.rs"), "open sesame please\n").unwrap();
+    std::os::unix::fs::symlink(&real, directory.path().join("link")).unwrap();
+    let mut context = create_test_context(directory.path());
+    context.working_directory = directory.path().join("link");
+    assert_ne!(
+        context.working_directory.canonicalize().unwrap(),
+        context.working_directory,
+        "the fixture has to be reached through a link to be a test"
+    );
+
+    let root = super::resolve(&context.working_directory);
+    let (found, _) = search_tree(
+        &root,
+        "open sesame please",
+        true,
+        SEARCH_MAX_RESULTS,
+        &context,
+    );
+
+    assert_eq!(found, ["own.rs:1: open sesame please"]);
+}
+
 #[tokio::test]
 async fn search_code_refuses_a_path_outside_cwd() {
     let outside = tempdir().unwrap();
@@ -516,19 +661,15 @@ fn the_search_walk_does_not_follow_a_symlink_out_of_cwd() {
     fs::write(inside.path().join("own.sh"), "open sesame please\n").unwrap();
     symlinked(inside.path(), "hop", outside.path());
     let context = create_test_context(inside.path());
-    let root = context.cwd.clone();
+    let root = context.working_directory.clone();
 
-    let mut results = Vec::new();
-    search_directory(
-        &root,
+    let (results, _) = search_tree(
         &root,
         "open sesame please",
         true,
-        &mut results,
         SEARCH_MAX_RESULTS,
         &context,
-    )
-    .expect("a walk of cwd");
+    );
 
     let output = results.join("\n");
     assert!(output.contains("own.sh"), "{output}");
@@ -538,8 +679,8 @@ fn the_search_walk_does_not_follow_a_symlink_out_of_cwd() {
     );
 }
 
-/// The directory case above is caught by `descendable`; a link to a *file*
-/// takes the other branch, which read whatever `is_file` resolved to.
+/// A link to a *file* is not a file to the walk either, so what it points at
+/// is never read.
 #[cfg(unix)]
 #[test]
 fn the_search_walk_does_not_read_a_symlink_to_a_file_out_of_cwd() {
@@ -550,19 +691,15 @@ fn the_search_walk_does_not_read_a_symlink_to_a_file_out_of_cwd() {
     fs::write(inside.path().join("own.rs"), "open sesame please\n").unwrap();
     symlinked(inside.path(), "hop.rs", &secret);
     let context = create_test_context(inside.path());
-    let root = context.cwd.clone();
+    let root = context.working_directory.clone();
 
-    let mut results = Vec::new();
-    search_directory(
-        &root,
+    let (results, _) = search_tree(
         &root,
         "open sesame please",
         true,
-        &mut results,
         SEARCH_MAX_RESULTS,
         &context,
-    )
-    .expect("a walk of cwd");
+    );
 
     let output = results.join("\n");
     assert!(output.contains("own.rs"), "{output}");
@@ -921,6 +1058,108 @@ async fn apply_patch_replaces_unique_text() {
     );
 }
 
+fn inode(path: &Path) -> u64 {
+    std::os::unix::fs::MetadataExt::ino(&fs::metadata(path).unwrap())
+}
+
+fn mode(path: &Path) -> u32 {
+    std::os::unix::fs::PermissionsExt::mode(&fs::metadata(path).unwrap().permissions()) & 0o7777
+}
+
+fn patch(path: &str, old: &str, new: &str) -> serde_json::Value {
+    serde_json::json!({"path": path, "old_string": old, "new_string": new, "reason": "Fix it."})
+}
+
+/// The patched text lands in a new file renamed over the old one, never in
+/// the old file truncated to nothing and rewritten: a write that failed
+/// part-way through that used to leave the file empty.
+#[tokio::test]
+async fn apply_patch_renames_a_complete_file_into_place() {
+    let directory = tempdir().unwrap();
+    let file = directory.path().join("main.rs");
+    fs::write(&file, "fn main() { a(); }\n").unwrap();
+    fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o640)).unwrap();
+    let before = inode(&file);
+    let context = create_test_context(directory.path());
+
+    let result = ApplyPatchTool
+        .execute(patch("main.rs", "a()", "b()"), &context)
+        .await
+        .unwrap();
+
+    assert!(result.success, "{result:?}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "fn main() { b(); }\n");
+    assert_ne!(inode(&file), before, "the file was rewritten in place");
+    assert_eq!(
+        mode(&file),
+        0o640,
+        "the replacement kept the file's permissions"
+    );
+    let left: Vec<_> = fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["main.rs"], "a temporary file was left behind");
+}
+
+#[tokio::test]
+async fn a_rejected_patch_leaves_the_file_exactly_as_it_was() {
+    let directory = tempdir().unwrap();
+    let file = directory.path().join("main.rs");
+    let original = "fn main() { a(); a(); }\n";
+    fs::write(&file, original).unwrap();
+    let before = inode(&file);
+    let context = create_test_context(directory.path());
+
+    for rejected in [
+        patch("main.rs", "missing()", "b()"),
+        patch("main.rs", "a()", "b()"),
+    ] {
+        let error = ApplyPatchTool
+            .execute(rejected, &context)
+            .await
+            .expect_err("the patch does not apply");
+        assert!(error.to_string().contains("Hunk 1"), "{error}");
+    }
+
+    assert_eq!(fs::read(&file).unwrap(), original.as_bytes());
+    assert_eq!(inode(&file), before);
+}
+
+/// A link inside the tree is followed to the file it names, which is the
+/// one patched; the link itself stays a link.
+#[cfg(unix)]
+#[tokio::test]
+async fn apply_patch_through_a_link_edits_the_file_it_names() {
+    let directory = tempdir().unwrap();
+    fs::create_dir(directory.path().join("real")).unwrap();
+    let file = directory.path().join("real/main.rs");
+    fs::write(&file, "one\n").unwrap();
+    std::os::unix::fs::symlink("real/main.rs", directory.path().join("alias.rs")).unwrap();
+
+    for context in [create_test_context(directory.path()), {
+        let mut unrestricted = create_test_context(directory.path());
+        unrestricted.unrestricted = true;
+        unrestricted
+    }] {
+        let current = fs::read_to_string(&file).unwrap();
+        let next = format!("{}!", current.trim_end());
+        let result = ApplyPatchTool
+            .execute(patch("alias.rs", current.trim_end(), &next), &context)
+            .await
+            .unwrap();
+        assert!(result.success, "{result:?}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), format!("{next}\n"));
+        assert!(
+            fs::symlink_metadata(directory.path().join("alias.rs"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link was replaced by a file"
+        );
+    }
+}
+
 #[tokio::test]
 async fn apply_patch_rejects_ambiguous_matches() {
     let directory = tempdir().unwrap();
@@ -977,7 +1216,7 @@ async fn apply_patch_replace_all_and_hunks() {
 
 #[test]
 fn write_file_params_read_the_reason() {
-    let params: WriteFileParams = serde_json::from_value(serde_json::json!({
+    let parameters: WriteFileParameters = serde_json::from_value(serde_json::json!({
         "path": "src/main.rs",
         "content": "fn main() {}\n",
         "reason": "Create the binary entry point the crate is missing."
@@ -985,7 +1224,7 @@ fn write_file_params_read_the_reason() {
     .unwrap();
 
     assert_eq!(
-        params.reason.as_deref(),
+        parameters.reason.as_deref(),
         Some("Create the binary entry point the crate is missing.")
     );
 }
@@ -1036,7 +1275,7 @@ async fn write_file_without_a_reason_still_writes() {
 
 #[test]
 fn apply_patch_params_read_the_reason() {
-    let params: ApplyPatchParams = serde_json::from_value(serde_json::json!({
+    let parameters: ApplyPatchParameters = serde_json::from_value(serde_json::json!({
         "path": "src/main.rs",
         "old_string": "foo",
         "new_string": "bar",
@@ -1045,7 +1284,7 @@ fn apply_patch_params_read_the_reason() {
     .unwrap();
 
     assert_eq!(
-        params.reason.as_deref(),
+        parameters.reason.as_deref(),
         Some("Rename the helper the caller now expects.")
     );
 }
@@ -1219,7 +1458,7 @@ fn beside(outside: &Path) -> PathBuf {
 /// `cwd/keep/leaf.rs` holding `INSIDE`, and the swapper aimed at it.
 #[cfg(unix)]
 fn swapped(context: &ToolContext, outside: &Path, stop: &Arc<AtomicBool>) -> JoinHandle<()> {
-    let keep = context.cwd.join(KEEP);
+    let keep = context.working_directory.join(KEEP);
     fs::create_dir(&keep).expect("a directory inside cwd");
     let entry = keep.join(LEAF);
     fs::write(&entry, INSIDE).expect("a file inside cwd");
@@ -1311,13 +1550,10 @@ async fn search_code_never_reads_an_entry_swapped_out_of_cwd() {
 
     let mut disclosed = Vec::new();
     for _ in 0..ATTEMPTS {
-        let mut results = Vec::new();
-        let _ = search_directory(
-            &context.cwd,
-            &context.cwd,
+        let (results, _) = search_tree(
+            &context.working_directory,
             SECRET,
             true,
-            &mut results,
             SEARCH_MAX_RESULTS,
             &context,
         );

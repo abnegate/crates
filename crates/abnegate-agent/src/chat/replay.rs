@@ -1,5 +1,10 @@
-use abnegate_llm::{GeneratedImage, ImageUrl, Message, Role, ToolCall};
-use serde::{Deserialize, Serialize};
+use abnegate_llm::GeneratedImage;
+use abnegate_llm::ImageUrl;
+use abnegate_llm::Message;
+use abnegate_llm::Role;
+use abnegate_llm::ToolCall;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// The storage format version a [`ReplayMessage`] is written in.
 pub const VERSION: u16 = 1;

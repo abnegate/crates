@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use super::{LOG_CHECK_INTERVAL, MAX_JOB_LIFETIME, MAX_JOB_LOG_BYTES};
+use super::LOG_CHECK_INTERVAL;
+use super::MAX_JOB_LIFETIME;
+use super::MAX_JOB_LOG_BYTES;
 
 /// What a job is held to.
 ///

@@ -1,9 +1,12 @@
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Current phase of the agent execution
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AgentPhase {
     /// Initial state, processing user input
     Thinking,

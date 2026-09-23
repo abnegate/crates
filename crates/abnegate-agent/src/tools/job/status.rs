@@ -3,15 +3,19 @@ use std::fmt;
 use super::JobExited;
 
 /// Where a job has got to, spelled the way `tail_job` reports it.
+///
+/// Not `abnegate_exec::JobState`: that one tracks an executor run through
+/// its lifecycle, this one is what a model is told about a background job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JobState {
+#[non_exhaustive]
+pub enum JobStatus {
     Running,
     Exited(i32),
     Killed,
     Flooded,
 }
 
-impl fmt::Display for JobState {
+impl fmt::Display for JobStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Running => formatter.write_str("running"),
@@ -22,7 +26,7 @@ impl fmt::Display for JobState {
     }
 }
 
-impl JobState {
+impl JobStatus {
     pub fn settled(self) -> bool {
         !matches!(self, Self::Running)
     }

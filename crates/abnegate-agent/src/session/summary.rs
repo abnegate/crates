@@ -1,5 +1,7 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::DateTime;
+use chrono::Utc;
+use serde::Deserialize;
+use serde::Serialize;
 use uuid::Uuid;
 
 use super::Session;
@@ -11,7 +13,8 @@ pub struct SessionSummary {
     pub title: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub project_dir: Option<String>,
+    #[serde(alias = "project_dir")]
+    pub project_directory: Option<String>,
     pub finished: bool,
 }
 
@@ -22,7 +25,7 @@ impl From<&Session> for SessionSummary {
             title: session.title.clone(),
             created_at: session.created_at,
             updated_at: session.updated_at,
-            project_dir: session.project_dir.clone(),
+            project_directory: session.project_directory.clone(),
             finished: session.state.finished,
         }
     }
@@ -42,7 +45,7 @@ mod tests {
 
         assert_eq!(summary.id, session.id);
         assert_eq!(summary.title, "My Session");
-        assert_eq!(summary.project_dir, Some("/project".to_string()));
+        assert_eq!(summary.project_directory, Some("/project".to_string()));
         assert!(!summary.finished);
     }
 
@@ -77,7 +80,7 @@ mod tests {
         let session = Session::new(state, "No Project", None);
         let summary = SessionSummary::from(&session);
 
-        assert!(summary.project_dir.is_none());
+        assert!(summary.project_directory.is_none());
     }
 
     #[test]
@@ -126,7 +129,7 @@ mod tests {
 
         assert_eq!(deserialized.id, summary.id);
         assert_eq!(deserialized.title, summary.title);
-        assert_eq!(deserialized.project_dir, summary.project_dir);
+        assert_eq!(deserialized.project_directory, summary.project_directory);
         assert_eq!(deserialized.finished, summary.finished);
     }
 }

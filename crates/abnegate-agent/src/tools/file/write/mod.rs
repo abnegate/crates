@@ -1,14 +1,22 @@
-mod params;
+mod parameters;
 
-pub(super) use params::WriteFileParams;
-
-use async_trait::async_trait;
-use serde_json::{Value, json};
 use std::io::Write;
 use std::path::Path;
 
-use crate::tools::beneath::{self, Access};
-use crate::tools::{REASON_PARAM, Tier, Tool, ToolContext, ToolError, ToolResult, reason_property};
+use async_trait::async_trait;
+pub(super) use parameters::WriteFileParameters;
+use serde_json::Value;
+use serde_json::json;
+
+use crate::tools::REASON_PARAMETER;
+use crate::tools::Tier;
+use crate::tools::Tool;
+use crate::tools::ToolContext;
+use crate::tools::ToolError;
+use crate::tools::ToolResult;
+use crate::tools::beneath;
+use crate::tools::beneath::Access;
+use crate::tools::reason_property;
 
 /// Write content to a file
 pub struct WriteFileTool;
@@ -27,14 +35,14 @@ impl Tool for WriteFileTool {
         Tier::Host
     }
 
-    fn preview(&self, params: &Value) -> Option<String> {
-        let params: WriteFileParams = serde_json::from_value(params.clone()).ok()?;
-        let characters = params.content.chars().count();
-        Some(match params.append {
-            true => format!("Append {characters} characters to {}.", params.path),
+    fn preview(&self, parameters: &Value) -> Option<String> {
+        let parameters: WriteFileParameters = serde_json::from_value(parameters.clone()).ok()?;
+        let characters = parameters.content.chars().count();
+        Some(match parameters.append {
+            true => format!("Append {characters} characters to {}.", parameters.path),
             false => format!(
                 "Write {characters} characters to {}, replacing whatever is there.",
-                params.path
+                parameters.path
             ),
         })
     }
@@ -55,26 +63,30 @@ impl Tool for WriteFileTool {
                     "type": "boolean",
                     "description": "If true, append to file instead of overwriting"
                 },
-                REASON_PARAM: reason_property()
+                REASON_PARAMETER: reason_property()
             },
-            "required": ["path", "content", REASON_PARAM]
+            "required": ["path", "content", REASON_PARAMETER]
         })
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let params: WriteFileParams = serde_json::from_value(params)
-            .map_err(|error| ToolError::InvalidParams(error.to_string()))?;
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let parameters: WriteFileParameters = serde_json::from_value(parameters)
+            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
         tracing::debug!(
             tool = self.name(),
-            reason_given = params
+            reason_given = parameters
                 .reason
                 .as_deref()
                 .is_some_and(|why| !why.trim().is_empty()),
             "Running tool"
         );
 
-        let normalized_path = params.path.replace('\\', "/");
+        let normalized_path = parameters.path.replace('\\', "/");
         if !context.unrestricted
             && (normalized_path.contains("..")
                 || normalized_path.starts_with('/')
@@ -86,28 +98,28 @@ impl Tool for WriteFileTool {
             ));
         }
 
-        let path = Path::new(&params.path);
+        let path = Path::new(&parameters.path);
         if let Some(parent) = path.parent() {
             beneath::create_dir_all(context, parent)?;
         }
 
-        let access = if params.append {
+        let access = if parameters.append {
             Access::Append
         } else {
             Access::Replace
         };
         let mut file = beneath::open(context, path, access)?;
-        file.write_all(params.content.as_bytes())
+        file.write_all(parameters.content.as_bytes())
             .map_err(|error| ToolError::Execution(format!("Cannot write file: {error}")))?;
 
-        let action = if params.append {
+        let action = if parameters.append {
             "appended to"
         } else {
             "wrote"
         };
         Ok(ToolResult::success(format!(
             "Successfully {} {}",
-            action, params.path
+            action, parameters.path
         )))
     }
 }

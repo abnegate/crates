@@ -1,22 +1,26 @@
-use regex::{Captures, Regex};
-use serde_json::Value;
+use std::cell::RefCell;
 use std::sync::LazyLock;
 
+use regex::Captures;
+use regex::Regex;
+use serde_json::Value;
+
 use super::TemplateContext;
+use super::TemplateError;
 
 /// `{{#if key}}…{{/if}}`: kept when the key holds a truthy value.
 static CONDITIONAL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{/if\}\}").expect("a valid conditional pattern")
+    Regex::new(r"\{\{#if\s+([\w-]+)\}\}([\s\S]*?)\{\{/if\}\}").expect("a valid conditional pattern")
 });
 
 /// A `{{#each key}}…{{/each}}` loop, or a `{{key}}` placeholder.
 static EXPANSION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{\{#each\s+(\w+)\}\}([\s\S]*?)\{\{/each\}\}|\{\{\s*([@\w.]+)\s*\}\}")
+    Regex::new(r"\{\{#each\s+([\w-]+)\}\}([\s\S]*?)\{\{/each\}\}|\{\{\s*([@\w.-]+)\s*\}\}")
         .expect("a valid expansion pattern")
 });
 
 static PLACEHOLDER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{\{\s*([@\w.]+)\s*\}\}").expect("a valid placeholder pattern"));
+    LazyLock::new(|| Regex::new(r"\{\{\s*([@\w.-]+)\s*\}\}").expect("a valid placeholder pattern"));
 
 const THIS: &str = "this";
 const THIS_FIELD: &str = "this.";
@@ -27,14 +31,18 @@ const LAST: &str = "@last";
 
 /// Renders templates against a [`TemplateContext`].
 ///
-/// `{{key}}` becomes the key's value, and a key the context does not hold is
-/// left as written. `{{#if key}}…{{/if}}` keeps its body when the key is
-/// truthy: `true`, a non-empty string, array or object, or any number.
-/// `{{#each key}}…{{/each}}` repeats its body for every item of an array: an
-/// object item's fields are `{{field}}` and `{{this.field}}`, a scalar item is
-/// `{{this}}` and `{{item}}`, an object item's `item` field is also `{{this}}`,
-/// and `{{@index}}`, `{{@first}}` and `{{@last}}` say where the loop is.
-/// A key the item does not hold falls back to the context.
+/// `{{key}}` becomes the key's value, and a key the context does not hold
+/// renders as nothing; [`render_strict`](Self::render_strict) refuses such a
+/// template instead. Keys are letters, digits, `_` and `-`.
+/// `{{#if key}}…{{/if}}` keeps its body when the key is truthy: `true`, a
+/// non-empty string, array or object, or any number; an empty string, like a
+/// missing key, is false. `{{#each key}}…{{/each}}` repeats its body for every
+/// item of an array: an object item's fields are `{{field}}` and
+/// `{{this.field}}`, a scalar item is `{{this}}` and `{{item}}`, an object
+/// item's `item` field is also `{{this}}`, and `{{@index}}`, `{{@first}}` and
+/// `{{@last}}` say where the loop is. A key the item does not hold falls back
+/// to the context.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TemplateRenderer;
 
 impl TemplateRenderer {
@@ -42,34 +50,65 @@ impl TemplateRenderer {
         Self
     }
 
+    /// Render `template`, with every key the context lacks as nothing.
     pub fn render(&self, template: &str, context: &TemplateContext) -> String {
-        let kept = CONDITIONAL.replace_all(template, |captures: &Captures<'_>| {
-            if context.get(&captures[1]).is_some_and(truthy) {
-                captures[2].to_string()
-            } else {
-                String::new()
-            }
-        });
-        EXPANSION
-            .replace_all(&kept, |captures: &Captures<'_>| match captures.get(1) {
-                Some(array) => expand(array.as_str(), &captures[2], context),
-                None => context
-                    .get(&captures[3])
-                    .map(text)
-                    .unwrap_or_else(|| captures[0].to_string()),
-            })
-            .into_owned()
+        expand(template, context, &RefCell::new(Vec::new()))
+    }
+
+    /// Render `template`, or name the first key it uses that the context
+    /// does not hold.
+    ///
+    /// A key tested by `{{#if}}` is never missing: absence is what the test
+    /// is for.
+    pub fn render_strict(
+        &self,
+        template: &str,
+        context: &TemplateContext,
+    ) -> Result<String, TemplateError> {
+        let missing = RefCell::new(Vec::new());
+        let rendered = expand(template, context, &missing);
+        match missing.into_inner().into_iter().next() {
+            Some(key) => Err(TemplateError::Missing(key)),
+            None => Ok(rendered),
+        }
     }
 }
 
-impl Default for TemplateRenderer {
-    fn default() -> Self {
-        Self::new()
-    }
+fn expand(template: &str, context: &TemplateContext, missing: &RefCell<Vec<String>>) -> String {
+    let kept = CONDITIONAL.replace_all(template, |captures: &Captures<'_>| {
+        if context.get(&captures[1]).is_some_and(truthy) {
+            captures[2].to_string()
+        } else {
+            String::new()
+        }
+    });
+    EXPANSION
+        .replace_all(&kept, |captures: &Captures<'_>| match captures.get(1) {
+            Some(array) => iterate(array.as_str(), &captures[2], context, missing),
+            None => lookup(&captures[3], context.get(&captures[3]).map(text), missing),
+        })
+        .into_owned()
 }
 
-fn expand(array: &str, body: &str, context: &TemplateContext) -> String {
-    let Some(items) = context.get(array).and_then(Value::as_array) else {
+/// A key's text, or nothing, noting the key when there was none.
+fn lookup(key: &str, value: Option<String>, missing: &RefCell<Vec<String>>) -> String {
+    value.unwrap_or_else(|| {
+        missing.borrow_mut().push(key.to_string());
+        String::new()
+    })
+}
+
+fn iterate(
+    array: &str,
+    body: &str,
+    context: &TemplateContext,
+    missing: &RefCell<Vec<String>>,
+) -> String {
+    let Some(value) = context.get(array) else {
+        missing.borrow_mut().push(array.to_string());
+        return String::new();
+    };
+    let Some(items) = value.as_array() else {
         return String::new();
     };
     items
@@ -78,9 +117,10 @@ fn expand(array: &str, body: &str, context: &TemplateContext) -> String {
         .map(|(index, item)| {
             PLACEHOLDER
                 .replace_all(body, |captures: &Captures<'_>| {
-                    scoped(&captures[1], item, index, items.len())
-                        .or_else(|| context.get(&captures[1]).map(text))
-                        .unwrap_or_else(|| captures[0].to_string())
+                    let key = &captures[1];
+                    let value = scoped(key, item, index, items.len())
+                        .or_else(|| context.get(key).map(text));
+                    lookup(key, value, missing)
                 })
                 .into_owned()
         })
@@ -129,9 +169,11 @@ fn truthy(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde_json::json;
     use std::collections::HashMap;
+
+    use serde_json::json;
+
+    use super::*;
 
     /// The context an issue tracker would render a fix prompt from.
     fn issue(context: &str) -> TemplateContext {
@@ -584,13 +626,59 @@ Items:{{#each items}} {{name}}{{/each}}"#;
     }
 
     #[test]
-    fn a_placeholder_the_context_does_not_hold_is_left_as_written() {
+    fn a_placeholder_the_context_does_not_hold_renders_as_nothing() {
         let renderer = TemplateRenderer::new();
         let result = renderer.render(
             "Hello {{name}}, {{missing}}",
             &issue("").with_variable("name", "Ada"),
         );
-        assert_eq!(result, "Hello Ada, {{missing}}");
+        assert_eq!(result, "Hello Ada, ");
+    }
+
+    /// Strictness is for a caller who would rather hear about a key it
+    /// forgot to set than send a prompt with a hole in it.
+    #[test]
+    fn a_strict_render_names_the_first_key_the_context_lacks() {
+        let renderer = TemplateRenderer::new();
+        let context = issue("").with_variable("name", "Ada");
+
+        assert_eq!(
+            renderer.render_strict("Hello {{name}}, {{missing}} {{other}}", &context),
+            Err(TemplateError::Missing("missing".to_string()))
+        );
+        assert_eq!(
+            renderer.render_strict("{{#each absent}}x{{/each}}", &context),
+            Err(TemplateError::Missing("absent".to_string()))
+        );
+        assert_eq!(
+            renderer.render_strict("Hello {{name}}{{#if missing}}!{{/if}}", &context),
+            Ok("Hello Ada".to_string()),
+            "an {{#if}} on a missing key is a test, not a hole"
+        );
+    }
+
+    /// Keys like `issue-id` were left as written, braces and all.
+    #[test]
+    fn a_key_may_contain_a_hyphen() {
+        let renderer = TemplateRenderer::new();
+        let context = TemplateContext::new()
+            .with_variable("issue-id", "PROJ-7")
+            .with_value("has-notes", true)
+            .with_value("tag-list", json!(["a", "b"]));
+
+        let result = renderer.render(
+            "{{issue-id}}{{#if has-notes}} +notes{{/if}}{{#each tag-list}} #{{this}}{{/each}}",
+            &context,
+        );
+
+        assert_eq!(result, "PROJ-7 +notes #a #b");
+    }
+
+    #[test]
+    fn an_empty_string_is_false() {
+        let renderer = TemplateRenderer::new();
+        let context = TemplateContext::new().with_variable("blank", "");
+        assert_eq!(renderer.render("{{#if blank}}shown{{/if}}", &context), "");
     }
 
     #[test]
