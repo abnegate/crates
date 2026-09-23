@@ -53,10 +53,10 @@ impl GitService {
     /// but the two in [`LEFT_TO_CALLER`]: a managed clone is the caller's own,
     /// and [`Self::verify_remote`] checks its configuration against the
     /// allowlist and its `origin` against the address the caller configured
-    /// immediately before every fetch, so a helper or proxy the clone's
-    /// configuration names, or an address a run wrote there, is refused while
-    /// the caller's global ones stay usable. The hardened commands keep every
-    /// pin.
+    /// and the refspec git writes for a clone immediately before every fetch,
+    /// so a helper or proxy the clone's configuration names, or an address or
+    /// refspec a run wrote there, is refused while the caller's global ones
+    /// stay usable. The hardened commands keep every pin.
     pub(super) fn managed_remote(path: &Path) -> Command {
         let mut command = Self::managed_command(Some(path));
         command.env("GIT_ALLOW_PROTOCOL", MANAGED_PROTOCOLS);
@@ -70,17 +70,30 @@ impl GitService {
         command
     }
 
-    /// Every branch `origin` has, and none it no longer has.
+    /// Every branch `origin` has, and none it no longer has, each forced onto
+    /// its remote-tracking ref by the refspec on the command line alone: the
+    /// refspecs the clone's configuration holds neither narrow nor add to
+    /// what the fetch writes.
     fn fetching_all(path: &Path) -> Command {
         let mut command = Self::managed_remote(path);
-        command.args(["fetch", "--prune", "--", ORIGIN]);
+        command.args([
+            "fetch",
+            "--prune",
+            IGNORE_CONFIGURED_REFSPECS,
+            "--",
+            ORIGIN,
+            FETCH_REFSPEC,
+        ]);
         command
     }
 
-    /// One branch of `origin`.
+    /// One branch of `origin`, forced onto its remote-tracking ref as
+    /// [`Self::fetching_all`] forces every branch.
     fn fetching(path: &Path, branch: &BranchName) -> Command {
         let mut command = Self::managed_remote(path);
-        command.args(["fetch", "--", ORIGIN, branch.as_str()]);
+        command
+            .args(["fetch", IGNORE_CONFIGURED_REFSPECS, "--", ORIGIN])
+            .arg(tracking_refspec(branch));
         command
     }
 
@@ -145,8 +158,9 @@ impl GitService {
 
     /// Ensure a managed clone exists at `path` and is up to date on
     /// `default_branch`, cloning it from `url` when it is not there yet. A
-    /// clone whose `origin` is no longer `url` is refused with
-    /// [`GitError::UnsafeConfig`] rather than fetched.
+    /// clone whose `origin` is no longer `url`, or no longer fetches every
+    /// branch the remote has, is refused with [`GitError::UnsafeConfig`]
+    /// rather than fetched.
     pub async fn ensure_repository(
         &self,
         path: &Path,
@@ -178,7 +192,9 @@ impl GitService {
     }
 
     /// Ensure a managed clone is current *and* its working tree is advanced to
-    /// the remote's default branch.
+    /// the remote's default branch. A clone whose `origin` fetches fewer
+    /// branches than the remote has is widened back to every branch first,
+    /// rather than refused.
     pub async fn ensure_synced(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         if self.is_repository_root(path) {
             self.track_all_branches(path).await;
@@ -188,14 +204,15 @@ impl GitService {
         Ok(default_branch)
     }
 
-    /// Widen the fetch refspec to every branch the remote has.
+    /// Widen the fetch refspec to every branch the remote has: every value
+    /// the clone holds for it, or none, replaced by [`FETCH_REFSPEC`] alone.
     async fn track_all_branches(&self, path: &Path) {
         let output = Self::output(Self::managed_command(Some(path)).args([
-            "remote",
-            "set-branches",
-            "--",
-            ORIGIN,
-            "*",
+            "config",
+            "--local",
+            "--replace-all",
+            ORIGIN_FETCH,
+            FETCH_REFSPEC,
         ]))
         .await;
         match output {
@@ -205,33 +222,45 @@ impl GitService {
                 tracing::debug!(repository = ?path, error = %stderr, "Failed to widen fetch refspec");
             }
             Err(error) => {
-                tracing::debug!(repository = ?path, %error, "Failed to run git remote set-branches");
+                tracing::debug!(repository = ?path, %error, "Failed to run git config");
             }
         }
     }
 
     /// Refuse a managed clone before anything reaches its remote: one whose
-    /// configuration [`Self::verify_config`] refuses, or one whose `origin`
-    /// names anything but the one address a clone of `url` is made from.
-    /// Every worktree of the clone shares that configuration, so a run could
+    /// configuration [`Self::verify_config`] refuses, one whose `origin`
+    /// names anything but the one address a clone of `url` is made from, or
+    /// one whose `origin` fetches anything but [`FETCH_REFSPEC`]. Every
+    /// worktree of the clone shares that configuration, so a run could
     /// otherwise point the next fetch at a host of its choosing, and the
-    /// caller's own credential helper would be asked to answer for it. The
-    /// listing must hold that address alone: git reads an empty value after
-    /// it as clearing the list, and then looks for `origin` elsewhere.
+    /// caller's own credential helper would be asked to answer for it, or
+    /// narrow what a fetch writes so that a remote-tracking ref it set to a
+    /// commit of its own survives as `origin`'s. Each listing must hold that
+    /// one value alone: git reads an empty value after the address as
+    /// clearing the list, and then looks for `origin` elsewhere, and an empty
+    /// refspec fetches `HEAD` alone.
     async fn verify_remote(path: &Path, url: &str) -> GitResult<()> {
         Self::verify_config(path).await?;
-        let expected = [address(url)?.as_encoded_bytes(), b"\0"].concat();
-        let listed = Self::output(Self::managed_local(path).args(ORIGIN_LISTING)).await?;
-        match listed.status.success() && listed.stdout == expected {
+        let expected = address(url)?;
+        Self::verify_sole(path, ORIGIN_URL, expected.as_encoded_bytes()).await?;
+        Self::verify_sole(path, ORIGIN_FETCH, FETCH_REFSPEC.as_bytes()).await
+    }
+
+    /// Refuse a managed clone whose own configuration gives `key` any value
+    /// but `value`, no value, or that value more than once.
+    async fn verify_sole(path: &Path, key: &str, value: &[u8]) -> GitResult<()> {
+        let listed = Self::output(Self::managed_local(path).args(VALUE_LISTING).arg(key)).await?;
+        match listed.status.success() && listed.stdout == [value, b"\0"].concat() {
             true => Ok(()),
-            false => Err(GitError::UnsafeConfig(ORIGIN_URL.to_string())),
+            false => Err(GitError::UnsafeConfig(key.to_string())),
         }
     }
 
     /// Fetch every remote ref into a managed clone without touching its
     /// working tree. A clone whose configuration holds anything beyond what
-    /// git writes for one, or whose `origin` is no longer `url`, is refused
-    /// with [`GitError::UnsafeConfig`] first.
+    /// git writes for one, or whose `origin` is no longer `url` or no longer
+    /// fetches every branch the remote has, is refused with
+    /// [`GitError::UnsafeConfig`] first.
     pub async fn fetch_all(&self, path: &Path, url: &str) -> GitResult<()> {
         tracing::debug!(repository = ?path, "Fetching all remote refs");
 
@@ -408,6 +437,11 @@ fn fallback_default_branch() -> BranchName {
     BranchName::literal(FALLBACK_DEFAULT_BRANCH)
 }
 
+/// The refspec that forces `branch` of `origin` onto its remote-tracking ref.
+fn tracking_refspec(branch: &BranchName) -> String {
+    format!("+{}:{REMOTE_TRACKING}{branch}", branch.reference())
+}
+
 fn default_branch_of(reference: &[u8]) -> BranchName {
     String::from_utf8_lossy(reference)
         .trim()
@@ -471,6 +505,23 @@ mod managed_tests {
             )
         })
     }
+
+    /// Point `refs/remotes/origin/main` at a commit only the clone at `path`
+    /// has, and name that commit.
+    fn track_a_local_commit(path: &Path) -> String {
+        let local = git(path, &["commit-tree", "-m", "local", "HEAD^{tree}"]);
+        git(path, &["update-ref", "refs/remotes/origin/main", &local]);
+        local
+    }
+
+    /// What `refs/remotes/origin/main` points at in the clone at `path`.
+    fn tracked(path: &Path) -> String {
+        git(path, &["rev-parse", "refs/remotes/origin/main"])
+    }
+
+    /// The refspec narrowed to write `origin`'s `main` somewhere other than
+    /// `refs/remotes/origin/main`.
+    const NARROWED: &str = "+refs/heads/main:refs/remotes/origin/elsewhere";
 
     /// Whether `path`'s object store holds `object`.
     fn holds(path: &Path, object: &str) -> bool {
@@ -1255,6 +1306,263 @@ mod managed_tests {
             );
         }
         assert!(holds(&target, &fetched), "the new commit was fetched");
+    }
+
+    /// A fetch names what it fetches and where it writes it on its own
+    /// command line, so the refspec a clone's configuration holds never
+    /// decides which remote-tracking refs a fetch overwrites.
+    #[test]
+    fn every_managed_fetch_names_its_refspec_on_the_command_line() {
+        let path = Path::new("/repository");
+        let fetches = [
+            (GitService::fetching_all(path), FETCH_REFSPEC),
+            (
+                GitService::fetching(path, &branch("feature/one")),
+                "+refs/heads/feature/one:refs/remotes/origin/feature/one",
+            ),
+        ];
+
+        for (command, refspec) in &fetches {
+            let arguments = arguments(command);
+            assert!(
+                arguments.ends_with(&[
+                    "--refmap=".to_string(),
+                    "--".to_string(),
+                    ORIGIN.to_string(),
+                    refspec.to_string()
+                ]),
+                "{arguments:?}"
+            );
+        }
+    }
+
+    /// Every fetch each managed operation runs carries the refspec it needs
+    /// on its command line.
+    #[tokio::test]
+    async fn every_fetch_a_managed_operation_runs_names_its_refspec() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        git(source.path(), &["branch", "feature"]);
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        let feature = branch("feature");
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+        let everything = FETCH_REFSPEC.to_string();
+        let one = tracking_refspec(&feature);
+        let default = tracking_refspec(&main);
+
+        let operations = [
+            (
+                recording(async { service.fetch_all(&target, &url).await.err() }).await,
+                &everything,
+            ),
+            (
+                recording(async { service.fetch_branch(&target, &url, &feature).await.err() })
+                    .await,
+                &one,
+            ),
+            (
+                recording(async { service.pull(&target, &url, &main).await.err() }).await,
+                &default,
+            ),
+            (
+                recording(async { service.ensure_repository(&target, &url, &main).await.err() })
+                    .await,
+                &default,
+            ),
+            (
+                recording(async { service.ensure_fetched(&target, &url).await.err() }).await,
+                &everything,
+            ),
+            (
+                recording(async { service.ensure_synced(&target, &url).await.err() }).await,
+                &everything,
+            ),
+        ];
+
+        for (operation, ((failure, recorded), refspec)) in operations.iter().enumerate() {
+            assert!(failure.is_none(), "operation {operation}: {failure:?}");
+            let fetches: Vec<&Vec<String>> = recorded
+                .iter()
+                .filter(|command| command.iter().any(|argument| argument == "fetch"))
+                .collect();
+            assert!(!fetches.is_empty(), "operation {operation}: {recorded:?}");
+            for fetch in fetches {
+                let refmap = fetch.iter().position(|argument| argument == "--refmap=");
+                assert_eq!(
+                    refmap.map(|refmap| &fetch[refmap + 1..]),
+                    Some(["--".to_string(), ORIGIN.to_string(), refspec.to_string()].as_slice()),
+                    "operation {operation}: {fetch:?}"
+                );
+            }
+        }
+    }
+
+    /// A clone's refspec sits in the configuration every worktree of it
+    /// shares, so a run can narrow it, and a remote-tracking ref it pointed
+    /// at a commit of its own would then outlive the next fetch and be
+    /// checked out as `origin`'s. Every operation that fetches refuses a
+    /// clone whose `origin` fetches anything but every branch into its
+    /// remote-tracking refs, before any git command reaches the remote; a
+    /// sync widens the refspec back first and then fetches.
+    #[tokio::test]
+    async fn a_managed_clone_whose_refspec_is_not_the_one_git_writes_is_never_fetched() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let head = git(source.path(), &["rev-parse", "HEAD"]);
+        let workspace = TempDir::new().unwrap();
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        let rewrites: [(&str, Vec<&str>); 5] = [
+            ("narrowed", vec!["config", ORIGIN_FETCH, NARROWED]),
+            ("joined", vec!["config", "--add", ORIGIN_FETCH, NARROWED]),
+            (
+                "repeated",
+                vec!["config", "--add", ORIGIN_FETCH, FETCH_REFSPEC],
+            ),
+            ("emptied", vec!["config", "--add", ORIGIN_FETCH, ""]),
+            ("removed", vec!["config", "--unset-all", ORIGIN_FETCH]),
+        ];
+
+        for (index, (rewrite, arguments)) in rewrites.iter().enumerate() {
+            let target = workspace.path().join(index.to_string());
+            service
+                .ensure_repository(&target, &url, &main)
+                .await
+                .unwrap();
+            let local = track_a_local_commit(&target);
+            git(&target, arguments);
+            git(&target, &["symbolic-ref", "--delete", REMOTE_HEAD]);
+
+            let refusals = [
+                recording(async { service.fetch_all(&target, &url).await.err() }).await,
+                recording(async { service.fetch_branch(&target, &url, &main).await.err() }).await,
+                recording(async { service.pull(&target, &url, &main).await.err() }).await,
+                recording(async { service.ensure_repository(&target, &url, &main).await.err() })
+                    .await,
+                recording(async { service.ensure_fetched(&target, &url).await.err() }).await,
+            ];
+            let ((), set_head) = recording(service.update_remote_head(&target, &url)).await;
+
+            for (operation, (refusal, recorded)) in refusals.iter().enumerate() {
+                assert!(
+                    matches!(refusal, Some(GitError::UnsafeConfig(key)) if key == ORIGIN_FETCH),
+                    "{rewrite}, operation {operation}: {refusal:?}"
+                );
+                assert!(
+                    !reached_remote(recorded),
+                    "{rewrite}, operation {operation}: {recorded:?}"
+                );
+            }
+            assert!(!reached_remote(&set_head), "{rewrite}: {set_head:?}");
+            assert_eq!(tracked(&target), local, "{rewrite}: nothing was fetched");
+
+            let synced = service.ensure_synced(&target, &url).await;
+            assert!(
+                synced
+                    .as_ref()
+                    .is_ok_and(|default| default.as_str() == "main"),
+                "{rewrite}: {synced:?}"
+            );
+            assert_eq!(
+                git(&target, &["config", "--local", "--get-all", ORIGIN_FETCH]),
+                FETCH_REFSPEC,
+                "{rewrite}: the sync widened the refspec back"
+            );
+            assert_eq!(tracked(&target), head, "{rewrite}");
+            assert_eq!(git(&target, &["rev-parse", "HEAD"]), head, "{rewrite}");
+        }
+    }
+
+    /// A remote-tracking ref pointed at a commit only the clone has is
+    /// forced back to what `origin` holds by every operation that fetches
+    /// it, and a pull checks out `origin`'s commit rather than that one.
+    #[tokio::test]
+    async fn every_managed_fetch_forces_a_remote_tracking_ref_back_to_the_remote() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let head = git(source.path(), &["rev-parse", "HEAD"]);
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+
+        for operation in 0..4 {
+            let local = track_a_local_commit(&target);
+            assert_ne!(local, head);
+
+            match operation {
+                0 => service.fetch_all(&target, &url).await.unwrap(),
+                1 => service.fetch_branch(&target, &url, &main).await.unwrap(),
+                2 => service.pull(&target, &url, &main).await.unwrap(),
+                _ => service
+                    .ensure_fetched(&target, &url)
+                    .await
+                    .map(drop)
+                    .unwrap(),
+            }
+
+            assert_eq!(tracked(&target), head, "operation {operation}");
+            assert_eq!(
+                git(&target, &["rev-parse", "HEAD"]),
+                head,
+                "operation {operation}"
+            );
+        }
+    }
+
+    /// What a fetch writes is decided by the refspec on its command line
+    /// alone, so even a clone whose refspec was narrowed after it was checked
+    /// has its remote-tracking ref forced back to what `origin` holds, and
+    /// nothing is written where the narrowed refspec points.
+    #[tokio::test]
+    async fn a_fetch_forces_remote_tracking_refs_whatever_refspec_the_clone_holds() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let head = git(source.path(), &["rev-parse", "HEAD"]);
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let main = branch("main");
+        GitService::new()
+            .ensure_repository(&target, &origin(source.path()), &main)
+            .await
+            .unwrap();
+
+        for mut command in [
+            GitService::fetching_all(&target),
+            GitService::fetching(&target, &main),
+        ] {
+            let local = track_a_local_commit(&target);
+            git(&target, &["config", ORIGIN_FETCH, NARROWED]);
+
+            let output = GitService::output(&mut command).await.unwrap();
+
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_ne!(local, head);
+            assert_eq!(tracked(&target), head, "{:?}", arguments(&command));
+            assert_eq!(
+                git(&target, &["for-each-ref", "refs/remotes/origin/elsewhere"]),
+                "",
+                "{:?}",
+                arguments(&command)
+            );
+        }
     }
 
     /// Git records a relative local path as an absolute one, so the address a

@@ -76,6 +76,10 @@ const REMOTE_HEAD: &str = "refs/remotes/origin/HEAD";
 /// Every branch the remote has, tracked under [`REMOTE_TRACKING`].
 const FETCH_REFSPEC: &str = "+refs/heads/*:refs/remotes/origin/*";
 
+/// Has a fetch write only what the refspecs on its command line name, and
+/// nothing a remote's configured refspecs would also map a fetched ref to.
+const IGNORE_CONFIGURED_REFSPECS: &str = "--refmap=";
+
 /// How `ls-remote --symref` introduces the ref a symbolic ref points at.
 const SYMBOLIC_REFERENCE: &str = "ref: ";
 
@@ -112,9 +116,12 @@ const MANAGED_PROTOCOLS: &str = "file:https:ssh";
 /// The key naming the address a managed clone fetches from.
 const ORIGIN_URL: &str = "remote.origin.url";
 
-/// Lists every value of [`ORIGIN_URL`] in a repository's own configuration,
-/// each ended by a NUL.
-const ORIGIN_LISTING: [&str; 5] = ["config", "--local", "-z", "--get-all", ORIGIN_URL];
+/// The key naming which of the remote's refs a fetch writes, and where.
+const ORIGIN_FETCH: &str = "remote.origin.fetch";
+
+/// Lists every value the key that follows holds in a repository's own
+/// configuration, each ended by a NUL.
+const VALUE_LISTING: [&str; 4] = ["config", "--local", "-z", "--get-all"];
 
 /// Repository formats a clone was made in, and the values each may take:
 /// without them git cannot read its own objects or refs.

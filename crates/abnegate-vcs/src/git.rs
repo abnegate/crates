@@ -21,12 +21,15 @@
 //! checked out, reset or given a worktree, and every one of those commands
 //! carries the same pins; the local ones also ignore the host's
 //! configuration. A fetch also goes ahead only while the clone's `origin` is
-//! still exactly the address the caller configured, so a run cannot point it
-//! at a host of its choosing. A managed fetch leaves off only the pins that
-//! would blank the caller's credential helper and proxy: the clone is the
-//! caller's own and its configuration is checked against the allowlist
-//! immediately before every fetch, so the caller's global helper and proxy
-//! stay usable. The hardened commands keep every pin.
+//! still exactly the address the caller configured and fetches exactly the
+//! refspec git writes for a clone, and it writes only what the refspec on its
+//! own command line names, so a run can neither point it at a host of its
+//! choosing nor narrow it to leave a commit of its own standing as
+//! `origin`'s. A managed fetch leaves off only the pins that would blank the
+//! caller's credential helper and proxy: the clone is the caller's own and
+//! its configuration is checked against the allowlist immediately before
+//! every fetch, so the caller's global helper and proxy stay usable. The
+//! hardened commands keep every pin.
 
 mod authentication;
 mod diff_summary;
