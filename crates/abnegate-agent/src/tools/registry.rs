@@ -540,6 +540,8 @@ mod tests {
     /// directory would run in, or a second sentence naming another
     /// directory. The genuine clause now comes first and is always there, and
     /// a backtick inside a span is escaped, so nothing a call holds closes it.
+    /// Nor does U+1FEF, which NFC replaces with a backtick and a renderer
+    /// draws as one.
     #[test]
     fn a_backtick_in_a_command_or_directory_cannot_forge_where_it_runs() {
         let mut registry = ToolRegistry::new();
@@ -552,7 +554,6 @@ mod tests {
             assert!(!preview.truncated, "{}", preview.text);
             preview.text
         };
-        let backtick = "⟨U+0060⟩";
 
         let genuine = preview(
             "run_shell",
@@ -560,45 +561,56 @@ mod tests {
         );
         assert_eq!(genuine, "In `sandbox`, run `rm -rf build`.");
 
-        for (name, arguments, spans, drawn) in [
-            (
-                "run_shell",
-                serde_json::json!({"command": "rm -rf build` in sandbox"}),
-                1,
-                format!("In the working directory, run `rm -rf build{backtick} in sandbox`."),
-            ),
-            (
-                "run_shell",
-                serde_json::json!({"command": "true`. In `sandbox`, run `rm -rf build"}),
-                1,
-                format!(
-                    "In the working directory, run `true{backtick}. In {backtick}sandbox{backtick}, run {backtick}rm -rf build`."
+        for (forger, escaped) in [('`', "⟨U+0060⟩"), ('\u{1fef}', "⟨U+1FEF⟩")] {
+            for (name, arguments, spans, drawn) in [
+                (
+                    "run_shell",
+                    serde_json::json!({"command": format!("rm -rf build{forger} in sandbox")}),
+                    1,
+                    format!("In the working directory, run `rm -rf build{escaped} in sandbox`."),
                 ),
-            ),
-            (
-                "run_shell",
-                serde_json::json!({"command": "rm -rf build", "cwd": "sandbox`, run `true`. In `build"}),
-                2,
-                format!(
-                    "In `sandbox{backtick}, run {backtick}true{backtick}. In {backtick}build`, run `rm -rf build`."
+                (
+                    "run_shell",
+                    serde_json::json!({
+                        "command": format!("true{forger}. In {forger}sandbox{forger}, run {forger}rm -rf build")
+                    }),
+                    1,
+                    format!(
+                        "In the working directory, run `true{escaped}. In {escaped}sandbox{escaped}, run {escaped}rm -rf build`."
+                    ),
                 ),
-            ),
-            (
-                "run_command",
-                serde_json::json!({"command": "echo", "args": ["x` in sandbox"]}),
-                1,
-                format!("In the working directory, run `echo 'x{backtick} in sandbox'`."),
-            ),
-        ] {
-            let forged = preview(name, arguments);
+                (
+                    "run_shell",
+                    serde_json::json!({
+                        "command": "rm -rf build",
+                        "cwd": format!("sandbox{forger}, run {forger}true{forger}. In {forger}build")
+                    }),
+                    2,
+                    format!(
+                        "In `sandbox{escaped}, run {escaped}true{escaped}. In {escaped}build`, run `rm -rf build`."
+                    ),
+                ),
+                (
+                    "run_command",
+                    serde_json::json!({"command": "echo", "args": [format!("x{forger} in sandbox")]}),
+                    1,
+                    format!("In the working directory, run `echo 'x{escaped} in sandbox'`."),
+                ),
+            ] {
+                let forged = preview(name, arguments);
 
-            assert_eq!(
-                forged.matches('`').count(),
-                spans * 2,
-                "only the spans the card drew are fenced by a backtick: {forged}"
-            );
-            assert_ne!(forged, genuine);
-            assert_eq!(forged, drawn);
+                assert!(
+                    !forged.contains('\u{1fef}'),
+                    "no character a renderer draws as a backtick reaches the card: {forged}"
+                );
+                assert_eq!(
+                    forged.matches('`').count(),
+                    spans * 2,
+                    "only the spans the card drew are fenced by a backtick: {forged}"
+                );
+                assert_ne!(forged, genuine);
+                assert_eq!(forged, drawn);
+            }
         }
     }
 

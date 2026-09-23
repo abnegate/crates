@@ -3,6 +3,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::Value;
+use unicode_normalization::IsNormalized;
+use unicode_normalization::is_nfc_quick;
 
 use super::LINE_BREAK;
 use super::MAX_PREVIEW_CHARACTERS;
@@ -49,17 +51,18 @@ static LEGIBLE: LazyLock<Regex> =
 /// does. A control, format or invisible character in the call is shown as its
 /// code point between `⟨` and `⟩`, `⟨U+0008⟩` for a backspace, as is any
 /// whitespace but a plain space or a `\n`, the blank Braille pattern, a
-/// combining mark, any other character past ASCII that is not a letter, a
-/// number, punctuation or a symbol, a space straight after a `\` or a line
-/// break, a backtick inside a [code span](Rendering::code), and any `⟨`,
-/// `⟩`, `⟦`, `⟧` or `⏎` it carries, so the call can neither redraw the card
-/// it is shown on, pass one character off as another, hide a space a
-/// backslash escapes among the ones between words, close the span it is
-/// shown in and write the rest of the card, nor forge the marks the preview
-/// draws. An escape is one of those marks: text that reads `\u{8}` is shown
-/// as those characters, and one that reads `⟨U+0008⟩` has its fences
-/// escaped, so everything between a `⟨` and a `⟩` on the card is a character
-/// the preview escaped.
+/// combining mark, a character NFC replaces or composes with the one before
+/// it, any other character past ASCII that is not a letter, a number,
+/// punctuation or a symbol, a space straight after a `\` or a line break, a
+/// backtick inside a [code span](Rendering::code), and any `⟨`, `⟩`, `⟦`,
+/// `⟧` or `⏎` it carries, so the call can neither redraw the card it is
+/// shown on, pass one character off as another, hide a space a backslash
+/// escapes among the ones between words, close the span it is shown in and
+/// write the rest of the card, nor forge the marks the preview draws. An
+/// escape is one of those marks: text that reads `\u{8}` is shown as those
+/// characters, and one that reads `⟨U+0008⟩` has its fences escaped, so
+/// everything between a `⟨` and a `⟩` on the card is a character the
+/// preview escaped.
 ///
 /// Everything else is drawn verbatim. Nothing is squeezed, here or by the
 /// tool that rendered the call: blank space, blank lines and indentation
@@ -137,16 +140,22 @@ impl Preview {
 
 /// Whether `character` reaches the card as its [`escape`].
 ///
-/// An ASCII character is escaped when it is a control. Past ASCII only a
-/// letter, a number, punctuation or a symbol is drawn as itself, and not
-/// even one of those when it is [`INVISIBLE`]. A control or invisible
-/// character would let the call move the cursor, erase or reorder what the
-/// reader is shown, a line or paragraph separator, a Unicode space or the
-/// blank Braille pattern would pass for a plain space, a combining mark
-/// would change the letter before it, a private-use or unassigned code
-/// point has no glyph a reader could tell apart from another, and the glyphs
-/// the preview draws its own marks and escapes with would let it forge them,
-/// so none of them is shown as itself.
+/// An ASCII character is escaped when it is a control. A character past
+/// ASCII is drawn as itself only when it is all of:
+///
+/// - [`LEGIBLE`], since a private-use or unassigned code point has no glyph a
+///   reader could tell apart from another;
+/// - [`normalized`], since a renderer may draw a character NFC replaces as
+///   the one it is replaced with: U+1FEF as a backtick that closes the code
+///   span it stands in, U+037E as `;`;
+/// - not [`INVISIBLE`], since a control or invisible character would let the
+///   call move the cursor, erase or reorder what the reader is shown, a line
+///   or paragraph separator, a Unicode space or the blank Braille pattern
+///   would pass for a plain space, and a combining mark would change the
+///   letter before it.
+///
+/// The glyphs the preview draws its own marks and escapes with are escaped
+/// as well, since shown as themselves they would let the call forge them.
 fn escaped(character: char) -> bool {
     match character {
         RETURN | CUT_OPEN | CUT_CLOSE | ESCAPE_OPEN | ESCAPE_CLOSE => true,
@@ -154,9 +163,16 @@ fn escaped(character: char) -> bool {
         _ => {
             let mut buffer = [0; 4];
             let encoded = character.encode_utf8(&mut buffer);
-            INVISIBLE.is_match(encoded) || !LEGIBLE.is_match(encoded)
+            !LEGIBLE.is_match(encoded) || !normalized(character) || INVISIBLE.is_match(encoded)
         }
     }
+}
+
+/// Whether NFC leaves `character` as it is wherever it stands: it is not
+/// replaced by another character, as U+212A KELVIN SIGN is by `K`, nor
+/// composed with the character before it.
+fn normalized(character: char) -> bool {
+    is_nfc_quick(once(character)) == IsNormalized::Yes
 }
 
 /// How one character of a call reaches the card.
@@ -649,6 +665,27 @@ mod tests {
                 format!("a{}b", escape(character)),
                 "{character:?}"
             );
+        }
+    }
+
+    /// A character NFC replaces is drawn by many renderers as the one it is
+    /// replaced with, so U+1FEF drew as a backtick and closed the code span
+    /// it stood in, U+037E drew `echo a;b` as the command it is not, and the
+    /// Kelvin, Ohm and Angstrom signs and the CJK compatibility ideographs
+    /// passed for the letters they decompose to.
+    #[test]
+    fn a_character_normalisation_replaces_is_shown_as_its_escape() {
+        for character in [
+            '\u{1fef}', '\u{37e}', '\u{212a}', '\u{2126}', '\u{212b}', '\u{f900}',
+        ] {
+            let preview = Preview::within(&format!("a{character}b"), MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(
+                preview.text,
+                format!("a{}b", escape(character)),
+                "{character:?}"
+            );
+            assert!(!preview.truncated, "{character:?}");
         }
     }
 
