@@ -1,3 +1,4 @@
+#[cfg(any(feature = "anthropic", feature = "openai"))]
 use abnegate_secret::SecretValue;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +11,15 @@ use crate::modality::config::{
 const BUDGET_PREFIX: &str = "budget:";
 const DEFAULT_BUDGET_USD: f64 = 10.0;
 
+/// Which provider serves each modality, as a configuration file names them.
+///
+/// Configuration only: nothing in this crate builds a provider from it. The
+/// names are the caller's to resolve, and the vendor clients this crate ships
+/// are the ones in [`vendor`](crate::modality::vendor) — Anthropic, Gemini and
+/// OpenAI, each behind its feature — plus any OpenAI-compatible endpoint
+/// through [`HttpProvider`](crate::HttpProvider) and
+/// [`CompletionBridge`](crate::modality::CompletionBridge). A name outside
+/// that set describes a provider the caller supplies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub text_provider: TextProviderConfig,
@@ -25,34 +35,10 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
-    /// A minimal config naming Anthropic as the text provider.
-    pub fn anthropic(api_key: impl Into<SecretValue>) -> Self {
-        Self::with_text_provider("anthropic", Some(api_key.into()), None)
-    }
-
-    /// A minimal config naming OpenAI as the text provider.
-    pub fn openai(api_key: impl Into<SecretValue>) -> Self {
-        Self::with_text_provider("openai", Some(api_key.into()), None)
-    }
-
-    /// A config naming a local Ollama instance as the text provider.
-    pub fn ollama(model: impl Into<String>) -> Self {
-        Self::with_text_provider("ollama", None, Some(model.into()))
-    }
-
-    fn with_text_provider(
-        provider: &str,
-        api_key: Option<SecretValue>,
-        model: Option<String>,
-    ) -> Self {
+    /// A config with `text_provider` and no other modality configured.
+    pub fn new(text_provider: TextProviderConfig) -> Self {
         Self {
-            text_provider: TextProviderConfig {
-                provider: provider.to_string(),
-                api_key,
-                oauth_token: None,
-                model,
-                base_url: None,
-            },
+            text_provider,
             image_provider: None,
             audio_provider: None,
             voice_provider: None,
@@ -64,37 +50,54 @@ impl ProviderConfig {
         }
     }
 
+    /// A minimal config naming Anthropic as the text provider.
+    #[cfg(feature = "anthropic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "anthropic")))]
+    pub fn anthropic(api_key: impl Into<SecretValue>) -> Self {
+        Self::new(TextProviderConfig::new("anthropic").with_api_key(api_key))
+    }
+
+    /// A minimal config naming OpenAI as the text provider.
+    #[cfg(feature = "openai")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
+    pub fn openai(api_key: impl Into<SecretValue>) -> Self {
+        Self::new(TextProviderConfig::new("openai").with_api_key(api_key))
+    }
+
     /// The `cost_strategy` field as a [`CostStrategy`], if one is set.
     ///
-    /// An unrecognised name reads as [`CostStrategy::BestValue`] rather than
-    /// failing, so a typo in a config file does not stop a run.
+    /// Leniently: an unrecognised name reads as [`CostStrategy::BestValue`],
+    /// and a budget that is not a finite amount of zero or more reads as a
+    /// ten dollar budget, so a typo in a config file does not stop a run. Parse
+    /// the field with [`str::parse`] to be told about the typo instead.
     pub fn parse_cost_strategy(&self) -> Option<CostStrategy> {
-        self.cost_strategy.as_ref().map(|strategy| {
-            match strategy.as_str() {
-                "cheapest" | "cheapest-possible" => return CostStrategy::CheapestPossible,
-                "best-quality" | "quality" => return CostStrategy::BestQuality,
-                "best-value" | "value" => return CostStrategy::BestValue,
-                "local-first" | "local" => return CostStrategy::LocalFirst,
-                _ => {}
-            }
-
-            match strategy.strip_prefix(BUDGET_PREFIX) {
-                Some(budget) => CostStrategy::Budget {
-                    max_usd: budget.parse().unwrap_or(DEFAULT_BUDGET_USD),
-                },
-                None => CostStrategy::BestValue,
-            }
+        self.cost_strategy.as_deref().map(|strategy| {
+            strategy.parse().unwrap_or_else(|_| {
+                if strategy.starts_with(BUDGET_PREFIX) {
+                    CostStrategy::Budget {
+                        max_usd: DEFAULT_BUDGET_USD,
+                    }
+                } else {
+                    CostStrategy::BestValue
+                }
+            })
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use abnegate_secret::SecretValue;
+
     use super::*;
+
+    fn keyed(provider: &str, key: &str) -> ProviderConfig {
+        ProviderConfig::new(TextProviderConfig::new(provider).with_api_key(key))
+    }
 
     #[test]
     fn anthropic_names_the_provider_and_holds_the_key() {
-        let config = ProviderConfig::anthropic("test-key");
+        let config = keyed("anthropic", "test-key");
         assert_eq!(config.text_provider.provider, "anthropic");
         assert_eq!(
             config
@@ -109,7 +112,7 @@ mod tests {
 
     #[test]
     fn openai_names_the_provider_and_holds_the_key() {
-        let config = ProviderConfig::openai("sk-openai-test");
+        let config = keyed("openai", "sk-openai-test");
         assert_eq!(config.text_provider.provider, "openai");
         assert_eq!(
             config
@@ -122,16 +125,42 @@ mod tests {
     }
 
     #[test]
-    fn ollama_needs_a_model_and_no_key() {
-        let config = ProviderConfig::ollama("mistral");
+    fn a_keyless_provider_names_its_model_and_holds_no_key() {
+        let config = ProviderConfig::new(
+            TextProviderConfig::new("ollama")
+                .with_model("mistral")
+                .with_base_url("http://127.0.0.1:11434/v1"),
+        );
         assert_eq!(config.text_provider.provider, "ollama");
         assert_eq!(config.text_provider.model.as_deref(), Some("mistral"));
         assert!(config.text_provider.api_key.is_none());
     }
 
+    #[cfg(feature = "anthropic")]
+    #[test]
+    fn the_anthropic_shorthand_names_the_provider_and_holds_the_key() {
+        let config = ProviderConfig::anthropic(concat!("sk-ant-", "test"));
+        assert_eq!(config.text_provider.provider, "anthropic");
+        assert_eq!(
+            config
+                .text_provider
+                .api_key
+                .as_ref()
+                .map(SecretValue::expose),
+            Some(concat!("sk-ant-", "test"))
+        );
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn the_openai_shorthand_names_the_provider_and_holds_the_key() {
+        let config = ProviderConfig::openai("sk-openai-test");
+        assert_eq!(config.text_provider.provider, "openai");
+    }
+
     #[test]
     fn a_key_never_survives_a_round_trip_through_json() {
-        let config = ProviderConfig::anthropic("sk-test-key");
+        let config = keyed("anthropic", "sk-test-key");
 
         let json = serde_json::to_string(&config).unwrap();
         let roundtrip: ProviderConfig = serde_json::from_str(&json).unwrap();
@@ -151,7 +180,7 @@ mod tests {
 
     #[test]
     fn a_key_never_reaches_a_debug_line() {
-        let config = ProviderConfig::anthropic("sk-test-key");
+        let config = keyed("anthropic", "sk-test-key");
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("sk-test-key"), "{rendered}");
         assert!(rendered.contains("[REDACTED]"), "{rendered}");
@@ -159,7 +188,7 @@ mod tests {
 
     #[test]
     fn an_oauth_token_never_reaches_a_debug_line() {
-        let mut config = ProviderConfig::anthropic("sk-test-key");
+        let mut config = keyed("anthropic", "sk-test-key");
         config.text_provider.oauth_token = Some(SecretValue::new("oauth-token-123"));
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("oauth-token-123"), "{rendered}");
@@ -179,7 +208,7 @@ mod tests {
         ];
 
         for (name, expected) in cases {
-            let mut config = ProviderConfig::anthropic("key");
+            let mut config = keyed("anthropic", "key");
             config.cost_strategy = Some(name.into());
             assert_eq!(config.parse_cost_strategy(), Some(expected), "{name}");
         }
@@ -187,7 +216,7 @@ mod tests {
 
     #[test]
     fn a_budget_strategy_carries_its_limit() {
-        let mut config = ProviderConfig::anthropic("key");
+        let mut config = keyed("anthropic", "key");
         config.cost_strategy = Some("budget:25.50".into());
 
         match config.parse_cost_strategy().unwrap() {
@@ -199,8 +228,24 @@ mod tests {
     }
 
     #[test]
+    fn a_budget_that_is_not_a_finite_amount_falls_back_to_the_default() {
+        for budget in ["budget:NaN", "budget:-5", "budget:inf"] {
+            let mut config = keyed("anthropic", "key");
+            config.cost_strategy = Some(budget.into());
+
+            assert_eq!(
+                config.parse_cost_strategy(),
+                Some(CostStrategy::Budget {
+                    max_usd: DEFAULT_BUDGET_USD
+                }),
+                "{budget}"
+            );
+        }
+    }
+
+    #[test]
     fn an_unparseable_budget_falls_back_to_the_default() {
-        let mut config = ProviderConfig::anthropic("key");
+        let mut config = keyed("anthropic", "key");
         config.cost_strategy = Some("budget:lots".into());
 
         match config.parse_cost_strategy().unwrap() {
@@ -213,16 +258,12 @@ mod tests {
 
     #[test]
     fn no_strategy_parses_to_nothing() {
-        assert!(
-            ProviderConfig::anthropic("key")
-                .parse_cost_strategy()
-                .is_none()
-        );
+        assert!(keyed("anthropic", "key").parse_cost_strategy().is_none());
     }
 
     #[test]
     fn an_unknown_strategy_reads_as_best_value() {
-        let mut config = ProviderConfig::anthropic("key");
+        let mut config = keyed("anthropic", "key");
         config.cost_strategy = Some("unknown-strategy".into());
         assert_eq!(config.parse_cost_strategy(), Some(CostStrategy::BestValue));
     }
