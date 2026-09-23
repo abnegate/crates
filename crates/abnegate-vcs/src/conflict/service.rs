@@ -421,6 +421,7 @@ fn push_arguments(remote: &RepositoryUrl, commit: &CommitSha, branch: &BranchNam
     vec![
         "push".to_string(),
         "--porcelain".to_string(),
+        "--no-follow-tags".to_string(),
         "--".to_string(),
         remote.to_string(),
         format!("{commit}:{}", branch.reference()),

@@ -1,16 +1,19 @@
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::process::Command;
 use std::process::Stdio;
 
 /// Settings pinned on every command line, where a repository's own
 /// configuration cannot override them: nothing a run wrote into it may run a
-/// hook, a file-system monitor, a credential helper or a signing program,
-/// follow a redirect, turn off certificate checks, route through a proxy or
-/// mark files so a status stops seeing them.
+/// hook, a file-system monitor, a credential helper, a signing program or a
+/// maintenance job, follow a redirect, turn off certificate checks, route
+/// through a proxy, recurse into submodules, push tags or options nobody
+/// named, or mark files so a status stops seeing them.
 ///
 /// `http.sslCAInfo` and `http.sslCAPath` are deliberately absent: git hands an
 /// empty value to curl verbatim and every HTTPS request then fails. A
 /// repository that sets either is refused by [`refused`] instead.
-const PINS: [&str; 20] = [
+const PINS: [&str; 34] = [
     "-c",
     "core.hooksPath=/dev/null",
     "-c",
@@ -31,6 +34,20 @@ const PINS: [&str; 20] = [
     "core.ignoreStat=false",
     "-c",
     "submodule.recurse=false",
+    "-c",
+    "fetch.recurseSubmodules=false",
+    "-c",
+    "push.followTags=false",
+    "-c",
+    "push.gpgSign=false",
+    "-c",
+    "push.negotiate=false",
+    "-c",
+    "push.pushOption=",
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
 ];
 
 /// Environment every hardened command runs under, after the host's own has
@@ -51,31 +68,35 @@ const ENVIRONMENT: [(&str, &str); 11] = [
     ("LC_ALL", "C"),
 ];
 
-/// Repository configuration sections that name a program, a transport rewrite,
-/// an HTTP override or another file to read. A run's git commands can write
-/// them, and none can be pinned away on the command line.
-const REFUSED_SECTIONS: [&str; 7] = [
-    "url.",
-    "http.",
-    "include.",
-    "includeif.",
-    "filter.",
-    "diff.",
-    "merge.",
+/// The repository configuration git itself writes for a clone, a worktree and
+/// a tracking branch, and nothing else. Every other key -- a transport
+/// rewrite, an HTTP override, an include, a filter, diff or merge driver, a
+/// hook, a command -- is one a run's git commands could have written, and git
+/// keeps adding keys that run programs, so a repository carrying any key not
+/// listed here is refused rather than inspected key by key.
+const PERMITTED_KEYS: [&str; 9] = [
+    "core.repositoryformatversion",
+    "core.filemode",
+    "core.bare",
+    "core.logallrefupdates",
+    "core.ignorecase",
+    "core.precomposeunicode",
+    "core.symlinks",
+    "extensions.objectformat",
+    "extensions.refstorage",
 ];
 
-/// Single repository configuration keys refused for the same reason: an SSH
-/// program, per-worktree configuration nothing here reads, and a work tree
-/// somewhere other than where the command was pointed.
-const REFUSED_KEYS: [&str; 3] = [
-    "core.sshcommand",
-    "extensions.worktreeconfig",
-    "core.worktree",
-];
+/// A remote's keys that name where it is and what to fetch from it.
+const PERMITTED_REMOTE_KEYS: [&str; 2] = ["url", "fetch"];
 
-/// The section configuring a named remote, which a URL given on the command
-/// line is looked up in as a name.
+/// A branch's keys that name what it tracks.
+const PERMITTED_BRANCH_KEYS: [&str; 2] = ["remote", "merge"];
+
+/// The section configuring a named remote.
 const REMOTE_SECTION: &str = "remote.";
+
+/// The section configuring a local branch.
+const BRANCH_SECTION: &str = "branch.";
 
 /// Lists the repository's own configuration keys, NUL-terminated.
 pub(crate) const CONFIG_LISTING: [&str; 5] = ["config", "--local", "--name-only", "--list", "-z"];
@@ -84,10 +105,21 @@ pub(crate) const CONFIG_LISTING: [&str; 5] = ["config", "--local", "--name-only"
 pub(crate) fn harden(command: &mut Command) {
     command
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env(
+            "PATH",
+            absolute(&std::env::var_os("PATH").unwrap_or_default()),
+        )
         .envs(ENVIRONMENT)
         .args(PINS)
         .stdin(Stdio::null());
+}
+
+/// The absolute entries of a `PATH`. A relative or empty entry is resolved
+/// against the directory a command runs in, which for a hardened command is a
+/// repository a run can write, so a `git` there would run instead of git.
+fn absolute(path: &OsStr) -> OsString {
+    std::env::join_paths(std::env::split_paths(path).filter(|entry| entry.is_absolute()))
+        .unwrap_or_default()
 }
 
 /// The first key of a [`CONFIG_LISTING`] a hardened command must not run
@@ -95,22 +127,23 @@ pub(crate) fn harden(command: &mut Command) {
 pub(crate) fn refused(listing: &[u8]) -> Option<String> {
     listing
         .split(|byte| *byte == 0)
+        .filter(|key| !key.is_empty())
         .map(|key| String::from_utf8_lossy(key).to_ascii_lowercase())
-        .find(|key| {
-            REFUSED_SECTIONS
-                .iter()
-                .any(|section| key.starts_with(section))
-                || REFUSED_KEYS.contains(&key.as_str())
-                || names_a_location(key)
-        })
+        .find(|key| !permitted(key))
 }
 
-/// Whether a `remote.<name>.<key>` entry is named like a URL, which git
-/// applies to a push or fetch given that URL on the command line.
-fn names_a_location(key: &str) -> bool {
-    key.strip_prefix(REMOTE_SECTION)
-        .and_then(|rest| rest.rsplit_once('.'))
-        .is_some_and(|(name, _)| name.contains([':', '/']))
+fn permitted(key: &str) -> bool {
+    PERMITTED_KEYS.contains(&key)
+        || scoped(key, REMOTE_SECTION, &PERMITTED_REMOTE_KEYS)
+            .is_some_and(|name| !name.contains([':', '/']))
+        || scoped(key, BRANCH_SECTION, &PERMITTED_BRANCH_KEYS).is_some()
+}
+
+/// The subsection of a `{section}{name}.{key}` entry whose key is one of
+/// `keys`.
+fn scoped<'a>(key: &'a str, section: &str, keys: &[&str]) -> Option<&'a str> {
+    let (name, variable) = key.strip_prefix(section)?.rsplit_once('.')?;
+    (!name.is_empty() && keys.contains(&variable)).then_some(name)
 }
 
 #[cfg(test)]
@@ -128,19 +161,28 @@ mod tests {
                 "core.repositoryformatversion",
                 "core.filemode",
                 "core.bare",
+                "core.logallrefupdates",
+                "core.ignorecase",
+                "core.precomposeunicode",
+                "core.symlinks",
                 "remote.origin.url",
+                "remote.origin.fetch",
                 "remote.origin.fetch",
                 "branch.main.remote",
                 "branch.main.merge",
+                "branch.task/one.merge",
                 "extensions.objectformat",
+                "extensions.refStorage",
             ])),
             None
         );
     }
 
     #[test]
-    fn a_key_that_names_a_program_a_transport_or_another_file_is_refused() {
+    fn every_other_key_is_refused() {
         for key in [
+            "hook.planted.command",
+            "hook.planted.event",
             "url.https://elsewhere.test/.insteadof",
             "http.proxy",
             "http.https://github.com/.sslcainfo",
@@ -151,10 +193,24 @@ mod tests {
             "diff.driver.textconv",
             "merge.driver.driver",
             "core.sshCommand",
-            "extensions.worktreeConfig",
+            "core.alternateRefsCommand",
             "core.worktree",
-            "remote.https://github.com/owner/repository.git.pushurl",
-            "remote.file:///tmp/x.receivepack",
+            "core.excludesFile",
+            "core.attributesFile",
+            "core.autocrlf",
+            "author.name",
+            "user.email",
+            "push.followTags",
+            "fetch.bundleURI",
+            "transfer.bundleURI",
+            "extensions.worktreeConfig",
+            "extensions.partialClone",
+            "remote.origin.pushurl",
+            "remote.origin.uploadpack",
+            "remote.https://github.com/owner/repository.git.url",
+            "remote.file:///tmp/x.fetch",
+            "branch.main.pushRemote",
+            "status.showUntrackedFiles",
         ] {
             assert_eq!(
                 refused(&listing(&["core.bare", key])),
@@ -162,6 +218,19 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    #[test]
+    fn only_absolute_entries_of_the_search_path_are_kept() {
+        let joined = std::env::join_paths(["/usr/bin", "", ".", "bin", "/bin"]).unwrap();
+
+        assert_eq!(
+            std::env::split_paths(&absolute(&joined)).collect::<Vec<_>>(),
+            vec![
+                std::path::PathBuf::from("/usr/bin"),
+                std::path::PathBuf::from("/bin")
+            ]
+        );
     }
 
     #[test]

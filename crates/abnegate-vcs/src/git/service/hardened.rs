@@ -45,7 +45,14 @@ impl GitService {
                 "Task branch is missing from the repository".into(),
             ));
         }
-        if self.current_branch(path).await? == branch.as_str() {
+        let checked_out = Self::output(
+            Self::hardened()
+                .args(["symbolic-ref", "--quiet", "HEAD"])
+                .current_dir(path)
+                .stdout(Stdio::piped()),
+        )
+        .await?;
+        if String::from_utf8_lossy(&checked_out.stdout).trim() == reference {
             return Ok(());
         }
         let held = Self::output(
@@ -230,9 +237,9 @@ impl GitService {
         url: &RepositoryUrl,
         token: Option<&SecretValue>,
     ) -> GitResult<()> {
-        Self::verify_config(path).await?;
         let mut attempts = 0;
         loop {
+            Self::verify_config(path).await?;
             let mut command = Self::connected(url, token);
             command
                 .args(["fetch", "--prune", "--", url.as_str(), FETCH_REFSPEC])
@@ -563,6 +570,12 @@ impl GitService {
                     "-m",
                     message,
                 ])
+                .envs([
+                    ("GIT_AUTHOR_NAME", &self.author_name),
+                    ("GIT_AUTHOR_EMAIL", &self.author_email),
+                    ("GIT_COMMITTER_NAME", &self.author_name),
+                    ("GIT_COMMITTER_EMAIL", &self.author_email),
+                ])
                 .current_dir(path)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -597,6 +610,7 @@ impl GitService {
             .args([
                 "push",
                 "--porcelain",
+                "--no-follow-tags",
                 "--",
                 remote.as_str(),
                 &format!("{commit}:{}", branch.reference()),
@@ -1622,8 +1636,9 @@ mod configuration_tests {
     }
 
     #[tokio::test]
-    async fn every_configuration_no_pin_reaches_refuses_every_hardened_operation() {
+    async fn any_configuration_git_did_not_write_for_the_clone_refuses_it() {
         for (key, value) in [
+            ("hook.planted.command", "true"),
             (
                 "url.https://elsewhere.test/.insteadOf",
                 "https://github.com/",
@@ -1636,7 +1651,12 @@ mod configuration_tests {
             ("diff.external", "cat"),
             ("merge.planted.driver", "cat"),
             ("core.sshCommand", "ssh"),
+            ("core.alternateRefsCommand", "cat"),
             ("core.worktree", "/tmp"),
+            ("core.excludesFile", "/dev/null"),
+            ("author.name", "Someone Else"),
+            ("push.followTags", "true"),
+            ("fetch.bundleURI", "https://elsewhere.test/bundle"),
             ("extensions.worktreeConfig", "true"),
             (
                 "remote.https://github.com/owner/repository.git.pushurl",
@@ -1653,6 +1673,81 @@ mod configuration_tests {
                 "{key}: {refusal:?}"
             );
         }
+    }
+
+    /// Hooks defined in configuration run whatever `core.hooksPath` says,
+    /// and see the credential of the command they run under; a repository
+    /// defining one is refused by every hardened operation before anything
+    /// runs in it.
+    #[tokio::test]
+    async fn a_hook_defined_in_configuration_never_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let origin = root.path().join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        remote(&origin);
+        let base = root.path().join("base");
+        clone(&origin, &base);
+        let markers = tempfile::tempdir().unwrap();
+        let marker = markers.path().join("hook-ran");
+        git(
+            &base,
+            &[
+                "config",
+                "hook.planted.command",
+                &format!("touch '{}'", marker.display()),
+            ],
+        );
+        for event in [
+            "reference-transaction",
+            "post-index-change",
+            "pre-push",
+            "pre-commit",
+            "post-commit",
+        ] {
+            git(&base, &["config", "--add", "hook.planted.event", event]);
+        }
+        std::fs::write(base.join("work.txt"), "work\n").unwrap();
+        let service = GitService::new();
+        let head = CommitSha::parse(&git(&base, &["rev-parse", "HEAD"])).unwrap();
+
+        let refusals = [
+            service.fetch(&base, &local(&origin), None).await.err(),
+            service.has_changes(&base).await.err(),
+            service.diff_summary(&base).await.err(),
+            service.stage_all(&base).await.err(),
+            service.commit(&base, "work").await.err(),
+            service
+                .create_branch(&base, &branch("task/one"))
+                .await
+                .err(),
+            service
+                .prepare_branch(&base, &branch("task/two"), false)
+                .await
+                .err(),
+            service
+                .push_with_token(&base, &branch("task/one"), &local(&origin), &token())
+                .await
+                .err(),
+            service
+                .remote_head(&base, &local(&origin), None)
+                .await
+                .err(),
+            service.set_remote_head(&base, &branch("main")).await.err(),
+            service.revision(&base, "HEAD").await.err(),
+            service.has_commit(&base, &head).await.err(),
+            service.is_ancestor(&base, &head, &head).await.err(),
+            service.changed_files(&base, &head).await.err(),
+            service.get_remote_url(&base, "origin").await.err(),
+            service.checkout(&base, &branch("main")).await.err(),
+        ];
+
+        for (operation, refusal) in refusals.iter().enumerate() {
+            assert!(
+                matches!(refusal, Some(GitError::UnsafeConfig(key)) if key.starts_with("hook.")),
+                "operation {operation}: {refusal:?}"
+            );
+        }
+        assert!(!marker.exists(), "a configured hook ran");
     }
 
     #[tokio::test]
@@ -1777,18 +1872,22 @@ mod configuration_tests {
     }
 
     #[tokio::test]
-    async fn an_untracked_file_is_a_change_whatever_the_clone_says_to_show() {
+    async fn an_untracked_file_is_a_change_and_a_clone_told_to_hide_them_is_refused() {
         let repository = repository();
-        git(
-            repository.path(),
-            &["config", "status.showUntrackedFiles", "no"],
-        );
         let service = GitService::new();
         assert!(!service.has_changes(repository.path()).await.unwrap());
 
         std::fs::write(repository.path().join("untracked"), "new\n").unwrap();
-
         assert!(service.has_changes(repository.path()).await.unwrap());
+
+        git(
+            repository.path(),
+            &["config", "status.showUntrackedFiles", "no"],
+        );
+        assert!(matches!(
+            service.has_changes(repository.path()).await,
+            Err(GitError::UnsafeConfig(_))
+        ));
     }
 }
 
@@ -1833,6 +1932,39 @@ mod commit_tests {
         assert_eq!(
             committed.as_str(),
             git(repository.path(), &["rev-parse", "HEAD"])
+        );
+    }
+}
+
+#[cfg(test)]
+mod resumption_tests {
+    use super::fixtures::branch;
+    use super::*;
+    use crate::worktree::fixtures::git;
+    use crate::worktree::fixtures::remote;
+
+    /// A tag sharing the branch's name made the checked-out branch read back
+    /// as `heads/{name}`, and the worktree was refused as though another run
+    /// held its own branch.
+    #[tokio::test]
+    async fn a_worktree_already_on_its_branch_is_resumed_whatever_else_shares_the_name() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+        let service = GitService::new();
+        service
+            .prepare_branch(repository.path(), &branch("task/one"), false)
+            .await
+            .unwrap();
+        git(repository.path(), &["tag", "task/one"]);
+
+        service
+            .prepare_branch(repository.path(), &branch("task/one"), false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(repository.path(), &["symbolic-ref", "HEAD"]),
+            "refs/heads/task/one"
         );
     }
 }

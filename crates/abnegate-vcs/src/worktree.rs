@@ -396,29 +396,27 @@ mod tests {
     }
 
     /// A run's git commands reach the shared configuration, and a setting
-    /// there that hides untracked files — `status.showUntrackedFiles`, or an
-    /// excludes file that ignores everything — must not hide them from the
-    /// check. A file the repository's own `.gitignore` covers is not counted.
+    /// there that hides untracked files -- `status.showUntrackedFiles`, or an
+    /// excludes file that ignores everything -- refuses the check rather than
+    /// hiding them from it. A file the repository's own committed
+    /// `.gitignore` covers is not counted.
     #[test]
-    fn an_untracked_file_counts_even_when_the_clone_is_told_to_hide_them() {
+    fn a_clone_told_to_hide_untracked_files_is_refused_and_committed_ignores_hold() {
         let repositories = repositories();
         let path = repositories.worktrees.join("run");
         add(&repositories.base, &path, "origin/HEAD").unwrap();
         let start = git(&path, &["rev-parse", "HEAD"]);
-        git(&path, &["config", "status.showUntrackedFiles", "no"]);
-        let excludes = repositories.worktrees.join("hide-everything");
-        std::fs::write(&excludes, "*\n").unwrap();
-        git(
-            &path,
-            &["config", "core.excludesFile", excludes.to_str().unwrap()],
-        );
+        for (key, value) in [
+            ("status.showUntrackedFiles", "no"),
+            ("core.excludesFile", "/dev/null"),
+        ] {
+            git(&path, &["config", key, value]);
+            assert!(unfinished(&path, &[&start]).is_err(), "{key}");
+            git(&path, &["config", "--unset", key]);
+        }
         std::fs::write(path.join("notes.txt"), "not yet added\n").unwrap();
-        assert!(
-            unfinished(&path, &[&start]).unwrap().uncommitted,
-            "the file is seen despite status.showUntrackedFiles=no and an excludes file"
-        );
+        assert!(unfinished(&path, &[&start]).unwrap().uncommitted);
         std::fs::remove_file(path.join("notes.txt")).unwrap();
-        git(&path, &["config", "--unset", "core.excludesFile"]);
         std::fs::write(path.join(".gitignore"), "*.log\n").unwrap();
         git(&path, &["add", ".gitignore"]);
         git(&path, &["commit", "-q", "-m", "ignore logs"]);
@@ -608,10 +606,21 @@ mod tests {
         git(&repositories.base, &["config", "core.ignoreStat", "true"]);
         git(&path, &["update-index", "--really-refresh"]);
         std::fs::write(path.join("README"), "changed\n").unwrap();
+        assert!(
+            unfinished(&path, &[&start]).is_err(),
+            "the setting itself is refused"
+        );
+        git(
+            &repositories.base,
+            &["config", "--unset", "core.ignoreStat"],
+        );
 
         let held = unfinished(&path, &[&start]).unwrap();
 
-        assert!(held.uncommitted, "{held:?}");
+        assert!(
+            held.uncommitted,
+            "the marks it left behind still count: {held:?}"
+        );
     }
 
     /// A clone whose configuration names a program for git to run refuses

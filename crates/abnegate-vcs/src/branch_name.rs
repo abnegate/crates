@@ -19,7 +19,7 @@ pub(crate) const HEADS: &str = "refs/heads/";
 const RESERVED: [&str; 2] = ["@", "HEAD"];
 
 /// A branch name git accepts that no git command line can read as an option,
-/// a revision expression or a pathspec.
+/// a revision expression, a pathspec or a forced refspec.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BranchName(String);
 
@@ -28,7 +28,7 @@ impl BranchName {
         let refused = value.is_empty()
             || value.len() > MAXIMUM_LENGTH
             || RESERVED.contains(&value)
-            || value.starts_with('-')
+            || value.starts_with(['-', '+'])
             || value.starts_with('/')
             || value.ends_with('/')
             || value.ends_with('.')
@@ -121,6 +121,7 @@ mod tests {
             "HEAD",
             "-force",
             "--upload-pack=evil",
+            "+refs/heads/main",
             "/leading",
             "trailing/",
             "trailing.",
