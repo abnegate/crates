@@ -12,6 +12,7 @@ use serde_json::json;
 use super::blocking;
 use super::read_text;
 use crate::tools::REASON_PARAMETER;
+use crate::tools::Rendering;
 use crate::tools::Tier;
 use crate::tools::Tool;
 use crate::tools::ToolContext;
@@ -43,7 +44,7 @@ impl Tool for ApplyPatchTool {
     /// goes in is the part of an edit a reader is deciding on. The text and
     /// the path are drawn verbatim but for the preview's escapes, so two
     /// edits that differ only in indentation never read alike.
-    fn preview(&self, parameters: &Value) -> Option<String> {
+    fn preview(&self, parameters: &Value) -> Option<Rendering> {
         let parameters: ApplyPatchParameters = serde_json::from_value(parameters.clone()).ok()?;
         let hunks = parameters.hunks().ok()?;
         let scope = match parameters.replace_all {
@@ -61,7 +62,10 @@ impl Tool for ApplyPatchTool {
             })
             .collect::<Vec<String>>()
             .join("; ");
-        Some(format!("Edit {}: {replacements}.", word(&parameters.path)))
+        Some(Rendering::from(format!(
+            "Edit {}: {replacements}.",
+            word(&parameters.path)
+        )))
     }
 
     fn parameters_schema(&self) -> Value {

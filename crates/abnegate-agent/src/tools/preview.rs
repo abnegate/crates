@@ -6,7 +6,9 @@ use serde_json::Value;
 
 use super::LINE_BREAK;
 use super::MAX_PREVIEW_CHARACTERS;
+use super::Rendering;
 use super::Tool;
+use super::rendering::BACKTICK;
 
 /// The glyph [`LINE_BREAK`] draws a line break with.
 const RETURN: char = '⏎';
@@ -49,13 +51,15 @@ static LEGIBLE: LazyLock<Regex> =
 /// whitespace but a plain space or a `\n`, the blank Braille pattern, a
 /// combining mark, any other character past ASCII that is not a letter, a
 /// number, punctuation or a symbol, a space straight after a `\` or a line
-/// break, and any `⟨`, `⟩`, `⟦`, `⟧` or `⏎` it carries, so the call can
-/// neither redraw the card it is shown on, pass one character off as another,
-/// hide a space a backslash escapes among the ones between words, nor forge
-/// the marks the preview draws. An escape is one of those marks: text that
-/// reads `\u{8}` is shown as those characters, and one that reads
-/// `⟨U+0008⟩` has its fences escaped, so everything between a `⟨` and a `⟩`
-/// on the card is a character the preview escaped.
+/// break, a backtick inside a [code span](Rendering::code), and any `⟨`,
+/// `⟩`, `⟦`, `⟧` or `⏎` it carries, so the call can neither redraw the card
+/// it is shown on, pass one character off as another, hide a space a
+/// backslash escapes among the ones between words, close the span it is
+/// shown in and write the rest of the card, nor forge the marks the preview
+/// draws. An escape is one of those marks: text that reads `\u{8}` is shown
+/// as those characters, and one that reads `⟨U+0008⟩` has its fences
+/// escaped, so everything between a `⟨` and a `⟩` on the card is a character
+/// the preview escaped.
 ///
 /// Everything else is drawn verbatim. Nothing is squeezed, here or by the
 /// tool that rendered the call: blank space, blank lines and indentation
@@ -88,7 +92,26 @@ impl Preview {
     /// marker is paid for out of the budget, so a cut preview is no longer
     /// than one that fits.
     pub fn within(rendered: &str, max_characters: usize) -> Self {
-        let glyphs = glyphs(rendered);
+        Self::drawn(&Rendering::from(rendered), max_characters)
+    }
+
+    /// What `tool` will do with `parameters`: its own account of the call,
+    /// or the call itself when it gives none.
+    ///
+    /// A tool with nothing of its own to say - a remote MCP method has no
+    /// catalog entry a reader would recognise it by - is shown as its name
+    /// and every argument it was given.
+    pub fn of(tool: &dyn Tool, parameters: &Value) -> Self {
+        let rendering = tool
+            .preview(parameters)
+            .unwrap_or_else(|| call(tool.name(), parameters));
+        Self::drawn(&rendering, MAX_PREVIEW_CHARACTERS)
+    }
+
+    /// `rendering` held to `max_characters`, as [`within`](Self::within)
+    /// holds plain text.
+    fn drawn(rendering: &Rendering, max_characters: usize) -> Self {
+        let glyphs = glyphs(rendering);
         let length: usize = glyphs.iter().map(|glyph| glyph.width()).sum();
         if length <= max_characters {
             return Self {
@@ -109,19 +132,6 @@ impl Preview {
             ),
             truncated: true,
         }
-    }
-
-    /// What `tool` will do with `parameters`: its own account of the call,
-    /// or the call itself when it gives none.
-    ///
-    /// A tool with nothing of its own to say - a remote MCP method has no
-    /// catalog entry a reader would recognise it by - is shown as its name
-    /// and every argument it was given.
-    pub fn of(tool: &dyn Tool, parameters: &Value) -> Self {
-        let rendered = tool
-            .preview(parameters)
-            .unwrap_or_else(|| call(tool.name(), parameters));
-        Self::new(&rendered)
     }
 }
 
@@ -161,17 +171,20 @@ enum Glyph {
 }
 
 impl Glyph {
-    /// How `character` is shown when `previous` comes before it.
+    /// How `character` is shown when `previous` comes before it, and whether
+    /// it lies `inside` a code span.
     ///
     /// A space straight after a `\` or a line break is escaped as well. The
     /// shell reads the first as part of a word and the second as blank space
     /// a continued line opens with, but shown as itself the first reads as
     /// the space between two words and the second is lost in the space
-    /// [`LINE_BREAK`] ends with.
-    fn of(character: char, previous: Option<char>) -> Self {
+    /// [`LINE_BREAK`] ends with. So is a backtick inside a code span, which
+    /// shown as itself would close the span.
+    fn of(character: char, previous: Option<char>, inside: bool) -> Self {
         match character {
             '\n' => Self::Break,
             ' ' if matches!(previous, Some('\\' | '\n')) => Self::Escaped(character),
+            BACKTICK if inside => Self::Escaped(character),
             _ if escaped(character) => Self::Escaped(character),
             _ => Self::Plain(character),
         }
@@ -216,12 +229,13 @@ fn escape_width(character: char) -> usize {
     [ESCAPE_OPEN, ESCAPE_CLOSE].len() + CODE_POINT.len() + digits
 }
 
-/// Every character of `text` as the card shows it.
-fn glyphs(text: &str) -> Vec<Glyph> {
-    let previous = once(None).chain(text.chars().map(Some));
-    text.chars()
+/// Every character of `rendering` as the card shows it.
+fn glyphs(rendering: &Rendering) -> Vec<Glyph> {
+    let previous = once(None).chain(rendering.characters().map(|(character, _)| Some(character)));
+    rendering
+        .characters()
         .zip(previous)
-        .map(|(character, previous)| Glyph::of(character, previous))
+        .map(|((character, inside), previous)| Glyph::of(character, previous, inside))
         .collect()
 }
 
@@ -247,14 +261,15 @@ fn hidden(characters: usize) -> String {
     format!(" {CUT_OPEN}{characters} characters hidden{CUT_CLOSE} ")
 }
 
-fn call(name: &str, parameters: &Value) -> String {
+fn call(name: &str, parameters: &Value) -> Rendering {
     let empty = parameters.is_null()
         || parameters
             .as_object()
             .is_some_and(|arguments| arguments.is_empty());
+    let named = Rendering::from("Call ").code(name);
     match empty {
-        true => format!("Call `{name}` with no arguments."),
-        false => format!("Call `{name}` with {parameters}."),
+        true => named.text(" with no arguments."),
+        false => named.text(&format!(" with {parameters}.")),
     }
 }
 
@@ -693,6 +708,60 @@ mod tests {
         assert_eq!(
             Preview::of(&ReadFileTool, &json!({})).text,
             "Call `read_file` with no arguments."
+        );
+        assert_eq!(
+            call("read`file", &json!({"path": "a`b"})),
+            Rendering::from("Call ")
+                .code("read`file")
+                .text(" with {\"path\":\"a`b\"}.")
+        );
+    }
+
+    /// Only a backtick inside a code span is escaped: the tool's own words and
+    /// call text it sets outside a span are drawn as they are.
+    #[test]
+    fn a_backtick_is_escaped_inside_a_code_span_and_drawn_as_itself_outside_one() {
+        let backtick = escape(BACKTICK);
+        let rendering = Rendering::from("In ")
+            .code("a`b")
+            .text(", run ")
+            .code("`echo` hi`")
+            .text(" and `this`.");
+
+        let preview = Preview::drawn(&rendering, MAX_PREVIEW_CHARACTERS);
+
+        assert_eq!(
+            preview.text,
+            format!("In `a{backtick}b`, run `{backtick}echo{backtick} hi{backtick}` and `this`.")
+        );
+        assert!(!preview.truncated);
+        assert_eq!(
+            Preview::within("run `echo` hi`", MAX_PREVIEW_CHARACTERS).text,
+            "run `echo` hi`"
+        );
+    }
+
+    #[test]
+    fn a_cut_inside_a_code_span_keeps_its_escaped_backticks_whole() {
+        let backtick = escape(BACKTICK);
+        let rendering = Rendering::from("run ").code(&"`".repeat(1_000)).text(".");
+
+        let preview = Preview::drawn(&rendering, MAX_PREVIEW_CHARACTERS);
+
+        assert!(preview.truncated);
+        assert!(
+            preview.text.chars().count() <= MAX_PREVIEW_CHARACTERS,
+            "{}",
+            preview.text
+        );
+        let (head, hidden, tail) = parts(&preview.text);
+        let head = head.strip_prefix("run `").expect("the span opens the head");
+        let tail = tail.strip_suffix("`.").expect("the span closes the tail");
+        assert_eq!(head.replace(&backtick, ""), "", "{head}");
+        assert_eq!(tail.replace(&backtick, ""), "", "{tail}");
+        assert_eq!(
+            head.matches(&backtick).count() + hidden + tail.matches(&backtick).count(),
+            1_000
         );
     }
 }

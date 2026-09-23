@@ -4,6 +4,7 @@ use abnegate_llm::ToolDefinition;
 use async_trait::async_trait;
 use serde_json::Value;
 
+use super::Rendering;
 use super::Tier;
 use super::ToolContext;
 use super::ToolError;
@@ -66,10 +67,12 @@ pub trait Tool: Send + Sync {
     /// verbatim: every argument shown as the call holds it, blank space,
     /// blank lines and indentation included, never squeezed. The
     /// [`Preview`](super::Preview) built from it escapes what cannot be drawn
-    /// as itself, holds it to a length and says so when it does. A tool that
-    /// leaves this alone is shown as the call itself, its name and every
-    /// argument.
-    fn preview(&self, _parameters: &Value) -> Option<String> {
+    /// as itself, holds it to a length and says so when it does. Call text
+    /// whose extent the reader has to see, a command or the directory it runs
+    /// in, goes in a [code span](super::Rendering::code), which no backtick it
+    /// holds can close. A tool that leaves this alone is shown as the call
+    /// itself, its name and every argument.
+    fn preview(&self, _parameters: &Value) -> Option<Rendering> {
         None
     }
 

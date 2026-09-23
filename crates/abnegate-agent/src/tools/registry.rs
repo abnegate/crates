@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(
             preview.text,
             format!(
-                "Run `rm -rf ~{}⟨U+001B⟩[2Kecho safe`.",
+                "In the working directory, run `rm -rf ~{}⟨U+001B⟩[2Kecho safe`.",
                 "⟨U+0008⟩".repeat(30)
             )
         );
@@ -262,7 +262,7 @@ mod tests {
 
         assert_eq!(
             preview.text,
-            format!("Run `cd sandbox⟨U+000D⟩{LINE_BREAK}rm -rf ./*`.")
+            format!("In the working directory, run `cd sandbox⟨U+000D⟩{LINE_BREAK}rm -rf ./*`.")
         );
         assert!(!preview.truncated);
     }
@@ -282,32 +282,41 @@ mod tests {
         let cases = [
             (
                 "echo first \\\necho second",
-                format!("Run `echo first \\{LINE_BREAK}echo second`."),
+                format!("In the working directory, run `echo first \\{LINE_BREAK}echo second`."),
             ),
             (
                 "echo first \\ \necho second",
-                format!("Run `echo first \\{space}{LINE_BREAK}echo second`."),
+                format!(
+                    "In the working directory, run `echo first \\{space}{LINE_BREAK}echo second`."
+                ),
             ),
             (
                 "echo first \\\t\necho second",
-                format!("Run `echo first \\{tab}{LINE_BREAK}echo second`."),
+                format!(
+                    "In the working directory, run `echo first \\{tab}{LINE_BREAK}echo second`."
+                ),
             ),
             (
                 "echo first \\\n\necho second",
-                format!("Run `echo first \\{LINE_BREAK}{LINE_BREAK}echo second`."),
+                format!(
+                    "In the working directory, run `echo first \\{LINE_BREAK}{LINE_BREAK}echo second`."
+                ),
             ),
             (
                 "rm -rf ~/tmp\\  ~",
-                format!("Run `rm -rf ~/tmp\\{space} ~`."),
+                format!("In the working directory, run `rm -rf ~/tmp\\{space} ~`."),
             ),
-            ("rm -rf ~/tmp\\ ~", format!("Run `rm -rf ~/tmp\\{space}~`.")),
+            (
+                "rm -rf ~/tmp\\ ~",
+                format!("In the working directory, run `rm -rf ~/tmp\\{space}~`."),
+            ),
             (
                 "rm -rf ~/tmp\\\n  ~",
-                format!("Run `rm -rf ~/tmp\\{LINE_BREAK}{space} ~`."),
+                format!("In the working directory, run `rm -rf ~/tmp\\{LINE_BREAK}{space} ~`."),
             ),
             (
                 "rm -rf ~/tmp\\\n~",
-                format!("Run `rm -rf ~/tmp\\{LINE_BREAK}~`."),
+                format!("In the working directory, run `rm -rf ~/tmp\\{LINE_BREAK}~`."),
             ),
         ];
 
@@ -359,8 +368,14 @@ mod tests {
             "run_command",
             serde_json::json!({"command": "find", "args": [".", "-name", "*.rs", "-delete"]}),
         );
-        assert_eq!(pattern, "Run `find . -name '*.rs -delete'`.");
-        assert_eq!(deleting, "Run `find . -name '*.rs' -delete`.");
+        assert_eq!(
+            pattern,
+            "In the working directory, run `find . -name '*.rs -delete'`."
+        );
+        assert_eq!(
+            deleting,
+            "In the working directory, run `find . -name '*.rs' -delete`."
+        );
         assert_ne!(pattern, deleting);
 
         assert_eq!(
@@ -368,21 +383,21 @@ mod tests {
                 "run_command",
                 serde_json::json!({"command": "git", "args": ["commit", "-m", "it's done", ""]}),
             ),
-            r"Run `git commit -m 'it'\''s done' ''`."
+            r"In the working directory, run `git commit -m 'it'\''s done' ''`."
         );
         assert_eq!(
             preview(
                 "run_command",
                 serde_json::json!({"command": "cargo", "args": ["test"], "cwd": "my crates/app"}),
             ),
-            "Run `cargo test` in 'my crates/app'."
+            "In `my crates/app`, run `cargo test`."
         );
         assert_eq!(
             preview(
                 "run_shell",
                 serde_json::json!({"command": "ls", "cwd": "my crates/app"}),
             ),
-            "Run `ls` in 'my crates/app'."
+            "In `my crates/app`, run `ls`."
         );
     }
 
@@ -410,8 +425,14 @@ mod tests {
             "run_command",
             serde_json::json!({"command": "git", "args": ["commit", "-m", "a b"]}),
         );
-        assert_eq!(wide, "Run `git commit -m 'a   b'`.");
-        assert_eq!(narrow, "Run `git commit -m 'a b'`.");
+        assert_eq!(
+            wide,
+            "In the working directory, run `git commit -m 'a   b'`."
+        );
+        assert_eq!(
+            narrow,
+            "In the working directory, run `git commit -m 'a b'`."
+        );
         assert_ne!(wide, narrow);
 
         assert_eq!(
@@ -419,14 +440,16 @@ mod tests {
                 "run_command",
                 serde_json::json!({"command": "echo", "args": ["a\tb", "c\n\n  d"]}),
             ),
-            format!("Run `echo 'a⟨U+0009⟩b' 'c{LINE_BREAK}{LINE_BREAK}⟨U+0020⟩ d'`.")
+            format!(
+                "In the working directory, run `echo 'a⟨U+0009⟩b' 'c{LINE_BREAK}{LINE_BREAK}⟨U+0020⟩ d'`."
+            )
         );
         assert_eq!(
             preview(
                 "run_shell",
                 serde_json::json!({"command": "cargo test", "cwd": "my   crates"}),
             ),
-            "Run `cargo test` in 'my   crates'."
+            "In `my   crates`, run `cargo test`."
         );
     }
 
@@ -450,15 +473,23 @@ mod tests {
 
         let wide = preview("echo 'a   b'");
         let narrow = preview("echo 'a b'");
-        assert_eq!(wide, "Run `echo 'a   b'`.");
-        assert_eq!(narrow, "Run `echo 'a b'`.");
+        assert_eq!(wide, "In the working directory, run `echo 'a   b'`.");
+        assert_eq!(narrow, "In the working directory, run `echo 'a b'`.");
         assert_ne!(wide, narrow);
 
-        assert_eq!(preview("cargo    test"), "Run `cargo    test`.");
-        assert_eq!(preview("echo\ta"), "Run `echo⟨U+0009⟩a`.");
+        assert_eq!(
+            preview("cargo    test"),
+            "In the working directory, run `cargo    test`."
+        );
+        assert_eq!(
+            preview("echo\ta"),
+            "In the working directory, run `echo⟨U+0009⟩a`."
+        );
         assert_eq!(
             preview("  cd /srv\n\n  rm -rf app  "),
-            format!("Run `  cd /srv{LINE_BREAK}{LINE_BREAK}⟨U+0020⟩ rm -rf app  `.")
+            format!(
+                "In the working directory, run `  cd /srv{LINE_BREAK}{LINE_BREAK}⟨U+0020⟩ rm -rf app  `."
+            )
         );
         assert_ne!(
             preview("cd /srv\n\nrm -rf app"),
@@ -487,19 +518,87 @@ mod tests {
             (
                 r"rm -rf ~/tmp\u{20}~",
                 r"rm -rf ~/tmp\ ~",
-                r"Run `rm -rf ~/tmp\u{20}~`.",
-                r"Run `rm -rf ~/tmp\⟨U+0020⟩~`.",
+                r"In the working directory, run `rm -rf ~/tmp\u{20}~`.",
+                r"In the working directory, run `rm -rf ~/tmp\⟨U+0020⟩~`.",
             ),
             (
                 "echo safe⟨U+0008⟩",
                 "echo safe\u{8}",
-                "Run `echo safe⟨U+27E8⟩U+0008⟨U+27E9⟩`.",
-                "Run `echo safe⟨U+0008⟩`.",
+                "In the working directory, run `echo safe⟨U+27E8⟩U+0008⟨U+27E9⟩`.",
+                "In the working directory, run `echo safe⟨U+0008⟩`.",
             ),
         ] {
             assert_eq!(preview(typed), typed_drawn, "{typed:?}");
             assert_eq!(preview(real), real_drawn, "{real:?}");
             assert_ne!(preview(typed), preview(real), "{typed:?}");
+        }
+    }
+
+    /// A backtick in a command closed the span the card drew it in, so the
+    /// command could write the rest of the card itself: an `in DIR` clause
+    /// after the span, read as the directory a command run in the working
+    /// directory would run in, or a second sentence naming another
+    /// directory. The genuine clause now comes first and is always there, and
+    /// a backtick inside a span is escaped, so nothing a call holds closes it.
+    #[test]
+    fn a_backtick_in_a_command_or_directory_cannot_forge_where_it_runs() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        registry.register(Arc::new(RunCommandTool));
+        let preview = |name: &str, arguments: serde_json::Value| {
+            let preview = registry
+                .preview(name, &arguments.to_string())
+                .expect("a command previews what it will run");
+            assert!(!preview.truncated, "{}", preview.text);
+            preview.text
+        };
+        let backtick = "⟨U+0060⟩";
+
+        let genuine = preview(
+            "run_shell",
+            serde_json::json!({"command": "rm -rf build", "cwd": "sandbox"}),
+        );
+        assert_eq!(genuine, "In `sandbox`, run `rm -rf build`.");
+
+        for (name, arguments, spans, drawn) in [
+            (
+                "run_shell",
+                serde_json::json!({"command": "rm -rf build` in sandbox"}),
+                1,
+                format!("In the working directory, run `rm -rf build{backtick} in sandbox`."),
+            ),
+            (
+                "run_shell",
+                serde_json::json!({"command": "true`. In `sandbox`, run `rm -rf build"}),
+                1,
+                format!(
+                    "In the working directory, run `true{backtick}. In {backtick}sandbox{backtick}, run {backtick}rm -rf build`."
+                ),
+            ),
+            (
+                "run_shell",
+                serde_json::json!({"command": "rm -rf build", "cwd": "sandbox`, run `true`. In `build"}),
+                2,
+                format!(
+                    "In `sandbox{backtick}, run {backtick}true{backtick}. In {backtick}build`, run `rm -rf build`."
+                ),
+            ),
+            (
+                "run_command",
+                serde_json::json!({"command": "echo", "args": ["x` in sandbox"]}),
+                1,
+                format!("In the working directory, run `echo 'x{backtick} in sandbox'`."),
+            ),
+        ] {
+            let forged = preview(name, arguments);
+
+            assert_eq!(
+                forged.matches('`').count(),
+                spans * 2,
+                "only the spans the card drew are fenced by a backtick: {forged}"
+            );
+            assert_ne!(forged, genuine);
+            assert_eq!(forged, drawn);
         }
     }
 
@@ -545,7 +644,7 @@ mod tests {
                 &serde_json::json!({"command": "cargo test", "cwd": "crates/app"}).to_string(),
             )
             .expect("a command previews what it will run");
-        assert_eq!(short.text, "Run `cargo test` in crates/app.");
+        assert_eq!(short.text, "In `crates/app`, run `cargo test`.");
         assert!(!short.truncated);
     }
 

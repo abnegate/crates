@@ -9,6 +9,7 @@ use serde_json::Value;
 use serde_json::json;
 
 use crate::tools::REASON_PARAMETER;
+use crate::tools::Rendering;
 use crate::tools::Tier;
 use crate::tools::Tool;
 use crate::tools::ToolContext;
@@ -42,10 +43,10 @@ impl Tool for WriteFileTool {
     /// for the preview's escapes: indentation is what a Python block or a
     /// Makefile recipe is made of, so squeezing it would show the reader a
     /// file other than the one written.
-    fn preview(&self, parameters: &Value) -> Option<String> {
+    fn preview(&self, parameters: &Value) -> Option<Rendering> {
         let parameters: WriteFileParameters = serde_json::from_value(parameters.clone()).ok()?;
         let characters = parameters.content.chars().count();
-        Some(match parameters.append {
+        let rendered = match parameters.append {
             true => format!(
                 "Append {characters} characters to {}: {}.",
                 word(&parameters.path),
@@ -56,7 +57,8 @@ impl Tool for WriteFileTool {
                 word(&parameters.path),
                 quote(&parameters.content)
             ),
-        })
+        };
+        Some(Rendering::from(rendered))
     }
 
     fn parameters_schema(&self) -> Value {
