@@ -3,7 +3,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use abnegate_secret::MasterKey;
-use abnegate_secret::SecretValue;
 use serde::de::DeserializeOwned;
 use toml::Value;
 
@@ -99,12 +98,12 @@ impl<'key> Loader<'key> {
 }
 
 fn duplicate(key: &MasterKey) -> Option<MasterKey> {
-    let hexadecimal = SecretValue::new(key.to_hex());
-    MasterKey::from_hex(hexadecimal.expose()).ok()
+    MasterKey::from_hex(&key.to_hex()).ok()
 }
 
 #[cfg(test)]
 mod tests {
+    use abnegate_secret::SecretValue;
     use abnegate_secret::encrypt_value;
     use abnegate_secret::is_encrypted;
     use serde::Deserialize;
@@ -209,7 +208,7 @@ mod tests {
 
     #[test]
     fn a_sealed_value_arrives_as_plaintext() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let envelope = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
         let (_directory, path) = written(&format!("password = \"{envelope}\"\n"));
 
@@ -223,7 +222,7 @@ mod tests {
 
     #[test]
     fn a_sealed_value_stays_sealed_without_a_key() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let envelope = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
         let (_directory, path) = written(&format!("password = \"{envelope}\"\n"));
 
@@ -234,11 +233,15 @@ mod tests {
 
     #[test]
     fn the_wrong_key_fails_the_load() {
-        let envelope = encrypt_value(&SecretValue::new("hunter2"), &MasterKey::generate()).unwrap();
+        let envelope = encrypt_value(
+            &SecretValue::new("hunter2"),
+            &MasterKey::generate().unwrap(),
+        )
+        .unwrap();
         let (_directory, path) = written(&format!("password = \"{envelope}\"\n"));
 
         let error = Loader::at(&path)
-            .master_key(&MasterKey::generate())
+            .master_key(&MasterKey::generate().unwrap())
             .load::<Settings>()
             .unwrap_err();
 
@@ -253,7 +256,7 @@ mod tests {
         let (_directory, path) = written("model = \"gpt-4o\"\npassword = \"plain\"\n");
 
         let config = Loader::at(&path)
-            .master_key(&MasterKey::generate())
+            .master_key(&MasterKey::generate().unwrap())
             .load::<Settings>()
             .unwrap();
 

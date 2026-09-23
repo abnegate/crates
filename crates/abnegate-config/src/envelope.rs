@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn every_sealed_string_is_decrypted_wherever_it_sits() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document = sealed_document(&key);
 
         let sealed = unseal(&mut document, Some(&key)).unwrap();
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn plain_strings_are_left_alone() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document = sealed_document(&key);
 
         unseal(&mut document, Some(&key)).unwrap();
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn without_a_key_envelopes_are_found_and_left_sealed() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document = sealed_document(&key);
         let original = document.clone();
 
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn a_document_without_envelopes_seals_nothing() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document: Value = toml::from_str("model = \"gpt-4o\"").unwrap();
 
         assert!(unseal(&mut document, Some(&key)).unwrap().is_empty());
@@ -198,11 +198,15 @@ mod tests {
 
     #[test]
     fn the_wrong_key_names_the_field_it_could_not_decrypt() {
-        let token = encrypt_value(&SecretValue::new("hunter2"), &MasterKey::generate()).unwrap();
+        let token = encrypt_value(
+            &SecretValue::new("hunter2"),
+            &MasterKey::generate().unwrap(),
+        )
+        .unwrap();
         let mut document: Value =
             toml::from_str(&format!("[database]\npassword = \"{token}\"\n")).unwrap();
 
-        let error = unseal(&mut document, Some(&MasterKey::generate())).unwrap_err();
+        let error = unseal(&mut document, Some(&MasterKey::generate().unwrap())).unwrap_err();
 
         assert!(
             matches!(&error, ConfigError::Decrypt { field, .. } if field == "database.password"),
@@ -212,11 +216,15 @@ mod tests {
 
     #[test]
     fn an_index_names_the_element_it_could_not_decrypt() {
-        let token = encrypt_value(&SecretValue::new("hunter2"), &MasterKey::generate()).unwrap();
+        let token = encrypt_value(
+            &SecretValue::new("hunter2"),
+            &MasterKey::generate().unwrap(),
+        )
+        .unwrap();
         let mut document: Value =
             toml::from_str(&format!("hosts = [\"one\", \"{token}\"]\n")).unwrap();
 
-        let error = unseal(&mut document, Some(&MasterKey::generate())).unwrap_err();
+        let error = unseal(&mut document, Some(&MasterKey::generate().unwrap())).unwrap_err();
 
         assert!(
             matches!(&error, ConfigError::Decrypt { field, .. } if field == "hosts[1]"),
@@ -226,7 +234,7 @@ mod tests {
 
     #[test]
     fn resealing_restores_every_location_that_arrived_sealed() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document = sealed_document(&key);
         let sealed = unseal(&mut document, Some(&key)).unwrap();
 
@@ -241,7 +249,7 @@ mod tests {
 
     #[test]
     fn resealing_survives_a_field_that_has_since_been_removed() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document: Value = toml::from_str("model = \"gpt-4o\"").unwrap();
         let sealed = [Sealed::new(password(), SecretValue::new("hunter2"))];
 
@@ -252,7 +260,7 @@ mod tests {
 
     #[test]
     fn an_already_sealed_value_is_not_sealed_twice() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document = sealed_document(&key);
         let envelope = document["password"].as_str().unwrap().to_string();
         let sealed = [Sealed::new(password(), SecretValue::new("hunter2"))];
@@ -264,7 +272,7 @@ mod tests {
 
     #[test]
     fn a_shifted_array_seals_the_secret_and_not_its_new_neighbour() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
         let mut document: Value =
             toml::from_str(&format!("hosts = [\"one\", \"{token}\", \"three\"]\n")).unwrap();
@@ -286,7 +294,7 @@ mod tests {
 
     #[test]
     fn a_shifted_array_of_tables_follows_the_secret() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
         let mut document: Value = toml::from_str(&format!(
             "[[servers]]\npassword = \"plain\"\n\n[[servers]]\npassword = \"{token}\"\n"
@@ -302,7 +310,7 @@ mod tests {
 
     #[test]
     fn a_sealed_field_that_is_no_longer_a_string_is_refused() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document: Value = toml::from_str("[password]\nvalue = \"hunter2\"\n").unwrap();
         let sealed = [Sealed::new(password(), SecretValue::new("hunter2"))];
 
@@ -316,7 +324,7 @@ mod tests {
 
     #[test]
     fn a_lost_array_secret_whose_key_path_holds_other_values_is_refused() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document: Value = toml::from_str("hosts = [1, 2]").unwrap();
         let sealed = [Sealed::new(
             Location::from(vec![Segment::Key("hosts".to_string()), Segment::Index(0)]),
@@ -333,7 +341,7 @@ mod tests {
 
     #[test]
     fn without_a_key_an_untouched_envelope_is_written_as_it_was() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document = sealed_document(&key);
         let original = document.clone();
         let sealed = unseal(&mut document, None).unwrap();
@@ -345,7 +353,7 @@ mod tests {
 
     #[test]
     fn without_a_key_a_replaced_envelope_is_refused() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let mut document = sealed_document(&key);
         let sealed = unseal(&mut document, None).unwrap();
 

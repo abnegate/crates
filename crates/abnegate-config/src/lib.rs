@@ -59,7 +59,7 @@
 //!     password: String,
 //! }
 //!
-//! let key = MasterKey::generate();
+//! let key = MasterKey::generate()?;
 //! let directory = tempfile::tempdir()?;
 //! let path = directory.path().join("config.toml");
 //! std::fs::write(

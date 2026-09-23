@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn resealing_returns_a_sealed_value_to_the_file() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("config.toml");
         let envelope = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn resealing_an_edited_value_seals_the_new_one() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("config.toml");
         let envelope = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
@@ -413,7 +413,7 @@ mod tests {
                 password: "hunter2".to_string(),
             },
         )
-        .save_sealed(&MasterKey::generate())
+        .save_sealed(&MasterKey::generate().unwrap())
         .unwrap();
 
         assert!(fs::read_to_string(&path).unwrap().contains("hunter2"));
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn saving_after_loading_with_a_key_keeps_every_secret_sealed() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let (_directory, path) = sealed_file(account, &key);
 
         let mut config = Loader::at(&path)
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn saving_after_an_array_shifts_seals_the_secret_where_it_moved() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let (_directory, path) = sealed_file(account, &key);
 
         let mut config = Loader::at(&path)
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn saving_without_a_key_keeps_an_untouched_envelope() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let (_directory, path) = sealed_file(account, &key);
 
         let mut config = Loader::at(&path).load::<Account>().unwrap();
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn saving_without_a_key_refuses_to_write_a_sealed_field_in_the_clear() {
-        let key = MasterKey::generate();
+        let key = MasterKey::generate().unwrap();
         let (_directory, path) = sealed_file(account, &key);
         let before = fs::read_to_string(&path).unwrap();
 
@@ -510,8 +510,8 @@ mod tests {
 
     #[test]
     fn a_new_key_reseals_under_that_key() {
-        let old = MasterKey::generate();
-        let new = MasterKey::generate();
+        let old = MasterKey::generate().unwrap();
+        let new = MasterKey::generate().unwrap();
         let (_directory, path) = sealed_file(account, &old);
 
         Loader::at(&path)
