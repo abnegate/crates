@@ -112,7 +112,9 @@ async fn transfer(
 /// Bring the `.part` file up to the whole upstream file.
 ///
 /// `false` means what is on disk cannot be continued and must be discarded
-/// before the next attempt starts from the first byte.
+/// before the next attempt starts from the first byte: the server would not
+/// resume it, or the `.part` file is not the length this transfer wrote, so
+/// its end is no longer the offset of the next upstream byte.
 async fn fetch(
     client: &Client,
     url: &str,
@@ -176,16 +178,14 @@ async fn fetch(
     let piped = pipe(response.bytes_stream(), &writer, progress).await;
     writer.finish().await?;
     let received = offset + piped?;
-    let stored = fs::metadata(part).await?.len();
+    if fs::metadata(part).await?.len() != received {
+        return Ok(false);
+    }
 
     match total {
         Some(expected) if expected != received => {
             Err(DownloadError::Incomplete { expected, received })
         }
-        _ if stored != received => Err(DownloadError::Incomplete {
-            expected: received,
-            received: stored,
-        }),
         _ => Ok(true),
     }
 }

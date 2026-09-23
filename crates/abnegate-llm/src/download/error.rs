@@ -16,7 +16,7 @@ pub enum DownloadError {
     Checksum { expected: String, actual: String },
     #[error("{0} is not a 64-character hexadecimal SHA-256 digest")]
     InvalidChecksum(String),
-    #[error("the server kept answering the resumed range inconsistently")]
+    #[error("the download was still inconsistent after starting over")]
     Inconsistent,
     #[error("another download to the same file is in progress")]
     InProgress,
