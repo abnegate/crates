@@ -1094,7 +1094,7 @@ mod tests {
             concat!("rk_live_", "0123456789abcdefghij"),
             concat!("rk_test_", "0123456789abcdefghij"),
             concat!("hf_", "abcdefghijklmnopqrstuvwxyzABCDEFGH"),
-            "AIzaSy0123456789abcdefghij0123",
+            concat!("AIzaSy", "0123456789abcdefghij0123"),
         ];
 
         for sample in samples {
@@ -1223,7 +1223,7 @@ mod tests {
     fn an_aws_access_key_prefix_needs_the_exact_shape() {
         for text in [
             concat!("ASIA", "0123456789ABCDEFG"),
-            "ASIAPACIFIC_OPERATIONS_TEAM",
+            concat!("ASIA", "PACIFIC_OPERATIONS_TEAM"),
             "asia0123456789abcdef",
         ] {
             assert_eq!(redact(text), text);
