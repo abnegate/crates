@@ -24,8 +24,10 @@ const STATUS: [&str; 5] = [
 const SWITCH: [&str; 3] = ["switch", "--quiet", "--no-guess"];
 
 /// A checkout onto a new branch that does not list the working tree's
-/// changes afterwards, for the reason [`SWITCH`] does not.
-const CREATE_BRANCH: [&str; 3] = ["checkout", "--quiet", "-b"];
+/// changes afterwards, for the reason [`SWITCH`] does not, and records no
+/// upstream for it: a branch started from a remote-tracking ref would
+/// otherwise have git write that ref into the repository's configuration.
+const CREATE_BRANCH: [&str; 4] = ["checkout", "--quiet", "--no-track", "-b"];
 
 impl GitService {
     /// Clone into an empty, caller-owned directory. Credentials live only in the
@@ -107,16 +109,7 @@ impl GitService {
                         .into(),
                 ));
             }
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|since| format!("{}.{:09}", since.as_secs(), since.subsec_nanos()))
-                .unwrap_or_else(|_| "0".to_string());
-            let aside = BranchName::parse(&format!("{branch}{ABANDONED}{stamp}"))?;
-            let mut rename = Self::hardened();
-            rename
-                .args(["branch", "-m", "--", branch.as_str(), aside.as_str()])
-                .current_dir(path);
-            Self::finish(&mut rename).await?;
+            let aside = Self::set_aside(path, branch).await?;
             tracing::warn!(
                 %branch,
                 %aside,
@@ -130,6 +123,51 @@ impl GitService {
         }
         command.arg("--").current_dir(path);
         Self::finish(&mut command).await
+    }
+
+    /// Move `branch` to a name of its own, `<branch>.abandoned.<time>`, in one
+    /// ref transaction that neither overwrites a ref already there nor
+    /// deletes the branch if it moved since it was read. `branch -m` would
+    /// also move the branch's section of the configuration, and git does that
+    /// by renaming a rewritten file over it, through a link wherever
+    /// `.git/config` is one, even when there is no section to move.
+    async fn set_aside(path: &Path, branch: &BranchName) -> GitResult<BranchName> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| format!("{}.{:09}", since.as_secs(), since.subsec_nanos()))
+            .unwrap_or_else(|_| "0".to_string());
+        let aside = BranchName::parse(&format!("{branch}{ABANDONED}{stamp}"))?;
+        let reference = branch.reference();
+        let read = Self::output(
+            Self::hardened()
+                .args(["rev-parse", "--verify", &reference])
+                .current_dir(path)
+                .stdout(Stdio::piped()),
+        )
+        .await?;
+        if !read.status.success() {
+            return Err(GitError::CommandFailed(
+                "Cannot read the branch to set aside".to_string(),
+            ));
+        }
+        let commit = CommitSha::parse(&String::from_utf8_lossy(&read.stdout))?;
+        let transaction = format!(
+            "start\ncreate {} {commit}\ndelete {reference} {commit}\ncommit\n",
+            aside.reference()
+        );
+        let moved = Self::fed(
+            Self::hardened()
+                .args(["update-ref", "--stdin"])
+                .current_dir(path),
+            transaction.as_bytes(),
+        )
+        .await?;
+        match moved.status.success() {
+            true => Ok(aside),
+            false => Err(GitError::CommandFailed(
+                "Cannot set the branch aside".to_string(),
+            )),
+        }
     }
 
     /// Resolve a commit without reading a caller-controlled symbolic baseline later.
@@ -1066,6 +1104,7 @@ mod checkout_tests {
 mod publication_tests {
     use super::fixtures::branch;
     use super::fixtures::local;
+    use super::fixtures::recording;
     use super::fixtures::token;
     use super::*;
     use crate::worktree::fixtures::git;
@@ -1197,10 +1236,28 @@ mod publication_tests {
             .clone_repository(&local(&remote), &second, None)
             .await
             .unwrap();
-        service
-            .prepare_branch(&second, &branch("task/one"), true)
-            .await
-            .unwrap();
+        let (prepared, recorded) =
+            recording(service.prepare_branch(&second, &branch("task/one"), true)).await;
+        prepared.unwrap();
+        assert!(
+            recorded.iter().any(|command| command.ends_with(
+                &[
+                    "checkout",
+                    "--quiet",
+                    "--no-track",
+                    "-b",
+                    "task/one",
+                    "refs/remotes/origin/task/one",
+                    "--",
+                ]
+                .map(String::from)
+            )),
+            "{recorded:?}"
+        );
+        assert!(
+            !git(&second, &["config", "--local", "--list"]).contains("branch.task/one."),
+            "the resumed branch recorded an upstream"
+        );
         assert_eq!(
             service.revision(&second, "HEAD").await.unwrap(),
             first_commit
@@ -1499,6 +1556,56 @@ mod publication_tests {
             .unwrap();
         assert_eq!(service.current_branch(&fourth).await.unwrap(), "task/other");
     }
+
+    /// Setting a branch aside moves its ref alone, so the clone's
+    /// configuration is never rewritten, through a link wherever
+    /// `.git/config` is one.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setting_a_branch_aside_writes_nothing_through_a_linked_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        crate::worktree::fixtures::remote(&remote);
+        let base = root.path().join("base");
+        crate::worktree::fixtures::clone(&remote, &base);
+        let service = GitService::new();
+        let first = root.path().join("first");
+        crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
+        service
+            .prepare_branch(&first, &branch("task/one"), false)
+            .await
+            .unwrap();
+        git(&first, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        let held = git(&first, &["rev-parse", "HEAD"]);
+        git(
+            &base,
+            &["worktree", "remove", "--force", first.to_str().unwrap()],
+        );
+        let second = root.path().join("second");
+        crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
+        let linked = crate::worktree::fixtures::LinkedConfig::new(&base, &root.path().join("copy"));
+
+        service
+            .prepare_branch(&second, &branch("task/one"), false)
+            .await
+            .unwrap();
+
+        assert_eq!(service.current_branch(&second).await.unwrap(), "task/one");
+        assert_eq!(
+            git(
+                &base,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/task/one.abandoned.*",
+                ],
+            ),
+            held,
+            "the branch's commit is kept under a name of its own"
+        );
+        linked.assert_untouched();
+    }
 }
 
 #[cfg(test)]
@@ -1581,7 +1688,7 @@ mod branch_tests {
 
     #[test]
     fn moving_between_branches_never_lists_the_working_tree_s_changes() {
-        for arguments in [SWITCH, CREATE_BRANCH] {
+        for arguments in [SWITCH.as_slice(), CREATE_BRANCH.as_slice()] {
             assert!(arguments.contains(&"--quiet"), "{arguments:?}");
         }
     }

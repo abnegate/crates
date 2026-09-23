@@ -24,6 +24,7 @@ use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -267,21 +268,42 @@ impl GitService {
     /// Run a git command in a process group of its own, torn down with every
     /// helper it started if it outlives [`COMMAND_TIMEOUT`] or its caller.
     pub(crate) async fn output(command: &mut Command) -> GitResult<Output> {
+        Self::run(command, None).await
+    }
+
+    /// Run a git command as [`Self::output`] does, with `input` as the whole
+    /// of its standard input.
+    pub(crate) async fn fed(command: &mut Command, input: &[u8]) -> GitResult<Output> {
+        Self::run(command.stdin(Stdio::piped()), Some(input)).await
+    }
+
+    async fn run(command: &mut Command, input: Option<&[u8]>) -> GitResult<Output> {
         #[cfg(test)]
         fixtures::record(command);
         #[cfg(unix)]
         command.process_group(0);
         command.kill_on_drop(true);
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
         #[cfg(unix)]
         let mut group = Group::new(nix::unistd::Pid::from_raw(
             child
                 .id()
                 .ok_or_else(|| std::io::Error::other("Git process has no ID"))? as i32,
         ));
-        let output = tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| GitError::TimedOut)??;
+        let stdin = child.stdin.take();
+        let feeding = async {
+            if let (Some(mut stdin), Some(input)) = (stdin, input) {
+                stdin.write_all(input).await?;
+            }
+            Ok::<(), std::io::Error>(())
+        };
+        let (fed, output) = tokio::time::timeout(COMMAND_TIMEOUT, async {
+            tokio::join!(feeding, child.wait_with_output())
+        })
+        .await
+        .map_err(|_| GitError::TimedOut)?;
+        fed?;
+        let output = output?;
         #[cfg(unix)]
         group.disarm();
         Ok(output)
