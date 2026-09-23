@@ -86,7 +86,7 @@ const ENVIRONMENT: [(&str, &str); 11] = [
 /// hook, a command -- is one a run's git commands could have written, and git
 /// keeps adding keys that run programs, so a repository carrying any key not
 /// listed here is refused rather than inspected key by key.
-const PERMITTED_KEYS: [&str; 9] = [
+const PERMITTED_KEYS: [&str; 10] = [
     "core.repositoryformatversion",
     "core.filemode",
     "core.bare",
@@ -96,6 +96,7 @@ const PERMITTED_KEYS: [&str; 9] = [
     "core.symlinks",
     "extensions.objectformat",
     "extensions.refstorage",
+    "extensions.relativeworktrees",
 ];
 
 /// A remote's keys that name where it is and what to fetch from it.
@@ -189,6 +190,18 @@ fn absolute(path: &OsStr) -> OsString {
 /// that is not one absolute directory for each, are refused: what stands
 /// there cannot be known.
 pub(crate) fn unlinked(located: &[u8]) -> GitResult<()> {
+    let (own, shared) = directories(located)?;
+    if own != shared {
+        walk(&own)?;
+    }
+    walk(&shared)
+}
+
+/// The worktree's own git directory and the one every worktree of its
+/// repository shares, as [`LOCATING`] printed them. A listing that is not
+/// one absolute directory for each is refused: what it names cannot be
+/// known.
+pub(crate) fn directories(located: &[u8]) -> GitResult<(PathBuf, PathBuf)> {
     let unlocated = || GitError::CommandFailed("Cannot locate the repository's files".to_string());
     let directories: Vec<PathBuf> = located
         .strip_suffix(b"\n")
@@ -197,13 +210,8 @@ pub(crate) fn unlinked(located: &[u8]) -> GitResult<()> {
         .map(|line| native(line).filter(|directory| directory.is_absolute()))
         .collect::<Option<_>>()
         .ok_or_else(unlocated)?;
-    let [own, shared] = directories.as_slice() else {
-        return Err(unlocated());
-    };
-    if own != shared {
-        walk(own)?;
-    }
-    walk(shared)
+    let [own, shared] = <[PathBuf; 2]>::try_from(directories).map_err(|_| unlocated())?;
+    Ok((own, shared))
 }
 
 /// Refuse the first symbolic link at or below `root`, never following one.
@@ -319,6 +327,7 @@ mod tests {
                 "branch.task/one.merge",
                 "extensions.objectformat",
                 "extensions.refStorage",
+                "extensions.relativeWorktrees",
             ])),
             None
         );

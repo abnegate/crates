@@ -3,6 +3,7 @@
 //! Every repository here is built from scratch inside a temporary directory, so
 //! nothing in these tests can reach the checkout the suite is running from.
 
+use abnegate_vcs::GitError;
 use abnegate_vcs::RepositoryUrl;
 use abnegate_vcs::conflict::BranchName;
 use abnegate_vcs::conflict::CommitSha;
@@ -553,6 +554,45 @@ async fn a_hook_written_into_the_repository_refuses_the_repair() {
         Err(ConflictError::Git(_))
     ));
     assert!(!marker.exists(), "a hook defined in the repository ran");
+}
+
+/// Something that reached the repository anyway and named another
+/// repository's git directory as the one it shares -- where git then keeps
+/// every ref and object it writes -- refuses the repair before anything is
+/// written there.
+#[tokio::test]
+async fn a_repository_that_shares_another_s_git_directory_refuses_the_repair() {
+    let origin = conflicting_origin();
+    let service = ConflictService::new();
+    let conflict = service.reproduce(&request(origin.path())).await.unwrap();
+    repair(&conflict);
+    let elsewhere = TempDir::new().unwrap();
+    git(elsewhere.path(), &["init", "--quiet", "--ref-format=files"]);
+    git(
+        elsewhere.path(),
+        &["commit", "--quiet", "--allow-empty", "-m", "elsewhere"],
+    );
+    std::fs::write(
+        repository_of(&conflict).join("commondir"),
+        format!("{}\n", elsewhere.path().join(".git").display()),
+    )
+    .unwrap();
+    let listed = git(elsewhere.path(), &["for-each-ref"]);
+
+    let applied = service.apply(&conflict, "(fix): merge").await;
+
+    assert_eq!(
+        git(elsewhere.path(), &["for-each-ref"]),
+        listed,
+        "the refused repair wrote the other repository's refs"
+    );
+    assert!(
+        matches!(
+            applied,
+            Err(ConflictError::Git(GitError::RedirectedGitDirectory))
+        ),
+        "{applied:?}"
+    );
 }
 
 /// A hard link carries another file's content under the conflicted file's

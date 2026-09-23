@@ -18,6 +18,7 @@ mod unfinished;
 
 use crate::branch_name::BranchName;
 use crate::commit_sha::CommitSha;
+use crate::git::Anchor;
 use crate::git::CONFIG_LISTING;
 use crate::git::GITLINK_MODE;
 use crate::git::IGNORE_SUBMODULES;
@@ -89,11 +90,13 @@ fn local(repository: &Path) -> Command {
 }
 
 /// Refuse a repository whose own configuration holds anything beyond what git
-/// writes for a clone, a worktree and a tracking branch, or whose git
-/// directory holds a symbolic link, which it refuses with
-/// [`crate::git::GitError::LinkedPath`]: the configuration and the refs are
-/// the base clone's, which every run of the repository can write through its
-/// own git commands.
+/// writes for a clone, a worktree and a tracking branch; a checkout whose git
+/// directory, or the one it shares, is not the one its own `.git` names,
+/// which it refuses with [`crate::git::GitError::RedirectedGitDirectory`];
+/// and one whose `.git` is a link or whose git directory holds one, which it
+/// refuses with [`crate::git::GitError::LinkedPath`]: the configuration and
+/// the refs are the base clone's, which every run of the repository can
+/// write through its own git commands.
 fn verify(repository: &Path) -> std::io::Result<()> {
     let listing = run(
         local(repository).args(CONFIG_LISTING),
@@ -108,6 +111,9 @@ fn verify(repository: &Path) -> std::io::Result<()> {
         local(repository).args(LOCATING),
         "locate the repository's files",
     )?;
+    Anchor::Checkout(repository.to_path_buf())
+        .holds(&located)
+        .map_err(std::io::Error::other)?;
     unlinked(&located).map_err(std::io::Error::other)
 }
 

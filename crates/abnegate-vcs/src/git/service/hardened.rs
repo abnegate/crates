@@ -440,9 +440,12 @@ impl GitService {
     /// ref formats. The replacement is written beside the file under git's own
     /// lock name and renamed over it, so a git command running meanwhile reads
     /// either the old file or the new one, and one holding the lock is not
-    /// overwritten.
+    /// overwritten. A clone whose `.git` is a link, which would have another
+    /// clone's configuration replaced, is refused with
+    /// [`GitError::LinkedPath`], and one whose `.git` is not a directory with
+    /// [`GitError::RedirectedGitDirectory`].
     pub async fn reset_config(&self, path: &Path, url: &RepositoryUrl) -> GitResult<()> {
-        let file = path.join(GIT_DIRECTORY).join(CONFIG_FILE);
+        let file = Anchor::own(path)?.join(CONFIG_FILE);
         let listed = Self::output(
             Self::hardened()
                 .args(["config", "--file"])
@@ -2767,9 +2770,10 @@ mod configuration_tests {
     }
 
     /// A nested repository standing where the index records a gitlink refuses
-    /// the staging, from anywhere in the working tree: `add` checks such a
-    /// repository for changes by starting a git inside it, under that
-    /// repository's own configuration, whatever the submodule settings say.
+    /// the staging: `add` checks such a repository for changes by starting a
+    /// git inside it, under that repository's own configuration, whatever the
+    /// submodule settings say. A directory below the top of the working tree
+    /// is no checkout of its own, and is refused before anything is read.
     #[tokio::test]
     async fn a_nested_repository_standing_at_a_recorded_gitlink_refuses_the_staging() {
         let repository = repository();
@@ -2807,13 +2811,17 @@ mod configuration_tests {
         std::fs::write(repository.path().join("second"), "second\n").unwrap();
         let expected = repository.path().canonicalize().unwrap().join("nested");
 
-        for from in [repository.path(), subdirectory.as_path()] {
-            let refusal = service.stage_all(from).await;
-            assert!(
-                matches!(refusal, Err(GitError::NestedRepository(ref at)) if *at == expected),
-                "{from:?}: {refusal:?}"
-            );
-        }
+        let refusal = service.stage_all(repository.path()).await;
+        let below = service.stage_all(&subdirectory).await;
+
+        assert!(
+            matches!(refusal, Err(GitError::NestedRepository(ref at)) if *at == expected),
+            "{refusal:?}"
+        );
+        assert!(
+            matches!(below, Err(GitError::RedirectedGitDirectory)),
+            "{below:?}"
+        );
         assert_eq!(
             git(repository.path(), &["ls-files", "--", "second"]),
             "",
