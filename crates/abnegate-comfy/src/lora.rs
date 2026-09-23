@@ -22,8 +22,13 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio::process::ChildStderr;
 use tokio::process::Command;
+use tokio::task::JoinHandle;
+
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -133,6 +138,12 @@ struct Attempt {
     artifact: Option<String>,
     produced: Option<PathBuf>,
 }
+
+/// Bytes of a trainer's stderr kept to explain a failure.
+const STDERR_TAIL: usize = 4096;
+const STDERR_CHUNK: usize = 1024;
+/// How long a finished trainer's stderr is given to reach end of file.
+const STDERR_DRAIN: Duration = Duration::from_millis(250);
 
 /// Name the weight a publication replaces is kept under inside its attempt,
 /// until the replacement is durable. Recovery after a crash reads it back.
@@ -471,10 +482,7 @@ async fn train_with_pipeline(
                     .join("input")
                     .display()
                     .to_string(),
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            );
         match &model {
             TrainingModel::Flux { checkpoint } => {
                 process.env(contract.variable("CHECKPOINT"), checkpoint);
@@ -486,19 +494,10 @@ async fn train_with_pipeline(
                     .env(contract.variable("VAE"), vae);
             }
         }
-        let status = match process.status().await {
-            Ok(status) => status,
-            Err(error) => {
-                crate::train::cleanup_with(&http, config, &run).await;
-                return Err(failed(error));
-            }
-        };
-        if !status.success() {
+        let trained = run_trainer(process, Duration::from_secs(config.train_timeout_seconds)).await;
+        if let Err(error) = trained {
             crate::train::cleanup_with(&http, config, &run).await;
-            return Err(TrainError::Failed(format!(
-                "trainer exited {}",
-                status.code().unwrap_or(1)
-            )));
+            return Err(error);
         }
         run
     } else {
@@ -563,6 +562,77 @@ async fn train_with_pipeline(
             attempted,
         },
     })
+}
+
+/// Runs the external trainer to completion within `budget`.
+///
+/// Its stdout goes nowhere: a trainer that prints progress would otherwise
+/// fill a pipe nobody reads, or die writing to one already closed. Its stderr
+/// is read as it arrives and only the last [`STDERR_TAIL`] bytes are kept, to
+/// say why it failed. Past the budget, or if this future is dropped, the
+/// trainer is killed rather than left running.
+async fn run_trainer(mut process: Command, budget: Duration) -> Result<(), TrainError> {
+    let mut child = process
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(failed)?;
+    let tail = Arc::new(Mutex::new(Vec::with_capacity(STDERR_TAIL)));
+    let reader = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(read_tail(stderr, Arc::clone(&tail))));
+    let waited = tokio::time::timeout(budget, child.wait()).await;
+    if waited.is_err() {
+        let _ = child.start_kill();
+    }
+    if let Some(reader) = reader {
+        settle(reader).await;
+    }
+    let reason = crate::excerpt::tail(&String::from_utf8_lossy(
+        &tail.lock().unwrap_or_else(PoisonError::into_inner),
+    ));
+    let status = match waited {
+        Ok(status) => status.map_err(failed)?,
+        Err(_) => {
+            tracing::warn!(stderr = %reason, "external trainer ran past its budget and was killed");
+            return Err(TrainError::Failed(format!(
+                "trainer timed out after {} s",
+                budget.as_secs()
+            )));
+        }
+    };
+    if status.success() {
+        return Ok(());
+    }
+    tracing::warn!(code = ?status.code(), stderr = %reason, "external trainer failed");
+    Err(TrainError::Failed(format!(
+        "trainer exited {}",
+        status.code().unwrap_or(1)
+    )))
+}
+
+async fn read_tail(mut stderr: ChildStderr, tail: Arc<Mutex<Vec<u8>>>) {
+    let mut chunk = [0u8; STDERR_CHUNK];
+    while let Ok(read @ 1..) = stderr.read(&mut chunk).await {
+        let mut tail = tail.lock().unwrap_or_else(PoisonError::into_inner);
+        tail.extend_from_slice(&chunk[..read]);
+        let excess = tail.len().saturating_sub(STDERR_TAIL);
+        tail.drain(..excess);
+    }
+}
+
+/// Gives the reader a moment to collect what the trainer wrote last, without
+/// waiting on a pipe a grandchild of the trainer may still hold open.
+async fn settle(mut reader: JoinHandle<()>) {
+    if tokio::time::timeout(STDERR_DRAIN, &mut reader)
+        .await
+        .is_err()
+    {
+        reader.abort();
+    }
 }
 
 fn validate_pairing(images: &[TrainImage], model: &TrainingModel) -> Result<(), TrainError> {
@@ -1863,6 +1933,73 @@ mod tests {
             "the exit code is the diagnosis: {message}"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_trainer_that_prints_progress_before_its_weights_still_trains() {
+        let command = r#"
+            i=0
+            while [ $i -lt 2000 ]; do
+                echo "step $i of 2000: loss 0.0123456789, learning rate 0.0001"
+                echo "warning $i" >&2
+                i=$((i + 1))
+            done
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+        let outcome = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("chatty"),
+            keep_all,
+        )
+        .await
+        .expect("a trainer's output must not decide whether it can finish");
+        assert_eq!(fs::read(outcome.path).unwrap(), b"lora");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_trainer_that_outlives_its_budget_is_killed() {
+        let marker = tempfile::tempdir().unwrap();
+        let finished = marker.path().join("finished");
+        let command = format!("sleep 2; touch \"{}\"", finished.display());
+        let (_root, mut config) = harness(&command);
+        config.train_timeout_seconds = 1;
+        let started = std::time::Instant::now();
+
+        let error = rejected(&config, identity("slow")).await;
+
+        assert!(
+            matches!(&error, TrainError::Failed(message) if message.contains("timed out")),
+            "{error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the budget was not enforced"
+        );
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(
+            !finished.exists(),
+            "the trainer kept running past its budget"
+        );
+        assert!(training_entries(&config).is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_the_end_of_a_trainers_stderr_is_kept() {
+        let mut process = Command::new("sh");
+        process
+            .arg("-c")
+            .arg("head -c 100000 /dev/zero | tr '\\0' x >&2; printf done >&2");
+        let mut child = process.stderr(Stdio::piped()).spawn().unwrap();
+        let tail = Arc::new(Mutex::new(Vec::new()));
+        read_tail(child.stderr.take().unwrap(), Arc::clone(&tail)).await;
+        child.wait().await.unwrap();
+        let tail = tail.lock().unwrap();
+        assert_eq!(tail.len(), STDERR_TAIL);
+        assert!(tail.ends_with(b"done"));
     }
 
     #[tokio::test]
