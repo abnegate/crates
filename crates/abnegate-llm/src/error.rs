@@ -1,10 +1,16 @@
+use abnegate_secret::redact;
 use thiserror::Error;
 
 /// A failure reaching, or reading, an OpenAI-compatible endpoint.
+///
+/// Every message an endpoint sends back has had [`abnegate_secret::redact`]
+/// applied before it lands here, and a transport failure carries no URL, so a
+/// key echoed in a rejection body or carried in a query string never reaches
+/// a log line through this type.
 #[derive(Debug, Error)]
 pub enum LlmError {
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     #[error("API error: {status} - {message}")]
     Api { status: u16, message: String },
     #[error("JSON error: {0}")]
@@ -15,7 +21,28 @@ pub enum LlmError {
     InvalidConfig(String),
 }
 
+impl From<reqwest::Error> for LlmError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(error.without_url())
+    }
+}
+
 impl LlmError {
+    /// The same failure with [`redact`] applied to every message it carries,
+    /// for a value that did not come through [`crate::LlmClient`].
+    pub fn redacted(self) -> Self {
+        match self {
+            Self::Api { status, message } => Self::Api {
+                status,
+                message: redact(&message).into_owned(),
+            },
+            Self::Stream(message) => Self::Stream(redact(&message).into_owned()),
+            Self::InvalidConfig(message) => Self::InvalidConfig(redact(&message).into_owned()),
+            Self::Http(error) => Self::Http(error.without_url()),
+            other => other,
+        }
+    }
+
     /// Whether the provider explicitly rejected this model's tool capability.
     ///
     /// A proxy in front of Ollama wraps its capability rejection as an

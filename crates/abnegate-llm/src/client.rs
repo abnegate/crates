@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use abnegate_secret::REDACTED;
+use abnegate_secret::redact;
 use reqwest::Client;
 use reqwest::Url;
 use tokio::runtime;
@@ -233,9 +234,10 @@ impl LlmClient {
             return Ok(response);
         }
 
+        let body = response.text().await.unwrap_or_default();
         Err(LlmError::Api {
             status: status.as_u16(),
-            message: response.text().await.unwrap_or_default(),
+            message: redact(&body).into_owned(),
         })
     }
 
@@ -344,7 +346,7 @@ impl LlmClient {
                 let chunk = match chunk {
                     Ok(chunk) => chunk,
                     Err(error) => {
-                        yield Err(LlmError::Http(error));
+                        yield Err(LlmError::from(error));
                         break;
                     }
                 };
@@ -626,6 +628,45 @@ mod tests {
             })
             .unwrap();
         assert!(compact.get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_rejection_body_echoing_the_key_is_redacted() {
+        const ECHOED: &str = "sk-proj-0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e";
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(401).set_body_string(format!(
+                    r#"{{"error":{{"message":"Incorrect API key provided: {ECHOED}"}}}}"#
+                )),
+            )
+            .mount(&server)
+            .await;
+
+        let error = client_for(&server.uri())
+            .chat(&[Message::user("hello")], None)
+            .await
+            .expect_err("a 401 is a failure");
+
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains(ECHOED), "the key leaked: {rendered}");
+        assert!(matches!(error, LlmError::Api { status: 401, .. }));
+    }
+
+    #[tokio::test]
+    async fn a_transport_failure_never_carries_the_url() {
+        const QUERY_SECRET: &str = "a9f3e1c7b5d2046e8f1a3c5e7b9d0f2a";
+        let error = client_for(&format!("http://127.0.0.1:1/v1?key={QUERY_SECRET}"))
+            .chat(&[Message::user("hello")], None)
+            .await
+            .expect_err("nothing listens on port 1");
+
+        let rendered = format!("{error} {error:?}");
+        assert!(matches!(error, LlmError::Http(_)), "{rendered}");
+        assert!(
+            !rendered.contains(QUERY_SECRET),
+            "the URL reached the error: {rendered}"
+        );
     }
 
     #[test]

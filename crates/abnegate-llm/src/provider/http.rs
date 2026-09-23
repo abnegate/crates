@@ -98,10 +98,7 @@ impl CompletionProvider for HttpProvider {
                 request.options,
             )
             .await
-            .map_err(|source| ProviderError::Http {
-                provider: self.name.clone(),
-                source,
-            })?;
+            .map_err(|source| ProviderError::http(&self.name, source))?;
 
         let usage = response.usage;
         let choice =
@@ -120,10 +117,58 @@ impl CompletionProvider for HttpProvider {
 
 #[cfg(test)]
 mod tests {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+
     use super::HttpProvider;
+    use crate::client::RequestOptions;
     use crate::provider::capabilities::Capabilities;
-    use crate::provider::completion::{CompletionProvider, ProviderKind};
+    use crate::provider::completion::{CompletionProvider, CompletionRequest, ProviderKind};
     use crate::provider::credential::Credential;
+    use crate::wire::Message;
+
+    const ECHOED_KEY: &str = "sk-proj-4f9c2a7e1b3d5f6a8c0e2b4d6f8a1c3e";
+
+    #[tokio::test]
+    async fn a_rejection_body_echoing_the_key_never_reaches_the_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string(format!(
+                r#"{{"error":{{"message":"Incorrect API key provided: {ECHOED_KEY}"}}}}"#
+            )))
+            .mount(&server)
+            .await;
+        let provider = HttpProvider::connect(
+            "gateway",
+            format!("{}/v1", server.uri()),
+            &Credential::key("OPENAI_API_KEY", ECHOED_KEY),
+            "gpt-4",
+        );
+        let messages = [Message::user("hello")];
+
+        let error = provider
+            .complete(CompletionRequest {
+                model: "gpt-4",
+                messages: &messages,
+                tools: None,
+                options: RequestOptions { reserved: 16 },
+            })
+            .await
+            .expect_err("a 401 is a failure");
+
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(ECHOED_KEY),
+            "the echoed key reached the error: {rendered}"
+        );
+        assert!(rendered.contains("401"), "the status was lost: {rendered}");
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "nothing was redacted: {rendered}"
+        );
+    }
 
     #[test]
     fn debug_never_prints_the_credential() {

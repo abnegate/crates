@@ -123,6 +123,14 @@ impl ProviderError {
         }
     }
 
+    /// An endpoint failure, with every message it carries redacted.
+    pub fn http(provider: &str, source: LlmError) -> Self {
+        Self::Http {
+            provider: provider.to_string(),
+            source: source.redacted(),
+        }
+    }
+
     pub fn exit(provider: &str, status: ExitStatus, message: &str) -> Self {
         Self::Exit {
             provider: provider.to_string(),
@@ -243,6 +251,14 @@ mod tests {
             ProviderError::io(leaked),
             ProviderError::config(leaked),
             ProviderError::unsupported(leaked),
+            ProviderError::http(
+                "gateway",
+                LlmError::Api {
+                    status: 401,
+                    message: leaked.to_string(),
+                },
+            ),
+            ProviderError::http("gateway", LlmError::Stream(leaked.to_string())),
         ] {
             let rendered = format!("{error} {error:?}");
             assert!(

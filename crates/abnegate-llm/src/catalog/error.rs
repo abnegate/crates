@@ -4,13 +4,19 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum CatalogError {
     #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     #[error("Failed to parse response: {0}")]
     Parse(String),
     #[error("Provider unavailable: {0}")]
     Unavailable(String),
     #[error("Filesystem error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl From<reqwest::Error> for CatalogError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(error.without_url())
+    }
 }
 
 #[cfg(test)]

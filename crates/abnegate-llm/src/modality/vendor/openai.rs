@@ -144,7 +144,7 @@ impl OpenAIProvider {
         let response = request
             .send()
             .await
-            .map_err(|error| ProviderError::network(error.to_string()))?;
+            .map_err(|error| ProviderError::network(error.without_url()))?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -158,7 +158,7 @@ impl OpenAIProvider {
         response
             .json()
             .await
-            .map_err(|error| ProviderError::parse(error.to_string()))
+            .map_err(|error| ProviderError::parse(error.without_url()))
     }
 }
 
@@ -362,7 +362,7 @@ impl TranscriptionProvider for OpenAIProvider {
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(file_name)
             .mime_str("audio/mpeg")
-            .map_err(|error| ProviderError::network(error.to_string()))?;
+            .map_err(|error| ProviderError::config(error.without_url()))?;
 
         let form = reqwest::multipart::Form::new()
             .text("model", TRANSCRIPTION_MODEL)

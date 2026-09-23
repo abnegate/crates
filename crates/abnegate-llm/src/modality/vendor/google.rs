@@ -121,7 +121,7 @@ impl GeminiProvider {
             .json(body)
             .send()
             .await
-            .map_err(|error| ProviderError::network(error.to_string()))?;
+            .map_err(|error| ProviderError::network(error.without_url()))?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -135,7 +135,7 @@ impl GeminiProvider {
         response
             .json()
             .await
-            .map_err(|error| ProviderError::parse(error.to_string()))
+            .map_err(|error| ProviderError::parse(error.without_url()))
     }
 }
 
