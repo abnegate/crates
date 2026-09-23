@@ -530,6 +530,28 @@ impl GitService {
     /// Commit what is staged, and say which commit it became.
     pub async fn commit(&self, path: &Path, message: &str) -> GitResult<CommitSha> {
         Self::verify_config(path).await?;
+        let staged = Self::output(
+            Self::hardened()
+                .args([
+                    "diff",
+                    "--cached",
+                    "--quiet",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                ])
+                .current_dir(path),
+        )
+        .await?;
+        match staged.status.code() {
+            Some(0) => return Err(GitError::NoChanges),
+            Some(1) => {}
+            _ => {
+                return Err(GitError::CommandFailed(
+                    "Cannot read the staged changes".to_string(),
+                ));
+            }
+        }
+
         let output = Self::output(
             Self::hardened()
                 .args([
@@ -548,11 +570,9 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("nothing to commit") {
-                return Err(GitError::NoChanges);
-            }
-            return Err(GitError::CommandFailed(stderr.to_string()));
+            return Err(GitError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
         }
 
         self.revision(path, "HEAD").await
@@ -1769,5 +1789,50 @@ mod configuration_tests {
         std::fs::write(repository.path().join("untracked"), "new\n").unwrap();
 
         assert!(service.has_changes(repository.path()).await.unwrap());
+    }
+}
+
+#[cfg(test)]
+mod commit_tests {
+    use super::*;
+    use crate::worktree::fixtures::git;
+    use crate::worktree::fixtures::remote;
+
+    #[tokio::test]
+    async fn a_commit_with_nothing_staged_reports_no_changes() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+        std::fs::write(repository.path().join("unstaged"), "not added\n").unwrap();
+        let service = GitService::new();
+
+        let refusal = service.commit(repository.path(), "nothing").await;
+
+        assert!(matches!(refusal, Err(GitError::NoChanges)), "{refusal:?}");
+    }
+
+    #[tokio::test]
+    async fn a_repository_with_no_commits_and_nothing_staged_reports_no_changes() {
+        let repository = tempfile::tempdir().unwrap();
+        git(repository.path(), &["init", "-q", "-b", "main"]);
+
+        let refusal = GitService::new().commit(repository.path(), "nothing").await;
+
+        assert!(matches!(refusal, Err(GitError::NoChanges)), "{refusal:?}");
+    }
+
+    #[tokio::test]
+    async fn the_first_commit_of_a_repository_is_made_and_named() {
+        let repository = tempfile::tempdir().unwrap();
+        git(repository.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(repository.path().join("first"), "first\n").unwrap();
+        let service = GitService::new();
+        service.stage_all(repository.path()).await.unwrap();
+
+        let committed = service.commit(repository.path(), "first").await.unwrap();
+
+        assert_eq!(
+            committed.as_str(),
+            git(repository.path(), &["rev-parse", "HEAD"])
+        );
     }
 }
