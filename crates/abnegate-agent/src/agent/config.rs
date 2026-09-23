@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// How an [`Agent`](super::Agent) runs a turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AgentConfig {
     /// Model rounds one turn may spend before it fails.
     pub max_iterations: usize,
@@ -14,6 +15,44 @@ pub struct AgentConfig {
     pub temperature: Option<f32>,
     /// The system prompt, or the default one listing the tools when unset.
     pub system_prompt: Option<String>,
+}
+
+impl AgentConfig {
+    /// The same config, allowing `max_iterations` model rounds a turn.
+    ///
+    /// The config is non-exhaustive, so a caller outside this crate starts
+    /// from [`Default`] and changes what it needs:
+    ///
+    /// ```
+    /// use abnegate_agent::AgentConfig;
+    ///
+    /// let config = AgentConfig::default()
+    ///     .with_max_iterations(10)
+    ///     .with_system_prompt("You review pull requests.");
+    /// assert_eq!(config.max_iterations, 10);
+    /// ```
+    pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
+    /// The same config, reserving `max_tokens` for each reply.
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = max_tokens;
+        self
+    }
+
+    /// The same config, sampling at `temperature`.
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    /// The same config, with its own system prompt in place of the default.
+    pub fn with_system_prompt(mut self, system_prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(system_prompt.into());
+        self
+    }
 }
 
 impl Default for AgentConfig {

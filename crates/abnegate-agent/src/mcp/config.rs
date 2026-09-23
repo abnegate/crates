@@ -14,6 +14,7 @@ const CONFIG_FILE: &str = "mcp.json";
 
 /// The MCP servers to attach for one agent run.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct McpConfig {
     pub servers: Vec<McpServerSpec>,
     /// Whether [`fallback`](Self::fallback) may attach a server when none is
@@ -31,6 +32,14 @@ impl Default for McpConfig {
 }
 
 impl McpConfig {
+    /// Exactly `servers`, with auto-connect on.
+    pub fn new(servers: Vec<McpServerSpec>) -> Self {
+        Self {
+            servers,
+            ..Self::default()
+        }
+    }
+
     /// Load from the environment under [`DEFAULT_PREFIX`].
     pub fn from_env() -> Self {
         Self::with_prefix(DEFAULT_PREFIX)

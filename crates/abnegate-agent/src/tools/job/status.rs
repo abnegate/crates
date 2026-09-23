@@ -7,6 +7,7 @@ use super::JobExited;
 /// Not `abnegate_exec::JobState`: that one tracks an executor run through
 /// its lifecycle, this one is what a model is told about a background job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JobStatus {
     Running,
     Exited(i32),

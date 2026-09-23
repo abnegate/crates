@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Why a conversation store refused or failed an operation.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("This chat already has an active response")]
     Busy,

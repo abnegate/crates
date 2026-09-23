@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 /// Session storage error
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SessionError {
     #[error("Session not found: {0}")]
     NotFound(Uuid),

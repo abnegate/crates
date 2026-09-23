@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Why a tool could not run, as opposed to a tool that ran and failed.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ToolError {
     #[error("Invalid parameters: {0}")]
     InvalidParameters(String),

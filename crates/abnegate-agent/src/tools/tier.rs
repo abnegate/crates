@@ -4,6 +4,7 @@
 /// threshold rather than a list of tool names that has to be kept in step with
 /// the catalog by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Tier {
     /// Observes and changes nothing, so it never waits and may share a batch.
     Read,

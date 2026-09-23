@@ -13,6 +13,7 @@ use crate::tools::ToolError;
 /// Any failure this crate reports, for a caller that composes several of its
 /// modules and wants one error to return.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("LLM error: {0}")]
     Llm(#[from] LlmError),

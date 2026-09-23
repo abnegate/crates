@@ -21,6 +21,7 @@ use crate::agent::AgentState;
 /// A saved run: its [`AgentState`] under a title, with the directory it
 /// worked in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Session {
     /// The run's own id, so a session and its state never disagree.
     pub id: Uuid,

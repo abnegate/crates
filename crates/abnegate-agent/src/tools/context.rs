@@ -17,6 +17,7 @@ const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 /// it to the user through [`AgentCallback::approve`](crate::AgentCallback)
 /// before it runs.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ToolContext {
     /// The root file tools stay beneath and commands run in by default.
     pub working_directory: PathBuf,
@@ -44,8 +45,42 @@ pub struct ToolContext {
 
 impl ToolContext {
     /// The same context, rooted at `working_directory`.
+    ///
+    /// The context is non-exhaustive, so a caller outside this crate starts
+    /// from [`Default`] and changes what it needs:
+    ///
+    /// ```
+    /// use abnegate_agent::tools::Session;
+    /// use abnegate_agent::{Application, ToolContext};
+    /// use std::time::Duration;
+    ///
+    /// let mut context = ToolContext::default()
+    ///     .within("/srv/checkout")
+    ///     .with_session(Session::Detached)
+    ///     .with_application(Application::new("acme")?);
+    /// context.command_timeout = Duration::from_secs(60);
+    /// # Ok::<(), abnegate_agent::ApplicationError>(())
+    /// ```
     pub fn within(mut self, working_directory: impl Into<PathBuf>) -> Self {
         self.working_directory = working_directory.into();
+        self
+    }
+
+    /// The same context, for the chat or task run `session`.
+    pub fn with_session(mut self, session: Session) -> Self {
+        self.session = session;
+        self
+    }
+
+    /// The same context, keeping its own files under `application`.
+    pub fn with_application(mut self, application: Application) -> Self {
+        self.application = application;
+        self
+    }
+
+    /// The same context, giving children exactly `environment`.
+    pub fn with_environment(mut self, environment: EnvironmentPolicy) -> Self {
+        self.environment = environment;
         self
     }
 

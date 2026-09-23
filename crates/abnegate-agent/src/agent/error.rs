@@ -5,6 +5,7 @@ use crate::context::ContextError;
 
 /// Why a run stopped short of an answer.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AgentError {
     #[error("LLM error: {0}")]
     Llm(#[from] LlmError),

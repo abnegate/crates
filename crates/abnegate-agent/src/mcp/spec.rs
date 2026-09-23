@@ -16,6 +16,7 @@ use crate::tools::EnvironmentPolicy;
 /// this process's environment. Values are [`SecretValue`]s, so printing a spec
 /// never prints a key it carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct McpServerSpec {
     /// Registry key, and the prefix its tools are named under (`docs__search`).
     #[serde(default)]
@@ -41,6 +42,22 @@ pub struct McpServerSpec {
 }
 
 impl McpServerSpec {
+    /// The same spec, giving its child `name` set to `value`.
+    pub fn with_environment(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<SecretValue>,
+    ) -> Self {
+        self.environment.insert(name.into(), value.into());
+        self
+    }
+
+    /// The same spec, started in `working_directory`.
+    pub fn within(mut self, working_directory: impl Into<PathBuf>) -> Self {
+        self.working_directory = Some(working_directory.into());
+        self
+    }
+
     /// The environment this spec's child is started with.
     pub fn environment_policy(&self) -> EnvironmentPolicy {
         let base = if self.inherit_environment {

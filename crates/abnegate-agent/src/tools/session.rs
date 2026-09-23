@@ -5,6 +5,7 @@ use uuid::Uuid;
 /// Background jobs and waits are keyed on it: a job started by one session is
 /// unreadable from another, and a detached context can start neither.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Session {
     Detached,
     Chat(Uuid),
