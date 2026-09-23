@@ -54,6 +54,7 @@ pub use crate::limit::RateLimitConfig;
 pub use crate::limit::RateLimiter;
 pub use crate::public::PublicClient;
 pub use crate::public::PublicClientBuilder;
+pub use crate::public::PublicRequest;
 pub use crate::public::public_client;
 pub use crate::public::public_client_builder;
 pub use crate::response::HttpResponse;

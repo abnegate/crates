@@ -64,7 +64,7 @@ impl ReqwestHttpClient {
             request = request.body(body.to_string());
         }
 
-        let response = request.send().await?;
+        let response = self.outbound.execute(request.build()?).await?;
         let status = response.status().as_u16();
         let body = read_capped(response, self.body_limit).await?;
         let body = String::from_utf8(body)
@@ -278,6 +278,23 @@ mod tests {
 
         assert!(matches!(error, HttpError::UnreadableBody(_)), "{error}");
         assert!(!format!("{error:?}").contains("hunter2"), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_huge_declared_length_under_an_unbounded_limit_is_unreadable_rather_than_a_panic() {
+        let port = serve_once(format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\ntiny",
+            u64::MAX - 2
+        ))
+        .await;
+
+        let error = client()
+            .with_body_limit(usize::MAX)
+            .get(&format!("http://127.0.0.1:{port}/"), Vec::new())
+            .await
+            .expect_err("the body ended four bytes in");
+
+        assert!(matches!(error, HttpError::UnreadableBody(_)), "{error}");
     }
 
     #[tokio::test]

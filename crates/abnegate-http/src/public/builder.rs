@@ -168,7 +168,6 @@ mod tests {
             .expect("a public name passes the URL check")
             .send()
             .await
-            .map_err(HttpError::from)
             .expect_err("the redirect leads into loopback");
 
         assert_untouched(&target);
