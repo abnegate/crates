@@ -17,11 +17,12 @@ use crate::log::writer::Writer;
 /// [`Record`](crate::log::Record); a caller can add its own under names of its
 /// choosing to the same file.
 ///
-/// Entries for the lines a run printed are buffered and stop once the file
-/// reaches its limit, with one [`Record::Truncated`] entry saying so; every
-/// other entry is always written and flushes whatever is buffered, so a run
-/// that ends, however it ends, leaves every entry before its last one on
-/// disk.
+/// Entries for the lines a run printed are buffered and stop for good at
+/// the first that would take the file past its limit, with one
+/// [`Record::Truncated`] entry saying so. Every other entry is always written
+/// and flushes whatever is buffered, so it reaches the disk with every line
+/// before it; only lines since the last such entry are lost if the process
+/// itself dies.
 #[derive(Debug, Clone, Default)]
 pub struct Journal {
     label: String,
@@ -93,11 +94,12 @@ impl Journal {
                 Ok(()) => writer.flush().await,
                 Err(error) => Err(error),
             }
+        } else if writer.truncated() {
+            Ok(())
         } else if !writer.full(entry.len()) {
             writer.write(&entry).await
-        } else if writer.truncate() {
-            Ok(())
         } else {
+            writer.truncate();
             let limit = writer.limit();
             match self.entry(&Record::Truncated, json!({ "limit": limit })) {
                 Some(marker) => writer.write(&marker).await,
@@ -325,6 +327,29 @@ mod tests {
         );
         assert_eq!(events.last().map(String::as_str), Some("process_completed"));
         assert!(events.iter().any(|event| event == "stdout_line"));
+    }
+
+    #[tokio::test]
+    async fn no_line_entry_follows_the_truncation_marker() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let journal = Journal::open(&path, "capped", 2048).await;
+
+        journal
+            .append_line(Record::StdoutLine, json!({"line": "x".repeat(4096)}))
+            .await;
+        for number in 0..5 {
+            journal
+                .append_line(Record::StdoutLine, json!({"line_number": number}))
+                .await;
+        }
+        journal.append(Record::Completed, json!({})).await;
+
+        let events: Vec<String> = entries(&path)
+            .into_iter()
+            .filter_map(|entry| entry["event"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(events, ["journal_truncated", "process_completed"]);
     }
 
     #[tokio::test]

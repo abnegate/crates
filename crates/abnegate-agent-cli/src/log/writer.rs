@@ -28,9 +28,12 @@ impl Writer {
             > self.limit
     }
 
-    /// Mark the file truncated, and say whether it already was.
-    pub(crate) fn truncate(&mut self) -> bool {
-        std::mem::replace(&mut self.truncated, true)
+    pub(crate) fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    pub(crate) fn truncate(&mut self) {
+        self.truncated = true;
     }
 
     pub(crate) fn limit(&self) -> u64 {
