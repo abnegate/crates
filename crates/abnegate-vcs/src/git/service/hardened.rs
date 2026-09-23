@@ -838,6 +838,7 @@ pub(super) fn split_nul(output: &[u8]) -> Vec<String> {
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
+    use std::cell::RefCell;
 
     pub(crate) fn local(path: &Path) -> RepositoryUrl {
         RepositoryUrl::local(path).unwrap()
@@ -876,6 +877,34 @@ pub(crate) mod fixtures {
     #[cfg(unix)]
     pub(crate) fn alive(pid: u32) -> bool {
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    tokio::task_local! {
+        static RECORDED: RefCell<Vec<Vec<String>>>;
+    }
+
+    pub(crate) fn arguments(command: &Command) -> Vec<String> {
+        command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Note `command`'s arguments when it runs inside [`recording`].
+    pub(crate) fn record(command: &Command) {
+        let _ = RECORDED.try_with(|recorded| recorded.borrow_mut().push(arguments(command)));
+    }
+
+    /// What `operation` came to, and the arguments of every git command
+    /// [`GitService::output`] ran for it, in order.
+    pub(crate) async fn recording<T>(operation: impl Future<Output = T>) -> (T, Vec<Vec<String>>) {
+        RECORDED
+            .scope(RefCell::default(), async {
+                let outcome = operation.await;
+                (outcome, RECORDED.with(RefCell::take))
+            })
+            .await
     }
 }
 

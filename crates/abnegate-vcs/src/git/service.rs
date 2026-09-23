@@ -16,6 +16,8 @@ use crate::git::harden;
 use crate::git::refused;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
@@ -102,6 +104,17 @@ const CARRIED_CORE: [&str; 4] = ["filemode", "ignorecase", "precomposeunicode", 
 /// configuration, because pinning them would blank the credential helper and
 /// proxy the caller set up.
 const LEFT_TO_CALLER: [&str; 2] = ["credential.helper=", "http.proxy="];
+
+/// The transports a managed clone is cloned and fetched over: a local path,
+/// HTTPS and SSH. Plain HTTP, `git://` and every remote helper are refused.
+const MANAGED_PROTOCOLS: &str = "file:https:ssh";
+
+/// The key naming the address a managed clone fetches from.
+const ORIGIN_URL: &str = "remote.origin.url";
+
+/// Lists every value of [`ORIGIN_URL`] in a repository's own configuration,
+/// each ended by a NUL.
+const ORIGIN_LISTING: [&str; 5] = ["config", "--local", "-z", "--get-all", ORIGIN_URL];
 
 /// Repository formats a clone was made in, and the values each may take:
 /// without them git cannot read its own objects or refs.
@@ -247,6 +260,8 @@ impl GitService {
     /// Run a git command in a process group of its own, torn down with every
     /// helper it started if it outlives [`COMMAND_TIMEOUT`] or its caller.
     pub(crate) async fn output(command: &mut Command) -> GitResult<Output> {
+        #[cfg(test)]
+        fixtures::record(command);
         #[cfg(unix)]
         command.process_group(0);
         command.kill_on_drop(true);
