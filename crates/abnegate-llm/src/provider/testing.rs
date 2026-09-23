@@ -41,6 +41,7 @@ pub struct StubProvider {
     name: String,
     behaviour: Behaviour,
     capabilities: Capabilities,
+    kind: ProviderKind,
     usage: Option<Usage>,
     calls: AtomicUsize,
     seen: Mutex<Option<Seen>>,
@@ -52,6 +53,7 @@ impl StubProvider {
             name: name.into(),
             behaviour,
             capabilities: Capabilities::NONE,
+            kind: ProviderKind::Http,
             usage: None,
             calls: AtomicUsize::new(0),
             seen: Mutex::new(None),
@@ -72,6 +74,11 @@ impl StubProvider {
 
     pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    pub fn with_kind(mut self, kind: ProviderKind) -> Self {
+        self.kind = kind;
         self
     }
 
@@ -103,7 +110,7 @@ impl CompletionProvider for StubProvider {
     }
 
     fn kind(&self) -> ProviderKind {
-        ProviderKind::Http
+        self.kind
     }
 
     fn capabilities(&self) -> Capabilities {

@@ -22,6 +22,8 @@ pub enum ProviderKind {
     Http,
     /// A coding agent CLI driven as a child process.
     Cli,
+    /// A router whose arms reach their models in more than one way.
+    Mixed,
 }
 
 impl ProviderKind {
@@ -29,6 +31,7 @@ impl ProviderKind {
         match self {
             Self::Http => "http",
             Self::Cli => "cli",
+            Self::Mixed => "mixed",
         }
     }
 }
@@ -92,6 +95,7 @@ mod tests {
     fn a_provider_kind_renders_its_own_label() {
         assert_eq!(ProviderKind::Http.to_string(), "http");
         assert_eq!(ProviderKind::Cli.to_string(), "cli");
+        assert_eq!(ProviderKind::Mixed.to_string(), "mixed");
         assert_ne!(ProviderKind::Http, ProviderKind::Cli);
     }
 }

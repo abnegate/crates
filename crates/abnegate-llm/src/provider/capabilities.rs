@@ -32,6 +32,18 @@ impl Capabilities {
         cost_reporting: true,
     };
 
+    /// What both sets support, which is what a caller can rely on when either
+    /// one may end up serving the request.
+    pub fn intersection(self, other: Self) -> Self {
+        Self {
+            structured_output: self.structured_output && other.structured_output,
+            tool_permissions: self.tool_permissions && other.tool_permissions,
+            custom_instructions: self.custom_instructions && other.custom_instructions,
+            streaming_events: self.streaming_events && other.streaming_events,
+            cost_reporting: self.cost_reporting && other.cost_reporting,
+        }
+    }
+
     /// Whether these capabilities cover everything `required` asks for.
     pub fn satisfies(self, required: Self) -> bool {
         (!required.structured_output || self.structured_output)
@@ -89,6 +101,26 @@ mod tests {
                 ..Capabilities::ALL
             }
             .satisfies(required)
+        );
+    }
+
+    #[test]
+    fn an_intersection_keeps_only_what_both_support() {
+        let structured = Capabilities {
+            structured_output: true,
+            cost_reporting: true,
+            ..Capabilities::NONE
+        };
+        let costed = Capabilities {
+            cost_reporting: true,
+            ..Capabilities::NONE
+        };
+
+        assert_eq!(structured.intersection(costed), costed);
+        assert_eq!(Capabilities::ALL.intersection(structured), structured);
+        assert_eq!(
+            Capabilities::NONE.intersection(Capabilities::ALL),
+            Capabilities::NONE
         );
     }
 
