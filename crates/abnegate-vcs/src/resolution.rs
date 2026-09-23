@@ -13,75 +13,15 @@
 
 use crate::conflict::{BASE_MARKER, OURS_MARKER, SPLIT_MARKER, THEIRS_MARKER};
 
-/// Which branch's work a repair dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConflictSide {
-    Ours,
-    Theirs,
-}
+mod conflict_hunk;
+mod conflict_side;
+mod region;
+mod verdict;
 
-impl ConflictSide {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ConflictSide::Ours => "ours",
-            ConflictSide::Theirs => "theirs",
-        }
-    }
-}
-
-impl std::fmt::Display for ConflictSide {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-/// One `<<<<<<< / ======= / >>>>>>>` block, split into the two sides it offers.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ConflictHunk {
-    pub ours: Vec<String>,
-    pub theirs: Vec<String>,
-}
-
-/// What a repaired file is, judged against the conflicted file it came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResolutionVerdict {
-    Resolved,
-    NoConflict,
-    MarkersRemain,
-    Emptied,
-    Discarded(ConflictSide),
-}
-
-impl ResolutionVerdict {
-    pub fn accepted(self) -> bool {
-        self == ResolutionVerdict::Resolved
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ResolutionVerdict::Resolved => "resolved",
-            ResolutionVerdict::NoConflict => "no_conflict",
-            ResolutionVerdict::MarkersRemain => "markers_remain",
-            ResolutionVerdict::Emptied => "emptied",
-            ResolutionVerdict::Discarded(ConflictSide::Ours) => "discarded_ours",
-            ResolutionVerdict::Discarded(ConflictSide::Theirs) => "discarded_theirs",
-        }
-    }
-}
-
-impl std::fmt::Display for ResolutionVerdict {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Region {
-    Outside,
-    Ours,
-    Base,
-    Theirs,
-}
+pub use crate::resolution::conflict_hunk::ConflictHunk;
+pub use crate::resolution::conflict_side::ConflictSide;
+use crate::resolution::region::Region;
+pub use crate::resolution::verdict::ResolutionVerdict;
 
 /// Split a conflicted file into its hunks.
 ///

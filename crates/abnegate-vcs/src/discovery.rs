@@ -7,71 +7,24 @@
 //! directory one level below it, and keeps only the dependencies whose owner is
 //! one of the organisations it was given.
 
-use serde::Deserialize;
+mod composer_json;
+mod discovered_dependency;
+mod error;
+mod manifest;
+mod package_json;
+
+use crate::discovery::composer_json::ComposerJson;
+pub use crate::discovery::discovered_dependency::DiscoveredDependency;
+pub use crate::discovery::error::DiscoveryError;
+pub use crate::discovery::error::DiscoveryResult;
+use crate::discovery::manifest::COMPOSER_MANIFEST;
+pub use crate::discovery::manifest::Manifest;
+use crate::discovery::manifest::PACKAGE_MANIFEST;
+use crate::discovery::package_json::PackageJson;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt;
 use std::fs;
 use std::path::Path;
-use thiserror::Error;
-
-/// A manifest file this reads dependencies out of.
-const COMPOSER_MANIFEST: &str = "composer.json";
-const PACKAGE_MANIFEST: &str = "package.json";
-
-/// What went wrong reading a manifest.
-#[derive(Debug, Error)]
-pub enum DiscoveryError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("Malformed manifest: {0}")]
-    Malformed(#[from] serde_json::Error),
-}
-
-pub type DiscoveryResult<T> = Result<T, DiscoveryError>;
-
-/// The package manager a dependency was declared to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Manifest {
-    Composer,
-    Npm,
-}
-
-impl Manifest {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Composer => "composer",
-            Self::Npm => "npm",
-        }
-    }
-
-    const fn file_name(self) -> &'static str {
-        match self {
-            Self::Composer => COMPOSER_MANIFEST,
-            Self::Npm => PACKAGE_MANIFEST,
-        }
-    }
-}
-
-impl fmt::Display for Manifest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-/// One dependency one repository declares on another.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredDependency {
-    /// The repository that has the dependency.
-    pub repository: String,
-    /// The dependency's package name, as `organisation/package`.
-    pub depends_on: String,
-    /// The package manager it was declared to.
-    pub manifest: Manifest,
-    /// Where on disk the repository declaring it was found.
-    pub repository_path: String,
-}
 
 /// Scans directories for dependencies on known organisations.
 #[derive(Debug, Clone, Default)]
@@ -218,23 +171,7 @@ fn unscoped(package: &str) -> String {
     package.trim_start_matches('@').to_string()
 }
 
-type Requirements = Option<HashMap<String, serde_json::Value>>;
-
-#[derive(Deserialize)]
-struct ComposerJson {
-    name: Option<String>,
-    require: Requirements,
-    #[serde(rename = "require-dev")]
-    require_dev: Requirements,
-}
-
-#[derive(Deserialize)]
-struct PackageJson {
-    name: Option<String>,
-    dependencies: Requirements,
-    #[serde(rename = "devDependencies")]
-    dev_dependencies: Requirements,
-}
+pub(super) type Requirements = Option<HashMap<String, serde_json::Value>>;
 
 #[cfg(test)]
 mod tests {

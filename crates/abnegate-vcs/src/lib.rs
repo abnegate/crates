@@ -32,6 +32,8 @@
 //! - `github`: [`pull_request`], which opens pull requests on GitHub or a
 //!   GitHub Enterprise install and reads back how each one was received.
 
+mod branch_name;
+mod commit_sha;
 pub mod conflict;
 pub mod discovery;
 pub mod git;

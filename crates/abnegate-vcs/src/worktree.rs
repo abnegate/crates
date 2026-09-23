@@ -14,6 +14,9 @@
 //! a `Drop` as well as under `spawn_blocking`; the one network step, fetching
 //! the base clone, stays on [`crate::git::GitService`] with its timeout.
 
+mod unfinished;
+
+pub use crate::worktree::unfinished::Unfinished;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -24,23 +27,6 @@ const AREA_SUFFIX: &str = "-worktrees";
 
 /// What a path segment that may not carry a separator falls back to.
 const REPLACEMENT: &str = "_";
-
-/// What removing a worktree would lose.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Unfinished {
-    /// Changes in the working tree or the index that no commit holds.
-    pub uncommitted: bool,
-    /// HEAD is not a commit the caller knows to be safe — neither the one the
-    /// run started on nor one that was pushed — so it holds work that was
-    /// committed and never published.
-    pub unpublished: bool,
-}
-
-impl Unfinished {
-    pub fn any(self) -> bool {
-        self.uncommitted || self.unpublished
-    }
-}
 
 /// A git invocation that reads nothing from the host's configuration, runs
 /// no program the repository's configuration names, and never talks to the
