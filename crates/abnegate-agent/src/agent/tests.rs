@@ -69,11 +69,7 @@ pub(super) async fn provider(replies: Vec<Value>) -> Provider {
         .mount(&server)
         .await;
     Provider {
-        client: LlmClient::new(LlmConfig {
-            base_url: format!("{}/v1", server.uri()),
-            default_model: "test".to_string(),
-            ..LlmConfig::default()
-        }),
+        client: LlmClient::new(LlmConfig::new(format!("{}/v1", server.uri()), "test", "")),
         received,
         _server: server,
     }

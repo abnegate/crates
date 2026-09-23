@@ -30,11 +30,7 @@
 //! use abnegate_llm::{LlmClient, LlmConfig};
 //!
 //! # async fn example() -> Result<(), abnegate_agent::AgentError> {
-//! let llm = LlmClient::new(LlmConfig {
-//!     base_url: "http://127.0.0.1:4000/v1".to_string(),
-//!     default_model: "qwen3".to_string(),
-//!     ..LlmConfig::default()
-//! });
+//! let llm = LlmClient::new(LlmConfig::new("http://127.0.0.1:4000/v1", "qwen3", ""));
 //! let agent = Agent::new(
 //!     llm,
 //!     ToolRegistry::with_defaults(),

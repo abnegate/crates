@@ -29,7 +29,7 @@ impl Capture {
     }
 
     pub(crate) fn push(&mut self, bytes: &[u8]) {
-        let (_, kept, _) = self.limiter.check(bytes.len());
+        let kept = self.limiter.admit(bytes.len()).accepted;
         self.head.extend_from_slice(&bytes[..kept]);
         let rest = &bytes[kept..];
         let skipped = rest.len().saturating_sub(self.limit);

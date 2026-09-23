@@ -89,12 +89,9 @@ async fn provider(
         }
     });
     Provider {
-        client: LlmClient::new(LlmConfig {
-            base_url: format!("http://{address}/v1"),
-            default_model: "test".into(),
-            max_tokens: 1024,
-            ..Default::default()
-        }),
+        client: LlmClient::new(
+            LlmConfig::new(format!("http://{address}/v1"), "test", "").with_max_tokens(1024),
+        ),
         requests,
         task,
     }
@@ -857,10 +854,7 @@ async fn cancelling_summarization_keeps_checkpoint_and_canonical_evidence_unchan
         notified.notify_one();
         std::future::pending::<()>().await;
     });
-    let client = LlmClient::new(LlmConfig {
-        base_url: format!("http://{address}/v1"),
-        ..Default::default()
-    });
+    let client = LlmClient::new(LlmConfig::new(format!("http://{address}/v1"), "test", ""));
     let history = active_history();
     let original = context::coverage(&history, &["calls-a".into(), "result-a".into()]).unwrap();
     let settings = policy(5_000);
