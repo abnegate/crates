@@ -54,6 +54,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The header GitHub reports the requests left in the current window in.
 const RATE_LIMIT_REMAINING: &str = "x-ratelimit-remaining";
 
+/// The header GitHub's secondary rate limit says how long to wait in.
+const RETRY_AFTER: &str = "retry-after";
+
+/// Most of an error body carried into [`PullRequestError::GitHubApi`].
+const MAXIMUM_ERROR_BYTES: usize = 1024;
+
 /// What GitHub says when a pull request for the branch is already open.
 const ALREADY_EXISTS: &str = "A pull request already exists";
 
@@ -424,9 +430,7 @@ fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
 }
 
 fn authorised(request: RequestBuilder, token: &SecretValue) -> RequestBuilder {
-    request
-        .header("Authorization", format!("Bearer {}", token.expose()))
-        .header("Accept", ACCEPT)
+    request.bearer_auth(token.expose()).header("Accept", ACCEPT)
 }
 
 /// What an unsuccessful answer means: a token GitHub did not accept, one it
@@ -437,7 +441,8 @@ async fn refusal(response: Response) -> PullRequestError {
     let exhausted = response
         .headers()
         .get(RATE_LIMIT_REMAINING)
-        .is_some_and(|remaining| remaining.as_bytes() == b"0");
+        .is_some_and(|remaining| remaining.as_bytes() == b"0")
+        || response.headers().contains_key(RETRY_AFTER);
     match status {
         StatusCode::UNAUTHORIZED => PullRequestError::AuthenticationFailed,
         StatusCode::TOO_MANY_REQUESTS => PullRequestError::RateLimited,
@@ -446,7 +451,11 @@ async fn refusal(response: Response) -> PullRequestError {
         StatusCode::NOT_FOUND => PullRequestError::NotFound,
         _ => {
             let text = response.text().await.unwrap_or_default();
-            PullRequestError::GitHubApi(format!("GitHub API returned {status}: {text}"))
+            let mut end = text.len().min(MAXIMUM_ERROR_BYTES);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            PullRequestError::GitHubApi(format!("GitHub API returned {status}: {}", &text[..end]))
         }
     }
 }
@@ -873,6 +882,10 @@ mod tests {
                 "RateLimited",
             ),
             (ResponseTemplate::new(429), "RateLimited"),
+            (
+                ResponseTemplate::new(403).insert_header("retry-after", "60"),
+                "RateLimited",
+            ),
             (ResponseTemplate::new(404), "NotFound"),
             (
                 ResponseTemplate::new(422).set_body_string(
@@ -911,6 +924,28 @@ mod tests {
                 "{expected}: {failure:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_error_body_is_carried_only_so_far() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("é".repeat(4096)))
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .fetch_mergeability(&seven(&service), &token())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            failure.len() < MAXIMUM_ERROR_BYTES + 100,
+            "{}",
+            failure.len()
+        );
     }
 
     /// A trailing slash on the configured origin used to open an empty path
