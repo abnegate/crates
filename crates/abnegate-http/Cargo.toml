@@ -1,8 +1,8 @@
 [package]
 name = "abnegate-http"
-description = "An HTTP client abstraction over reqwest, behind a trait a test can stand in for"
-keywords = ["http", "client", "reqwest"]
-categories = ["web-programming::http-client"]
+description = "An HTTP client abstraction over reqwest, and SSRF-guarded fetches of caller-supplied URLs"
+keywords = ["http", "client", "ssrf", "reqwest"]
+categories = ["web-programming::http-client", "network-programming"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,7 +22,7 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
 wiremock = { workspace = true }
