@@ -741,3 +741,55 @@ async fn a_conflicted_file_whose_name_starts_with_a_space_is_read_exactly() {
     .unwrap();
     service.apply(&conflict, "(fix): merge").await.unwrap();
 }
+
+/// A nested repository left in a repair's checkout is a stray that refuses the
+/// commit, whether it is only sitting there or recorded in the index, and it
+/// is never entered to decide so: reading its own state would start a child
+/// git under the nested repository's configuration, which the branch controls.
+#[tokio::test]
+async fn a_nested_repository_in_the_checkout_is_a_stray_that_refuses_the_commit() {
+    let origin = conflicting_origin();
+    let service = ConflictService::new();
+    let conflict = service.reproduce(&request(origin.path())).await.unwrap();
+    repair(&conflict);
+
+    let nested = conflict.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    git(&nested, &["init", "--quiet", "--initial-branch", "main"]);
+    write(&nested, "file", "a\n");
+    git(&nested, &["add", "file"]);
+    git(&nested, &["commit", "--quiet", "-m", "nested"]);
+
+    assert!(
+        service
+            .strays(&conflict)
+            .await
+            .unwrap()
+            .iter()
+            .any(|stray| stray.starts_with("nested")),
+        "an untracked nested repository is a stray"
+    );
+    assert!(matches!(
+        service.apply(&conflict, "(fix): merge").await,
+        Err(ConflictError::Strays(_))
+    ));
+
+    inside(&conflict, &["add", "nested"]);
+    assert!(
+        service
+            .strays(&conflict)
+            .await
+            .unwrap()
+            .contains(&"nested".to_string()),
+        "a gitlink recorded in the index is a stray, read from the index"
+    );
+    assert!(matches!(
+        service.apply(&conflict, "(fix): merge").await,
+        Err(ConflictError::Strays(_))
+    ));
+    assert_eq!(
+        inside(&conflict, &["rev-parse", "HEAD"]),
+        conflict.head().as_str(),
+        "nothing was committed"
+    );
+}

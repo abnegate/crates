@@ -29,12 +29,19 @@ impl GitService {
     /// HEAD at the commit it is about to be recreated on -- so one a crashed
     /// run left behind does not refuse the next. Anything else standing there
     /// is refused with [`GitError::UnsafeWorktree`].
+    ///
+    /// The clone's own configuration is verified and the worktree commands are
+    /// hardened first, because a worktree of a managed clone shares that
+    /// configuration and a run works in a worktree: a clone whose
+    /// configuration a run left something no pin reaches in is refused with
+    /// [`GitError::UnsafeConfig`] before a worktree is added.
     pub async fn create_worktree(
         &self,
         path: &Path,
         worktree_path: &Path,
         checkout_ref: &BranchName,
     ) -> GitResult<()> {
+        Self::verify_config(path).await?;
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
 
@@ -55,7 +62,7 @@ impl GitService {
         );
 
         let output = Self::output(
-            Self::managed_command(Some(path))
+            Self::managed_local(path)
                 .args(["worktree", "add", "--detach", "--"])
                 .arg(worktree_path)
                 .arg(checkout_ref.as_str()),
@@ -86,6 +93,7 @@ impl GitService {
         branch: &BranchName,
         start_point: &BranchName,
     ) -> GitResult<()> {
+        Self::verify_config(path).await?;
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
 
@@ -106,7 +114,7 @@ impl GitService {
         );
 
         let output = Self::output(
-            Self::managed_command(Some(path))
+            Self::managed_local(path)
                 .args(["worktree", "add", "-B", branch.as_str(), "--"])
                 .arg(worktree_path)
                 .arg(start_point.as_str()),
@@ -133,6 +141,7 @@ impl GitService {
     /// not the repository itself, and not locked. Everything else is somewhere
     /// the caller did not declare disposable, and is refused.
     pub async fn remove_worktree(&self, path: &Path, worktree_path: &Path) -> GitResult<()> {
+        Self::verify_config(path).await?;
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
         if worktree_path.components().any(|component| {
@@ -152,7 +161,7 @@ impl GitService {
         };
 
         let output = Self::output(
-            Self::managed_command(Some(path))
+            Self::managed_local(path)
                 .args(["worktree", "remove", "--force", "--"])
                 .arg(worktree_path),
         )
@@ -169,7 +178,7 @@ impl GitService {
             tokio::fs::remove_dir_all(&disposable).await?;
         }
 
-        let _ = Self::output(Self::managed_command(Some(path)).args(["worktree", "prune"])).await;
+        let _ = Self::output(Self::managed_local(path).args(["worktree", "prune"])).await;
 
         tracing::debug!(worktree = ?worktree_path, "Worktree removed");
         Ok(())
@@ -198,13 +207,9 @@ impl GitService {
             return Err(refuse());
         }
 
-        let listed = Self::output(Self::managed_command(Some(path)).args([
-            "worktree",
-            "list",
-            "--porcelain",
-            "-z",
-        ]))
-        .await?;
+        let listed =
+            Self::output(Self::managed_local(path).args(["worktree", "list", "--porcelain", "-z"]))
+                .await?;
         if !listed.status.success() {
             return Err(refuse());
         }
@@ -238,7 +243,7 @@ impl GitService {
         if !details.is_file() {
             return Ok(false);
         }
-        let common = Self::output(Self::managed_command(Some(path)).args([
+        let common = Self::output(Self::managed_local(path).args([
             "rev-parse",
             "--path-format=absolute",
             "--git-common-dir",
@@ -269,7 +274,7 @@ impl GitService {
         start: &BranchName,
     ) -> GitResult<()> {
         let refuse = || GitError::UnsafeWorktree(worktree_path.to_path_buf());
-        let resolved = Self::output(Self::managed_command(Some(path)).args([
+        let resolved = Self::output(Self::managed_local(path).args([
             "rev-parse",
             "--verify",
             "--end-of-options",
@@ -560,5 +565,77 @@ mod tests {
 
         assert!(refused(&fixture, &outer).await);
         assert!(inner.join("README").exists());
+    }
+
+    #[test]
+    fn the_managed_worktree_commands_are_hardened_and_use_no_transport() {
+        let command = GitService::managed_local(Path::new("/repository"));
+        let arguments: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        let environment: Vec<(String, Option<String>)> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+
+        for pin in [
+            "core.hooksPath=/dev/null",
+            "core.fsmonitor=false",
+            "credential.helper=",
+        ] {
+            assert!(arguments.contains(&pin.to_string()), "{pin}: {arguments:?}");
+        }
+        assert!(
+            environment.contains(&("GIT_ALLOW_PROTOCOL".to_string(), Some(String::new()))),
+            "a local worktree command reaches no transport: {environment:?}"
+        );
+        assert!(
+            environment.contains(&(
+                "GIT_CONFIG_GLOBAL".to_string(),
+                Some("/dev/null".to_string())
+            )),
+            "{environment:?}"
+        );
+    }
+
+    /// A managed clone whose shared configuration a run wrote a key into that no
+    /// pin reaches is refused before a worktree of it is added or removed: every
+    /// worktree shares that file, so the next worktree command would otherwise
+    /// run whatever it names.
+    #[tokio::test]
+    async fn a_managed_clone_whose_configuration_names_something_no_pin_reaches_is_refused() {
+        let fixture = Fixture::new();
+        git(&fixture.repository, &["config", "alias.co", "checkout"]);
+        let worktree = fixture.at("area-worktrees/one");
+
+        let refusal = GitService::new()
+            .create_worktree(&fixture.repository, &worktree, &branch("main"))
+            .await;
+
+        assert!(
+            matches!(refusal, Err(GitError::UnsafeConfig(ref key)) if key == "alias.co"),
+            "{refusal:?}"
+        );
+        assert!(
+            !worktree.exists(),
+            "no worktree was added in a refused clone"
+        );
+        assert!(
+            matches!(
+                GitService::new()
+                    .remove_worktree(&fixture.repository, &worktree)
+                    .await,
+                Err(GitError::UnsafeConfig(_))
+            ),
+            "removal is refused in the same clone"
+        );
     }
 }

@@ -12,6 +12,8 @@ use crate::conflict::index;
 use crate::conflict::layout::Layout;
 use crate::conflict::resolve;
 use crate::conflict::validate;
+use crate::git::DIFF_PREFIX;
+use crate::git::GITLINK_MODE;
 use crate::git::GitService;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
@@ -120,14 +122,7 @@ impl ConflictService {
         let unmerged = self
             .capture(
                 &layout,
-                &[
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--name-only",
-                    "--diff-filter=U",
-                    "-z",
-                ],
+                &[&DIFF_PREFIX[..], &["--name-only", "--diff-filter=U", "-z"]].concat(),
             )
             .await?;
 
@@ -179,13 +174,7 @@ impl ConflictService {
         let modified = self
             .capture(
                 &conflict.layout,
-                &[
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--name-only",
-                    "-z",
-                ],
+                &[&DIFF_PREFIX[..], &["--name-only", "-z"]].concat(),
             )
             .await?;
         let created = self
@@ -208,6 +197,7 @@ impl ConflictService {
                 .split('\0')
                 .chain(created.split('\0'))
                 .chain(rules)
+                .chain(gitlinks(&staged))
                 .filter(|entry| !entry.is_empty())
                 .map(str::to_string),
         );
@@ -476,6 +466,17 @@ fn push_arguments(remote: &RepositoryUrl, commit: &CommitSha, branch: &BranchNam
 /// in any directory.
 fn names(path: &str, name: &str) -> bool {
     path.rsplit('/').next() == Some(name)
+}
+
+/// The paths of every gitlink in an `ls-files --stage -z` listing: a nested
+/// repository recorded in the index, which only a conflicted file the repair
+/// resolved has any business being, and which is never entered to inspect.
+fn gitlinks(staged: &str) -> impl Iterator<Item = &str> {
+    staged
+        .split('\0')
+        .filter(|entry| entry.starts_with(GITLINK_MODE))
+        .filter_map(|entry| entry.split_once('\t'))
+        .map(|(_, path)| path)
 }
 
 fn prefixed(option: &str, path: &std::path::Path) -> OsString {

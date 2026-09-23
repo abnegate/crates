@@ -101,6 +101,23 @@ const BRANCH_SECTION: &str = "branch.";
 /// Lists the repository's own configuration keys, NUL-terminated.
 pub(crate) const CONFIG_LISTING: [&str; 5] = ["config", "--local", "--name-only", "--list", "-z"];
 
+/// Passed to every status and diff so neither descends into a nested
+/// repository standing in the working tree: doing so starts a child git inside
+/// it that reads that repository's own configuration, and a run only has to
+/// leave a `.git` directory behind for a program named there to run as the
+/// host. A mode-160000 entry is detected separately, so ignoring a nested
+/// repository's own dirty state loses no signal the host acts on.
+pub(crate) const IGNORE_SUBMODULES: &str = "--ignore-submodules=dirty";
+
+/// The mode `git ls-files -s` prints for a gitlink: a nested repository
+/// recorded in the index rather than a file whose content the host controls.
+pub(crate) const GITLINK_MODE: &str = "160000 ";
+
+/// The flags every diff carries before its own: no external or textconv
+/// driver a repository could name, and no descent into a nested repository.
+pub(crate) const DIFF_PREFIX: [&str; 4] =
+    ["diff", "--no-ext-diff", "--no-textconv", IGNORE_SUBMODULES];
+
 /// Apply the pins and environment every hardened git command runs with.
 pub(crate) fn harden(command: &mut Command) {
     command
@@ -218,6 +235,27 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    #[test]
+    fn every_diff_carries_the_flag_that_keeps_it_out_of_a_nested_repository() {
+        assert_eq!(IGNORE_SUBMODULES, "--ignore-submodules=dirty");
+        assert_eq!(DIFF_PREFIX[0], "diff");
+        assert!(
+            DIFF_PREFIX.contains(&IGNORE_SUBMODULES),
+            "every diff is built from this prefix, so every diff carries it: {DIFF_PREFIX:?}"
+        );
+        assert!(
+            !DIFF_PREFIX
+                .iter()
+                .any(|flag| flag.contains("ignore-submodules=none")),
+            "nothing must ask a diff to descend into a nested repository"
+        );
+    }
+
+    #[test]
+    fn a_gitlink_is_recognised_by_the_mode_git_prints_for_it() {
+        assert_eq!(GITLINK_MODE, "160000 ");
     }
 
     #[test]

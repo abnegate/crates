@@ -18,13 +18,22 @@ mod unfinished;
 
 use crate::branch_name::BranchName;
 use crate::git::CONFIG_LISTING;
+use crate::git::GITLINK_MODE;
+use crate::git::IGNORE_SUBMODULES;
 use crate::git::harden;
 use crate::git::refused;
 pub use crate::worktree::unfinished::Unfinished;
+use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::sync_channel;
+use std::time::Duration;
 
 /// The suffix the directory holding a repository's worktrees carries.
 const AREA_SUFFIX: &str = "-worktrees";
@@ -34,6 +43,31 @@ const REPLACEMENT: &str = "_";
 
 /// The file a repository's own ignore rules live in.
 const IGNORE_FILE: &str = ".gitignore";
+
+/// Most standard output a local git command may produce before it is torn
+/// down: a run can fill a worktree with untracked files whose names alone run
+/// to gigabytes, and the host reads these listings whole. Output past this is
+/// refused rather than held, which every caller here treats as a worktree that
+/// cannot be confirmed empty and so is kept rather than removed.
+const MAXIMUM_OUTPUT_BYTES: usize = 16 << 20;
+
+/// Longest a local git command may run before it is torn down. These commands
+/// reach no network, so this only bounds a command wedged on its own output.
+const OUTPUT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How much of a command's output is read at a time.
+const CHUNK: usize = 8192;
+
+/// The status that decides whether a worktree holds tracked changes: no
+/// untracked files, which are listed separately, and no descent into a nested
+/// repository, whose presence is read from the index instead.
+const TRACKED_STATUS: [&str; 5] = [
+    "status",
+    "--porcelain",
+    "-z",
+    "--untracked-files=no",
+    IGNORE_SUBMODULES,
+];
 
 /// A git invocation with the pins and environment the hardened
 /// [`crate::git::GitService`] commands run with, that additionally may use no
@@ -67,12 +101,78 @@ fn verify(repository: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Run a local git command, reading at most [`MAXIMUM_OUTPUT_BYTES`] `+ 1` of
+/// its standard output under [`OUTPUT_TIMEOUT`]. Output that runs past the cap,
+/// or a command that outlives the timeout, tears the process group down and is
+/// reported as a failure, so no run can make the host hold an unbounded
+/// listing or wait on a wedged command.
 fn run(command: &mut Command, what: &str) -> std::io::Result<Vec<u8>> {
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(std::io::Error::other(format!("git could not {what}")));
+    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("git command has no standard output"))?;
+    let (sender, receiver) = sync_channel::<Vec<u8>>(1);
+    std::thread::spawn(move || {
+        let mut collected = Vec::new();
+        let mut chunk = [0u8; CHUNK];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => {
+                    let room = (MAXIMUM_OUTPUT_BYTES + 1).saturating_sub(collected.len());
+                    collected.extend_from_slice(&chunk[..read.min(room)]);
+                    if collected.len() > MAXIMUM_OUTPUT_BYTES {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = sender.send(collected);
+    });
+    match receiver.recv_timeout(OUTPUT_TIMEOUT) {
+        Ok(collected) if collected.len() > MAXIMUM_OUTPUT_BYTES => {
+            terminate(&mut child);
+            Err(std::io::Error::other(format!(
+                "git produced too much output to {what}"
+            )))
+        }
+        Ok(collected) => {
+            let status = child.wait()?;
+            match status.success() {
+                true => Ok(collected),
+                false => Err(std::io::Error::other(format!("git could not {what}"))),
+            }
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            terminate(&mut child);
+            Err(std::io::Error::other(format!(
+                "git took too long to {what}"
+            )))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            terminate(&mut child);
+            Err(std::io::Error::other(format!("git could not {what}")))
+        }
     }
-    Ok(output.stdout)
+}
+
+/// Kill a local git command and, where the platform has process groups, every
+/// helper it started with it.
+fn terminate(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(child.id() as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Where a repository's worktrees live, and where one of them lives.
@@ -133,18 +233,19 @@ pub fn is_worktree(path: &Path) -> bool {
 /// run adds is itself a change the check sees, a new `.gitignore` included
 /// even when it ignores itself -- and not what an excludes file or
 /// `info/exclude` does; and every entry marked assume-unchanged or
-/// skip-worktree, whose changes a status never reports.
+/// skip-worktree, whose changes a status never reports; and any gitlink the
+/// index records, which the status is told not to descend into -- descending
+/// runs a child git under the nested repository's own configuration -- and
+/// whose presence is counted as work rather than followed.
 pub fn unfinished(path: &Path, known: &[&str]) -> std::io::Result<Unfinished> {
     verify(path)?;
     let tracked = run(
-        local(path).args([
-            "status",
-            "--porcelain",
-            "-z",
-            "--untracked-files=no",
-            "--ignore-submodules=none",
-        ]),
+        local(path).args(TRACKED_STATUS),
         "read the worktree's status",
+    )?;
+    let staged = run(
+        local(path).args(["ls-files", "-s", "-z"]),
+        "read the worktree's staged entries",
     )?;
     let untracked = run(
         local(path).args([
@@ -172,9 +273,19 @@ pub fn unfinished(path: &Path, known: &[&str]) -> std::io::Result<Unfinished> {
         uncommitted: !tracked.is_empty()
             || !untracked.is_empty()
             || adds_ignore_rules(&everything)
-            || hides_changes(&marked),
+            || hides_changes(&marked)
+            || holds_gitlink(&staged),
         unpublished: !known.iter().any(|commit| *commit == head),
     })
+}
+
+/// Whether an `ls-files -s` listing records a gitlink: a nested repository the
+/// index points at, which the status is told not to enter and which a run can
+/// leave behind. Its presence is treated as work rather than followed into.
+fn holds_gitlink(listing: &[u8]) -> bool {
+    listing
+        .split(|byte| *byte == 0)
+        .any(|entry| entry.starts_with(GITLINK_MODE.as_bytes()))
 }
 
 /// Whether a listing of untracked files holds a `.gitignore`, anywhere: a new
@@ -725,5 +836,74 @@ mod tests {
                 "{directory:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_status_reading_tracked_changes_stays_out_of_a_nested_repository() {
+        assert!(
+            TRACKED_STATUS.contains(&IGNORE_SUBMODULES),
+            "{TRACKED_STATUS:?}"
+        );
+        assert!(
+            TRACKED_STATUS.contains(&"--untracked-files=no"),
+            "{TRACKED_STATUS:?}"
+        );
+    }
+
+    /// A nested repository a run leaves in a worktree is reported as work and
+    /// never entered: git is told to ignore submodules' own state, and the
+    /// gitlink the index records is what marks the worktree unfinished, whether
+    /// the nested repository is only sitting there or has been recorded.
+    #[test]
+    fn a_nested_repository_is_reported_as_work_and_never_entered() {
+        let repositories = repositories();
+        let path = repositories.worktrees.join("run");
+        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let start = git(&path, &["rev-parse", "HEAD"]);
+
+        let nested = path.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        git(&nested, &["init", "-q", "-b", "main"]);
+        assert!(
+            unfinished(&path, &[&start]).unwrap().uncommitted,
+            "an untracked nested repository is work"
+        );
+
+        std::fs::write(nested.join("file"), "a\n").unwrap();
+        git(&nested, &["add", "file"]);
+        git(&nested, &["commit", "-q", "-m", "nested"]);
+        git(&path, &["add", "nested"]);
+        git(&path, &["commit", "-q", "-m", "record gitlink"]);
+        let head = git(&path, &["rev-parse", "HEAD"]);
+        std::fs::write(
+            nested.join("file"),
+            "changed inside the nested repository\n",
+        )
+        .unwrap();
+
+        let held = unfinished(&path, &[&start, &head]).unwrap();
+        assert!(
+            held.uncommitted,
+            "a recorded gitlink is read from the index, not by entering it: {held:?}"
+        );
+    }
+
+    /// A command flooding its output is capped and torn down rather than read
+    /// whole, so a run cannot make the host hold gigabytes of a listing.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_floods_its_output_is_capped_and_torn_down() {
+        let started = std::time::Instant::now();
+
+        let result = run(&mut Command::new("yes"), "flood");
+
+        assert!(
+            result.is_err(),
+            "unbounded output must be refused, not held"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the flood must be capped, not read to the end"
+        );
     }
 }
