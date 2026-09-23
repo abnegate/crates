@@ -2,10 +2,15 @@
 //!
 //! Each message is a single JSON object followed by a newline character.
 
-use bytes::{Buf, BufMut, BytesMut};
-use serde::{Serialize, de::DeserializeOwned};
 use std::marker::PhantomData;
-use tokio_util::codec::{Decoder, Encoder};
+
+use bytes::Buf;
+use bytes::BufMut;
+use bytes::BytesMut;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use tokio_util::codec::Decoder;
+use tokio_util::codec::Encoder;
 
 use crate::error::ProtocolError;
 
@@ -118,8 +123,12 @@ impl<T: Serialize> Encoder<T> for NdjsonCodec<T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::protocol::ErrorCode;
+    use crate::protocol::InboundMessage;
+    use crate::protocol::LogLevel;
+    use crate::protocol::OutboundMessage;
+
     use super::*;
-    use crate::protocol::messages::{ErrorCode, InboundMessage, LogLevel, OutboundMessage};
 
     #[test]
     fn test_decode_single_message() {

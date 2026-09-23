@@ -3,11 +3,14 @@
 //! On Unix systems, we create a new process group for each spawned command,
 //! allowing us to send signals to the entire process tree when cancelling.
 
-use crate::error::ExecutorError;
-use nix::sys::signal::{Signal, kill};
-use nix::unistd::Pid;
 use std::time::Duration;
+
+use nix::sys::signal::Signal;
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
 use tokio::time::sleep;
+
+use crate::error::ExecutorError;
 
 /// A handle to a process group for signal management.
 #[derive(Debug, Clone)]

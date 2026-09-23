@@ -1,6 +1,7 @@
 //! Job state machine for tracking execution lifecycle.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::protocol::ErrorCode;
 

@@ -1,89 +1,32 @@
 //! Command execution with streaming output.
 
-use crate::error::ExecutorError;
-use crate::protocol::{InboundMessage, LogLevel, OutboundMessage};
-use crate::proxy::Proxy;
-use base64::prelude::*;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
+
+use base64::prelude::*;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+use crate::error::ExecutorError;
+use crate::protocol::InboundMessage;
+use crate::protocol::LogLevel;
+use crate::protocol::OutboundMessage;
+use crate::proxy::Proxy;
+
+use super::config::ExecutorConfig;
 use super::confinement::Confinement;
-use super::limits::{ExecutorConfig, OutputLimiter};
+use super::job_handle::JobHandle;
+use super::output_kind::OutputKind;
+use super::output_limiter::OutputLimiter;
 use super::process_group::ProcessGroup;
-
-/// Handle to a running job's stdin
-#[derive(Debug)]
-pub struct StdinHandle {
-    tx: mpsc::Sender<Vec<u8>>,
-}
-
-impl StdinHandle {
-    /// Send data to the process's stdin
-    pub async fn send(&self, data: Vec<u8>) -> Result<(), ExecutorError> {
-        self.tx
-            .send(data)
-            .await
-            .map_err(|_| ExecutorError::ChannelClosed)
-    }
-
-    /// Close the stdin (signals EOF to the process)
-    pub fn close(self) {
-        drop(self);
-    }
-}
-
-/// Handle to a running job
-#[derive(Debug)]
-pub struct JobHandle {
-    /// Process ID
-    pub pid: u32,
-
-    /// Process group for signaling
-    pub process_group: ProcessGroup,
-
-    /// Handle to send data to stdin
-    pub stdin: Option<StdinHandle>,
-
-    /// Start time
-    pub started_at: Instant,
-
-    /// Cancellation flag
-    pub cancelled: Arc<AtomicBool>,
-}
-
-impl JobHandle {
-    /// Get the process ID
-    pub fn pid(&self) -> u32 {
-        self.pid
-    }
-
-    /// Cancel the job
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-    }
-
-    /// Check if cancelled
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
-    }
-
-    /// Get elapsed time since start
-    pub fn elapsed(&self) -> Duration {
-        self.started_at.elapsed()
-    }
-}
-
-/// Output stream type
-#[derive(Debug, Clone, Copy)]
-pub enum OutputKind {
-    Stdout,
-    Stderr,
-}
+use super::stdin_handle::StdinHandle;
 
 /// Command executor that spawns processes and streams output.
 #[derive(Debug, Clone)]
@@ -461,9 +404,10 @@ impl Default for CommandExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    use super::*;
 
     #[tokio::test]
     async fn proxy_overrides_request_environment() {
@@ -718,64 +662,6 @@ mod tests {
             SLEPT.as_millis()
         );
     }
-
-    #[tokio::test]
-    async fn test_stdin_handle_send() {
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(10);
-        let stdin_handle = StdinHandle { tx };
-
-        let result = stdin_handle.send(b"hello".to_vec()).await;
-        assert!(result.is_ok());
-
-        let received = rx.recv().await.unwrap();
-        assert_eq!(received, b"hello".to_vec());
-    }
-
-    #[tokio::test]
-    async fn test_stdin_handle_send_closed_channel() {
-        let (tx, rx) = mpsc::channel::<Vec<u8>>(10);
-        let stdin_handle = StdinHandle { tx };
-
-        drop(rx);
-
-        let result = stdin_handle.send(b"hello".to_vec()).await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ExecutorError::ChannelClosed => {}
-            e => panic!("Expected ChannelClosed, got {:?}", e),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_stdin_handle_close() {
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(10);
-        let stdin_handle = StdinHandle { tx };
-
-        stdin_handle.close();
-
-        assert!(rx.recv().await.is_none());
-    }
-
-    #[test]
-    fn test_output_kind_clone_copy() {
-        let kind = OutputKind::Stdout;
-        let cloned = kind;
-        let copied = kind;
-
-        assert!(matches!(cloned, OutputKind::Stdout));
-        assert!(matches!(copied, OutputKind::Stdout));
-
-        let kind = OutputKind::Stderr;
-        assert!(matches!(kind, OutputKind::Stderr));
-    }
-
-    #[test]
-    fn test_output_kind_debug() {
-        let kind = OutputKind::Stdout;
-        let debug_str = format!("{:?}", kind);
-        assert!(debug_str.contains("Stdout"));
-    }
-
     #[tokio::test]
     async fn test_spawn_echo() {
         let executor = CommandExecutor::new();

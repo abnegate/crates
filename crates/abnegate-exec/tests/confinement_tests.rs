@@ -7,25 +7,33 @@
 //! - Fail-closed spawning when confinement cannot be established
 //! - Real confined execution on hosts that can prove their sandbox
 
-use base64::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+use abnegate_exec::error::ExecutorError;
+use abnegate_exec::executor::Backend;
+use abnegate_exec::executor::CommandExecutor;
+use abnegate_exec::executor::Confinement;
+use abnegate_exec::executor::ConfinementError;
+use abnegate_exec::executor::ConfinementMode;
+use abnegate_exec::executor::HOST_BACKEND;
+use abnegate_exec::protocol::Capability;
+use abnegate_exec::protocol::ConfinementRequest;
+use abnegate_exec::protocol::ErrorCode;
+use abnegate_exec::protocol::InboundMessage;
+use abnegate_exec::protocol::OutboundMessage;
+use abnegate_exec::protocol::ProcessTreeRequest;
+use base64::prelude::*;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-
-use abnegate_exec::error::ExecutorError;
-use abnegate_exec::executor::{
-    Backend, CommandExecutor, Confinement, ConfinementError, ConfinementMode, HOST_BACKEND,
-};
-use abnegate_exec::protocol::{
-    Capability, ConfinementRequest, ErrorCode, InboundMessage, OutboundMessage, ProcessTreeRequest,
-};
 
 const SECRET: &str = "secret\n";
 const GRANTED: &str = "granted\n";

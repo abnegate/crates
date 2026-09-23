@@ -1,6 +1,7 @@
 //! Optional proxy routing for HTTP clients launched by tools.
 
 use std::ffi::OsString;
+
 use tokio::process::Command;
 
 /// Environment variable naming the proxy every spawned command is routed
@@ -50,10 +51,14 @@ impl Proxy {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::AsyncBufReadExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::io::BufReader;
     use tokio::net::TcpListener;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::Duration;
+    use tokio::time::timeout;
+
+    use super::*;
 
     fn curl(proxy: &Proxy, url: &str) -> Command {
         let mut command = Command::new("curl");
