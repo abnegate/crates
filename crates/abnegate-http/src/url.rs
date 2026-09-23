@@ -130,7 +130,11 @@ pub async fn read_capped(mut response: reqwest::Response, limit: usize) -> Resul
         return Err(HttpError::OversizedBody { limit });
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(HttpError::UnreadableBody)? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| HttpError::UnreadableBody(error.without_url()))?
+    {
         if body.len() + chunk.len() > limit {
             return Err(HttpError::OversizedBody { limit });
         }
