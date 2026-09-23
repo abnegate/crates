@@ -182,8 +182,8 @@ impl GitService {
     /// whose `origin` is no longer `url` is refused as
     /// [`Self::ensure_repository`] refuses it, and a default branch whose
     /// remote-tracking ref is a symbolic ref is refused with
-    /// [`GitError::SymbolicBranch`]: following the link would name whatever
-    /// branch it points at.
+    /// [`GitError::SymbolicDefaultBranch`]: following the link would name
+    /// whatever branch it points at.
     pub async fn ensure_fetched(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         match path.exists() {
             true => self.fetch_all(path, url).await?,
@@ -202,11 +202,14 @@ impl GitService {
     /// whose `origin` no longer fetches every branch the remote has is
     /// refused with [`GitError::UnsafeConfig`] rather than widened back, and
     /// its configuration, or whatever file a link there points to, is left
-    /// as it was. A default branch whose remote-tracking ref is a symbolic
-    /// ref is refused with [`GitError::SymbolicBranch`].
+    /// as it was. A default branch that is a symbolic ref, or whose
+    /// remote-tracking ref is one, is refused with
+    /// [`GitError::SymbolicDefaultBranch`].
     pub async fn ensure_synced(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         let default_branch = self.ensure_fetched(path, url).await?;
-        self.checkout_reset(path, &default_branch).await?;
+        self.checkout_reset(path, &default_branch)
+            .await
+            .map_err(unnamed)?;
         Ok(default_branch)
     }
 
@@ -382,14 +385,17 @@ impl GitService {
     /// following a chain through a remote-tracking ref that is itself a link
     /// would answer with whatever branch the last link names. A branch whose
     /// remote-tracking ref is a symbolic ref is refused with
-    /// [`GitError::SymbolicBranch`], and one that cannot be read is `main`.
+    /// [`GitError::SymbolicDefaultBranch`], and one that cannot be read is
+    /// `main`.
     async fn default_branch(path: &Path) -> GitResult<BranchName> {
         let output = Self::output(Self::managed_command(Some(path)).args(DEFAULT_BRANCH)).await;
         let branch = match output {
             Ok(result) if result.status.success() => default_branch_of(&result.stdout),
             _ => fallback_default_branch(),
         };
-        Self::refuse_linked_tracking(path, &branch).await?;
+        Self::refuse_linked_tracking(path, &branch)
+            .await
+            .map_err(unnamed)?;
         Ok(branch)
     }
 
@@ -454,6 +460,16 @@ const NOT_SYMBOLIC: i32 = 1;
 
 fn fallback_default_branch() -> BranchName {
     BranchName::literal(FALLBACK_DEFAULT_BRANCH)
+}
+
+/// `error`, with a refusal of the default branch left unnamed: the
+/// repository chose that name, and a refusal is read by whoever the caller
+/// shows it to.
+fn unnamed(error: GitError) -> GitError {
+    match error {
+        GitError::SymbolicBranch(_) => GitError::SymbolicDefaultBranch,
+        other => other,
+    }
 }
 
 /// The refspec that forces `branch` of `origin` onto its remote-tracking ref.
@@ -1038,14 +1054,87 @@ mod managed_tests {
             "refs/heads/main"
         );
         assert_eq!(git(&target, &["rev-parse", "HEAD"]), head);
-        for outcome in [synced.map(drop), reset] {
-            assert!(
-                matches!(outcome, Err(GitError::SymbolicBranch(ref refused)) if *refused == main),
-                "{outcome:?}"
-            );
-        }
+        assert!(
+            matches!(synced, Err(GitError::SymbolicDefaultBranch)),
+            "{synced:?}"
+        );
+        assert!(
+            matches!(reset, Err(GitError::SymbolicBranch(ref refused)) if *refused == main),
+            "{reset:?}"
+        );
         assert_eq!(service.detect_default_branch(&target).await, main);
         assert_eq!(service.detect_default_branch_blocking(&target), main);
+    }
+
+    /// The default branch is named by the repository, and a name git and a
+    /// [`BranchName`] both accept can hold characters that change how the
+    /// text around them reads, so a refusal of it names no branch: neither
+    /// one whose remote-tracking ref is a link nor one that is a link
+    /// itself.
+    #[tokio::test]
+    async fn a_linked_default_branch_is_refused_without_the_name_the_repository_gave_it() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &url, &branch("main"))
+            .await
+            .unwrap();
+        let name = "ma\u{200B}in";
+        let tracking = format!("{REMOTE_TRACKING}{name}");
+        let local = format!("{HEADS}{name}");
+        git(
+            &target,
+            &["symbolic-ref", &tracking, "refs/remotes/origin/main"],
+        );
+        git(source.path(), &["branch", name]);
+        git(source.path(), &["symbolic-ref", "HEAD", &local]);
+
+        let fetched = service.ensure_fetched(&target, &url).await.map(drop);
+        let synced = service.ensure_synced(&target, &url).await.map(drop);
+        assert_eq!(
+            git(&target, &["symbolic-ref", "--no-recurse", REMOTE_HEAD]),
+            tracking,
+            "the remote's default branch was not read"
+        );
+        git(&target, &["update-ref", "--no-deref", "-d", &tracking]);
+        git(&target, &["symbolic-ref", &local, "refs/heads/main"]);
+        let listed = git(
+            &target,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/heads",
+            ],
+        );
+        let reset = service.ensure_synced(&target, &url).await.map(drop);
+
+        assert_eq!(
+            git(
+                &target,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/heads"
+                ]
+            ),
+            listed,
+            "the refused sync moved a branch"
+        );
+        for (operation, refusal) in [fetched, synced, reset].into_iter().enumerate() {
+            let refusal = refusal.unwrap_err();
+            assert!(
+                !refusal.to_string().contains(name),
+                "operation {operation}: the refusal carries the name: {refusal}"
+            );
+            assert!(
+                matches!(refusal, GitError::SymbolicDefaultBranch),
+                "operation {operation}: {refusal:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -147,12 +147,11 @@ impl GitService {
     }
 
     /// Refuse a checkout whose HEAD names a branch that is itself a symbolic
-    /// ref: git moves that branch through the link, onto whatever ref it
-    /// names. The refusal is [`GitError::SymbolicBranch`] when the branch's
-    /// name is one a [`BranchName`] carries, and [`GitError::SymbolicHead`]
-    /// when it is not, since the repository chose that name. A HEAD whose
-    /// branch this platform cannot name cannot be checked, and is refused as
-    /// unreadable. A detached HEAD is its own ref.
+    /// ref, with [`GitError::SymbolicHead`]: git moves that branch through
+    /// the link, onto whatever ref it names. The refusal leaves the branch
+    /// unnamed, since the repository chose its name. A HEAD whose branch this
+    /// platform cannot name cannot be checked, and is refused as unreadable.
+    /// A detached HEAD is its own ref.
     async fn refuse_linked_head(path: &Path) -> GitResult<()> {
         let head = Self::output(
             Self::hardened()
@@ -176,13 +175,10 @@ impl GitService {
                 "Cannot read the checkout's HEAD".to_string(),
             ));
         };
-        if !Self::is_symbolic(path, name).await? {
-            return Ok(());
+        match Self::is_symbolic(path, name).await? {
+            true => Err(GitError::SymbolicHead),
+            false => Ok(()),
         }
-        let branch = std::str::from_utf8(reference)
-            .ok()
-            .and_then(|name| BranchName::parse(name.strip_prefix(HEADS).unwrap_or(name)).ok());
-        Err(branch.map_or(GitError::SymbolicHead, GitError::SymbolicBranch))
     }
 
     /// Move `branch` to a name of its own, `<branch>.abandoned.<time>`, in one
@@ -728,7 +724,7 @@ impl GitService {
 
     /// Commit what is staged, and say which commit it became. A checkout on a
     /// branch that is a symbolic ref is refused with
-    /// [`GitError::SymbolicBranch`].
+    /// [`GitError::SymbolicHead`].
     pub async fn commit(&self, path: &Path, message: &str) -> GitResult<CommitSha> {
         Self::verify_config(path).await?;
         Self::refuse_linked_head(path).await?;
@@ -2089,7 +2085,7 @@ mod branch_tests {
             "the commit landed on the branch the link names"
         );
         assert!(
-            matches!(committed, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("feature/one")),
+            matches!(committed, Err(GitError::SymbolicHead)),
             "{committed:?}"
         );
     }
@@ -2150,12 +2146,12 @@ mod branch_tests {
         );
     }
 
-    /// A checked-out branch that is a link, under a name git accepts and a
-    /// branch name may not carry, is refused without that name: the
-    /// repository chose it, and a refusal is read by whoever the caller
-    /// shows it to.
+    /// A checked-out branch that is a link is refused without its name,
+    /// whether or not a branch name may carry it: the repository chose it,
+    /// characters git accepts in it can change how the text around them
+    /// reads, and a refusal is read by whoever the caller shows it to.
     #[tokio::test]
-    async fn committing_on_a_link_under_a_name_no_branch_may_carry_is_refused_unnamed() {
+    async fn committing_on_a_linked_branch_is_refused_without_the_name_the_repository_chose() {
         let repository = tempfile::tempdir().unwrap();
         remote(repository.path());
         let start = git(repository.path(), &["rev-parse", "HEAD"]);
@@ -2164,7 +2160,14 @@ mod branch_tests {
         let service = GitService::new();
         service.stage_all(repository.path()).await.unwrap();
 
-        for name in ["-planted", "HEAD", "@", "planted\u{85}"] {
+        for name in [
+            "-planted",
+            "HEAD",
+            "@",
+            "planted\u{85}",
+            "planted\u{200B}",
+            "planted\u{202E}",
+        ] {
             let reference = format!("refs/heads/{name}");
             git(
                 repository.path(),
