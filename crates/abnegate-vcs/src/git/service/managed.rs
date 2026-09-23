@@ -117,10 +117,12 @@ impl GitService {
         command
     }
 
-    /// `branch` checked out at its remote-tracking ref, whatever it held,
-    /// without recording that ref as its upstream: git would write the
-    /// upstream into the clone's configuration, and through a link wherever
-    /// `.git/config` is one.
+    /// `branch` checked out at its remote-tracking ref, whatever it, the
+    /// index and the working tree held, without recording that ref as its
+    /// upstream: git would write the upstream into the clone's configuration,
+    /// and through a link wherever `.git/config` is one. Unlike
+    /// `reset --hard`, it writes no `ORIG_HEAD`, which git would write
+    /// through a symbolic ref standing there onto whatever branch it names.
     fn checking_out(path: &Path, branch: &BranchName) -> Command {
         let mut command = Self::managed_local(path);
         command.args([
@@ -129,18 +131,6 @@ impl GitService {
             "--no-track",
             "-B",
             branch.as_str(),
-            &format!("{REMOTE_TRACKING}{branch}"),
-            "--",
-        ]);
-        command
-    }
-
-    /// The index and working tree reset to `branch`'s remote-tracking ref.
-    fn resetting(path: &Path, branch: &BranchName) -> Command {
-        let mut command = Self::managed_local(path);
-        command.args([
-            "reset",
-            "--hard",
             &format!("{REMOTE_TRACKING}{branch}"),
             "--",
         ]);
@@ -334,13 +324,14 @@ impl GitService {
         Ok(())
     }
 
-    /// Check out `branch` and hard-reset the working tree to `origin/<branch>`.
+    /// Check out `branch` at `origin/<branch>`, with the index and working
+    /// tree set to it.
     ///
     /// Assumes the refs are already fetched, and discards anything the working
-    /// tree holds: only a managed clone may be reset this way. Both steps are
-    /// local, so they run hardened, after the clone's configuration is checked
-    /// and a `branch` that is a symbolic ref is refused with
-    /// [`GitError::SymbolicBranch`].
+    /// tree or the index holds: only a managed clone may be reset this way.
+    /// The checkout is local, so it runs hardened, after the clone's
+    /// configuration is checked and a `branch` that is a symbolic ref is
+    /// refused with [`GitError::SymbolicBranch`].
     async fn checkout_reset(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         Self::verify_config(path).await?;
         if Self::is_symbolic(path, branch.reference()).await? {
@@ -351,15 +342,6 @@ impl GitService {
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
                 "git checkout failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
-
-        let output = Self::output(&mut Self::resetting(path, branch)).await?;
-
-        if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git reset failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             )));
         }
@@ -469,6 +451,7 @@ mod managed_tests {
     use crate::git::service::hardened::fixtures::arguments;
     use crate::git::service::hardened::fixtures::branch;
     use crate::git::service::hardened::fixtures::recording;
+    use crate::worktree::fixtures::attempt;
     use crate::worktree::fixtures::git;
     use tempfile::TempDir;
 
@@ -709,8 +692,8 @@ mod managed_tests {
     }
 
     /// A managed clone whose default branch became a link is not brought
-    /// forward: `checkout -B` and `reset --hard` would reset the branch the
-    /// link names to the remote's.
+    /// forward: `checkout -B` would reset the branch the link names to the
+    /// remote's.
     #[tokio::test]
     async fn a_managed_clone_whose_default_branch_is_a_link_is_not_brought_forward() {
         let source = TempDir::new().unwrap();
@@ -813,6 +796,149 @@ mod managed_tests {
                 "{outcome:?}"
             );
         }
+    }
+
+    /// `reset --hard` records the commit it moves from in `ORIG_HEAD`, and
+    /// writes it through a symbolic ref standing there onto the branch that
+    /// ref names, one another worktree may have checked out. A clone is
+    /// brought forward without writing `ORIG_HEAD` at all.
+    #[tokio::test]
+    async fn bringing_a_clone_forward_leaves_the_branch_orig_head_names() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+        let other = workspace.path().join("other");
+        git(
+            &target,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "task/other",
+                other.to_str().unwrap(),
+            ],
+        );
+        git(&other, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        let kept = git(&other, &["rev-parse", "HEAD"]);
+        git(
+            &target,
+            &["symbolic-ref", "ORIG_HEAD", "refs/heads/task/other"],
+        );
+
+        for operation in 0..2 {
+            git(
+                source.path(),
+                &[
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    &format!("advance {operation}"),
+                ],
+            );
+
+            match operation {
+                0 => service
+                    .ensure_repository(&target, &url, &main)
+                    .await
+                    .unwrap(),
+                _ => service
+                    .ensure_synced(&target, &url)
+                    .await
+                    .map(drop)
+                    .unwrap(),
+            }
+
+            assert_eq!(
+                git(
+                    &target,
+                    &[
+                        "for-each-ref",
+                        "--format=%(objectname)",
+                        "refs/heads/task/other"
+                    ],
+                ),
+                kept,
+                "operation {operation}: the branch ORIG_HEAD names was moved"
+            );
+            assert_eq!(
+                git(&target, &["rev-parse", "HEAD"]),
+                git(source.path(), &["rev-parse", "HEAD"]),
+                "operation {operation}: the clone was brought forward"
+            );
+        }
+        assert_eq!(git(&other, &["rev-parse", "HEAD"]), kept);
+        assert_eq!(
+            git(&target, &["symbolic-ref", "--no-recurse", "ORIG_HEAD"]),
+            "refs/heads/task/other",
+            "ORIG_HEAD was written"
+        );
+    }
+
+    /// Bringing a clone forward discards whatever its working tree and index
+    /// held: a changed file, a staged file the remote's branch does not have,
+    /// and a merge left in conflict.
+    #[tokio::test]
+    async fn bringing_a_clone_forward_discards_a_dirty_tree_and_a_stale_index() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+        git(&target, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(target.join("README.md"), "side\n").unwrap();
+        git(&target, &["commit", "-q", "-am", "side"]);
+        git(&target, &["checkout", "-q", "main"]);
+        std::fs::write(target.join("README.md"), "mine\n").unwrap();
+        git(&target, &["commit", "-q", "-am", "mine"]);
+        assert!(
+            !attempt(&target, &["merge", "-q", "side"]),
+            "the merge is left in conflict"
+        );
+        std::fs::write(target.join("staged.txt"), "staged\n").unwrap();
+        git(&target, &["add", "staged.txt"]);
+        std::fs::write(target.join("README.md"), "changed\n").unwrap();
+        second_commit(source.path());
+
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(&target, &["status", "--porcelain", "--untracked-files=all"]),
+            ""
+        );
+        assert_eq!(
+            git(&target, &["ls-files", "--stage"]),
+            git(source.path(), &["ls-files", "--stage"]),
+            "the index is the remote branch's"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("README.md")).unwrap(),
+            "# test\n"
+        );
+        assert!(!target.join("staged.txt").exists());
+        assert!(!target.join(GIT_DIRECTORY).join("MERGE_HEAD").exists());
+        assert_eq!(
+            git(&target, &["rev-parse", "HEAD"]),
+            git(source.path(), &["rev-parse", "HEAD"])
+        );
     }
 
     #[tokio::test]
@@ -1900,7 +2026,7 @@ mod managed_tests {
         );
     }
 
-    /// A checkout or reset carries every pin. A fetch carries every pin but
+    /// A checkout carries every pin. A fetch carries every pin but
     /// the two that would blank the caller's own credential helper and proxy,
     /// and nothing more.
     #[test]
@@ -1918,10 +2044,7 @@ mod managed_tests {
             GitService::fetching(path, &main),
             GitService::setting_head(path),
         ];
-        let local = [
-            GitService::checking_out(path, &main),
-            GitService::resetting(path, &main),
-        ];
+        let local = [GitService::checking_out(path, &main)];
         let pins = PINS.map(String::from);
         let remote_pins: Vec<String> = PINS
             .as_chunks::<2>()
@@ -1959,7 +2082,7 @@ mod managed_tests {
             assert!(arguments.starts_with(&pins), "{arguments:?}");
             assert!(
                 configured_globally(command),
-                "a checkout or reset ignores the host's configuration: {arguments:?}"
+                "a checkout ignores the host's configuration: {arguments:?}"
             );
         }
     }

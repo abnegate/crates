@@ -412,9 +412,10 @@ pub(crate) mod fixtures {
     use std::path::PathBuf;
     use std::process::Command;
 
-    /// Run git in a fixture with a fixed identity, panicking on failure.
-    pub fn git(path: &Path, arguments: &[&str]) -> String {
-        let output = Command::new("git")
+    /// Git in a fixture with a fixed identity and no host configuration.
+    fn command(path: &Path, arguments: &[&str]) -> Command {
+        let mut command = Command::new("git");
+        command
             .env("GIT_AUTHOR_NAME", "Fixture")
             .env("GIT_AUTHOR_EMAIL", "fixture@example.test")
             .env("GIT_COMMITTER_NAME", "Fixture")
@@ -423,9 +424,13 @@ pub(crate) mod fixtures {
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_TERMINAL_PROMPT", "0")
             .args(arguments)
-            .current_dir(path)
-            .output()
-            .expect("git runs");
+            .current_dir(path);
+        command
+    }
+
+    /// Run git in a fixture with a fixed identity, panicking on failure.
+    pub fn git(path: &Path, arguments: &[&str]) -> String {
+        let output = command(path, arguments).output().expect("git runs");
         assert!(
             output.status.success(),
             "git {arguments:?} in {}: {}",
@@ -433,6 +438,15 @@ pub(crate) mod fixtures {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// Run git in a fixture as [`git`] does, and say whether it succeeded.
+    pub fn attempt(path: &Path, arguments: &[&str]) -> bool {
+        command(path, arguments)
+            .output()
+            .expect("git runs")
+            .status
+            .success()
     }
 
     /// A repository with one commit on `main`, the shape a remote has.
