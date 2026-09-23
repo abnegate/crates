@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "{} at {}ms, shot {}{}",
             frame.filename,
-            frame.timestamp_ms,
+            frame.timestamp_milliseconds,
             frame.group,
             if frame.mirrored { ", mirrored" } else { "" }
         );

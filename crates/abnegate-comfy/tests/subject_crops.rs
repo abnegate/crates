@@ -23,9 +23,9 @@ fn scene(width: u32, height: u32, centre: (u32, u32), radius: u32) -> Vec<u8> {
     let mut pixels = vec![226u8; (width * height * 3) as usize];
     for y in 0..height {
         for x in 0..width {
-            let dx = f64::from(x) - f64::from(centre.0);
-            let dy = f64::from(y) - f64::from(centre.1);
-            if dx * dx + dy * dy <= f64::from(radius * radius) {
+            let horizontal = f64::from(x) - f64::from(centre.0);
+            let vertical = f64::from(y) - f64::from(centre.1);
+            if horizontal * horizontal + vertical * vertical <= f64::from(radius * radius) {
                 let offset = ((y * width + x) * 3) as usize;
                 pixels[offset..offset + 3].copy_from_slice(&[26, 32, 44]);
             }

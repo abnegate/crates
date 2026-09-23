@@ -262,7 +262,7 @@ impl Client {
         })?;
         let client = HttpClient::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(config.request_timeout_secs))
+            .timeout(Duration::from_secs(config.request_timeout_seconds))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let catalog = RecipeCatalog::load(Some(config.workflow_path.as_path()))?;
@@ -283,14 +283,14 @@ impl Client {
 
     fn image_recipe(&self) -> Result<&Recipe, Error> {
         let selected = self.config.checkpoint.as_str();
-        if self.config.models_dir.is_dir() {
-            let items = crate::inventory::scan(&self.config.models_dir, &self.catalog);
+        if self.config.models_directory.is_dir() {
+            let items = crate::inventory::scan(&self.config.models_directory, &self.catalog);
             if let Some(item) = crate::inventory::find(&items, selected)
                 && let Some(recipe) = self.catalog.get(&item.recipe_id)
             {
                 return Ok(recipe);
             }
-            let loras = self.config.models_dir.join("loras");
+            let loras = self.config.models_directory.join("loras");
             let pending = crate::inventory::publication_marker(&loras, selected)
                 .is_some_and(|marker| std::fs::symlink_metadata(marker).is_ok());
             if pending || std::fs::symlink_metadata(loras.join(selected)).is_ok() {
@@ -351,8 +351,8 @@ impl Client {
         if cancel.try_recv().is_ok() {
             return Err(Error::Cancelled);
         }
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_secs(self.config.generation_timeout_secs);
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_secs(self.config.generation_timeout_seconds);
         let prompt = if prompt.trim().is_empty() {
             if source.is_some() {
                 "edit this image"
@@ -417,7 +417,7 @@ impl Client {
         }
         let (video_workflow, i2v_workflow) = self.video_workflows()?;
         let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.video_generation_timeout_secs);
+            + Duration::from_secs(self.config.video_generation_timeout_seconds);
         let prompt = if prompt.trim().is_empty() {
             if source.is_some() {
                 "animate this image"
@@ -479,7 +479,7 @@ impl Client {
         }
         let workflow = load_upscale_workflow(&self.config.upscale_workflow_path)?;
         let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.upscale_generation_timeout_secs);
+            + Duration::from_secs(self.config.upscale_generation_timeout_seconds);
         let _ = progress.send("Uploading source image...".to_string());
         let uploaded = self
             .upload_media(
@@ -522,7 +522,7 @@ impl Client {
         }
         let workflow = load_upscale_video_workflow(&self.config.upscale_workflow_path)?;
         let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.upscale_generation_timeout_secs);
+            + Duration::from_secs(self.config.upscale_generation_timeout_seconds);
         let _ = progress.send("Uploading source video...".to_string());
         let uploaded = self
             .upload_media(
@@ -566,7 +566,7 @@ impl Client {
         }
         let audio_workflow = self.audio_workflow()?;
         let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.audio_generation_timeout_secs);
+            + Duration::from_secs(self.config.audio_generation_timeout_seconds);
         let workflow = configure_ace_step_workflow(
             audio_workflow,
             prompt,
@@ -658,7 +658,7 @@ impl Client {
                     self.cancel(&prompt_id).await;
                     return Err(Error::Timeout);
                 }
-                _ = tokio::time::sleep(Duration::from_millis(self.config.poll_interval_ms)) => {
+                _ = tokio::time::sleep(Duration::from_millis(self.config.poll_interval_milliseconds)) => {
                     if !announced_generation {
                         let _ = progress.send(collection.generating.to_string());
                         announced_generation = true;
@@ -1574,7 +1574,7 @@ mod tests {
         std::fs::write(&weight, b"lora").unwrap();
         let config = Config {
             checkpoint: "style.safetensors".into(),
-            models_dir: models,
+            models_directory: models,
             ..Default::default()
         };
         assert!(matches!(
@@ -1588,7 +1588,7 @@ mod tests {
             &weight,
             &crate::inventory::WeightSidecar {
                 recipe_id: "flux-schnell-adapter".into(),
-                hf_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
+                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
         )
         .unwrap();
@@ -1598,7 +1598,7 @@ mod tests {
             &weight,
             &crate::inventory::WeightSidecar {
                 recipe_id: "flux-schnell-adapter".into(),
-                hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
             },
         )
         .unwrap();
@@ -1758,7 +1758,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -1810,7 +1810,7 @@ mod tests {
                 base_url: server.uri(),
                 api_token: Some("secret".into()),
                 token_header: header.to_string(),
-                poll_interval_ms: 50,
+                poll_interval_milliseconds: 50,
                 ..Default::default()
             })
             .unwrap();
@@ -1837,7 +1837,7 @@ mod tests {
             &weight,
             &crate::inventory::WeightSidecar {
                 recipe_id: "qwen-image-edit-adapter".into(),
-                hf_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
+                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
         )
         .unwrap();
@@ -1876,8 +1876,8 @@ mod tests {
             enabled: true,
             base_url: server.uri(),
             checkpoint: "qwen-image-edit-plus-nsfw-lora.safetensors".into(),
-            models_dir: models,
-            poll_interval_ms: 50,
+            models_directory: models,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -1911,7 +1911,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 5000,
+            poll_interval_milliseconds: 5000,
             ..Default::default()
         })
         .unwrap();
@@ -1977,7 +1977,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            request_timeout_secs: 60,
+            request_timeout_seconds: 60,
             ..Default::default()
         })
         .unwrap();
@@ -2039,7 +2039,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2184,7 +2184,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2249,7 +2249,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2297,7 +2297,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2357,7 +2357,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2403,7 +2403,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();

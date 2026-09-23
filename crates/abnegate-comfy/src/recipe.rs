@@ -105,7 +105,7 @@ pub enum TrainingModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrainingAdapter {
     pub recipe_id: String,
-    pub hf_base: String,
+    pub huggingface_base: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -123,7 +123,7 @@ pub struct Recipe {
     pub adapter: bool,
     pub prompt_mode: PromptMode,
     pub defaults: HashMap<String, String>,
-    pub hf_bases: Vec<String>,
+    pub huggingface_bases: Vec<String>,
     pub required_files: Vec<RequiredFile>,
     training: Option<Training>,
     bare: Value,
@@ -177,8 +177,8 @@ struct CatalogRecipe {
     prompt_mode: PromptMode,
     #[serde(default)]
     defaults: HashMap<String, String>,
-    #[serde(default)]
-    hf_bases: Vec<String>,
+    #[serde(default, rename = "hf_bases")]
+    huggingface_bases: Vec<String>,
     #[serde(default)]
     required_files: Vec<RequiredFile>,
     #[serde(default)]
@@ -189,7 +189,8 @@ struct CatalogRecipe {
 struct CatalogTraining {
     architecture: TrainingArchitecture,
     adapter: String,
-    hf_base: String,
+    #[serde(rename = "hf_base")]
+    huggingface_base: String,
 }
 
 #[derive(Debug, Clone)]
@@ -224,11 +225,11 @@ impl RecipeCatalog {
     /// workflow directory; otherwise use the packaged catalog. Graphs of the
     /// same filename in that workflow directory overlay the baked-in copies.
     pub fn load(workflow_path: Option<&Path>) -> Result<Self, Error> {
-        let dir = workflow_path.and_then(Path::parent);
-        if let Some(contents) = read_overlay_catalog(dir)? {
-            Self::from_json(&contents, dir)
+        let directory = workflow_path.and_then(Path::parent);
+        if let Some(contents) = read_overlay_catalog(directory)? {
+            Self::from_json(&contents, directory)
         } else {
-            Self::from_json(PACKAGED_CATALOG, dir)
+            Self::from_json(PACKAGED_CATALOG, directory)
         }
     }
 
@@ -278,13 +279,13 @@ impl RecipeCatalog {
                 adapter: spec.adapter,
                 prompt_mode: spec.prompt_mode,
                 defaults: spec.defaults,
-                hf_bases: spec.hf_bases,
+                huggingface_bases: spec.huggingface_bases,
                 required_files: spec.required_files,
                 training: spec.training.map(|training| Training {
                     architecture: training.architecture,
                     adapter: TrainingAdapter {
                         recipe_id: training.adapter,
-                        hf_base: training.hf_base,
+                        huggingface_base: training.huggingface_base,
                     },
                 }),
                 bare,
@@ -307,13 +308,13 @@ impl RecipeCatalog {
                 || adapter_recipe.kind != recipe.kind
                 || !adapter_recipe.has_lora_slot()
                 || !recipe
-                    .hf_bases
+                    .huggingface_bases
                     .iter()
-                    .any(|base| base.eq_ignore_ascii_case(&adapter.hf_base))
+                    .any(|base| base.eq_ignore_ascii_case(&adapter.huggingface_base))
                 || !adapter_recipe
-                    .hf_bases
+                    .huggingface_bases
                     .iter()
-                    .any(|base| base.eq_ignore_ascii_case(&adapter.hf_base))
+                    .any(|base| base.eq_ignore_ascii_case(&adapter.huggingface_base))
             {
                 return Err(Error::Configuration(
                     "training metadata does not match its adapter recipe",
@@ -391,10 +392,10 @@ impl RecipeCatalog {
             .filter(|recipe| recipe.kind == MediaKind::Image)
     }
 
-    pub fn hf_bases(&self) -> Vec<String> {
+    pub fn huggingface_bases(&self) -> Vec<String> {
         let mut bases = Vec::new();
         for recipe in self.image_recipes() {
-            for base in &recipe.hf_bases {
+            for base in &recipe.huggingface_bases {
                 if !bases.iter().any(|existing| existing == base) {
                     bases.push(base.clone());
                 }
@@ -403,15 +404,15 @@ impl RecipeCatalog {
         bases
     }
 
-    pub fn adapter_recipe_for_base(&self, hf_base: &str) -> Option<&Recipe> {
+    pub fn adapter_recipe_for_base(&self, huggingface_base: &str) -> Option<&Recipe> {
         self.recipes.iter().find(|recipe| {
             recipe.kind == MediaKind::Image
                 && recipe.adapter
                 && recipe.has_lora_slot()
                 && recipe
-                    .hf_bases
+                    .huggingface_bases
                     .iter()
-                    .any(|base| base.eq_ignore_ascii_case(hf_base))
+                    .any(|base| base.eq_ignore_ascii_case(huggingface_base))
         })
     }
 }
@@ -524,12 +525,12 @@ fn read_overlay_catalog(workflow_dir: Option<&Path>) -> Result<Option<String>, E
         .map_err(|_| Error::Configuration("recipe catalog is not readable"))
 }
 
-fn load_graph(dir: Option<&Path>, filename: &str) -> Result<Value, Error> {
+fn load_graph(directory: Option<&Path>, filename: &str) -> Result<Value, Error> {
     if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
         return Err(Error::Configuration("invalid workflow filename"));
     }
-    if let Some(path) = dir
-        .map(|dir| dir.join(filename))
+    if let Some(path) = directory
+        .map(|directory| directory.join(filename))
         .filter(|path| path.is_file())
     {
         let contents = std::fs::read_to_string(path)
@@ -635,9 +636,9 @@ pub fn sanitize_upload_name(name: &str) -> Result<String, Error> {
         || name.contains('/')
         || name.contains('\\')
         || name.contains("..")
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        || !name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+        })
     {
         return Err(Error::Configuration("invalid source image filename"));
     }
@@ -747,7 +748,7 @@ mod tests {
                 .unwrap(),
             &TrainingAdapter {
                 recipe_id: "qwen-image-edit-adapter".into(),
-                hf_base: "Qwen/Qwen-Image-Edit-2511".into(),
+                huggingface_base: "Qwen/Qwen-Image-Edit-2511".into(),
             }
         );
     }

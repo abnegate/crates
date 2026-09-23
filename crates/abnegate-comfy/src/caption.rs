@@ -118,7 +118,7 @@ impl Captioner {
     pub fn new(config: &Config, litellm_host: String, litellm_key: String) -> Self {
         Self {
             model: config.caption_model.clone(),
-            timeout: Duration::from_secs(config.caption_timeout_secs),
+            timeout: Duration::from_secs(config.caption_timeout_seconds),
             host: litellm_host,
             key: litellm_key,
         }
@@ -330,7 +330,7 @@ mod tests {
     fn config(model: &str) -> Config {
         Config {
             caption_model: model.to_string(),
-            caption_timeout_secs: 5,
+            caption_timeout_seconds: 5,
             ..Default::default()
         }
     }

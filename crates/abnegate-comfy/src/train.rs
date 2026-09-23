@@ -283,7 +283,7 @@ async fn execute(
         &client,
         config,
         prompt,
-        Duration::from_secs(config.train_timeout_secs),
+        Duration::from_secs(config.train_timeout_seconds),
     )
     .await
     {
@@ -300,7 +300,7 @@ async fn execute(
 fn client(config: &Config) -> Result<reqwest::Client, TrainError> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(config.train_timeout_secs))
+        .timeout(Duration::from_secs(config.train_timeout_seconds))
         .build()
         .map_err(|error| TrainError::Failed(error.to_string()))
 }
@@ -969,7 +969,7 @@ async fn cancel_and_wait(
         {
             return true;
         }
-        tokio::time::sleep(Duration::from_millis(config.poll_interval_ms)).await;
+        tokio::time::sleep(Duration::from_millis(config.poll_interval_milliseconds)).await;
     }
 }
 
@@ -1028,7 +1028,7 @@ fn cleanup_local(config: &Config, run: &Run) {
 }
 
 fn local_input(config: &Config) -> Result<Option<PathBuf>, TrainError> {
-    let Some(root) = config.models_dir.parent() else {
+    let Some(root) = config.models_directory.parent() else {
         return Ok(None);
     };
     let root = match fs::symlink_metadata(root) {
@@ -1045,7 +1045,7 @@ fn local_input(config: &Config) -> Result<Option<PathBuf>, TrainError> {
 }
 
 fn local_output(config: &Config) -> Option<PathBuf> {
-    let root = require_directory(config.models_dir.parent()?, "ComfyUI root").ok()?;
+    let root = require_directory(config.models_directory.parent()?, "ComfyUI root").ok()?;
     let output = require_child_directory(&root, &root.join("output"), "ComfyUI output").ok()?;
     require_child_directory(&output, &output.join("loras"), "ComfyUI LoRA output").ok()
 }
@@ -1222,10 +1222,10 @@ mod tests {
             enabled: true,
             base_url: server.uri(),
             api_token: Some("secret".into()),
-            train_timeout_secs: 60,
-            poll_interval_ms: 50,
+            train_timeout_seconds: 60,
+            poll_interval_milliseconds: 50,
             // No sibling input/ directory, so staging falls through to upload.
-            models_dir: std::env::temp_dir().join(format!("comfy-models-{}", Uuid::new_v4())),
+            models_directory: std::env::temp_dir().join(format!("comfy-models-{}", Uuid::new_v4())),
             ..Default::default()
         }
     }
@@ -1611,14 +1611,14 @@ mod tests {
         finishes(&server, prompt).await;
         serves(&server, vec![7u8; 20_000]).await;
 
-        // models_dir with a sibling input/ is the shared-volume deployment,
+        // models_directory with a sibling input/ is the shared-volume deployment,
         // where the dataset can simply be copied into place.
         let comfy = tempfile::tempdir().unwrap();
         let input = comfy.path().join("input");
         fs::create_dir_all(&input).unwrap();
         let mut settings = config(&server);
-        settings.models_dir = comfy.path().join("models");
-        fs::create_dir_all(&settings.models_dir).unwrap();
+        settings.models_directory = comfy.path().join("models");
+        fs::create_dir_all(&settings.models_directory).unwrap();
 
         let work = dataset();
         run(
@@ -1938,7 +1938,7 @@ mod tests {
         let linked_root = root.path().join("comfy");
         symlink(&actual, &linked_root).unwrap();
         let config = Config {
-            models_dir: linked_root.join("models"),
+            models_directory: linked_root.join("models"),
             ..Default::default()
         };
         assert!(local_input(&config).is_err());
@@ -1949,7 +1949,7 @@ mod tests {
         fs::create_dir(&outside).unwrap();
         symlink(&outside, safe.join("input")).unwrap();
         let config = Config {
-            models_dir: safe.join("models"),
+            models_directory: safe.join("models"),
             ..Default::default()
         };
         assert!(local_input(&config).is_err());
@@ -1987,7 +1987,7 @@ mod tests {
         symlink(&outside_output, comfy.join("output/loras")).unwrap();
         cleanup_local(
             &Config {
-                models_dir: comfy.join("models"),
+                models_directory: comfy.join("models"),
                 ..Default::default()
             },
             &run,
@@ -2024,7 +2024,7 @@ mod tests {
             &reqwest::Client::new(),
             &Config {
                 base_url: server.uri(),
-                poll_interval_ms: 1,
+                poll_interval_milliseconds: 1,
                 ..Default::default()
             },
             prompt,
@@ -2075,7 +2075,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let failure = queue(&reqwest::Client::new(), &config, json!({}))

@@ -70,23 +70,23 @@ pub struct Config {
     pub upscale_model: String,
     pub artifact_root: std::path::PathBuf,
     pub classifier_model: String,
-    pub classifier_timeout_secs: u64,
+    pub classifier_timeout_seconds: u64,
     /// Vision model that captions LoRA training images. Empty disables captioning.
     pub caption_model: String,
-    pub caption_timeout_secs: u64,
-    pub request_timeout_secs: u64,
-    pub generation_timeout_secs: u64,
-    pub video_generation_timeout_secs: u64,
-    pub audio_generation_timeout_secs: u64,
-    pub upscale_generation_timeout_secs: u64,
-    pub poll_interval_ms: u64,
+    pub caption_timeout_seconds: u64,
+    pub request_timeout_seconds: u64,
+    pub generation_timeout_seconds: u64,
+    pub video_generation_timeout_seconds: u64,
+    pub audio_generation_timeout_seconds: u64,
+    pub upscale_generation_timeout_seconds: u64,
+    pub poll_interval_milliseconds: u64,
     /// ComfyUI models root (`checkpoints/`, `loras/`, `diffusion_models/`, ...).
-    pub models_dir: std::path::PathBuf,
+    pub models_directory: std::path::PathBuf,
     /// Optional command used to train a LoRA. Empty runs the packaged training
     /// graph on ComfyUI.
     pub train_command: Option<String>,
     /// Wall clock budget for a ComfyUI train job.
-    pub train_timeout_secs: u64,
+    pub train_timeout_seconds: u64,
     /// Decoder that turns a submitted clip into training frames.
     pub ffmpeg: String,
     /// Reads a clip's duration, so a long one lowers its sampling rate instead
@@ -127,18 +127,18 @@ impl Default for Config {
             upscale_model: "RealESRGAN_x4plus.safetensors".to_string(),
             artifact_root: "/app/artifacts".into(),
             classifier_model: "auto".to_string(),
-            classifier_timeout_secs: 3,
+            classifier_timeout_seconds: 3,
             caption_model: String::new(),
-            caption_timeout_secs: 60,
-            request_timeout_secs: 15,
-            generation_timeout_secs: 300,
-            video_generation_timeout_secs: 600,
-            audio_generation_timeout_secs: 600,
-            upscale_generation_timeout_secs: 600,
-            poll_interval_ms: 500,
-            models_dir: std::path::PathBuf::from("/app/comfyui/models"),
+            caption_timeout_seconds: 60,
+            request_timeout_seconds: 15,
+            generation_timeout_seconds: 300,
+            video_generation_timeout_seconds: 600,
+            audio_generation_timeout_seconds: 600,
+            upscale_generation_timeout_seconds: 600,
+            poll_interval_milliseconds: 500,
+            models_directory: std::path::PathBuf::from("/app/comfyui/models"),
             train_command: None,
-            train_timeout_secs: 3600,
+            train_timeout_seconds: 3600,
             ffmpeg: "ffmpeg".to_string(),
             ffprobe: "ffprobe".to_string(),
             frame_fps: 4,
@@ -159,7 +159,7 @@ impl Config {
     /// [`Config::from_env`], taking the U2-Net weights path from `variable`
     /// instead, for a deployment that already names it something else.
     pub fn from_env_with_vision_model(variable: &str) -> Self {
-        let models_dir: std::path::PathBuf = env::var("COMFYUI_MODELS_DIR")
+        let models_directory: std::path::PathBuf = env::var("COMFYUI_MODELS_DIR")
             .unwrap_or_else(|_| "/app/comfyui/models".to_string())
             .into();
         Self {
@@ -202,37 +202,37 @@ impl Config {
                 .into(),
             classifier_model: env_text("COMFYUI_CLASSIFIER_MODEL")
                 .unwrap_or_else(|| "auto".to_string()),
-            classifier_timeout_secs: env_u64("COMFYUI_CLASSIFIER_TIMEOUT_SECS", 3, 1, 30),
+            classifier_timeout_seconds: env_u64("COMFYUI_CLASSIFIER_TIMEOUT_SECS", 3, 1, 30),
             caption_model: env_text("COMFYUI_CAPTION_MODEL").unwrap_or_default(),
-            caption_timeout_secs: env_u64("COMFYUI_CAPTION_TIMEOUT_SECS", 60, 5, 600),
-            request_timeout_secs: env_u64("COMFYUI_REQUEST_TIMEOUT_SECS", 15, 1, 120),
-            generation_timeout_secs: env_u64("COMFYUI_GENERATION_TIMEOUT_SECS", 300, 10, 3600),
-            video_generation_timeout_secs: env_u64(
+            caption_timeout_seconds: env_u64("COMFYUI_CAPTION_TIMEOUT_SECS", 60, 5, 600),
+            request_timeout_seconds: env_u64("COMFYUI_REQUEST_TIMEOUT_SECS", 15, 1, 120),
+            generation_timeout_seconds: env_u64("COMFYUI_GENERATION_TIMEOUT_SECS", 300, 10, 3600),
+            video_generation_timeout_seconds: env_u64(
                 "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECS",
                 600,
                 10,
                 3600,
             ),
-            audio_generation_timeout_secs: env_u64(
+            audio_generation_timeout_seconds: env_u64(
                 "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECS",
                 600,
                 10,
                 3600,
             ),
-            upscale_generation_timeout_secs: env_u64(
+            upscale_generation_timeout_seconds: env_u64(
                 "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECS",
                 600,
                 10,
                 3600,
             ),
-            poll_interval_ms: env_u64("COMFYUI_POLL_INTERVAL_MS", 500, 50, 5000),
+            poll_interval_milliseconds: env_u64("COMFYUI_POLL_INTERVAL_MS", 500, 50, 5000),
             vision_model: env_text(variable)
                 .map(std::path::PathBuf::from)
-                .or_else(|| Some(models_dir.join("vision/u2net.onnx")))
+                .or_else(|| Some(models_directory.join("vision/u2net.onnx")))
                 .filter(|path| path.is_file()),
-            models_dir,
+            models_directory,
             train_command: env_text("COMFYUI_TRAIN_COMMAND"),
-            train_timeout_secs: env_u64("COMFYUI_TRAIN_TIMEOUT_SECS", 3600, 60, 14400),
+            train_timeout_seconds: env_u64("COMFYUI_TRAIN_TIMEOUT_SECS", 3600, 60, 14400),
             ffmpeg: env_text("COMFYUI_FFMPEG").unwrap_or_else(|| "ffmpeg".to_string()),
             ffprobe: env_text("COMFYUI_FFPROBE").unwrap_or_else(|| "ffprobe".to_string()),
             frame_fps: env_u64("COMFYUI_TRAIN_FRAME_FPS", 4, 1, 30) as u32,
@@ -257,7 +257,7 @@ mod tests {
             development.audio_workflow_path
         );
         assert_eq!(development.audio_checkpoint, "ace_step_v1_3.5b.safetensors");
-        assert_eq!(development.audio_generation_timeout_secs, 600);
+        assert_eq!(development.audio_generation_timeout_seconds, 600);
 
         if env::var_os("COMFYUI_AUDIO_WORKFLOW_PATH").is_none() {
             let container = Config::from_env();

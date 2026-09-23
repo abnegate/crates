@@ -210,8 +210,8 @@ impl Drop for Attempt {
     }
 }
 
-pub fn available_bases(catalog: &RecipeCatalog, models_dir: &Path) -> Vec<TrainBase> {
-    let items = crate::inventory::scan(models_dir, catalog);
+pub fn available_bases(catalog: &RecipeCatalog, models_directory: &Path) -> Vec<TrainBase> {
+    let items = crate::inventory::scan(models_directory, catalog);
     catalog
         .image_recipes()
         .filter(|recipe| !recipe.adapter)
@@ -379,8 +379,8 @@ async fn train_with_pipeline(
         described
     };
     let findings = crate::dataset::inspect(&described, survivors.len());
-    let mut attempt = Attempt::create(&config.models_dir)?;
-    let loras = ensure_child_directory(&config.models_dir, "loras")?;
+    let mut attempt = Attempt::create(&config.models_directory)?;
+    let loras = ensure_child_directory(&config.models_directory, "loras")?;
     let output = validate_output(&loras, &loras.join(&filename))?;
     let output_sidecar = validate_output(&loras, &sidecar_path(&output))?;
     let targets = ensure_child_directory(&attempt.root, "targets")?;
@@ -445,12 +445,12 @@ async fn train_with_pipeline(
             .env("COMFYUI_BASE_URL", &config.base_url)
             .env(
                 contract.variable("TIMEOUT"),
-                config.train_timeout_secs.to_string(),
+                config.train_timeout_seconds.to_string(),
             )
             .env(
                 contract.input_variable(),
                 config
-                    .models_dir
+                    .models_directory
                     .parent()
                     .unwrap_or(Path::new("."))
                     .join("input")
@@ -512,7 +512,7 @@ async fn train_with_pipeline(
     let bytes = serde_json::to_vec_pretty(&WeightDocument {
         sidecar: WeightSidecar {
             recipe_id: adapter.recipe_id.clone(),
-            hf_base: Some(adapter.hf_base.clone()),
+            huggingface_base: Some(adapter.huggingface_base.clone()),
         },
         generation: Some(attempt.id.clone()),
     })
@@ -1390,9 +1390,9 @@ mod tests {
         fs::create_dir(&models).expect("models directory");
         let config = Config {
             base_url: "http://127.0.0.1:9".to_string(),
-            models_dir: models,
+            models_directory: models,
             train_command: Some(command.to_string()),
-            train_timeout_secs: 2,
+            train_timeout_seconds: 2,
             contract: contract(),
             ..Default::default()
         };
@@ -1518,7 +1518,7 @@ mod tests {
     }
 
     fn training_entries(config: &Config) -> Vec<PathBuf> {
-        let training = config.models_dir.join("training");
+        let training = config.models_directory.join("training");
         let Ok(entries) = fs::read_dir(training) else {
             return Vec::new();
         };
@@ -1530,7 +1530,7 @@ mod tests {
         generation: &str,
         contents: &[u8],
     ) -> (PathBuf, PathBuf, PathBuf) {
-        let attempt = config.models_dir.join("training").join(generation);
+        let attempt = config.models_directory.join("training").join(generation);
         fs::create_dir_all(&attempt).unwrap();
         let staged = attempt.join(format!("{generation}.safetensors"));
         let sidecar = sidecar_path(&staged);
@@ -1540,7 +1540,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some(generation.to_string()),
             })
@@ -1709,7 +1709,7 @@ mod tests {
             .join("..")
             .join(format!("escaped-{}", uuid::Uuid::new_v4()));
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1751,7 +1751,7 @@ mod tests {
     async fn training_needs_images() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1766,7 +1766,7 @@ mod tests {
     async fn a_blank_trigger_counts_as_no_trigger() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1779,7 +1779,7 @@ mod tests {
     async fn an_unknown_base_is_refused_before_anything_is_written() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1797,7 +1797,7 @@ mod tests {
     async fn a_trainer_that_exits_badly_is_reported() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("exit 3".into()),
             ..Default::default()
         };
@@ -1816,7 +1816,7 @@ mod tests {
     async fn a_trainer_that_writes_nothing_is_not_a_success() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1832,7 +1832,7 @@ mod tests {
     async fn an_edit_base_gets_a_control_directory_beside_its_targets() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("printf lora > \"$TRAIN_OUTPUT\"".into()),
             contract: contract(),
             ..Default::default()
@@ -1858,7 +1858,7 @@ mod tests {
     async fn a_blank_caption_is_filled_in_before_the_dataset_is_written() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("printf lora > \"$TRAIN_OUTPUT\"".into()),
             contract: contract(),
             ..Default::default()
@@ -1875,7 +1875,7 @@ mod tests {
     async fn a_name_too_long_to_write_is_refused_rather_than_failing_in_the_trainer() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("printf lora > \"$TRAIN_OUTPUT\"".into()),
             contract: contract(),
             ..Default::default()
@@ -1975,11 +1975,11 @@ mod tests {
 
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             enabled: true,
             base_url: server.uri(),
             train_command: None,
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         };
         let outcome = train(
@@ -2229,7 +2229,7 @@ mod tests {
         let (_root, mut config) = harness(&command);
         config.enabled = true;
         config.base_url = server.uri();
-        config.poll_interval_ms = 1;
+        config.poll_interval_milliseconds = 1;
 
         let outcome = train_with_remediation(
             &config,
@@ -2416,10 +2416,10 @@ mod tests {
         let config = Config {
             enabled: true,
             base_url: server.uri(),
-            models_dir: models,
-            poll_interval_ms: 1,
+            models_directory: models,
+            poll_interval_milliseconds: 1,
             train_command: None,
-            train_timeout_secs: 2,
+            train_timeout_seconds: 2,
             ..Default::default()
         };
         let outcome = train_with_screening(
@@ -2621,7 +2621,7 @@ mod tests {
         use std::time::Duration;
 
         let (_root, config) = harness("unused");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("shared.safetensors");
         let output_sidecar = sidecar_path(&output);
@@ -2679,8 +2679,11 @@ mod tests {
             "the second publication must wait at the same final name"
         );
         assert!(
-            crate::inventory::scan(&config.models_dir, &RecipeCatalog::packaged().unwrap())
-                .is_empty(),
+            crate::inventory::scan(
+                &config.models_directory,
+                &RecipeCatalog::packaged().unwrap()
+            )
+            .is_empty(),
             "readers must not observe the first weight before its sidecar"
         );
 
@@ -2697,7 +2700,7 @@ mod tests {
     #[test]
     fn interrupted_publication_is_hidden_and_recovers_the_previous_generation() {
         let (_root, config) = harness("unused");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("stable.safetensors");
         let output_sidecar = sidecar_path(&output);
@@ -2708,7 +2711,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some(previous_generation.clone()),
             })
@@ -2739,8 +2742,11 @@ mod tests {
         let marker = publication_marker(&loras, "stable.safetensors").unwrap();
         assert!(marker.is_file());
         assert!(
-            crate::inventory::scan(&config.models_dir, &RecipeCatalog::packaged().unwrap())
-                .is_empty(),
+            crate::inventory::scan(
+                &config.models_directory,
+                &RecipeCatalog::packaged().unwrap()
+            )
+            .is_empty(),
             "an interrupted generation must fail closed"
         );
 
@@ -2758,7 +2764,7 @@ mod tests {
     #[test]
     fn publication_error_restores_both_files_before_returning() {
         let (_root, config) = harness("unused");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("stable.safetensors");
         let output_sidecar = sidecar_path(&output);
@@ -2769,7 +2775,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some(previous_generation.clone()),
             })
@@ -2812,7 +2818,7 @@ mod tests {
     #[test]
     fn mismatched_staged_sidecar_never_reaches_the_final_name() {
         let (_root, config) = harness("unused");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let generation = Uuid::new_v4().to_string();
         let wrong_generation = Uuid::new_v4().to_string();
@@ -2822,7 +2828,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some(wrong_generation),
             })
@@ -2852,7 +2858,7 @@ mod tests {
     async fn attempt_cleanup_never_removes_another_attempt() {
         let (_root, config) = harness("printf trained > \"$TRAIN_OUTPUT\"");
         let other = config
-            .models_dir
+            .models_directory
             .join("training")
             .join(Uuid::new_v4().to_string());
         fs::create_dir_all(&other).unwrap();
@@ -2886,7 +2892,7 @@ mod tests {
         assert!(training_entries(&config).is_empty());
         assert!(
             !config
-                .models_dir
+                .models_directory
                 .join("loras/unsupported.safetensors")
                 .exists()
         );
@@ -2929,7 +2935,7 @@ mod tests {
         assert!(training_entries(&config).is_empty());
         assert!(
             !config
-                .models_dir
+                .models_directory
                 .join("loras/must-not-train.safetensors")
                 .exists()
         );
@@ -2938,46 +2944,48 @@ mod tests {
     #[test]
     fn advertised_bases_are_ready_and_have_a_typed_training_architecture() {
         let (_root, config) = harness("unused");
-        fs::create_dir_all(config.models_dir.join("checkpoints")).unwrap();
-        fs::create_dir_all(config.models_dir.join("diffusion_models")).unwrap();
-        fs::create_dir_all(config.models_dir.join("text_encoders")).unwrap();
-        fs::create_dir_all(config.models_dir.join("vae")).unwrap();
+        fs::create_dir_all(config.models_directory.join("checkpoints")).unwrap();
+        fs::create_dir_all(config.models_directory.join("diffusion_models")).unwrap();
+        fs::create_dir_all(config.models_directory.join("text_encoders")).unwrap();
+        fs::create_dir_all(config.models_directory.join("vae")).unwrap();
         fs::write(
             config
-                .models_dir
+                .models_directory
                 .join("checkpoints/flux1-schnell-fp8.safetensors"),
             b"flux",
         )
         .unwrap();
         fs::write(
             config
-                .models_dir
+                .models_directory
                 .join("checkpoints/sd15-custom.safetensors"),
             b"sd15",
         )
         .unwrap();
         fs::write(
             config
-                .models_dir
+                .models_directory
                 .join("diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors"),
             b"qwen",
         )
         .unwrap();
         fs::write(
             config
-                .models_dir
+                .models_directory
                 .join("text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"),
             b"clip",
         )
         .unwrap();
         fs::write(
-            config.models_dir.join("vae/qwen_image_vae.safetensors"),
+            config
+                .models_directory
+                .join("vae/qwen_image_vae.safetensors"),
             b"vae",
         )
         .unwrap();
         let catalog = RecipeCatalog::packaged().unwrap();
 
-        let bases = available_bases(&catalog, &config.models_dir);
+        let bases = available_bases(&catalog, &config.models_directory);
 
         assert!(bases.iter().any(|base| base.id == "flux-schnell"));
         assert!(
@@ -2999,7 +3007,7 @@ mod tests {
         let (root, config) = harness("printf escaped > \"$TRAIN_OUTPUT\"");
         let outside = root.path().join("outside");
         fs::create_dir(&outside).unwrap();
-        symlink(&outside, config.models_dir.join("training")).unwrap();
+        symlink(&outside, config.models_directory.join("training")).unwrap();
 
         let error = train_with_screening(
             &config,
@@ -3021,7 +3029,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let (root, config) = harness("printf replacement > \"$TRAIN_OUTPUT\"");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let outside = root.path().join("outside.safetensors");
         fs::write(&outside, b"outside").unwrap();
@@ -3048,7 +3056,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let (root, config) = harness("unused");
-        let attempt = Attempt::create(&config.models_dir).unwrap();
+        let attempt = Attempt::create(&config.models_directory).unwrap();
         let targets = ensure_child_directory(&attempt.root, "targets").unwrap();
         let outside = root.path().join("outside.png");
         fs::write(&outside, b"outside").unwrap();

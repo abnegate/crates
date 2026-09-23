@@ -23,8 +23,8 @@ const SCAN_DIRECTORIES: &[(&str, &str)] = &[
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WeightSidecar {
     pub recipe_id: String,
-    #[serde(default)]
-    pub hf_base: Option<String>,
+    #[serde(default, rename = "hf_base")]
+    pub huggingface_base: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,10 +50,10 @@ pub struct InventoryItem {
     pub prompt_mode: String,
 }
 
-pub fn scan(models_dir: &Path, catalog: &RecipeCatalog) -> Vec<InventoryItem> {
+pub fn scan(models_directory: &Path, catalog: &RecipeCatalog) -> Vec<InventoryItem> {
     let mut items = Vec::new();
     for (directory, kind) in SCAN_DIRECTORIES {
-        let folder = models_dir.join(directory);
+        let folder = models_directory.join(directory);
         let Ok(entries) = fs::read_dir(&folder) else {
             continue;
         };
@@ -71,23 +71,26 @@ pub fn scan(models_dir: &Path, catalog: &RecipeCatalog) -> Vec<InventoryItem> {
             if sanitize_weight_filename(filename).is_err() {
                 continue;
             }
-            if *kind == "lora" && publication_pending(models_dir, filename) {
+            if *kind == "lora" && publication_pending(models_directory, filename) {
                 continue;
             }
             let metadata = fs::metadata(&path).ok();
-            let size = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+            let size = metadata
+                .as_ref()
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
             let modified_at = metadata
-                .and_then(|meta| meta.modified().ok())
+                .and_then(|metadata| metadata.modified().ok())
                 .and_then(rfc3339);
             let sidecar = read_sidecar(&path);
             let recipe = resolve_recipe(catalog, filename, kind, sidecar.as_ref());
             let Some(recipe) = recipe else {
                 continue;
             };
-            if *kind == "lora" && publication_pending(models_dir, filename) {
+            if *kind == "lora" && publication_pending(models_directory, filename) {
                 continue;
             }
-            let missing = missing_required(models_dir, &recipe.required_files);
+            let missing = missing_required(models_directory, &recipe.required_files);
             let mut required: Vec<String> = recipe
                 .required_files
                 .iter()
@@ -161,14 +164,14 @@ fn resolve_recipe<'a>(
         }
         let sidecar = &document.sidecar;
         let recipe = catalog.get(&sidecar.recipe_id)?;
-        let hf_base = sidecar.hf_base.as_deref()?;
+        let huggingface_base = sidecar.huggingface_base.as_deref()?;
         return (recipe.kind == MediaKind::Image
             && recipe.adapter
             && recipe.has_lora_slot()
             && recipe
-                .hf_bases
+                .huggingface_bases
                 .iter()
-                .any(|base| base.eq_ignore_ascii_case(hf_base)))
+                .any(|base| base.eq_ignore_ascii_case(huggingface_base)))
         .then_some(recipe);
     }
     if let Some(document) = document
@@ -188,16 +191,16 @@ pub(crate) fn publication_marker(loras: &Path, filename: &str) -> Option<PathBuf
     )
 }
 
-fn publication_pending(models_dir: &Path, filename: &str) -> bool {
-    publication_marker(&models_dir.join("loras"), filename)
+fn publication_pending(models_directory: &Path, filename: &str) -> bool {
+    publication_marker(&models_directory.join("loras"), filename)
         .is_some_and(|path| fs::symlink_metadata(path).is_ok())
 }
 
-fn missing_required(models_dir: &Path, required: &[RequiredFile]) -> Vec<String> {
+fn missing_required(models_directory: &Path, required: &[RequiredFile]) -> Vec<String> {
     required
         .iter()
         .filter(|file| {
-            !models_dir
+            !models_directory
                 .join(&file.directory)
                 .join(&file.filename)
                 .is_file()
@@ -264,7 +267,7 @@ mod tests {
             weight,
             &WeightSidecar {
                 recipe_id: "qwen-image-edit-adapter".into(),
-                hf_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
+                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
         )
         .unwrap();
@@ -328,7 +331,7 @@ mod tests {
             &lora,
             &WeightSidecar {
                 recipe_id: "qwen-image-edit-adapter".into(),
-                hf_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
+                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
         )
         .unwrap();
@@ -353,7 +356,7 @@ mod tests {
             &unbound,
             &WeightSidecar {
                 recipe_id: "flux-schnell-adapter".into(),
-                hf_base: None,
+                huggingface_base: None,
             },
         )
         .unwrap();
@@ -361,7 +364,7 @@ mod tests {
             &mismatched,
             &WeightSidecar {
                 recipe_id: "flux-schnell-adapter".into(),
-                hf_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
+                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
         )
         .unwrap();
@@ -369,7 +372,7 @@ mod tests {
             &unknown,
             &WeightSidecar {
                 recipe_id: "missing-adapter".into(),
-                hf_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
+                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
         )
         .unwrap();
@@ -378,7 +381,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some("not-a-generation".into()),
             })
@@ -400,7 +403,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some(uuid::Uuid::new_v4().to_string()),
             })

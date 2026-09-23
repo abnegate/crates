@@ -89,7 +89,8 @@ pub struct FrameRequest {
 pub struct Frame {
     pub filename: String,
     pub bytes_base64: String,
-    pub timestamp_ms: u64,
+    #[serde(rename = "timestamp_ms")]
+    pub timestamp_milliseconds: u64,
     pub mirrored: bool,
     /// Frames sharing a group are the same shot, so one caption describes them
     /// all and the vision model only has to look at one of them.
@@ -111,7 +112,7 @@ pub struct Clip {
 /// frames that survive selection are decoded a second time to be cropped.
 struct Measured {
     path: PathBuf,
-    timestamp_ms: u64,
+    timestamp_milliseconds: u64,
     sharpness: f64,
     brightness: f64,
     contrast: f64,
@@ -172,10 +173,10 @@ fn build(
     let mut within = 0usize;
     for (position, &index) in chosen.iter().enumerate() {
         let frame = &measured[index];
-        if frame.timestamp_ms / 1000 == second {
+        if frame.timestamp_milliseconds / 1000 == second {
             within += 1;
         } else {
-            second = frame.timestamp_ms / 1000;
+            second = frame.timestamp_milliseconds / 1000;
             within = 0;
         }
         let mirrored = options.mirror && within % 2 == 1;
@@ -183,7 +184,7 @@ fn build(
         frames.push(Frame {
             filename: format!("frame-{position:04}.png"),
             bytes_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-            timestamp_ms: frame.timestamp_ms,
+            timestamp_milliseconds: frame.timestamp_milliseconds,
             mirrored,
             group: groups[position],
         });
@@ -280,7 +281,7 @@ fn measure(stills: &Path, fps: f64) -> Result<Vec<Measured>, TrainError> {
         let (brightness, contrast) = spread(&plane);
         measured.push(Measured {
             path,
-            timestamp_ms: (index as f64 * 1000.0 / fps).round() as u64,
+            timestamp_milliseconds: (index as f64 * 1000.0 / fps).round() as u64,
             sharpness: sharpness(&plane, ANALYSIS as usize),
             brightness,
             contrast,
@@ -350,7 +351,7 @@ fn choose(measured: &[Measured], per_second: usize, limit: usize) -> Vec<usize> 
     let mut bucket: Vec<usize> = Vec::new();
     let mut second = u64::MAX;
     for &index in &usable {
-        let at = measured[index].timestamp_ms / 1000;
+        let at = measured[index].timestamp_milliseconds / 1000;
         if at != second && !bucket.is_empty() {
             sharpest.extend(pick(&bucket, measured, per_second));
             bucket.clear();
@@ -362,7 +363,7 @@ fn choose(measured: &[Measured], per_second: usize, limit: usize) -> Vec<usize> 
     sharpest.sort_unstable();
 
     let mut chosen = diversify(&sharpest, measured, limit.max(1));
-    chosen.sort_unstable_by_key(|&index| measured[index].timestamp_ms);
+    chosen.sort_unstable_by_key(|&index| measured[index].timestamp_milliseconds);
     chosen
 }
 
@@ -641,10 +642,10 @@ fn container(filename: &str) -> String {
 mod tests {
     use super::*;
 
-    fn measured(timestamp_ms: u64, sharpness: f64, hash: u64) -> Measured {
+    fn measured(timestamp_milliseconds: u64, sharpness: f64, hash: u64) -> Measured {
         Measured {
             path: PathBuf::new(),
-            timestamp_ms,
+            timestamp_milliseconds,
             sharpness,
             brightness: 128.0,
             contrast: 40.0,
@@ -764,10 +765,11 @@ mod tests {
         assert!(
             chosen
                 .windows(2)
-                .all(|pair| frames[pair[0]].timestamp_ms <= frames[pair[1]].timestamp_ms),
+                .all(|pair| frames[pair[0]].timestamp_milliseconds
+                    <= frames[pair[1]].timestamp_milliseconds),
             "frames come back in time order"
         );
-        let last = frames[*chosen.last().unwrap()].timestamp_ms;
+        let last = frames[*chosen.last().unwrap()].timestamp_milliseconds;
         assert!(
             last > 40_000,
             "the whole clip is represented, not just its opening: last frame at {last}ms"
@@ -993,7 +995,7 @@ mod tests {
             "only the readable jpeg counts: a corrupt frame is dropped, and so is a file \
              ffmpeg did not write"
         );
-        assert_eq!(measured[0].timestamp_ms, 0);
+        assert_eq!(measured[0].timestamp_milliseconds, 0);
     }
 
     #[test]
@@ -1124,7 +1126,7 @@ mod tests {
             extracted
                 .frames
                 .windows(2)
-                .all(|pair| pair[0].timestamp_ms < pair[1].timestamp_ms),
+                .all(|pair| pair[0].timestamp_milliseconds < pair[1].timestamp_milliseconds),
             "frames arrive in time order"
         );
         for frame in &extracted.frames {

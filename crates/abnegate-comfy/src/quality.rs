@@ -84,7 +84,7 @@ pub async fn select(
             // step that refused instead.
             tracing::warn!(
                 artifact = %run.artifact,
-                models_dir = %config.models_dir.display(),
+                models_directory = %config.models_directory.display(),
                 images = captions.len(),
                 loras = models_loras(config).is_some(),
                 produced = produced(config).is_some(),
@@ -95,7 +95,7 @@ pub async fn select(
             return None;
         }
     };
-    let deadline = Instant::now() + Duration::from_secs(config.train_timeout_secs);
+    let deadline = Instant::now() + Duration::from_secs(config.train_timeout_seconds);
     let sample = subsample(config, model, &run.folder, captions, RANK_IMAGES);
     let quality = selection.choose(sample.as_ref(), deadline).await;
     if selection.probe.cleanup.load(Ordering::Acquire) {
@@ -350,7 +350,7 @@ impl<'a> Probe<'a> {
         Some(Self {
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(config.train_timeout_secs))
+                .timeout(Duration::from_secs(config.train_timeout_seconds))
                 .build()
                 .ok()?,
             config,
@@ -411,7 +411,10 @@ impl<'a> Probe<'a> {
                 }
             };
             let Some(entry) = entry else {
-                tokio::time::sleep(Duration::from_millis(self.config.poll_interval_ms)).await;
+                tokio::time::sleep(Duration::from_millis(
+                    self.config.poll_interval_milliseconds,
+                ))
+                .await;
                 continue;
             };
             if failed(&entry) {
@@ -421,7 +424,10 @@ impl<'a> Probe<'a> {
             if completed(&entry) {
                 return Some(entry);
             }
-            tokio::time::sleep(Duration::from_millis(self.config.poll_interval_ms)).await;
+            tokio::time::sleep(Duration::from_millis(
+                self.config.poll_interval_milliseconds,
+            ))
+            .await;
         }
     }
 
@@ -557,7 +563,10 @@ impl<'a> Probe<'a> {
             {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(self.config.poll_interval_ms)).await;
+            tokio::time::sleep(Duration::from_millis(
+                self.config.poll_interval_milliseconds,
+            ))
+            .await;
         }
     }
 
@@ -799,19 +808,19 @@ fn read_regular(path: &Path) -> Option<Vec<u8>> {
 }
 
 fn produced(config: &Config) -> Option<PathBuf> {
-    let root = real_directory(config.models_dir.parent()?)?;
+    let root = real_directory(config.models_directory.parent()?)?;
     let output = child_directory(&root, "output")?;
     child_directory(&output, "loras")
 }
 
 fn input(config: &Config) -> Option<PathBuf> {
-    let root = real_directory(config.models_dir.parent()?)?;
+    let root = real_directory(config.models_directory.parent()?)?;
     child_directory(&root, "input")
 }
 
 fn models_loras(config: &Config) -> Option<PathBuf> {
-    let root = real_directory(config.models_dir.parent()?)?;
-    let models = real_directory(&config.models_dir)?;
+    let root = real_directory(config.models_directory.parent()?)?;
+    let models = real_directory(&config.models_directory)?;
     if models.parent() != Some(root.as_path()) {
         return None;
     }
@@ -1106,7 +1115,7 @@ mod tests {
             let foreign = format!("{ARTIFACT_PREFIX}other-step99.safetensors");
             fs::write(output.join(&foreign), b"other").unwrap();
             let config = Config {
-                models_dir: models,
+                models_directory: models,
                 ..Default::default()
             };
             let model = flux();
@@ -1168,7 +1177,7 @@ mod tests {
             symlink(&victim, input.join(&sample.folder)).unwrap();
             discard(
                 &Config {
-                    models_dir: models,
+                    models_directory: models,
                     ..Default::default()
                 },
                 Some(&sample),
@@ -1190,7 +1199,7 @@ mod tests {
         let linked = root.path().join("comfy");
         symlink(&actual, &linked).unwrap();
         let linked_config = Config {
-            models_dir: linked.join("models"),
+            models_directory: linked.join("models"),
             ..Default::default()
         };
         assert!(input(&linked_config).is_none());
@@ -1205,7 +1214,7 @@ mod tests {
         fs::create_dir(comfy.join("output")).unwrap();
         symlink(&outside, comfy.join("output/loras")).unwrap();
         let config = Config {
-            models_dir: comfy.join("models"),
+            models_directory: comfy.join("models"),
             ..Default::default()
         };
         assert!(input(&config).is_none());
@@ -1235,7 +1244,7 @@ mod tests {
             .map(|index| (format!("{index:04}.png"), format!("instruction {index}")))
             .collect();
         let config = Config {
-            models_dir: models,
+            models_directory: models,
             ..Default::default()
         };
         assert!(subsample(&config, &flux(), &run.folder, &captions, 4).is_none());
@@ -1268,7 +1277,7 @@ mod tests {
                 .await;
             let config = Config {
                 base_url: server.uri(),
-                poll_interval_ms: 1,
+                poll_interval_milliseconds: 1,
                 ..Default::default()
             };
             let model = flux();
@@ -1303,7 +1312,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1353,7 +1362,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1404,7 +1413,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1431,7 +1440,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1471,7 +1480,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1508,7 +1517,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1547,7 +1556,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             contract: Contract {
                 stage_training_artifact_node: "StageWeights".into(),
                 artifact_prefix: "adapter-".into(),
@@ -1593,7 +1602,7 @@ mod tests {
             .unwrap();
         }
         let config = Config {
-            models_dir: models,
+            models_directory: models,
             ..Default::default()
         };
         let sample = subsample(&config, &qwen(), &run.folder, &captions, 4).unwrap();
