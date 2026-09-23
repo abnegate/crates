@@ -1,6 +1,8 @@
 use reqwest::header::CONTENT_RANGE;
 use reqwest::header::HeaderMap;
 
+use crate::download::error::DownloadError;
+
 const BYTES_UNIT: &str = "bytes ";
 const UNKNOWN_LENGTH: &str = "*";
 
@@ -26,6 +28,24 @@ impl ContentRange {
             start: start.trim().parse().ok()?,
             total,
         })
+    }
+
+    /// How long the whole file is: the length the range names, or else where
+    /// a body of `body` bytes from the range's start ends.
+    pub(crate) fn file_length(&self, body: Option<u64>) -> Result<Option<u64>, DownloadError> {
+        match (self.total, body) {
+            (Some(total), _) => Ok(Some(total)),
+            (None, Some(body)) => {
+                self.start
+                    .checked_add(body)
+                    .map(Some)
+                    .ok_or(DownloadError::Incomplete {
+                        expected: u64::MAX,
+                        received: self.start,
+                    })
+            }
+            (None, None) => Ok(None),
+        }
     }
 }
 
@@ -56,6 +76,43 @@ mod tests {
                 start: 4,
                 total: None
             })
+        );
+    }
+
+    #[test]
+    fn the_file_length_is_the_named_total_or_the_end_of_the_body() {
+        let named = ContentRange {
+            start: 4,
+            total: Some(9),
+        };
+        let unnamed = ContentRange {
+            start: 4,
+            total: None,
+        };
+
+        assert_eq!(named.file_length(Some(5)).unwrap(), Some(9));
+        assert_eq!(unnamed.file_length(Some(5)).unwrap(), Some(9));
+        assert_eq!(unnamed.file_length(None).unwrap(), None);
+    }
+
+    #[test]
+    fn a_body_that_ends_past_u64_is_incomplete_rather_than_an_overflow() {
+        let range = ContentRange {
+            start: u64::MAX - 1,
+            total: None,
+        };
+
+        let length = range.file_length(Some(5));
+
+        assert!(
+            matches!(
+                length,
+                Err(DownloadError::Incomplete {
+                    expected: u64::MAX,
+                    received
+                }) if received == u64::MAX - 1
+            ),
+            "{length:?}"
         );
     }
 

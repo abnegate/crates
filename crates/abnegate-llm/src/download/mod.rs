@@ -14,7 +14,10 @@ mod error;
 mod lock;
 mod progress;
 mod validator;
+mod writer;
 
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::path::Path;
 use std::path::PathBuf;
@@ -22,6 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use futures::Stream;
 use futures::StreamExt;
 use reqwest::Client;
 use reqwest::StatusCode;
@@ -32,8 +36,6 @@ use reqwest::header::RANGE;
 use sha2::Digest;
 use sha2::Sha256;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufWriter;
 
 pub use crate::download::checksum::Checksum;
 pub use crate::download::error::DownloadError;
@@ -42,6 +44,7 @@ pub use crate::download::progress::DownloadProgress;
 use crate::download::content_range::ContentRange;
 use crate::download::lock::TransferLock;
 use crate::download::validator::Validator;
+use crate::download::writer::Writer;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest the server may go without sending a byte. A whole-transfer
@@ -60,7 +63,8 @@ const ATTEMPTS: usize = 2;
 ///
 /// One transfer to a target runs at a time, in this process or any other: a
 /// second is refused with [`DownloadError::InProgress`] rather than left to
-/// write into the same `.part` file.
+/// write into the same `.part` file. A transfer that fails or is dropped keeps
+/// the target until the bytes it had already received are on disk.
 pub async fn download_gguf(
     url: &str,
     target: &Path,
@@ -90,14 +94,14 @@ async fn transfer(
     }
 
     let part = part_path(target);
-    let _lock = TransferLock::acquire(&part).await?;
+    let lock = Arc::new(TransferLock::acquire(&part).await?);
     let client = Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .build()?;
 
     for _ in 0..ATTEMPTS {
-        if fetch(&client, url, &part, progress).await? {
+        if fetch(&client, url, &part, &lock, progress).await? {
             return finish(&part, target, expected).await;
         }
         discard(&part).await?;
@@ -113,6 +117,7 @@ async fn fetch(
     client: &Client,
     url: &str,
     part: &Path,
+    lock: &Arc<TransferLock>,
     progress: &DownloadProgress,
 ) -> Result<bool, DownloadError> {
     let existing = fs::metadata(part).await.map(|file| file.len()).unwrap_or(0);
@@ -148,12 +153,9 @@ async fn fetch(
 
     let (offset, total) = if status == StatusCode::PARTIAL_CONTENT {
         match ContentRange::from_headers(response.headers()) {
-            Some(range) if guard.is_some() && range.start == existing => (
-                existing,
-                range
-                    .total
-                    .or_else(|| response.content_length().map(|length| existing + length)),
-            ),
+            Some(range) if guard.is_some() && range.start == existing => {
+                (existing, range.file_length(response.content_length())?)
+            }
             _ => return Ok(false),
         }
     } else {
@@ -166,29 +168,54 @@ async fn fetch(
     progress.downloaded_bytes.store(offset, Ordering::Relaxed);
 
     let file = if offset > 0 {
-        fs::OpenOptions::new().append(true).open(part).await?
+        open(part, OpenOptions::new().append(true), lock).await?
     } else {
-        restart(url, part, response.headers()).await?
+        restart(url, part, response.headers(), lock).await?
     };
-    let mut writer = BufWriter::new(file);
-    let mut received = offset;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        writer.write_all(&chunk).await?;
-        received += chunk.len() as u64;
-        progress
-            .downloaded_bytes
-            .fetch_add(chunk.len() as u64, Ordering::Relaxed);
-    }
-    writer.flush().await?;
+    let writer = Writer::spawn(file, lock);
+    let piped = pipe(response.bytes_stream(), &writer, progress).await;
+    writer.finish().await?;
+    let received = offset + piped?;
+    let stored = fs::metadata(part).await?.len();
 
     match total {
         Some(expected) if expected != received => {
             Err(DownloadError::Incomplete { expected, received })
         }
+        _ if stored != received => Err(DownloadError::Incomplete {
+            expected: received,
+            received: stored,
+        }),
         _ => Ok(true),
     }
+}
+
+/// Queue a body's chunks on `writer`, and count the bytes queued.
+///
+/// Stops early once the writer has stopped, whose error [`Writer::finish`]
+/// reports.
+async fn pipe<Chunk>(
+    chunks: impl Stream<Item = reqwest::Result<Chunk>>,
+    writer: &Writer<Chunk>,
+    progress: &DownloadProgress,
+) -> Result<u64, DownloadError>
+where
+    Chunk: AsRef<[u8]> + Send + 'static,
+{
+    let mut chunks = std::pin::pin!(chunks);
+    let mut piped = 0;
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk?;
+        let length = chunk.as_ref().len() as u64;
+        if !writer.write(chunk).await {
+            break;
+        }
+        piped += length;
+        progress
+            .downloaded_bytes
+            .fetch_add(length, Ordering::Relaxed);
+    }
+    Ok(piped)
 }
 
 /// Empty the `.part` file for a whole new body, and only then record which
@@ -197,15 +224,33 @@ async fn fetch(
 /// The other order leaves the old bytes beside the new file's validator when
 /// the open fails or the call is dropped between the two, and the next call
 /// would resume the old bytes as though they were the start of the new file.
-async fn restart(url: &str, part: &Path, headers: &HeaderMap) -> Result<fs::File, DownloadError> {
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(part)
-        .await?;
+async fn restart(
+    url: &str,
+    part: &Path,
+    headers: &HeaderMap,
+    lock: &Arc<TransferLock>,
+) -> Result<File, DownloadError> {
+    let file = open(
+        part,
+        OpenOptions::new().create(true).write(true).truncate(true),
+        lock,
+    )
+    .await?;
     Validator::from_headers(url, headers).store(part).await?;
     Ok(file)
+}
+
+/// Open the `.part` file under the lock, so an open that truncates it never
+/// lands after the transfer that asked for it has let go.
+async fn open(
+    part: &Path,
+    options: &OpenOptions,
+    lock: &Arc<TransferLock>,
+) -> std::io::Result<File> {
+    let (part, options) = (part.to_path_buf(), options.clone());
+    lock.hold(move || options.open(part))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 /// The length the server reports for the whole file, read from the header
