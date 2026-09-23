@@ -857,7 +857,10 @@ pub async fn huggingface_repo_downloads(
         )));
     }
     let parsed: HuggingFaceModel = response.json().await.map_err(|error| {
-        CatalogError::Parse(format!("Failed to parse HuggingFace model: {error}"))
+        CatalogError::Parse(format!(
+            "Failed to parse HuggingFace model: {}",
+            error.without_url()
+        ))
     })?;
     Ok(to_model(parsed))
 }
@@ -1549,6 +1552,28 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, CatalogError::Unavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn a_repository_that_does_not_parse_is_reported_without_its_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let catalog = format!("{}/api/models", server.uri());
+        let error = huggingface_repo_downloads(&catalog, None, "owner/repo")
+            .await
+            .unwrap_err();
+
+        let CatalogError::Parse(message) = &error else {
+            panic!("expected a parse failure, got {error:?}");
+        };
+        assert!(
+            !message.contains(&server.address().to_string()),
+            "{message}"
+        );
     }
 
     #[tokio::test]
