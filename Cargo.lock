@@ -3,6 +3,29 @@
 version = 4
 
 [[package]]
+name = "abnegate-comfy"
+version = "0.1.0"
+dependencies = [
+ "abnegate-llm",
+ "abnegate-vision",
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "image",
+ "rand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "urlencoding",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "abnegate-config"
 version = "0.1.0"
 dependencies = [

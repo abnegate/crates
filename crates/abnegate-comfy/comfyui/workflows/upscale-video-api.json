@@ -1,0 +1,52 @@
+{
+  "1": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": "upscale-input.webm"
+    },
+    "_meta": {
+      "title": "Source Video"
+    }
+  },
+  "2": {
+    "class_type": "GetVideoComponents",
+    "inputs": {
+      "video": ["1", 0]
+    },
+    "_meta": {
+      "title": "Split Source Video"
+    }
+  },
+  "3": {
+    "class_type": "UpscaleModelLoader",
+    "inputs": {
+      "model_name": "RealESRGAN_x4plus.safetensors"
+    },
+    "_meta": {
+      "title": "Pinned Upscale Model"
+    }
+  },
+  "4": {
+    "class_type": "ImageUpscaleWithModel",
+    "inputs": {
+      "image": ["2", 0],
+      "upscale_model": ["3", 0]
+    },
+    "_meta": {
+      "title": "Upscale Frames"
+    }
+  },
+  "5": {
+    "class_type": "SaveWEBM",
+    "inputs": {
+      "codec": "vp9",
+      "crf": 32,
+      "filename_prefix": "upscale",
+      "fps": ["2", 2],
+      "images": ["4", 0]
+    },
+    "_meta": {
+      "title": "Video Output"
+    }
+  }
+}

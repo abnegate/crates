@@ -1,0 +1,324 @@
+{
+  "schema_version": 1,
+  "default_image": "flux-schnell",
+  "recipes": [
+    {
+      "id": "flux-schnell",
+      "kind": "image",
+      "label": "FLUX.1 Schnell",
+      "bare": "flux1-schnell-fp8-api.json",
+      "with_source": "flux1-schnell-fp8-img2img-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/text",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "weights": {
+          "checkpoint": "/4/inputs/ckpt_name"
+        }
+      },
+      "defaults": {
+        "checkpoint": "flux1-schnell-fp8.safetensors"
+      },
+      "training": {
+        "architecture": "flux",
+        "adapter": "flux-schnell-adapter",
+        "hf_base": "black-forest-labs/FLUX.1-schnell"
+      },
+      "files": [
+        "flux1-schnell-fp8.safetensors"
+      ],
+      "required_files": [
+        {
+          "filename": "flux1-schnell-fp8.safetensors",
+          "directory": "checkpoints"
+        }
+      ],
+      "hf_bases": [
+        "black-forest-labs/FLUX.1-schnell"
+      ],
+      "base_models": [
+        "Flux.1 S",
+        "Flux.1 Schnell"
+      ],
+      "filename_hints": [
+        "flux1-schnell",
+        "schnell"
+      ]
+    },
+    {
+      "id": "flux-schnell-adapter",
+      "kind": "image",
+      "label": "FLUX.1 Schnell adapter",
+      "adapter": true,
+      "bare": "flux1-schnell-fp8-adapter-api.json",
+      "with_source": "flux1-schnell-fp8-adapter-img2img-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/text",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "weights": {
+          "checkpoint": "/4/inputs/ckpt_name",
+          "lora": "/13/inputs/lora_name"
+        }
+      },
+      "defaults": {
+        "checkpoint": "flux1-schnell-fp8.safetensors"
+      },
+      "required_files": [
+        {
+          "filename": "flux1-schnell-fp8.safetensors",
+          "directory": "checkpoints"
+        }
+      ],
+      "hf_bases": [
+        "black-forest-labs/FLUX.1-schnell"
+      ]
+    },
+    {
+      "id": "flux-dev",
+      "kind": "image",
+      "label": "FLUX.1 Dev",
+      "bare": "flux1-dev-fp8-api.json",
+      "with_source": "flux1-dev-fp8-img2img-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/text",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "weights": {
+          "checkpoint": "/4/inputs/ckpt_name"
+        }
+      },
+      "defaults": {
+        "checkpoint": "flux1-dev-fp8.safetensors"
+      },
+      "training": {
+        "architecture": "flux",
+        "adapter": "flux-dev-adapter",
+        "hf_base": "black-forest-labs/FLUX.1-dev"
+      },
+      "files": [
+        "flux1-dev-fp8.safetensors"
+      ],
+      "required_files": [
+        {
+          "filename": "flux1-dev-fp8.safetensors",
+          "directory": "checkpoints"
+        }
+      ],
+      "hf_bases": [
+        "black-forest-labs/FLUX.1-dev"
+      ],
+      "base_models": [
+        "Flux.1 D",
+        "Flux.1 Dev"
+      ],
+      "filename_hints": [
+        "flux1-dev",
+        "flux-dev"
+      ]
+    },
+    {
+      "id": "flux-dev-adapter",
+      "kind": "image",
+      "label": "FLUX.1 Dev + LoRA",
+      "adapter": true,
+      "bare": "flux1-dev-fp8-adapter-api.json",
+      "with_source": "flux1-dev-fp8-adapter-img2img-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/text",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "weights": {
+          "checkpoint": "/4/inputs/ckpt_name",
+          "lora": "/13/inputs/lora_name"
+        }
+      },
+      "defaults": {
+        "checkpoint": "flux1-dev-fp8.safetensors"
+      },
+      "required_files": [
+        {
+          "filename": "flux1-dev-fp8.safetensors",
+          "directory": "checkpoints"
+        }
+      ],
+      "hf_bases": [
+        "black-forest-labs/FLUX.1-dev"
+      ],
+      "base_models": [
+        "Flux.1 D",
+        "Flux.1 Dev"
+      ]
+    },
+    {
+      "id": "sd15",
+      "kind": "image",
+      "label": "Stable Diffusion 1.5",
+      "bare": "sd15-api.json",
+      "with_source": "sd15-img2img-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/text",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "weights": {
+          "checkpoint": "/4/inputs/ckpt_name"
+        }
+      },
+      "files": [],
+      "base_models": [
+        "SD 1.5",
+        "SD 1.5 Hyper",
+        "SD 1.5 LCM"
+      ],
+      "filename_hints": [
+        "sd15",
+        "sd-15",
+        "sd1.5",
+        "sd1_5",
+        "v1-5",
+        "v1_5"
+      ]
+    },
+    {
+      "id": "sdxl",
+      "kind": "image",
+      "label": "Stable Diffusion XL",
+      "bare": "sdxl-api.json",
+      "with_source": "sdxl-img2img-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/text",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "weights": {
+          "checkpoint": "/4/inputs/ckpt_name"
+        }
+      },
+      "files": [],
+      "base_models": [
+        "SDXL 1.0",
+        "SDXL Turbo",
+        "Pony",
+        "Illustrious"
+      ],
+      "filename_hints": [
+        "sdxl",
+        "sd_xl",
+        "sd-xl",
+        "pony",
+        "illustrious",
+        "juggernautxl"
+      ]
+    },
+    {
+      "id": "qwen-image-edit",
+      "kind": "image",
+      "label": "Qwen Image Edit 2511",
+      "prompt_mode": "edit_instruction",
+      "bare": "qwen-image-edit-2511-api.json",
+      "with_source": "qwen-image-edit-2511-edit-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/prompt",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "weights": {
+          "unet": "/1/inputs/unet_name",
+          "clip": "/2/inputs/clip_name",
+          "vae": "/8/inputs/vae_name"
+        }
+      },
+      "defaults": {
+        "unet": "qwen_image_edit_2511_fp8mixed.safetensors",
+        "clip": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "vae": "qwen_image_vae.safetensors"
+      },
+      "training": {
+        "architecture": "qwen_edit",
+        "adapter": "qwen-image-edit-adapter",
+        "hf_base": "Qwen/Qwen-Image-Edit-2511"
+      },
+      "files": [
+        "qwen_image_edit_2511_fp8mixed.safetensors",
+        "qwen_image_edit_2511_bf16.safetensors"
+      ],
+      "required_files": [
+        {
+          "filename": "qwen_image_edit_2511_fp8mixed.safetensors",
+          "directory": "diffusion_models"
+        },
+        {
+          "filename": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+          "directory": "text_encoders"
+        },
+        {
+          "filename": "qwen_image_vae.safetensors",
+          "directory": "vae"
+        }
+      ],
+      "hf_bases": [
+        "Qwen/Qwen-Image-Edit-2511"
+      ],
+      "filename_hints": [
+        "qwen_image_edit",
+        "qwen-image-edit"
+      ]
+    },
+    {
+      "id": "qwen-image-edit-adapter",
+      "kind": "image",
+      "label": "Qwen Image Edit 2511 adapter",
+      "adapter": true,
+      "prompt_mode": "edit_instruction",
+      "bare": "qwen-image-edit-2511-adapter-api.json",
+      "with_source": "qwen-image-edit-2511-adapter-edit-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/prompt",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "weights": {
+          "unet": "/1/inputs/unet_name",
+          "clip": "/2/inputs/clip_name",
+          "vae": "/8/inputs/vae_name",
+          "lora": "/4/inputs/lora_name"
+        }
+      },
+      "defaults": {
+        "unet": "qwen_image_edit_2511_fp8mixed.safetensors",
+        "clip": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "vae": "qwen_image_vae.safetensors"
+      },
+      "required_files": [
+        {
+          "filename": "qwen_image_edit_2511_fp8mixed.safetensors",
+          "directory": "diffusion_models"
+        },
+        {
+          "filename": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+          "directory": "text_encoders"
+        },
+        {
+          "filename": "qwen_image_vae.safetensors",
+          "directory": "vae"
+        }
+      ],
+      "hf_bases": [
+        "Qwen/Qwen-Image-Edit-2511"
+      ]
+    }
+  ]
+}
