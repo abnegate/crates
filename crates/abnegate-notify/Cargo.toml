@@ -1,0 +1,39 @@
+[package]
+name = "abnegate-notify"
+description = "One notification delivered to every channel at once, with per-channel isolation and SSRF-guarded webhooks"
+keywords = ["notifications", "slack", "discord", "webhook", "smtp"]
+categories = ["asynchronous", "email", "network-programming"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+smtp = ["dep:lettre"]
+
+[dependencies]
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+lettre = { workspace = true, optional = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+wiremock = { workspace = true }
