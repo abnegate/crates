@@ -3,6 +3,7 @@ name = "abnegate-agent"
 description = "A ReAct agent loop with a sandbox-aware tool registry, background jobs, token-aware context compaction, chat history storage, session persistence, prompt templates and an optional MCP client"
 keywords = ["agent", "llm", "tools", "mcp", "react"]
 categories = ["asynchronous", "development-tools", "text-processing"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

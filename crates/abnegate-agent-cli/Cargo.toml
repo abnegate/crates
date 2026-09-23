@@ -3,6 +3,7 @@ name = "abnegate-agent-cli"
 description = "Coding agent CLIs (Claude Code, Codex) driven as child processes behind the abnegate-llm completion provider contract, with bounded NDJSON framing, stream parsers, MCP attachment and execution logs"
 keywords = ["llm", "agent", "claude", "codex", "cli"]
 categories = ["asynchronous", "command-line-interface", "development-tools"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

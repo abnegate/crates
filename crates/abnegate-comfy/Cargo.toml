@@ -9,6 +9,7 @@ categories = [
     "multimedia::images",
     "multimedia::video",
 ]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

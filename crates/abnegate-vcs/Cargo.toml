@@ -3,6 +3,7 @@ name = "abnegate-vcs"
 description = "Git operations over the git command line: branches, worktrees, merge-conflict reproduction, dependency discovery and GitHub pull requests"
 keywords = ["git", "worktree", "merge", "pull-request", "github"]
 categories = ["development-tools"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
