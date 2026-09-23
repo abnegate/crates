@@ -74,6 +74,7 @@ impl Reader {
         stdout: Option<ChildStdout>,
     ) -> Result<StdoutParseResult, String> {
         let outcome = self.read(stdout).await;
+        self.result.conclude();
         if let Err(reason) = &outcome {
             self.settle(Verdict::Failed(reason.clone()));
             self.journal
@@ -156,6 +157,11 @@ impl Reader {
                     let message = self.scrubber.scrub(&message).into_owned();
                     self.settle(Verdict::Failed(message.clone()));
                     AgentEvent::Failed(message)
+                }
+                AgentEvent::Diagnostic(message) => {
+                    let message = self.scrubber.scrub(&message).into_owned();
+                    tracing::debug!(agent = %self.agent, diagnostic = %message, "agent diagnostic");
+                    AgentEvent::Diagnostic(message)
                 }
                 AgentEvent::Finished { finish_reason } => {
                     self.settle(Verdict::Finished);

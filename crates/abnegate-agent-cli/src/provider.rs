@@ -1189,6 +1189,48 @@ echo '{"type":"turn.completed","usage":{"input_tokens":40,"output_tokens":8}}'
     }
 
     #[tokio::test]
+    async fn a_codex_reconnect_notice_does_not_cut_a_completing_turn_short() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"thread.started","thread_id":"t1"}'
+echo '{"type":"turn.started"}'
+echo '{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion)"}'
+sleep 1
+echo '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"The suite passes."}}'
+echo '{"type":"turn.completed","usage":{"input_tokens":40,"output_tokens":8}}'
+"#;
+        let provider = CliProvider::agent(AgentKind::Codex, settings(&directory, script));
+
+        let completion = run(&provider, &[Message::user("run the tests")])
+            .await
+            .expect("an answer");
+
+        assert_eq!(
+            completion.message.content.as_deref(),
+            Some("The suite passes.")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_codex_error_with_no_turn_after_it_is_the_runs_failure() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"turn.started"}'
+echo '{"type":"error","message":"You have hit your usage limit. Try again later."}'
+"#;
+        let provider = CliProvider::agent(AgentKind::Codex, settings(&directory, script));
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a failure");
+
+        let ProviderError::Agent { message, .. } = &error else {
+            panic!("expected the agent's own failure, got {error:?}");
+        };
+        assert!(message.contains("usage limit"), "{message}");
+    }
+
+    #[tokio::test]
     async fn codex_refuses_claude_only_settings_before_starting_anything() {
         let provider = CliProvider::agent(
             AgentKind::Codex,
