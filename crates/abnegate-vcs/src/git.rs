@@ -9,9 +9,9 @@
 //! configuration where no pin reaches -- a transport rewrite, an HTTP
 //! override, an include, a driver, a configured hook -- a repository whose
 //! configuration holds anything beyond what git itself writes for a clone is
-//! refused before anything runs in it, as is one with a symbolic link
-//! standing where git writes its refs, reflogs, `HEAD` or configuration,
-//! since git writes through such a link to wherever it points. The check is
+//! refused before anything runs in it, as is one whose git directory holds a
+//! symbolic link anywhere, since git writes through such a link to wherever
+//! it points, in a file's place or a directory's. The check is
 //! made before each command, so it cannot stop a run that rewrites the
 //! repository in the instant between the check and the command; a clone
 //! every run can write is not one a credential should be sent from. A

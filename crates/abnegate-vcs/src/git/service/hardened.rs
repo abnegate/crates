@@ -1670,7 +1670,7 @@ mod publication_tests {
             .await;
 
         assert!(
-            matches!(prepared, Err(GitError::LinkedPath("config"))),
+            matches!(prepared, Err(GitError::LinkedPath)),
             "{prepared:?}"
         );
         linked.assert_untouched();

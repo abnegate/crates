@@ -89,11 +89,11 @@ fn local(repository: &Path) -> Command {
 }
 
 /// Refuse a repository whose own configuration holds anything beyond what git
-/// writes for a clone, a worktree and a tracking branch, or that has a
-/// symbolic link standing where git writes a ref, a reflog, `HEAD` or the
-/// configuration, which it refuses with [`crate::git::GitError::LinkedPath`]:
-/// the configuration and the refs are the base clone's, which every run of
-/// the repository can write through its own git commands.
+/// writes for a clone, a worktree and a tracking branch, or whose git
+/// directory holds a symbolic link, which it refuses with
+/// [`crate::git::GitError::LinkedPath`]: the configuration and the refs are
+/// the base clone's, which every run of the repository can write through its
+/// own git commands.
 fn verify(repository: &Path) -> std::io::Result<()> {
     let listing = run(
         local(repository).args(CONFIG_LISTING),
@@ -723,7 +723,7 @@ mod tests {
                 refusal
                     .get_ref()
                     .and_then(|inner| inner.downcast_ref::<GitError>()),
-                Some(GitError::LinkedPath("config"))
+                Some(GitError::LinkedPath)
             ),
             "{refusal:?}"
         );

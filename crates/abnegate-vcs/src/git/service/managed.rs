@@ -1921,7 +1921,7 @@ mod managed_tests {
         ];
         for (operation, refusal) in refusals.iter().enumerate() {
             assert!(
-                matches!(refusal, Some(GitError::LinkedPath("config"))),
+                matches!(refusal, Some(GitError::LinkedPath)),
                 "operation {operation}: {refusal:?}"
             );
         }
@@ -2000,9 +2000,9 @@ mod managed_tests {
     /// symbolic link standing at `relative` under its git directory: to
     /// `link` when given, and otherwise to what stood there, moved out of the
     /// clone, or to a new file when nothing did. A sync and a worktree are
-    /// both refused by that name, and nothing the link points at is written.
+    /// both refused, and nothing the link points at is written.
     #[cfg(unix)]
-    async fn refused_while_linked(relative: &'static str, link: Option<&str>) {
+    async fn refused_while_linked(relative: &str, link: Option<&str>) {
         let source = TempDir::new().unwrap();
         repository(source.path());
         let workspace = TempDir::new().unwrap();
@@ -2038,11 +2038,11 @@ mod managed_tests {
         let added = crate::worktree::add(&target, &worktree, "HEAD").unwrap_err();
 
         assert!(
-            matches!(synced, Err(GitError::LinkedPath(refused)) if refused == relative),
+            matches!(synced, Err(GitError::LinkedPath)),
             "{relative}: {synced:?}"
         );
         assert!(
-            matches!(carried(&added), Some(GitError::LinkedPath(refused)) if *refused == relative),
+            matches!(carried(&added), Some(GitError::LinkedPath)),
             "{relative}: {added:?}"
         );
         assert_eq!(
@@ -2156,13 +2156,13 @@ mod managed_tests {
         assert!(std::fs::symlink_metadata(&packed).unwrap().is_file());
     }
 
-    /// A worktree shares its repository's refs, reflogs and configuration
-    /// and keeps its own `HEAD`, `ORIG_HEAD` and `FETCH_HEAD`, so a command
-    /// run in one is refused for a link in the directory it shares, and for
-    /// one in its own directory that leaves the repository's own untouched.
+    /// A worktree shares its repository's git directory and keeps its own
+    /// inside it, so a link in the shared one refuses a command run in the
+    /// worktree, and one in the worktree's own refuses a command run in the
+    /// worktree or in the repository.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_worktree_is_checked_where_it_keeps_each_of_its_files() {
+    async fn a_link_in_either_of_a_worktree_s_git_directories_is_refused() {
         let source = TempDir::new().unwrap();
         repository(source.path());
         let workspace = TempDir::new().unwrap();
@@ -2188,21 +2188,16 @@ mod managed_tests {
         let shared = service.current_branch(&worktree).await;
         let blocking = crate::worktree::unfinished(&worktree, &[]).unwrap_err();
 
+        assert!(matches!(shared, Err(GitError::LinkedPath)), "{shared:?}");
         assert!(
-            matches!(shared, Err(GitError::LinkedPath("packed-refs"))),
-            "{shared:?}"
-        );
-        assert!(
-            matches!(
-                carried(&blocking),
-                Some(GitError::LinkedPath("packed-refs"))
-            ),
+            matches!(carried(&blocking), Some(GitError::LinkedPath)),
             "{blocking:?}"
         );
         assert_eq!(contents(&moved), before);
 
         std::fs::remove_file(&packed).unwrap();
         std::fs::rename(&moved, &packed).unwrap();
+        assert_eq!(service.current_branch(&worktree).await.unwrap(), "HEAD");
         let own = PathBuf::from(git(
             &worktree,
             &["rev-parse", "--path-format=absolute", "--git-dir"],
@@ -2212,13 +2207,17 @@ mod managed_tests {
         std::os::unix::fs::symlink(&planted, own.join("ORIG_HEAD")).unwrap();
         let held = std::fs::read(&planted).unwrap();
 
-        let refused = service.current_branch(&worktree).await;
+        let refusals = [
+            service.current_branch(&worktree).await,
+            service.current_branch(&target).await,
+        ];
 
-        assert!(
-            matches!(refused, Err(GitError::LinkedPath("ORIG_HEAD"))),
-            "{refused:?}"
-        );
-        assert_eq!(service.current_branch(&target).await.unwrap(), "main");
+        for (operation, refusal) in refusals.iter().enumerate() {
+            assert!(
+                matches!(refusal, Err(GitError::LinkedPath)),
+                "operation {operation}: {refusal:?}"
+            );
+        }
         assert_eq!(std::fs::read(&planted).unwrap(), held);
     }
 

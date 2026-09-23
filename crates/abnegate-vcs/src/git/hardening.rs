@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
@@ -109,39 +110,20 @@ const REMOTE_SECTION: &str = "remote.";
 /// The section configuring a local branch.
 const BRANCH_SECTION: &str = "branch.";
 
-/// Paths under a worktree's own git directory, and under the directory
-/// every worktree of the repository shares, that git writes by name and
-/// through a symbolic link standing in the place of any of them: a ref, a
-/// rewrite of the packed refs, a reflog, `FETCH_HEAD`, `ORIG_HEAD`, `HEAD`
-/// or a change to the configuration lands wherever the link points. Each
-/// worktree keeps its own `HEAD`, `ORIG_HEAD` and `FETCH_HEAD`.
-const UNLINKED: [(Directory, &str); 11] = [
-    (Directory::Shared, "packed-refs"),
-    (Directory::Shared, "refs"),
-    (Directory::Shared, "refs/heads"),
-    (Directory::Shared, "refs/remotes"),
-    (Directory::Shared, "refs/remotes/origin"),
-    (Directory::Shared, "refs/tags"),
-    (Directory::Shared, "logs"),
-    (Directory::Own, "FETCH_HEAD"),
-    (Directory::Own, "ORIG_HEAD"),
-    (Directory::Own, "HEAD"),
-    (Directory::Shared, "config"),
-];
+/// The directory a repository keeps its objects in. Its loose objects and
+/// packs run to many thousands of files, so the walk [`unlinked`] makes looks
+/// at what stands directly in it and walks only [`OBJECT_INFO`] below it.
+const OBJECTS: &str = "objects";
 
-/// Which git directory a path in [`UNLINKED`] lives under.
-#[derive(Clone, Copy)]
-enum Directory {
-    /// The worktree's own, which is the repository's for its main worktree.
-    Own,
-    /// The one every worktree of the repository shares.
-    Shared,
-}
+/// The one directory under [`OBJECTS`] walked whole: it holds `alternates`,
+/// naming the further stores git reads objects from, and the commit graphs
+/// git writes.
+const OBJECT_INFO: &str = "info";
 
 /// Prints the worktree's own git directory and the one every worktree of
 /// its repository shares, a line each, as absolute paths. Git resolves every
-/// link on the way to an absolute path it prints, so the paths under them
-/// are joined here rather than asked for: a path git printed for a link
+/// link on the way to an absolute path it prints, so what stands under them
+/// is walked here rather than asked for: a path git printed for a link
 /// would already name what the link points at.
 pub(crate) const LOCATING: [&str; 4] = [
     "rev-parse",
@@ -196,11 +178,16 @@ fn absolute(path: &OsStr) -> OsString {
         .unwrap_or_default()
 }
 
-/// Refuse a repository with a symbolic link standing at any of
-/// [`UNLINKED`], given the directories [`LOCATING`] printed, with
-/// [`GitError::LinkedPath`]. A path nothing stands at is fine. One that
-/// cannot be looked at, and a listing that is not one absolute directory
-/// for each, are refused: what stands there cannot be known.
+/// Refuse a repository with a symbolic link anywhere under the worktree's
+/// own git directory or the one every worktree of its repository shares,
+/// given the directories [`LOCATING`] printed, with [`GitError::LinkedPath`]:
+/// git writes its refs, ref tables, reflogs, index, worktree records, commit
+/// message and configuration by name, and follows a link standing at any of
+/// them or at a directory above one. No link is followed, so each is seen
+/// where it stands; [`OBJECTS`] is looked at only as far as it says. What
+/// vanishes while the walk runs is fine. What cannot be read, and a listing
+/// that is not one absolute directory for each, are refused: what stands
+/// there cannot be known.
 pub(crate) fn unlinked(located: &[u8]) -> GitResult<()> {
     let unlocated = || GitError::CommandFailed("Cannot locate the repository's files".to_string());
     let directories: Vec<PathBuf> = located
@@ -213,25 +200,49 @@ pub(crate) fn unlinked(located: &[u8]) -> GitResult<()> {
     let [own, shared] = directories.as_slice() else {
         return Err(unlocated());
     };
-    for (directory, name) in UNLINKED {
-        let base = match directory {
-            Directory::Own => own,
-            Directory::Shared => shared,
+    if own != shared {
+        walk(own)?;
+    }
+    walk(shared)
+}
+
+/// Refuse the first symbolic link at or below `root`, never following one.
+fn walk(root: &Path) -> GitResult<()> {
+    let objects = root.join(OBJECTS);
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Some(entries) = present(std::fs::read_dir(&directory))? else {
+            continue;
         };
-        match std::fs::symlink_metadata(base.join(name)) {
-            Ok(details) if details.file_type().is_symlink() => {
-                return Err(GitError::LinkedPath(name));
+        let whole = directory != objects;
+        for entry in entries {
+            let Some(entry) = present(entry)? else {
+                continue;
+            };
+            let Some(kind) = present(entry.file_type())? else {
+                continue;
+            };
+            if kind.is_symlink() {
+                return Err(GitError::LinkedPath);
             }
-            Ok(_) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) => {}
-            Err(_) => return Err(unlocated()),
+            if kind.is_dir() && (whole || entry.file_name() == OBJECT_INFO) {
+                pending.push(entry.path());
+            }
         }
     }
     Ok(())
+}
+
+/// What a look at the git directory found: nothing when what it looked at
+/// vanished meanwhile, and a refusal when it could not look.
+fn present<T>(looked: std::io::Result<T>) -> GitResult<Option<T>> {
+    match looked {
+        Ok(found) => Ok(Some(found)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(GitError::CommandFailed(
+            "Cannot read the repository's git directory".to_string(),
+        )),
+    }
 }
 
 /// A path or ref name git printed, byte for byte, so a name that is not
@@ -431,72 +442,178 @@ mod tests {
     }
 
     #[test]
-    fn paths_nothing_stands_at_and_real_files_and_directories_are_accepted() {
+    fn real_files_and_directories_at_every_depth_are_accepted() {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(directory.path().join("refs/heads")).unwrap();
-        std::fs::write(directory.path().join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        std::fs::write(directory.path().join("refs/remotes"), "not a directory\n").unwrap();
+        for name in [
+            "refs/heads/task",
+            "logs/refs/heads/task",
+            "objects/info",
+            "objects/ab",
+        ] {
+            std::fs::create_dir_all(directory.path().join(name)).unwrap();
+        }
+        for name in [
+            "HEAD",
+            "refs/heads/task/one",
+            "logs/refs/heads/task/one",
+            "objects/info/alternates",
+            "objects/ab/cdef",
+        ] {
+            std::fs::write(directory.path().join(name), "held\n").unwrap();
+        }
 
         assert!(unlinked(&located(directory.path(), directory.path())).is_ok());
     }
 
-    /// A symbolic link at `name` under `own` when `in_own`, and under
-    /// `shared` otherwise, pointing at a file that is not there.
+    /// A symbolic link at `name` under `base`, pointing at a file that is
+    /// not there, with every directory on the way made.
     #[cfg(unix)]
-    fn link(own: &std::path::Path, shared: &std::path::Path, in_own: bool, name: &str) {
-        let standing = match in_own {
-            true => own.join(name),
-            false => shared.join(name),
-        };
+    fn link(base: &std::path::Path, name: &str) {
+        let standing = base.join(name);
         std::fs::create_dir_all(standing.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(shared.join("elsewhere"), standing).unwrap();
+        std::os::unix::fs::symlink(base.join("elsewhere"), standing).unwrap();
     }
+
+    /// Where a link stands: in a main worktree's git directory, which is
+    /// its own and the shared one at once; in a linked worktree's own, kept
+    /// inside the shared one as git keeps it or outside it; or in the shared
+    /// one of a linked worktree.
+    #[cfg(unix)]
+    #[derive(Debug, Clone, Copy)]
+    enum Placement {
+        Main,
+        OwnInside,
+        OwnOutside,
+        Shared,
+    }
+
+    /// Paths git writes by name, and through a link standing at any of them
+    /// or at a directory above one, at every depth, with a name no refusal
+    /// may carry among them.
+    #[cfg(unix)]
+    const WRITTEN: [&str; 25] = [
+        "HEAD",
+        "ORIG_HEAD",
+        "FETCH_HEAD",
+        "config",
+        "index",
+        "COMMIT_EDITMSG",
+        "packed-refs",
+        "refs",
+        "refs/heads/main",
+        "refs/heads/planted\u{202E}",
+        "refs/remotes/origin/main",
+        "logs",
+        "logs/HEAD",
+        "logs/refs/remotes/origin/main",
+        "reftable",
+        "reftable/tables.list",
+        "worktrees",
+        "worktrees/two/index",
+        "modules/nested/config",
+        "objects",
+        "objects/info",
+        "objects/info/alternates",
+        "objects/info/commit-graphs/graph.graph",
+        "objects/pack",
+        "objects/ab",
+    ];
 
     #[cfg(unix)]
     #[test]
-    fn a_symbolic_link_at_any_path_is_refused_by_its_name() {
-        for (directory, name) in UNLINKED {
-            let shared = tempfile::tempdir().unwrap();
-            let own = shared.path().join("worktrees").join("one");
-            link(
-                &own,
-                shared.path(),
-                matches!(directory, Directory::Own),
-                name,
-            );
+    fn a_symbolic_link_anywhere_in_either_git_directory_is_refused_unnamed() {
+        for name in WRITTEN {
+            for placement in [
+                Placement::Main,
+                Placement::OwnInside,
+                Placement::OwnOutside,
+                Placement::Shared,
+            ] {
+                let shared = tempfile::tempdir().unwrap();
+                let outside = tempfile::tempdir().unwrap();
+                let own = match placement {
+                    Placement::Main => shared.path().to_path_buf(),
+                    Placement::OwnInside => shared.path().join("worktrees").join("one"),
+                    Placement::OwnOutside | Placement::Shared => outside.path().join("one"),
+                };
+                std::fs::create_dir_all(&own).unwrap();
+                match placement {
+                    Placement::Main | Placement::Shared => link(shared.path(), name),
+                    Placement::OwnInside | Placement::OwnOutside => link(&own, name),
+                }
 
-            let refusal = unlinked(&located(&own, shared.path())).unwrap_err();
+                let refusal = unlinked(&located(&own, shared.path())).unwrap_err();
+
+                assert!(
+                    matches!(refusal, GitError::LinkedPath),
+                    "{name:?} {placement:?}: {refusal:?}"
+                );
+                assert_eq!(
+                    refusal.to_string(),
+                    "Refusing a repository whose git directory holds a symbolic link"
+                );
+            }
+        }
+    }
+
+    /// Loose objects and packs are named by git from their content and run
+    /// to many thousands of files, so what stands inside a directory of
+    /// them is not looked at.
+    #[cfg(unix)]
+    #[test]
+    fn the_object_store_is_walked_only_at_its_top_and_in_its_info_directory() {
+        for name in ["objects/ab/cdef", "objects/pack/pack-one.pack"] {
+            let directory = tempfile::tempdir().unwrap();
+            link(directory.path(), name);
 
             assert!(
-                matches!(refusal, GitError::LinkedPath(refused) if refused == name),
-                "{name}: {refusal:?}"
-            );
-            assert_eq!(
-                refusal.to_string(),
-                format!("Refusing a repository whose {name} is a symbolic link")
+                unlinked(&located(directory.path(), directory.path())).is_ok(),
+                "{name}"
             );
         }
     }
 
-    /// A worktree keeps its own `HEAD`, `ORIG_HEAD` and `FETCH_HEAD` and
-    /// shares the rest, so each is looked for in the one directory git
-    /// reads it from, and a link in the other is not what git follows.
+    #[test]
+    fn a_git_directory_that_is_not_there_holds_no_link() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+
+        assert!(unlinked(&located(&missing, &missing)).is_ok());
+    }
+
+    /// What vanished while the walk ran holds no link, and what could not
+    /// be looked at may hold one.
+    #[test]
+    fn only_what_vanished_is_passed_over() {
+        let vanished = present::<()>(Err(std::io::ErrorKind::NotFound.into()));
+        let unreadable = present::<()>(Err(std::io::ErrorKind::PermissionDenied.into()));
+
+        assert!(matches!(vanished, Ok(None)), "{vanished:?}");
+        assert!(
+            matches!(unreadable, Err(GitError::CommandFailed(_))),
+            "{unreadable:?}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
-    fn each_path_is_looked_for_where_git_keeps_it() {
-        for (directory, name) in UNLINKED {
-            let shared = tempfile::tempdir().unwrap();
-            let own = shared.path().join("worktrees").join("one");
-            std::fs::create_dir_all(&own).unwrap();
-            link(
-                &own,
-                shared.path(),
-                matches!(directory, Directory::Shared),
-                name,
-            );
-
-            assert!(unlinked(&located(&own, shared.path())).is_ok(), "{name}");
+    fn a_directory_that_cannot_be_read_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        if nix::unistd::geteuid().is_root() {
+            return;
         }
+        let directory = tempfile::tempdir().unwrap();
+        let sealed = directory.path().join("refs");
+        std::fs::create_dir(&sealed).unwrap();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let walked = unlinked(&located(directory.path(), directory.path()));
+
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            matches!(walked, Err(GitError::CommandFailed(_))),
+            "{walked:?}"
+        );
     }
 
     #[test]
