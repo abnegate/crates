@@ -1,4 +1,11 @@
+mod character_set;
+mod credential;
+
 use std::borrow::Cow;
+
+use crate::redact::character_set::CharacterSet;
+use crate::redact::credential::CREDENTIALS;
+use crate::redact::credential::Credential;
 
 /// Stands in for every credential this module removes, and for the body of a
 /// [`SecretValue`](crate::SecretValue) that is printed.
@@ -29,13 +36,13 @@ const SECRET_KEY_WORDS: &[&str] = &[
 /// absent on purpose: `--key=main` and `auth=none` are ordinary output, so a
 /// value assigned to those still has to look like a secret to be redacted.
 /// A value assigned to one of these does not -- a chosen passphrase is low
-/// entropy by nature, and `JWT_SECRET=correct-horse-battery-staple` is a
-/// credential however it reads.
+/// entropy by nature, and a hexadecimal master key reads as a digest.
 const NAMED_SECRET_KEY_WORDS: &[&str] = &[
     "accesskey",
     "apikey",
     "credential",
     "encryptionkey",
+    "masterkey",
     "passwd",
     "password",
     "privatekey",
@@ -47,163 +54,62 @@ const NAMED_SECRET_KEY_WORDS: &[&str] = &[
     "token",
 ];
 
+/// Key endings that name where a credential is kept rather than the
+/// credential itself, as `MASTER_KEY_FILE=/etc/example/master.key` does.
+const REFERENCE_KEY_SUFFIXES: &[&str] = &["dir", "directory", "file", "path"];
+
 /// Words that introduce a credential without an assignment, as
 /// `Authorization: Bearer <token>` does.
 const SECRET_INTRODUCERS: &[&str] = &["bearer", "basic", "token", "password", "passwd", "secret"];
 
+/// Key words whose value is a credential scheme followed by the credential.
+const AUTHORIZATION_KEY_WORDS: &[&str] = &["authorization"];
+
+/// The length of the shortest key word, below which no key can contain one.
+const SHORTEST_KEY_WORD: usize = shortest_word(&[
+    SECRET_KEY_WORDS,
+    NAMED_SECRET_KEY_WORDS,
+    AUTHORIZATION_KEY_WORDS,
+]);
+
 /// Shortest run redacted when a key word names it outright.
 const MINIMUM_NAMED_LENGTH: usize = 6;
 
+const QUOTES: &[u8] = b"\"'`";
+const ESCAPE: u8 = b'\\';
+
 const PEM_BEGIN: &str = "-----BEGIN ";
 const PEM_END: &str = "-----END ";
-const PEM_PRIVATE: &str = "PRIVATE KEY-----";
+const PEM_PRIVATE: &str = "PRIVATE KEY";
 
-#[derive(Clone, Copy)]
-enum Charset {
-    /// `[A-Za-z0-9_.:/+-]`
-    Token,
-    /// `[A-Za-z0-9_-]`
-    Word,
-    /// `[A-Za-z0-9+/_-]`
-    Encoded,
-}
+const URL_SCHEME_SEPARATOR: &[u8] = b"://";
+const URL_USERINFO_DELIMITERS: &[u8] = b"/@ \t\n";
+const URL_USERINFO_END: u8 = b'@';
 
-impl Charset {
-    fn contains(self, byte: u8) -> bool {
-        byte.is_ascii_alphanumeric()
-            || match self {
-                Self::Token => matches!(byte, b'_' | b'.' | b':' | b'/' | b'+' | b'-'),
-                Self::Word => matches!(byte, b'_' | b'-'),
-                Self::Encoded => matches!(byte, b'+' | b'/' | b'_' | b'-'),
-            }
-    }
-}
-
-/// A credential family recognised by its prefix.
-struct Credential {
-    prefix: &'static str,
-    body: Charset,
-    minimum: usize,
-}
-
-const CREDENTIALS: &[Credential] = &[
-    Credential {
-        prefix: "npm_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "ghp_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "gho_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "ghu_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "ghs_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "ghr_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "github_pat_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "sk-",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "xoxb-",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "xoxa-",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "xoxp-",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "xoxr-",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "xoxs-",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "AKIA",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "lin_api_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "sntryu_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "sntrys_",
-        body: Charset::Token,
-        minimum: 8,
-    },
-    Credential {
-        prefix: "glpat-",
-        body: Charset::Word,
-        minimum: 16,
-    },
-    Credential {
-        prefix: "sk_live_",
-        body: Charset::Encoded,
-        minimum: 16,
-    },
-    Credential {
-        prefix: "AIzaSy",
-        body: Charset::Word,
-        minimum: 20,
-    },
-];
+const AWS_ACCESS_KEY_PREFIXES: &[&[u8]] = &[b"AKIA", b"ASIA"];
+const AWS_ACCESS_KEY_BODY: usize = 16;
 
 /// Replace every credential in `text` with [`REDACTED`].
 ///
-/// Text with nothing to redact is returned untouched and unallocated.
+/// Text with nothing to redact is returned untouched and unallocated. Time is
+/// linear in the length of `text`.
 pub fn redact(text: &str) -> Cow<'_, str> {
+    let bytes = text.as_bytes();
     let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut userinfo: Option<usize> = None;
     let mut index = 0;
 
-    while index < text.len() {
-        match secret_at(text, index) {
-            Some(end) => {
-                spans.push((index, end));
-                index = end;
-            }
-            None => index += 1,
+    while index < bytes.len() {
+        if may_start_secret(bytes, index, userinfo)
+            && let Some(end) = secret_at(text, index, &mut userinfo)
+        {
+            spans.push((index, end));
+            userinfo = None;
+            index = end;
+            continue;
         }
+        userinfo = userinfo_after(bytes, index, userinfo);
+        index += 1;
     }
 
     if spans.is_empty() {
@@ -221,36 +127,44 @@ pub fn redact(text: &str) -> Cow<'_, str> {
     Cow::Owned(output)
 }
 
-fn secret_at(text: &str, index: usize) -> Option<usize> {
-    private_key_at(text, index)
-        .or_else(|| credential_at(text, index))
-        .or_else(|| json_web_token_at(text, index))
-        .or_else(|| url_password_at(text, index))
-        .or_else(|| encoded_at(text, index))
-        .or_else(|| named_at(text, index))
+/// Whether any scanner could match at `index`: every one but the URL password
+/// scanner starts on a token byte other than a colon, and that one starts
+/// after a colon inside userinfo.
+fn may_start_secret(bytes: &[u8], index: usize, userinfo: Option<usize>) -> bool {
+    let byte = bytes[index];
+    (byte != b':' && CharacterSet::Token.contains(byte))
+        || (userinfo.is_some() && index > 0 && bytes[index - 1] == b':')
 }
 
-/// The body of a PEM private key, from its BEGIN line to the end of its END
-/// line. Nothing in the block carries a prefix or an assignment, and the base64
-/// is newline-wrapped, so the run scanners never see it whole.
+fn secret_at(text: &str, index: usize, userinfo: &mut Option<usize>) -> Option<usize> {
+    let bytes = text.as_bytes();
+    private_key_at(text, index)
+        .or_else(|| credential_at(bytes, index))
+        .or_else(|| aws_access_key_at(bytes, index))
+        .or_else(|| json_web_token_at(bytes, index))
+        .or_else(|| url_password_at(bytes, index, userinfo))
+        .or_else(|| encoded_at(bytes, index))
+        .or_else(|| named_at(bytes, index))
+}
+
+/// The body of a PEM or PGP private key, from its BEGIN line to the end of its
+/// END line. Nothing in the block carries a prefix or an assignment, and the
+/// base64 is newline-wrapped, so the run scanners never see it whole.
+///
+/// The block closes only on an END line for the label it opened with, and only
+/// on one that is the whole line: an END line for another label, or one with
+/// text after it, must not leave the rest of the key standing.
 fn private_key_at(text: &str, index: usize) -> Option<usize> {
-    let rest = text.get(index..)?;
-    if !rest.starts_with(PEM_BEGIN) {
+    if !text.as_bytes()[index..].starts_with(PEM_BEGIN.as_bytes()) {
         return None;
     }
+    let rest = &text[index..];
     let line = rest.find('\n').unwrap_or(rest.len());
     if !rest[..line].contains(PEM_PRIVATE) {
         return None;
     }
-    // Closing on the first END marker lets an intervening one -- an END line
-    // for some other label, sitting in the same output -- cut the redaction
-    // short and leave the rest of the key material standing. Close on the label
-    // this block opened with.
     let label = rest[PEM_BEGIN.len()..line].trim_end_matches('\r');
     let closing = format!("{PEM_END}{label}");
-    // The marker has to be the whole line. Matching it anywhere lets a line
-    // that merely starts with it -- `-----END X----- and then some` -- close
-    // the block, which is the same escape one spelling further on.
     let end = closes_at(rest, &closing).map_or(rest.len(), |at| {
         rest[at..]
             .find('\n')
@@ -273,56 +187,110 @@ fn closes_at(text: &str, closing: &str) -> Option<usize> {
     None
 }
 
+/// Where the userinfo of the URL being read starts, for as long as the text
+/// read since could still be userinfo.
+fn userinfo_after(bytes: &[u8], index: usize, userinfo: Option<usize>) -> Option<usize> {
+    if bytes[index..].starts_with(URL_SCHEME_SEPARATOR) {
+        return Some(index + URL_SCHEME_SEPARATOR.len());
+    }
+    userinfo.filter(|start| index < *start || !URL_USERINFO_DELIMITERS.contains(&bytes[index]))
+}
+
 /// The password in a `scheme://user:password@host` URL.
 ///
 /// The run is preceded by a colon, so `assigned_to_secret` looks back over the
 /// *username* for a key word and finds none: `postgres://user:<password>@db`
 /// reads as an assignment to `user`.
-fn url_password_at(text: &str, index: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    if index == 0 || bytes[index - 1] != b':' {
+///
+/// A colon whose password runs into something other than `@` rules out every
+/// later colon before that point too, so the userinfo is forgotten and each
+/// byte is scanned at most once.
+fn url_password_at(bytes: &[u8], index: usize, userinfo: &mut Option<usize>) -> Option<usize> {
+    let start = (*userinfo)?;
+    let colon = index.checked_sub(1)?;
+    if colon < start || bytes[colon] != b':' {
         return None;
     }
 
-    let mut start = index - 1;
-    while start > 0 && !matches!(bytes[start - 1], b'/' | b'@' | b' ' | b'\t' | b'\n') {
-        start -= 1;
+    let end = bytes[index..]
+        .iter()
+        .position(|byte| URL_USERINFO_DELIMITERS.contains(byte))
+        .map_or(bytes.len(), |length| index + length);
+    if end > index && bytes.get(end) == Some(&URL_USERINFO_END) {
+        return Some(end);
     }
-    if !text[..start].ends_with("://") {
-        return None;
-    }
-
-    let mut end = index;
-    while end < bytes.len() && !matches!(bytes[end], b'@' | b'/' | b' ' | b'\t' | b'\n') {
-        end += 1;
-    }
-    (end > index && end < bytes.len() && bytes[end] == b'@').then_some(end)
+    *userinfo = None;
+    None
 }
 
-/// A run that a key word names outright, whatever it looks like.
-fn named_at(text: &str, index: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    if index > 0 && Charset::Token.contains(bytes[index - 1]) {
+/// A run that a key word names outright, whatever it looks like, or that a
+/// word such as `Bearer` introduces and that is shaped like a credential.
+///
+/// A named value opened by a quote runs to the closing quote, or to the end of
+/// the line when there is none.
+///
+/// Only a run that starts after a colon can overlap the run before it, so one
+/// is scanned only once an assignment is known to name it; a scan that finds
+/// the value is skipped past, and one that does not stops short.
+fn named_at(bytes: &[u8], index: usize) -> Option<usize> {
+    let first = *bytes.get(index)?;
+    if first == b':' || !CharacterSet::Token.contains(first) {
         return None;
     }
+    match index.checked_sub(1).map(|previous| bytes[previous]) {
+        Some(b':') => assigned_value_at(bytes, index, None),
+        Some(quote) if QUOTES.contains(&quote) => assigned_value_at(bytes, index, Some(quote)),
+        Some(previous) if CharacterSet::Token.contains(previous) => None,
+        _ => assigned_value_at(bytes, index, None).or_else(|| introduced_value_at(bytes, index)),
+    }
+}
 
-    let end = run(bytes, index, Charset::Token);
+fn assigned_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<usize> {
+    if !assigned_to(bytes, index, NAMED_SECRET_KEY_WORDS) {
+        return None;
+    }
+    let end = quote.map_or_else(
+        || CharacterSet::Token.run(bytes, index),
+        |quote| quoted_end(bytes, index, quote),
+    );
+    (end - index >= MINIMUM_NAMED_LENGTH).then_some(end)
+}
+
+fn introduced_value_at(bytes: &[u8], index: usize) -> Option<usize> {
+    let end = CharacterSet::Token.run(bytes, index);
     if end - index < MINIMUM_NAMED_LENGTH {
         return None;
     }
-    (assigned_to(bytes, index, NAMED_SECRET_KEY_WORDS) || introduced_at(bytes, index))
-        .then_some(end)
+    let introducer = introducer_before(bytes, index)?;
+    (assigned_to(bytes, introducer, AUTHORIZATION_KEY_WORDS)
+        || is_secret_shaped(&bytes[index..end]))
+    .then_some(end)
 }
 
-/// Whether the word immediately before `index`, separated by spaces rather than
-/// an assignment, introduces a credential.
-fn introduced_at(bytes: &[u8], index: usize) -> bool {
+/// Where the quoted value starting at `from` ends: its closing `quote`, or the
+/// end of the line when the quote is never closed.
+fn quoted_end(bytes: &[u8], from: usize, quote: u8) -> usize {
+    let mut index = from;
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'\n' | b'\r' => return index,
+            ESCAPE => index += 2,
+            _ if byte == quote => return index,
+            _ => index += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// The start of the word immediately before `index`, separated by spaces
+/// rather than an assignment, when that word introduces a credential.
+fn introducer_before(bytes: &[u8], index: usize) -> Option<usize> {
     let mut cursor = index;
     while cursor > 0 && matches!(bytes[cursor - 1], b' ' | b'\t') {
         cursor -= 1;
     }
     if cursor == index || cursor == 0 {
-        return false;
+        return None;
     }
 
     let end = cursor;
@@ -332,33 +300,70 @@ fn introduced_at(bytes: &[u8], index: usize) -> bool {
         start -= 1;
     }
 
-    let word: String = bytes[start..end]
+    let word = &bytes[start..end];
+    SECRET_INTRODUCERS
         .iter()
-        .map(|byte| byte.to_ascii_lowercase() as char)
-        .collect();
-    SECRET_INTRODUCERS.contains(&word.as_str())
+        .any(|introducer| word.eq_ignore_ascii_case(introducer.as_bytes()))
+        .then_some(start)
 }
 
-fn credential_at(text: &str, index: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
+/// Whether a run reads as a credential rather than as prose: it mixes letters
+/// with digits, or it is long and does not read as words.
+fn is_secret_shaped(candidate: &[u8]) -> bool {
+    let letters = candidate.iter().any(u8::is_ascii_alphabetic);
+    let digits = candidate.iter().any(u8::is_ascii_digit);
+    (letters && digits)
+        || (candidate.len() >= MINIMUM_ALPHANUMERIC_RUN && !reads_as_words(candidate))
+}
+
+/// Whether every hyphen- or underscore-separated part is a lowercase,
+/// capitalised or uppercase word.
+fn reads_as_words(candidate: &[u8]) -> bool {
+    candidate
+        .split(|byte| matches!(byte, b'-' | b'_'))
+        .all(|word| {
+            let tail = word.get(1..).unwrap_or_default();
+            word.iter().all(u8::is_ascii_alphabetic)
+                && (tail.iter().all(u8::is_ascii_lowercase)
+                    || word.iter().all(u8::is_ascii_uppercase))
+        })
+}
+
+fn credential_at(bytes: &[u8], index: usize) -> Option<usize> {
+    if (index > 0 && bytes[index - 1].is_ascii_alphanumeric())
+        || !Credential::may_start(bytes[index])
+    {
+        return None;
+    }
+    CREDENTIALS
+        .iter()
+        .find_map(|credential| credential.end_at(bytes, index))
+}
+
+/// An AWS access key ID: a four-letter prefix and sixteen uppercase letters or
+/// digits, matched exactly so that prose such as `Asia/Tokyo` is left alone.
+fn aws_access_key_at(bytes: &[u8], index: usize) -> Option<usize> {
     if index > 0 && bytes[index - 1].is_ascii_alphanumeric() {
         return None;
     }
-
-    CREDENTIALS.iter().find_map(|credential| {
-        let prefix = credential.prefix.as_bytes();
-        let body = index + prefix.len();
-        if body > bytes.len() || !bytes[index..body].eq_ignore_ascii_case(prefix) {
-            return None;
-        }
-        let end = run(bytes, body, credential.body);
-        (end - body >= credential.minimum).then_some(end)
-    })
+    let prefix = AWS_ACCESS_KEY_PREFIXES
+        .iter()
+        .find(|prefix| bytes[index..].starts_with(prefix))?;
+    let body = index + prefix.len();
+    let end = body + AWS_ACCESS_KEY_BODY;
+    let identifier = bytes.get(body..end)?;
+    let terminated = bytes
+        .get(end)
+        .is_none_or(|byte| !byte.is_ascii_alphanumeric());
+    (terminated
+        && identifier
+            .iter()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()))
+    .then_some(end)
 }
 
-fn json_web_token_at(text: &str, index: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    if index > 0 && Charset::Word.contains(bytes[index - 1]) {
+fn json_web_token_at(bytes: &[u8], index: usize) -> Option<usize> {
+    if index > 0 && CharacterSet::Word.contains(bytes[index - 1]) {
         return None;
     }
     if !bytes[index..].starts_with(JSON_WEB_TOKEN_PREFIX) {
@@ -366,7 +371,7 @@ fn json_web_token_at(text: &str, index: usize) -> Option<usize> {
     }
 
     let header = index + JSON_WEB_TOKEN_PREFIX.len();
-    let mut end = run(bytes, header, Charset::Word);
+    let mut end = CharacterSet::Word.run(bytes, header);
     if end - header < JSON_WEB_TOKEN_SEGMENT {
         return None;
     }
@@ -375,7 +380,7 @@ fn json_web_token_at(text: &str, index: usize) -> Option<usize> {
         if bytes.get(end) != Some(&b'.') {
             return None;
         }
-        let segment = run(bytes, end + 1, Charset::Word);
+        let segment = CharacterSet::Word.run(bytes, end + 1);
         if segment - (end + 1) < JSON_WEB_TOKEN_SEGMENT {
             return None;
         }
@@ -385,13 +390,12 @@ fn json_web_token_at(text: &str, index: usize) -> Option<usize> {
     Some(end)
 }
 
-fn encoded_at(text: &str, index: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    if index > 0 && Charset::Encoded.contains(bytes[index - 1]) {
+fn encoded_at(bytes: &[u8], index: usize) -> Option<usize> {
+    if index > 0 && CharacterSet::Encoded.contains(bytes[index - 1]) {
         return None;
     }
 
-    let end = run(bytes, index, Charset::Encoded);
+    let end = CharacterSet::Encoded.run(bytes, index);
     if end - index < MINIMUM_ENCODED_LENGTH {
         return None;
     }
@@ -423,24 +427,51 @@ fn assigned_to(bytes: &[u8], index: usize, words: &[&str]) -> bool {
     let end = skip_padding(cursor - 1);
     let limit = end.saturating_sub(KEY_LOOKBEHIND);
     let mut start = end;
-    while start > limit && Charset::Word.contains(bytes[start - 1]) {
+    while start > limit && CharacterSet::Word.contains(bytes[start - 1]) {
         start -= 1;
     }
 
-    let key: String = bytes[start..end]
+    let mut buffer = [0u8; KEY_LOOKBEHIND];
+    let mut length = 0;
+    for byte in bytes[start..end]
         .iter()
         .filter(|byte| byte.is_ascii_alphanumeric())
-        .map(|byte| byte.to_ascii_lowercase() as char)
-        .collect();
-    words.iter().any(|word| key.contains(word))
+    {
+        buffer[length] = byte.to_ascii_lowercase();
+        length += 1;
+    }
+    let key = &buffer[..length];
+    if key.len() < SHORTEST_KEY_WORD {
+        return false;
+    }
+
+    !REFERENCE_KEY_SUFFIXES
+        .iter()
+        .any(|suffix| key.ends_with(suffix.as_bytes()))
+        && words.iter().any(|word| contains(key, word.as_bytes()))
 }
 
-fn run(bytes: &[u8], from: usize, charset: Charset) -> usize {
-    let mut index = from;
-    while index < bytes.len() && charset.contains(bytes[index]) {
-        index += 1;
+const fn shortest_word(lists: &[&[&str]]) -> usize {
+    let mut shortest = usize::MAX;
+    let mut list = 0;
+    while list < lists.len() {
+        let mut word = 0;
+        while word < lists[list].len() {
+            let length = lists[list][word].len();
+            if length < shortest {
+                shortest = length;
+            }
+            word += 1;
+        }
+        list += 1;
     }
-    index
+    shortest
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 fn is_secret_like(candidate: &[u8]) -> bool {
@@ -494,13 +525,9 @@ fn longest_alphanumeric_run(candidate: &[u8]) -> usize {
 
 #[cfg(test)]
 mod shapes_that_carry_no_prefix {
+    use super::REDACTED;
     use super::redact;
 
-    /// Each of these reached stored tool output whole: the value carries no
-    /// vendor prefix, so it was left to the entropy scanner, which needs an
-    /// assignment whose key names a secret. A bearer header is introduced by a
-    /// space, a URL password's key is the username, and a PEM body is wrapped
-    /// across lines.
     #[test]
     fn a_bearer_token_does_not_survive_its_header() {
         for line in [
@@ -523,6 +550,34 @@ mod shapes_that_carry_no_prefix {
     }
 
     #[test]
+    fn a_basic_credential_does_not_survive_its_header() {
+        assert_eq!(
+            redact("Authorization: Basic dXNlcjpwYXNz"),
+            format!("Authorization: Basic {REDACTED}")
+        );
+    }
+
+    #[test]
+    fn a_credential_introduced_in_prose_is_redacted_when_it_looks_like_one() {
+        for (line, expected) in [
+            (
+                "invalid token AbCdEf0123456789XyZ in request",
+                format!("invalid token {REDACTED} in request"),
+            ),
+            (
+                "Bearer Zm9vYmFyYmF6cXV4cXV1eA failed",
+                format!("Bearer {REDACTED} failed"),
+            ),
+            (
+                "the password hunter2 was rejected",
+                format!("the password {REDACTED} was rejected"),
+            ),
+        ] {
+            assert_eq!(redact(line), expected);
+        }
+    }
+
+    #[test]
     fn a_connection_string_password_does_not_survive() {
         let redacted =
             redact("DATABASE_URL=postgres://application:hunter2seventeen@db:5432/manager");
@@ -533,11 +588,6 @@ mod shapes_that_carry_no_prefix {
         );
     }
 
-    /// Closing on the first END marker in the text lets an END line for some
-    /// other label -- which the same tool output can carry, next to the key or
-    /// inside it -- end the redaction early and leave the rest standing.
-    /// One spelling further on: a line that merely *starts* with the closing
-    /// marker is not the closing line, and must not end the redaction.
     #[test]
     fn an_end_marker_with_trailing_text_does_not_close_a_private_key() {
         let key = concat!(
@@ -572,6 +622,19 @@ mod shapes_that_carry_no_prefix {
     }
 
     #[test]
+    fn a_pgp_private_key_block_does_not_survive() {
+        let key = concat!(
+            "-----BEGIN PGP PRIVATE",
+            " KEY BLOCK-----\n",
+            "\n",
+            "lQOYBGYx2sQBCADm4kHq8vT3yN1pZ0cR7wXjL5fKbA9sUeD2oPiGhM6tVnC3rQzW\n",
+            "=Xk3e\n",
+            "-----END PGP PRIVATE KEY BLOCK-----"
+        );
+        assert_eq!(redact(key), REDACTED);
+    }
+
+    #[test]
     fn a_private_key_body_does_not_survive() {
         let key = concat!(
             "-----BEGIN RSA PRIVATE KEY-----\n",
@@ -582,6 +645,79 @@ mod shapes_that_carry_no_prefix {
         let redacted = redact(key);
         assert!(!redacted.contains("MIIEowIBAAKCAQEA"), "{redacted}");
         assert!(!redacted.contains("b2ZuRk9tS3hZd0hq"), "{redacted}");
+    }
+
+    #[test]
+    fn a_master_key_does_not_survive_in_any_spelling() {
+        let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        for (line, expected) in [
+            (
+                format!("EXAMPLE_MASTER_KEY={key}"),
+                format!("EXAMPLE_MASTER_KEY={REDACTED}"),
+            ),
+            (
+                format!("master_key: {key}"),
+                format!("master_key: {REDACTED}"),
+            ),
+            (format!("masterKey={key}"), format!("masterKey={REDACTED}")),
+            (
+                format!("export EXAMPLE_MASTER_KEY=\"{key}\""),
+                format!("export EXAMPLE_MASTER_KEY=\"{REDACTED}\""),
+            ),
+            (
+                format!("signing_key={key}"),
+                format!("signing_key={REDACTED}"),
+            ),
+            (
+                format!("private_key={key}"),
+                format!("private_key={REDACTED}"),
+            ),
+        ] {
+            assert_eq!(redact(&line), expected);
+        }
+    }
+
+    #[test]
+    fn a_key_file_path_is_not_a_key() {
+        for line in [
+            "EXAMPLE_MASTER_KEY_FILE=/home/example/.example/master.key",
+            "POSTGRES_PASSWORD_FILE=/run/secrets/postgres",
+            "signing_key_path: /etc/example/signing.pem",
+        ] {
+            assert_eq!(redact(line), line);
+        }
+    }
+
+    #[test]
+    fn a_value_assigned_with_a_bare_colon_does_not_survive() {
+        assert_eq!(
+            redact("DB_PASSWORD:hunter2seventeen"),
+            format!("DB_PASSWORD:{REDACTED}")
+        );
+    }
+
+    #[test]
+    fn a_quoted_passphrase_does_not_survive_past_its_first_word() {
+        for (line, expected) in [
+            (
+                "SECRET=\"correct horse battery staple\"",
+                format!("SECRET=\"{REDACTED}\""),
+            ),
+            (
+                "password: 'my pass phrase' # rotated",
+                format!("password: '{REDACTED}' # rotated"),
+            ),
+            (
+                "{\"api_key\": \"two words\", \"user\": \"example\"}",
+                format!("{{\"api_key\": \"{REDACTED}\", \"user\": \"example\"}}"),
+            ),
+            (
+                "TOKEN=\"never closed\nnext line",
+                format!("TOKEN=\"{REDACTED}\nnext line"),
+            ),
+        ] {
+            assert_eq!(redact(line), expected);
+        }
     }
 
     #[test]
@@ -601,9 +737,6 @@ mod shapes_that_carry_no_prefix {
         }
     }
 
-    /// The relaxation must not start eating ordinary output. `key` and `auth`
-    /// are deliberately not treated as naming a credential outright, and a
-    /// value has to be assigned or introduced to be redacted at all.
     #[test]
     fn ordinary_output_is_left_alone() {
         for line in [
@@ -616,6 +749,14 @@ mod shapes_that_carry_no_prefix {
             "warning: unused variable: `token`",
             "https://github.com/abnegate/crates/pull/42",
             "keyword: password",
+            "invalid token format in request",
+            "the basic example compiles",
+            "Bearer authentication failed",
+            "the password reset link expired",
+            "TZ=Asia/Kolkata",
+            "export HF_HUB_CACHE=/var/cache/huggingface",
+            "error: std::password::hashing::verify failed",
+            "listening on http://localhost:8080 with {\"json\":1}",
         ] {
             let redacted = redact(line);
             assert_eq!(redacted, line, "ordinary output was redacted: {redacted}");
@@ -625,12 +766,22 @@ mod shapes_that_carry_no_prefix {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
     use super::*;
 
-    /// Each sample sits in prose rather than an assignment. `export TOKEN=<value>`
-    /// is redacted by the key word alone, whatever the value looks like, so the
-    /// whole prefix table could be emptied with the assertion still holding --
-    /// seven of these families were in fact removable with the suite green.
+    /// A megabyte scanned quadratically takes tens of seconds even optimised;
+    /// scanned linearly it takes a few milliseconds optimised and a few tens
+    /// unoptimised.
+    const LINEAR_BUDGET: Duration = if cfg!(debug_assertions) {
+        Duration::from_millis(1000)
+    } else {
+        Duration::from_millis(100)
+    };
+
+    /// Each sample sits in prose rather than an assignment, which would be
+    /// redacted by its key word alone and so prove nothing about the prefix.
     #[test]
     fn redacts_every_known_credential_family() {
         let samples = [
@@ -650,9 +801,15 @@ mod tests {
             "xoxp-0123456789abcdefghij",
             "xoxr-0123456789abcdefghij",
             "xoxs-0123456789abcdefghij",
+            concat!("xapp-", "1-A0123456789-0123456789012-abcdef"),
             "AKIA0123456789ABCDEF",
+            concat!("ASIA", "0123456789ABCDEF"),
             "glpat-0123456789abcdefghij",
             "sk_live_0123456789abcdefghij",
+            concat!("sk_test_", "0123456789abcdefghij"),
+            concat!("rk_live_", "0123456789abcdefghij"),
+            concat!("rk_test_", "0123456789abcdefghij"),
+            concat!("hf_", "abcdefghijklmnopqrstuvwxyzABCDEFGH"),
             "AIzaSy0123456789abcdefghij0123",
         ];
 
@@ -769,6 +926,45 @@ mod tests {
     fn redacts_a_credential_beside_multibyte_text() {
         let text = "clé → ghp_0123456789abcdefghij ✅";
         assert_eq!(redact(text), format!("clé → {REDACTED} ✅"));
+    }
+
+    #[test]
+    fn an_aws_access_key_prefix_needs_the_exact_shape() {
+        for text in [
+            concat!("ASIA", "0123456789ABCDEFG"),
+            "ASIAPACIFIC_OPERATIONS_TEAM",
+            "asia0123456789abcdef",
+        ] {
+            assert_eq!(redact(text), text);
+        }
+    }
+
+    #[test]
+    fn redaction_is_linear_in_the_length_of_minified_json() {
+        let json = "\"k\":1,".repeat(1024 * 1024 / 6);
+        let started = Instant::now();
+        let redacted = redact(&json);
+        let elapsed = started.elapsed();
+
+        assert!(matches!(redacted, Cow::Borrowed(_)));
+        assert!(
+            elapsed < LINEAR_BUDGET,
+            "a megabyte of minified JSON took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_url_that_never_closes_its_userinfo_is_scanned_once() {
+        let text = format!("http://x{}", ":1".repeat(512 * 1024));
+        let started = Instant::now();
+        let redacted = redact(&text);
+        let elapsed = started.elapsed();
+
+        assert!(matches!(redacted, Cow::Borrowed(_)));
+        assert!(
+            elapsed < LINEAR_BUDGET,
+            "a megabyte of colons after a scheme took {elapsed:?}"
+        );
     }
 
     #[test]
