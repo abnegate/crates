@@ -11,8 +11,12 @@
 //! configuration holds anything beyond what git itself writes for a clone is
 //! refused before anything runs in it, as is one whose git directory holds a
 //! symbolic link anywhere, since git writes through such a link to wherever
-//! it points, in a file's place or a directory's. The check is
-//! made before each command, so it cannot stop a run that rewrites the
+//! it points, in a file's place or a directory's, and a checkout whose git
+//! directory, or the one it shares, is not the one its own `.git` names: a
+//! `.git` that is a link, is missing, or is a file or worktree record
+//! rewritten to name another clone's would hand every write to that other
+//! repository. A checkout is named by its top, where its `.git` stands. The
+//! check is made before each command, so it cannot stop a run that rewrites the
 //! repository in the instant between the check and the command; a clone
 //! every run can write is not one a credential should be sent from. A
 //! *managed* one is a local clone the caller owns outright: it is cloned and
@@ -33,6 +37,7 @@
 //! every fetch, so the caller's global helper and proxy stay usable. The
 //! hardened commands keep every pin.
 
+mod anchor;
 mod authentication;
 mod diff_summary;
 mod error;
@@ -43,6 +48,7 @@ mod remote_head;
 mod service;
 mod worktree_entry;
 
+pub(crate) use crate::git::anchor::Anchor;
 pub use crate::git::diff_summary::DiffSummary;
 pub use crate::git::error::GitError;
 pub use crate::git::error::GitResult;

@@ -70,10 +70,7 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git worktree add failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            return Err(Self::failed("worktree add", &output));
         }
 
         tracing::info!(worktree = ?worktree_path, "Worktree created");
@@ -129,10 +126,7 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git worktree add -B {branch} failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            return Err(Self::failed("worktree add", &output));
         }
 
         tracing::info!(worktree = ?worktree_path, %branch, "Worktree created on branch");
@@ -175,8 +169,10 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!(error = %stderr, "git worktree remove failed");
+            tracing::debug!(
+                error = %String::from_utf8_lossy(&output.stderr),
+                "git worktree remove failed"
+            );
         }
 
         if std::fs::symlink_metadata(worktree_path).is_ok() {

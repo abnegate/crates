@@ -12,6 +12,7 @@ use crate::conflict::index;
 use crate::conflict::layout::Layout;
 use crate::conflict::resolve;
 use crate::conflict::validate;
+use crate::git::Anchor;
 use crate::git::DIFF_PREFIX;
 use crate::git::GITLINK_MODE;
 use crate::git::GitService;
@@ -344,9 +345,10 @@ impl ConflictService {
     }
 
     /// Refuse a repository whose configuration names something no pin
-    /// reaches, or that has a symbolic link where git writes through one.
+    /// reaches, that shares a git directory other than its own, or that has a
+    /// symbolic link where git writes through one.
     pub(super) async fn verify_config(&self, layout: &Layout) -> ConflictResult<()> {
-        Ok(GitService::verify(|| self.bound(layout)).await?)
+        Ok(GitService::verify(|| self.bound(layout), Anchor::Bound(layout.git.clone())).await?)
     }
 
     async fn run(&self, layout: &Layout, arguments: &[&str]) -> ConflictResult<()> {

@@ -1,6 +1,7 @@
 use crate::branch_name::BranchName;
 use crate::branch_name::HEADS;
 use crate::commit_sha::CommitSha;
+use crate::git::Anchor;
 use crate::git::CONFIG_LISTING;
 use crate::git::DIFF_PREFIX;
 use crate::git::DiffSummary;
@@ -35,6 +36,8 @@ mod hardened;
 #[cfg(all(test, unix))]
 mod linked_tests;
 mod managed;
+#[cfg(test)]
+mod redirected_tests;
 mod worktrees;
 
 #[cfg(test)]
@@ -230,23 +233,30 @@ impl GitService {
 
     /// Refuse a repository whose own configuration holds anything beyond what
     /// git writes for a clone, a worktree and a tracking branch, with
-    /// [`GitError::UnsafeConfig`], or whose git directory holds a symbolic
-    /// link anywhere git could write through it, with
-    /// [`GitError::LinkedPath`]. Run before every hardened operation, because
-    /// a run's git commands can write the repository between two of them.
+    /// [`GitError::UnsafeConfig`]; a checkout at `path` whose git directory,
+    /// or the one it shares, is not the one its own `.git` names, with
+    /// [`GitError::RedirectedGitDirectory`], or whose `.git` is a link; and
+    /// one whose git directory holds a symbolic link anywhere git could write
+    /// through it, with [`GitError::LinkedPath`]. Run before every hardened
+    /// operation, because a run's git commands can write the repository
+    /// between two of them.
     pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
-        Self::verify(|| {
-            let mut command = Self::hardened();
-            command.current_dir(path);
-            command
-        })
+        Self::verify(
+            || {
+                let mut command = Self::hardened();
+                command.current_dir(path);
+                command
+            },
+            Anchor::Checkout(path.to_path_buf()),
+        )
         .await
     }
 
-    /// [`Self::verify_config`] for commands `bind` points at their repository.
-    /// The git directories are walked on the blocking pool: a clone with
-    /// many loose refs and reflogs holds thousands of entries.
-    pub(crate) async fn verify(bind: impl Fn() -> Command) -> GitResult<()> {
+    /// [`Self::verify_config`] for commands `bind` points at the repository
+    /// `anchor` names. The git directories are anchored, then walked, on the
+    /// blocking pool: a clone with many loose refs and reflogs holds
+    /// thousands of entries.
+    pub(crate) async fn verify(bind: impl Fn() -> Command, anchor: Anchor) -> GitResult<()> {
         let listed = Self::output(bind().args(CONFIG_LISTING).stdout(Stdio::piped())).await?;
         if !listed.status.success() {
             return Err(GitError::CommandFailed(
@@ -262,9 +272,12 @@ impl GitService {
                 "Cannot locate the repository's files".to_string(),
             ));
         }
-        tokio::task::spawn_blocking(move || unlinked(&located.stdout))
-            .await
-            .map_err(std::io::Error::other)?
+        tokio::task::spawn_blocking(move || {
+            anchor.holds(&located.stdout)?;
+            unlinked(&located.stdout)
+        })
+        .await
+        .map_err(std::io::Error::other)?
     }
 
     /// A hardened invocation that may reach `remote`, over the one transport
@@ -394,6 +407,19 @@ impl GitService {
             ));
         }
         Ok(())
+    }
+
+    /// The failure of the git `operation` that produced `output`, named by
+    /// the operation alone: git's standard error quotes the ref names and
+    /// paths a repository chose, so what it said is logged at debug and
+    /// never carried.
+    fn failed(operation: &str, output: &Output) -> GitError {
+        tracing::debug!(
+            operation,
+            error = %String::from_utf8_lossy(&output.stderr),
+            "A git command failed"
+        );
+        GitError::CommandFailed(format!("git {operation} failed"))
     }
 }
 

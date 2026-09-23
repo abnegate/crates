@@ -48,6 +48,13 @@ pub enum GitError {
     #[error("Refusing a repository whose git directory holds a symbolic link")]
     LinkedPath,
 
+    /// A checkout whose git directory, or the one it shares, is not the one
+    /// its own `.git` names: git would read and write another repository's
+    /// refs, index and configuration from it. Which one is left unnamed: the
+    /// checkout chose that path.
+    #[error("Refusing a checkout whose git directory is not its own")]
+    RedirectedGitDirectory,
+
     #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
     UnsafeWorktree(PathBuf),
 

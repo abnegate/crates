@@ -86,7 +86,7 @@ const ENVIRONMENT: [(&str, &str); 11] = [
 /// hook, a command -- is one a run's git commands could have written, and git
 /// keeps adding keys that run programs, so a repository carrying any key not
 /// listed here is refused rather than inspected key by key.
-const PERMITTED_KEYS: [&str; 9] = [
+const PERMITTED_KEYS: [&str; 10] = [
     "core.repositoryformatversion",
     "core.filemode",
     "core.bare",
@@ -96,6 +96,7 @@ const PERMITTED_KEYS: [&str; 9] = [
     "core.symlinks",
     "extensions.objectformat",
     "extensions.refstorage",
+    "extensions.relativeworktrees",
 ];
 
 /// A remote's keys that name where it is and what to fetch from it.
@@ -110,15 +111,17 @@ const REMOTE_SECTION: &str = "remote.";
 /// The section configuring a local branch.
 const BRANCH_SECTION: &str = "branch.";
 
-/// The directory a repository keeps its objects in. Its loose objects and
-/// packs run to many thousands of files, so the walk [`unlinked`] makes looks
-/// at what stands directly in it and walks only [`OBJECT_INFO`] below it.
+/// The directory a repository keeps its objects in. Its loose objects run to
+/// many thousands of files, so the walk [`unlinked`] makes looks at what
+/// stands directly in it and walks only [`OBJECTS_WALKED`] below it.
 const OBJECTS: &str = "objects";
 
-/// The one directory under [`OBJECTS`] walked whole: it holds `alternates`,
-/// naming the further stores git reads objects from, and the commit graphs
-/// git writes.
-const OBJECT_INFO: &str = "info";
+/// The directories under [`OBJECTS`] walked whole: `info` holds
+/// `alternates`, naming the further stores git reads objects from, and the
+/// commit graphs git writes; `pack` holds the few packs a clone keeps, whose
+/// times git sets through a link standing in a pack's place when it
+/// freshens one.
+const OBJECTS_WALKED: [&str; 2] = ["info", "pack"];
 
 /// Prints the worktree's own git directory and the one every worktree of
 /// its repository shares, a line each, as absolute paths. Git resolves every
@@ -184,11 +187,28 @@ fn absolute(path: &OsStr) -> OsString {
 /// git writes its refs, ref tables, reflogs, index, worktree records, commit
 /// message and configuration by name, and follows a link standing at any of
 /// them or at a directory above one. No link is followed, so each is seen
-/// where it stands; [`OBJECTS`] is looked at only as far as it says. What
-/// vanishes while the walk runs is fine. What cannot be read, and a listing
-/// that is not one absolute directory for each, are refused: what stands
-/// there cannot be known.
+/// where it stands; [`OBJECTS`] is looked at only as far as it says. Inside
+/// the directories its loose objects fan out into, only the directories
+/// themselves are looked at: git writes a loose object to a file of its
+/// own and renames it into place, but freshens one already there by
+/// setting its times, through a link standing in its place, so a link there
+/// can have git touch the times, and never the content, of the file it
+/// points at. What vanishes while the walk runs is fine. What cannot be
+/// read, and a listing that is not one absolute directory for each, are
+/// refused: what stands there cannot be known.
 pub(crate) fn unlinked(located: &[u8]) -> GitResult<()> {
+    let (own, shared) = directories(located)?;
+    if own != shared {
+        walk(&own)?;
+    }
+    walk(&shared)
+}
+
+/// The worktree's own git directory and the one every worktree of its
+/// repository shares, as [`LOCATING`] printed them. A listing that is not
+/// one absolute directory for each is refused: what it names cannot be
+/// known.
+pub(crate) fn directories(located: &[u8]) -> GitResult<(PathBuf, PathBuf)> {
     let unlocated = || GitError::CommandFailed("Cannot locate the repository's files".to_string());
     let directories: Vec<PathBuf> = located
         .strip_suffix(b"\n")
@@ -197,13 +217,8 @@ pub(crate) fn unlinked(located: &[u8]) -> GitResult<()> {
         .map(|line| native(line).filter(|directory| directory.is_absolute()))
         .collect::<Option<_>>()
         .ok_or_else(unlocated)?;
-    let [own, shared] = directories.as_slice() else {
-        return Err(unlocated());
-    };
-    if own != shared {
-        walk(own)?;
-    }
-    walk(shared)
+    let [own, shared] = <[PathBuf; 2]>::try_from(directories).map_err(|_| unlocated())?;
+    Ok((own, shared))
 }
 
 /// Refuse the first symbolic link at or below `root`, never following one.
@@ -225,7 +240,12 @@ fn walk(root: &Path) -> GitResult<()> {
             if kind.is_symlink() {
                 return Err(GitError::LinkedPath);
             }
-            if kind.is_dir() && (whole || entry.file_name() == OBJECT_INFO) {
+            if kind.is_dir()
+                && (whole
+                    || OBJECTS_WALKED
+                        .iter()
+                        .any(|walked| entry.file_name() == *walked))
+            {
                 pending.push(entry.path());
             }
         }
@@ -234,11 +254,21 @@ fn walk(root: &Path) -> GitResult<()> {
 }
 
 /// What a look at the git directory found: nothing when what it looked at
-/// vanished meanwhile, and a refusal when it could not look.
+/// vanished meanwhile, or became a file, as a ref directory can between the
+/// look at what it is and the look inside it when a concurrent command
+/// deletes the refs in it and writes a ref of its name; and a refusal when
+/// it could not look.
 fn present<T>(looked: std::io::Result<T>) -> GitResult<Option<T>> {
     match looked {
         Ok(found) => Ok(Some(found)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
         Err(_) => Err(GitError::CommandFailed(
             "Cannot read the repository's git directory".to_string(),
         )),
@@ -319,6 +349,7 @@ mod tests {
                 "branch.task/one.merge",
                 "extensions.objectformat",
                 "extensions.refStorage",
+                "extensions.relativeWorktrees",
             ])),
             None
         );
@@ -491,7 +522,7 @@ mod tests {
     /// or at a directory above one, at every depth, with a name no refusal
     /// may carry among them.
     #[cfg(unix)]
-    const WRITTEN: [&str; 25] = [
+    const WRITTEN: [&str; 26] = [
         "HEAD",
         "ORIG_HEAD",
         "FETCH_HEAD",
@@ -516,6 +547,7 @@ mod tests {
         "objects/info/alternates",
         "objects/info/commit-graphs/graph.graph",
         "objects/pack",
+        "objects/pack/pack-one.pack",
         "objects/ab",
     ];
 
@@ -556,21 +588,22 @@ mod tests {
         }
     }
 
-    /// Loose objects and packs are named by git from their content and run
-    /// to many thousands of files, so what stands inside a directory of
-    /// them is not looked at.
+    /// Loose objects are named by git from their content and run to many
+    /// thousands of files, so what stands inside a directory of them is not
+    /// looked at; the few packs a clone keeps are.
     #[cfg(unix)]
     #[test]
-    fn the_object_store_is_walked_only_at_its_top_and_in_its_info_directory() {
-        for name in ["objects/ab/cdef", "objects/pack/pack-one.pack"] {
-            let directory = tempfile::tempdir().unwrap();
-            link(directory.path(), name);
+    fn the_object_store_is_walked_at_its_top_and_in_its_info_and_pack_directories() {
+        let loose = tempfile::tempdir().unwrap();
+        link(loose.path(), "objects/ab/cdef");
+        let packed = tempfile::tempdir().unwrap();
+        link(packed.path(), "objects/pack/pack-one.pack");
 
-            assert!(
-                unlinked(&located(directory.path(), directory.path())).is_ok(),
-                "{name}"
-            );
-        }
+        let passed = unlinked(&located(loose.path(), loose.path()));
+        let refused = unlinked(&located(packed.path(), packed.path()));
+
+        assert!(passed.is_ok(), "{passed:?}");
+        assert!(matches!(refused, Err(GitError::LinkedPath)), "{refused:?}");
     }
 
     #[test]
@@ -581,14 +614,16 @@ mod tests {
         assert!(unlinked(&located(&missing, &missing)).is_ok());
     }
 
-    /// What vanished while the walk ran holds no link, and what could not
-    /// be looked at may hold one.
+    /// What vanished while the walk ran, or became a file, holds no link,
+    /// and what could not be looked at may hold one.
     #[test]
     fn only_what_vanished_is_passed_over() {
         let vanished = present::<()>(Err(std::io::ErrorKind::NotFound.into()));
+        let replaced = present::<()>(Err(std::io::ErrorKind::NotADirectory.into()));
         let unreadable = present::<()>(Err(std::io::ErrorKind::PermissionDenied.into()));
 
         assert!(matches!(vanished, Ok(None)), "{vanished:?}");
+        assert!(matches!(replaced, Ok(None)), "{replaced:?}");
         assert!(
             matches!(unreadable, Err(GitError::CommandFailed(_))),
             "{unreadable:?}"
