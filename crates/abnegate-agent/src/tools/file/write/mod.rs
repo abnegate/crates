@@ -18,6 +18,7 @@ use crate::tools::beneath;
 use crate::tools::beneath::Access;
 use crate::tools::quote;
 use crate::tools::reason_property;
+use crate::tools::word;
 
 /// Write content to a file
 pub struct WriteFileTool;
@@ -44,12 +45,12 @@ impl Tool for WriteFileTool {
         Some(match parameters.append {
             true => format!(
                 "Append {characters} characters to {}: {}.",
-                parameters.path,
+                word(&parameters.path),
                 quote(&parameters.content)
             ),
             false => format!(
                 "Write {characters} characters to {}, replacing whatever is there: {}.",
-                parameters.path,
+                word(&parameters.path),
                 quote(&parameters.content)
             ),
         })

@@ -20,6 +20,7 @@ use crate::tools::ToolResult;
 use crate::tools::beneath;
 use crate::tools::quote;
 use crate::tools::reason_property;
+use crate::tools::word;
 
 /// Replace exact text in an existing file without rewriting the rest.
 pub struct ApplyPatchTool;
@@ -58,7 +59,7 @@ impl Tool for ApplyPatchTool {
             })
             .collect::<Vec<String>>()
             .join("; ");
-        Some(format!("Edit {}: {replacements}.", parameters.path))
+        Some(format!("Edit {}: {replacements}.", word(&parameters.path)))
     }
 
     fn parameters_schema(&self) -> Value {

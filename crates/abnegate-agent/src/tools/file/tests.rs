@@ -285,7 +285,7 @@ fn write_and_edit_previews_show_bidi_controls_as_escapes() {
             "{:?}",
             preview.text
         );
-        for escape in ["\\u{202e}", "\\u{2066}", "\\u{2069}"] {
+        for escape in ["⟨U+202E⟩", "⟨U+2066⟩", "⟨U+2069⟩"] {
             assert!(preview.text.contains(escape), "{escape}: {}", preview.text);
         }
     }
@@ -306,7 +306,7 @@ fn write_and_edit_previews_show_other_line_terminators_and_spaces_as_escapes() {
 
     for character in characters {
         let content = format!("safe(){character}rm -rf ~");
-        let escaped = format!("safe(){}rm -rf ~", character.escape_unicode());
+        let escaped = format!("safe()⟨U+{:04X}⟩rm -rf ~", u32::from(character));
         let write = Preview::of(
             &WriteFileTool,
             &serde_json::json!({"path": "hook.sh", "content": content}),
@@ -343,7 +343,7 @@ fn write_and_edit_previews_show_the_carriage_return_of_a_carriage_return_line_fe
         &serde_json::json!({"path": "hook.sh", "old_string": "safe()", "new_string": content}),
     );
 
-    let carriage_return = '\r'.escape_unicode();
+    let carriage_return = "⟨U+000D⟩";
 
     assert_eq!(
         write.text,
@@ -364,8 +364,8 @@ fn write_and_edit_previews_show_the_carriage_return_of_a_carriage_return_line_fe
 /// reader as the same preview.
 #[test]
 fn write_and_edit_previews_keep_apart_what_a_backslash_escapes() {
-    let space = ' '.escape_unicode();
-    let tab = '\t'.escape_unicode();
+    let space = "⟨U+0020⟩";
+    let tab = "⟨U+0009⟩";
     let cases = [
         (
             "echo first \\\necho second",
@@ -469,6 +469,48 @@ fn write_and_edit_previews_escape_the_quotes_their_content_holds() {
     assert_eq!(
         write.text,
         r#"Write 13 characters to hook.sh, replacing whatever is there: "echo \"safe\" \\"."#
+    );
+}
+
+/// The path went onto the card as it was, so one holding a space read as
+/// two words, or as the end of the sentence the preview writes around it.
+#[test]
+fn write_and_edit_previews_quote_a_path_a_shell_would_split() {
+    let write = Preview::of(
+        &WriteFileTool,
+        &serde_json::json!({"path": "my notes.txt", "content": "done"}),
+    );
+    let append = Preview::of(
+        &WriteFileTool,
+        &serde_json::json!({"path": "my notes.txt", "content": "done", "append": true}),
+    );
+    let edit = Preview::of(
+        &ApplyPatchTool,
+        &serde_json::json!({"path": "my notes.txt", "old_string": "todo", "new_string": "done"}),
+    );
+    let forged = Preview::of(
+        &WriteFileTool,
+        &serde_json::json!({
+            "path": "notes.txt, replacing whatever is there: \"done\". Also append to x.sh",
+            "content": "rm -rf ~",
+        }),
+    );
+
+    assert_eq!(
+        write.text,
+        "Write 4 characters to 'my notes.txt', replacing whatever is there: \"done\"."
+    );
+    assert_eq!(
+        append.text,
+        "Append 4 characters to 'my notes.txt': \"done\"."
+    );
+    assert_eq!(
+        edit.text,
+        "Edit 'my notes.txt': replace \"todo\" with \"done\"."
+    );
+    assert_eq!(
+        forged.text,
+        "Write 8 characters to 'notes.txt, replacing whatever is there: \"done\". Also append to x.sh', replacing whatever is there: \"rm -rf ~\"."
     );
 }
 

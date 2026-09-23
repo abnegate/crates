@@ -24,6 +24,7 @@ use super::job;
 use super::job::JobCommand;
 use super::job::Jobs;
 use super::job::WAIT_FOR;
+use super::word;
 
 pub(super) const MAX_OUTPUT_PARAMETER: &str = "max_output_chars";
 const BACKGROUND_PARAMETER: &str = "background";
@@ -121,10 +122,11 @@ async fn background(command: &JobCommand, context: &ToolContext) -> Result<ToolR
 ///
 /// Rendered whole: a [`Preview`](super::Preview) too long for the card is cut
 /// in the middle, so the directory goes after the command, where it stays in
-/// view however long the command is.
+/// view however long the command is. The directory is a [`word`], so one
+/// holding a space reads as the single path it is.
 fn run_preview(line: &str, directory: Option<&str>) -> String {
     match directory {
-        Some(directory) => format!("Run `{line}` in {directory}."),
+        Some(directory) => format!("Run `{line}` in {}.", word(directory)),
         None => format!("Run `{line}`."),
     }
 }

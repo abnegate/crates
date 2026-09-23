@@ -16,6 +16,13 @@ const CUT_OPEN: char = '⟦';
 
 const CUT_CLOSE: char = '⟧';
 
+const ESCAPE_OPEN: char = '⟨';
+
+const ESCAPE_CLOSE: char = '⟩';
+
+/// What an [`escape`] writes before the hex digits of its code point.
+const CODE_POINT: &str = "U+";
+
 /// Format controls, the bidi overrides and isolates among them, and every
 /// other code point a renderer draws nothing for.
 static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
@@ -29,11 +36,15 @@ static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
 /// [`truncated`](Self::truncated) is set, so a call padded to push its payload
 /// out of view reads as a call that was cut, never as the whole of what it
 /// does. A control, format or invisible character in the call is shown as its
-/// `\u{…}` escape, as is any whitespace but a plain space or a `\n`, a space
-/// straight after a `\` or a line break, and any `⟦`, `⟧` or `⏎` it carries,
-/// so the call can neither redraw the card it is shown on, pass one character
-/// off as another, hide a space a backslash escapes among the ones between
-/// words, nor forge the marks the preview draws. The
+/// code point between `⟨` and `⟩`, `⟨U+0008⟩` for a backspace, as is any
+/// whitespace but a plain space or a `\n`, a space straight after a `\` or a
+/// line break, and any `⟨`, `⟩`, `⟦`, `⟧` or `⏎` it carries, so the call can
+/// neither redraw the card it is shown on, pass one character off as another,
+/// hide a space a backslash escapes among the ones between words, nor forge
+/// the marks the preview draws. An escape is one of those marks: text that
+/// reads `\u{8}` is shown as those characters, and one that reads
+/// `⟨U+0008⟩` has its fences escaped, so everything between a `⟨` and a `⟩`
+/// on the card is a character the preview escaped. The
 /// [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always holds
 /// every argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,16 +107,16 @@ impl Preview {
     }
 }
 
-/// Whether `character` reaches the card as its [`char::escape_unicode`].
+/// Whether `character` reaches the card as its [`escape`].
 ///
 /// A control or invisible character would let the call move the cursor, erase
 /// or reorder what the reader is shown, a line or paragraph separator or a
 /// Unicode space would pass for a plain space, and the glyphs the preview
-/// draws its own marks with would let it forge them, so none of them is shown
-/// as itself.
+/// draws its own marks and escapes with would let it forge them, so none of
+/// them is shown as itself.
 fn escaped(character: char) -> bool {
     match character {
-        RETURN | CUT_OPEN | CUT_CLOSE => true,
+        RETURN | CUT_OPEN | CUT_CLOSE | ESCAPE_OPEN | ESCAPE_CLOSE => true,
         _ if character.is_ascii() => character.is_ascii_control(),
         _ => {
             character.is_control()
@@ -120,7 +131,7 @@ fn escaped(character: char) -> bool {
 enum Glyph {
     /// Shown as itself.
     Plain(char),
-    /// Shown as its [`char::escape_unicode`].
+    /// Shown as its [`escape`].
     Escaped(char),
     /// A line break, shown as [`LINE_BREAK`].
     Break,
@@ -147,7 +158,7 @@ impl Glyph {
     fn width(self) -> usize {
         match self {
             Self::Plain(_) => 1,
-            Self::Escaped(character) => character.escape_unicode().len(),
+            Self::Escaped(character) => escape_width(character),
             Self::Break => LINE_BREAK.chars().count(),
         }
     }
@@ -155,10 +166,31 @@ impl Glyph {
     fn draw(self, text: &mut String) {
         match self {
             Self::Plain(character) => text.push(character),
-            Self::Escaped(character) => text.extend(character.escape_unicode()),
+            Self::Escaped(character) => text.push_str(&escape(character)),
             Self::Break => text.push_str(LINE_BREAK),
         }
     }
+}
+
+/// `character` as the card shows a character it cannot show as itself: its
+/// code point between fences no call can type, since the card escapes them
+/// too.
+fn escape(character: char) -> String {
+    format!(
+        "{ESCAPE_OPEN}{CODE_POINT}{:04X}{ESCAPE_CLOSE}",
+        u32::from(character)
+    )
+}
+
+/// How many characters of the card [`escape`] takes for `character`,
+/// counted without drawing it.
+fn escape_width(character: char) -> usize {
+    let digits = match u32::from(character) {
+        0..=0xFFFF => 4,
+        0x1_0000..=0xF_FFFF => 5,
+        _ => 6,
+    };
+    [ESCAPE_OPEN, ESCAPE_CLOSE].len() + CODE_POINT.len() + digits
 }
 
 /// Every character of `text` as the card shows it.
@@ -300,7 +332,7 @@ mod tests {
 
             assert_eq!(
                 preview.text,
-                format!("a{}b", character.escape_unicode()),
+                format!("a{}b", escape(character)),
                 "{character:?}"
             );
             assert!(!preview.truncated, "{character:?}");
@@ -309,11 +341,19 @@ mod tests {
 
     #[test]
     fn an_escape_spends_the_budget_for_every_character_it_is_shown_as() {
-        let fits = Preview::within(&format!("{}\u{8}", "x".repeat(395)), MAX_PREVIEW_CHARACTERS);
+        let room = MAX_PREVIEW_CHARACTERS - escape('\u{8}').chars().count();
+
+        let fits = Preview::within(
+            &format!("{}\u{8}", "x".repeat(room)),
+            MAX_PREVIEW_CHARACTERS,
+        );
         assert!(!fits.truncated, "{}", fits.text);
         assert_eq!(fits.text.chars().count(), MAX_PREVIEW_CHARACTERS);
 
-        let over = Preview::within(&format!("{}\u{8}", "x".repeat(396)), MAX_PREVIEW_CHARACTERS);
+        let over = Preview::within(
+            &format!("{}\u{8}", "x".repeat(room + 1)),
+            MAX_PREVIEW_CHARACTERS,
+        );
         assert!(over.truncated, "{}", over.text);
         assert!(
             over.text.chars().count() <= MAX_PREVIEW_CHARACTERS,
@@ -328,8 +368,8 @@ mod tests {
     /// escaped space was lost in the space [`LINE_BREAK`] opens with.
     #[test]
     fn a_space_after_a_backslash_or_a_line_break_is_shown_as_its_escape() {
-        let space = ' '.escape_unicode();
-        let tab = '\t'.escape_unicode();
+        let space = "⟨U+0020⟩";
+        let tab = "⟨U+0009⟩";
 
         for (rendered, drawn) in [
             (r"rm -rf ~/tmp\ ~", format!(r"rm -rf ~/tmp\{space}~")),
@@ -355,11 +395,16 @@ mod tests {
 
     #[test]
     fn an_escaped_space_spends_the_budget_for_every_character_it_is_shown_as() {
-        let fits = Preview::within(&format!("{}\\ ", "x".repeat(393)), MAX_PREVIEW_CHARACTERS);
+        let room = MAX_PREVIEW_CHARACTERS - 1 - escape(' ').chars().count();
+
+        let fits = Preview::within(&format!("{}\\ ", "x".repeat(room)), MAX_PREVIEW_CHARACTERS);
         assert!(!fits.truncated, "{}", fits.text);
         assert_eq!(fits.text.chars().count(), MAX_PREVIEW_CHARACTERS);
 
-        let over = Preview::within(&format!("{}\\ ", "x".repeat(394)), MAX_PREVIEW_CHARACTERS);
+        let over = Preview::within(
+            &format!("{}\\ ", "x".repeat(room + 1)),
+            MAX_PREVIEW_CHARACTERS,
+        );
         assert!(over.truncated, "{}", over.text);
         assert!(
             over.text.chars().count() <= MAX_PREVIEW_CHARACTERS,
@@ -370,7 +415,7 @@ mod tests {
 
     #[test]
     fn a_cut_keeps_escapes_whole_and_counts_the_characters_of_the_call() {
-        let escape = '\u{8}'.escape_unicode().to_string();
+        let backspace = escape('\u{8}');
 
         let preview = Preview::within(&"\u{8}".repeat(1_000), MAX_PREVIEW_CHARACTERS);
 
@@ -381,10 +426,18 @@ mod tests {
             preview.text
         );
         let (head, hidden, tail) = parts(&preview.text);
-        assert_eq!(head.replace(&escape, ""), "", "the head is whole escapes");
-        assert_eq!(tail.replace(&escape, ""), "", "the tail is whole escapes");
         assert_eq!(
-            head.matches(&escape).count() + hidden + tail.matches(&escape).count(),
+            head.replace(&backspace, ""),
+            "",
+            "the head is whole escapes"
+        );
+        assert_eq!(
+            tail.replace(&backspace, ""),
+            "",
+            "the tail is whole escapes"
+        );
+        assert_eq!(
+            head.matches(&backspace).count() + hidden + tail.matches(&backspace).count(),
             1_000,
             "the marker counts characters of the call, not of their escapes"
         );
@@ -398,8 +451,8 @@ mod tests {
         let typed = hidden(12).trim().to_string();
         let escaped = format!(
             "{}12 characters hidden{}",
-            CUT_OPEN.escape_unicode(),
-            CUT_CLOSE.escape_unicode()
+            escape(CUT_OPEN),
+            escape(CUT_CLOSE)
         );
 
         let short = Preview::within(&format!("echo '{typed}'"), MAX_PREVIEW_CHARACTERS);
@@ -436,7 +489,7 @@ mod tests {
 
         assert_eq!(
             preview.text,
-            format!("echo {} done{LINE_BREAK}rm -rf ~", RETURN.escape_unicode())
+            format!("echo {} done{LINE_BREAK}rm -rf ~", escape(RETURN))
         );
         assert_eq!(LINE_BREAK, format!(" {RETURN} "));
     }
@@ -452,9 +505,67 @@ mod tests {
 
         assert_eq!(
             preview.text,
-            "Call `read_file` with {\"path\":\"a\\u{7f}b\\u{9b}c\\u{202e}d\\be\"}."
+            "Call `read_file` with {\"path\":\"a⟨U+007F⟩b⟨U+009B⟩c⟨U+202E⟩d\\be\"}."
         );
         assert!(!preview.truncated);
+    }
+
+    /// An escape was `\u{…}`, text a call could type, so a command holding
+    /// the characters `\u{8}` read as one holding a backspace, and a real
+    /// escaped space as the characters `\u{20}`.
+    #[test]
+    fn the_text_of_an_escape_the_call_carries_is_not_the_character_it_names() {
+        for (typed, real, typed_drawn, real_drawn) in [
+            (
+                r"echo a\u{20}b",
+                r"echo a\ b",
+                r"echo a\u{20}b",
+                r"echo a\⟨U+0020⟩b",
+            ),
+            (r"echo \u{8}", "echo \u{8}", r"echo \u{8}", "echo ⟨U+0008⟩"),
+            (
+                "echo ⟨U+0008⟩",
+                "echo \u{8}",
+                "echo ⟨U+27E8⟩U+0008⟨U+27E9⟩",
+                "echo ⟨U+0008⟩",
+            ),
+            (
+                "echo ⟨U+0020⟩",
+                "echo \\ ",
+                "echo ⟨U+27E8⟩U+0020⟨U+27E9⟩",
+                r"echo \⟨U+0020⟩",
+            ),
+        ] {
+            let typed_preview = Preview::within(typed, MAX_PREVIEW_CHARACTERS);
+            let real_preview = Preview::within(real, MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(typed_preview.text, typed_drawn, "{typed:?}");
+            assert_eq!(real_preview.text, real_drawn, "{real:?}");
+            assert_ne!(typed_preview.text, real_preview.text, "{typed:?}");
+        }
+    }
+
+    #[test]
+    fn an_escape_is_as_wide_as_it_is_drawn() {
+        for character in [
+            '\u{0}',
+            ' ',
+            '\u{7f}',
+            '\u{ffff}',
+            '\u{10000}',
+            '\u{fffff}',
+            '\u{100000}',
+            '\u{10ffff}',
+        ] {
+            assert_eq!(
+                escape_width(character),
+                escape(character).chars().count(),
+                "{character:?}"
+            );
+        }
+        assert_eq!(escape('\u{8}'), "⟨U+0008⟩");
+        assert_eq!(escape('\u{e0041}'), "⟨U+E0041⟩");
+        assert_eq!(escape('\u{10ffff}'), "⟨U+10FFFF⟩");
     }
 
     #[test]

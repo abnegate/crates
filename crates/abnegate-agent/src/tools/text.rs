@@ -143,6 +143,29 @@ pub(crate) fn quote(text: &str) -> String {
     quoted
 }
 
+/// `text` as one word of a command line, the way a shell would read it back.
+///
+/// As it is when every character is one a shell takes as itself anywhere in
+/// a word, and otherwise between single quotes, a `'` it holds written as
+/// `'\''`. Words joined by a space lost where one ended and the next began,
+/// so `-name '*.rs -delete'`, one pattern, read as a pattern and a
+/// `-delete`, and a path holding a space as two.
+pub(crate) fn word(text: &str) -> Cow<'_, str> {
+    if !text.is_empty() && text.chars().all(literal) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(format!("'{}'", text.replace('\'', r"'\''")))
+}
+
+/// Whether a shell takes `character` as itself wherever it falls in a word.
+fn literal(character: char) -> bool {
+    character.is_ascii_alphanumeric()
+        || matches!(
+            character,
+            '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '_' | '-'
+        )
+}
+
 fn trim_marker(dropped: usize) -> String {
     format!("\n\n[… {dropped} characters trimmed …]\n\n")
 }
@@ -252,6 +275,29 @@ mod tests {
             quote("echo first \\\necho second"),
             "\"echo first \\\necho second\""
         );
+    }
+
+    #[test]
+    fn a_word_is_quoted_whenever_a_shell_would_not_read_it_as_itself() {
+        assert_eq!(word("src/lib.rs"), "src/lib.rs");
+        assert_eq!(word("--features=a,b"), "--features=a,b");
+        assert_eq!(word(""), "''");
+        assert_eq!(word("*.rs -delete"), "'*.rs -delete'");
+        assert_eq!(word("my notes.txt"), "'my notes.txt'");
+        assert_eq!(word("it's"), r"'it'\''s'");
+        assert_eq!(word("~/tmp"), "'~/tmp'");
+        assert_eq!(word("a\"b"), "'a\"b'");
+        for metacharacter in [
+            ' ', '\t', '\n', '\\', '$', '`', ';', '&', '|', '<', '>', '(', ')', '*', '?', '[', ']',
+            '{', '}', '#', '!', '~', '"', '\'',
+        ] {
+            let text = format!("a{metacharacter}b");
+            assert!(
+                word(&text).starts_with('\''),
+                "{metacharacter:?}: {}",
+                word(&text)
+            );
+        }
     }
 
     #[test]
