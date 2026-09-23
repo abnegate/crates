@@ -18,6 +18,28 @@ impl GitService {
         command
     }
 
+    /// A hardened git invocation against a managed clone's own repository, for
+    /// the local worktree and `rev-parse` operations that read the clone's
+    /// shared configuration file.
+    ///
+    /// Every worktree of a managed clone shares that file, and a run works in a
+    /// worktree, so a run can write a hook, a file-system monitor or a driver
+    /// into it that the next worktree operation would otherwise run as the host
+    /// with the caller's environment. These operations are local, so they run
+    /// with the host configuration ignored, those settings pinned off, and no
+    /// transport at all; only [`Self::verify_config`], run first, guards a key
+    /// no pin reaches. The clone and fetch that reach the caller's configured
+    /// address keep [`Self::managed_command`] and its environment unchanged.
+    pub(super) fn managed_local(path: &Path) -> Command {
+        let mut command = Self::hardened();
+        command
+            .env("GIT_ALLOW_PROTOCOL", "")
+            .current_dir(path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
     /// Convert a possibly relative path to an absolute one using the process
     /// working directory.
     ///

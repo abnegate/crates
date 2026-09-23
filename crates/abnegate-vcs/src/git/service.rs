@@ -2,9 +2,11 @@ use crate::branch_name::BranchName;
 use crate::branch_name::HEADS;
 use crate::commit_sha::CommitSha;
 use crate::git::CONFIG_LISTING;
+use crate::git::DIFF_PREFIX;
 use crate::git::DiffSummary;
 use crate::git::GitError;
 use crate::git::GitResult;
+use crate::git::IGNORE_SUBMODULES;
 use crate::git::RemoteHead;
 use crate::git::authentication::authenticate;
 #[cfg(unix)]
@@ -18,6 +20,7 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -254,6 +257,61 @@ impl GitService {
         #[cfg(unix)]
         group.disarm();
         Ok(output)
+    }
+
+    /// Run a git command as [`Self::output`] does, but read at most `cap + 1`
+    /// bytes of its standard output and tear the process group down the instant
+    /// that much has arrived, so a run cannot make the host hold an unbounded
+    /// diff or listing in memory. The second value is whether the output ran
+    /// past `cap`.
+    pub(crate) async fn capped(command: &mut Command, cap: usize) -> GitResult<(Vec<u8>, bool)> {
+        #[cfg(unix)]
+        command.process_group(0);
+        command.kill_on_drop(true).stdout(Stdio::piped());
+        let mut child = command.spawn()?;
+        #[cfg(unix)]
+        let mut group = Group::new(nix::unistd::Pid::from_raw(
+            child
+                .id()
+                .ok_or_else(|| std::io::Error::other("Git process has no ID"))? as i32,
+        ));
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("Git process has no standard output"))?;
+        let ceiling = cap.saturating_add(1);
+        let mut collected = Vec::new();
+        let read = tokio::time::timeout(COMMAND_TIMEOUT, async {
+            let mut chunk = [0u8; 8192];
+            loop {
+                let read = stdout.read(&mut chunk).await?;
+                if read == 0 {
+                    break;
+                }
+                let room = ceiling - collected.len();
+                collected.extend_from_slice(&chunk[..read.min(room)]);
+                if collected.len() >= ceiling {
+                    break;
+                }
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .await;
+        let truncated = collected.len() > cap;
+        match read {
+            Ok(Ok(())) if !truncated => {
+                let waited = tokio::time::timeout(COMMAND_TIMEOUT, child.wait())
+                    .await
+                    .map_err(|_| GitError::TimedOut)?;
+                waited?;
+                #[cfg(unix)]
+                group.disarm();
+                Ok((collected, false))
+            }
+            Ok(Ok(())) => Ok((collected, true)),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_) => Err(GitError::TimedOut),
+        }
     }
 
     async fn finish(command: &mut Command) -> GitResult<()> {

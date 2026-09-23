@@ -2,6 +2,16 @@ use super::*;
 use crate::git::WorktreeEntry;
 use tokio::io::AsyncWriteExt;
 
+/// The status a change check runs: every untracked path, and no descent into a
+/// nested repository standing in the working tree.
+const STATUS: [&str; 5] = [
+    "status",
+    "--porcelain",
+    "-z",
+    "--untracked-files=all",
+    IGNORE_SUBMODULES,
+];
+
 impl GitService {
     /// Clone into an empty, caller-owned directory. Credentials live only in the
     /// child environment, never the origin URL, process arguments, or git config.
@@ -162,10 +172,8 @@ impl GitService {
         Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
+                .args(DIFF_PREFIX)
                 .args([
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
                     "--name-only",
                     "-z",
                     "--end-of-options",
@@ -402,14 +410,8 @@ impl GitService {
 
         let shortstat = Self::output(
             Self::hardened()
-                .args([
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--shortstat",
-                    "HEAD",
-                    "--",
-                ])
+                .args(DIFF_PREFIX)
+                .args(["--shortstat", "HEAD", "--"])
                 .current_dir(path)
                 .stdout(Stdio::piped()),
         )
@@ -434,18 +436,19 @@ impl GitService {
             }
         }
 
-        let diff = Self::output(
+        let (diff, overflowed) = Self::capped(
             Self::hardened()
-                .args(["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"])
-                .current_dir(path)
-                .stdout(Stdio::piped()),
+                .args(DIFF_PREFIX)
+                .args(["HEAD", "--"])
+                .current_dir(path),
+            MAXIMUM_DIFF_BYTES,
         )
         .await?;
 
-        let diff_text = String::from_utf8_lossy(&diff.stdout);
-        let diff_text = match diff_text.len() > MAXIMUM_DIFF_BYTES {
+        let diff_text = String::from_utf8_lossy(&diff);
+        let diff_text = match overflowed || diff_text.len() > MAXIMUM_DIFF_BYTES {
             true => {
-                let mut end = MAXIMUM_DIFF_BYTES;
+                let mut end = MAXIMUM_DIFF_BYTES.min(diff_text.len());
                 while end > 0 && !diff_text.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -463,11 +466,12 @@ impl GitService {
     }
 
     /// `git status --porcelain -z` over every untracked file, whatever the
-    /// repository's configuration says to show.
+    /// repository's configuration says to show, without descending into a
+    /// nested repository standing in the working tree.
     async fn status(path: &Path) -> GitResult<Vec<u8>> {
         let output = Self::output(
             Self::hardened()
-                .args(["status", "--porcelain", "-z", "--untracked-files=all"])
+                .args(STATUS)
                 .current_dir(path)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -540,13 +544,8 @@ impl GitService {
         Self::verify_config(path).await?;
         let staged = Self::output(
             Self::hardened()
-                .args([
-                    "diff",
-                    "--cached",
-                    "--quiet",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                ])
+                .args(DIFF_PREFIX)
+                .args(["--cached", "--quiet"])
                 .current_dir(path),
         )
         .await?;
@@ -1893,6 +1892,78 @@ mod configuration_tests {
             service.has_changes(repository.path()).await,
             Err(GitError::UnsafeConfig(_))
         ));
+    }
+
+    #[test]
+    fn the_change_check_status_stays_out_of_a_nested_repository() {
+        assert!(STATUS.contains(&IGNORE_SUBMODULES), "{STATUS:?}");
+        assert!(STATUS.contains(&"--untracked-files=all"), "{STATUS:?}");
+    }
+
+    /// A nested repository standing in the working tree is reported as a change
+    /// when the index records it, but its own dirty working tree is never read:
+    /// reading it would start a child git under the nested repository's own
+    /// configuration, which a run controls.
+    #[tokio::test]
+    async fn a_nested_repository_is_a_change_but_its_own_dirty_state_is_never_read() {
+        let repository = repository();
+        let service = GitService::new();
+        let nested = repository.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        git(&nested, &["init", "-q", "-b", "main"]);
+        std::fs::write(nested.join("file"), "a\n").unwrap();
+        git(&nested, &["add", "file"]);
+        git(&nested, &["commit", "-q", "-m", "nested"]);
+
+        service.stage_all(repository.path()).await.unwrap();
+        assert!(
+            service.has_changes(repository.path()).await.unwrap(),
+            "a recorded gitlink is a change"
+        );
+        let summary = service.diff_summary(repository.path()).await.unwrap();
+        assert!(
+            summary.files_changed.iter().any(|file| file == "nested"),
+            "{summary:?}"
+        );
+
+        service
+            .commit(repository.path(), "record gitlink")
+            .await
+            .unwrap();
+        std::fs::write(
+            nested.join("file"),
+            "changed inside the nested repository\n",
+        )
+        .unwrap();
+        assert!(
+            !service.has_changes(repository.path()).await.unwrap(),
+            "reading the nested repository's dirty state would require entering it"
+        );
+    }
+
+    /// A diff far past the limit is torn down once enough has been read, rather
+    /// than buffered whole, so a run cannot make the host hold gigabytes.
+    #[tokio::test]
+    async fn a_diff_far_larger_than_the_limit_is_capped_without_being_read_whole() {
+        let repository = repository();
+        std::fs::write(
+            repository.path().join("README"),
+            "a line of ordinary text\n".repeat(1_000_000),
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let summary = GitService::new()
+            .diff_summary(repository.path())
+            .await
+            .unwrap();
+
+        assert!(summary.diff_text.ends_with(TRUNCATED));
+        assert!(summary.diff_text.len() <= MAXIMUM_DIFF_BYTES + TRUNCATED.len());
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "a capped diff must be torn down, not read to the end"
+        );
     }
 }
 
