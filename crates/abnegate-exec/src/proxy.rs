@@ -1,5 +1,6 @@
 //! Optional proxy routing for HTTP clients launched by tools.
 
+use std::env;
 use std::ffi::OsString;
 
 use tokio::process::Command;
@@ -8,9 +9,25 @@ use tokio::process::Command;
 /// through. Absent or empty leaves each command's own environment alone.
 pub const PROXY_URL_ENV: &str = "ABNEGATE_EXEC_PROXY_URL";
 
-/// Loopback and co-located service names stay directly reachable rather than
-/// being sent to the proxy.
-const BYPASS: &str = "localhost,127.0.0.1,::1,host.docker.internal,gateway.docker.internal,gluetun,searxng,manager,console,litellm,ollama,comfyui,postgres,valkey,traefik,prometheus,grafana,.svc,.svc.cluster.local";
+/// Environment variable listing, comma-separated, the hosts a routed command
+/// reaches directly rather than through the proxy. Absent means
+/// [`DEFAULT_BYPASS`]; set but empty means every host goes through the proxy.
+pub const PROXY_BYPASS_ENV: &str = "ABNEGATE_EXEC_PROXY_BYPASS";
+
+/// The hosts a routed command reaches directly when no bypass list is given:
+/// loopback, and nothing else.
+pub const DEFAULT_BYPASS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+const PROXY_VARIABLES: [&str; 6] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+];
+const BYPASS_VARIABLES: [&str; 2] = ["NO_PROXY", "no_proxy"];
+const BYPASS_SEPARATOR: &str = ",";
 
 /// Process-level routing policy applied after per-command environment overlays.
 ///
@@ -19,33 +36,66 @@ const BYPASS: &str = "localhost,127.0.0.1,::1,host.docker.internal,gateway.docke
 #[derive(Clone, Default)]
 pub struct Proxy {
     url: Option<OsString>,
+    bypass: Vec<String>,
 }
 
 impl Proxy {
-    /// An absent or empty setting preserves the command's existing environment.
-    pub fn from_env() -> Self {
+    /// Route through `url`, reaching only [`DEFAULT_BYPASS`] directly.
+    pub fn new(url: impl Into<OsString>) -> Self {
         Self {
-            url: std::env::var_os(PROXY_URL_ENV).filter(|url| !url.is_empty()),
+            url: Some(url.into()),
+            bypass: DEFAULT_BYPASS.map(String::from).to_vec(),
+        }
+    }
+
+    /// Reach exactly `hosts` directly instead of [`DEFAULT_BYPASS`]. Each is
+    /// a host name, an address, or a `.domain` suffix, as `NO_PROXY` takes.
+    pub fn with_bypass<I, S>(mut self, hosts: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.bypass = hosts.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Read [`PROXY_URL_ENV`] and [`PROXY_BYPASS_ENV`]. An absent or empty
+    /// URL preserves the command's existing environment.
+    pub fn from_env() -> Self {
+        Self::from_settings(env::var_os(PROXY_URL_ENV), env::var(PROXY_BYPASS_ENV).ok())
+    }
+
+    fn from_settings(url: Option<OsString>, bypass: Option<String>) -> Self {
+        let Some(url) = url.filter(|url| !url.is_empty()) else {
+            return Self::default();
+        };
+        let proxy = Self::new(url);
+        match bypass {
+            Some(hosts) => proxy.with_bypass(
+                hosts
+                    .split(BYPASS_SEPARATOR)
+                    .map(str::trim)
+                    .filter(|host| !host.is_empty()),
+            ),
+            None => proxy,
         }
     }
 
     /// Apply routing last so a tool's environment cannot accidentally bypass it.
+    ///
+    /// The command also receives [`PROXY_URL_ENV`] and [`PROXY_BYPASS_ENV`],
+    /// so an executor it starts routes the same way.
     pub fn apply(&self, command: &mut Command) {
         let Some(url) = &self.url else {
             return;
         };
-        for name in [
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "http_proxy",
-            "https_proxy",
-            "all_proxy",
-            PROXY_URL_ENV,
-        ] {
+        for name in PROXY_VARIABLES.into_iter().chain([PROXY_URL_ENV]) {
             command.env(name, url);
         }
-        command.env("NO_PROXY", BYPASS).env("no_proxy", BYPASS);
+        let bypass = self.bypass.join(BYPASS_SEPARATOR);
+        for name in BYPASS_VARIABLES.into_iter().chain([PROXY_BYPASS_ENV]) {
+            command.env(name, &bypass);
+        }
     }
 }
 
@@ -114,9 +164,7 @@ mod tests {
             ),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let proxy = Proxy {
-                url: Some(format!("http://{}", listener.local_addr().unwrap()).into()),
-            };
+            let proxy = Proxy::new(format!("http://{}", listener.local_addr().unwrap()));
             let server = tokio::spawn(async move { response(listener, status).await });
             let output = curl(&proxy, url).output().await.unwrap();
             assert_eq!(
@@ -137,9 +185,7 @@ mod tests {
         for scheme in ["http", "https"] {
             let destination = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let unavailable = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let proxy = Proxy {
-                url: Some(format!("http://{}", unavailable.local_addr().unwrap()).into()),
-            };
+            let proxy = Proxy::new(format!("http://{}", unavailable.local_addr().unwrap()));
             drop(unavailable);
             let port = destination.local_addr().unwrap().port();
             let output = curl(&proxy, &format!("{scheme}://routing.invalid:{port}/check"))
@@ -162,40 +208,131 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn loopback_and_stack_services_bypass_proxy() {
-        for hostname in [
-            "127.0.0.1",
-            "localhost",
-            "host.docker.internal",
-            "gateway.docker.internal",
-            "gluetun",
-            "ollama",
-            "litellm",
-            "manager",
-        ] {
-            let destination = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let port = destination.local_addr().unwrap().port();
-            let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let policy = Proxy {
-                url: Some(format!("http://{}", proxy.local_addr().unwrap()).into()),
-            };
-            let server = tokio::spawn(async move { response(destination, "200 OK").await });
-            let output = curl(&policy, &format!("http://{hostname}:{port}/check"))
-                .args(["--resolve", &format!("{hostname}:{port}:127.0.0.1")])
-                .output()
-                .await
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+    async fn reaches(policy: &Proxy, hostname: &str) -> bool {
+        let destination = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = destination.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { response(destination, "200 OK").await });
+        let output = curl(policy, &format!("http://{hostname}:{port}/check"))
+            .args(["--resolve", &format!("{hostname}:{port}:127.0.0.1")])
+            .output()
+            .await
+            .unwrap();
+        let reached = output.status.success();
+        if reached {
             assert_eq!(server.await.unwrap(), "GET /check HTTP/1.1\r\n");
+        } else {
+            server.abort();
+        }
+        reached
+    }
+
+    async fn unused_proxy() -> (TcpListener, Proxy) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = Proxy::new(format!("http://{}", listener.local_addr().unwrap()));
+        (listener, proxy)
+    }
+
+    #[tokio::test]
+    async fn loopback_bypasses_proxy() {
+        for hostname in ["127.0.0.1", "localhost"] {
+            let (listener, proxy) = unused_proxy().await;
+
+            assert!(reaches(&proxy, hostname).await, "{hostname}");
             assert!(
-                timeout(Duration::from_millis(50), proxy.accept())
+                timeout(Duration::from_millis(50), listener.accept())
                     .await
                     .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn only_loopback_bypasses_by_default() {
+        let (listener, proxy) = unused_proxy().await;
+        let proxied = tokio::spawn(async move { response(listener, "200 OK").await });
+
+        let output = curl(&proxy, "http://ollama:11434/check")
+            .output()
+            .await
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            proxied.await.unwrap(),
+            "GET http://ollama:11434/check HTTP/1.1\r\n",
+            "a host outside the default bypass must go through the proxy"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_configured_bypass_replaces_the_default() {
+        let (listener, proxy) = unused_proxy().await;
+        let proxy = proxy.with_bypass(["ollama"]);
+
+        assert!(reaches(&proxy, "ollama").await);
+        assert!(
+            timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_bypass_setting_is_a_trimmed_comma_separated_list() {
+        let proxy = Proxy::from_settings(
+            Some("http://proxy:3128".into()),
+            Some(" ollama, .svc ,,127.0.0.1 ".to_string()),
+        );
+
+        assert_eq!(proxy.bypass, ["ollama", ".svc", "127.0.0.1"]);
+    }
+
+    #[test]
+    fn an_absent_bypass_setting_means_loopback_only() {
+        let proxy = Proxy::from_settings(Some("http://proxy:3128".into()), None);
+
+        assert_eq!(proxy.bypass, DEFAULT_BYPASS);
+    }
+
+    #[test]
+    fn an_empty_bypass_setting_sends_everything_through_the_proxy() {
+        let proxy = Proxy::from_settings(Some("http://proxy:3128".into()), Some(String::new()));
+
+        assert!(proxy.bypass.is_empty());
+    }
+
+    #[test]
+    fn an_absent_or_empty_url_routes_nothing() {
+        for url in [None, Some(OsString::new())] {
+            let proxy = Proxy::from_settings(url, Some("ollama".to_string()));
+
+            assert!(proxy.url.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_routed_command_learns_the_same_routing() {
+        let mut command = Command::new("env");
+        command.env_clear();
+        Proxy::new("http://proxy:3128")
+            .with_bypass(["ollama", ".svc"])
+            .apply(&mut command);
+
+        let output = String::from_utf8(command.output().await.unwrap().stdout).unwrap();
+
+        for line in [
+            "ABNEGATE_EXEC_PROXY_URL=http://proxy:3128",
+            "ABNEGATE_EXEC_PROXY_BYPASS=ollama,.svc",
+            "NO_PROXY=ollama,.svc",
+            "no_proxy=ollama,.svc",
+        ] {
+            assert!(
+                output.lines().any(|candidate| candidate == line),
+                "{output}"
             );
         }
     }

@@ -67,8 +67,9 @@
 //!
 //! [`Proxy::from_env`] reads [`PROXY_URL_ENV`] and, when it is set, overlays the
 //! standard proxy variables onto every unconfined command after its own
-//! environment, so a tool cannot accidentally route around it. Confined commands
-//! reach no network at all and are unaffected.
+//! environment, so a tool cannot accidentally route around it. Only loopback
+//! bypasses the proxy unless [`PROXY_BYPASS_ENV`] names other hosts. Confined
+//! commands reach no network at all and are unaffected.
 //!
 //! # Platform support
 //!
@@ -92,4 +93,4 @@ pub use protocol::{
     Capability, ConfinementRequest, ErrorCode, InboundMessage, LogLevel, NdjsonCodec,
     OutboundMessage, PROTOCOL_VERSION, ProcessTreeRequest,
 };
-pub use proxy::{PROXY_URL_ENV, Proxy};
+pub use proxy::{DEFAULT_BYPASS, PROXY_BYPASS_ENV, PROXY_URL_ENV, Proxy};
