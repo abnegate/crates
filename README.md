@@ -23,6 +23,19 @@ its heavy dependencies behind features.
 | `abnegate-vision` | Subject-aware image cropping: decode JPEG, PNG and WebP, locate the salient subject with U2-Net on ONNX Runtime, and render the crop in a single resampling pass | `saliency` | [![docs.rs](https://img.shields.io/docsrs/abnegate-vision)](https://docs.rs/abnegate-vision) |
 | `abnegate-comfy` | ComfyUI image, video, and audio generation, model inventory, and LoRA training | `saliency` | [![docs.rs](https://img.shields.io/docsrs/abnegate-comfy)](https://docs.rs/abnegate-comfy) |
 
+## Scope notes
+
+Some donors carry more than the first release absorbs:
+
+- `abnegate-llm` ships the OpenAI-compatible client, the OpenAI, Anthropic and
+  Google vendor clients, and the model catalogue. minigame's other vendor
+  clients and its per-modality provider router are not ported yet and are a
+  planned follow-up; the completion `Router` is a separate type and ships now.
+- `abnegate-vcs` ships git and GitHub pull requests. GitLab and GitHub App
+  authentication follow.
+- `abnegate-notify` ships Slack, Discord, webhook and SMTP delivery. Telegram,
+  WhatsApp, SMS and Pushover follow.
+
 ## Consuming unreleased changes
 
 A consumer that needs a change before it is released points at a local checkout
