@@ -1,0 +1,28 @@
+[package]
+name = "abnegate-http"
+description = "An HTTP client abstraction over reqwest, behind a trait a test can stand in for"
+keywords = ["http", "client", "reqwest"]
+categories = ["web-programming::http-client"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+wiremock = { workspace = true }
