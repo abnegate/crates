@@ -105,6 +105,6 @@ pub use crate::reasoning::{Effort, ReasoningEffort};
 pub use crate::wire::{
     ChatRequest, ChatResponse, ChatStreamChunk, Choice, ContentPart, FunctionCall,
     FunctionDefinition, GeneratedImage, ImageUrl, Message, Role, SpecificFunction, StreamChoice,
-    StreamDelta, StreamFunctionCall, StreamToolCall, ToolCall, ToolChoice, ToolDefinition, Usage,
-    wire_arguments,
+    StreamDelta, StreamFunctionCall, StreamToolCall, ToolCall, ToolChoice, ToolDefinition,
+    ToolMode, Usage, wire_arguments,
 };
