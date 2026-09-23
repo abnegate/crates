@@ -2,71 +2,21 @@
 
 use std::fmt;
 
-/// The kind of change a subject line announces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Feat,
-    Fix,
-    Refactor,
-    Perf,
-    Test,
-    Docs,
-    Style,
-    Chore,
-}
+mod kind;
 
-impl Kind {
-    /// Every kind, in the order a classifier is offered them.
-    pub const ALL: [Self; 8] = [
-        Self::Feat,
-        Self::Fix,
-        Self::Refactor,
-        Self::Perf,
-        Self::Test,
-        Self::Docs,
-        Self::Style,
-        Self::Chore,
-    ];
+pub use crate::subject::kind::Kind;
 
-    /// The kind a change falls back to when nothing classified it.
-    ///
-    /// It claims the least of the eight, so a wrong guess here understates the
-    /// change rather than announcing one that was never made.
-    pub const UNCLASSIFIED: Self = Self::Chore;
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Feat => "feat",
-            Self::Fix => "fix",
-            Self::Refactor => "refactor",
-            Self::Perf => "perf",
-            Self::Test => "test",
-            Self::Docs => "docs",
-            Self::Style => "style",
-            Self::Chore => "chore",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        let value = value.trim().to_ascii_lowercase();
-        Self::ALL.into_iter().find(|kind| kind.label() == value)
-    }
-}
-
-impl fmt::Display for Kind {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.label())
-    }
-}
-
-/// Longest a subject line may run.
+/// Longest a subject line may run, prefix included.
 ///
 /// A subject is read in a list of subjects, so what does not fit on one line
 /// of that list is not read at all.
-const MAX_SUMMARY_CHARS: usize = 72;
+const MAXIMUM_LINE_LENGTH: usize = 72;
 
-/// What a change with no title and no classification is called. A task title is
-/// only `NOT NULL`, so an empty one reaches here.
+/// What a cut summary may not end on.
+const TRAILING: [char; 2] = [' ', '.'];
+
+/// What a change with no summary is called. A task title is only `NOT NULL`,
+/// so an empty one reaches here.
 const UNTITLED: &str = "apply the work of a background task";
 
 /// A commit subject: the kind of change, then what it did.
@@ -77,10 +27,17 @@ pub struct Subject {
 }
 
 impl Subject {
+    /// A subject of `kind` saying `summary`, made one line that fits the
+    /// subject's budget with its prefix, or saying where the change came from
+    /// when `summary` says nothing.
     pub fn new(kind: Kind, summary: &str) -> Self {
+        let summary = normalize(summary, kind);
         Self {
             kind,
-            summary: normalize(summary),
+            summary: match summary.is_empty() {
+                true => normalize(UNTITLED, kind),
+                false => summary,
+            },
         }
     }
 
@@ -91,14 +48,7 @@ impl Subject {
     /// one. A title with nothing in it leaves the subject saying only where the
     /// change came from, which still beats a kind with nothing after it.
     pub fn unclassified(title: &str) -> Self {
-        let summary = normalize(title);
-        Self {
-            kind: Kind::UNCLASSIFIED,
-            summary: match summary.is_empty() {
-                true => UNTITLED.to_string(),
-                false => summary,
-            },
-        }
+        Self::new(Kind::UNCLASSIFIED, title)
     }
 
     /// Read `(kind): summary` back out of a line.
@@ -114,14 +64,16 @@ impl Subject {
         lines.next().is_none().then_some(())?;
         let (kind, summary) = line.trim().trim_start_matches('(').split_once("):")?;
         let kind = Kind::parse(kind)?;
-        let summary = normalize(summary);
+        let summary = normalize(summary, kind);
         (!summary.is_empty()).then_some(Self { kind, summary })
     }
 
+    /// The kind of change announced.
     pub fn kind(&self) -> Kind {
         self.kind
     }
 
+    /// What the change did.
     pub fn summary(&self) -> &str {
         &self.summary
     }
@@ -133,11 +85,17 @@ impl fmt::Display for Subject {
     }
 }
 
-/// One line, no trailing stop, and starting lowercase where that does not
-/// change a word that was already capitalised for its own sake.
-fn normalize(summary: &str) -> String {
+/// The characters a summary of `kind` has left once `(kind): ` is written.
+fn budget(kind: Kind) -> usize {
+    MAXIMUM_LINE_LENGTH.saturating_sub(format!("({kind}): ").chars().count())
+}
+
+/// One line within the budget for `kind`, no trailing stop or space, and
+/// starting lowercase where that does not change a word that was already
+/// capitalised for its own sake.
+fn normalize(summary: &str, kind: Kind) -> String {
     let collapsed = summary.split_whitespace().collect::<Vec<&str>>().join(" ");
-    let trimmed = collapsed.trim_end_matches('.').trim();
+    let trimmed = collapsed.trim_end_matches(TRAILING);
     let opening = trimmed.split_whitespace().next().unwrap_or_default();
     let lowered = match opening.chars().skip(1).any(char::is_uppercase) {
         true => trimmed.to_string(),
@@ -149,7 +107,12 @@ fn normalize(summary: &str) -> String {
             }
         }
     };
-    lowered.chars().take(MAX_SUMMARY_CHARS).collect()
+    lowered
+        .chars()
+        .take(budget(kind))
+        .collect::<String>()
+        .trim_end_matches(TRAILING)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -214,11 +177,36 @@ mod tests {
         );
     }
 
+    /// The budget is the line's, not the summary's: a summary cut to the
+    /// whole budget ran the line past it by the length of its prefix.
     #[test]
-    fn a_summary_past_the_line_it_is_read_on_is_cut_to_it() {
-        let long = Subject::new(Kind::Chore, &"a".repeat(200));
+    fn a_subject_past_the_line_it_is_read_on_is_cut_to_it() {
+        for kind in Kind::ALL {
+            let long = Subject::new(kind, &"a".repeat(200));
 
-        assert_eq!(long.summary().chars().count(), MAX_SUMMARY_CHARS);
+            assert_eq!(
+                long.to_string().chars().count(),
+                MAXIMUM_LINE_LENGTH,
+                "{long}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cut_never_ends_on_a_space_or_a_stop() {
+        for filler in ["a b. c", "word. ", "ends here . "] {
+            let long = Subject::new(Kind::Refactor, &filler.repeat(40));
+
+            assert!(!long.summary().ends_with(TRAILING), "{long}");
+            assert!(long.to_string().chars().count() <= MAXIMUM_LINE_LENGTH);
+        }
+    }
+
+    #[test]
+    fn a_subject_with_nothing_to_say_says_where_it_came_from() {
+        for summary in ["", "   ", "..."] {
+            assert_eq!(Subject::new(Kind::Fix, summary).summary(), UNTITLED);
+        }
     }
 
     #[test]

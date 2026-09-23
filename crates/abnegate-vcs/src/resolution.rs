@@ -11,77 +11,19 @@
 //! would refuse most correct repairs; what it can never do is come out the other
 //! end carrying no trace of a branch that contributed distinct lines.
 
-use crate::conflict::{BASE_MARKER, OURS_MARKER, SPLIT_MARKER, THEIRS_MARKER};
+mod conflict_hunk;
+mod conflict_side;
+mod region;
+mod verdict;
 
-/// Which branch's work a repair dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConflictSide {
-    Ours,
-    Theirs,
-}
-
-impl ConflictSide {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ConflictSide::Ours => "ours",
-            ConflictSide::Theirs => "theirs",
-        }
-    }
-}
-
-impl std::fmt::Display for ConflictSide {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-/// One `<<<<<<< / ======= / >>>>>>>` block, split into the two sides it offers.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ConflictHunk {
-    pub ours: Vec<String>,
-    pub theirs: Vec<String>,
-}
-
-/// What a repaired file is, judged against the conflicted file it came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResolutionVerdict {
-    Resolved,
-    NoConflict,
-    MarkersRemain,
-    Emptied,
-    Discarded(ConflictSide),
-}
-
-impl ResolutionVerdict {
-    pub fn accepted(self) -> bool {
-        self == ResolutionVerdict::Resolved
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ResolutionVerdict::Resolved => "resolved",
-            ResolutionVerdict::NoConflict => "no_conflict",
-            ResolutionVerdict::MarkersRemain => "markers_remain",
-            ResolutionVerdict::Emptied => "emptied",
-            ResolutionVerdict::Discarded(ConflictSide::Ours) => "discarded_ours",
-            ResolutionVerdict::Discarded(ConflictSide::Theirs) => "discarded_theirs",
-        }
-    }
-}
-
-impl std::fmt::Display for ResolutionVerdict {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Region {
-    Outside,
-    Ours,
-    Base,
-    Theirs,
-}
+use crate::conflict::has_markers;
+use crate::conflict::marker::Marker;
+pub use crate::resolution::conflict_hunk::ConflictHunk;
+pub use crate::resolution::conflict_side::ConflictSide;
+use crate::resolution::region::Region;
+pub use crate::resolution::verdict::ResolutionVerdict;
+use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 /// Split a conflicted file into its hunks.
 ///
@@ -94,22 +36,20 @@ pub fn hunks(conflicted: &str) -> Vec<ConflictHunk> {
     let mut region = Region::Outside;
 
     for line in conflicted.lines() {
-        if line.starts_with(OURS_MARKER) {
-            current = ConflictHunk::default();
-            region = Region::Ours;
-        } else if line.starts_with(BASE_MARKER) && region == Region::Ours {
-            region = Region::Base;
-        } else if line.starts_with(SPLIT_MARKER) && matches!(region, Region::Ours | Region::Base) {
-            region = Region::Theirs;
-        } else if line.starts_with(THEIRS_MARKER) && region == Region::Theirs {
-            hunks.push(std::mem::take(&mut current));
-            region = Region::Outside;
-        } else {
-            match region {
-                Region::Ours => current.ours.push(line.to_string()),
-                Region::Theirs => current.theirs.push(line.to_string()),
-                Region::Base | Region::Outside => {}
+        match (Marker::parse(line), region) {
+            (Some(Marker::Ours), _) => {
+                current = ConflictHunk::default();
+                region = Region::Ours;
             }
+            (Some(Marker::Base), Region::Ours) => region = Region::Base,
+            (Some(Marker::Split), Region::Ours | Region::Base) => region = Region::Theirs,
+            (Some(Marker::Theirs), Region::Theirs) => {
+                hunks.push(std::mem::take(&mut current));
+                region = Region::Outside;
+            }
+            (_, Region::Ours) => current.ours.push(line.to_string()),
+            (_, Region::Theirs) => current.theirs.push(line.to_string()),
+            (_, Region::Base | Region::Outside) => {}
         }
     }
 
@@ -125,21 +65,16 @@ fn significant(lines: &[String]) -> Vec<&str> {
 }
 
 /// Lines one side contributed that the other side did not.
-fn distinctive<'a>(side: &'a [String], other: &[String]) -> Vec<&'a str> {
-    let shared = significant(other);
-    let mut unique: Vec<&str> = significant(side)
+fn distinctive<'a>(side: &'a [String], other: &[String]) -> BTreeSet<&'a str> {
+    let shared: HashSet<&str> = significant(other).into_iter().collect();
+    significant(side)
         .into_iter()
         .filter(|line| !shared.contains(line))
-        .collect();
-    unique.sort_unstable();
-    unique.dedup();
-    unique
+        .collect()
 }
 
-fn survives(resolved: &str, lines: &[&str]) -> bool {
-    lines
-        .iter()
-        .any(|line| resolved.lines().any(|candidate| candidate.trim() == *line))
+fn survives(present: &HashSet<&str>, lines: &BTreeSet<&str>) -> bool {
+    lines.iter().any(|line| present.contains(line))
 }
 
 /// Judge a repaired file against the conflicted file it was produced from.
@@ -149,10 +84,7 @@ pub fn judge(conflicted: &str, resolved: &str) -> ResolutionVerdict {
         return ResolutionVerdict::NoConflict;
     }
 
-    if resolved
-        .lines()
-        .any(|line| line.starts_with(OURS_MARKER) || line.starts_with(THEIRS_MARKER))
-    {
+    if has_markers(resolved) {
         return ResolutionVerdict::MarkersRemain;
     }
 
@@ -160,17 +92,18 @@ pub fn judge(conflicted: &str, resolved: &str) -> ResolutionVerdict {
         return ResolutionVerdict::Emptied;
     }
 
-    let mut ours: Vec<&str> = Vec::new();
-    let mut theirs: Vec<&str> = Vec::new();
+    let mut ours: BTreeSet<&str> = BTreeSet::new();
+    let mut theirs: BTreeSet<&str> = BTreeSet::new();
     for hunk in &hunks {
         ours.extend(distinctive(&hunk.ours, &hunk.theirs));
         theirs.extend(distinctive(&hunk.theirs, &hunk.ours));
     }
 
-    if !ours.is_empty() && !survives(resolved, &ours) {
+    let present: HashSet<&str> = resolved.lines().map(str::trim).collect();
+    if !ours.is_empty() && !survives(&present, &ours) {
         return ResolutionVerdict::Discarded(ConflictSide::Ours);
     }
-    if !theirs.is_empty() && !survives(resolved, &theirs) {
+    if !theirs.is_empty() && !survives(&present, &theirs) {
         return ResolutionVerdict::Discarded(ConflictSide::Theirs);
     }
 
@@ -380,5 +313,35 @@ fn greet() {
         );
         assert!(ResolutionVerdict::Resolved.accepted());
         assert!(!ResolutionVerdict::MarkersRemain.accepted());
+    }
+
+    /// A line that merely starts like a marker -- a longer underline, a
+    /// banner -- is content, and belongs to whichever side carries it.
+    #[test]
+    fn a_line_longer_than_a_marker_is_content_of_its_side() {
+        let conflicted = "\
+<<<<<<< HEAD
+Title
+========
+ours
+=======
+theirs
+>>>>>>>>>> not a marker
+more theirs
+>>>>>>> feature
+";
+        let parsed = hunks(conflicted);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].ours, vec!["Title", "========", "ours"]);
+        assert_eq!(
+            parsed[0].theirs,
+            vec!["theirs", ">>>>>>>>>> not a marker", "more theirs"]
+        );
+        assert_eq!(
+            judge(conflicted, "Title\n========\nours\ntheirs\nmore theirs\n"),
+            ResolutionVerdict::Resolved,
+            "an underline in the repaired file is not a leftover marker"
+        );
     }
 }

@@ -14,6 +14,13 @@
 //! a `Drop` as well as under `spawn_blocking`; the one network step, fetching
 //! the base clone, stays on [`crate::git::GitService`] with its timeout.
 
+mod unfinished;
+
+use crate::branch_name::BranchName;
+use crate::git::CONFIG_LISTING;
+use crate::git::harden;
+use crate::git::refused;
+pub use crate::worktree::unfinished::Unfinished;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -25,58 +32,44 @@ const AREA_SUFFIX: &str = "-worktrees";
 /// What a path segment that may not carry a separator falls back to.
 const REPLACEMENT: &str = "_";
 
-/// What removing a worktree would lose.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Unfinished {
-    /// Changes in the working tree or the index that no commit holds.
-    pub uncommitted: bool,
-    /// HEAD is not a commit the caller knows to be safe — neither the one the
-    /// run started on nor one that was pushed — so it holds work that was
-    /// committed and never published.
-    pub unpublished: bool,
-}
+/// The file a repository's own ignore rules live in.
+const IGNORE_FILE: &str = ".gitignore";
 
-impl Unfinished {
-    pub fn any(self) -> bool {
-        self.uncommitted || self.unpublished
-    }
-}
-
-/// A git invocation that reads nothing from the host's configuration, runs
-/// no program the repository's configuration names, and never talks to the
-/// network: the hardening [`crate::git::GitService`] applies, for the local
-/// operations that need no timeout. The repository configuration is the base
-/// clone's, which every run of the repository can write through its own git
-/// commands, so a hook path or a file-system monitor found there is not
-/// honoured.
+/// A git invocation with the pins and environment the hardened
+/// [`crate::git::GitService`] commands run with, that additionally may use no
+/// transport at all, so nothing here can reach the network -- not even a lazy
+/// fetch of an object the clone lacks -- and needs no timeout.
 fn local(repository: &Path) -> Command {
     let mut command = Command::new("git");
+    harden(&mut command);
     command
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("GIT_GRAFT_FILE", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .args([
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-        ])
+        .env("GIT_ALLOW_PROTOCOL", "")
         .current_dir(repository)
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command
 }
 
+/// Refuse a repository whose own configuration holds anything beyond what git
+/// writes for a clone, a worktree and a tracking branch: the configuration is
+/// the base clone's, which every run of the repository can write through its
+/// own git commands.
+fn verify(repository: &Path) -> std::io::Result<()> {
+    let listing = run(
+        local(repository).args(CONFIG_LISTING),
+        "read the repository's configuration",
+    )?;
+    match refused(&listing) {
+        Some(key) => Err(std::io::Error::other(format!(
+            "refusing a repository whose configuration sets {key:?}"
+        ))),
+        None => Ok(()),
+    }
+}
+
 fn run(command: &mut Command, what: &str) -> std::io::Result<Vec<u8>> {
     let output = command.output()?;
     if !output.status.success() {
-        // Git's stderr can quote paths and refs a caller supplied; the
-        // operation is named instead, and the caller knows the path.
         return Err(std::io::Error::other(format!("git could not {what}")));
     }
     Ok(output.stdout)
@@ -86,17 +79,23 @@ fn run(command: &mut Command, what: &str) -> std::io::Result<Vec<u8>> {
 ///
 /// `{workspace}/{repository name}-worktrees/{identifier}`, with everything that
 /// would open a second path segment replaced, so neither name can reach out of
-/// the area the workspace set aside for it.
-pub fn path(workspace: &Path, repository_name: &str, identifier: &str) -> PathBuf {
+/// the area the workspace set aside for it. An empty identifier names no
+/// worktree.
+pub fn path(workspace: &Path, repository_name: &str, identifier: &str) -> Option<PathBuf> {
+    if identifier.is_empty() {
+        return None;
+    }
     let short_name = repository_name
         .split('/')
         .next_back()
         .unwrap_or(repository_name)
         .replace(['/', '\\', '\0'], REPLACEMENT);
     let identifier = identifier.replace(['/', '\\', '.', '\0'], REPLACEMENT);
-    workspace
-        .join(format!("{short_name}{AREA_SUFFIX}"))
-        .join(identifier)
+    Some(
+        workspace
+            .join(format!("{short_name}{AREA_SUFFIX}"))
+            .join(identifier),
+    )
 }
 
 /// Add a detached worktree of `repository` at `path`, checked out at `start`.
@@ -104,6 +103,7 @@ pub fn path(workspace: &Path, repository_name: &str, identifier: &str) -> PathBu
 /// step that makes it in a clone, and a worktree that started on a named
 /// branch would pin that branch to itself.
 pub fn add(repository: &Path, path: &Path, start: &str) -> std::io::Result<()> {
+    verify(repository)?;
     run(
         local(repository)
             .args(["worktree", "add", "--detach", "--"])
@@ -123,25 +123,45 @@ pub fn is_worktree(path: &Path) -> bool {
 
 /// What this worktree holds that nothing else does. `known` are the commits
 /// the caller can vouch for: the one the run started on and the one that was
-/// pushed, if any. The status is read with untracked files listed explicitly
-/// and no excludes file taken from the configuration, so neither a
-/// `status.showUntrackedFiles` nor a `core.excludesFile` a run wrote into the
-/// shared configuration can hide a file from the check. A file the
-/// repository's own ignore rules cover is not counted: those rules are what
-/// the repository declares disposable, and a rule a run adds to `.gitignore`
-/// is itself a change the check sees.
+/// pushed, if any.
+///
+/// Changes are read three ways, so no setting a run wrote into the shared
+/// configuration and no mark it set in the index can hide one: tracked
+/// changes from the status; files git does not track from the directory
+/// itself, excluding only what the repository's own `.gitignore` files cover
+/// -- those rules are what the repository declares disposable, and a rule a
+/// run adds is itself a change the check sees, a new `.gitignore` included
+/// even when it ignores itself -- and not what an excludes file or
+/// `info/exclude` does; and every entry marked assume-unchanged or
+/// skip-worktree, whose changes a status never reports.
 pub fn unfinished(path: &Path, known: &[&str]) -> std::io::Result<Unfinished> {
-    let status = run(
+    verify(path)?;
+    let tracked = run(
         local(path).args([
-            "-c",
-            "status.showUntrackedFiles=all",
-            "-c",
-            "core.excludesFile=/dev/null",
             "status",
             "--porcelain",
-            "--untracked-files=all",
+            "-z",
+            "--untracked-files=no",
+            "--ignore-submodules=none",
         ]),
         "read the worktree's status",
+    )?;
+    let untracked = run(
+        local(path).args([
+            "ls-files",
+            "--others",
+            "--exclude-per-directory=.gitignore",
+            "-z",
+        ]),
+        "list the worktree's untracked files",
+    )?;
+    let everything = run(
+        local(path).args(["ls-files", "--others", "-z"]),
+        "list every file the worktree does not track",
+    )?;
+    let marked = run(
+        local(path).args(["ls-files", "-v", "-z"]),
+        "read the worktree's index",
     )?;
     let head = run(
         local(path).args(["rev-parse", "--verify", "HEAD^{commit}"]),
@@ -149,21 +169,42 @@ pub fn unfinished(path: &Path, known: &[&str]) -> std::io::Result<Unfinished> {
     )?;
     let head = String::from_utf8_lossy(&head).trim().to_string();
     Ok(Unfinished {
-        uncommitted: !status.is_empty(),
+        uncommitted: !tracked.is_empty()
+            || !untracked.is_empty()
+            || adds_ignore_rules(&everything)
+            || hides_changes(&marked),
         unpublished: !known.iter().any(|commit| *commit == head),
     })
 }
 
-/// The branch the worktree is on, or `None` when it is detached.
-pub fn branch(path: &Path) -> std::io::Result<Option<String>> {
-    let name = run(
+/// Whether a listing of untracked files holds a `.gitignore`, anywhere: a new
+/// one is itself a change, and one that ignores itself hides every other file
+/// beneath it from the listing that honours it.
+fn adds_ignore_rules(listing: &[u8]) -> bool {
+    listing
+        .split(|byte| *byte == 0)
+        .any(|entry| entry.rsplit(|byte| *byte == b'/').next() == Some(IGNORE_FILE.as_bytes()))
+}
+
+/// Whether an `ls-files -v` listing marks any entry assume-unchanged, which it
+/// tags in lowercase, or skip-worktree, which it tags `S`.
+fn hides_changes(listing: &[u8]) -> bool {
+    listing
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| entry.first())
+        .any(|tag| tag.is_ascii_lowercase() || *tag == b'S')
+}
+
+/// The branch the worktree is on, or `None` when it is detached or cannot be
+/// read.
+pub fn branch(path: &Path) -> Option<BranchName> {
+    verify(path).ok()?;
+    run(
         local(path).args(["symbolic-ref", "--quiet", "--short", "HEAD"]),
         "read the worktree's branch",
     )
     .ok()
-    .map(|output| String::from_utf8_lossy(&output).trim().to_string())
-    .filter(|name| !name.is_empty());
-    Ok(name)
+    .and_then(|output| BranchName::parse(String::from_utf8_lossy(&output).trim()).ok())
 }
 
 /// Remove a worktree whether or not it is clean — the caller has decided,
@@ -172,7 +213,8 @@ pub fn branch(path: &Path) -> std::io::Result<Option<String>> {
 /// are on the remote, that is what clean means, and a local ref left behind
 /// would refuse the next run of the same task its own branch.
 pub fn remove(repository: &Path, path: &Path) -> std::io::Result<()> {
-    let on = branch(path).unwrap_or(None);
+    verify(repository)?;
+    let on = branch(path);
     run(
         local(repository)
             .args(["worktree", "remove", "--force", "--"])
@@ -185,12 +227,10 @@ pub fn remove(repository: &Path, path: &Path) -> std::io::Result<()> {
     );
     if let Some(name) = on
         && let Err(error) = run(
-            local(repository).args(["branch", "-D", "--", &name]),
+            local(repository).args(["branch", "-D", "--", name.as_str()]),
             "delete the branch",
         )
     {
-        // The worktree is gone and nothing holds the branch now; the next run
-        // that asks for the name finds it unheld and takes it over.
         tracing::warn!(branch = %name, %error, "Removed a worktree but could not delete its branch");
     }
     Ok(())
@@ -199,6 +239,7 @@ pub fn remove(repository: &Path, path: &Path) -> std::io::Result<()> {
 /// The repository a worktree belongs to: the directory holding the `.git`
 /// its `.git` file points into.
 pub fn repository_of(path: &Path) -> std::io::Result<PathBuf> {
+    verify(path)?;
     let common = run(
         local(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
         "find the worktree's repository",
@@ -262,7 +303,9 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{clone, git, remote};
+    use super::fixtures::clone;
+    use super::fixtures::git;
+    use super::fixtures::remote;
     use super::*;
 
     struct Repositories {
@@ -300,11 +343,7 @@ mod tests {
             std::fs::read_to_string(path.join("README")).unwrap(),
             "fixture\n"
         );
-        assert_eq!(
-            branch(&path).unwrap(),
-            None,
-            "detached, so no branch is pinned"
-        );
+        assert_eq!(branch(&path), None, "detached, so no branch is pinned");
         let start = git(&repositories.remote, &["rev-parse", "main"]);
         assert_eq!(unfinished(&path, &[&start]).unwrap(), Unfinished::default());
         assert!(!unfinished(&path, &[&start]).unwrap().any());
@@ -367,7 +406,10 @@ mod tests {
             unfinished(&path, &[&start, &pushed]).unwrap(),
             Unfinished::default()
         );
-        assert_eq!(branch(&path).unwrap().as_deref(), Some("task/one"));
+        assert_eq!(
+            branch(&path).as_ref().map(BranchName::as_str),
+            Some("task/one")
+        );
         assert_eq!(
             git(&repositories.remote, &["rev-parse", "task/one"]),
             pushed
@@ -375,29 +417,27 @@ mod tests {
     }
 
     /// A run's git commands reach the shared configuration, and a setting
-    /// there that hides untracked files — `status.showUntrackedFiles`, or an
-    /// excludes file that ignores everything — must not hide them from the
-    /// check. A file the repository's own `.gitignore` covers is not counted.
+    /// there that hides untracked files -- `status.showUntrackedFiles`, or an
+    /// excludes file that ignores everything -- refuses the check rather than
+    /// hiding them from it. A file the repository's own committed
+    /// `.gitignore` covers is not counted.
     #[test]
-    fn an_untracked_file_counts_even_when_the_clone_is_told_to_hide_them() {
+    fn a_clone_told_to_hide_untracked_files_is_refused_and_committed_ignores_hold() {
         let repositories = repositories();
         let path = repositories.worktrees.join("run");
         add(&repositories.base, &path, "origin/HEAD").unwrap();
         let start = git(&path, &["rev-parse", "HEAD"]);
-        git(&path, &["config", "status.showUntrackedFiles", "no"]);
-        let excludes = repositories.worktrees.join("hide-everything");
-        std::fs::write(&excludes, "*\n").unwrap();
-        git(
-            &path,
-            &["config", "core.excludesFile", excludes.to_str().unwrap()],
-        );
+        for (key, value) in [
+            ("status.showUntrackedFiles", "no"),
+            ("core.excludesFile", "/dev/null"),
+        ] {
+            git(&path, &["config", key, value]);
+            assert!(unfinished(&path, &[&start]).is_err(), "{key}");
+            git(&path, &["config", "--unset", key]);
+        }
         std::fs::write(path.join("notes.txt"), "not yet added\n").unwrap();
-        assert!(
-            unfinished(&path, &[&start]).unwrap().uncommitted,
-            "the file is seen despite status.showUntrackedFiles=no and an excludes file"
-        );
+        assert!(unfinished(&path, &[&start]).unwrap().uncommitted);
         std::fs::remove_file(path.join("notes.txt")).unwrap();
-        git(&path, &["config", "--unset", "core.excludesFile"]);
         std::fs::write(path.join(".gitignore"), "*.log\n").unwrap();
         git(&path, &["add", ".gitignore"]);
         git(&path, &["commit", "-q", "-m", "ignore logs"]);
@@ -429,7 +469,10 @@ mod tests {
         let second = repositories.worktrees.join("second");
         add(&repositories.base, &second, "origin/HEAD").unwrap();
         git(&second, &["checkout", "-q", "-b", "task/one"]);
-        assert_eq!(branch(&second).unwrap().as_deref(), Some("task/one"));
+        assert_eq!(
+            branch(&second).as_ref().map(BranchName::as_str),
+            Some("task/one")
+        );
     }
 
     #[test]
@@ -439,27 +482,28 @@ mod tests {
         assert!(unfinished(&missing, &[]).is_err());
         assert!(remove(&repositories.base, &missing).is_err());
         assert!(repository_of(&missing).is_err());
+        assert_eq!(branch(&missing), None);
     }
 
     #[test]
     fn a_worktree_lives_under_an_area_named_for_its_repository() {
         assert_eq!(
             path(Path::new("/work"), "owner/repository", "ABC-123"),
-            PathBuf::from("/work/repository-worktrees/ABC-123")
+            Some(PathBuf::from("/work/repository-worktrees/ABC-123"))
         );
         assert_eq!(
             path(Path::new("/work"), "repository", "XYZ-1"),
-            PathBuf::from("/work/repository-worktrees/XYZ-1"),
+            Some(PathBuf::from("/work/repository-worktrees/XYZ-1")),
             "a name with no owner is its own short name"
         );
         assert_eq!(
             path(Path::new("/work"), "org/team/repository", "ISSUE-1"),
-            PathBuf::from("/work/repository-worktrees/ISSUE-1"),
+            Some(PathBuf::from("/work/repository-worktrees/ISSUE-1")),
             "only the last segment names the area"
         );
         assert_eq!(
             path(Path::new("/work"), "org/my-cool_repository", "ID-1"),
-            PathBuf::from("/work/my-cool_repository-worktrees/ID-1"),
+            Some(PathBuf::from("/work/my-cool_repository-worktrees/ID-1")),
             "hyphens and underscores are part of a name"
         );
         assert_eq!(
@@ -468,7 +512,9 @@ mod tests {
                 "myorg/backend",
                 "JIRA-4567"
             ),
-            PathBuf::from("/var/lib/workspaces/backend-worktrees/JIRA-4567")
+            Some(PathBuf::from(
+                "/var/lib/workspaces/backend-worktrees/JIRA-4567"
+            ))
         );
     }
 
@@ -521,14 +567,163 @@ mod tests {
         ] {
             assert_eq!(
                 path(Path::new("/work"), repository_name, identifier),
-                PathBuf::from("/work").join(expected),
+                Some(PathBuf::from("/work").join(expected)),
                 "{repository_name:?} / {identifier:?}"
             );
         }
         assert_eq!(
             path(Path::new("/work"), "owner/repository", ""),
-            PathBuf::from("/work/repository-worktrees/"),
-            "an empty identifier names the area itself"
+            None,
+            "an empty identifier names no worktree"
         );
+    }
+
+    /// A file only `info/exclude` ignores is not one the repository declares
+    /// disposable: a run can write that file.
+    #[test]
+    fn a_file_hidden_only_by_the_clone_s_own_exclude_file_still_counts() {
+        let repositories = repositories();
+        let path = repositories.worktrees.join("run");
+        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let start = git(&path, &["rev-parse", "HEAD"]);
+        let exclude = git(&path, &["rev-parse", "--git-path", "info/exclude"]);
+        let exclude = path.join(exclude);
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        std::fs::write(&exclude, "notes.txt\n").unwrap();
+        std::fs::write(path.join("notes.txt"), "not yet added\n").unwrap();
+
+        assert!(unfinished(&path, &[&start]).unwrap().uncommitted);
+    }
+
+    /// An entry marked assume-unchanged or skip-worktree hides its changes
+    /// from a status, so the mark itself counts.
+    #[test]
+    fn a_change_hidden_by_an_index_mark_still_counts() {
+        for mark in ["--assume-unchanged", "--skip-worktree"] {
+            let repositories = repositories();
+            let path = repositories.worktrees.join("run");
+            add(&repositories.base, &path, "origin/HEAD").unwrap();
+            let start = git(&path, &["rev-parse", "HEAD"]);
+            git(&path, &["update-index", mark, "README"]);
+            std::fs::write(path.join("README"), "changed and hidden\n").unwrap();
+            assert_eq!(
+                git(&path, &["status", "--porcelain"]),
+                "",
+                "{mark} hides the change from a status"
+            );
+
+            assert!(unfinished(&path, &[&start]).unwrap().uncommitted, "{mark}");
+        }
+    }
+
+    /// Stat information git trusts under `core.ignoreStat` hides an edit made
+    /// after the entry was refreshed; the setting is pinned off.
+    #[test]
+    fn a_change_hidden_by_trusted_stat_information_still_counts() {
+        let repositories = repositories();
+        let path = repositories.worktrees.join("run");
+        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let start = git(&path, &["rev-parse", "HEAD"]);
+        git(&repositories.base, &["config", "core.ignoreStat", "true"]);
+        git(&path, &["update-index", "--really-refresh"]);
+        std::fs::write(path.join("README"), "changed\n").unwrap();
+        assert!(
+            unfinished(&path, &[&start]).is_err(),
+            "the setting itself is refused"
+        );
+        git(
+            &repositories.base,
+            &["config", "--unset", "core.ignoreStat"],
+        );
+
+        let held = unfinished(&path, &[&start]).unwrap();
+
+        assert!(
+            held.uncommitted,
+            "the marks it left behind still count: {held:?}"
+        );
+    }
+
+    /// A clone whose configuration names a program for git to run refuses
+    /// every operation here before git runs anything in it.
+    #[test]
+    fn a_clone_whose_configuration_names_a_driver_is_refused_before_anything_runs() {
+        let repositories = repositories();
+        let markers = tempfile::tempdir().unwrap();
+        let marker = markers.path().join("ran");
+        std::fs::write(
+            repositories.base.join(".gitattributes"),
+            "* filter=planted\n",
+        )
+        .unwrap();
+        git(&repositories.base, &["add", ".gitattributes"]);
+        git(&repositories.base, &["commit", "-q", "-m", "attributes"]);
+        git(
+            &repositories.base,
+            &[
+                "config",
+                "filter.planted.smudge",
+                &format!("touch '{}'; cat", marker.display()),
+            ],
+        );
+        let path = repositories.worktrees.join("run");
+
+        let refusal = add(&repositories.base, &path, "HEAD")
+            .unwrap_err()
+            .to_string();
+
+        assert!(refusal.contains("filter.planted.smudge"), "{refusal}");
+        assert!(!marker.exists(), "the smudge filter ran");
+        assert!(!path.exists());
+        assert!(unfinished(&repositories.base, &[]).is_err());
+        assert!(repository_of(&repositories.base).is_err());
+        assert!(remove(&repositories.base, &path).is_err());
+    }
+
+    #[test]
+    fn a_local_command_may_use_no_transport_and_fetch_nothing_lazily() {
+        let command = local(Path::new("."));
+        let environment: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+
+        for (key, value) in [
+            ("GIT_ALLOW_PROTOCOL", ""),
+            ("GIT_NO_LAZY_FETCH", "1"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ] {
+            assert!(
+                environment.contains(&(key.to_string(), Some(value.to_string()))),
+                "{key}={value} in {environment:?}"
+            );
+        }
+    }
+
+    /// A `.gitignore` a run adds that ignores itself hides everything beneath
+    /// it from a listing that honours `.gitignore` files, so a new one counts
+    /// on its own.
+    #[test]
+    fn a_new_ignore_file_that_hides_itself_still_counts() {
+        for directory in ["", "nested/"] {
+            let repositories = repositories();
+            let path = repositories.worktrees.join("run");
+            add(&repositories.base, &path, "origin/HEAD").unwrap();
+            let start = git(&path, &["rev-parse", "HEAD"]);
+            std::fs::create_dir_all(path.join(directory)).unwrap();
+            std::fs::write(path.join(format!("{directory}.gitignore")), "*\n").unwrap();
+            std::fs::write(path.join(format!("{directory}work.txt")), "unsaved\n").unwrap();
+
+            assert!(
+                unfinished(&path, &[&start]).unwrap().uncommitted,
+                "{directory:?}"
+            );
+        }
     }
 }

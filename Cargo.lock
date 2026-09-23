@@ -203,6 +203,8 @@ dependencies = [
 name = "abnegate-vcs"
 version = "0.1.0"
 dependencies = [
+ "abnegate-secret",
+ "abnegate-vcs",
  "base64 0.23.1",
  "chrono",
  "nix",
