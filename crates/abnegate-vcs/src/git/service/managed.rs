@@ -118,7 +118,7 @@ impl GitService {
         let mut command = Self::managed_command(None);
         command
             .env("GIT_ALLOW_PROTOCOL", MANAGED_PROTOCOLS)
-            .args(["clone", "--"])
+            .args(["clone", "--template=", "--"])
             .arg(address)
             .arg(target);
         command
@@ -716,6 +716,36 @@ mod managed_tests {
 
         assert!(refusal.contains("git clone failed"), "{refusal}");
         assert!(!marker.exists(), "the address was read as an option");
+    }
+
+    /// A template directory is the caller's to configure, and a link in it
+    /// would be copied into the clone's git directory, where every later
+    /// command refuses it; the hooks a template carries never run anyway.
+    #[tokio::test]
+    async fn a_managed_clone_copies_nothing_from_a_template_directory() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+
+        let (cloned, recorded) = recording(GitService::new().ensure_repository(
+            &target,
+            &origin(source.path()),
+            &branch("main"),
+        ))
+        .await;
+
+        cloned.unwrap();
+        let clone = recorded
+            .iter()
+            .find(|command| command.iter().any(|argument| argument == "clone"))
+            .expect("the repository was cloned");
+        let template = clone.iter().position(|argument| argument == "--template=");
+        let options = clone.iter().position(|argument| argument == "--");
+        assert!(
+            template.is_some_and(|template| options.is_some_and(|options| template < options)),
+            "{clone:?}"
+        );
     }
 
     #[tokio::test]
