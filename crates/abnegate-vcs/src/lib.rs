@@ -15,6 +15,10 @@
 //!
 //! Nothing here holds application state, so a task runner can drive it directly.
 //!
+//! The crate needs git 2.39 or newer, the first to read a symbolic ref without
+//! following it: on an older git [`GitService::commit`] fails closed and
+//! [`worktree::branch`] reads a worktree's branch as unknown.
+//!
 //! ```no_run
 //! # async fn example(repository: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
 //! use abnegate_vcs::GitService;
