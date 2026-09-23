@@ -7,8 +7,16 @@
 //! two passes: name the subject shared by every image, then describe each image
 //! while excluding that subject.
 
+mod draft;
+mod image;
+mod request;
+
+pub use draft::Draft;
+pub use image::CaptionImage;
+pub use request::CaptionRequest;
+
 use abnegate_llm::{LlmClient, LlmConfig, Message};
-use serde::Deserialize;
+use abnegate_secret::SecretValue;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
@@ -17,7 +25,7 @@ use crate::config::Config;
 
 const SUBJECT_TOKENS: u32 = 40;
 const DESCRIPTION_TOKENS: u32 = 80;
-const MAX_CAPTION_WORDS: usize = 18;
+const MAXIMUM_CAPTION_WORDS: usize = 18;
 /// A word in at least this share of the descriptions is invariant, so it is identity.
 /// Set low on purpose: leaking identity costs more than dropping a little context.
 const INVARIANT_SHARE: f32 = 0.34;
@@ -53,45 +61,6 @@ const STOPWORDS: &[&str] = &[
     "large", "big", "tiny",
 ];
 
-#[derive(Debug, Deserialize)]
-pub struct CaptionRequest {
-    #[serde(default)]
-    pub trigger: Option<String>,
-    pub images: Vec<CaptionImage>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CaptionImage {
-    pub filename: String,
-    pub bytes_base64: String,
-    #[serde(default)]
-    pub caption: String,
-    /// Images sharing a group show the same shot, so one description covers
-    /// them all. Video frames arrive grouped; separate photos do not.
-    #[serde(default)]
-    pub group: Option<usize>,
-}
-
-/// One image on its way to a caption.
-#[derive(Clone, Debug)]
-pub struct Draft {
-    /// Inline data URL, the only image shape a vision model takes.
-    pub image: String,
-    pub caption: String,
-    /// Drafts sharing a group are described once and captioned alike.
-    pub group: usize,
-}
-
-impl Draft {
-    pub fn new(filename: &str, base64: &str, caption: &str, group: usize) -> Self {
-        Self {
-            image: data_url(filename, base64),
-            caption: caption.to_string(),
-            group,
-        }
-    }
-}
-
 /// Inline data URL, the only image shape an OpenAI-compatible vision model takes.
 pub fn data_url(filename: &str, base64: &str) -> String {
     let extension = Path::new(filename)
@@ -111,14 +80,14 @@ pub struct Captioner {
     model: String,
     timeout: Duration,
     host: String,
-    key: String,
+    key: SecretValue,
 }
 
 impl Captioner {
-    pub fn new(config: &Config, litellm_host: String, litellm_key: String) -> Self {
+    pub fn new(config: &Config, litellm_host: String, litellm_key: SecretValue) -> Self {
         Self {
             model: config.caption_model.clone(),
-            timeout: Duration::from_secs(config.caption_timeout_secs),
+            timeout: Duration::from_secs(config.caption_timeout_seconds),
             host: litellm_host,
             key: litellm_key,
         }
@@ -211,7 +180,7 @@ impl Captioner {
     async fn ask(&self, message: Message, max_tokens: u32) -> Option<String> {
         let client = LlmClient::new(LlmConfig {
             base_url: self.host.clone(),
-            api_key: self.key.clone(),
+            api_key: self.key.expose().to_string(),
             default_model: self.model.clone(),
             temperature: 0.0,
             max_tokens,
@@ -279,7 +248,7 @@ pub(crate) fn content_words(value: &str) -> impl Iterator<Item = String> + '_ {
 /// Drop the comma clauses that carry identity, keeping the ones about the shot.
 fn strip_words(description: &str, banned: &HashSet<String>) -> String {
     let mut kept: Vec<&str> = Vec::new();
-    let mut budget = MAX_CAPTION_WORDS;
+    let mut budget = MAXIMUM_CAPTION_WORDS;
     for clause in description.split(',').map(str::trim) {
         if clause.is_empty() || content_words(clause).any(|word| banned.contains(&word)) {
             continue;
@@ -324,13 +293,13 @@ fn tidy(answer: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn config(model: &str) -> Config {
         Config {
             caption_model: model.to_string(),
-            caption_timeout_secs: 5,
+            caption_timeout_seconds: 5,
             ..Default::default()
         }
     }
@@ -347,6 +316,21 @@ mod tests {
                 "finish_reason": "stop"
             }]
         })
+    }
+
+    #[test]
+    fn images_print_their_size_rather_than_their_bytes() {
+        let upload = "A".repeat(1 << 20);
+        let image = CaptionImage {
+            filename: "a.png".into(),
+            bytes_base64: upload.clone(),
+            caption: String::new(),
+            group: None,
+        };
+        let draft = Draft::new("a.png", &upload, "", 0);
+        for rendered in [format!("{image:?}"), format!("{draft:?}")] {
+            assert!(rendered.len() < 200, "{} characters", rendered.len());
+        }
     }
 
     #[test]
@@ -408,7 +392,7 @@ mod tests {
             capped, clause,
             "a clause that does not fit is dropped whole"
         );
-        assert!(capped.split_whitespace().count() <= MAX_CAPTION_WORDS);
+        assert!(capped.split_whitespace().count() <= MAXIMUM_CAPTION_WORDS);
     }
 
     #[tokio::test]
@@ -526,6 +510,25 @@ mod tests {
             "the caption itself still drops identity: {}",
             images[0].caption
         );
+    }
+
+    #[tokio::test]
+    async fn the_litellm_key_reaches_the_authorization_header_intact() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer sk-litellm-0123456789"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(answer("a teapot robot")))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let captioner = Captioner::new(
+            &config("vision"),
+            server.uri(),
+            SecretValue::new("sk-litellm-0123456789"),
+        );
+        let mut images = vec![Draft::new("a.png", "aaa", "", 0)];
+        captioner.fill(&mut images, "zrkxyz").await;
     }
 
     #[tokio::test]

@@ -16,14 +16,19 @@
 //! model's vocabulary, so it will sometimes be wrong, and a wrong warning a user
 //! can overrule costs far less than a refusal they cannot.
 
+mod concern;
+mod finding;
+
+pub use concern::Concern;
+pub use finding::Finding;
+
 use crate::caption::content_words;
-use serde::Serialize;
 use std::collections::HashSet;
 
 /// A measured eight-image run improved the subject by 34.72%, so the floor sits
 /// below it: under five, the set is also too small for the checks below to say
 /// anything about it.
-const MINIMUM: usize = 5;
+pub(crate) const MINIMUM: usize = 5;
 /// Word overlap needs enough descriptions for a majority to exist.
 const DESCRIBED: usize = 3;
 /// Share of description pairs that must share a word for one subject to be
@@ -109,21 +114,6 @@ const POSES: &[&[&str]] = &[
     &["full body", "full length", "head to toe"],
     &["medium shot", "medium close", "waist up"],
 ];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Concern {
-    TooFew,
-    LowVariety,
-    MixedSubjects,
-    LowPoseVariety,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Finding {
-    pub concern: Concern,
-    pub detail: String,
-}
 
 /// Read the vision model's descriptions for signs the set cannot train well.
 ///

@@ -14,6 +14,16 @@
 //! costs nothing here because the same frame differences already decide which
 //! frames are worth keeping.
 
+mod clip;
+mod frame;
+mod frame_request;
+mod options;
+
+pub use clip::Clip;
+pub use frame::Frame;
+pub use frame_request::FrameRequest;
+pub use options::Options;
+
 use crate::config::Config;
 use crate::lora::{TrainError, png};
 use crate::subject::Subject;
@@ -21,9 +31,12 @@ use abnegate_vision::crop::{self, Region, Rendered, Target};
 use abnegate_vision::gravity::{self, Point};
 use abnegate_vision::{Raster, decode};
 use base64::Engine;
-use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Output;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
 
 /// Sampling runs at this multiple of the requested rate so every kept frame is
@@ -54,64 +67,61 @@ const GROUP_DISTANCE: u32 = 14;
 /// Frames kept before near-duplicate rejection is allowed to stop early. Below
 /// this a static clip would train on a single pose.
 const FLOOR: usize = 8;
+/// Narrowest plane a second derivative can be taken on: one pixel with a
+/// neighbour on each side.
+const LAPLACIAN_SIDE: usize = 3;
+/// How long ffprobe may take to read a clip's duration.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long ffmpeg may take to sample a clip at most [`CEILING`] frames.
+const DECODE_TIMEOUT: Duration = Duration::from_secs(600);
+/// The only protocol ffmpeg and ffprobe may open, so a playlist or reference
+/// inside a clip cannot reach the network or another file scheme.
+const INPUT_PROTOCOLS: &str = "file";
 
-/// How a clip is turned into training images.
-#[derive(Clone, Copy, Debug)]
-pub struct Options {
-    /// Frames kept per second of video.
-    pub fps: u32,
-    /// Side of the square crop every frame is rendered at.
-    pub resolution: u32,
-    /// Mirror alternate frames within each second.
-    pub mirror: bool,
-    /// Frames kept in total. The packaged trainer caps its step count, so past
-    /// this each extra frame is seen fewer times without adding variety the
-    /// selection has not already taken.
-    pub limit: usize,
+/// A container a clip may be read as: the extension it is written under and
+/// the demuxer forced on it, so ffmpeg never picks one by probing the upload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Container {
+    extension: &'static str,
+    demuxer: &'static str,
 }
 
-/// A clip submitted for training.
-#[derive(Debug, Deserialize)]
-pub struct FrameRequest {
-    pub filename: String,
-    pub bytes_base64: String,
-    /// Frames kept per second. Falls back to the configured rate.
-    #[serde(default)]
-    pub fps: Option<u32>,
-    /// Mirror alternate frames. Worth turning off for a subject carrying text
-    /// or anything else a mirror would render backwards.
-    #[serde(default)]
-    pub mirror: Option<bool>,
-}
+const MP4: Container = Container {
+    extension: "mp4",
+    demuxer: "mov",
+};
 
-/// One training image pulled from a clip.
-#[derive(Clone, Debug, Serialize)]
-pub struct Frame {
-    pub filename: String,
-    pub bytes_base64: String,
-    pub timestamp_ms: u64,
-    pub mirrored: bool,
-    /// Frames sharing a group are the same shot, so one caption describes them
-    /// all and the vision model only has to look at one of them.
-    pub group: usize,
-}
-
-/// What one clip yielded.
-#[derive(Clone, Debug, Serialize)]
-pub struct Clip {
-    pub frames: Vec<Frame>,
-    /// Frames pulled out of the video before selection.
-    pub sampled: usize,
-    /// Rate those frames were pulled at, which drops below the requested rate
-    /// only when the clip is long enough to hit the sampling ceiling.
-    pub sampled_fps: f64,
-}
+/// Every container a clip is read as. `m4v` is the MPEG-4 file, not the raw
+/// elementary stream ffmpeg's own `m4v` demuxer reads.
+const CONTAINERS: [Container; 6] = [
+    MP4,
+    Container {
+        extension: "mov",
+        demuxer: "mov",
+    },
+    Container {
+        extension: "m4v",
+        demuxer: "mov",
+    },
+    Container {
+        extension: "webm",
+        demuxer: "matroska",
+    },
+    Container {
+        extension: "mkv",
+        demuxer: "matroska",
+    },
+    Container {
+        extension: "avi",
+        demuxer: "avi",
+    },
+];
 
 /// Everything one sampled frame is judged on. The pixels are not kept: only the
 /// frames that survive selection are decoded a second time to be cropped.
 struct Measured {
     path: PathBuf,
-    timestamp_ms: u64,
+    timestamp_milliseconds: u64,
     sharpness: f64,
     brightness: f64,
     contrast: f64,
@@ -129,11 +139,12 @@ pub async fn extract(
         return Err(TrainError::Invalid("video is empty"));
     }
     let work = tempfile::tempdir().map_err(|error| TrainError::Failed(error.to_string()))?;
-    let clip = work.path().join(format!("clip.{}", container(filename)));
+    let container = container(filename);
+    let clip = work.path().join(format!("clip.{}", container.extension));
     std::fs::write(&clip, video).map_err(|error| TrainError::Failed(error.to_string()))?;
 
     let requested = f64::from(options.fps.clamp(1, 30));
-    let sampled_fps = match duration(config, &clip).await {
+    let sampled_fps = match duration(config, container, &clip, PROBE_TIMEOUT).await {
         Some(seconds) if seconds > 0.0 => {
             (CEILING as f64 / seconds).clamp(0.5, requested * OVERSAMPLE)
         }
@@ -141,11 +152,17 @@ pub async fn extract(
     };
     let stills = work.path().join("frames");
     std::fs::create_dir_all(&stills).map_err(|error| TrainError::Failed(error.to_string()))?;
-    sample(config, &clip, &stills, sampled_fps).await?;
+    sample(
+        config,
+        container,
+        &clip,
+        &stills,
+        sampled_fps,
+        DECODE_TIMEOUT,
+    )
+    .await?;
 
-    // Decoding, measuring, cropping and encoding hundreds of frames is seconds
-    // of CPU that would otherwise sit on a runtime thread other requests need.
-    let subject = Subject::shared(config);
+    let subject = Subject::shared(config).await;
     tokio::task::spawn_blocking(move || build(&stills, sampled_fps, options, &subject))
         .await
         .map_err(|error| TrainError::Failed(error.to_string()))?
@@ -172,10 +189,10 @@ fn build(
     let mut within = 0usize;
     for (position, &index) in chosen.iter().enumerate() {
         let frame = &measured[index];
-        if frame.timestamp_ms / 1000 == second {
+        if frame.timestamp_milliseconds / 1000 == second {
             within += 1;
         } else {
-            second = frame.timestamp_ms / 1000;
+            second = frame.timestamp_milliseconds / 1000;
             within = 0;
         }
         let mirrored = options.mirror && within % 2 == 1;
@@ -183,7 +200,7 @@ fn build(
         frames.push(Frame {
             filename: format!("frame-{position:04}.png"),
             bytes_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-            timestamp_ms: frame.timestamp_ms,
+            timestamp_milliseconds: frame.timestamp_milliseconds,
             mirrored,
             group: groups[position],
         });
@@ -196,56 +213,39 @@ fn build(
 }
 
 /// Seconds of video, as ffprobe reports them.
-async fn duration(config: &Config, clip: &Path) -> Option<f64> {
-    let output = Command::new(&config.ffprobe)
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-        ])
-        .arg(clip)
-        .stdin(Stdio::null())
-        .output()
+async fn duration(
+    config: &Config,
+    container: Container,
+    clip: &Path,
+    budget: Duration,
+) -> Option<f64> {
+    let output = execute(&config.ffprobe, &probe_arguments(container, clip), budget)
         .await
-        .ok()?;
+        .ok()??;
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
-async fn sample(config: &Config, clip: &Path, stills: &Path, fps: f64) -> Result<(), TrainError> {
-    let filter = format!(
-        "fps={fps:.4},scale='min({WORKING_EDGE},iw)':'min({WORKING_EDGE},ih)':\
-         force_original_aspect_ratio=decrease:force_divisible_by=2"
-    );
-    let output = Command::new(&config.ffmpeg)
-        .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-i"])
-        .arg(clip)
-        .args(["-map", "0:v:0", "-vf", &filter])
-        .args([
-            "-frames:v",
-            &CEILING.to_string(),
-            "-q:v",
-            "2",
-            "-f",
-            "image2",
-        ])
-        .arg(stills.join("%06d.jpg"))
-        .stdin(Stdio::null())
-        .output()
+async fn sample(
+    config: &Config,
+    container: Container,
+    clip: &Path,
+    stills: &Path,
+    fps: f64,
+    budget: Duration,
+) -> Result<(), TrainError> {
+    let arguments = sample_arguments(container, clip, stills, fps);
+    let output = execute(&config.ffmpeg, &arguments, budget)
         .await
         .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => TrainError::Disabled,
+            io::ErrorKind::NotFound => TrainError::Disabled,
             _ => TrainError::Failed(error.to_string()),
-        })?;
+        })?
+        .ok_or(TrainError::Invalid(
+            "the video took too long to decode; try a shorter clip",
+        ))?;
     if !output.status.success() {
-        // Every argument but the file itself is ours, so a refusal here is the
-        // file. The reason is worth keeping, in the log rather than the reply.
         tracing::warn!(
-            reason = %String::from_utf8_lossy(&output.stderr).trim(),
+            reason = %crate::excerpt::tail(&String::from_utf8_lossy(&output.stderr)),
             "ffmpeg could not read a submitted clip"
         );
         return Err(TrainError::Invalid(
@@ -253,6 +253,88 @@ async fn sample(config: &Config, clip: &Path, stills: &Path, fps: f64) -> Result
         ));
     }
     Ok(())
+}
+
+/// Runs a decoder to completion, or kills it once `budget` runs out and
+/// answers `None`.
+async fn execute(
+    program: &str,
+    arguments: &[OsString],
+    budget: Duration,
+) -> io::Result<Option<Output>> {
+    let mut command = Command::new(program);
+    command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    match tokio::time::timeout(budget, command.output()).await {
+        Ok(output) => output.map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Options that pin how `clip` is opened. They have to precede `-i`.
+fn input_arguments(container: Container, clip: &Path) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = [
+        "-protocol_whitelist",
+        INPUT_PROTOCOLS,
+        "-f",
+        container.demuxer,
+        "-i",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    arguments.push(clip.as_os_str().to_os_string());
+    arguments
+}
+
+fn probe_arguments(container: Container, clip: &Path) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = [
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    arguments.extend(input_arguments(container, clip));
+    arguments
+}
+
+fn sample_arguments(container: Container, clip: &Path, stills: &Path, fps: f64) -> Vec<OsString> {
+    let filter = format!(
+        "fps={fps:.4},scale='min({WORKING_EDGE},iw)':'min({WORKING_EDGE},ih)':\
+         force_original_aspect_ratio=decrease:force_divisible_by=2"
+    );
+    let mut arguments: Vec<OsString> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    arguments.extend(input_arguments(container, clip));
+    arguments.extend(
+        [
+            "-map",
+            "0:v:0",
+            "-vf",
+            &filter,
+            "-frames:v",
+            &CEILING.to_string(),
+            "-q:v",
+            "2",
+            "-f",
+            "image2",
+        ]
+        .into_iter()
+        .map(OsString::from),
+    );
+    arguments.push(stills.join("%06d.jpg").into_os_string());
+    arguments
 }
 
 fn measure(stills: &Path, fps: f64) -> Result<Vec<Measured>, TrainError> {
@@ -280,7 +362,7 @@ fn measure(stills: &Path, fps: f64) -> Result<Vec<Measured>, TrainError> {
         let (brightness, contrast) = spread(&plane);
         measured.push(Measured {
             path,
-            timestamp_ms: (index as f64 * 1000.0 / fps).round() as u64,
+            timestamp_milliseconds: (index as f64 * 1000.0 / fps).round() as u64,
             sharpness: sharpness(&plane, ANALYSIS as usize),
             brightness,
             contrast,
@@ -350,7 +432,7 @@ fn choose(measured: &[Measured], per_second: usize, limit: usize) -> Vec<usize> 
     let mut bucket: Vec<usize> = Vec::new();
     let mut second = u64::MAX;
     for &index in &usable {
-        let at = measured[index].timestamp_ms / 1000;
+        let at = measured[index].timestamp_milliseconds / 1000;
         if at != second && !bucket.is_empty() {
             sharpest.extend(pick(&bucket, measured, per_second));
             bucket.clear();
@@ -362,7 +444,7 @@ fn choose(measured: &[Measured], per_second: usize, limit: usize) -> Vec<usize> 
     sharpest.sort_unstable();
 
     let mut chosen = diversify(&sharpest, measured, limit.max(1));
-    chosen.sort_unstable_by_key(|&index| measured[index].timestamp_ms);
+    chosen.sort_unstable_by_key(|&index| measured[index].timestamp_milliseconds);
     chosen
 }
 
@@ -401,8 +483,7 @@ fn diversify(candidates: &[usize], measured: &[Measured], budget: usize) -> Vec<
     };
     let mut taken = vec![false; candidates.len()];
     let mut distances = vec![u32::MAX; candidates.len()];
-    // Sized as it grows rather than reserved: the budget is small, and a
-    // capacity taken from the clip is a promise about the clip's size.
+    // The budget is caller-supplied, so it is never trusted as a capacity.
     let mut chosen = Vec::new();
     let mut next = sharpest;
     while chosen.len() < budget.min(candidates.len()) {
@@ -547,8 +628,7 @@ fn luma(pixels: &[u8]) -> Vec<f32> {
 /// Variance of the Laplacian: a blurred frame has little left after a
 /// second-derivative filter, a sharp one keeps its edges.
 fn sharpness(luma: &[f32], side: usize) -> f64 {
-    // A second derivative needs a pixel on each side of the one it is taken at.
-    if side < 3 || luma.len() < side * side {
+    if side < LAPLACIAN_SIDE || luma.len() < side * side {
         return 0.0;
     }
     let mut total = 0.0f64;
@@ -620,31 +700,28 @@ fn hash(luma: &[f32]) -> u64 {
     bits
 }
 
-/// The extension ffmpeg should demux the upload as, taken from the name the
-/// browser sent. ffmpeg probes the content anyway; this only stops it guessing
-/// from an extension that is not there.
-fn container(filename: &str) -> String {
-    Path::new(filename)
+/// The container a clip is read as, from the extension the browser sent. An
+/// extension outside [`CONTAINERS`] is read as MP4, and a clip that is not one
+/// then fails to decode rather than being probed as whatever it resembles.
+fn container(filename: &str) -> Container {
+    let extension = Path::new(filename)
         .extension()
         .and_then(|value| value.to_str())
-        .map(str::to_ascii_lowercase)
-        .filter(|value| {
-            value.len() <= 5
-                && value
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric())
-        })
-        .unwrap_or_else(|| "mp4".to_string())
+        .map(str::to_ascii_lowercase);
+    CONTAINERS
+        .into_iter()
+        .find(|container| Some(container.extension) == extension.as_deref())
+        .unwrap_or(MP4)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn measured(timestamp_ms: u64, sharpness: f64, hash: u64) -> Measured {
+    fn measured(timestamp_milliseconds: u64, sharpness: f64, hash: u64) -> Measured {
         Measured {
             path: PathBuf::new(),
-            timestamp_ms,
+            timestamp_milliseconds,
             sharpness,
             brightness: 128.0,
             contrast: 40.0,
@@ -764,10 +841,11 @@ mod tests {
         assert!(
             chosen
                 .windows(2)
-                .all(|pair| frames[pair[0]].timestamp_ms <= frames[pair[1]].timestamp_ms),
+                .all(|pair| frames[pair[0]].timestamp_milliseconds
+                    <= frames[pair[1]].timestamp_milliseconds),
             "frames come back in time order"
         );
-        let last = frames[*chosen.last().unwrap()].timestamp_ms;
+        let last = frames[*chosen.last().unwrap()].timestamp_milliseconds;
         assert!(
             last > 40_000,
             "the whole clip is represented, not just its opening: last frame at {last}ms"
@@ -825,11 +903,130 @@ mod tests {
     }
 
     #[test]
+    fn clips_and_frames_print_their_size_rather_than_their_bytes() {
+        let upload = "A".repeat(1 << 20);
+        let request = FrameRequest {
+            filename: "clip.mp4".into(),
+            bytes_base64: upload.clone(),
+            fps: None,
+            mirror: None,
+        };
+        let frame = Frame {
+            filename: "frame-0000.png".into(),
+            bytes_base64: upload,
+            timestamp_milliseconds: 0,
+            mirrored: false,
+            group: 0,
+        };
+        for rendered in [format!("{request:?}"), format!("{frame:?}")] {
+            assert!(rendered.len() < 200, "{} characters", rendered.len());
+            assert!(rendered.contains("bytes_base64: 1048576"), "{rendered}");
+        }
+    }
+
+    #[test]
     fn an_unnamed_upload_still_gets_a_container() {
-        assert_eq!(container("clip.MOV"), "mov");
-        assert_eq!(container("clip.webm"), "webm");
-        assert_eq!(container("clip"), "mp4");
-        assert_eq!(container("clip.../etc/passwd"), "mp4");
+        assert_eq!(container("clip.MOV").extension, "mov");
+        assert_eq!(container("clip.webm").extension, "webm");
+        assert_eq!(container("clip"), MP4);
+        assert_eq!(container("clip.../etc/passwd"), MP4);
+    }
+
+    #[test]
+    fn only_allowlisted_containers_are_demuxed_and_each_by_its_own_demuxer() {
+        for (filename, extension, demuxer) in [
+            ("a.mp4", "mp4", "mov"),
+            ("a.MOV", "mov", "mov"),
+            ("a.m4v", "m4v", "mov"),
+            ("a.webm", "webm", "matroska"),
+            ("a.mkv", "mkv", "matroska"),
+            ("a.avi", "avi", "avi"),
+        ] {
+            assert_eq!(
+                container(filename),
+                Container { extension, demuxer },
+                "{filename}"
+            );
+        }
+        for filename in [
+            "playlist.m3u8",
+            "list.ffconcat",
+            "a.txt",
+            "a.hls",
+            "a.sdp",
+            "a.image2",
+            "a.tty",
+        ] {
+            assert_eq!(container(filename), MP4, "{filename} chose its own demuxer");
+        }
+    }
+
+    fn position(arguments: &[OsString], flag: &str) -> usize {
+        arguments
+            .iter()
+            .position(|argument| argument == flag)
+            .unwrap_or_else(|| panic!("{flag} is missing from {arguments:?}"))
+    }
+
+    #[test]
+    fn both_tools_open_the_clip_as_a_local_file_with_a_forced_demuxer() {
+        let clip = Path::new("/work/clip.webm");
+        let container = container("upload.webm");
+        for arguments in [
+            probe_arguments(container, clip),
+            sample_arguments(container, clip, Path::new("/work/frames"), 8.0),
+        ] {
+            let input = position(&arguments, "-i");
+            let whitelist = position(&arguments, "-protocol_whitelist");
+            let format = position(&arguments, "-f");
+            assert!(
+                whitelist < input && format < input,
+                "input options must precede -i: {arguments:?}"
+            );
+            assert_eq!(arguments[whitelist + 1], "file");
+            assert_eq!(arguments[format + 1], "matroska");
+            assert_eq!(arguments[input + 1], clip.as_os_str());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_decoder_that_outlives_its_budget_is_killed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let work = tempfile::tempdir().unwrap();
+        let finished = work.path().join("finished");
+        let decoder = work.path().join("ffmpeg");
+        std::fs::write(
+            &decoder,
+            format!("#!/bin/sh\nsleep 2\ntouch \"{}\"\n", finished.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&decoder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = Config {
+            ffmpeg: decoder.display().to_string(),
+            ..Default::default()
+        };
+        let started = std::time::Instant::now();
+
+        let error = sample(
+            &config,
+            MP4,
+            &work.path().join("clip.mp4"),
+            work.path(),
+            8.0,
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, TrainError::Invalid(_)), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        tokio::time::sleep(Duration::from_millis(2_300)).await;
+        assert!(
+            !finished.exists(),
+            "the decoder kept running past its budget"
+        );
     }
 
     #[test]
@@ -852,8 +1049,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_decoder_that_cannot_be_run_is_reported_rather_than_swallowed() {
-        // Present but not executable: a misconfigured path, not a missing one,
-        // so it is the server's fault in a way "not installed" does not cover.
         let work = tempfile::tempdir().unwrap();
         let blocked = work.path().join("ffmpeg");
         std::fs::write(&blocked, "#!/bin/sh\nexit 0\n").unwrap();
@@ -993,7 +1188,7 @@ mod tests {
             "only the readable jpeg counts: a corrupt frame is dropped, and so is a file \
              ffmpeg did not write"
         );
-        assert_eq!(measured[0].timestamp_ms, 0);
+        assert_eq!(measured[0].timestamp_milliseconds, 0);
     }
 
     #[test]
@@ -1124,7 +1319,7 @@ mod tests {
             extracted
                 .frames
                 .windows(2)
-                .all(|pair| pair[0].timestamp_ms < pair[1].timestamp_ms),
+                .all(|pair| pair[0].timestamp_milliseconds < pair[1].timestamp_milliseconds),
             "frames arrive in time order"
         );
         for frame in &extracted.frames {
@@ -1146,6 +1341,32 @@ mod tests {
                 frame.filename
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_clip_is_demuxed_as_the_container_it_is_named_rather_than_probed() {
+        if !ffmpeg_installed() {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let clip = work.path().join("clip.webm");
+        synthesize(&clip, MOVING_SUBJECT, "1").await;
+        let bytes = std::fs::read(&clip).unwrap();
+        let options = Options {
+            fps: 2,
+            resolution: 64,
+            mirror: false,
+            limit: 4,
+        };
+
+        extract(&Config::default(), &bytes, "clip.webm", options)
+            .await
+            .expect("a WebM named as one is read as Matroska");
+        let error = extract(&Config::default(), &bytes, "clip.mp4", options)
+            .await
+            .expect_err("a WebM named as MP4 must not be probed into being read anyway");
+        assert!(matches!(error, TrainError::Invalid(_)), "{error}");
     }
 
     #[tokio::test]

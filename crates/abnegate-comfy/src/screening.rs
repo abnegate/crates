@@ -14,18 +14,24 @@
 //! the user what [`Verdict::drop`] cost them, the same way auto-crop and
 //! auto-caption fix a set rather than filing a complaint about it. Two rules
 //! bound that. Nothing that fails to decode is ever dropped, because screening
-//! is the wrong place to fail a run. And the set never falls below five images:
-//! when it would, the most salvageable rejects come back, since returning four
-//! images and a clean conscience is worse than returning eight and a warning.
+//! is the wrong place to fail a run. And the set never falls below [`FLOOR`]
+//! images: when it would, the most salvageable rejects come back, since
+//! returning too few images and a clean conscience is worse than returning
+//! enough and a warning.
+
+mod rejection;
+mod verdict;
+
+pub use rejection::Rejection;
+pub use verdict::Verdict;
 
 use abnegate_vision::crop::{self, Region, Target};
 use abnegate_vision::decode::{self, Raster};
-use serde::Serialize;
 
-/// Matches `dataset::inspect`'s own minimum: a measured eight-image run
-/// improved its subject by 34.72%, and five is the point below which a set
-/// stops being able to teach one at all.
-const FLOOR: usize = 5;
+/// The smallest set [`crate::dataset::inspect`] considers able to teach one
+/// subject, so screening never cuts a set below it.
+const FLOOR: usize = crate::dataset::MINIMUM;
+
 /// Long edge every image is reduced to before it is measured. Both measures are
 /// scale-dependent, so a fixed analysis size is what lets one threshold hold
 /// for a phone panorama and a thumbnail alike. Images already smaller are left
@@ -54,23 +60,6 @@ const WINDOW: usize = 9;
 const AXES: usize = 2;
 const FINGERPRINT_WIDTH: usize = 9;
 const FINGERPRINT_HEIGHT: usize = 8;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Rejection {
-    Duplicate,
-    Blurred,
-    Small,
-}
-
-/// Which images to train on, and what the rest were rejected for. The two lists
-/// partition the caller's slice: an image restored to keep the set at its floor
-/// appears in `keep`, not in `drop`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Verdict {
-    pub keep: Vec<usize>,
-    pub drop: Vec<(usize, Rejection)>,
-}
 
 /// Screen a training set, keeping the images worth an hour of training.
 ///

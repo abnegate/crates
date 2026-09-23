@@ -2,16 +2,36 @@
 //! ComfyUI; [`Config::train_command`] hands the dataset to an external trainer
 //! instead.
 
+mod dropped;
+mod remediation;
+mod remediation_outcome;
+mod screening;
+mod train_base;
+mod train_error;
+mod train_image;
+mod train_outcome;
+mod train_request;
+
+pub use dropped::Dropped;
+pub use remediation::Remediation;
+pub use remediation_outcome::RemediationOutcome;
+pub use screening::Screening;
+pub use train_base::TrainBase;
+pub use train_error::TrainError;
+pub use train_image::TrainImage;
+pub use train_outcome::TrainOutcome;
+pub use train_request::TrainRequest;
+
 use crate::caption::{Captioner, Draft};
 use crate::client::{Client, SourceImage};
 use crate::config::Config;
 use crate::inventory::{
     PUBLICATION_DIRECTORY, WeightDocument, WeightSidecar, publication_marker, sidecar_path,
 };
-use crate::quality::Quality;
 use crate::recipe::{RecipeCatalog, TrainingModel, sanitize_weight_filename};
 use crate::subject::{CENTRE, Subject};
 use crate::train::{Contract, Run};
+use abnegate_secret::SecretValue;
 use abnegate_vision::gravity::Point;
 use abnegate_vision::{Raster, Rendered, decode};
 use serde::{Deserialize, Serialize};
@@ -21,90 +41,14 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio::process::ChildStderr;
 use tokio::process::Command;
+use tokio::task::JoinHandle;
+
 use uuid::Uuid;
-
-#[derive(Debug, thiserror::Error)]
-pub enum TrainError {
-    #[error("training is not configured")]
-    Disabled,
-    #[error("invalid training request: {0}")]
-    Invalid(&'static str),
-    #[error("training failed: {0}")]
-    Failed(String),
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TrainRequest {
-    pub name: String,
-    pub base: String,
-    #[serde(default)]
-    pub trigger: Option<String>,
-    pub images: Vec<TrainImage>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TrainImage {
-    pub filename: String,
-    pub caption: String,
-    pub bytes_base64: String,
-    #[serde(default)]
-    pub before_base64: Option<String>,
-    /// Images sharing a group are the same shot and are captioned together.
-    /// Frames pulled from a clip arrive grouped; separate photos do not.
-    #[serde(default)]
-    pub group: Option<usize>,
-}
-
-/// A finished run: the adapter on disk and, when ComfyUI could be asked, how
-/// far it beats the base it was trained from.
-#[derive(Debug, Serialize)]
-pub struct TrainOutcome {
-    pub path: PathBuf,
-    pub quality: Option<Quality>,
-    pub dataset: Vec<crate::dataset::Finding>,
-    pub screening: Screening,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Screening {
-    pub kept: usize,
-    pub dropped: Vec<Dropped>,
-    pub attempted: Vec<Remediation>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Dropped {
-    pub filename: String,
-    pub reason: crate::screening::Rejection,
-}
-
-/// The result of trying the configured image upscaler before rejecting a target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RemediationOutcome {
-    Used,
-    StillRejected,
-    Failed,
-}
-
-/// One target the pipeline tried to repair before selecting the training set.
-#[derive(Debug, PartialEq, Eq, Serialize)]
-pub struct Remediation {
-    pub source_index: usize,
-    pub filename: String,
-    pub reason: crate::screening::Rejection,
-    pub outcome: RemediationOutcome,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(PartialEq))]
-pub struct TrainBase {
-    pub id: String,
-    pub label: String,
-    pub edit: bool,
-}
 
 struct ScreenedImage {
     original: usize,
@@ -130,6 +74,12 @@ struct Attempt {
     artifact: Option<String>,
     produced: Option<PathBuf>,
 }
+
+/// Bytes of a trainer's stderr kept to explain a failure.
+const STDERR_TAIL: usize = 4096;
+const STDERR_CHUNK: usize = 1024;
+/// How long a finished trainer's stderr is given to reach end of file.
+const STDERR_DRAIN: Duration = Duration::from_millis(250);
 
 /// Name the weight a publication replaces is kept under inside its attempt,
 /// until the replacement is durable. Recovery after a crash reads it back.
@@ -210,8 +160,8 @@ impl Drop for Attempt {
     }
 }
 
-pub fn available_bases(catalog: &RecipeCatalog, models_dir: &Path) -> Vec<TrainBase> {
-    let items = crate::inventory::scan(models_dir, catalog);
+pub fn available_bases(catalog: &RecipeCatalog, models_directory: &Path) -> Vec<TrainBase> {
+    let items = crate::inventory::scan(models_directory, catalog);
     catalog
         .image_recipes()
         .filter(|recipe| !recipe.adapter)
@@ -232,7 +182,7 @@ pub fn available_bases(catalog: &RecipeCatalog, models_dir: &Path) -> Vec<TrainB
 pub async fn train(
     config: &Config,
     litellm_host: String,
-    litellm_key: String,
+    litellm_key: SecretValue,
     request: TrainRequest,
 ) -> Result<TrainOutcome, TrainError> {
     train_with_remediation(
@@ -248,7 +198,7 @@ pub async fn train(
 async fn train_with_remediation(
     config: &Config,
     litellm_host: String,
-    litellm_key: String,
+    litellm_key: SecretValue,
     request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
 ) -> Result<TrainOutcome, TrainError> {
@@ -259,7 +209,7 @@ async fn train_with_remediation(
 async fn train_with_screening(
     config: &Config,
     litellm_host: String,
-    litellm_key: String,
+    litellm_key: SecretValue,
     request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
 ) -> Result<TrainOutcome, TrainError> {
@@ -269,7 +219,7 @@ async fn train_with_screening(
 async fn train_with_pipeline(
     config: &Config,
     litellm_host: String,
-    litellm_key: String,
+    litellm_key: SecretValue,
     request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
     repair_rejections: bool,
@@ -277,11 +227,13 @@ async fn train_with_pipeline(
     if config.train_command.is_none() && !config.enabled {
         return Err(TrainError::Disabled);
     }
+    config.validate()?;
+
     let filename = final_filename(&request.name)?;
     if request.images.is_empty() {
         return Err(TrainError::Invalid("training needs images"));
     }
-    let catalog = RecipeCatalog::load(Some(config.workflow_path.as_path()))
+    let catalog = RecipeCatalog::load(config.workflow_path.as_deref())
         .map_err(|_| TrainError::Invalid("recipe catalog is missing"))?;
     let recipe = catalog
         .get(&request.base)
@@ -304,12 +256,22 @@ async fn train_with_pipeline(
         .map(|image| decode_base64(&image.bytes_base64))
         .collect::<Result<Vec<Vec<u8>>, TrainError>>()?;
     let side = crate::train::packaged_config()?.resolution();
+    let http =
+        crate::http::client(config).map_err(|error| TrainError::Failed(error.to_string()))?;
     let mut verdict = screening(&decoded, side);
     validate_verdict(&verdict, request.images.len())?;
     let mut attempts = Vec::new();
     if repair_rejections {
         loop {
-            let fresh = remediate(config, &mut decoded, &request.images, &verdict, &attempts).await;
+            let fresh = remediate(
+                config,
+                &http,
+                &mut decoded,
+                &request.images,
+                &verdict,
+                &attempts,
+            )
+            .await;
             if fresh.is_empty() {
                 break;
             }
@@ -327,10 +289,8 @@ async fn train_with_pipeline(
             reason: *rejection,
         })
         .collect::<Vec<Dropped>>();
-    // Cropping comes before captioning so the vision model describes the image
-    // that will be trained on. Captioning the upload instead would have it
-    // describe a background the crop is about to remove.
-    let subject = Subject::shared(config);
+    // Crop before captioning, or the caption describes background the crop removes.
+    let subject = Subject::shared(config).await;
     let groups = shots(&request.images);
     let mut survivors = request
         .images
@@ -379,8 +339,8 @@ async fn train_with_pipeline(
         described
     };
     let findings = crate::dataset::inspect(&described, survivors.len());
-    let mut attempt = Attempt::create(&config.models_dir)?;
-    let loras = ensure_child_directory(&config.models_dir, "loras")?;
+    let mut attempt = Attempt::create(&config.models_directory)?;
+    let loras = ensure_child_directory(&config.models_directory, "loras")?;
     let output = validate_output(&loras, &loras.join(&filename))?;
     let output_sidecar = validate_output(&loras, &sidecar_path(&output))?;
     let targets = ensure_child_directory(&attempt.root, "targets")?;
@@ -445,21 +405,18 @@ async fn train_with_pipeline(
             .env("COMFYUI_BASE_URL", &config.base_url)
             .env(
                 contract.variable("TIMEOUT"),
-                config.train_timeout_secs.to_string(),
+                config.train_timeout_seconds.to_string(),
             )
             .env(
                 contract.input_variable(),
                 config
-                    .models_dir
+                    .models_directory
                     .parent()
                     .unwrap_or(Path::new("."))
                     .join("input")
                     .display()
                     .to_string(),
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            );
         match &model {
             TrainingModel::Flux { checkpoint } => {
                 process.env(contract.variable("CHECKPOINT"), checkpoint);
@@ -471,32 +428,32 @@ async fn train_with_pipeline(
                     .env(contract.variable("VAE"), vae);
             }
         }
-        let status = match process.status().await {
-            Ok(status) => status,
-            Err(error) => {
-                crate::train::cleanup(config, &run).await;
-                return Err(failed(error));
-            }
-        };
-        if !status.success() {
-            crate::train::cleanup(config, &run).await;
-            return Err(TrainError::Failed(format!(
-                "trainer exited {}",
-                status.code().unwrap_or(1)
-            )));
+        let trained = run_trainer(process, Duration::from_secs(config.train_timeout_seconds)).await;
+        if let Err(error) = trained {
+            crate::train::cleanup_with(&http, config, &run).await;
+            return Err(error);
         }
         run
     } else {
-        crate::train::run(config, &model, &attempt.root, &staged, survivors.len()).await?
+        crate::train::run_with(
+            &http,
+            config,
+            &model,
+            &attempt.root,
+            &staged,
+            survivors.len(),
+        )
+        .await?
     };
     attempt.register(&run, &config.contract)?;
     if require_regular_file(&attempt.root, &staged).is_err() {
-        crate::train::cleanup(config, &run).await;
+        crate::train::cleanup_with(&http, config, &run).await;
         return Err(TrainError::Failed(
             "trainer did not write a regular LoRA file".to_string(),
         ));
     }
-    let quality = crate::quality::select(config, &model, &run, &staged, &captions).await;
+    let quality =
+        crate::quality::select_with(&http, config, &model, &run, &staged, &captions).await;
     require_regular_file(&attempt.root, &staged).map_err(|_| {
         tracing::warn!(
             staged = %staged.display(),
@@ -512,7 +469,7 @@ async fn train_with_pipeline(
     let bytes = serde_json::to_vec_pretty(&WeightDocument {
         sidecar: WeightSidecar {
             recipe_id: adapter.recipe_id.clone(),
-            hf_base: Some(adapter.hf_base.clone()),
+            huggingface_base: Some(adapter.huggingface_base.clone()),
         },
         generation: Some(attempt.id.clone()),
     })
@@ -539,6 +496,77 @@ async fn train_with_pipeline(
             attempted,
         },
     })
+}
+
+/// Runs the external trainer to completion within `budget`.
+///
+/// Its stdout goes nowhere: a trainer that prints progress would otherwise
+/// fill a pipe nobody reads, or die writing to one already closed. Its stderr
+/// is read as it arrives and only the last [`STDERR_TAIL`] bytes are kept, to
+/// say why it failed. Past the budget, or if this future is dropped, the
+/// trainer is killed rather than left running.
+async fn run_trainer(mut process: Command, budget: Duration) -> Result<(), TrainError> {
+    let mut child = process
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(failed)?;
+    let tail = Arc::new(Mutex::new(Vec::with_capacity(STDERR_TAIL)));
+    let reader = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(read_tail(stderr, Arc::clone(&tail))));
+    let waited = tokio::time::timeout(budget, child.wait()).await;
+    if waited.is_err() {
+        let _ = child.start_kill();
+    }
+    if let Some(reader) = reader {
+        settle(reader).await;
+    }
+    let reason = crate::excerpt::tail(&String::from_utf8_lossy(
+        &tail.lock().unwrap_or_else(PoisonError::into_inner),
+    ));
+    let status = match waited {
+        Ok(status) => status.map_err(failed)?,
+        Err(_) => {
+            tracing::warn!(stderr = %reason, "external trainer ran past its budget and was killed");
+            return Err(TrainError::Failed(format!(
+                "trainer timed out after {} s",
+                budget.as_secs()
+            )));
+        }
+    };
+    if status.success() {
+        return Ok(());
+    }
+    tracing::warn!(code = ?status.code(), stderr = %reason, "external trainer failed");
+    Err(TrainError::Failed(format!(
+        "trainer exited {}",
+        status.code().unwrap_or(1)
+    )))
+}
+
+async fn read_tail(mut stderr: ChildStderr, tail: Arc<Mutex<Vec<u8>>>) {
+    let mut chunk = [0u8; STDERR_CHUNK];
+    while let Ok(read @ 1..) = stderr.read(&mut chunk).await {
+        let mut tail = tail.lock().unwrap_or_else(PoisonError::into_inner);
+        tail.extend_from_slice(&chunk[..read]);
+        let excess = tail.len().saturating_sub(STDERR_TAIL);
+        tail.drain(..excess);
+    }
+}
+
+/// Gives the reader a moment to collect what the trainer wrote last, without
+/// waiting on a pipe a grandchild of the trainer may still hold open.
+async fn settle(mut reader: JoinHandle<()>) {
+    if tokio::time::timeout(STDERR_DRAIN, &mut reader)
+        .await
+        .is_err()
+    {
+        reader.abort();
+    }
 }
 
 fn validate_pairing(images: &[TrainImage], model: &TrainingModel) -> Result<(), TrainError> {
@@ -602,6 +630,7 @@ fn repairable(rejection: crate::screening::Rejection) -> bool {
 
 async fn remediate(
     config: &Config,
+    http: &reqwest::Client,
     images: &mut [Vec<u8>],
     request: &[TrainImage],
     verdict: &crate::screening::Verdict,
@@ -628,7 +657,7 @@ async fn remediate(
         return attempts;
     }
 
-    let client = match Client::new(config.clone()) {
+    let client = match Client::with_http(config.clone(), http.clone()) {
         Ok(client) => client,
         Err(error) => {
             tracing::warn!(error = %error, "could not initialize LoRA image remediation");
@@ -974,9 +1003,7 @@ where
             failed(error),
         );
     }
-    // Both renames were synced before the marker was removed. If this final
-    // directory sync fails, a restart may still see the marker and complete
-    // the already-consistent generation through `recover_publication`.
+    // Both renames are durable; a restart that still sees the marker completes them.
     let _ = sync_directory(&publications);
     Ok(())
 }
@@ -1239,11 +1266,7 @@ fn safe_directory(path: &Path) -> bool {
 /// from; a separate photo is its own, numbered past every clip's groups so the
 /// two cannot be taken for each other.
 fn shots(images: &[TrainImage]) -> Vec<usize> {
-    // Renumbered into a dense range rather than used as sent. The group is
-    // deserialized straight from the request, so counting up from the largest
-    // one overflows on usize::MAX and, saturating, would hand a photo the same
-    // shot as the clip. Renumbering cannot collide whatever arrives, and cannot
-    // run past the number of images.
+    // Renumbered densely: counting up from a caller's largest group overflows.
     let mut clips: Vec<usize> = Vec::new();
     let seen: Vec<Option<usize>> = images
         .iter()
@@ -1310,8 +1333,7 @@ fn frame_with_target(
     let raster = decode_bytes(target)?;
     let focus = subject.focus(&raster, CENTRE);
     let control = match &image.before_base64 {
-        // The control has to keep answering the target pixel for pixel, so it
-        // is cropped to the target's subject rather than to its own.
+        // Cropped on the target's focus, so the pair stays aligned pixel for pixel.
         Some(before) => Some(square(subject, &decode(before)?, side, focus)?),
         None => None,
     };
@@ -1390,9 +1412,9 @@ mod tests {
         fs::create_dir(&models).expect("models directory");
         let config = Config {
             base_url: "http://127.0.0.1:9".to_string(),
-            models_dir: models,
+            models_directory: models,
             train_command: Some(command.to_string()),
-            train_timeout_secs: 2,
+            train_timeout_seconds: 2,
             contract: contract(),
             ..Default::default()
         };
@@ -1518,7 +1540,7 @@ mod tests {
     }
 
     fn training_entries(config: &Config) -> Vec<PathBuf> {
-        let training = config.models_dir.join("training");
+        let training = config.models_directory.join("training");
         let Ok(entries) = fs::read_dir(training) else {
             return Vec::new();
         };
@@ -1530,7 +1552,7 @@ mod tests {
         generation: &str,
         contents: &[u8],
     ) -> (PathBuf, PathBuf, PathBuf) {
-        let attempt = config.models_dir.join("training").join(generation);
+        let attempt = config.models_directory.join("training").join(generation);
         fs::create_dir_all(&attempt).unwrap();
         let staged = attempt.join(format!("{generation}.safetensors"));
         let sidecar = sidecar_path(&staged);
@@ -1540,7 +1562,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some(generation.to_string()),
             })
@@ -1589,9 +1611,14 @@ mod tests {
     #[tokio::test]
     async fn train_writes_adapter_with_configured_command() {
         let (_root, config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
-        let outcome = train(&config, String::new(), String::new(), identity("my-style"))
-            .await
-            .unwrap();
+        let outcome = train(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("my-style"),
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.path.file_name().unwrap(), "my-style.safetensors");
         assert_eq!(fs::read(&outcome.path).unwrap(), b"lora");
         assert!(
@@ -1612,7 +1639,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("default-prefix"),
             keep_all,
         )
@@ -1632,7 +1659,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("renamed-prefix"),
             keep_all,
         )
@@ -1656,7 +1683,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("legacy-style"),
             keep_all,
         )
@@ -1684,7 +1711,7 @@ mod tests {
     }
 
     async fn rejected(config: &Config, request: TrainRequest) -> TrainError {
-        train(config, String::new(), String::new(), request)
+        train(config, String::new(), SecretValue::new(""), request)
             .await
             .expect_err("this request should not have trained")
     }
@@ -1709,7 +1736,7 @@ mod tests {
             .join("..")
             .join(format!("escaped-{}", uuid::Uuid::new_v4()));
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1748,10 +1775,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_configuration_that_would_poll_in_a_busy_loop_is_refused() {
+        let root = root();
+        let config = Config {
+            models_directory: root.clone(),
+            train_command: Some("true".into()),
+            poll_interval_milliseconds: 0,
+            ..Default::default()
+        };
+        let error = rejected(&config, request("my-style", "flux-schnell", Some("ohwx"))).await;
+        assert!(matches!(error, TrainError::Configuration(_)), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_contract_that_names_a_path_outside_comfyui_is_refused() {
+        let (_root, mut config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
+        config.contract.artifact_prefix = "../escape-".into();
+        let error = rejected(&config, identity("escaping")).await;
+        assert!(matches!(error, TrainError::Configuration(_)), "{error}");
+        assert!(training_entries(&config).is_empty());
+    }
+
+    #[tokio::test]
     async fn training_needs_images() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1766,7 +1816,7 @@ mod tests {
     async fn a_blank_trigger_counts_as_no_trigger() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1779,7 +1829,7 @@ mod tests {
     async fn an_unknown_base_is_refused_before_anything_is_written() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1797,7 +1847,7 @@ mod tests {
     async fn a_trainer_that_exits_badly_is_reported() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("exit 3".into()),
             ..Default::default()
         };
@@ -1813,10 +1863,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_trainer_that_prints_progress_before_its_weights_still_trains() {
+        let command = r#"
+            i=0
+            while [ $i -lt 2000 ]; do
+                echo "step $i of 2000: loss 0.0123456789, learning rate 0.0001"
+                echo "warning $i" >&2
+                i=$((i + 1))
+            done
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+        let outcome = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("chatty"),
+            keep_all,
+        )
+        .await
+        .expect("a trainer's output must not decide whether it can finish");
+        assert_eq!(fs::read(outcome.path).unwrap(), b"lora");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_trainer_that_outlives_its_budget_is_killed() {
+        let marker = tempfile::tempdir().unwrap();
+        let finished = marker.path().join("finished");
+        let command = format!("sleep 2; touch \"{}\"", finished.display());
+        let (_root, mut config) = harness(&command);
+        config.train_timeout_seconds = 1;
+        let started = std::time::Instant::now();
+
+        let error = rejected(&config, identity("slow")).await;
+
+        assert!(
+            matches!(&error, TrainError::Failed(message) if message.contains("timed out")),
+            "{error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the budget was not enforced"
+        );
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(
+            !finished.exists(),
+            "the trainer kept running past its budget"
+        );
+        assert!(training_entries(&config).is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_the_end_of_a_trainers_stderr_is_kept() {
+        let mut process = Command::new("sh");
+        process
+            .arg("-c")
+            .arg("head -c 100000 /dev/zero | tr '\\0' x >&2; printf done >&2");
+        let mut child = process.stderr(Stdio::piped()).spawn().unwrap();
+        let tail = Arc::new(Mutex::new(Vec::new()));
+        read_tail(child.stderr.take().unwrap(), Arc::clone(&tail)).await;
+        child.wait().await.unwrap();
+        let tail = tail.lock().unwrap();
+        assert_eq!(tail.len(), STDERR_TAIL);
+        assert!(tail.ends_with(b"done"));
+    }
+
+    #[tokio::test]
     async fn a_trainer_that_writes_nothing_is_not_a_success() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("true".into()),
             ..Default::default()
         };
@@ -1832,7 +1949,7 @@ mod tests {
     async fn an_edit_base_gets_a_control_directory_beside_its_targets() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("printf lora > \"$TRAIN_OUTPUT\"".into()),
             contract: contract(),
             ..Default::default()
@@ -1848,7 +1965,7 @@ mod tests {
             .clone();
         let mut pair = request("my-edit", &edit_base, Some("ohwx"));
         pair.images[0].before_base64 = Some(encoded_at(8, 8));
-        train(&config, String::new(), String::new(), pair)
+        train(&config, String::new(), SecretValue::new(""), pair)
             .await
             .expect("an edit base trains on before and after together");
         let _ = fs::remove_dir_all(root);
@@ -1858,14 +1975,14 @@ mod tests {
     async fn a_blank_caption_is_filled_in_before_the_dataset_is_written() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("printf lora > \"$TRAIN_OUTPUT\"".into()),
             contract: contract(),
             ..Default::default()
         };
         let mut blank = request("my-style", "flux-schnell", Some("ohwx"));
         blank.images[0].caption = String::new();
-        train(&config, String::new(), String::new(), blank)
+        train(&config, String::new(), SecretValue::new(""), blank)
             .await
             .expect("with no caption model, the trigger alone still has to reach the dataset");
         let _ = fs::remove_dir_all(root);
@@ -1875,20 +1992,23 @@ mod tests {
     async fn a_name_too_long_to_write_is_refused_rather_than_failing_in_the_trainer() {
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             train_command: Some("printf lora > \"$TRAIN_OUTPUT\"".into()),
             contract: contract(),
             ..Default::default()
         };
-        // Under the limit itself, over it once ".safetensors" is on the end.
-        let long = "a".repeat(250);
-        let error = rejected(&config, request(&long, "flux-schnell", Some("ohwx"))).await;
+        let too_long_once_suffixed = "a".repeat(250);
+        let error = rejected(
+            &config,
+            request(&too_long_once_suffixed, "flux-schnell", Some("ohwx")),
+        )
+        .await;
         assert!(matches!(error, TrainError::Invalid(_)), "{error}");
 
         let named = train(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             request("already.safetensors", "flux-schnell", Some("ohwx")),
         )
         .await
@@ -1899,6 +2019,26 @@ mod tests {
             "a name that already carries the extension keeps exactly one"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_training_request_prints_its_images_sizes_rather_than_their_bytes() {
+        let upload = "A".repeat(1 << 20);
+        let request = TrainRequest {
+            images: vec![TrainImage {
+                bytes_base64: upload.clone(),
+                before_base64: Some(upload),
+                ..image("target", "a portrait", None)
+            }],
+            ..identity("sized")
+        };
+        let rendered = format!("{request:?}");
+        assert!(rendered.len() < 400, "{} characters", rendered.len());
+        assert!(rendered.contains("bytes_base64: 1048576"), "{rendered}");
+        assert!(
+            rendered.contains("before_base64: Some(1048576)"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -1975,17 +2115,17 @@ mod tests {
 
         let root = root();
         let config = Config {
-            models_dir: root.clone(),
+            models_directory: root.clone(),
             enabled: true,
             base_url: server.uri(),
             train_command: None,
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         };
         let outcome = train(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             request("graph-style", "flux-schnell", Some("ohwx")),
         )
         .await
@@ -2034,7 +2174,7 @@ mod tests {
         let (_root, config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
         let mut request = identity("my-style");
         request.trigger = None;
-        let error = train(&config, String::new(), String::new(), request)
+        let error = train(&config, String::new(), SecretValue::new(""), request)
             .await
             .unwrap_err();
         assert!(matches!(error, TrainError::Invalid(_)));
@@ -2075,10 +2215,15 @@ mod tests {
             edit(vec![image("target", "  ", Some("reference"))]),
         ];
         for request in cases {
-            let error =
-                train_with_screening(&config, String::new(), String::new(), request, keep_all)
-                    .await
-                    .unwrap_err();
+            let error = train_with_screening(
+                &config,
+                String::new(),
+                SecretValue::new(""),
+                request,
+                keep_all,
+            )
+            .await
+            .unwrap_err();
             assert!(matches!(error, TrainError::Invalid(_)), "got {error:?}");
         }
         assert!(training_entries(&config).is_empty());
@@ -2112,8 +2257,6 @@ mod tests {
             cp "$TRAIN_DIR/control_1/0001.png" "KEPT/control-1.png" || exit 19
             printf trained > "$TRAIN_OUTPUT"
         "#;
-        // The attempt is cleaned up when the run ends, so the images have to be
-        // copied out before they can be compared against the crops they should be.
         let kept = tempfile::tempdir().expect("kept dataset");
         let command = command
             .replace("KEPT", &kept.path().display().to_string())
@@ -2125,7 +2268,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             captioner.uri(),
-            "key".to_string(),
+            SecretValue::new("key"),
             edit(vec![
                 image("target-zero", " change zero ", Some("reference-zero")),
                 image("target-one", "change one", Some("reference-one")),
@@ -2155,7 +2298,7 @@ mod tests {
         assert!(training_entries(&config).is_empty());
 
         let side = crate::train::packaged_config().unwrap().resolution();
-        let subject = Subject::shared(&config);
+        let subject = Subject::shared(&config).await;
         for (index, name) in [(0, "zero"), (1, "two")] {
             let source = image(
                 &format!("target-{name}"),
@@ -2229,12 +2372,12 @@ mod tests {
         let (_root, mut config) = harness(&command);
         config.enabled = true;
         config.base_url = server.uri();
-        config.poll_interval_ms = 1;
+        config.poll_interval_milliseconds = 1;
 
         let outcome = train_with_remediation(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("repaired"),
             reject_tiny,
         )
@@ -2253,7 +2396,7 @@ mod tests {
             }]
         );
         let expected = frame(
-            &Subject::shared(&config),
+            &Subject::shared(&config).await,
             &TrainImage {
                 filename: "target.png".into(),
                 caption: "a portrait".into(),
@@ -2416,16 +2559,16 @@ mod tests {
         let config = Config {
             enabled: true,
             base_url: server.uri(),
-            models_dir: models,
-            poll_interval_ms: 1,
+            models_directory: models,
+            poll_interval_milliseconds: 1,
             train_command: None,
-            train_timeout_secs: 2,
+            train_timeout_seconds: 2,
             ..Default::default()
         };
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             edit(vec![
                 image("target-zero", " change zero ", Some("reference-zero")),
                 image("target-one", "change one", Some("reference-one")),
@@ -2554,7 +2697,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("identity"),
             keep_all,
         )
@@ -2564,9 +2707,15 @@ mod tests {
 
         let mut paired = identity("paired-identity");
         paired.images[0].before_base64 = Some(encoded(colour("reference")));
-        let error = train_with_screening(&config, String::new(), String::new(), paired, keep_all)
-            .await
-            .unwrap_err();
+        let error = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            paired,
+            keep_all,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(error, TrainError::Invalid(_)));
         assert!(training_entries(&config).is_empty());
     }
@@ -2577,7 +2726,7 @@ mod tests {
         let first = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("stable"),
             keep_all,
         )
@@ -2589,7 +2738,7 @@ mod tests {
         let error = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("stable"),
             keep_all,
         )
@@ -2605,7 +2754,7 @@ mod tests {
         let third = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("stable"),
             keep_all,
         )
@@ -2621,7 +2770,7 @@ mod tests {
         use std::time::Duration;
 
         let (_root, config) = harness("unused");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("shared.safetensors");
         let output_sidecar = sidecar_path(&output);
@@ -2679,8 +2828,11 @@ mod tests {
             "the second publication must wait at the same final name"
         );
         assert!(
-            crate::inventory::scan(&config.models_dir, &RecipeCatalog::packaged().unwrap())
-                .is_empty(),
+            crate::inventory::scan(
+                &config.models_directory,
+                &RecipeCatalog::packaged().unwrap()
+            )
+            .is_empty(),
             "readers must not observe the first weight before its sidecar"
         );
 
@@ -2697,7 +2849,7 @@ mod tests {
     #[test]
     fn interrupted_publication_is_hidden_and_recovers_the_previous_generation() {
         let (_root, config) = harness("unused");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("stable.safetensors");
         let output_sidecar = sidecar_path(&output);
@@ -2708,7 +2860,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some(previous_generation.clone()),
             })
@@ -2739,8 +2891,11 @@ mod tests {
         let marker = publication_marker(&loras, "stable.safetensors").unwrap();
         assert!(marker.is_file());
         assert!(
-            crate::inventory::scan(&config.models_dir, &RecipeCatalog::packaged().unwrap())
-                .is_empty(),
+            crate::inventory::scan(
+                &config.models_directory,
+                &RecipeCatalog::packaged().unwrap()
+            )
+            .is_empty(),
             "an interrupted generation must fail closed"
         );
 
@@ -2758,7 +2913,7 @@ mod tests {
     #[test]
     fn publication_error_restores_both_files_before_returning() {
         let (_root, config) = harness("unused");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("stable.safetensors");
         let output_sidecar = sidecar_path(&output);
@@ -2769,7 +2924,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some(previous_generation.clone()),
             })
@@ -2812,7 +2967,7 @@ mod tests {
     #[test]
     fn mismatched_staged_sidecar_never_reaches_the_final_name() {
         let (_root, config) = harness("unused");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let generation = Uuid::new_v4().to_string();
         let wrong_generation = Uuid::new_v4().to_string();
@@ -2822,7 +2977,7 @@ mod tests {
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
-                    hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
                 },
                 generation: Some(wrong_generation),
             })
@@ -2852,7 +3007,7 @@ mod tests {
     async fn attempt_cleanup_never_removes_another_attempt() {
         let (_root, config) = harness("printf trained > \"$TRAIN_OUTPUT\"");
         let other = config
-            .models_dir
+            .models_directory
             .join("training")
             .join(Uuid::new_v4().to_string());
         fs::create_dir_all(&other).unwrap();
@@ -2861,7 +3016,7 @@ mod tests {
         train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("isolated"),
             keep_all,
         )
@@ -2878,15 +3033,21 @@ mod tests {
         let mut request = identity("unsupported");
         request.base = "sd15".to_string();
 
-        let error = train_with_screening(&config, String::new(), String::new(), request, keep_all)
-            .await
-            .unwrap_err();
+        let error = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            request,
+            keep_all,
+        )
+        .await
+        .unwrap_err();
 
         assert!(matches!(error, TrainError::Invalid(_)));
         assert!(training_entries(&config).is_empty());
         assert!(
             !config
-                .models_dir
+                .models_directory
                 .join("loras/unsupported.safetensors")
                 .exists()
         );
@@ -2913,12 +3074,12 @@ mod tests {
             serde_json::to_vec(&catalog).unwrap(),
         )
         .unwrap();
-        config.workflow_path = workflows.join("flux1-schnell-fp8-api.json");
+        config.workflow_path = Some(workflows.join("flux1-schnell-fp8-api.json"));
 
         let error = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("must-not-train"),
             keep_all,
         )
@@ -2929,7 +3090,7 @@ mod tests {
         assert!(training_entries(&config).is_empty());
         assert!(
             !config
-                .models_dir
+                .models_directory
                 .join("loras/must-not-train.safetensors")
                 .exists()
         );
@@ -2938,46 +3099,48 @@ mod tests {
     #[test]
     fn advertised_bases_are_ready_and_have_a_typed_training_architecture() {
         let (_root, config) = harness("unused");
-        fs::create_dir_all(config.models_dir.join("checkpoints")).unwrap();
-        fs::create_dir_all(config.models_dir.join("diffusion_models")).unwrap();
-        fs::create_dir_all(config.models_dir.join("text_encoders")).unwrap();
-        fs::create_dir_all(config.models_dir.join("vae")).unwrap();
+        fs::create_dir_all(config.models_directory.join("checkpoints")).unwrap();
+        fs::create_dir_all(config.models_directory.join("diffusion_models")).unwrap();
+        fs::create_dir_all(config.models_directory.join("text_encoders")).unwrap();
+        fs::create_dir_all(config.models_directory.join("vae")).unwrap();
         fs::write(
             config
-                .models_dir
+                .models_directory
                 .join("checkpoints/flux1-schnell-fp8.safetensors"),
             b"flux",
         )
         .unwrap();
         fs::write(
             config
-                .models_dir
+                .models_directory
                 .join("checkpoints/sd15-custom.safetensors"),
             b"sd15",
         )
         .unwrap();
         fs::write(
             config
-                .models_dir
+                .models_directory
                 .join("diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors"),
             b"qwen",
         )
         .unwrap();
         fs::write(
             config
-                .models_dir
+                .models_directory
                 .join("text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"),
             b"clip",
         )
         .unwrap();
         fs::write(
-            config.models_dir.join("vae/qwen_image_vae.safetensors"),
+            config
+                .models_directory
+                .join("vae/qwen_image_vae.safetensors"),
             b"vae",
         )
         .unwrap();
         let catalog = RecipeCatalog::packaged().unwrap();
 
-        let bases = available_bases(&catalog, &config.models_dir);
+        let bases = available_bases(&catalog, &config.models_directory);
 
         assert!(bases.iter().any(|base| base.id == "flux-schnell"));
         assert!(
@@ -2999,12 +3162,12 @@ mod tests {
         let (root, config) = harness("printf escaped > \"$TRAIN_OUTPUT\"");
         let outside = root.path().join("outside");
         fs::create_dir(&outside).unwrap();
-        symlink(&outside, config.models_dir.join("training")).unwrap();
+        symlink(&outside, config.models_directory.join("training")).unwrap();
 
         let error = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("escape"),
             keep_all,
         )
@@ -3021,7 +3184,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let (root, config) = harness("printf replacement > \"$TRAIN_OUTPUT\"");
-        let loras = config.models_dir.join("loras");
+        let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let outside = root.path().join("outside.safetensors");
         fs::write(&outside, b"outside").unwrap();
@@ -3030,7 +3193,7 @@ mod tests {
         let error = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("linked"),
             keep_all,
         )
@@ -3048,7 +3211,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let (root, config) = harness("unused");
-        let attempt = Attempt::create(&config.models_dir).unwrap();
+        let attempt = Attempt::create(&config.models_directory).unwrap();
         let targets = ensure_child_directory(&attempt.root, "targets").unwrap();
         let outside = root.path().join("outside.png");
         fs::write(&outside, b"outside").unwrap();
@@ -3061,8 +3224,6 @@ mod tests {
 
     #[test]
     fn a_group_at_the_top_of_its_range_does_not_wrap_a_photo_onto_a_clip() {
-        // The group is deserialized straight from the request, so this is a
-        // value a caller can actually send.
         let images = vec![
             upload("", Some(usize::MAX)),
             upload("", Some(usize::MAX)),
@@ -3078,9 +3239,6 @@ mod tests {
 
     #[test]
     fn a_trigger_is_matched_as_a_word_rather_than_a_substring() {
-        // A short trigger occurs inside longer words, and a substring test
-        // would read that as the trigger already being present, leaving the
-        // image to train with no trigger at all.
         assert_eq!(
             identity_caption("zrk pattern knitwear", "zrkx"),
             "zrkx, zrk pattern knitwear"
@@ -3095,8 +3253,6 @@ mod tests {
             "zrkxyz, zrkxyzed hair",
             "a longer word that merely starts with the trigger is not the trigger"
         );
-        // A trigger is not always one word. Splitting the caption into words
-        // could never match this one, and would prefix it a second time.
         assert_eq!(
             identity_caption("my-style, a portrait", "my-style"),
             "my-style, a portrait",

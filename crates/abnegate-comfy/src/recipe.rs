@@ -3,6 +3,22 @@
 //! Chat never picks a workflow. The selected checkpoint filename resolves to a
 //! recipe; an attached image selects that recipe's `with_source` graph.
 
+mod fill;
+mod media_kind;
+mod output;
+mod prompt_mode;
+mod required_file;
+mod training_adapter;
+mod training_model;
+
+pub use fill::Fill;
+pub use media_kind::MediaKind;
+pub use output::RecipeOutput;
+pub use prompt_mode::PromptMode;
+pub use required_file::RequiredFile;
+pub use training_adapter::TrainingAdapter;
+pub use training_model::TrainingModel;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -60,56 +76,6 @@ fn packaged_workflow(name: &str) -> Option<&'static str> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MediaKind {
-    Image,
-    Video,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecipeOutput {
-    PreviewImage,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptMode {
-    #[default]
-    ClipScene,
-    EditInstruction,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct RequiredFile {
-    pub filename: String,
-    pub directory: String,
-}
-
-/// The exact model components a supported training graph loads.
-///
-/// This is resolved only from the catalog's explicit `training` metadata. A
-/// recipe id, prompt mode, or process-wide checkpoint is never enough to select
-/// a trainer because those are presentation and inference concerns.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TrainingModel {
-    Flux {
-        checkpoint: String,
-    },
-    QwenEdit {
-        unet: String,
-        clip: String,
-        vae: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrainingAdapter {
-    pub recipe_id: String,
-    pub hf_base: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
 enum TrainingArchitecture {
     Flux,
     QwenEdit,
@@ -123,7 +89,7 @@ pub struct Recipe {
     pub adapter: bool,
     pub prompt_mode: PromptMode,
     pub defaults: HashMap<String, String>,
-    pub hf_bases: Vec<String>,
+    pub huggingface_bases: Vec<String>,
     pub required_files: Vec<RequiredFile>,
     training: Option<Training>,
     bare: Value,
@@ -139,13 +105,6 @@ struct RecipeSlots {
     weights: HashMap<String, String>,
     output_node: String,
     output: RecipeOutput,
-}
-
-pub struct Fill<'a> {
-    pub prompt: &'a str,
-    pub seed: u64,
-    pub weights: HashMap<&'a str, &'a str>,
-    pub source: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,8 +127,6 @@ struct CatalogRecipe {
     #[serde(default)]
     files: Vec<String>,
     #[serde(default)]
-    base_models: Vec<String>,
-    #[serde(default)]
     filename_hints: Vec<String>,
     #[serde(default)]
     adapter: bool,
@@ -177,8 +134,8 @@ struct CatalogRecipe {
     prompt_mode: PromptMode,
     #[serde(default)]
     defaults: HashMap<String, String>,
-    #[serde(default)]
-    hf_bases: Vec<String>,
+    #[serde(default, rename = "hf_bases")]
+    huggingface_bases: Vec<String>,
     #[serde(default)]
     required_files: Vec<RequiredFile>,
     #[serde(default)]
@@ -189,7 +146,8 @@ struct CatalogRecipe {
 struct CatalogTraining {
     architecture: TrainingArchitecture,
     adapter: String,
-    hf_base: String,
+    #[serde(rename = "hf_base")]
+    huggingface_base: String,
 }
 
 #[derive(Debug, Clone)]
@@ -224,11 +182,11 @@ impl RecipeCatalog {
     /// workflow directory; otherwise use the packaged catalog. Graphs of the
     /// same filename in that workflow directory overlay the baked-in copies.
     pub fn load(workflow_path: Option<&Path>) -> Result<Self, Error> {
-        let dir = workflow_path.and_then(Path::parent);
-        if let Some(contents) = read_overlay_catalog(dir)? {
-            Self::from_json(&contents, dir)
+        let directory = workflow_path.and_then(Path::parent);
+        if let Some(contents) = read_overlay_catalog(directory)? {
+            Self::from_json(&contents, directory)
         } else {
-            Self::from_json(PACKAGED_CATALOG, dir)
+            Self::from_json(PACKAGED_CATALOG, directory)
         }
     }
 
@@ -265,9 +223,6 @@ impl RecipeCatalog {
             for filename in spec.files {
                 files.insert(filename, spec.id.clone());
             }
-            // CivitAI-style family labels are catalog documentation. Matching a
-            // checkpoint uses `files` then `filename_hints`, never these labels.
-            let _ = spec.base_models;
             for hint in spec.filename_hints {
                 hints.push((hint.to_ascii_lowercase(), spec.id.clone()));
             }
@@ -278,13 +233,13 @@ impl RecipeCatalog {
                 adapter: spec.adapter,
                 prompt_mode: spec.prompt_mode,
                 defaults: spec.defaults,
-                hf_bases: spec.hf_bases,
+                huggingface_bases: spec.huggingface_bases,
                 required_files: spec.required_files,
                 training: spec.training.map(|training| Training {
                     architecture: training.architecture,
                     adapter: TrainingAdapter {
                         recipe_id: training.adapter,
-                        hf_base: training.hf_base,
+                        huggingface_base: training.huggingface_base,
                     },
                 }),
                 bare,
@@ -307,13 +262,13 @@ impl RecipeCatalog {
                 || adapter_recipe.kind != recipe.kind
                 || !adapter_recipe.has_lora_slot()
                 || !recipe
-                    .hf_bases
+                    .huggingface_bases
                     .iter()
-                    .any(|base| base.eq_ignore_ascii_case(&adapter.hf_base))
+                    .any(|base| base.eq_ignore_ascii_case(&adapter.huggingface_base))
                 || !adapter_recipe
-                    .hf_bases
+                    .huggingface_bases
                     .iter()
-                    .any(|base| base.eq_ignore_ascii_case(&adapter.hf_base))
+                    .any(|base| base.eq_ignore_ascii_case(&adapter.huggingface_base))
             {
                 return Err(Error::Configuration(
                     "training metadata does not match its adapter recipe",
@@ -354,8 +309,6 @@ impl RecipeCatalog {
     pub fn image_recipe_for(&self, checkpoint: &str) -> Result<&Recipe, Error> {
         let id = self.resolve_image_id(checkpoint);
         self.get(id)
-            // An adapter recipe drives a LoRA slot. Letting one answer for a
-            // plain checkpoint would write that checkpoint into the LoRA input.
             .filter(|recipe| recipe.kind == MediaKind::Image && !recipe.adapter)
             .ok_or(Error::Configuration(
                 "no image recipe matches this checkpoint",
@@ -391,10 +344,10 @@ impl RecipeCatalog {
             .filter(|recipe| recipe.kind == MediaKind::Image)
     }
 
-    pub fn hf_bases(&self) -> Vec<String> {
+    pub fn huggingface_bases(&self) -> Vec<String> {
         let mut bases = Vec::new();
         for recipe in self.image_recipes() {
-            for base in &recipe.hf_bases {
+            for base in &recipe.huggingface_bases {
                 if !bases.iter().any(|existing| existing == base) {
                     bases.push(base.clone());
                 }
@@ -403,15 +356,15 @@ impl RecipeCatalog {
         bases
     }
 
-    pub fn adapter_recipe_for_base(&self, hf_base: &str) -> Option<&Recipe> {
+    pub fn adapter_recipe_for_base(&self, huggingface_base: &str) -> Option<&Recipe> {
         self.recipes.iter().find(|recipe| {
             recipe.kind == MediaKind::Image
                 && recipe.adapter
                 && recipe.has_lora_slot()
                 && recipe
-                    .hf_bases
+                    .huggingface_bases
                     .iter()
-                    .any(|base| base.eq_ignore_ascii_case(hf_base))
+                    .any(|base| base.eq_ignore_ascii_case(huggingface_base))
         })
     }
 }
@@ -524,12 +477,12 @@ fn read_overlay_catalog(workflow_dir: Option<&Path>) -> Result<Option<String>, E
         .map_err(|_| Error::Configuration("recipe catalog is not readable"))
 }
 
-fn load_graph(dir: Option<&Path>, filename: &str) -> Result<Value, Error> {
+fn load_graph(directory: Option<&Path>, filename: &str) -> Result<Value, Error> {
     if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
         return Err(Error::Configuration("invalid workflow filename"));
     }
-    if let Some(path) = dir
-        .map(|dir| dir.join(filename))
+    if let Some(path) = directory
+        .map(|directory| directory.join(filename))
         .filter(|path| path.is_file())
     {
         let contents = std::fs::read_to_string(path)
@@ -635,9 +588,9 @@ pub fn sanitize_upload_name(name: &str) -> Result<String, Error> {
         || name.contains('/')
         || name.contains('\\')
         || name.contains("..")
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        || !name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+        })
     {
         return Err(Error::Configuration("invalid source image filename"));
     }
@@ -747,7 +700,7 @@ mod tests {
                 .unwrap(),
             &TrainingAdapter {
                 recipe_id: "qwen-image-edit-adapter".into(),
-                hf_base: "Qwen/Qwen-Image-Edit-2511".into(),
+                huggingface_base: "Qwen/Qwen-Image-Edit-2511".into(),
             }
         );
     }
@@ -824,8 +777,6 @@ mod tests {
                 .id,
             "sdxl"
         );
-        // Family labels are not checkpoint filenames; an unknown name stays
-        // on the default image recipe instead of matching "SD 1.5".
         assert_eq!(
             catalog.image_recipe_for("SD 1.5").unwrap().id,
             "flux-schnell"

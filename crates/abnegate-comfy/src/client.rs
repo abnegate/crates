@@ -1,11 +1,25 @@
 //! Direct ComfyUI API client. Graphs come from packaged recipes; chat only
 //! supplies prompt, seed, checkpoint filename, and an optional source image.
 
+mod error;
+mod generated_image;
+mod source_image;
+mod source_video;
+
+pub use error::Error;
+pub use generated_image::GeneratedImage;
+pub use source_image::MAXIMUM_SOURCE_IMAGE_BYTES;
+pub use source_image::SourceImage;
+pub use source_video::MAXIMUM_SOURCE_VIDEO_BYTES;
+pub use source_video::SourceVideo;
+
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
@@ -16,10 +30,6 @@ use crate::recipe::{
     Fill, PromptMode, Recipe, RecipeCatalog, sanitize_upload_name, sanitize_weight_filename,
 };
 
-pub const MAX_SOURCE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
-/// Clips come back from the artifact store rather than a chat upload, so the
-/// cap matches what the store is willing to keep rather than a request body.
-pub const MAX_SOURCE_VIDEO_BYTES: usize = 64 * 1024 * 1024;
 const PACKAGED_VIDEO_WORKFLOW: &str = include_str!("../comfyui/workflows/wan2.2-ti2v-5b-api.json");
 const PACKAGED_I2V_WORKFLOW: &str =
     include_str!("../comfyui/workflows/wan2.2-ti2v-5b-i2v-api.json");
@@ -28,92 +38,6 @@ const PACKAGED_AUDIO_WORKFLOW: &str =
 const PACKAGED_UPSCALE_WORKFLOW: &str = include_str!("../comfyui/workflows/upscale-image-api.json");
 const PACKAGED_UPSCALE_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/upscale-video-api.json");
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("ComfyUI is disabled")]
-    Disabled,
-    #[error("invalid ComfyUI configuration: {0}")]
-    Configuration(&'static str),
-    #[error("ComfyUI request failed: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("ComfyUI returned an invalid response: {0}")]
-    InvalidResponse(&'static str),
-    #[error("generation timed out")]
-    Timeout,
-    #[error("image generation cancelled")]
-    Cancelled,
-}
-
-#[derive(Debug)]
-pub struct GeneratedImage {
-    pub bytes: bytes::Bytes,
-    pub mime: String,
-    pub filename: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct SourceImage {
-    pub bytes: bytes::Bytes,
-    pub mime: String,
-    pub filename: String,
-}
-
-impl SourceImage {
-    pub fn new(bytes: impl Into<bytes::Bytes>, mime: &str) -> Result<Self, Error> {
-        let mime = normalize_source_mime(mime)?;
-        let bytes = bytes.into();
-        if bytes.is_empty() || bytes.len() > MAX_SOURCE_IMAGE_BYTES {
-            return Err(Error::Configuration("source image is empty or too large"));
-        }
-        Ok(Self {
-            filename: format!("img2img-{}.{}", Uuid::new_v4(), extension_for_mime(&mime)),
-            bytes,
-            mime,
-        })
-    }
-
-    /// Creates an image source when only its encoded contents are available.
-    pub fn from_bytes(bytes: impl Into<bytes::Bytes>) -> Result<Self, Error> {
-        let bytes = bytes.into();
-        let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            "image/png"
-        } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-            "image/jpeg"
-        } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-            "image/webp"
-        } else {
-            return Err(Error::Configuration("source image type is not supported"));
-        };
-        Self::new(bytes, mime)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SourceVideo {
-    pub bytes: bytes::Bytes,
-    pub mime: String,
-    pub filename: String,
-}
-
-impl SourceVideo {
-    pub fn new(bytes: impl Into<bytes::Bytes>, mime: &str) -> Result<Self, Error> {
-        let mime = normalize_source_video_mime(mime)?;
-        let bytes = bytes.into();
-        if bytes.is_empty() || bytes.len() > MAX_SOURCE_VIDEO_BYTES {
-            return Err(Error::Configuration("source video is empty or too large"));
-        }
-        Ok(Self {
-            filename: format!(
-                "upscale-{}.{}",
-                Uuid::new_v4(),
-                extension_for_video_mime(&mime)
-            ),
-            bytes,
-            mime,
-        })
-    }
-}
 
 #[derive(Clone)]
 pub struct Client {
@@ -254,18 +178,22 @@ fn outputs_from_history_entry(
 
 impl Client {
     pub fn new(config: Config) -> Result<Self, Error> {
+        let client = crate::http::client(&config)?;
+        Self::with_http(config, client)
+    }
+
+    /// A client sharing `client`'s connections, for a caller that already
+    /// holds one for the same ComfyUI.
+    pub(crate) fn with_http(config: Config, client: HttpClient) -> Result<Self, Error> {
+        config.validate()?;
+
         if config.base_url.trim().is_empty() {
             return Err(Error::Configuration("COMFYUI_BASE_URL is empty"));
         }
         sanitize_weight_filename(&config.checkpoint).map_err(|_| {
             Error::Configuration("COMFYUI_CHECKPOINT must be a checkpoint filename")
         })?;
-        let client = HttpClient::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(config.request_timeout_secs))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
-        let catalog = RecipeCatalog::load(Some(config.workflow_path.as_path()))?;
+        let catalog = RecipeCatalog::load(config.workflow_path.as_deref())?;
         let client = Self {
             config,
             client,
@@ -283,14 +211,14 @@ impl Client {
 
     fn image_recipe(&self) -> Result<&Recipe, Error> {
         let selected = self.config.checkpoint.as_str();
-        if self.config.models_dir.is_dir() {
-            let items = crate::inventory::scan(&self.config.models_dir, &self.catalog);
+        if self.config.models_directory.is_dir() {
+            let items = crate::inventory::scan(&self.config.models_directory, &self.catalog);
             if let Some(item) = crate::inventory::find(&items, selected)
                 && let Some(recipe) = self.catalog.get(&item.recipe_id)
             {
                 return Ok(recipe);
             }
-            let loras = self.config.models_dir.join("loras");
+            let loras = self.config.models_directory.join("loras");
             let pending = crate::inventory::publication_marker(&loras, selected)
                 .is_some_and(|marker| std::fs::symlink_metadata(marker).is_ok());
             if pending || std::fs::symlink_metadata(loras.join(selected)).is_ok() {
@@ -321,9 +249,9 @@ impl Client {
                 return Err(Error::Configuration(message));
             }
         }
-        let video_workflow = load_video_workflow(&self.config.video_workflow_path)?;
+        let video_workflow = load_video_workflow(self.config.video_workflow_path.as_deref())?;
         validate_video_workflow(&video_workflow)?;
-        let i2v_workflow = load_i2v_workflow(&self.config.video_workflow_path)?;
+        let i2v_workflow = load_i2v_workflow(self.config.video_workflow_path.as_deref())?;
         validate_i2v_workflow(&i2v_workflow)?;
         Ok((video_workflow, i2v_workflow))
     }
@@ -332,7 +260,7 @@ impl Client {
         sanitize_weight_filename(&self.config.audio_checkpoint).map_err(|_| {
             Error::Configuration("COMFYUI_AUDIO_CHECKPOINT must be a checkpoint filename")
         })?;
-        let workflow = load_audio_workflow(&self.config.audio_workflow_path)?;
+        let workflow = load_audio_workflow(self.config.audio_workflow_path.as_deref())?;
         validate_audio_workflow(&workflow)?;
         Ok(workflow)
     }
@@ -351,8 +279,8 @@ impl Client {
         if cancel.try_recv().is_ok() {
             return Err(Error::Cancelled);
         }
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_secs(self.config.generation_timeout_secs);
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_secs(self.config.generation_timeout_seconds);
         let prompt = if prompt.trim().is_empty() {
             if source.is_some() {
                 "edit this image"
@@ -417,7 +345,7 @@ impl Client {
         }
         let (video_workflow, i2v_workflow) = self.video_workflows()?;
         let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.video_generation_timeout_secs);
+            + Duration::from_secs(self.config.video_generation_timeout_seconds);
         let prompt = if prompt.trim().is_empty() {
             if source.is_some() {
                 "animate this image"
@@ -477,9 +405,9 @@ impl Client {
         if cancel.try_recv().is_ok() {
             return Err(Error::Cancelled);
         }
-        let workflow = load_upscale_workflow(&self.config.upscale_workflow_path)?;
+        let workflow = load_upscale_workflow(self.config.upscale_workflow_path.as_deref())?;
         let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.upscale_generation_timeout_secs);
+            + Duration::from_secs(self.config.upscale_generation_timeout_seconds);
         let _ = progress.send("Uploading source image...".to_string());
         let uploaded = self
             .upload_media(
@@ -520,9 +448,9 @@ impl Client {
         if cancel.try_recv().is_ok() {
             return Err(Error::Cancelled);
         }
-        let workflow = load_upscale_video_workflow(&self.config.upscale_workflow_path)?;
+        let workflow = load_upscale_video_workflow(self.config.upscale_workflow_path.as_deref())?;
         let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.upscale_generation_timeout_secs);
+            + Duration::from_secs(self.config.upscale_generation_timeout_seconds);
         let _ = progress.send("Uploading source video...".to_string());
         let uploaded = self
             .upload_media(
@@ -566,7 +494,7 @@ impl Client {
         }
         let audio_workflow = self.audio_workflow()?;
         let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.audio_generation_timeout_secs);
+            + Duration::from_secs(self.config.audio_generation_timeout_seconds);
         let workflow = configure_ace_step_workflow(
             audio_workflow,
             prompt,
@@ -658,7 +586,7 @@ impl Client {
                     self.cancel(&prompt_id).await;
                     return Err(Error::Timeout);
                 }
-                _ = tokio::time::sleep(Duration::from_millis(self.config.poll_interval_ms)) => {
+                _ = tokio::time::sleep(Duration::from_millis(self.config.poll_interval_milliseconds)) => {
                     if !announced_generation {
                         let _ = progress.send(collection.generating.to_string());
                         announced_generation = true;
@@ -738,10 +666,7 @@ impl Client {
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.config.api_token {
-            Some(token) => request.header(self.config.token_header.as_str(), token),
-            None => request,
-        }
+        crate::http::authorize(&self.config, request)
     }
 
     async fn bounded<T, F>(
@@ -806,7 +731,6 @@ impl Client {
         let mut generated = Vec::with_capacity(outputs.len());
         for output in outputs {
             let filename = output.filename.clone();
-            // reqwest 0.13 dropped RequestBuilder::query; encode onto the URL.
             let url = format!(
                 "{}/view?filename={}&subfolder={}&type={}",
                 self.config.base_url,
@@ -852,9 +776,7 @@ impl Client {
         {
             tracing::warn!("Failed to cancel ComfyUI prompt {}: {}", prompt_id, error);
         }
-        // `/interrupt` is process-wide in ComfyUI and cannot safely identify a
-        // prompt. Never call it: removing queued work is safe, while an already
-        // running cancelled job finishes into ComfyUI's temporary directory.
+        // Never `/interrupt`: it is process-wide and would stop another caller's prompt.
     }
 
     async fn clear_history(&self, prompt_id: &str) {
@@ -905,15 +827,25 @@ pub fn build_flux_schnell_img2img_workflow(
         })
 }
 
-fn load_workflow_file(path: &std::path::Path) -> Result<Value, Error> {
+fn load_workflow_file(path: &Path) -> Result<Value, Error> {
     let contents = std::fs::read_to_string(path)
         .map_err(|_| Error::Configuration("COMFYUI_WORKFLOW_PATH is not readable"))?;
     serde_json::from_str(&contents)
         .map_err(|_| Error::Configuration("COMFYUI_WORKFLOW_PATH is not valid JSON"))
 }
 
-fn load_video_workflow(path: &std::path::Path) -> Result<Value, Error> {
-    if path.is_file() {
+fn configured_file(path: Option<&Path>) -> Option<&Path> {
+    path.filter(|path| path.is_file())
+}
+
+fn sibling_file(path: Option<&Path>, name: &str) -> Option<PathBuf> {
+    path.and_then(Path::parent)
+        .map(|directory| directory.join(name))
+        .filter(|sibling| sibling.is_file())
+}
+
+fn load_video_workflow(path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = configured_file(path) {
         return load_workflow_file(path)
             .map_err(|_| Error::Configuration("video workflow path is not readable"));
     }
@@ -921,11 +853,8 @@ fn load_video_workflow(path: &std::path::Path) -> Result<Value, Error> {
         .map_err(|_| Error::Configuration("packaged video workflow is not valid JSON"))
 }
 
-fn load_i2v_workflow(text_to_video_path: &std::path::Path) -> Result<Value, Error> {
-    let sibling = text_to_video_path
-        .parent()
-        .map(|directory| directory.join("wan2.2-ti2v-5b-i2v-api.json"));
-    if let Some(path) = sibling.filter(|path| path.is_file()) {
+fn load_i2v_workflow(text_to_video_path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = sibling_file(text_to_video_path, "wan2.2-ti2v-5b-i2v-api.json") {
         return load_workflow_file(&path)
             .map_err(|_| Error::Configuration("image-to-video workflow path is not readable"));
     }
@@ -933,8 +862,8 @@ fn load_i2v_workflow(text_to_video_path: &std::path::Path) -> Result<Value, Erro
         .map_err(|_| Error::Configuration("packaged image-to-video workflow is not valid JSON"))
 }
 
-fn load_audio_workflow(path: &std::path::Path) -> Result<Value, Error> {
-    if path.is_file() {
+fn load_audio_workflow(path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = configured_file(path) {
         return load_workflow_file(path)
             .map_err(|_| Error::Configuration("audio workflow path is not readable"));
     }
@@ -979,8 +908,8 @@ pub fn build_ace_step_workflow(prompt: &str, checkpoint: &str, seed: u64) -> Res
 const UPSCALE_IMAGE_OUTPUT_NODE: &str = "4";
 const UPSCALE_VIDEO_OUTPUT_NODE: &str = "5";
 
-fn load_upscale_workflow(path: &std::path::Path) -> Result<Value, Error> {
-    if path.is_file() {
+fn load_upscale_workflow(path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = configured_file(path) {
         return load_workflow_file(path)
             .map_err(|_| Error::Configuration("upscale workflow path is not readable"));
     }
@@ -988,11 +917,8 @@ fn load_upscale_workflow(path: &std::path::Path) -> Result<Value, Error> {
         .map_err(|_| Error::Configuration("packaged upscale workflow is not valid JSON"))
 }
 
-fn load_upscale_video_workflow(image_path: &std::path::Path) -> Result<Value, Error> {
-    let sibling = image_path
-        .parent()
-        .map(|directory| directory.join("upscale-video-api.json"));
-    if let Some(path) = sibling.filter(|path| path.is_file()) {
+fn load_upscale_video_workflow(image_path: Option<&Path>) -> Result<Value, Error> {
+    if let Some(path) = sibling_file(image_path, "upscale-video-api.json") {
         return load_workflow_file(&path)
             .map_err(|_| Error::Configuration("video upscale workflow path is not readable"));
     }
@@ -1152,9 +1078,6 @@ fn validate_audio_workflow(workflow: &Value) -> Result<(), Error> {
             ));
         }
     }
-    // Node 5 is where the caller's prompt lands, so pin its class as tightly as
-    // the output node: any other node type with a `tags` input would otherwise
-    // pass and receive the prompt.
     if workflow.pointer("/5/class_type").and_then(Value::as_str) != Some("TextEncodeAceStepAudio") {
         return Err(Error::Configuration(
             "audio workflow must encode the prompt with TextEncodeAceStepAudio",
@@ -1253,42 +1176,9 @@ fn apply_ace_step_workflow_inputs(
     let checkpoint = sanitize_weight_filename(checkpoint)?;
     workflow["1"]["inputs"]["ckpt_name"] = json!(checkpoint);
     workflow["5"]["inputs"]["tags"] = json!(prompt);
-    // Overwrite rather than trust the graph: lyrics authored into an
-    // operator-supplied workflow would otherwise be sung over every generation.
     workflow["5"]["inputs"]["lyrics"] = json!("");
     workflow["8"]["inputs"]["seed"] = json!(seed);
     Ok(())
-}
-
-fn normalize_source_mime(mime: &str) -> Result<String, Error> {
-    match mime.trim().to_ascii_lowercase().as_str() {
-        "image/jpg" | "image/jpeg" => Ok("image/jpeg".to_string()),
-        "image/png" => Ok("image/png".to_string()),
-        "image/webp" => Ok("image/webp".to_string()),
-        _ => Err(Error::Configuration("source image type is not supported")),
-    }
-}
-
-fn extension_for_mime(mime: &str) -> &'static str {
-    MediaType::for_mime(mime)
-        .filter(MediaType::is_image)
-        .unwrap_or(MediaType::PNG)
-        .extension
-}
-
-fn normalize_source_video_mime(mime: &str) -> Result<String, Error> {
-    match mime.trim().to_ascii_lowercase().as_str() {
-        "video/webm" => Ok("video/webm".to_string()),
-        "video/mp4" => Ok("video/mp4".to_string()),
-        _ => Err(Error::Configuration("source video type is not supported")),
-    }
-}
-
-fn extension_for_video_mime(mime: &str) -> &'static str {
-    match mime {
-        "video/mp4" => "mp4",
-        _ => "webm",
-    }
 }
 
 fn is_model_filename(name: &str) -> bool {
@@ -1331,6 +1221,26 @@ mod tests {
     };
 
     const REQUEST_WAIT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn media_payloads_print_their_size_rather_than_their_bytes() {
+        let payload = vec![0x5a_u8; 1 << 20];
+        let generated = GeneratedImage {
+            bytes: payload.clone().into(),
+            mime: "image/png".into(),
+            filename: "out.png".into(),
+        };
+        let image = SourceImage::new(payload.clone(), "image/png").unwrap();
+        let video = SourceVideo::new(payload, "video/mp4").unwrap();
+        for rendered in [
+            format!("{generated:?}"),
+            format!("{image:?}"),
+            format!("{video:?}"),
+        ] {
+            assert!(rendered.len() < 200, "{} characters", rendered.len());
+            assert!(rendered.contains("bytes: 1048576"), "{rendered}");
+        }
+    }
 
     #[test]
     fn workflow_mutates_only_approved_inputs() {
@@ -1556,6 +1466,17 @@ mod tests {
     }
 
     #[test]
+    fn a_client_that_would_poll_in_a_busy_loop_is_refused() {
+        assert!(matches!(
+            Client::new(Config {
+                poll_interval_milliseconds: 0,
+                ..Default::default()
+            }),
+            Err(Error::Configuration(message)) if message.contains("COMFYUI_POLL_INTERVAL_MS")
+        ));
+    }
+
+    #[test]
     fn image_client_accepts_empty_audio_checkpoint() {
         Client::new(Config {
             audio_checkpoint: String::new(),
@@ -1574,7 +1495,7 @@ mod tests {
         std::fs::write(&weight, b"lora").unwrap();
         let config = Config {
             checkpoint: "style.safetensors".into(),
-            models_dir: models,
+            models_directory: models,
             ..Default::default()
         };
         assert!(matches!(
@@ -1588,7 +1509,7 @@ mod tests {
             &weight,
             &crate::inventory::WeightSidecar {
                 recipe_id: "flux-schnell-adapter".into(),
-                hf_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
+                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
         )
         .unwrap();
@@ -1598,7 +1519,7 @@ mod tests {
             &weight,
             &crate::inventory::WeightSidecar {
                 recipe_id: "flux-schnell-adapter".into(),
-                hf_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
             },
         )
         .unwrap();
@@ -1758,7 +1679,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -1810,7 +1731,7 @@ mod tests {
                 base_url: server.uri(),
                 api_token: Some("secret".into()),
                 token_header: header.to_string(),
-                poll_interval_ms: 50,
+                poll_interval_milliseconds: 50,
                 ..Default::default()
             })
             .unwrap();
@@ -1837,7 +1758,7 @@ mod tests {
             &weight,
             &crate::inventory::WeightSidecar {
                 recipe_id: "qwen-image-edit-adapter".into(),
-                hf_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
+                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
         )
         .unwrap();
@@ -1876,8 +1797,8 @@ mod tests {
             enabled: true,
             base_url: server.uri(),
             checkpoint: "qwen-image-edit-plus-nsfw-lora.safetensors".into(),
-            models_dir: models,
-            poll_interval_ms: 50,
+            models_directory: models,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -1911,7 +1832,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 5000,
+            poll_interval_milliseconds: 5000,
             ..Default::default()
         })
         .unwrap();
@@ -1922,9 +1843,6 @@ mod tests {
                 .generate("a fox", None, &mut cancel_rx, progress_tx)
                 .await
         });
-        // A cancel that lands before the client holds a prompt id returns `Cancelled`
-        // having sent nothing. The queued progress message is emitted on the statement
-        // after the id is bound, which is what makes it this test's fence.
         let queued = tokio::time::timeout(REQUEST_WAIT, progress_rx.recv())
             .await
             .expect("the client should report the prompt queued before the cancel is sent")
@@ -1977,7 +1895,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            request_timeout_secs: 60,
+            request_timeout_seconds: 60,
             ..Default::default()
         })
         .unwrap();
@@ -1988,8 +1906,6 @@ mod tests {
                 .generate("a fox", None, &mut cancel_rx, progress_tx)
                 .await
         });
-        // What is under test is cancelling a request already in flight, so the cancel
-        // waits until the server has the request rather than until a clock says so.
         wait_for_request(&server, "/prompt").await;
         cancel_tx.send(()).unwrap();
         assert!(matches!(task.await.unwrap(), Err(Error::Cancelled)));
@@ -2039,7 +1955,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2059,9 +1975,6 @@ mod tests {
 
     #[test]
     fn video_upscale_ignores_the_source_clip_the_loader_previews() {
-        // LoadVideo reports the uploaded input as a PreviewVideo, which is a
-        // video output living under "input". Sweeping every node would take
-        // that for the result and fail the whole job.
         let nodes = json!({
             "1": {"images": [{"filename": "upscale-in.webm", "subfolder": "", "type": "input"}], "animated": [true]},
             "5": {"images": [{"filename": "upscale_00001_.webm", "subfolder": "", "type": "output"}], "animated": [true]}
@@ -2102,16 +2015,27 @@ mod tests {
             video["3"]["inputs"]["model_name"],
             json!("4x-model.safetensors")
         );
-        // The encoder takes its rate from the source so the clip keeps its timing.
-        assert_eq!(video["5"]["inputs"]["fps"], json!(["2", 2]));
+        assert_eq!(
+            video["5"]["inputs"]["fps"],
+            json!(["2", 2]),
+            "the encoder takes its rate from the source so the clip keeps its timing"
+        );
         assert_eq!(video["5"]["class_type"], json!("SaveWEBM"));
     }
 
     #[test]
     fn the_packaged_upscale_graphs_load_when_no_file_is_configured() {
-        // An operator who never sets COMFYUI_UPSCALE_WORKFLOW_PATH still gets a
-        // working pair, and the clip graph is found beside the image one.
-        let missing = std::path::Path::new("/nonexistent/upscale-image-api.json");
+        let missing = Some(Path::new("/nonexistent/upscale-image-api.json"));
+        for unset in [missing, None] {
+            assert_eq!(
+                load_upscale_workflow(unset).unwrap()["1"]["class_type"],
+                json!("LoadImage")
+            );
+            assert_eq!(
+                load_upscale_video_workflow(unset).unwrap()["1"]["class_type"],
+                json!("LoadVideo")
+            );
+        }
         let image = load_upscale_workflow(missing).unwrap();
         assert_eq!(image["1"]["class_type"], json!("LoadImage"));
         assert_eq!(
@@ -2126,7 +2050,6 @@ mod tests {
         );
         assert!(validate_upscale_image_workflow(&image).is_ok());
         assert!(validate_upscale_video_workflow(&video).is_ok());
-        // The graphs are not interchangeable.
         assert!(validate_upscale_video_workflow(&image).is_err());
         assert!(validate_upscale_image_workflow(&video).is_err());
     }
@@ -2184,7 +2107,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2249,7 +2172,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2297,7 +2220,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2357,7 +2280,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();
@@ -2403,7 +2326,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_ms: 50,
+            poll_interval_milliseconds: 50,
             ..Default::default()
         })
         .unwrap();

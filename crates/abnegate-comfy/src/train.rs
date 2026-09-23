@@ -1,6 +1,19 @@
 //! HTTP client that runs packaged LoRA training graphs on ComfyUI.
 
+mod config;
+mod contract;
+mod run;
+
+pub use config::TrainConfig;
+pub use config::packaged_config;
+pub use contract::Contract;
+pub use run::Run;
+
 use crate::config::Config;
+use crate::excerpt;
+use crate::http::CANCEL_TIMEOUT;
+use crate::http::POLL_TIMEOUT;
+use crate::http::authorize;
 use crate::lora::TrainError;
 use crate::recipe::TrainingModel;
 use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
@@ -9,15 +22,18 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
 use std::time::Duration;
 use uuid::Uuid;
 
-const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_config.json");
-const MIN_WEIGHT_BYTES: usize = 10_000;
+pub(crate) const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_config.json");
+/// Smallest body taken for trained weights. ComfyUI answers a missing file
+/// with a 200 error page, so size is what tells the two apart.
+pub(crate) const MINIMUM_WEIGHT_BYTES: usize = 10_000;
 const MANIFEST_VERSION: u32 = 1;
-const CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+const TRAIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Default `class_type` of the node that trains the adapter.
 pub const TRAIN_LORA_NODE: &str = "ZoneTrainLoRA";
@@ -41,110 +57,6 @@ pub const FOLDER_PREFIX: &str = "zone-train-";
 pub const ARTIFACT_PREFIX: &str = "zone-lora-";
 /// Default namespace of the input folder a quality probe stages its sample in.
 pub const PROBE_PREFIX: &str = "zone-probe-";
-
-/// The names a training run shares with the ComfyUI node pack that executes it
-/// and with an external training command. The nodes refuse a run namespace
-/// they do not recognise, so these have to match the deployment.
-///
-/// Defaults match Zone's node pack and training script, the deployment this crate was built for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Contract {
-    /// `class_type` of the node that trains the adapter.
-    pub train_lora_node: String,
-    /// `class_type` of the node that deletes a run's dataset and weights.
-    pub cleanup_training_run_node: String,
-    /// `class_type` of the node that loads a staged dataset and its manifest.
-    pub load_train_dataset_node: String,
-    /// `class_type` of the node that measures a model's loss on a dataset.
-    pub probe_loss_node: String,
-    /// `class_type` of the node that moves a trained checkpoint to where a
-    /// LoRA loader finds it.
-    pub stage_training_artifact_node: String,
-    /// Namespace of the input folder a run stages its dataset in.
-    pub folder_prefix: String,
-    /// Namespace of the weights a run writes.
-    pub artifact_prefix: String,
-    /// Namespace of the input folder a quality probe stages its sample in.
-    pub probe_prefix: String,
-    /// Prefix of the variables handed to [`Config::train_command`]: the
-    /// command reads the dataset from `<prefix>_DIR` and writes the adapter to
-    /// `<prefix>_OUTPUT`.
-    pub environment_prefix: String,
-    /// Prefix of `<prefix>_INPUT`, the ComfyUI input directory handed to
-    /// [`Config::train_command`].
-    pub input_environment_prefix: String,
-}
-
-impl Default for Contract {
-    fn default() -> Self {
-        Self {
-            train_lora_node: TRAIN_LORA_NODE.to_string(),
-            cleanup_training_run_node: CLEANUP_TRAINING_RUN_NODE.to_string(),
-            load_train_dataset_node: LOAD_TRAIN_DATASET_NODE.to_string(),
-            probe_loss_node: PROBE_LOSS_NODE.to_string(),
-            stage_training_artifact_node: STAGE_TRAINING_ARTIFACT_NODE.to_string(),
-            folder_prefix: FOLDER_PREFIX.to_string(),
-            artifact_prefix: ARTIFACT_PREFIX.to_string(),
-            probe_prefix: PROBE_PREFIX.to_string(),
-            environment_prefix: ENVIRONMENT_PREFIX.to_string(),
-            input_environment_prefix: INPUT_ENVIRONMENT_PREFIX.to_string(),
-        }
-    }
-}
-
-impl Contract {
-    pub(crate) fn variable(&self, name: &str) -> String {
-        format!("{}_{name}", self.environment_prefix)
-    }
-
-    pub(crate) fn input_variable(&self) -> String {
-        format!("{}_INPUT", self.input_environment_prefix)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TrainConfig {
-    passes_per_image: u32,
-    min_steps: u32,
-    max_steps: u32,
-    rank: u32,
-    learning_rate: f64,
-    lora_dtype: String,
-    training_dtype: String,
-    resolution: u32,
-    bypass_mode: bool,
-    gradient_checkpointing: bool,
-    checkpoint_depth: u32,
-    seed: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Run {
-    pub folder: String,
-    pub artifact: String,
-}
-
-impl Run {
-    /// A fresh pair of names under `contract`'s namespaces.
-    pub fn new(contract: &Contract) -> Self {
-        Self {
-            folder: format!("{}{}", contract.folder_prefix, Uuid::new_v4()),
-            artifact: format!("{}{}", contract.artifact_prefix, Uuid::new_v4()),
-        }
-    }
-
-    /// Refuses names that are not a v4 UUID under `contract`'s namespaces.
-    pub fn validate(&self, contract: &Contract) -> Result<(), TrainError> {
-        validate_run_name(&self.folder, &contract.folder_prefix)?;
-        validate_run_name(&self.artifact, &contract.artifact_prefix)
-    }
-}
-
-impl Default for Run {
-    fn default() -> Self {
-        Self::new(&Contract::default())
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -210,26 +122,6 @@ impl From<TrainError> for Failure {
     }
 }
 
-pub fn packaged_config() -> Result<TrainConfig, TrainError> {
-    serde_json::from_str(PACKAGED_TRAIN_CONFIG)
-        .map_err(|error| TrainError::Failed(format!("train config: {error}")))
-}
-
-impl TrainConfig {
-    /// Side of the square every training image is read back at.
-    pub fn resolution(&self) -> u32 {
-        self.resolution
-    }
-
-    /// Steps for a dataset of this size, clamped to the configured bounds.
-    pub fn steps(&self, image_count: usize) -> u32 {
-        u32::try_from(image_count.max(1))
-            .unwrap_or(u32::MAX)
-            .saturating_mul(self.passes_per_image)
-            .clamp(self.min_steps, self.max_steps)
-    }
-}
-
 pub async fn run(
     config: &Config,
     model: &TrainingModel,
@@ -240,19 +132,41 @@ pub async fn run(
     if !config.enabled {
         return Err(TrainError::Disabled);
     }
+    let client = crate::http::client(config).map_err(request_failed)?;
+    run_with(&client, config, model, work, output, image_count).await
+}
+
+/// [`run`] on a client the caller already holds for this run.
+pub(crate) async fn run_with(
+    client: &reqwest::Client,
+    config: &Config,
+    model: &TrainingModel,
+    work: &Path,
+    output: &Path,
+    image_count: usize,
+) -> Result<Run, TrainError> {
+    if !config.enabled {
+        return Err(TrainError::Disabled);
+    }
+    config.validate()?;
     let run = Run::new(&config.contract);
-    match execute(config, model, work, output, image_count, &run).await {
+    match execute(client, config, model, work, output, image_count, &run).await {
         Ok(()) => Ok(run),
         Err(failure) => {
             if failure.cleanup {
-                cleanup(config, &run).await;
+                cleanup_with(client, config, &run).await;
             }
             Err(failure.error)
         }
     }
 }
 
+fn request_failed(error: reqwest::Error) -> TrainError {
+    TrainError::Failed(error.to_string())
+}
+
 async fn execute(
+    client: &reqwest::Client,
     config: &Config,
     model: &TrainingModel,
     work: &Path,
@@ -262,8 +176,7 @@ async fn execute(
 ) -> Result<(), Failure> {
     run.validate(&config.contract)?;
     let settings = packaged_config()?;
-    let client = client(config)?;
-    let manifest = stage_or_upload(&client, config, model, work, run).await?;
+    let manifest = stage_or_upload(client, config, model, work, run).await?;
     let graph = train_graph(
         model,
         &run.folder,
@@ -273,17 +186,17 @@ async fn execute(
         settings.steps(image_count),
         &config.contract,
     );
-    let prompt = queue(&client, config, graph)
+    let prompt = queue(client, config, graph)
         .await
         .map_err(|failure| Failure {
             error: failure.error,
             cleanup: failure.cleanup,
         })?;
     if let Err(failure) = wait_prompt(
-        &client,
+        client,
         config,
         prompt,
-        Duration::from_secs(config.train_timeout_secs),
+        Duration::from_secs(config.train_timeout_seconds),
     )
     .await
     {
@@ -292,17 +205,9 @@ async fn execute(
             cleanup: failure.cleanup,
         });
     }
-    download(&client, config, run, output)
+    download(client, config, run, output)
         .await
         .map_err(Failure::from)
-}
-
-fn client(config: &Config) -> Result<reqwest::Client, TrainError> {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(config.train_timeout_secs))
-        .build()
-        .map_err(|error| TrainError::Failed(error.to_string()))
 }
 
 async fn queue(
@@ -346,7 +251,10 @@ async fn queue(
                 false
             };
             return Err(WaitFailure {
-                error: TrainError::Failed(format!("invalid ComfyUI prompt response: {error}")),
+                error: TrainError::Failed(format!(
+                    "invalid ComfyUI prompt response: {}",
+                    excerpt::head(&error.to_string())
+                )),
                 cleanup,
             });
         }
@@ -363,7 +271,10 @@ async fn queue(
             .unwrap_or_else(|| json!(response.node_errors));
         let cleanup = cancel_and_wait(client, config, prompt, false).await;
         return Err(WaitFailure {
-            error: TrainError::Failed(format!("ComfyUI rejected train graph: {detail:?}")),
+            error: TrainError::Failed(format!(
+                "ComfyUI rejected train graph: {}",
+                excerpt::head(&detail.to_string())
+            )),
             cleanup,
         });
     }
@@ -414,14 +325,15 @@ async fn download(
         .unwrap_or_default();
     if !is_weight_payload(content_type) {
         return Err(TrainError::Failed(format!(
-            "ComfyUI view response is not safetensors data: {content_type}"
+            "ComfyUI view response is not safetensors data: {}",
+            excerpt::head(content_type)
         )));
     }
     let bytes = response
         .bytes()
         .await
         .map_err(|error| TrainError::Failed(error.to_string()))?;
-    if bytes.len() < MIN_WEIGHT_BYTES {
+    if bytes.len() < MINIMUM_WEIGHT_BYTES {
         return Err(TrainError::Failed(
             "ComfyUI returned a LoRA that is too small to be trained weights".into(),
         ));
@@ -718,6 +630,11 @@ fn pairs(model: &TrainingModel, work: &Path) -> Result<Vec<Pair>, TrainError> {
 
 fn stage_local(work: &Path, input: &Path, run: &Run) -> Result<(), TrainError> {
     let input = require_directory(input, "ComfyUI input directory")?;
+    if !is_single_component(&run.folder) {
+        return Err(TrainError::Invalid(
+            "training namespace is not a single directory name",
+        ));
+    }
     let destination = input.join(&run.folder);
     if fs::symlink_metadata(&destination).is_ok() {
         return Err(TrainError::Failed(
@@ -881,7 +798,7 @@ async fn wait_prompt(
                 }
             }
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(TRAIN_POLL_INTERVAL).await;
     }
 }
 
@@ -893,7 +810,7 @@ async fn history(
 ) -> Result<Value, TrainError> {
     let timeout = deadline
         .saturating_duration_since(tokio::time::Instant::now())
-        .min(REQUEST_TIMEOUT);
+        .min(POLL_TIMEOUT);
     authorize(
         config,
         client
@@ -935,7 +852,13 @@ fn train_prompt_complete(entry: &Value) -> Result<bool, TrainError> {
     if status.status_str.eq_ignore_ascii_case("error") {
         return Err(TrainError::Failed(format!(
             "ComfyUI train failed: {}",
-            entry.get("status").cloned().unwrap_or(json!({}))
+            excerpt::head(
+                &entry
+                    .get("status")
+                    .cloned()
+                    .unwrap_or(json!({}))
+                    .to_string()
+            )
         )));
     }
     Ok(status.completed == Some(true) || status.status_str.eq_ignore_ascii_case("success"))
@@ -951,7 +874,7 @@ async fn cancel_and_wait(
         config,
         client
             .post(format!("{}/api/jobs/{prompt}/cancel", config.base_url))
-            .timeout(REQUEST_TIMEOUT),
+            .timeout(POLL_TIMEOUT),
     )
     .send()
     .await;
@@ -969,7 +892,7 @@ async fn cancel_and_wait(
         {
             return true;
         }
-        tokio::time::sleep(Duration::from_millis(config.poll_interval_ms)).await;
+        tokio::time::sleep(Duration::from_millis(config.poll_interval_milliseconds)).await;
     }
 }
 
@@ -985,21 +908,37 @@ fn train_prompt_terminal(entry: &Value) -> bool {
 }
 
 pub async fn cleanup(config: &Config, run: &Run) {
+    match crate::http::client(config) {
+        Ok(client) => cleanup_with(&client, config, run).await,
+        Err(error) => {
+            tracing::warn!(%error, "could not reach ComfyUI to clean up a training run");
+            if run.validate(&config.contract).is_ok() {
+                cleanup_local(config, run);
+            }
+        }
+    }
+}
+
+/// [`cleanup`] on a client the caller already holds for this run.
+pub(crate) async fn cleanup_with(client: &reqwest::Client, config: &Config, run: &Run) {
     if run.validate(&config.contract).is_err() {
         return;
     }
     cleanup_local(config, run);
-    let Ok(client) = client(config) else { return };
+    if config.validate().is_err() {
+        return;
+    }
     let graph = json!({
+
         "1": {
             "class_type": config.contract.cleanup_training_run_node,
             "inputs": { "folder": run.folder, "artifact": run.artifact }
         }
     });
-    let Ok(prompt) = queue(&client, config, graph).await else {
+    let Ok(prompt) = queue(client, config, graph).await else {
         return;
     };
-    let _ = wait_prompt(&client, config, prompt, Duration::from_secs(30)).await;
+    let _ = wait_prompt(client, config, prompt, CLEANUP_TIMEOUT).await;
 }
 
 fn cleanup_local(config: &Config, run: &Run) {
@@ -1028,7 +967,7 @@ fn cleanup_local(config: &Config, run: &Run) {
 }
 
 fn local_input(config: &Config) -> Result<Option<PathBuf>, TrainError> {
-    let Some(root) = config.models_dir.parent() else {
+    let Some(root) = config.models_directory.parent() else {
         return Ok(None);
     };
     let root = match fs::symlink_metadata(root) {
@@ -1045,7 +984,7 @@ fn local_input(config: &Config) -> Result<Option<PathBuf>, TrainError> {
 }
 
 fn local_output(config: &Config) -> Option<PathBuf> {
-    let root = require_directory(config.models_dir.parent()?, "ComfyUI root").ok()?;
+    let root = require_directory(config.models_directory.parent()?, "ComfyUI root").ok()?;
     let output = require_child_directory(&root, &root.join("output"), "ComfyUI output").ok()?;
     require_child_directory(&output, &output.join("loras"), "ComfyUI LoRA output").ok()
 }
@@ -1071,6 +1010,16 @@ fn require_child_directory(
         return Err(TrainError::Invalid(label));
     }
     Ok(path)
+}
+
+/// Whether `name` joins onto a directory as exactly one entry inside it.
+pub(crate) fn is_single_component(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    !name.contains(['/', '\\'])
+        && matches!(
+            (components.next(), components.next()),
+            (Some(Component::Normal(_)), None)
+        )
 }
 
 fn copy_new(source: &Path, destination: &Path) -> Result<(), TrainError> {
@@ -1152,24 +1101,6 @@ pub(crate) fn architecture(model: &TrainingModel) -> &'static str {
     }
 }
 
-fn validate_run_name(name: &str, prefix: &str) -> Result<(), TrainError> {
-    let Some(id) = name.strip_prefix(prefix) else {
-        return Err(TrainError::Invalid("invalid training run namespace"));
-    };
-    let uuid = Uuid::parse_str(id).map_err(|_| TrainError::Invalid("invalid training run UUID"))?;
-    if uuid.get_version_num() != 4 || uuid.to_string() != id {
-        return Err(TrainError::Invalid("invalid training run UUID"));
-    }
-    Ok(())
-}
-
-fn authorize(config: &Config, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    match &config.api_token {
-        Some(token) => request.header(config.token_header.as_str(), token),
-        None => request,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,10 +1153,9 @@ mod tests {
             enabled: true,
             base_url: server.uri(),
             api_token: Some("secret".into()),
-            train_timeout_secs: 60,
-            poll_interval_ms: 50,
-            // No sibling input/ directory, so staging falls through to upload.
-            models_dir: std::env::temp_dir().join(format!("comfy-models-{}", Uuid::new_v4())),
+            train_timeout_seconds: 60,
+            poll_interval_milliseconds: 50,
+            models_directory: std::env::temp_dir().join(format!("comfy-models-{}", Uuid::new_v4())),
             ..Default::default()
         }
     }
@@ -1287,6 +1217,75 @@ mod tests {
             .respond_with(Stage)
             .mount(server)
             .await;
+    }
+
+    struct Delayed<R>(R, Duration);
+
+    impl<R: wiremock::Respond> wiremock::Respond for Delayed<R> {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            self.0.respond(request).set_delay(self.1)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_redirect_never_carries_the_token_to_another_host() {
+        let server = MockServer::start().await;
+        let elsewhere = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        uploads(&server).await;
+        queues(&server, json!({"prompt_id": prompt, "number": 1})).await;
+        finishes(&server, prompt).await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/view", elsewhere.uri()).as_str()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(Serve(vec![7u8; 20_000], "application/safetensors"))
+            .mount(&elsewhere)
+            .await;
+
+        let work = dataset();
+        let output = work.path().join("out.safetensors");
+        run(&config(&server), &base(), work.path(), &output, 2)
+            .await
+            .expect_err("a redirected download is not the artifact that was asked for");
+
+        assert!(
+            elsewhere.received_requests().await.unwrap().is_empty(),
+            "the token header followed a redirect to another host"
+        );
+        assert!(!output.exists());
+    }
+
+    #[tokio::test]
+    async fn a_short_training_deadline_does_not_cut_off_a_slow_upload() {
+        let server = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        Mock::given(method("POST"))
+            .and(path("/upload/image"))
+            .respond_with(Delayed(Stage, Duration::from_millis(1_200)))
+            .mount(&server)
+            .await;
+        queues(&server, json!({"prompt_id": prompt, "number": 1})).await;
+        finishes(&server, prompt).await;
+        serves(&server, vec![7u8; 20_000]).await;
+        let config = Config {
+            train_timeout_seconds: 1,
+            request_timeout_seconds: 30,
+            ..config(&server)
+        };
+
+        let work = dataset();
+        let output = work.path().join("out.safetensors");
+        run(&config, &base(), work.path(), &output, 2)
+            .await
+            .expect("the training deadline bounds the graph, not each request");
+        assert_eq!(fs::read(&output).unwrap(), vec![7u8; 20_000]);
     }
 
     async fn finishes(server: &MockServer, prompt: Uuid) {
@@ -1507,7 +1506,6 @@ mod tests {
         uploads(&server).await;
         queues(&server, json!({"prompt_id": prompt, "number": 1})).await;
         finishes(&server, prompt).await;
-        // ComfyUI serves its error pages with a 200, so size is the only tell.
         serves(&server, b"<html>not found</html>".to_vec()).await;
 
         let work = dataset();
@@ -1588,6 +1586,101 @@ mod tests {
         );
     }
 
+    fn escaping() -> Contract {
+        Contract {
+            folder_prefix: "../escape-".into(),
+            ..Contract::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_contract_that_names_a_path_outside_comfyui_is_refused_before_anything_is_sent() {
+        let server = MockServer::start().await;
+        let config = Config {
+            contract: escaping(),
+            ..config(&server)
+        };
+        let work = dataset();
+        let error = run(
+            &config,
+            &base(),
+            work.path(),
+            &work.path().join("out.safetensors"),
+            2,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TrainError::Configuration(_)), "{error}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cleanup_under_an_invalid_contract_touches_nothing() {
+        let server = MockServer::start().await;
+        let config = Config {
+            contract: escaping(),
+            ..config(&server)
+        };
+        cleanup(&config, &Run::new(&config.contract)).await;
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_staging_never_creates_a_directory_outside_the_input_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("input");
+        fs::create_dir(&input).unwrap();
+        let escaped = format!("escaped-{}", Uuid::new_v4());
+        let run = Run {
+            folder: format!("../{escaped}"),
+            artifact: format!("{ARTIFACT_PREFIX}{}", Uuid::new_v4()),
+        };
+        let work = dataset();
+        assert!(stage_local(work.path(), &input, &run).is_err());
+        assert!(
+            !root.path().join(&escaped).exists(),
+            "staging created a directory beside the input directory"
+        );
+    }
+
+    #[test]
+    fn only_a_plain_name_is_a_single_component() {
+        assert!(is_single_component("zone-run"));
+        for name in [
+            "",
+            ".",
+            "..",
+            "../run",
+            "nested/run",
+            "run/",
+            "back\\slash",
+            "/run",
+        ] {
+            assert!(!is_single_component(name), "{name:?} was accepted");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_zero_training_budget_is_refused_before_anything_is_sent() {
+        let server = MockServer::start().await;
+        let config = Config {
+            train_timeout_seconds: 0,
+            ..config(&server)
+        };
+        let work = dataset();
+        let error = run(
+            &config,
+            &base(),
+            work.path(),
+            &work.path().join("out.safetensors"),
+            2,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TrainError::Configuration(_)), "{error}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn training_against_a_disabled_comfyui_does_not_reach_the_network() {
         let work = dataset();
@@ -1611,14 +1704,12 @@ mod tests {
         finishes(&server, prompt).await;
         serves(&server, vec![7u8; 20_000]).await;
 
-        // models_dir with a sibling input/ is the shared-volume deployment,
-        // where the dataset can simply be copied into place.
         let comfy = tempfile::tempdir().unwrap();
         let input = comfy.path().join("input");
         fs::create_dir_all(&input).unwrap();
         let mut settings = config(&server);
-        settings.models_dir = comfy.path().join("models");
-        fs::create_dir_all(&settings.models_dir).unwrap();
+        settings.models_directory = comfy.path().join("models");
+        fs::create_dir_all(&settings.models_directory).unwrap();
 
         let work = dataset();
         run(
@@ -1636,7 +1727,6 @@ mod tests {
             .filter_map(|entry| entry.ok().map(|item| item.path()))
             .collect();
         assert_eq!(staged.len(), 1, "one folder per training run");
-        // Captions ride in the graph's captions_json, so only the images stage.
         assert!(staged[0].join("targets/0000.png").is_file());
         assert!(staged[0].join("targets/0001.png").is_file());
         assert!(
@@ -1672,11 +1762,13 @@ mod tests {
             12,
             &contract,
         );
-        for graph in [&flux, &qwen] {
-            assert!(graph.to_string().contains("VAEEncode"));
-            assert!(graph.to_string().contains(LOAD_TRAIN_DATASET_NODE));
-        }
+        assert_eq!(flux["2"]["class_type"], contract.load_train_dataset_node);
+        assert_eq!(flux["3"]["class_type"], "VAEEncode");
+        assert_eq!(flux["5"]["class_type"], contract.train_lora_node);
+        assert_eq!(qwen["4"]["class_type"], contract.load_train_dataset_node);
+        assert_eq!(qwen["7"]["class_type"], contract.train_lora_node);
         assert_eq!(flux["4"]["class_type"], "CLIPTextEncode");
+
         assert_eq!(qwen["1"]["class_type"], "UNETLoader");
         assert_eq!(qwen["1"]["inputs"]["unet_name"], "qwen-unet.safetensors");
         assert_eq!(qwen["2"]["class_type"], "CLIPLoader");
@@ -1794,27 +1886,22 @@ mod tests {
     }
 
     #[test]
-    fn the_default_contract_names_the_packaged_nodes_and_script() {
+    fn the_default_contract_is_the_wire_contract_of_the_out_of_tree_node_pack() {
         let contract = Contract::default();
-        assert_eq!(contract.train_lora_node, TRAIN_LORA_NODE);
-        assert_eq!(
-            contract.cleanup_training_run_node,
-            CLEANUP_TRAINING_RUN_NODE
-        );
-        assert_eq!(contract.load_train_dataset_node, LOAD_TRAIN_DATASET_NODE);
-        assert_eq!(contract.probe_loss_node, PROBE_LOSS_NODE);
+        assert_eq!(contract.train_lora_node, "ZoneTrainLoRA");
+        assert_eq!(contract.cleanup_training_run_node, "ZoneCleanupTrainingRun");
+        assert_eq!(contract.load_train_dataset_node, "ZoneLoadTrainDataset");
+        assert_eq!(contract.probe_loss_node, "ZoneProbeLoss");
         assert_eq!(
             contract.stage_training_artifact_node,
-            STAGE_TRAINING_ARTIFACT_NODE
+            "ZoneStageTrainingArtifact"
         );
-        assert_eq!(
-            contract.variable("OUTPUT"),
-            format!("{ENVIRONMENT_PREFIX}_OUTPUT")
-        );
-        assert_eq!(
-            contract.input_variable(),
-            format!("{INPUT_ENVIRONMENT_PREFIX}_INPUT")
-        );
+        assert_eq!(contract.folder_prefix, "zone-train-");
+        assert_eq!(contract.artifact_prefix, "zone-lora-");
+        assert_eq!(contract.probe_prefix, "zone-probe-");
+        assert_eq!(contract.variable("OUTPUT"), "ZONE_TRAIN_OUTPUT");
+        assert_eq!(contract.variable("DIR"), "ZONE_TRAIN_DIR");
+        assert_eq!(contract.input_variable(), "ZONE_COMFY_INPUT");
     }
 
     #[tokio::test]
@@ -1938,7 +2025,7 @@ mod tests {
         let linked_root = root.path().join("comfy");
         symlink(&actual, &linked_root).unwrap();
         let config = Config {
-            models_dir: linked_root.join("models"),
+            models_directory: linked_root.join("models"),
             ..Default::default()
         };
         assert!(local_input(&config).is_err());
@@ -1949,7 +2036,7 @@ mod tests {
         fs::create_dir(&outside).unwrap();
         symlink(&outside, safe.join("input")).unwrap();
         let config = Config {
-            models_dir: safe.join("models"),
+            models_directory: safe.join("models"),
             ..Default::default()
         };
         assert!(local_input(&config).is_err());
@@ -1987,7 +2074,7 @@ mod tests {
         symlink(&outside_output, comfy.join("output/loras")).unwrap();
         cleanup_local(
             &Config {
-                models_dir: comfy.join("models"),
+                models_directory: comfy.join("models"),
                 ..Default::default()
             },
             &run,
@@ -2024,7 +2111,7 @@ mod tests {
             &reqwest::Client::new(),
             &Config {
                 base_url: server.uri(),
-                poll_interval_ms: 1,
+                poll_interval_milliseconds: 1,
                 ..Default::default()
             },
             prompt,
@@ -2075,7 +2162,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let failure = queue(&reqwest::Client::new(), &config, json!({}))
@@ -2142,6 +2229,23 @@ mod tests {
                 .is_some()
         );
         assert!(exact_history(&json!({ Uuid::new_v4().to_string(): {} }), prompt).is_err());
+    }
+
+    #[test]
+    fn a_failure_comfyui_reports_is_quoted_bounded_and_sanitized() {
+        let entry = json!({"status": {
+            "status_str": "error",
+            "messages": [format!("\u{1b}[31m{}", "traceback line\n".repeat(10_000))]
+        }});
+        let TrainError::Failed(message) = train_prompt_complete(&entry).unwrap_err() else {
+            panic!("a failed graph is a training failure");
+        };
+        assert!(
+            message.chars().count() <= "ComfyUI train failed: ".len() + excerpt::LIMIT + 1,
+            "{} characters of ComfyUI's report reached the error",
+            message.len()
+        );
+        assert!(!message.contains('\u{1b}'));
     }
 
     #[test]

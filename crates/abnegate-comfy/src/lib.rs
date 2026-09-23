@@ -28,7 +28,7 @@
 //! checkpoint the run produced and keeps the best one:
 //!
 //! ```no_run
-//! # async fn example(request: abnegate_comfy::TrainRequest) -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn example(request: abnegate_comfy::lora::TrainRequest) -> Result<(), Box<dyn std::error::Error>> {
 //! use abnegate_comfy::{Config, lora};
 //!
 //! let config = Config::from_env();
@@ -37,10 +37,11 @@
 //! # Ok(())
 //! # }
 //! # fn litellm_host() -> String { String::new() }
-//! # fn litellm_key() -> String { String::new() }
+//! # fn litellm_key() -> abnegate_secret::SecretValue { abnegate_secret::SecretValue::new("") }
 //! ```
 //!
-//! A clip can stand in for that image set. [`extract`] samples it above the
+//! A clip can stand in for that image set. [`video::extract`] samples it above the
+
 //! rate the caller asked for, keeps the sharpest frame of each moment, drops
 //! the ones that repeat a shot already taken, and crops what is left around
 //! whatever moved:
@@ -77,34 +78,32 @@
 //!   the weights. Without it a photo is cropped on its centre and a video frame
 //!   on whatever moved. Off by default.
 
-pub mod caption;
-pub mod client;
-pub mod config;
-pub mod dataset;
+mod caption;
+mod client;
+mod config;
+mod dataset;
+mod excerpt;
+mod http;
 pub mod inventory;
 pub mod lora;
-pub mod media;
-pub mod observe;
+mod media;
+mod observe;
 pub mod quality;
 pub mod recipe;
-pub mod screening;
+mod screening;
 pub mod subject;
 pub mod train;
 pub mod video;
 
 pub use caption::{CaptionImage, CaptionRequest, Captioner, Draft, data_url};
-pub use client::{Client, Error, GeneratedImage, SourceImage, SourceVideo};
-pub use config::Config;
-pub use dataset::{Concern, Finding, inspect};
-pub use inventory::{InventoryItem, WeightSidecar, scan};
-pub use lora::{
-    TrainBase, TrainError, TrainImage, TrainOutcome, TrainRequest, available_bases, train,
+pub use client::{
+    Client, Error, GeneratedImage, MAXIMUM_SOURCE_IMAGE_BYTES, MAXIMUM_SOURCE_VIDEO_BYTES,
+    SourceImage, SourceVideo, build_ace_step_workflow, build_flux_schnell_img2img_workflow,
+    build_flux_schnell_workflow, build_upscale_image_workflow, build_upscale_video_workflow,
+    build_wan_i2v_workflow, build_wan_t2v_workflow,
 };
+pub use config::{Config, ConfigError, TOKEN_HEADER, VISION_MODEL_VARIABLE};
+pub use dataset::{Concern, Finding, inspect};
 pub use media::MediaType;
 pub use observe::{RequestObserver, observe_requests};
-pub use quality::Quality;
-pub use recipe::{PromptMode, Recipe, RecipeCatalog, sanitize_weight_filename};
 pub use screening::{Rejection, Verdict, screen};
-pub use subject::Subject;
-pub use train::Contract;
-pub use video::{Clip, Frame, FrameRequest, extract};

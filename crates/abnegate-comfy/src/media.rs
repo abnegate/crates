@@ -11,6 +11,7 @@ enum Lane {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MediaType {
     lane: Lane,
     /// The media type emitted and stored for this format.

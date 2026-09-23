@@ -1,7 +1,15 @@
 //! Scores a trained adapter against its own base and promotes the best checkpoint.
 
+mod calibration;
+
+pub use calibration::QualityCalibration;
+
 use crate::config::Config;
+use crate::http::CANCEL_TIMEOUT;
+use crate::http::POLL_TIMEOUT;
 use crate::recipe::TrainingModel;
+use crate::train::MINIMUM_WEIGHT_BYTES;
+use crate::train::PACKAGED_TRAIN_CONFIG;
 use crate::train::{Contract, Run};
 use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
@@ -14,15 +22,11 @@ use std::time::Duration;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_config.json");
 const RANK_PERCENT: &str = "0.5";
 const RANK_IMAGES: usize = 4;
 const MEASURE_PERCENTS: &str = "0.2,0.6,0.9";
 const PROBE_SEED: u64 = 1234;
-const MIN_WEIGHT_BYTES: usize = 10_000;
 const FINAL: &str = "final";
-const CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Deserialize)]
 struct Settings {
@@ -44,14 +48,6 @@ pub struct Quality {
     pub checkpoint: String,
     pub measured: bool,
     pub calibration: QualityCalibration,
-}
-
-/// Whether callers may compare the score with the FLUX health thresholds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QualityCalibration {
-    FluxHealthBands,
-    Uncalibrated,
 }
 
 struct Candidate {
@@ -76,32 +72,47 @@ pub async fn select(
     output: &Path,
     captions: &HashMap<String, String>,
 ) -> Option<Quality> {
-    let selection = match Selection::new(config, model, run, output, captions) {
+    match crate::http::client(config) {
+        Ok(client) => select_with(&client, config, model, run, output, captions).await,
+        Err(error) => {
+            tracing::warn!(%error, "could not reach ComfyUI; the adapter stands unscored");
+            None
+        }
+    }
+}
+
+/// [`select`] on a client the caller already holds for this run.
+pub(crate) async fn select_with(
+    client: &reqwest::Client,
+    config: &Config,
+    model: &TrainingModel,
+    run: &Run,
+    output: &Path,
+    captions: &HashMap<String, String>,
+) -> Option<Quality> {
+    let selection = match Selection::new(client, config, model, run, output, captions) {
         Some(selection) => selection,
         None => {
-            // Silence here reads to the caller as "the trainer produced
-            // nothing", which is what the error it raises next says. Name the
-            // step that refused instead.
             tracing::warn!(
                 artifact = %run.artifact,
-                models_dir = %config.models_dir.display(),
+                models_directory = %config.models_directory.display(),
                 images = captions.len(),
                 loras = models_loras(config).is_some(),
                 produced = produced(config).is_some(),
                 manifest = crate::train::manifest(model, captions).is_some(),
                 "quality selection could not start; the adapter stands unscored"
             );
-            crate::train::cleanup(config, run).await;
+            crate::train::cleanup_with(client, config, run).await;
             return None;
         }
     };
-    let deadline = Instant::now() + Duration::from_secs(config.train_timeout_secs);
+    let deadline = Instant::now() + Duration::from_secs(config.train_timeout_seconds);
     let sample = subsample(config, model, &run.folder, captions, RANK_IMAGES);
     let quality = selection.choose(sample.as_ref(), deadline).await;
     if selection.probe.cleanup.load(Ordering::Acquire) {
         discard(config, sample.as_ref());
         selection.sweep();
-        crate::train::cleanup(config, run).await;
+        crate::train::cleanup_with(client, config, run).await;
     } else {
         tracing::warn!(
             prompt_namespace = %run.folder,
@@ -124,18 +135,21 @@ struct Selection<'a> {
 
 impl<'a> Selection<'a> {
     fn new(
+        client: &reqwest::Client,
         config: &'a Config,
         model: &'a TrainingModel,
         run: &Run,
         output: &Path,
         captions: &HashMap<String, String>,
     ) -> Option<Self> {
+        config.validate().ok()?;
         run.validate(&config.contract).ok()?;
+
         let settings: Settings = serde_json::from_str(PACKAGED_TRAIN_CONFIG).ok()?;
         let adapter = format!("{}.safetensors", run.artifact);
         artifact(&adapter, &run.artifact, &config.contract.artifact_prefix)?;
         Some(Self {
-            probe: Probe::new(config, model, run, captions, settings.resolution)?,
+            probe: Probe::new(client, config, model, run, captions, settings.resolution)?,
             settings,
             folder: run.folder.clone(),
             output: output.to_path_buf(),
@@ -341,6 +355,7 @@ struct Probe<'a> {
 
 impl<'a> Probe<'a> {
     fn new(
+        client: &reqwest::Client,
         config: &'a Config,
         model: &'a TrainingModel,
         run: &Run,
@@ -348,11 +363,7 @@ impl<'a> Probe<'a> {
         resolution: u32,
     ) -> Option<Self> {
         Some(Self {
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(config.train_timeout_secs))
-                .build()
-                .ok()?,
+            client: client.clone(),
             config,
             model,
             manifest: crate::train::manifest(model, captions)?,
@@ -411,7 +422,10 @@ impl<'a> Probe<'a> {
                 }
             };
             let Some(entry) = entry else {
-                tokio::time::sleep(Duration::from_millis(self.config.poll_interval_ms)).await;
+                tokio::time::sleep(Duration::from_millis(
+                    self.config.poll_interval_milliseconds,
+                ))
+                .await;
                 continue;
             };
             if failed(&entry) {
@@ -421,7 +435,10 @@ impl<'a> Probe<'a> {
             if completed(&entry) {
                 return Some(entry);
             }
-            tokio::time::sleep(Duration::from_millis(self.config.poll_interval_ms)).await;
+            tokio::time::sleep(Duration::from_millis(
+                self.config.poll_interval_milliseconds,
+            ))
+            .await;
         }
     }
 
@@ -513,7 +530,7 @@ impl<'a> Probe<'a> {
                     .timeout(
                         deadline
                             .saturating_duration_since(Instant::now())
-                            .min(REQUEST_TIMEOUT),
+                            .min(POLL_TIMEOUT),
                     ),
             )
             .send()
@@ -539,7 +556,7 @@ impl<'a> Probe<'a> {
             .authorize(
                 self.client
                     .post(format!("{}/api/jobs/{prompt}/cancel", self.config.base_url))
-                    .timeout(REQUEST_TIMEOUT),
+                    .timeout(POLL_TIMEOUT),
             )
             .send()
             .await;
@@ -557,7 +574,10 @@ impl<'a> Probe<'a> {
             {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(self.config.poll_interval_ms)).await;
+            tokio::time::sleep(Duration::from_millis(
+                self.config.poll_interval_milliseconds,
+            ))
+            .await;
         }
     }
 
@@ -589,14 +609,11 @@ impl<'a> Probe<'a> {
             return None;
         }
         let bytes = response.bytes().await.ok()?;
-        (bytes.len() >= MIN_WEIGHT_BYTES).then(|| bytes.to_vec())
+        (bytes.len() >= MINIMUM_WEIGHT_BYTES).then(|| bytes.to_vec())
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.config.api_token {
-            Some(token) => request.header(self.config.token_header.as_str(), token),
-            None => request,
-        }
+        crate::http::authorize(self.config, request)
     }
 }
 
@@ -799,19 +816,19 @@ fn read_regular(path: &Path) -> Option<Vec<u8>> {
 }
 
 fn produced(config: &Config) -> Option<PathBuf> {
-    let root = real_directory(config.models_dir.parent()?)?;
+    let root = real_directory(config.models_directory.parent()?)?;
     let output = child_directory(&root, "output")?;
     child_directory(&output, "loras")
 }
 
 fn input(config: &Config) -> Option<PathBuf> {
-    let root = real_directory(config.models_dir.parent()?)?;
+    let root = real_directory(config.models_directory.parent()?)?;
     child_directory(&root, "input")
 }
 
 fn models_loras(config: &Config) -> Option<PathBuf> {
-    let root = real_directory(config.models_dir.parent()?)?;
-    let models = real_directory(&config.models_dir)?;
+    let root = real_directory(config.models_directory.parent()?)?;
+    let models = real_directory(&config.models_directory)?;
     if models.parent() != Some(root.as_path()) {
         return None;
     }
@@ -850,7 +867,11 @@ fn subsample(
     let input = input(config)?;
     let source = child_directory(&input, folder)?;
     let name = format!("{}{}", contract.probe_prefix, Uuid::new_v4());
+    if !crate::train::is_single_component(&name) {
+        return None;
+    }
     let destination = input.join(&name);
+
     if fs::symlink_metadata(&destination).is_ok() {
         return None;
     }
@@ -935,7 +956,7 @@ fn remove_namespace(root: &Path, name: &str, prefix: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::train::{ARTIFACT_PREFIX, FOLDER_PREFIX, LOAD_TRAIN_DATASET_NODE, PROBE_PREFIX};
+    use crate::train::{ARTIFACT_PREFIX, FOLDER_PREFIX, PROBE_PREFIX};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use wiremock::matchers::{method, path};
@@ -967,7 +988,7 @@ mod tests {
         Probe {
             config,
             model,
-            client: reqwest::Client::new(),
+            client: crate::http::client(config).unwrap(),
             manifest: "{}".into(),
             resolution: 512,
             stem: run.artifact.clone(),
@@ -981,11 +1002,13 @@ mod tests {
         let contract = Contract::default();
         let flux = graph(&flux(), "folder", "{}", 512, None, RANK_PERCENT, &contract);
         let qwen = graph(&qwen(), "folder", "{}", 512, None, RANK_PERCENT, &contract);
-        for graph in [&flux, &qwen] {
-            assert!(graph.to_string().contains("VAEEncode"));
-            assert!(graph.to_string().contains(LOAD_TRAIN_DATASET_NODE));
-        }
+        assert_eq!(flux["2"]["class_type"], contract.load_train_dataset_node);
+        assert_eq!(flux["3"]["class_type"], "VAEEncode");
+        assert_eq!(flux["5"]["class_type"], contract.probe_loss_node);
+        assert_eq!(qwen["4"]["class_type"], contract.load_train_dataset_node);
+        assert_eq!(qwen["7"]["class_type"], contract.probe_loss_node);
         assert_eq!(flux["1"]["class_type"], "CheckpointLoaderSimple");
+
         assert_eq!(flux["5"]["inputs"]["positive"], json!(["4", 0]));
         assert_eq!(qwen["1"]["class_type"], "UNETLoader");
         assert_eq!(qwen["2"]["inputs"]["type"], "qwen_image");
@@ -1106,11 +1129,12 @@ mod tests {
             let foreign = format!("{ARTIFACT_PREFIX}other-step99.safetensors");
             fs::write(output.join(&foreign), b"other").unwrap();
             let config = Config {
-                models_dir: models,
+                models_directory: models,
                 ..Default::default()
             };
             let model = flux();
             let selection = Selection::new(
+                &crate::http::client(&config).unwrap(),
                 &config,
                 &model,
                 &run,
@@ -1168,7 +1192,7 @@ mod tests {
             symlink(&victim, input.join(&sample.folder)).unwrap();
             discard(
                 &Config {
-                    models_dir: models,
+                    models_directory: models,
                     ..Default::default()
                 },
                 Some(&sample),
@@ -1190,7 +1214,7 @@ mod tests {
         let linked = root.path().join("comfy");
         symlink(&actual, &linked).unwrap();
         let linked_config = Config {
-            models_dir: linked.join("models"),
+            models_directory: linked.join("models"),
             ..Default::default()
         };
         assert!(input(&linked_config).is_none());
@@ -1205,11 +1229,44 @@ mod tests {
         fs::create_dir(comfy.join("output")).unwrap();
         symlink(&outside, comfy.join("output/loras")).unwrap();
         let config = Config {
-            models_dir: comfy.join("models"),
+            models_directory: comfy.join("models"),
             ..Default::default()
         };
         assert!(input(&config).is_none());
         assert!(produced(&config).is_none());
+    }
+
+    #[test]
+    fn a_sample_is_never_staged_outside_the_input_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let models = root.path().join("models");
+        let input = root.path().join("input");
+        fs::create_dir(&models).unwrap();
+        fs::create_dir(&input).unwrap();
+        let run = run();
+        let source = input.join(&run.folder).join("targets");
+        fs::create_dir_all(&source).unwrap();
+        for index in 0..5u8 {
+            fs::write(source.join(format!("{index:04}.png")), [index]).unwrap();
+        }
+        let captions = (0..5)
+            .map(|index| (format!("{index:04}.png"), format!("instruction {index}")))
+            .collect();
+        let config = Config {
+            models_directory: models,
+            contract: Contract {
+                probe_prefix: "../outside-".into(),
+                ..Contract::default()
+            },
+            ..Default::default()
+        };
+        assert!(subsample(&config, &flux(), &run.folder, &captions, 4).is_none());
+        let stray: Vec<_> = fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("outside-"))
+            .collect();
+        assert!(stray.is_empty(), "a sample was staged at {stray:?}");
     }
 
     #[cfg(unix)]
@@ -1235,7 +1292,7 @@ mod tests {
             .map(|index| (format!("{index:04}.png"), format!("instruction {index}")))
             .collect();
         let config = Config {
-            models_dir: models,
+            models_directory: models,
             ..Default::default()
         };
         assert!(subsample(&config, &flux(), &run.folder, &captions, 4).is_none());
@@ -1262,13 +1319,13 @@ mod tests {
                             format!("filename=\"{name}\"").as_str(),
                         )
                         .insert_header("content-type", served)
-                        .set_body_bytes(vec![3u8; MIN_WEIGHT_BYTES + 1]),
+                        .set_body_bytes(vec![3u8; MINIMUM_WEIGHT_BYTES + 1]),
                 )
                 .mount(&server)
                 .await;
             let config = Config {
                 base_url: server.uri(),
-                poll_interval_ms: 1,
+                poll_interval_milliseconds: 1,
                 ..Default::default()
             };
             let model = flux();
@@ -1277,7 +1334,7 @@ mod tests {
 
             assert_eq!(
                 bytes.map(|bytes| bytes.len()),
-                Some(MIN_WEIGHT_BYTES + 1),
+                Some(MINIMUM_WEIGHT_BYTES + 1),
                 "{served} must be fetched"
             );
         }
@@ -1297,13 +1354,13 @@ mod tests {
                         format!("filename=\"{name}\"").as_str(),
                     )
                     .insert_header("content-type", "text/html")
-                    .set_body_bytes(vec![3u8; MIN_WEIGHT_BYTES + 1]),
+                    .set_body_bytes(vec![3u8; MINIMUM_WEIGHT_BYTES + 1]),
             )
             .mount(&server)
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1353,7 +1410,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1404,7 +1461,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1431,7 +1488,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1471,7 +1528,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1508,7 +1565,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             ..Default::default()
         };
         let model = flux();
@@ -1547,7 +1604,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_ms: 1,
+            poll_interval_milliseconds: 1,
             contract: Contract {
                 stage_training_artifact_node: "StageWeights".into(),
                 artifact_prefix: "adapter-".into(),
@@ -1593,7 +1650,7 @@ mod tests {
             .unwrap();
         }
         let config = Config {
-            models_dir: models,
+            models_directory: models,
             ..Default::default()
         };
         let sample = subsample(&config, &qwen(), &run.folder, &captions, 4).unwrap();
