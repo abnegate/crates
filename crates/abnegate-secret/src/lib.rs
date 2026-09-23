@@ -11,7 +11,7 @@
 //! ```
 //! use abnegate_secret::{MasterKey, SecretValue, decrypt_value, encrypt_value, redact};
 //!
-//! let key = MasterKey::generate();
+//! let key = MasterKey::generate()?;
 //! let token = SecretValue::new("ghp_0123456789abcdefghij");
 //!
 //! let stored = encrypt_value(&token, &key)?;
@@ -26,21 +26,37 @@
 //!
 //! # Features
 //!
-//! - `sqlx`: `Encode`, `Decode` and `Type` for [`SecretValue`], so it reads and
-//!   writes as the text column it is stored in.
+//! - `sqlx`: `Encode`, `Decode` and `Type` for [`SecretValue`] over every
+//!   database that stores a `String`, so it reads and writes as the text column
+//!   it is stored in.
 //! - `rusqlite`: `ToSql` and `FromSql` for [`SecretValue`], the same for SQLite.
+//!
+//! Neither feature chooses a driver, runtime, TLS stack or SQLite build. Enable
+//! those on your own `sqlx` or `rusqlite` dependency (`sqlx/postgres` and
+//! `sqlx/runtime-tokio`, `rusqlite/bundled`, and so on); Cargo unifies them with
+//! the bare dependency this crate declares.
 
 mod database;
 mod encryption;
 mod error;
 mod key;
+mod random;
 mod redact;
 mod sanitize;
 mod value;
 
-pub use crate::encryption::{decrypt_value, encrypt_value, is_encrypted};
+pub use crate::encryption::decrypt_value;
+pub use crate::encryption::encrypt_value;
+pub use crate::encryption::is_encrypted;
 pub use crate::error::SecretError;
-pub use crate::key::{MasterKey, default_key_path, load_master_key, read_key_file, write_key_file};
-pub use crate::redact::{REDACTED, redact};
-pub use crate::sanitize::{sanitize, sanitize_owned};
-pub use crate::value::{OptionalSecretExt, SecretValue};
+pub use crate::key::MasterKey;
+pub use crate::key::default_key_path;
+pub use crate::key::load_master_key;
+pub use crate::key::read_key_file;
+pub use crate::key::write_key_file;
+pub use crate::redact::REDACTED;
+pub use crate::redact::redact;
+pub use crate::sanitize::sanitize;
+pub use crate::sanitize::sanitize_owned;
+pub use crate::value::OptionalSecretExt;
+pub use crate::value::SecretValue;

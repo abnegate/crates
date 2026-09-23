@@ -1,6 +1,9 @@
 use std::fmt;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
+use serde::Serializer;
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
@@ -9,8 +12,8 @@ use crate::redact::REDACTED;
 /// A credential string.
 ///
 /// `Debug` and `Display` print [`REDACTED`], the buffer is zeroized on drop,
-/// comparison is constant time, and [`SecretValue::expose`] is the only way to
-/// read the value back.
+/// and comparison is constant time. Read the value with
+/// [`SecretValue::expose`] at the point of use.
 ///
 /// ```
 /// use abnegate_secret::SecretValue;
@@ -18,6 +21,23 @@ use crate::redact::REDACTED;
 /// let token = SecretValue::new("ghp_0123456789abcdefghij");
 /// assert_eq!(format!("{token:?}"), "[REDACTED]");
 /// assert_eq!(token.expose(), "ghp_0123456789abcdefghij");
+/// ```
+///
+/// # Serialization
+///
+/// `Serialize` writes the credential **in plaintext**, and `Deserialize` reads
+/// plaintext back, so a settings file that holds one round-trips. Redaction
+/// covers `Debug` and `Display` only: seal the value with
+/// [`encrypt_value`](crate::encrypt_value) before it reaches storage, and
+/// never serialize a `SecretValue` into a log line, an error report or a
+/// response body.
+///
+/// ```
+/// use abnegate_secret::SecretValue;
+///
+/// let token = SecretValue::new("ghp_0123456789abcdefghij");
+/// assert_eq!(serde_json::to_string(&token)?, concat!("\"ghp_", "0123456789abcdefghij\""));
+/// # Ok::<(), serde_json::Error>(())
 /// ```
 #[derive(Clone)]
 pub struct SecretValue {
@@ -38,6 +58,11 @@ impl SecretValue {
 
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    #[cfg(feature = "sqlx")]
+    pub(crate) fn expose_buffer(&self) -> &String {
+        &self.inner
     }
 }
 
@@ -79,6 +104,8 @@ impl From<&str> for SecretValue {
     }
 }
 
+/// Writes the exposed credential in plaintext; see
+/// [Serialization](SecretValue#serialization).
 impl Serialize for SecretValue {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.inner)
@@ -105,21 +132,22 @@ impl OptionalSecretExt for Option<SecretValue> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn display_is_redacted_so_it_must_never_reach_an_authorization_header() {
-        // reqwest's bearer_auth takes T: Display. Handing it a SecretValue
-        // compiles and then sends this placeholder as the credential, so the
-        // redaction becomes the defect. .expose() is the only correct argument.
-        let secret = super::SecretValue::new("ghp_a_real_looking_token_value");
-        assert_eq!(secret.to_string(), super::REDACTED);
-        assert_ne!(secret.to_string(), secret.expose());
-    }
-
     use super::*;
 
     #[derive(Serialize, Deserialize)]
     struct Settings {
         token: SecretValue,
+    }
+
+    #[test]
+    fn display_is_redacted_so_it_must_never_reach_an_authorization_header() {
+        let secret = SecretValue::new(concat!("ghp_", "a_real_looking_token_value"));
+        assert_eq!(secret.to_string(), REDACTED);
+        assert_ne!(
+            secret.to_string(),
+            secret.expose(),
+            "a Display-taking API such as bearer_auth needs expose(), not the SecretValue"
+        );
     }
 
     #[test]

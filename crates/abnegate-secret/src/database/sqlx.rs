@@ -1,38 +1,71 @@
-use sqlx::{Database, Decode, Encode, Type, encode::IsNull, error::BoxDynError};
-use zeroize::Zeroize;
+use sqlx::Database;
+use sqlx::Decode;
+use sqlx::Encode;
+use sqlx::Type;
+use sqlx::encode::IsNull;
+use sqlx::error::BoxDynError;
 
 use crate::value::SecretValue;
 
-impl<DB: Database> Type<DB> for SecretValue
+impl<Driver: Database> Type<Driver> for SecretValue
 where
-    String: Type<DB>,
+    String: Type<Driver>,
 {
-    fn type_info() -> DB::TypeInfo {
-        <String as Type<DB>>::type_info()
+    fn type_info() -> Driver::TypeInfo {
+        <String as Type<Driver>>::type_info()
     }
 
-    fn compatible(info: &DB::TypeInfo) -> bool {
-        <String as Type<DB>>::compatible(info)
-    }
-}
-
-impl<'r, DB: Database> Decode<'r, DB> for SecretValue
-where
-    String: Decode<'r, DB>,
-{
-    fn decode(value: DB::ValueRef<'r>) -> Result<Self, BoxDynError> {
-        <String as Decode<'r, DB>>::decode(value).map(SecretValue::new)
+    fn compatible(info: &Driver::TypeInfo) -> bool {
+        <String as Type<Driver>>::compatible(info)
     }
 }
 
-impl<'q, DB: Database> Encode<'q, DB> for SecretValue
+impl<'r, Driver: Database> Decode<'r, Driver> for SecretValue
 where
-    String: Encode<'q, DB>,
+    String: Decode<'r, Driver>,
 {
-    fn encode_by_ref(&self, buffer: &mut DB::ArgumentBuffer) -> Result<IsNull, BoxDynError> {
-        let mut exposed = self.expose().to_string();
-        let encoded = <String as Encode<'q, DB>>::encode_by_ref(&exposed, buffer);
-        exposed.zeroize();
-        encoded
+    fn decode(value: Driver::ValueRef<'r>) -> Result<Self, BoxDynError> {
+        <String as Decode<'r, Driver>>::decode(value).map(SecretValue::new)
+    }
+}
+
+impl<'q, Driver: Database> Encode<'q, Driver> for SecretValue
+where
+    String: Encode<'q, Driver>,
+{
+    fn encode_by_ref(&self, buffer: &mut Driver::ArgumentBuffer) -> Result<IsNull, BoxDynError> {
+        <String as Encode<'q, Driver>>::encode_by_ref(self.expose_buffer(), buffer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::Any;
+    use sqlx::Arguments;
+    use sqlx::any::AnyArguments;
+
+    use super::*;
+
+    fn stores_as_text<Driver>()
+    where
+        Driver: Database,
+        SecretValue: Type<Driver> + for<'q> Encode<'q, Driver> + for<'r> Decode<'r, Driver>,
+    {
+    }
+
+    #[test]
+    fn is_a_column_wherever_text_is() {
+        stores_as_text::<Any>();
+        assert_eq!(
+            <SecretValue as Type<Any>>::type_info(),
+            <String as Type<Any>>::type_info()
+        );
+    }
+
+    #[test]
+    fn binds_as_a_query_argument() {
+        let mut arguments = AnyArguments::default();
+        arguments.add(SecretValue::new("sk-live-plain")).unwrap();
+        assert_eq!(arguments.len(), 1);
     }
 }

@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::ops::RangeInclusive;
 
 use crate::redact::redact;
 
@@ -9,10 +10,27 @@ const TAB: u8 = b'\t';
 const LINE_FEED: u8 = b'\n';
 const CARRIAGE_RETURN: u8 = b'\r';
 const DELETE: u8 = 0x7F;
-const CONTROL_LEAD: u8 = 0xC2;
-const CONTROL_SEQUENCE_INTRODUCER: u8 = 0x9B;
+const CONTROL_SEQUENCE_INTRODUCER: char = '\u{9B}';
 
-/// Strip terminal control sequences from `text` and redact any credential.
+/// Characters that render as nothing, or reorder the text around them, so what
+/// a reader sees differs from what the text says: a zero-width space inside a
+/// token hides it from [`redact`], and a right-to-left override disguises code.
+const INVISIBLE_CHARACTERS: &[RangeInclusive<char>] = &[
+    '\u{00AD}'..='\u{00AD}',
+    '\u{061C}'..='\u{061C}',
+    '\u{200B}'..='\u{200F}',
+    '\u{202A}'..='\u{202E}',
+    '\u{2060}'..='\u{2064}',
+    '\u{2066}'..='\u{2069}',
+    '\u{FEFF}'..='\u{FEFF}',
+];
+
+/// The UTF-8 lead bytes of every C1 control and every
+/// [invisible character](INVISIBLE_CHARACTERS).
+const INSPECTED_LEADS: &[u8] = &[0xC2, 0xD8, 0xE2, 0xEF];
+
+/// Strip terminal control sequences and invisible formatting characters from
+/// `text` and redact any credential.
 ///
 /// Text with nothing to remove is returned untouched and unallocated.
 pub fn sanitize(text: &str) -> Cow<'_, str> {
@@ -62,16 +80,20 @@ fn strip_control_sequences(text: &str) -> Cow<'_, str> {
                 index += 1;
             }
             0x00..=0x1F | DELETE => index += 1,
-            CONTROL_LEAD => match bytes.get(index + 1) {
-                Some(&CONTROL_SEQUENCE_INTRODUCER) => {
-                    index = control_sequence(bytes, index + 2).unwrap_or(index + 2);
-                }
-                Some(0x80..=0x9F) => index += 2,
-                _ => {
-                    output.push_str(&text[index..index + 2]);
-                    index += 2;
-                }
-            },
+            lead if INSPECTED_LEADS.contains(&lead) => {
+                let Some(character) = text[index..].chars().next() else {
+                    break;
+                };
+                let after = index + character.len_utf8();
+                index = if character == CONTROL_SEQUENCE_INTRODUCER {
+                    control_sequence(bytes, after).unwrap_or(after)
+                } else {
+                    if !character.is_control() && !is_invisible(character) {
+                        output.push(character);
+                    }
+                    after
+                };
+            }
             _ => {
                 let start = index;
                 while index < bytes.len() && !needs_inspection(bytes[index]) {
@@ -86,7 +108,13 @@ fn strip_control_sequences(text: &str) -> Cow<'_, str> {
 }
 
 fn needs_inspection(byte: u8) -> bool {
-    matches!(byte, 0x00..=0x08 | 0x0B..=0x1F | DELETE | CONTROL_LEAD)
+    matches!(byte, 0x00..=0x08 | 0x0B..=0x1F | DELETE) || INSPECTED_LEADS.contains(&byte)
+}
+
+fn is_invisible(character: char) -> bool {
+    INVISIBLE_CHARACTERS
+        .iter()
+        .any(|range| range.contains(&character))
 }
 
 /// The end of the sequence introduced by the escape at `index`.
@@ -96,10 +124,24 @@ fn needs_inspection(byte: u8) -> bool {
 fn escape_sequence(bytes: &[u8], index: usize) -> usize {
     match bytes.get(index + 1) {
         Some(b']') => operating_system_command(bytes, index + 2).unwrap_or(index + 2),
-        Some(b'P' | b'^' | b'_') => device_control(bytes, index + 2).unwrap_or(index + 2),
+        Some(b'P' | b'X' | b'^' | b'_') => device_control(bytes, index + 2).unwrap_or(index + 2),
         Some(b'[') => control_sequence(bytes, index + 2).unwrap_or(index + 2),
-        Some(0x40..=0x5F) => index + 2,
+        Some(0x20..=0x2F) => intermediate_sequence(bytes, index + 1).unwrap_or(index + 1),
+        Some(0x30..=0x7E) => index + 2,
         _ => index + 1,
+    }
+}
+
+/// The end of an escape sequence built from intermediate bytes and a final
+/// byte, as `ESC ( B` selects a character set.
+fn intermediate_sequence(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut index = from;
+    while matches!(bytes.get(index), Some(0x20..=0x2F)) {
+        index += 1;
+    }
+    match bytes.get(index) {
+        Some(0x30..=0x7E) => Some(index + 1),
+        _ => None,
     }
 }
 
@@ -147,6 +189,8 @@ mod tests {
     use super::*;
     use crate::redact::REDACTED;
 
+    const TOKEN: &str = concat!("ghp_", "0123456789abcdefghij");
+
     #[test]
     fn leaves_plain_text_alone() {
         let text = "Compiling example_crate v0.1.0\n    Finished in 4.21s\n";
@@ -191,7 +235,72 @@ mod tests {
     #[test]
     fn strips_a_lone_escape() {
         assert_eq!(sanitize("a\u{1b}Mb"), "ab");
-        assert_eq!(sanitize("a\u{1b}7b"), "a7b");
+        assert_eq!(sanitize("a\u{1b}7b"), "ab");
+        assert_eq!(sanitize("a\u{1b}8b"), "ab");
+        assert_eq!(sanitize("a\u{1b}cb"), "ab");
+    }
+
+    #[test]
+    fn strips_an_escape_sequence_with_intermediates() {
+        assert_eq!(sanitize("a\u{1b}(Bb"), "ab");
+        assert_eq!(sanitize("a\u{1b})0b"), "ab");
+        assert_eq!(sanitize("a\u{1b}#8b"), "ab");
+        assert_eq!(sanitize("a\u{1b} Fb"), "ab");
+    }
+
+    #[test]
+    fn strips_a_start_of_string() {
+        assert_eq!(sanitize("a\u{1b}Xhidden\u{1b}\\b"), "ab");
+    }
+
+    #[test]
+    fn strips_bidirectional_and_zero_width_characters() {
+        assert_eq!(
+            sanitize(concat!(
+                "a\u{202E}b\u{202A}c\u{2066}d\u{2069}e\u{200B}f\u{200D}g",
+                "\u{2060}h\u{FEFF}i\u{00AD}j\u{061C}k\u{200E}l"
+            )),
+            "abcdefghijkl"
+        );
+    }
+
+    #[test]
+    fn every_invisible_character_is_inspected() {
+        for range in INVISIBLE_CHARACTERS {
+            for character in range.clone() {
+                let mut encoded = [0u8; 4];
+                let lead = character.encode_utf8(&mut encoded).as_bytes()[0];
+                assert!(needs_inspection(lead), "{character:?} is never inspected");
+            }
+        }
+    }
+
+    #[test]
+    fn redacts_a_credential_split_by_an_invisible_character() {
+        for hidden in [
+            concat!("ghp_", "0123\u{200B}456789abcdefghij"),
+            concat!("ghp_", "0123456789\u{202E}abcdefghij"),
+        ] {
+            assert_eq!(
+                sanitize(&format!("fatal: {hidden} rejected")),
+                format!("fatal: {REDACTED} rejected")
+            );
+        }
+    }
+
+    #[test]
+    fn redacts_a_master_key_in_the_form_it_is_loaded_from() {
+        let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            sanitize(&format!("EXAMPLE_MASTER_KEY={key}")),
+            format!("EXAMPLE_MASTER_KEY={REDACTED}")
+        );
+    }
+
+    #[test]
+    fn keeps_typographic_punctuation() {
+        let text = "\u{201C}quoted\u{201D} \u{2014} dash \u{2192} arrow \u{2705} \u{00A3}20";
+        assert_eq!(sanitize(text), text);
     }
 
     #[test]
@@ -225,6 +334,7 @@ mod tests {
             sanitize("token=ghp_0123\u{1b}[0m456789abcdefghij"),
             format!("token={REDACTED}")
         );
+        assert_eq!(sanitize(&format!("{TOKEN}\u{1b}(B")), REDACTED);
     }
 
     #[test]
