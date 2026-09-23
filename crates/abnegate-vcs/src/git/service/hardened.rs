@@ -132,7 +132,7 @@ impl GitService {
     }
 
     /// Whether `reference` is a symbolic ref, dangling or not.
-    async fn is_symbolic(path: &Path, reference: impl AsRef<OsStr>) -> GitResult<bool> {
+    pub(super) async fn is_symbolic(path: &Path, reference: impl AsRef<OsStr>) -> GitResult<bool> {
         let read = Self::output(
             Self::hardened()
                 .args(["symbolic-ref", "--quiet"])

@@ -325,9 +325,14 @@ impl GitService {
     ///
     /// Assumes the refs are already fetched, and discards anything the working
     /// tree holds: only a managed clone may be reset this way. Both steps are
-    /// local, so they run hardened, after the clone's configuration is checked.
+    /// local, so they run hardened, after the clone's configuration is checked
+    /// and a `branch` that is a symbolic ref is refused with
+    /// [`GitError::SymbolicBranch`].
     async fn checkout_reset(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         Self::verify_config(path).await?;
+        if Self::is_symbolic(path, branch.reference()).await? {
+            return Err(GitError::SymbolicBranch(branch.clone()));
+        }
         let output = Self::output(&mut Self::checking_out(path, branch)).await?;
 
         if !output.status.success() {
@@ -687,6 +692,53 @@ mod managed_tests {
         assert!(
             git(&target, &["log", "--oneline"]).contains("second commit"),
             "the pull brought the new commit"
+        );
+    }
+
+    /// A managed clone whose default branch became a link is not brought
+    /// forward: `checkout -B` and `reset --hard` would reset the branch the
+    /// link names to the remote's.
+    #[tokio::test]
+    async fn a_managed_clone_whose_default_branch_is_a_link_is_not_brought_forward() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .await
+            .unwrap();
+        let kept = git(
+            &target,
+            &["commit-tree", "-p", "HEAD", "-m", "work", "HEAD^{tree}"],
+        );
+        git(&target, &["update-ref", "refs/heads/task/other", &kept]);
+        git(
+            &target,
+            &["symbolic-ref", "refs/heads/main", "refs/heads/task/other"],
+        );
+        second_commit(source.path());
+
+        let synced = service
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .await;
+
+        assert_eq!(
+            git(
+                &target,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/task/other"
+                ],
+            ),
+            kept,
+            "the branch the link names was reset to the remote's"
+        );
+        assert!(
+            matches!(synced, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("main")),
+            "{synced:?}"
         );
     }
 
