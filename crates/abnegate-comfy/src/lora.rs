@@ -17,6 +17,7 @@ use abnegate_vision::gravity::Point;
 use abnegate_vision::{Raster, Rendered, decode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -52,7 +53,7 @@ pub struct TrainRequest {
     pub images: Vec<TrainImage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct TrainImage {
     pub filename: String,
     pub caption: String,
@@ -63,6 +64,22 @@ pub struct TrainImage {
     /// Frames pulled from a clip arrive grouped; separate photos do not.
     #[serde(default)]
     pub group: Option<usize>,
+}
+
+impl fmt::Debug for TrainImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TrainImage")
+            .field("filename", &self.filename)
+            .field("caption", &self.caption)
+            .field("bytes_base64", &self.bytes_base64.len())
+            .field(
+                "before_base64",
+                &self.before_base64.as_ref().map(String::len),
+            )
+            .field("group", &self.group)
+            .finish()
+    }
 }
 
 /// A finished run: the adapter on disk and, when ComfyUI could be asked, how
@@ -2089,6 +2106,26 @@ mod tests {
             "a name that already carries the extension keeps exactly one"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_training_request_prints_its_images_sizes_rather_than_their_bytes() {
+        let upload = "A".repeat(1 << 20);
+        let request = TrainRequest {
+            images: vec![TrainImage {
+                bytes_base64: upload.clone(),
+                before_base64: Some(upload),
+                ..image("target", "a portrait", None)
+            }],
+            ..identity("sized")
+        };
+        let rendered = format!("{request:?}");
+        assert!(rendered.len() < 400, "{} characters", rendered.len());
+        assert!(rendered.contains("bytes_base64: 1048576"), "{rendered}");
+        assert!(
+            rendered.contains("before_base64: Some(1048576)"),
+            "{rendered}"
+        );
     }
 
     #[test]

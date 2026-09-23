@@ -23,6 +23,7 @@ use abnegate_vision::{Raster, decode};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -121,7 +122,7 @@ pub struct Options {
 }
 
 /// A clip submitted for training.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct FrameRequest {
     pub filename: String,
     pub bytes_base64: String,
@@ -134,8 +135,20 @@ pub struct FrameRequest {
     pub mirror: Option<bool>,
 }
 
+impl fmt::Debug for FrameRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FrameRequest")
+            .field("filename", &self.filename)
+            .field("bytes_base64", &self.bytes_base64.len())
+            .field("fps", &self.fps)
+            .field("mirror", &self.mirror)
+            .finish()
+    }
+}
+
 /// One training image pulled from a clip.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Frame {
     pub filename: String,
     pub bytes_base64: String,
@@ -145,6 +158,19 @@ pub struct Frame {
     /// Frames sharing a group are the same shot, so one caption describes them
     /// all and the vision model only has to look at one of them.
     pub group: usize,
+}
+
+impl fmt::Debug for Frame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Frame")
+            .field("filename", &self.filename)
+            .field("bytes_base64", &self.bytes_base64.len())
+            .field("timestamp_milliseconds", &self.timestamp_milliseconds)
+            .field("mirrored", &self.mirrored)
+            .field("group", &self.group)
+            .finish()
+    }
 }
 
 /// What one clip yielded.
@@ -945,6 +971,28 @@ mod tests {
                 7, 8, 9, 4, 5, 6, 1, 2, 3, 16, 17, 18, 13, 14, 15, 10, 11, 12
             ]
         );
+    }
+
+    #[test]
+    fn clips_and_frames_print_their_size_rather_than_their_bytes() {
+        let upload = "A".repeat(1 << 20);
+        let request = FrameRequest {
+            filename: "clip.mp4".into(),
+            bytes_base64: upload.clone(),
+            fps: None,
+            mirror: None,
+        };
+        let frame = Frame {
+            filename: "frame-0000.png".into(),
+            bytes_base64: upload,
+            timestamp_milliseconds: 0,
+            mirrored: false,
+            group: 0,
+        };
+        for rendered in [format!("{request:?}"), format!("{frame:?}")] {
+            assert!(rendered.len() < 200, "{} characters", rendered.len());
+            assert!(rendered.contains("bytes_base64: 1048576"), "{rendered}");
+        }
     }
 
     #[test]

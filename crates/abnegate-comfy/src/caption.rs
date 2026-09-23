@@ -11,6 +11,7 @@ use abnegate_llm::{LlmClient, LlmConfig, Message};
 use abnegate_secret::SecretValue;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -61,7 +62,7 @@ pub struct CaptionRequest {
     pub images: Vec<CaptionImage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct CaptionImage {
     pub filename: String,
     pub bytes_base64: String,
@@ -73,14 +74,37 @@ pub struct CaptionImage {
     pub group: Option<usize>,
 }
 
+impl fmt::Debug for CaptionImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CaptionImage")
+            .field("filename", &self.filename)
+            .field("bytes_base64", &self.bytes_base64.len())
+            .field("caption", &self.caption)
+            .field("group", &self.group)
+            .finish()
+    }
+}
+
 /// One image on its way to a caption.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Draft {
     /// Inline data URL, the only image shape a vision model takes.
     pub image: String,
     pub caption: String,
     /// Drafts sharing a group are described once and captioned alike.
     pub group: usize,
+}
+
+impl fmt::Debug for Draft {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Draft")
+            .field("image", &self.image.len())
+            .field("caption", &self.caption)
+            .field("group", &self.group)
+            .finish()
+    }
 }
 
 impl Draft {
@@ -348,6 +372,21 @@ mod tests {
                 "finish_reason": "stop"
             }]
         })
+    }
+
+    #[test]
+    fn images_print_their_size_rather_than_their_bytes() {
+        let upload = "A".repeat(1 << 20);
+        let image = CaptionImage {
+            filename: "a.png".into(),
+            bytes_base64: upload.clone(),
+            caption: String::new(),
+            group: None,
+        };
+        let draft = Draft::new("a.png", &upload, "", 0);
+        for rendered in [format!("{image:?}"), format!("{draft:?}")] {
+            assert!(rendered.len() < 200, "{} characters", rendered.len());
+        }
     }
 
     #[test]

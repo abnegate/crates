@@ -5,6 +5,7 @@ use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::fmt;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
@@ -47,18 +48,39 @@ pub enum Error {
     Cancelled,
 }
 
-#[derive(Debug)]
 pub struct GeneratedImage {
     pub bytes: bytes::Bytes,
     pub mime: String,
     pub filename: String,
 }
 
-#[derive(Debug, Clone)]
+impl fmt::Debug for GeneratedImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GeneratedImage")
+            .field("bytes", &self.bytes.len())
+            .field("mime", &self.mime)
+            .field("filename", &self.filename)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct SourceImage {
     pub bytes: bytes::Bytes,
     pub mime: String,
     pub filename: String,
+}
+
+impl fmt::Debug for SourceImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SourceImage")
+            .field("bytes", &self.bytes.len())
+            .field("mime", &self.mime)
+            .field("filename", &self.filename)
+            .finish()
+    }
 }
 
 impl SourceImage {
@@ -91,11 +113,22 @@ impl SourceImage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SourceVideo {
     pub bytes: bytes::Bytes,
     pub mime: String,
     pub filename: String,
+}
+
+impl fmt::Debug for SourceVideo {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SourceVideo")
+            .field("bytes", &self.bytes.len())
+            .field("mime", &self.mime)
+            .field("filename", &self.filename)
+            .finish()
+    }
 }
 
 impl SourceVideo {
@@ -1338,6 +1371,26 @@ mod tests {
     };
 
     const REQUEST_WAIT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn media_payloads_print_their_size_rather_than_their_bytes() {
+        let payload = vec![0x5a_u8; 1 << 20];
+        let generated = GeneratedImage {
+            bytes: payload.clone().into(),
+            mime: "image/png".into(),
+            filename: "out.png".into(),
+        };
+        let image = SourceImage::new(payload.clone(), "image/png").unwrap();
+        let video = SourceVideo::new(payload, "video/mp4").unwrap();
+        for rendered in [
+            format!("{generated:?}"),
+            format!("{image:?}"),
+            format!("{video:?}"),
+        ] {
+            assert!(rendered.len() < 200, "{} characters", rendered.len());
+            assert!(rendered.contains("bytes: 1048576"), "{rendered}");
+        }
+    }
 
     #[test]
     fn workflow_mutates_only_approved_inputs() {
