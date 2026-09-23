@@ -14,7 +14,7 @@ use std::process::Stdio;
 /// `http.sslCAInfo` and `http.sslCAPath` are deliberately absent: git hands an
 /// empty value to curl verbatim and every HTTPS request then fails. A
 /// repository that sets either is refused by [`refused`] instead.
-const PINS: [&str; 36] = [
+pub(crate) const PINS: [&str; 36] = [
     "-c",
     "core.hooksPath=/dev/null",
     "-c",

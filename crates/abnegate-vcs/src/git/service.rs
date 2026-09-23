@@ -7,6 +7,7 @@ use crate::git::DiffSummary;
 use crate::git::GitError;
 use crate::git::GitResult;
 use crate::git::IGNORE_SUBMODULES;
+use crate::git::PINS;
 use crate::git::RemoteHead;
 use crate::git::authentication::authenticate;
 #[cfg(unix)]
