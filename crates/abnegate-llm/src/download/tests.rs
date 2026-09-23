@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use sha2::Digest;
 use sha2::Sha256;
@@ -87,6 +88,7 @@ async fn download_writes_the_whole_file() {
     assert_eq!(fs::read(&target).await.unwrap(), BODY);
     assert!(!part_path(&target).exists());
     assert!(!Validator::path(&part_path(&target)).exists());
+    assert!(!TransferLock::path(&part_path(&target)).exists());
     assert!(progress.completed.load(Ordering::Relaxed));
     assert_eq!(progress.downloaded_bytes.load(Ordering::Relaxed), 9);
     assert_eq!(progress.percent(), 100);
@@ -440,5 +442,49 @@ async fn a_validator_that_names_no_url_is_not_trusted() {
     let (result, _) = download(&server, &target, None).await;
     result.unwrap();
 
+    assert_eq!(fs::read(&target).await.unwrap(), BODY);
+}
+
+#[tokio::test]
+async fn a_second_download_to_the_same_file_is_refused_while_the_first_runs() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(BODY.to_vec())
+                .set_delay(Duration::from_millis(300)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+
+    let first = tokio::spawn({
+        let url = server.uri();
+        let target = target.clone();
+        async move { download_gguf(&url, &target, None, Arc::new(DownloadProgress::new())).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty()
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the first download reached the server");
+
+    let (second, progress) = download(&server, &target, None).await;
+
+    assert!(
+        matches!(second, Err(DownloadError::InProgress)),
+        "{second:?}"
+    );
+    assert!(progress.failed.load(Ordering::Relaxed));
+    first.await.unwrap().unwrap();
     assert_eq!(fs::read(&target).await.unwrap(), BODY);
 }

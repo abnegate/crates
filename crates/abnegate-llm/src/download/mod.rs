@@ -11,6 +11,7 @@
 mod checksum;
 mod content_range;
 mod error;
+mod lock;
 mod progress;
 mod validator;
 
@@ -39,6 +40,7 @@ pub use crate::download::error::DownloadError;
 pub use crate::download::progress::DownloadProgress;
 
 use crate::download::content_range::ContentRange;
+use crate::download::lock::TransferLock;
 use crate::download::validator::Validator;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -55,6 +57,10 @@ const ATTEMPTS: usize = 2;
 /// the transfer completes, so an interrupted download never looks finished.
 /// When `expected` is given, a completed file whose SHA-256 differs is deleted
 /// and reported instead of installed.
+///
+/// One transfer to a target runs at a time, in this process or any other: a
+/// second is refused with [`DownloadError::InProgress`] rather than left to
+/// write into the same `.part` file.
 pub async fn download_gguf(
     url: &str,
     target: &Path,
@@ -84,6 +90,7 @@ async fn transfer(
     }
 
     let part = part_path(target);
+    let _lock = TransferLock::acquire(&part).await?;
     let client = Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)

@@ -18,6 +18,8 @@ pub enum DownloadError {
     InvalidChecksum(String),
     #[error("the server kept answering the resumed range inconsistently")]
     Inconsistent,
+    #[error("another download to the same file is in progress")]
+    InProgress,
 }
 
 impl From<reqwest::Error> for DownloadError {
