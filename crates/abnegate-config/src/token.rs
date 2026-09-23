@@ -4,6 +4,7 @@ use abnegate_secret::SecretValue;
 use keyring::Entry;
 use keyring::Error as KeyringError;
 
+use crate::application::Application;
 use crate::error::ConfigError;
 
 pub use crate::token::metadata::TokenMetadata;
@@ -12,17 +13,20 @@ const ACCESS_TOKEN: &str = "access-token";
 const REFRESH_TOKEN: &str = "refresh-token";
 const METADATA: &str = "metadata";
 
-/// Credentials held in the platform keyring under one service name.
+/// Credentials held in the platform keyring under the application's name.
 ///
-/// The service name is the caller's: nothing here reads a configuration file to
-/// find out which application it belongs to.
+/// The application is the caller's: nothing here reads a configuration file
+/// to find out which application it belongs to.
 ///
 /// ```no_run
-/// use abnegate_config::{TokenMetadata, TokenStore};
+/// use abnegate_config::Application;
+/// use abnegate_config::TokenMetadata;
+/// use abnegate_config::TokenStore;
 /// use abnegate_secret::SecretValue;
-/// use chrono::{TimeDelta, Utc};
+/// use chrono::TimeDelta;
+/// use chrono::Utc;
 ///
-/// let store = TokenStore::new("example-cli");
+/// let store = TokenStore::new(Application::new("example-cli")?);
 /// store.set_access_token(&SecretValue::new("at-0123456789"))?;
 /// store.set_metadata(&TokenMetadata::new(
 ///     "https://api.example.com",
@@ -34,18 +38,17 @@ const METADATA: &str = "metadata";
 /// # Ok::<(), abnegate_config::ConfigError>(())
 /// ```
 pub struct TokenStore {
-    service: String,
+    application: Application,
 }
 
 impl TokenStore {
-    pub fn new(service: impl Into<String>) -> Self {
-        Self {
-            service: service.into(),
-        }
+    pub fn new(application: Application) -> Self {
+        Self { application }
     }
 
+    /// The keyring service every credential is stored under.
     pub fn service(&self) -> &str {
-        &self.service
+        self.application.as_str()
     }
 
     /// Read the credential stored under `name`.
@@ -118,7 +121,7 @@ impl TokenStore {
     }
 
     fn entry(&self, name: &str) -> Result<Entry, ConfigError> {
-        Ok(Entry::new(&self.service, name)?)
+        Ok(Entry::new(self.service(), name)?)
     }
 
     fn failure(&self, name: &str, source: KeyringError) -> ConfigError {
@@ -135,17 +138,18 @@ impl TokenStore {
 mod tests {
     use super::*;
 
+    fn store(application: &str) -> TokenStore {
+        TokenStore::new(Application::new(application).unwrap())
+    }
+
     #[test]
     fn a_store_keeps_the_service_it_was_given() {
-        assert_eq!(TokenStore::new("example-cli").service(), "example-cli");
+        assert_eq!(store("example-cli").service(), "example-cli");
     }
 
     #[test]
     fn two_applications_do_not_share_a_service() {
-        assert_ne!(
-            TokenStore::new("one").service(),
-            TokenStore::new("two").service()
-        );
+        assert_ne!(store("one").service(), store("two").service());
     }
 
     #[test]
@@ -157,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_missing_credential_is_not_a_store_failure() {
-        let error = TokenStore::new("example").failure(ACCESS_TOKEN, KeyringError::NoEntry);
+        let error = store("example").failure(ACCESS_TOKEN, KeyringError::NoEntry);
 
         assert!(
             matches!(&error, ConfigError::NoCredential { name } if name == ACCESS_TOKEN),
@@ -168,7 +172,7 @@ mod tests {
 
     #[test]
     fn a_store_failure_is_reported_as_one() {
-        let error = TokenStore::new("example").failure(
+        let error = store("example").failure(
             ACCESS_TOKEN,
             KeyringError::Invalid("service".into(), "empty".into()),
         );
@@ -178,7 +182,7 @@ mod tests {
 
     #[test]
     fn an_undecodable_credential_is_reported_without_its_bytes() {
-        let error = TokenStore::new("example").failure(
+        let error = store("example").failure(
             ACCESS_TOKEN,
             KeyringError::BadEncoding(b"hunter2\xff".to_vec()),
         );

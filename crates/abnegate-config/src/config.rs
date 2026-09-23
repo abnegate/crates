@@ -1,14 +1,17 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 use abnegate_secret::MasterKey;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use toml::Value;
 
-use crate::envelope::{self, Location};
+use crate::application::Application;
+use crate::envelope;
+use crate::envelope::Sealed;
 use crate::error::ConfigError;
 use crate::loader::Loader;
+use crate::private_file::PrivateFile;
 
 /// An application's settings together with the file they came from.
 ///
@@ -17,7 +20,8 @@ use crate::loader::Loader;
 pub struct Config<T> {
     path: PathBuf,
     value: T,
-    sealed: Vec<Location>,
+    key: Option<MasterKey>,
+    sealed: Vec<Sealed>,
 }
 
 impl<T> Config<T> {
@@ -26,14 +30,21 @@ impl<T> Config<T> {
         Self {
             path: path.into(),
             value,
+            key: None,
             sealed: Vec::new(),
         }
     }
 
-    pub(crate) fn loaded(path: PathBuf, value: T, sealed: Vec<Location>) -> Self {
+    pub(crate) fn loaded(
+        path: PathBuf,
+        value: T,
+        key: Option<MasterKey>,
+        sealed: Vec<Sealed>,
+    ) -> Self {
         Self {
             path,
             value,
+            key,
             sealed,
         }
     }
@@ -59,7 +70,7 @@ impl<T: DeserializeOwned> Config<T> {
     /// Load `application`'s settings from the conventional location.
     ///
     /// Fails with [`ConfigError::Missing`] when the file is not there.
-    pub fn load(application: &str) -> Result<Self, ConfigError> {
+    pub fn load(application: &Application) -> Result<Self, ConfigError> {
         Loader::new(application)?.load()
     }
 }
@@ -67,55 +78,51 @@ impl<T: DeserializeOwned> Config<T> {
 impl<T: DeserializeOwned + Default> Config<T> {
     /// Load `application`'s settings, falling back to [`Default`] when the file
     /// is not there. Nothing is written until [`Config::save`] is called.
-    pub fn load_or_default(application: &str) -> Result<Self, ConfigError> {
+    pub fn load_or_default(application: &Application) -> Result<Self, ConfigError> {
         Loader::new(application)?.load_or_default()
     }
 }
 
 impl<T: Serialize> Config<T> {
-    /// Write the settings out, creating the directory if it is missing.
+    /// Write the settings out, sealing again every value that arrived sealed.
     ///
-    /// Values that arrived sealed are written back in plaintext; use
-    /// [`Config::save_sealed`] to keep them encrypted.
+    /// Values are sealed with the key the [`Loader`] was given. Without one, a
+    /// value that still holds its envelope is written as it was, and one that
+    /// would be written in the clear fails with
+    /// [`ConfigError::SealedWithoutKey`] rather than reach the disk.
+    ///
+    /// The file is replaced atomically and is readable only by its owner; a
+    /// directory created for it is too.
     pub fn save(&self) -> Result<(), ConfigError> {
-        self.write(self.document()?)
+        self.write(self.key.as_ref())
     }
 
-    /// Write the settings out, resealing every value that was sealed on load.
+    /// Write the settings out, sealing every value that arrived sealed with
+    /// `key` instead of the key they were loaded with.
     pub fn save_sealed(&self, key: &MasterKey) -> Result<(), ConfigError> {
-        let mut document = self.document()?;
+        self.write(Some(key))
+    }
+
+    fn write(&self, key: Option<&MasterKey>) -> Result<(), ConfigError> {
+        let mut document = Value::try_from(&self.value)?;
         envelope::seal(&mut document, &self.sealed, key)?;
-        self.write(document)
-    }
 
-    fn document(&self) -> Result<Value, ConfigError> {
-        Ok(Value::try_from(&self.value)?)
-    }
-
-    fn write(&self, document: Value) -> Result<(), ConfigError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
-                path: self.path.clone(),
-                source,
-            })?;
-        }
-
-        fs::write(&self.path, toml::to_string_pretty(&document)?).map_err(|source| {
-            ConfigError::Write {
-                path: self.path.clone(),
-                source,
-            }
-        })
+        PrivateFile::new(&self.path).write(toml::to_string_pretty(&document)?.as_bytes())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use abnegate_secret::{SecretValue, encrypt_value};
+    use std::fs;
+
+    use abnegate_secret::SecretValue;
+    use abnegate_secret::encrypt_value;
     use serde::Deserialize;
     use tempfile::TempDir;
 
     use super::*;
+
+    const SEALED: &str = "ENC[v1:";
 
     #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
     struct Settings {
@@ -154,6 +161,31 @@ mod tests {
     #[derive(Debug, Deserialize, Serialize)]
     struct Credentials {
         password: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct Account {
+        name: String,
+        password: String,
+        hosts: Vec<String>,
+    }
+
+    fn absent() -> Application {
+        Application::new("abnegate-config-no-such-application").unwrap()
+    }
+
+    fn sealed_file(content: impl FnOnce(&str) -> String, key: &MasterKey) -> (TempDir, PathBuf) {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("config.toml");
+        let envelope = encrypt_value(&SecretValue::new("hunter2"), key).unwrap();
+        fs::write(&path, content(&envelope)).unwrap();
+        (directory, path)
+    }
+
+    fn account(envelope: &str) -> String {
+        format!(
+            "name = \"person\"\npassword = \"{envelope}\"\nhosts = [\"one\", \"{envelope}\", \"three\"]\n"
+        )
     }
 
     fn settings() -> Settings {
@@ -303,15 +335,14 @@ mod tests {
 
     #[test]
     fn an_application_without_a_configuration_file_reports_it_missing() {
-        let error = Config::<Settings>::load("abnegate-config-no-such-application").unwrap_err();
+        let error = Config::<Settings>::load(&absent()).unwrap_err();
 
         assert!(matches!(error, ConfigError::Missing { .. }), "{error:?}");
     }
 
     #[test]
     fn an_application_without_a_configuration_file_still_has_defaults() {
-        let config =
-            Config::<Settings>::load_or_default("abnegate-config-no-such-application").unwrap();
+        let config = Config::<Settings>::load_or_default(&absent()).unwrap();
 
         assert_eq!(config.value(), &Settings::default());
     }
@@ -386,5 +417,152 @@ mod tests {
         .unwrap();
 
         assert!(fs::read_to_string(&path).unwrap().contains("hunter2"));
+    }
+
+    #[test]
+    fn saving_after_loading_with_a_key_keeps_every_secret_sealed() {
+        let key = MasterKey::generate();
+        let (_directory, path) = sealed_file(account, &key);
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Account>()
+            .unwrap();
+        config.value_mut().name = "someone else".to_string();
+        config.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("hunter2"), "{written}");
+        assert_eq!(written.matches(SEALED).count(), 2, "{written}");
+        let reloaded = Loader::at(&path)
+            .master_key(&key)
+            .load::<Account>()
+            .unwrap();
+        assert_eq!(reloaded.value().name, "someone else");
+        assert_eq!(reloaded.value().password, "hunter2");
+        assert_eq!(reloaded.value().hosts, ["one", "hunter2", "three"]);
+    }
+
+    #[test]
+    fn saving_after_an_array_shifts_seals_the_secret_where_it_moved() {
+        let key = MasterKey::generate();
+        let (_directory, path) = sealed_file(account, &key);
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Account>()
+            .unwrap();
+        config.value_mut().hosts.remove(0);
+        config.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("hunter2"), "{written}");
+        assert!(written.contains("\"three\""), "{written}");
+        assert_eq!(
+            Loader::at(&path)
+                .master_key(&key)
+                .load::<Account>()
+                .unwrap()
+                .value()
+                .hosts,
+            ["hunter2", "three"]
+        );
+    }
+
+    #[test]
+    fn saving_without_a_key_keeps_an_untouched_envelope() {
+        let key = MasterKey::generate();
+        let (_directory, path) = sealed_file(account, &key);
+
+        let mut config = Loader::at(&path).load::<Account>().unwrap();
+        config.value_mut().name = "someone else".to_string();
+        config.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert_eq!(written.matches(SEALED).count(), 2, "{written}");
+        assert_eq!(
+            Loader::at(&path)
+                .master_key(&key)
+                .load::<Account>()
+                .unwrap()
+                .value()
+                .password,
+            "hunter2"
+        );
+    }
+
+    #[test]
+    fn saving_without_a_key_refuses_to_write_a_sealed_field_in_the_clear() {
+        let key = MasterKey::generate();
+        let (_directory, path) = sealed_file(account, &key);
+        let before = fs::read_to_string(&path).unwrap();
+
+        let mut config = Loader::at(&path).load::<Account>().unwrap();
+        config.value_mut().password = "correct-horse".to_string();
+        let error = config.save().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedWithoutKey { field } if field == "password"),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_new_key_reseals_under_that_key() {
+        let old = MasterKey::generate();
+        let new = MasterKey::generate();
+        let (_directory, path) = sealed_file(account, &old);
+
+        Loader::at(&path)
+            .master_key(&old)
+            .load::<Account>()
+            .unwrap()
+            .save_sealed(&new)
+            .unwrap();
+
+        assert_eq!(
+            Loader::at(&path)
+                .master_key(&new)
+                .load::<Account>()
+                .unwrap()
+                .value()
+                .password,
+            "hunter2"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_file_and_its_directory_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TempDir::new().unwrap();
+        let nested = directory.path().join("nested");
+        let path = nested.join("config.toml");
+
+        Config::new(&path, settings()).save().unwrap();
+
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&nested), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_replaces_a_symlink_instead_of_writing_through_it() {
+        let directory = TempDir::new().unwrap();
+        let target = directory.path().join("elsewhere.toml");
+        let path = directory.path().join("config.toml");
+        fs::write(&target, "untouched = true\n").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        Config::new(&path, settings()).save().unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "untouched = true\n");
+        assert_eq!(
+            Loader::at(&path).load::<Settings>().unwrap().value(),
+            &settings()
+        );
     }
 }

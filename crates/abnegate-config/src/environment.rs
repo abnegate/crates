@@ -1,17 +1,60 @@
-use std::collections::{BTreeMap, BTreeSet};
+mod value;
+
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::Path;
+use std::path::PathBuf;
 
+use crate::environment::value::is_key;
+use crate::environment::value::quote;
+use crate::environment::value::unquote;
 use crate::error::ConfigError;
+use crate::private_file::PrivateFile;
 
-#[cfg(unix)]
-const FILE_MODE: u32 = 0o600;
+const SEPARATOR: char = '=';
+const COMMENT: char = '#';
 
 /// A `.env` file whose keys can be upserted without disturbing the rest of it.
 ///
 /// Comments, blank lines, and the order of existing keys survive an update;
-/// keys that are not already there are appended. The file is written back
-/// readable only by its owner, because these files hold credentials.
+/// keys that are not already there are appended. The file is replaced
+/// atomically and is readable only by its owner, because these files hold
+/// credentials; a symlink at the path is replaced, never written through.
+///
+/// Keys must be shell variable names. Every value reads back unchanged, and a
+/// POSIX shell sourcing the file expands and executes nothing in it:
+///
+/// - letters, digits and `_-./:@%+,` alone are written bare;
+/// - anything else without a `'` or a line break is single quoted, so `$`,
+///   `` ` `` and `\` are literal;
+/// - the rest are double quoted with `\`, `"`, `$` and `` ` `` escaped by a
+///   backslash and line breaks written as `\n` and `\r`, so a value can never
+///   spill onto a line of its own. A shell reads those two escapes as the
+///   characters themselves; dotenv readers, and this one, as line breaks.
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// use abnegate_config::EnvironmentFile;
+///
+/// let directory = tempfile::tempdir()?;
+/// let file = EnvironmentFile::new(directory.path().join(".env"));
+/// let values = BTreeMap::from([
+///     ("PASSWORD".to_string(), "pa$$word".to_string()),
+///     ("TOKEN".to_string(), "line\nADMIN=1".to_string()),
+/// ]);
+///
+/// file.update(&values)?;
+///
+/// assert_eq!(
+///     std::fs::read_to_string(file.path())?,
+///     "PASSWORD='pa$$word'\nTOKEN=\"line\\nADMIN=1\"\n"
+/// );
+/// assert_eq!(file.read()?, values);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct EnvironmentFile {
     path: PathBuf,
 }
@@ -25,7 +68,8 @@ impl EnvironmentFile {
         &self.path
     }
 
-    /// Every key the file defines. A file that is not there reads as empty.
+    /// Every key the file defines. A file that is not there reads as empty,
+    /// and a line that is not a `KEY=value` assignment is skipped.
     pub fn read(&self) -> Result<BTreeMap<String, String>, ConfigError> {
         Ok(self
             .content()?
@@ -35,50 +79,38 @@ impl EnvironmentFile {
     }
 
     /// Set every key in `values`, creating the file if it is not there.
+    ///
+    /// Fails with [`ConfigError::InvalidKey`], writing nothing, when a key is
+    /// not a shell variable name.
     pub fn update(&self, values: &BTreeMap<String, String>) -> Result<(), ConfigError> {
-        let updated = apply(&self.content()?, values);
-
-        fs::write(&self.path, updated).map_err(|source| ConfigError::Write {
-            path: self.path.clone(),
-            source,
-        })?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            fs::set_permissions(&self.path, fs::Permissions::from_mode(FILE_MODE)).map_err(
-                |source| ConfigError::Write {
-                    path: self.path.clone(),
-                    source,
-                },
-            )?;
+        if let Some(key) = values.keys().find(|key| !is_key(key)) {
+            return Err(ConfigError::InvalidKey { key: key.clone() });
         }
 
-        Ok(())
+        PrivateFile::new(&self.path).write(apply(&self.content()?, values).as_bytes())
     }
 
     fn content(&self) -> Result<String, ConfigError> {
-        if !self.path.exists() {
-            return Ok(String::new());
+        match fs::read_to_string(&self.path) {
+            Ok(content) => Ok(content),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+            Err(source) => Err(ConfigError::Read {
+                path: self.path.clone(),
+                source,
+            }),
         }
-
-        fs::read_to_string(&self.path).map_err(|source| ConfigError::Read {
-            path: self.path.clone(),
-            source,
-        })
     }
 }
 
 fn apply(content: &str, values: &BTreeMap<String, String>) -> String {
     let mut lines: Vec<String> = Vec::new();
-    let mut written: BTreeSet<String> = BTreeSet::new();
+    let mut written: BTreeSet<&String> = BTreeSet::new();
 
     for line in content.lines() {
         match parse(line).and_then(|(key, _)| values.get_key_value(&key)) {
             Some((key, value)) => {
-                lines.push(format!("{key}={}", quote(value)));
-                written.insert(key.clone());
+                lines.push(assignment(key, value));
+                written.insert(key);
             }
             None => lines.push(line.to_string()),
         }
@@ -86,7 +118,7 @@ fn apply(content: &str, values: &BTreeMap<String, String>) -> String {
 
     let appended: Vec<(&String, &String)> = values
         .iter()
-        .filter(|(key, _)| !written.contains(*key))
+        .filter(|(key, _)| !written.contains(key))
         .collect();
 
     if !appended.is_empty() {
@@ -97,7 +129,7 @@ fn apply(content: &str, values: &BTreeMap<String, String>) -> String {
         }
 
         for (key, value) in appended {
-            lines.push(format!("{key}={}", quote(value)));
+            lines.push(assignment(key, value));
         }
     }
 
@@ -109,37 +141,21 @@ fn apply(content: &str, values: &BTreeMap<String, String>) -> String {
     result
 }
 
+fn assignment(key: &str, value: &str) -> String {
+    format!("{key}{SEPARATOR}{}", quote(value))
+}
+
 fn parse(line: &str) -> Option<(String, String)> {
     let line = line.trim();
 
-    if line.is_empty() || line.starts_with('#') {
+    if line.is_empty() || line.starts_with(COMMENT) {
         return None;
     }
 
-    let separator = line.find('=')?;
-    let key = line[..separator].trim().to_string();
-    let value = line[separator + 1..].trim();
+    let (key, value) = line.split_once(SEPARATOR)?;
+    let key = key.trim();
 
-    let quoted = (value.starts_with('"') && value.ends_with('"'))
-        || (value.starts_with('\'') && value.ends_with('\''));
-    let value = if quoted && value.len() >= 2 {
-        value[1..value.len() - 1].to_string()
-    } else {
-        value.to_string()
-    };
-
-    Some((key, value))
-}
-
-fn quote(value: &str) -> String {
-    let special = [' ', '"', '\'', '#', '$', '\n', '\\'];
-
-    if value.contains(special) {
-        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-        format!("\"{escaped}\"")
-    } else {
-        value.to_string()
-    }
+    is_key(key).then(|| (key.to_string(), unquote(value.trim())))
 }
 
 #[cfg(test)]
@@ -148,11 +164,30 @@ mod tests {
 
     use super::*;
 
+    const ALPHABET: [char; 16] = [
+        'a', ' ', '\t', '\n', '\r', '"', '\'', '\\', '$', '`', '#', '=', 'n', 'é', '\u{2028}', '\0',
+    ];
+    const LONGEST: u32 = 4;
+
     fn values(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect()
+    }
+
+    fn every_value_up_to(longest: u32) -> impl Iterator<Item = String> {
+        (0..=longest).flat_map(|length| {
+            (0..ALPHABET.len().pow(length)).map(move |mut ordinal| {
+                (0..length)
+                    .map(|_| {
+                        let character = ALPHABET[ordinal % ALPHABET.len()];
+                        ordinal /= ALPHABET.len();
+                        character
+                    })
+                    .collect()
+            })
+        })
     }
 
     #[test]
@@ -188,6 +223,17 @@ mod tests {
     }
 
     #[test]
+    fn a_double_quoted_value_is_unescaped() {
+        assert_eq!(
+            parse("KEY=\"line\\nbreak \\\"quoted\\\" \\$HOME\""),
+            Some((
+                "KEY".to_string(),
+                "line\nbreak \"quoted\" $HOME".to_string()
+            ))
+        );
+    }
+
+    #[test]
     fn an_empty_value_parses() {
         assert_eq!(parse("KEY="), Some(("KEY".to_string(), String::new())));
     }
@@ -214,21 +260,10 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_value_is_not_quoted() {
-        assert_eq!(quote("simple"), "simple");
-    }
-
-    #[test]
-    fn a_value_the_shell_would_read_is_quoted() {
-        assert_eq!(quote("with spaces"), "\"with spaces\"");
-        assert_eq!(quote("with#hash"), "\"with#hash\"");
-        assert_eq!(quote("value$var"), "\"value$var\"");
-    }
-
-    #[test]
-    fn quotes_and_backslashes_are_escaped() {
-        assert_eq!(quote("with\"quote"), "\"with\\\"quote\"");
-        assert_eq!(quote("path\\to\\file"), "\"path\\\\to\\\\file\"");
+    fn a_line_whose_key_is_not_a_variable_name_is_not_an_assignment() {
+        assert!(parse("1KEY=value").is_none());
+        assert!(parse("KEY NAME=value").is_none());
+        assert!(parse("=value").is_none());
     }
 
     #[test]
@@ -313,6 +348,49 @@ mod tests {
     }
 
     #[test]
+    fn a_line_break_in_a_value_cannot_inject_a_key() {
+        let updated = apply(
+            "",
+            &values(&[("TOKEN", "harmless\nADMIN_TOKEN=injected\r\nOTHER=x")]),
+        );
+
+        assert_eq!(updated.lines().count(), 1, "{updated:?}");
+        let read: BTreeMap<String, String> = updated.lines().filter_map(parse).collect();
+        assert_eq!(
+            read,
+            values(&[("TOKEN", "harmless\nADMIN_TOKEN=injected\r\nOTHER=x")])
+        );
+    }
+
+    #[test]
+    fn every_value_round_trips_on_a_line_of_its_own() {
+        let mut checked = 0;
+
+        for value in every_value_up_to(LONGEST) {
+            let written = apply("", &values(&[("KEY", &value)]));
+
+            assert_eq!(
+                written.lines().count(),
+                1,
+                "{value:?} was written as {written:?}"
+            );
+            assert_eq!(
+                written.lines().filter_map(parse).collect::<Vec<_>>(),
+                [("KEY".to_string(), value.clone())],
+                "{value:?} was written as {written:?}"
+            );
+            checked += 1;
+        }
+
+        assert_eq!(
+            checked,
+            (0..=LONGEST)
+                .map(|length| ALPHABET.len().pow(length))
+                .sum::<usize>()
+        );
+    }
+
+    #[test]
     fn an_update_creates_the_file() {
         let directory = TempDir::new().unwrap();
         let file = EnvironmentFile::new(directory.path().join(".env"));
@@ -339,10 +417,48 @@ mod tests {
     }
 
     #[test]
+    fn a_tricky_value_survives_the_file() {
+        let directory = TempDir::new().unwrap();
+        let file = EnvironmentFile::new(directory.path().join(".env"));
+        let tricky = values(&[
+            ("NEWLINE", "one\ntwo"),
+            ("DOLLAR", "$HOME and ${PATH}"),
+            ("QUOTES", "it's \"quoted\""),
+            ("BACKSLASH", "C:\\path\\n"),
+        ]);
+
+        file.update(&tricky).unwrap();
+
+        assert_eq!(file.read().unwrap(), tricky);
+    }
+
+    #[test]
+    fn an_invalid_key_is_refused_before_anything_is_written() {
+        let directory = TempDir::new().unwrap();
+        let file = EnvironmentFile::new(directory.path().join(".env"));
+
+        for key in ["1KEY", "KEY-NAME", "KEY\nADMIN", "KEY=VALUE", ""] {
+            let error = file
+                .update(&values(&[("VALID", "value"), (key, "value")]))
+                .unwrap_err();
+
+            assert!(
+                matches!(&error, ConfigError::InvalidKey { key: refused } if refused == key),
+                "{key:?}: {error:?}"
+            );
+            assert!(!file.path().exists());
+        }
+    }
+
+    #[test]
     fn updating_twice_changes_nothing_the_second_time() {
         let directory = TempDir::new().unwrap();
         let file = EnvironmentFile::new(directory.path().join(".env"));
-        let updates = values(&[("KEY", "value"), ("OTHER", "with spaces")]);
+        let updates = values(&[
+            ("KEY", "value"),
+            ("OTHER", "with spaces"),
+            ("MULTI", "line\nvalue"),
+        ]);
 
         file.update(&updates).unwrap();
         let once = fs::read_to_string(file.path()).unwrap();
@@ -377,14 +493,107 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = TempDir::new().unwrap();
-        let file = EnvironmentFile::new(directory.path().join(".env"));
+        let path = directory.path().join(".env");
+        fs::write(&path, "TOKEN=old\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let file = EnvironmentFile::new(&path);
+
         file.update(&values(&[("TOKEN", "secret")])).unwrap();
 
         let mode = fs::metadata(file.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "environment file is world readable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_update_does_not_write_through_a_symlink() {
+        let directory = TempDir::new().unwrap();
+        let target = directory.path().join("authorized_keys");
+        let path = directory.path().join(".env");
+        fs::write(&target, "ssh-ed25519 AAAA person@example.com\n").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        EnvironmentFile::new(&path)
+            .update(&values(&[("TOKEN", "secret")]))
+            .unwrap();
+
         assert_eq!(
-            mode & 0o777,
-            FILE_MODE,
-            "environment file is world readable"
+            fs::read_to_string(&target).unwrap(),
+            "ssh-ed25519 AAAA person@example.com\n"
         );
+        assert!(
+            !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_sourcing_the_file_reads_every_value_literally() {
+        use std::process::Command;
+
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join(".env");
+        let witness = directory.path().join("executed");
+        let witness = witness.to_str().unwrap();
+        let hostile = values(&[
+            ("DOLLAR", "$HOME"),
+            ("BRACED", "${HOME}"),
+            ("SUBSTITUTION", &format!("$(touch {witness})")),
+            ("BACKTICK", &format!("`touch {witness}`")),
+            ("MIXED", &format!("it's $(touch {witness}) `id` \"$HOME\"")),
+            ("BACKSLASH", "a\\b\\\\c"),
+            ("HASH", "value # not a comment"),
+            ("SPACES", "  padded  "),
+        ]);
+        EnvironmentFile::new(&path).update(&hostile).unwrap();
+
+        let script = hostile
+            .keys()
+            .map(|key| format!("printf '%s\\0' \"${key}\""))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(format!(". \"$0\"; {script}"))
+            .arg(&path)
+            .output()
+            .unwrap();
+
+        assert!(output.status.success(), "{output:?}");
+        let sourced: Vec<&str> = std::str::from_utf8(&output.stdout)
+            .unwrap()
+            .split_terminator('\0')
+            .collect();
+        let expected: Vec<&str> = hostile.values().map(String::as_str).collect();
+        assert_eq!(sourced, expected);
+        assert!(
+            !Path::new(witness).exists(),
+            "sourcing the file ran a command"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_sourcing_the_file_sees_no_injected_key() {
+        use std::process::Command;
+
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join(".env");
+        EnvironmentFile::new(&path)
+            .update(&values(&[("TOKEN", "harmless\nADMIN_TOKEN=injected")]))
+            .unwrap();
+
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(". \"$0\"; printf '%s' \"${ADMIN_TOKEN-unset}\"")
+            .arg(&path)
+            .output()
+            .unwrap();
+
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "unset");
     }
 }

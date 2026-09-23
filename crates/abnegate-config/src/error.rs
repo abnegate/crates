@@ -34,6 +34,12 @@ pub enum ConfigError {
     Serialize(#[from] toml::ser::Error),
     #[error("Home directory not found")]
     NoHomeDirectory,
+    #[error(
+        "Application name '{name}' must start with a letter or digit and contain only letters, digits, '-' and '_'"
+    )]
+    InvalidApplication { name: String },
+    #[error("'{key}' is not an environment variable name")]
+    InvalidKey { key: String },
     #[error("Failed to decrypt '{field}'")]
     Decrypt {
         field: String,
@@ -46,6 +52,10 @@ pub enum ConfigError {
         #[source]
         source: SecretError,
     },
+    #[error("'{field}' arrived sealed and there is no master key to seal it again")]
+    SealedWithoutKey { field: String },
+    #[error("'{field}' arrived sealed and is no longer a string that can be sealed again")]
+    SealedShapeChanged { field: String },
     #[cfg(feature = "keyring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
     #[error("No credential stored for '{name}'")]
@@ -141,6 +151,17 @@ mod tests {
     }
 
     #[test]
+    fn a_sealed_field_without_a_key_is_named() {
+        let error = ConfigError::SealedWithoutKey {
+            field: "database.password".to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "'database.password' arrived sealed and there is no master key to seal it again"
+        );
+    }
+
+    #[test]
     fn every_error_is_debuggable() {
         let errors = [
             ConfigError::Missing {
@@ -150,6 +171,12 @@ mod tests {
             ConfigError::Encrypt {
                 field: "token".to_string(),
                 source: SecretError::Encryption,
+            },
+            ConfigError::InvalidKey {
+                key: "1KEY".to_string(),
+            },
+            ConfigError::SealedShapeChanged {
+                field: "hosts[0]".to_string(),
             },
         ];
 

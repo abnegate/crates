@@ -1,63 +1,109 @@
-use std::fmt::Write;
+mod location;
+mod sealed;
+mod segment;
 
-use abnegate_secret::{MasterKey, SecretValue, decrypt_value, encrypt_value, is_encrypted};
+use abnegate_secret::MasterKey;
+use abnegate_secret::SecretValue;
+use abnegate_secret::decrypt_value;
+use abnegate_secret::encrypt_value;
+use abnegate_secret::is_encrypted;
 use toml::Value;
 
 use crate::error::ConfigError;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Segment {
-    Key(String),
-    Index(usize),
-}
+pub(crate) use crate::envelope::location::Location;
+pub(crate) use crate::envelope::sealed::Sealed;
+pub(crate) use crate::envelope::segment::Segment;
 
-pub(crate) type Location = Vec<Segment>;
-
-pub(crate) fn unseal(document: &mut Value, key: &MasterKey) -> Result<Vec<Location>, ConfigError> {
+/// Find every `ENC[v1:...]` envelope in `document`, decrypting each in place
+/// when `key` is given and leaving it as it is when not.
+pub(crate) fn unseal(
+    document: &mut Value,
+    key: Option<&MasterKey>,
+) -> Result<Vec<Sealed>, ConfigError> {
     let mut sealed = Vec::new();
-    let mut location = Location::new();
-    walk(document, key, &mut location, &mut sealed)?;
+    walk(document, key, &mut Location::default(), &mut sealed)?;
     Ok(sealed)
 }
 
+/// Seal every location that holds a value which arrived sealed.
+///
+/// Without a key, a location that still holds its envelope is left alone and
+/// one that would be written in the clear fails with
+/// [`ConfigError::SealedWithoutKey`].
 pub(crate) fn seal(
     document: &mut Value,
-    locations: &[Location],
-    key: &MasterKey,
+    sealed: &[Sealed],
+    key: Option<&MasterKey>,
 ) -> Result<(), ConfigError> {
-    for location in locations {
-        let Some(Value::String(text)) = resolve(document, location) else {
-            continue;
-        };
-        if is_encrypted(text) {
-            continue;
-        }
+    let targets: Vec<Location> = sealed
+        .iter()
+        .flat_map(|value| value.targets(document))
+        .collect();
 
-        *text = encrypt_value(&SecretValue::new(text.as_str()), key).map_err(|source| {
-            ConfigError::Encrypt {
-                field: describe(location),
-                source,
-            }
-        })?;
+    for target in &targets {
+        seal_at(document, target, key)?;
     }
+
+    Ok(())
+}
+
+fn seal_at(
+    document: &mut Value,
+    location: &Location,
+    key: Option<&MasterKey>,
+) -> Result<(), ConfigError> {
+    let text = match location.resolve_mut(document) {
+        None => return Ok(()),
+        Some(Value::String(text)) => text,
+        Some(_) => {
+            return Err(ConfigError::SealedShapeChanged {
+                field: location.to_string(),
+            });
+        }
+    };
+
+    if is_encrypted(text) {
+        return Ok(());
+    }
+
+    let Some(key) = key else {
+        return Err(ConfigError::SealedWithoutKey {
+            field: location.to_string(),
+        });
+    };
+
+    *text = encrypt_value(&SecretValue::new(text.as_str()), key).map_err(|source| {
+        ConfigError::Encrypt {
+            field: location.to_string(),
+            source,
+        }
+    })?;
 
     Ok(())
 }
 
 fn walk(
     value: &mut Value,
-    key: &MasterKey,
+    key: Option<&MasterKey>,
     location: &mut Location,
-    sealed: &mut Vec<Location>,
+    sealed: &mut Vec<Sealed>,
 ) -> Result<(), ConfigError> {
     match value {
         Value::String(text) if is_encrypted(text) => {
-            let plaintext = decrypt_value(text, key).map_err(|source| ConfigError::Decrypt {
-                field: describe(location),
-                source,
-            })?;
-            *text = plaintext.expose().to_string();
-            sealed.push(location.clone());
+            let received = match key {
+                Some(key) => {
+                    let plaintext =
+                        decrypt_value(text, key).map_err(|source| ConfigError::Decrypt {
+                            field: location.to_string(),
+                            source,
+                        })?;
+                    *text = plaintext.expose().to_string();
+                    plaintext
+                }
+                None => SecretValue::new(text.as_str()),
+            };
+            sealed.push(Sealed::new(location.clone(), received));
         }
         Value::Table(table) => {
             for (name, child) in table.iter_mut() {
@@ -79,39 +125,6 @@ fn walk(
     Ok(())
 }
 
-fn resolve<'a>(document: &'a mut Value, location: &Location) -> Option<&'a mut Value> {
-    let mut current = document;
-
-    for segment in location {
-        current = match segment {
-            Segment::Key(name) => current.as_table_mut()?.get_mut(name)?,
-            Segment::Index(index) => current.as_array_mut()?.get_mut(*index)?,
-        };
-    }
-
-    Some(current)
-}
-
-fn describe(location: &[Segment]) -> String {
-    let mut description = String::new();
-
-    for segment in location {
-        match segment {
-            Segment::Key(name) => {
-                if !description.is_empty() {
-                    description.push('.');
-                }
-                description.push_str(name);
-            }
-            Segment::Index(index) => {
-                let _ = write!(description, "[{index}]");
-            }
-        }
-    }
-
-    description
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,14 +144,22 @@ mod tests {
         .unwrap()
     }
 
+    fn password() -> Location {
+        Location::from(vec![Segment::Key("password".to_string())])
+    }
+
+    fn is_sealed(value: &Value) -> bool {
+        value.as_str().is_some_and(is_encrypted)
+    }
+
     #[test]
     fn every_sealed_string_is_decrypted_wherever_it_sits() {
         let key = MasterKey::generate();
         let mut document = sealed_document(&key);
 
-        let locations = unseal(&mut document, &key).unwrap();
+        let sealed = unseal(&mut document, Some(&key)).unwrap();
 
-        assert_eq!(locations.len(), 3);
+        assert_eq!(sealed.len(), 3);
         assert_eq!(document["password"].as_str(), Some("hunter2"));
         assert_eq!(document["database"]["password"].as_str(), Some("hunter2"));
         assert_eq!(document["database"]["hosts"][1].as_str(), Some("hunter2"));
@@ -149,10 +170,22 @@ mod tests {
         let key = MasterKey::generate();
         let mut document = sealed_document(&key);
 
-        unseal(&mut document, &key).unwrap();
+        unseal(&mut document, Some(&key)).unwrap();
 
         assert_eq!(document["model"].as_str(), Some("gpt-4o"));
         assert_eq!(document["database"]["hosts"][0].as_str(), Some("one"));
+    }
+
+    #[test]
+    fn without_a_key_envelopes_are_found_and_left_sealed() {
+        let key = MasterKey::generate();
+        let mut document = sealed_document(&key);
+        let original = document.clone();
+
+        let sealed = unseal(&mut document, None).unwrap();
+
+        assert_eq!(sealed.len(), 3);
+        assert_eq!(document, original);
     }
 
     #[test]
@@ -160,7 +193,7 @@ mod tests {
         let key = MasterKey::generate();
         let mut document: Value = toml::from_str("model = \"gpt-4o\"").unwrap();
 
-        assert!(unseal(&mut document, &key).unwrap().is_empty());
+        assert!(unseal(&mut document, Some(&key)).unwrap().is_empty());
     }
 
     #[test]
@@ -169,7 +202,7 @@ mod tests {
         let mut document: Value =
             toml::from_str(&format!("[database]\npassword = \"{token}\"\n")).unwrap();
 
-        let error = unseal(&mut document, &MasterKey::generate()).unwrap_err();
+        let error = unseal(&mut document, Some(&MasterKey::generate())).unwrap_err();
 
         assert!(
             matches!(&error, ConfigError::Decrypt { field, .. } if field == "database.password"),
@@ -183,7 +216,7 @@ mod tests {
         let mut document: Value =
             toml::from_str(&format!("hosts = [\"one\", \"{token}\"]\n")).unwrap();
 
-        let error = unseal(&mut document, &MasterKey::generate()).unwrap_err();
+        let error = unseal(&mut document, Some(&MasterKey::generate())).unwrap_err();
 
         assert!(
             matches!(&error, ConfigError::Decrypt { field, .. } if field == "hosts[1]"),
@@ -195,14 +228,13 @@ mod tests {
     fn resealing_restores_every_location_that_arrived_sealed() {
         let key = MasterKey::generate();
         let mut document = sealed_document(&key);
-        let locations = unseal(&mut document, &key).unwrap();
+        let sealed = unseal(&mut document, Some(&key)).unwrap();
 
-        seal(&mut document, &locations, &key).unwrap();
+        seal(&mut document, &sealed, Some(&key)).unwrap();
 
-        assert!(is_encrypted(document["password"].as_str().unwrap()));
-        assert!(is_encrypted(
-            document["database"]["hosts"][1].as_str().unwrap()
-        ));
+        assert!(is_sealed(&document["password"]));
+        assert!(is_sealed(&document["database"]["password"]));
+        assert!(is_sealed(&document["database"]["hosts"][1]));
         assert_eq!(document["model"].as_str(), Some("gpt-4o"));
         assert_eq!(document["database"]["hosts"][0].as_str(), Some("one"));
     }
@@ -211,9 +243,9 @@ mod tests {
     fn resealing_survives_a_field_that_has_since_been_removed() {
         let key = MasterKey::generate();
         let mut document: Value = toml::from_str("model = \"gpt-4o\"").unwrap();
-        let locations = vec![vec![Segment::Key("password".to_string())]];
+        let sealed = [Sealed::new(password(), SecretValue::new("hunter2"))];
 
-        seal(&mut document, &locations, &key).unwrap();
+        seal(&mut document, &sealed, Some(&key)).unwrap();
 
         assert_eq!(document["model"].as_str(), Some("gpt-4o"));
     }
@@ -223,26 +255,106 @@ mod tests {
         let key = MasterKey::generate();
         let mut document = sealed_document(&key);
         let envelope = document["password"].as_str().unwrap().to_string();
-        let locations = vec![vec![Segment::Key("password".to_string())]];
+        let sealed = [Sealed::new(password(), SecretValue::new("hunter2"))];
 
-        seal(&mut document, &locations, &key).unwrap();
+        seal(&mut document, &sealed, Some(&key)).unwrap();
 
         assert_eq!(document["password"].as_str(), Some(envelope.as_str()));
     }
 
     #[test]
-    fn a_location_reads_as_a_dotted_path() {
-        assert_eq!(describe(&[]), "");
+    fn a_shifted_array_seals_the_secret_and_not_its_new_neighbour() {
+        let key = MasterKey::generate();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let mut document: Value =
+            toml::from_str(&format!("hosts = [\"one\", \"{token}\", \"three\"]\n")).unwrap();
+        let sealed = unseal(&mut document, Some(&key)).unwrap();
+
+        document["hosts"].as_array_mut().unwrap().remove(0);
+        seal(&mut document, &sealed, Some(&key)).unwrap();
+
+        let hosts = document["hosts"].as_array().unwrap();
+        assert!(is_sealed(&hosts[0]), "{hosts:?}");
+        assert_eq!(hosts[1].as_str(), Some("three"));
         assert_eq!(
-            describe(&[
-                Segment::Key("database".to_string()),
-                Segment::Key("password".to_string())
-            ]),
-            "database.password"
+            decrypt_value(hosts[0].as_str().unwrap(), &key)
+                .unwrap()
+                .expose(),
+            "hunter2"
         );
-        assert_eq!(
-            describe(&[Segment::Key("hosts".to_string()), Segment::Index(2)]),
-            "hosts[2]"
+    }
+
+    #[test]
+    fn a_shifted_array_of_tables_follows_the_secret() {
+        let key = MasterKey::generate();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let mut document: Value = toml::from_str(&format!(
+            "[[servers]]\npassword = \"plain\"\n\n[[servers]]\npassword = \"{token}\"\n"
+        ))
+        .unwrap();
+        let sealed = unseal(&mut document, Some(&key)).unwrap();
+
+        document["servers"].as_array_mut().unwrap().remove(0);
+        seal(&mut document, &sealed, Some(&key)).unwrap();
+
+        assert!(is_sealed(&document["servers"][0]["password"]));
+    }
+
+    #[test]
+    fn a_sealed_field_that_is_no_longer_a_string_is_refused() {
+        let key = MasterKey::generate();
+        let mut document: Value = toml::from_str("[password]\nvalue = \"hunter2\"\n").unwrap();
+        let sealed = [Sealed::new(password(), SecretValue::new("hunter2"))];
+
+        let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "password"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_lost_array_secret_whose_key_path_holds_other_values_is_refused() {
+        let key = MasterKey::generate();
+        let mut document: Value = toml::from_str("hosts = [1, 2]").unwrap();
+        let sealed = [Sealed::new(
+            Location::from(vec![Segment::Key("hosts".to_string()), Segment::Index(0)]),
+            SecretValue::new("hunter2"),
+        )];
+
+        let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
+
+        assert!(
+            matches!(error, ConfigError::SealedShapeChanged { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn without_a_key_an_untouched_envelope_is_written_as_it_was() {
+        let key = MasterKey::generate();
+        let mut document = sealed_document(&key);
+        let original = document.clone();
+        let sealed = unseal(&mut document, None).unwrap();
+
+        seal(&mut document, &sealed, None).unwrap();
+
+        assert_eq!(document, original);
+    }
+
+    #[test]
+    fn without_a_key_a_replaced_envelope_is_refused() {
+        let key = MasterKey::generate();
+        let mut document = sealed_document(&key);
+        let sealed = unseal(&mut document, None).unwrap();
+
+        document["database"]["password"] = Value::String("plaintext".to_string());
+        let error = seal(&mut document, &sealed, None).unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedWithoutKey { field } if field == "database.password"),
+            "{error:?}"
         );
     }
 }
