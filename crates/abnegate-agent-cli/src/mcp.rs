@@ -10,6 +10,7 @@
 
 mod attachment;
 mod config;
+mod document;
 mod placeholders;
 mod server;
 mod transport;

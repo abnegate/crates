@@ -29,9 +29,9 @@ const NAME_PUNCTUATION: [char; 2] = ['_', '-'];
 pub struct McpServer {
     /// The command that starts a stdio server, such as `uvx` or `npx`.
     pub command: Option<String>,
-    #[serde(rename = "args")]
+    #[serde(rename = "args", alias = "arguments")]
     pub arguments: Vec<String>,
-    #[serde(rename = "env")]
+    #[serde(rename = "env", alias = "environment")]
     pub environment: BTreeMap<String, SecretValue>,
     /// Where an HTTP or SSE server listens.
     pub url: Option<String>,
@@ -52,6 +52,12 @@ impl McpServer {
             (None, Some(_), transport) => transport.is_none_or(McpTransport::remote),
             _ => false,
         }
+    }
+
+    /// Whether `name`, and every tool this server names, holds only
+    /// letters, digits, `_` and `-`, and so is safe in `--allowedTools`.
+    pub fn nameable(&self, name: &str) -> bool {
+        valid_name(name) && self.tools.iter().all(|tool| valid_name(tool))
     }
 
     /// The `--allowedTools` entries for this server under `name`.
