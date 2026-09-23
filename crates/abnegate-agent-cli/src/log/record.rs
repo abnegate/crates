@@ -2,6 +2,7 @@ use std::fmt;
 
 /// A kind of entry in a run's [`Journal`](crate::log::Journal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Record {
     Initialized,
     SpawnFailed,

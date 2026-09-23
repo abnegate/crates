@@ -33,6 +33,7 @@ pub const WRITE_TOOLS: [&str; 5] = ["Bash", "Edit", "MultiEdit", "Write", "Noteb
 /// `Debug` is safe to log: the credential, every injected environment value
 /// and every MCP secret print as redacted.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CliSettings {
     /// Overrides the agent's own executable name. A relative name is resolved
     /// on `PATH` by the operating system.

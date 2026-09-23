@@ -37,6 +37,7 @@ const BYPASSES: [&str; 3] = [
 /// agent can report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum AgentKind {
     Claude,
     Codex,

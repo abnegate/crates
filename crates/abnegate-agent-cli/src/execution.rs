@@ -13,6 +13,7 @@ use crate::stdout_parse_result::StdoutParseResult;
 /// — the schema-shaped answer, the cost, the session to resume — can read it
 /// and decide for itself.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Execution {
     /// What the agent streamed. Its failure is scrubbed of every secret the
     /// run was given; its prose is the agent's answer, left as written.

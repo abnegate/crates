@@ -18,6 +18,7 @@ const FUNCTION: &str = "function";
 /// a second place to keep in step with it, so a throttled agent simply becomes
 /// a [`AgentEvent::Failed`] carrying the agent's own wording.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum AgentEvent {
     Text(String),
     Tool(ToolCall),

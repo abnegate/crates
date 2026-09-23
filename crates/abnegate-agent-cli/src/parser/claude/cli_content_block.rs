@@ -3,6 +3,7 @@ use serde::Deserialize;
 /// One block of an `assistant` event's `message.content`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum CliContentBlock {
     #[serde(rename = "text")]
     Text { text: String },

@@ -6,6 +6,7 @@ use crate::stream::api_delta::ApiDelta;
 /// One event of the Messages API's streaming response.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum ApiStreamEvent {
     #[serde(rename = "message_start")]
     MessageStart {},

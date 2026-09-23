@@ -11,6 +11,7 @@ use crate::parser::claude::CliUsage;
 
 /// The events of one run, folded into what they add up to.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct StdoutParseResult {
     /// The agent's prose, in the order it was streamed.
     pub text: String,

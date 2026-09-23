@@ -6,6 +6,7 @@ use serde::Serialize;
 /// How the CLI talks to an MCP server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum McpTransport {
     /// A child process speaking over its stdin and stdout.
     Stdio,

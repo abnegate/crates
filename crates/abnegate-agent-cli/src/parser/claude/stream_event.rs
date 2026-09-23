@@ -23,6 +23,7 @@ const NO_ARGUMENTS: &str = "{}";
 /// One line of `claude --output-format stream-json`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum StreamEvent {
     #[serde(rename = "system")]
     System {

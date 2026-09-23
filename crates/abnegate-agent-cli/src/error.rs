@@ -5,6 +5,7 @@ use thiserror::Error;
 /// A line grew past the cap without ever terminating.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[error("one event exceeded {limit} bytes")]
+#[non_exhaustive]
 pub struct Overlong {
     pub limit: usize,
 }

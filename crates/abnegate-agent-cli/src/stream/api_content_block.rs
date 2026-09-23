@@ -3,6 +3,7 @@ use serde::Deserialize;
 /// The block a `content_block_start` event opens.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum ApiContentBlock {
     #[serde(rename = "text")]
     Text {
