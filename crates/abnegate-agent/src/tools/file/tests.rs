@@ -24,6 +24,7 @@ use super::search::SEARCH_MAX_RESULTS;
 use super::search::search_tree;
 use super::write::WriteFileParameters;
 use crate::test_support::captured_logs;
+use crate::tools::LINE_BREAK;
 use crate::tools::Preview;
 use crate::tools::Session;
 use crate::tools::Tier;
@@ -287,6 +288,70 @@ fn write_and_edit_previews_show_bidi_controls_as_escapes() {
             assert!(preview.text.contains(escape), "{escape}: {}", preview.text);
         }
     }
+}
+
+/// Every line terminator but `\n` and every Unicode space was collapsed into
+/// a plain space before the preview escaped anything, so the card showed one
+/// line where the file would hold two, or an ordinary space where it would
+/// hold something else.
+#[test]
+fn write_and_edit_previews_show_other_line_terminators_and_spaces_as_escapes() {
+    let characters = [
+        '\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}', '\u{a0}', '\u{202f}', '\u{205f}',
+        '\u{3000}',
+    ]
+    .into_iter()
+    .chain('\u{2000}'..='\u{200a}');
+
+    for character in characters {
+        let content = format!("safe(){character}rm -rf ~");
+        let escaped = format!("safe(){}rm -rf ~", character.escape_unicode());
+        let write = Preview::of(
+            &WriteFileTool,
+            &serde_json::json!({"path": "hook.sh", "content": content}),
+        );
+        let edit = Preview::of(
+            &ApplyPatchTool,
+            &serde_json::json!({"path": "hook.sh", "old_string": "safe()", "new_string": content}),
+        );
+
+        for preview in [write, edit] {
+            assert!(
+                preview.text.contains(&escaped),
+                "{character:?}: {}",
+                preview.text
+            );
+            assert!(
+                !preview.text.contains(character),
+                "{character:?}: {}",
+                preview.text
+            );
+        }
+    }
+}
+
+#[test]
+fn write_and_edit_previews_draw_a_carriage_return_line_feed_as_one_break() {
+    let content = "safe()\r\nrm -rf ~";
+    let write = Preview::of(
+        &WriteFileTool,
+        &serde_json::json!({"path": "hook.sh", "content": content}),
+    );
+    let edit = Preview::of(
+        &ApplyPatchTool,
+        &serde_json::json!({"path": "hook.sh", "old_string": "safe()", "new_string": content}),
+    );
+
+    assert_eq!(
+        write.text,
+        format!(
+            "Write 16 characters to hook.sh, replacing whatever is there: \"safe(){LINE_BREAK}rm -rf ~\"."
+        )
+    );
+    assert_eq!(
+        edit.text,
+        format!("Edit hook.sh: replace \"safe()\" with \"safe(){LINE_BREAK}rm -rf ~\".")
+    );
 }
 
 /// An edit was previewed as the first 80 characters of the text it took out,
