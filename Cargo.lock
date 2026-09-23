@@ -60,6 +60,7 @@ dependencies = [
  "bytes",
  "chrono",
  "image",
+ "nix",
  "rand",
  "reqwest",
  "serde",

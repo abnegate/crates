@@ -3,6 +3,7 @@
 //! instead.
 
 mod dropped;
+mod process_group;
 mod remediation;
 mod remediation_outcome;
 mod screening;
@@ -34,6 +35,7 @@ use crate::train::{Contract, Run};
 use abnegate_secret::SecretValue;
 use abnegate_vision::gravity::Point;
 use abnegate_vision::{Raster, Rendered, decode};
+use process_group::ProcessGroup;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -503,24 +505,27 @@ async fn train_with_pipeline(
 /// Its stdout goes nowhere: a trainer that prints progress would otherwise
 /// fill a pipe nobody reads, or die writing to one already closed. Its stderr
 /// is read as it arrives and only the last [`STDERR_TAIL`] bytes are kept, to
-/// say why it failed. Past the budget, or if this future is dropped, the
-/// trainer is killed rather than left running.
+/// say why it failed. The trainer leads its own process group, and once it
+/// exits, runs past the budget, or this future is dropped, the whole group is
+/// killed: nothing the command started is left holding the GPU.
 async fn run_trainer(mut process: Command, budget: Duration) -> Result<(), TrainError> {
-    let mut child = process
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(failed)?;
+    let (mut child, mut group) = ProcessGroup::spawn(
+        process
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true),
+    )
+    .map_err(failed)?;
     let tail = Arc::new(Mutex::new(Vec::with_capacity(STDERR_TAIL)));
     let reader = child
         .stderr
         .take()
         .map(|stderr| tokio::spawn(read_tail(stderr, Arc::clone(&tail))));
     let waited = tokio::time::timeout(budget, child.wait()).await;
+    group.kill();
     if waited.is_err() {
-        let _ = child.start_kill();
+        let _ = child.kill().await;
     }
     if let Some(reader) = reader {
         settle(reader).await;
@@ -559,7 +564,7 @@ async fn read_tail(mut stderr: ChildStderr, tail: Arc<Mutex<Vec<u8>>>) {
 }
 
 /// Gives the reader a moment to collect what the trainer wrote last, without
-/// waiting on a pipe a grandchild of the trainer may still hold open.
+/// waiting on a pipe held open by a process that left the trainer's group.
 async fn settle(mut reader: JoinHandle<()>) {
     if tokio::time::timeout(STDERR_DRAIN, &mut reader)
         .await
@@ -1912,6 +1917,108 @@ mod tests {
             "the trainer kept running past its budget"
         );
         assert!(training_entries(&config).is_empty());
+    }
+
+    /// A `sleep` for a duration no other process on the machine is using, and
+    /// the pattern that finds it, and only it, by its command line.
+    #[cfg(unix)]
+    fn marked_sleep() -> (String, String) {
+        let fraction = uuid::Uuid::new_v4().as_u128() % 1_000_000_000;
+        (
+            format!("sleep 30.{fraction:09}"),
+            format!("^sleep 30\\.{fraction:09}$"),
+        )
+    }
+
+    #[cfg(unix)]
+    async fn running(pattern: &str) -> bool {
+        tokio::process::Command::new("pgrep")
+            .arg("-f")
+            .arg(pattern)
+            .stdout(Stdio::null())
+            .status()
+            .await
+            .expect("pgrep runs")
+            .success()
+    }
+
+    /// Whether the process `pattern` matches reaches the `expected` state
+    /// within a few seconds. A process still running when it gives up is
+    /// killed, so a failing test leaves nothing behind.
+    #[cfg(unix)]
+    async fn settles(pattern: &str, expected: bool) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while running(pattern).await != expected {
+            if std::time::Instant::now() >= deadline {
+                let _ = tokio::process::Command::new("pkill")
+                    .args(["-KILL", "-f", pattern])
+                    .status()
+                    .await;
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        true
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_trainer_past_its_budget_takes_everything_it_started_with_it() {
+        let (sleep, pattern) = marked_sleep();
+        let (_root, mut config) = harness(&format!("{sleep} & wait"));
+        config.train_timeout_seconds = 1;
+
+        let error = rejected(&config, identity("abandoned")).await;
+
+        assert!(
+            matches!(&error, TrainError::Failed(message) if message.contains("timed out")),
+            "{error}"
+        );
+        assert!(
+            settles(&pattern, false).await,
+            "a process the trainer started kept running past its budget"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_abandoned_trainer_takes_everything_it_started_with_it() {
+        let (sleep, pattern) = marked_sleep();
+        let mut process = Command::new("sh");
+        process.arg("-c").arg(format!("{sleep} & wait"));
+
+        tokio::select! {
+            finished = run_trainer(process, Duration::from_secs(60)) => {
+                panic!("the trainer finished instead of being abandoned: {finished:?}")
+            }
+            started = settles(&pattern, true) => {
+                assert!(started, "the trainer never started its own process");
+            }
+        }
+
+        assert!(
+            settles(&pattern, false).await,
+            "a process the trainer started outlived the abandoned run"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_trainer_that_exits_takes_what_it_left_running_with_it() {
+        let (sleep, pattern) = marked_sleep();
+        let mut process = Command::new("sh");
+        process.arg("-c").arg(format!(
+            "{sleep} & until pgrep -f '{pattern}' >/dev/null; do :; done"
+        ));
+
+        run_trainer(process, Duration::from_secs(60))
+            .await
+            .expect("the trainer exits cleanly");
+
+        assert!(
+            settles(&pattern, false).await,
+            "a process the trainer left running outlived it"
+        );
     }
 
     #[tokio::test]
