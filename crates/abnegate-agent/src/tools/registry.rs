@@ -216,6 +216,38 @@ mod tests {
         );
     }
 
+    /// A command reached the card with its control characters raw, so sixty
+    /// backspaces and an erase-line sequence drew `echo safe` over the
+    /// `rm -rf ~` that would run.
+    #[test]
+    fn a_shell_preview_shows_backspaces_and_escape_sequences_as_escapes() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        let command = format!("rm -rf ~{}\u{1b}[2Kecho safe", "\u{8}".repeat(60));
+
+        let preview = registry
+            .preview(
+                "run_shell",
+                &serde_json::json!({"command": command}).to_string(),
+            )
+            .expect("a shell call previews the line it will run");
+
+        assert!(
+            !preview.text.chars().any(char::is_control),
+            "{:?}",
+            preview.text
+        );
+        assert!(preview.text.contains("\\u{8}"), "{}", preview.text);
+        assert_eq!(
+            preview.text,
+            format!(
+                "Run `rm -rf ~{}\\u{{1b}}[2Kecho safe`.",
+                "\\u{8}".repeat(60)
+            )
+        );
+        assert!(!preview.truncated);
+    }
+
     /// The preview kept the first 400 characters of a command, so a call
     /// padded past them showed the reader the padding and hid the payload.
     #[test]
@@ -241,7 +273,7 @@ mod tests {
 
             assert!(preview.truncated, "{name}: {}", preview.text);
             assert!(
-                preview.text.contains("characters hidden]"),
+                preview.text.contains("characters hidden⟧"),
                 "{name}: {}",
                 preview.text
             );

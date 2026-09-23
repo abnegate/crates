@@ -319,7 +319,7 @@ async fn the_approver_is_shown_the_call_and_told_when_part_of_it_is_hidden() {
     );
     assert!(previews[1].truncated, "{:?}", previews[1]);
     assert!(
-        previews[1].text.contains("characters hidden]") && previews[1].text.contains("rm -rf ~"),
+        previews[1].text.contains("characters hidden⟧") && previews[1].text.contains("rm -rf ~"),
         "{:?}",
         previews[1]
     );

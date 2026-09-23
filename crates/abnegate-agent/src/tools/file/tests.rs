@@ -261,6 +261,34 @@ fn a_write_preview_shows_the_text_it_writes() {
     assert_eq!(appended.text, "Append 4 characters to log.txt: \"more\".");
 }
 
+/// A write or an edit reached the card with its bidi controls raw, so the
+/// text a reader approved read in an order other than the one it lands in.
+#[test]
+fn write_and_edit_previews_show_bidi_controls_as_escapes() {
+    let content = "access = \"user\u{202e} \u{2066}// admin\u{2069} \u{2066}\"";
+    let write = Preview::of(
+        &WriteFileTool,
+        &serde_json::json!({"path": "auth.rs", "content": content}),
+    );
+    let edit = Preview::of(
+        &ApplyPatchTool,
+        &serde_json::json!({"path": "auth.rs", "old_string": "user", "new_string": content}),
+    );
+
+    for preview in [write, edit] {
+        assert!(
+            !preview.text.chars().any(
+                |character| matches!(character, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            ),
+            "{:?}",
+            preview.text
+        );
+        for escape in ["\\u{202e}", "\\u{2066}", "\\u{2069}"] {
+            assert!(preview.text.contains(escape), "{escape}: {}", preview.text);
+        }
+    }
+}
+
 /// An edit was previewed as the first 80 characters of the text it took out,
 /// cut without saying so, and nothing of what it put in or of any later hunk.
 #[test]
