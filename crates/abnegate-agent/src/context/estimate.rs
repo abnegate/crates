@@ -132,7 +132,29 @@ pub fn estimate(
 
 #[cfg(test)]
 mod tests {
-    use super::tokens;
+    use super::{MESSAGE_FRAMING_TOKENS, message_cost, tokens};
+    use abnegate_llm::Message;
+
+    /// The estimate rounds up: a partial token still costs a token. The
+    /// claudear estimator this replaced rounded down, so a short message
+    /// could cost nothing.
+    #[test]
+    fn a_partial_token_rounds_up() {
+        assert_eq!(tokens("a"), 1);
+        assert_eq!(tokens("abcde"), 2);
+        assert_eq!(tokens("abcdefgh"), 2);
+    }
+
+    /// Every message spends eight tokens on framing, whatever it holds; the
+    /// claudear estimator charged twenty. A name or a call id is charged on
+    /// top, at the same four bytes a token.
+    #[test]
+    fn every_message_pays_the_same_framing() {
+        assert_eq!(MESSAGE_FRAMING_TOKENS, 8);
+        assert_eq!(message_cost(&Message::user("")), (0, 8));
+        assert_eq!(message_cost(&Message::user("abcdefgh")), (2, 8));
+        assert_eq!(message_cost(&Message::tool_result("abcd", "")), (0, 9));
+    }
 
     #[test]
     fn four_utf8_bytes_are_one_token() {

@@ -17,4 +17,6 @@ pub enum Error {
     Backend(String),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error("HTTP client failed: {0}")]
+    Http(#[from] reqwest::Error),
 }
