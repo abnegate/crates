@@ -158,6 +158,7 @@ mod tests {
         let messages = [Message::user("hello")];
         let format = ResponseFormat::Json {
             schema: Some(serde_json::json!({ "type": "object" })),
+            strict: false,
         };
 
         let completion = provider

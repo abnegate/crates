@@ -316,6 +316,7 @@ impl TextProvider for AnthropicProvider {
     ) -> Result<StructuredResponse, ProviderError> {
         let Some(ResponseFormat::Json {
             schema: Some(schema),
+            ..
         }) = &request.response_format
         else {
             return StructuredResponse::from_text(self.complete(request).await?);
@@ -599,6 +600,7 @@ mod tests {
         let mut request = TextRequest::new("sys", "usr");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "title": "Facts" })),
+            strict: false,
         });
 
         let structured = provider.complete_structured(&request).await.unwrap();
@@ -627,6 +629,7 @@ mod tests {
         let mut request = TextRequest::new("sys", "usr");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "title": "Facts" })),
+            strict: false,
         });
 
         let error = provider.complete_structured(&request).await.unwrap_err();
@@ -833,6 +836,7 @@ mod tests {
         let mut request = TextRequest::new("sys", "usr");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "type": "object" })),
+            strict: false,
         });
 
         let structured = provider.complete_structured(&request).await.unwrap();

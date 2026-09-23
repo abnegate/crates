@@ -47,7 +47,10 @@ mod tests {
             user_prompt: "User prompt here".into(),
             temperature: 0.3,
             max_tokens: 2000,
-            response_format: Some(ResponseFormat::Json { schema: None }),
+            response_format: Some(ResponseFormat::Json {
+                schema: None,
+                strict: false,
+            }),
             context: Some(serde_json::json!({ "key": "value" })),
         };
 
