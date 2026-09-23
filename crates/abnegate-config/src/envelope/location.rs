@@ -20,14 +20,6 @@ impl Location {
         self.segments.pop();
     }
 
-    /// Whether an array index is on the way, which is what lets the value
-    /// drift to another position when the application edits the array.
-    pub(crate) fn is_indexed(&self) -> bool {
-        self.segments
-            .iter()
-            .any(|segment| matches!(segment, Segment::Index(_)))
-    }
-
     pub(crate) fn resolve<'document>(
         &self,
         document: &'document Value,
@@ -162,12 +154,6 @@ mod tests {
             Location::from(vec![key("servers"), Segment::Index(0), key("password")]).to_string(),
             "servers[0].password"
         );
-    }
-
-    #[test]
-    fn only_a_path_through_an_array_is_indexed() {
-        assert!(!Location::from(vec![key("database"), key("password")]).is_indexed());
-        assert!(Location::from(vec![key("hosts"), Segment::Index(0)]).is_indexed());
     }
 
     #[test]

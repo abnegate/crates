@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use abnegate_secret::MasterKey;
 use serde::de::DeserializeOwned;
+use serde::de::Error as _;
 use toml::Value;
 
 use crate::application::Application;
@@ -90,7 +91,11 @@ impl<'key> Loader<'key> {
 
         let value = document.try_into().map_err(|source| ConfigError::Parse {
             path: self.path.clone(),
-            source,
+            source: if sealed.is_empty() {
+                source
+            } else {
+                rejection_as_written::<T>(&content)
+            },
         })?;
 
         Ok(Config::loaded(self.path.clone(), value, key, sealed))
@@ -101,13 +106,27 @@ fn duplicate(key: &MasterKey) -> Option<MasterKey> {
     MasterKey::from_hex(&key.to_hex()).ok()
 }
 
+/// Why `content` does not fit `T`, told from the file as it was written so a
+/// decrypted value never reaches the message.
+fn rejection_as_written<T: DeserializeOwned>(content: &str) -> toml::de::Error {
+    match toml::from_str::<T>(content) {
+        Err(rejection) => rejection,
+        Ok(_) => toml::de::Error::custom("a sealed value does not fit the settings once decrypted"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::error::Error as _;
+
     use abnegate_secret::SecretValue;
     use abnegate_secret::encrypt_value;
     use abnegate_secret::is_encrypted;
     use serde::Deserialize;
+    use serde::Deserializer;
     use serde::Serialize;
+    use serde::de::Unexpected;
     use tempfile::TempDir;
 
     use super::*;
@@ -118,6 +137,35 @@ mod tests {
         model: String,
         #[serde(default)]
         password: String,
+    }
+
+    type Ports = BTreeMap<String, u32>;
+
+    #[derive(Debug)]
+    struct OnlySealed;
+
+    impl<'de> Deserialize<'de> for OnlySealed {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let text = String::deserialize(deserializer)?;
+            if is_encrypted(&text) {
+                Ok(Self)
+            } else {
+                Err(D::Error::invalid_value(
+                    Unexpected::Str(&text),
+                    &"an envelope",
+                ))
+            }
+        }
+    }
+
+    fn rendered(error: &ConfigError) -> String {
+        let mut rendered = format!("{error}\n{error:?}\n");
+        let mut source = error.source();
+        while let Some(cause) = source {
+            rendered.push_str(&format!("{cause}\n{cause:?}\n"));
+            source = cause.source();
+        }
+        rendered
     }
 
     fn written(content: &str) -> (TempDir, PathBuf) {
@@ -249,6 +297,54 @@ mod tests {
             matches!(&error, ConfigError::Decrypt { field, .. } if field == "password"),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn a_sealed_value_of_the_wrong_type_is_reported_without_its_plaintext() {
+        let key = MasterKey::generate().unwrap();
+        let envelope = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let (_directory, path) = written(&format!("port = \"{envelope}\"\n"));
+
+        let error = Loader::at(&path)
+            .master_key(&key)
+            .load::<Ports>()
+            .unwrap_err();
+
+        let rendered = rendered(&error);
+        assert!(
+            matches!(&error, ConfigError::Parse { path: reported, .. } if reported == &path),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(rendered.contains("port"), "{rendered}");
+    }
+
+    #[test]
+    fn a_sealed_value_only_its_plaintext_fails_is_reported_without_it() {
+        let key = MasterKey::generate().unwrap();
+        let envelope = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let (_directory, path) = written(&format!("password = \"{envelope}\"\n"));
+
+        let error = Loader::at(&path)
+            .master_key(&key)
+            .load::<BTreeMap<String, OnlySealed>>()
+            .unwrap_err();
+
+        let rendered = rendered(&error);
+        assert!(matches!(error, ConfigError::Parse { .. }), "{rendered}");
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+    }
+
+    #[test]
+    fn a_file_without_envelopes_keeps_its_own_parse_error() {
+        let (_directory, path) = written("port = \"eighty\"\n");
+
+        let error = Loader::at(&path)
+            .master_key(&MasterKey::generate().unwrap())
+            .load::<Ports>()
+            .unwrap_err();
+
+        assert!(rendered(&error).contains("eighty"), "{error:?}");
     }
 
     #[test]

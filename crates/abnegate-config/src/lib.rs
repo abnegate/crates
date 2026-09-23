@@ -41,9 +41,12 @@
 //! Any string in the file written as an `ENC[v1:...]` envelope is decrypted on
 //! load when the loader is given a master key, so an application reads a
 //! password as a password and never learns that it was encrypted at rest.
-//! [`Config::save`] seals those same fields again, following a value in an
-//! array to wherever it has moved, and refuses with
-//! [`ConfigError::SealedWithoutKey`] rather than write one in the clear.
+//! [`Config::save`] seals those same values again wherever they now appear,
+//! under a renamed key or at a new position in an array, and refuses rather
+//! than write one in the clear: with [`ConfigError::SealedWithoutKey`] when
+//! there is no key to seal it with, and with [`ConfigError::SealedShapeChanged`]
+//! when a sealed value has gone and cannot be told apart from one that was
+//! renamed and edited.
 //!
 //! ```
 //! use abnegate_config::Loader;
