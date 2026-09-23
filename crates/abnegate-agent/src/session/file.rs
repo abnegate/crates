@@ -1,6 +1,7 @@
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use super::{Session, SessionError, SessionStore, SessionSummary};
@@ -8,8 +9,15 @@ use crate::Application;
 
 const SESSIONS_DIRECTORY: &str = "sessions";
 const SESSION_EXTENSION: &str = "json";
+const FILE_MODE: u32 = 0o600;
+const DIRECTORY_MODE: u32 = 0o700;
 
 /// Sessions stored as one pretty-printed JSON file each, in one directory.
+///
+/// A session holds a whole conversation, tool output included, so each file
+/// is readable by its owner alone, in a directory the store creates the same
+/// way. A save writes a new file and renames it into place, so a crash
+/// part-way through leaves the previous save rather than half of this one.
 pub struct FileSessionStore {
     directory: PathBuf,
 }
@@ -26,14 +34,32 @@ impl FileSessionStore {
             .map(|home| Self::new(home.join(application.directory()).join(SESSIONS_DIRECTORY)))
     }
 
+    /// Create the directory, readable by its owner alone, if it is missing.
     async fn ensure_directory(&self) -> Result<(), SessionError> {
-        fs::create_dir_all(&self.directory).await?;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(DIRECTORY_MODE)
+            .create(&self.directory)
+            .await?;
         Ok(())
     }
 
     fn session_path(&self, id: Uuid) -> PathBuf {
         self.directory.join(format!("{id}.{SESSION_EXTENSION}"))
     }
+}
+
+/// Write `contents` to a new file at `path` that only its owner can read,
+/// and wait for it to reach the disk.
+async fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(FILE_MODE)
+        .open(path)
+        .await?;
+    file.write_all(contents).await?;
+    file.sync_all().await
 }
 
 #[async_trait]
@@ -43,7 +69,21 @@ impl SessionStore for FileSessionStore {
 
         let path = self.session_path(session.id);
         let json = serde_json::to_string_pretty(session)?;
-        fs::write(&path, json).await?;
+        let temporary =
+            self.directory
+                .join(format!(".{}.{}.tmp", session.id, Uuid::new_v4().simple()));
+        let written = write_private(&temporary, json.as_bytes()).await;
+        let renamed = match written {
+            Ok(()) => fs::rename(&temporary, &path).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = renamed {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(error.into());
+        }
+        if let Ok(directory) = fs::File::open(&self.directory).await {
+            let _ = directory.sync_all().await;
+        }
 
         Ok(())
     }
@@ -345,6 +385,44 @@ mod tests {
         let loaded = store.load(session.id).await.unwrap();
         assert!(loaded.state.finished);
         assert!(loaded.state.final_response.is_some());
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    /// A session is the whole conversation, tool output and all. It was
+    /// written world-readable, in place, into a world-readable directory.
+    #[tokio::test]
+    async fn a_saved_session_is_readable_by_its_owner_alone() {
+        let root = TempDir::new().unwrap();
+        let directory = root.path().join("sessions");
+        let store = FileSessionStore::new(directory.clone());
+        let session = create_test_session("Secret prompt", "Private");
+
+        store.save(&session).await.unwrap();
+
+        assert_eq!(mode(&directory), 0o700);
+        assert_eq!(mode(&store.session_path(session.id)), 0o600);
+    }
+
+    #[tokio::test]
+    async fn a_save_leaves_only_the_session_behind() {
+        let directory = TempDir::new().unwrap();
+        let store = FileSessionStore::new(directory.path().to_path_buf());
+        let mut session = create_test_session("Prompt", "First");
+        store.save(&session).await.unwrap();
+        session.title = "Second".to_string();
+        store.save(&session).await.unwrap();
+
+        let names: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, [format!("{}.json", session.id)]);
+        assert_eq!(store.load(session.id).await.unwrap().title, "Second");
+        assert_eq!(mode(&store.session_path(session.id)), 0o600);
     }
 
     #[tokio::test]
