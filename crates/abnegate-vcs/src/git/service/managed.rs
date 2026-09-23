@@ -1127,10 +1127,7 @@ mod managed_tests {
         let target = workspace.path().join("cloned");
         let url = origin(source.path());
         let service = GitService::new();
-        service
-            .ensure_repository(&target, &url, &branch("main"))
-            .await
-            .unwrap();
+        clone_as_files(&url, &target);
         let name = "ma\u{200B}in";
         let tracking = format!("{REMOTE_TRACKING}{name}");
         let local = format!("{HEADS}{name}");
