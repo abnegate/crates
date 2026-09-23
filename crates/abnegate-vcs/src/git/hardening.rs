@@ -213,9 +213,13 @@ pub(crate) fn unlinked(located: &[u8]) -> GitResult<()> {
 /// [`GitError::AlternateObjects`]: git reads objects from every store that
 /// file names, whatever the host can read, and a push uploads whatever the
 /// pushed commit reaches from any of them. No clone this crate makes or
-/// manages has one, and a run's own commands can write it. A worktree's own
-/// git directory holds no objects, so only the shared one is looked at. What
-/// cannot be looked at is refused as [`unlinked`] refuses it.
+/// manages has one: each is made through git's transport, which sends
+/// objects and never the source's files, a managed clone of a local path
+/// included, since it is made with `--no-local`; git would otherwise copy
+/// the alternates of a source made with `--shared` or `--reference` along
+/// with its objects. A run's own commands can still write one. A worktree's
+/// own git directory holds no objects, so only the shared one is looked at.
+/// What cannot be looked at is refused as [`unlinked`] refuses it.
 pub(crate) fn unborrowed(located: &[u8]) -> GitResult<()> {
     let (_, shared) = directories(located)?;
     let alternates = ALTERNATES
