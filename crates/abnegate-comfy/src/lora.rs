@@ -304,12 +304,22 @@ async fn train_with_pipeline(
         .map(|image| decode_base64(&image.bytes_base64))
         .collect::<Result<Vec<Vec<u8>>, TrainError>>()?;
     let side = crate::train::packaged_config()?.resolution();
+    let http =
+        crate::http::client(config).map_err(|error| TrainError::Failed(error.to_string()))?;
     let mut verdict = screening(&decoded, side);
     validate_verdict(&verdict, request.images.len())?;
     let mut attempts = Vec::new();
     if repair_rejections {
         loop {
-            let fresh = remediate(config, &mut decoded, &request.images, &verdict, &attempts).await;
+            let fresh = remediate(
+                config,
+                &http,
+                &mut decoded,
+                &request.images,
+                &verdict,
+                &attempts,
+            )
+            .await;
             if fresh.is_empty() {
                 break;
             }
@@ -474,12 +484,12 @@ async fn train_with_pipeline(
         let status = match process.status().await {
             Ok(status) => status,
             Err(error) => {
-                crate::train::cleanup(config, &run).await;
+                crate::train::cleanup_with(&http, config, &run).await;
                 return Err(failed(error));
             }
         };
         if !status.success() {
-            crate::train::cleanup(config, &run).await;
+            crate::train::cleanup_with(&http, config, &run).await;
             return Err(TrainError::Failed(format!(
                 "trainer exited {}",
                 status.code().unwrap_or(1)
@@ -487,16 +497,25 @@ async fn train_with_pipeline(
         }
         run
     } else {
-        crate::train::run(config, &model, &attempt.root, &staged, survivors.len()).await?
+        crate::train::run_with(
+            &http,
+            config,
+            &model,
+            &attempt.root,
+            &staged,
+            survivors.len(),
+        )
+        .await?
     };
     attempt.register(&run, &config.contract)?;
     if require_regular_file(&attempt.root, &staged).is_err() {
-        crate::train::cleanup(config, &run).await;
+        crate::train::cleanup_with(&http, config, &run).await;
         return Err(TrainError::Failed(
             "trainer did not write a regular LoRA file".to_string(),
         ));
     }
-    let quality = crate::quality::select(config, &model, &run, &staged, &captions).await;
+    let quality =
+        crate::quality::select_with(&http, config, &model, &run, &staged, &captions).await;
     require_regular_file(&attempt.root, &staged).map_err(|_| {
         tracing::warn!(
             staged = %staged.display(),
@@ -602,6 +621,7 @@ fn repairable(rejection: crate::screening::Rejection) -> bool {
 
 async fn remediate(
     config: &Config,
+    http: &reqwest::Client,
     images: &mut [Vec<u8>],
     request: &[TrainImage],
     verdict: &crate::screening::Verdict,
@@ -628,7 +648,7 @@ async fn remediate(
         return attempts;
     }
 
-    let client = match Client::new(config.clone()) {
+    let client = match Client::with_http(config.clone(), http.clone()) {
         Ok(client) => client,
         Err(error) => {
             tracing::warn!(error = %error, "could not initialize LoRA image remediation");

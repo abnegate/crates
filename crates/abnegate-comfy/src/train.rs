@@ -1,6 +1,9 @@
 //! HTTP client that runs packaged LoRA training graphs on ComfyUI.
 
 use crate::config::Config;
+use crate::http::CANCEL_TIMEOUT;
+use crate::http::POLL_TIMEOUT;
+use crate::http::authorize;
 use crate::lora::TrainError;
 use crate::recipe::TrainingModel;
 use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
@@ -13,11 +16,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
-const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_config.json");
-const MIN_WEIGHT_BYTES: usize = 10_000;
+pub(crate) const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_config.json");
+/// Smallest body taken for trained weights. ComfyUI answers a missing file
+/// with a 200 error page, so size is what tells the two apart.
+pub(crate) const MIN_WEIGHT_BYTES: usize = 10_000;
 const MANIFEST_VERSION: u32 = 1;
-const CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+const TRAIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Default `class_type` of the node that trains the adapter.
 pub const TRAIN_LORA_NODE: &str = "ZoneTrainLoRA";
@@ -240,19 +245,40 @@ pub async fn run(
     if !config.enabled {
         return Err(TrainError::Disabled);
     }
+    let client = crate::http::client(config).map_err(request_failed)?;
+    run_with(&client, config, model, work, output, image_count).await
+}
+
+/// [`run`] on a client the caller already holds for this run.
+pub(crate) async fn run_with(
+    client: &reqwest::Client,
+    config: &Config,
+    model: &TrainingModel,
+    work: &Path,
+    output: &Path,
+    image_count: usize,
+) -> Result<Run, TrainError> {
+    if !config.enabled {
+        return Err(TrainError::Disabled);
+    }
     let run = Run::new(&config.contract);
-    match execute(config, model, work, output, image_count, &run).await {
+    match execute(client, config, model, work, output, image_count, &run).await {
         Ok(()) => Ok(run),
         Err(failure) => {
             if failure.cleanup {
-                cleanup(config, &run).await;
+                cleanup_with(client, config, &run).await;
             }
             Err(failure.error)
         }
     }
 }
 
+fn request_failed(error: reqwest::Error) -> TrainError {
+    TrainError::Failed(error.to_string())
+}
+
 async fn execute(
+    client: &reqwest::Client,
     config: &Config,
     model: &TrainingModel,
     work: &Path,
@@ -262,8 +288,7 @@ async fn execute(
 ) -> Result<(), Failure> {
     run.validate(&config.contract)?;
     let settings = packaged_config()?;
-    let client = client(config)?;
-    let manifest = stage_or_upload(&client, config, model, work, run).await?;
+    let manifest = stage_or_upload(client, config, model, work, run).await?;
     let graph = train_graph(
         model,
         &run.folder,
@@ -273,14 +298,14 @@ async fn execute(
         settings.steps(image_count),
         &config.contract,
     );
-    let prompt = queue(&client, config, graph)
+    let prompt = queue(client, config, graph)
         .await
         .map_err(|failure| Failure {
             error: failure.error,
             cleanup: failure.cleanup,
         })?;
     if let Err(failure) = wait_prompt(
-        &client,
+        client,
         config,
         prompt,
         Duration::from_secs(config.train_timeout_seconds),
@@ -292,17 +317,9 @@ async fn execute(
             cleanup: failure.cleanup,
         });
     }
-    download(&client, config, run, output)
+    download(client, config, run, output)
         .await
         .map_err(Failure::from)
-}
-
-fn client(config: &Config) -> Result<reqwest::Client, TrainError> {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(config.train_timeout_seconds))
-        .build()
-        .map_err(|error| TrainError::Failed(error.to_string()))
 }
 
 async fn queue(
@@ -881,7 +898,7 @@ async fn wait_prompt(
                 }
             }
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(TRAIN_POLL_INTERVAL).await;
     }
 }
 
@@ -893,7 +910,7 @@ async fn history(
 ) -> Result<Value, TrainError> {
     let timeout = deadline
         .saturating_duration_since(tokio::time::Instant::now())
-        .min(REQUEST_TIMEOUT);
+        .min(POLL_TIMEOUT);
     authorize(
         config,
         client
@@ -951,7 +968,7 @@ async fn cancel_and_wait(
         config,
         client
             .post(format!("{}/api/jobs/{prompt}/cancel", config.base_url))
-            .timeout(REQUEST_TIMEOUT),
+            .timeout(POLL_TIMEOUT),
     )
     .send()
     .await;
@@ -985,21 +1002,33 @@ fn train_prompt_terminal(entry: &Value) -> bool {
 }
 
 pub async fn cleanup(config: &Config, run: &Run) {
+    match crate::http::client(config) {
+        Ok(client) => cleanup_with(&client, config, run).await,
+        Err(error) => {
+            tracing::warn!(%error, "could not reach ComfyUI to clean up a training run");
+            if run.validate(&config.contract).is_ok() {
+                cleanup_local(config, run);
+            }
+        }
+    }
+}
+
+/// [`cleanup`] on a client the caller already holds for this run.
+pub(crate) async fn cleanup_with(client: &reqwest::Client, config: &Config, run: &Run) {
     if run.validate(&config.contract).is_err() {
         return;
     }
     cleanup_local(config, run);
-    let Ok(client) = client(config) else { return };
     let graph = json!({
         "1": {
             "class_type": config.contract.cleanup_training_run_node,
             "inputs": { "folder": run.folder, "artifact": run.artifact }
         }
     });
-    let Ok(prompt) = queue(&client, config, graph).await else {
+    let Ok(prompt) = queue(client, config, graph).await else {
         return;
     };
-    let _ = wait_prompt(&client, config, prompt, Duration::from_secs(30)).await;
+    let _ = wait_prompt(client, config, prompt, CLEANUP_TIMEOUT).await;
 }
 
 fn cleanup_local(config: &Config, run: &Run) {
@@ -1163,13 +1192,6 @@ fn validate_run_name(name: &str, prefix: &str) -> Result<(), TrainError> {
     Ok(())
 }
 
-fn authorize(config: &Config, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    match &config.api_token {
-        Some(token) => request.header(config.token_header.as_str(), token),
-        None => request,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1287,6 +1309,75 @@ mod tests {
             .respond_with(Stage)
             .mount(server)
             .await;
+    }
+
+    struct Delayed<R>(R, Duration);
+
+    impl<R: wiremock::Respond> wiremock::Respond for Delayed<R> {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            self.0.respond(request).set_delay(self.1)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_redirect_never_carries_the_token_to_another_host() {
+        let server = MockServer::start().await;
+        let elsewhere = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        uploads(&server).await;
+        queues(&server, json!({"prompt_id": prompt, "number": 1})).await;
+        finishes(&server, prompt).await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/view", elsewhere.uri()).as_str()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(Serve(vec![7u8; 20_000], "application/safetensors"))
+            .mount(&elsewhere)
+            .await;
+
+        let work = dataset();
+        let output = work.path().join("out.safetensors");
+        run(&config(&server), &base(), work.path(), &output, 2)
+            .await
+            .expect_err("a redirected download is not the artifact that was asked for");
+
+        assert!(
+            elsewhere.received_requests().await.unwrap().is_empty(),
+            "the token header followed a redirect to another host"
+        );
+        assert!(!output.exists());
+    }
+
+    #[tokio::test]
+    async fn a_short_training_deadline_does_not_cut_off_a_slow_upload() {
+        let server = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        Mock::given(method("POST"))
+            .and(path("/upload/image"))
+            .respond_with(Delayed(Stage, Duration::from_millis(1_200)))
+            .mount(&server)
+            .await;
+        queues(&server, json!({"prompt_id": prompt, "number": 1})).await;
+        finishes(&server, prompt).await;
+        serves(&server, vec![7u8; 20_000]).await;
+        let config = Config {
+            train_timeout_seconds: 1,
+            request_timeout_seconds: 30,
+            ..config(&server)
+        };
+
+        let work = dataset();
+        let output = work.path().join("out.safetensors");
+        run(&config, &base(), work.path(), &output, 2)
+            .await
+            .expect("the training deadline bounds the graph, not each request");
+        assert_eq!(fs::read(&output).unwrap(), vec![7u8; 20_000]);
     }
 
     async fn finishes(server: &MockServer, prompt: Uuid) {

@@ -81,6 +81,7 @@ pub mod caption;
 pub mod client;
 pub mod config;
 pub mod dataset;
+mod http;
 pub mod inventory;
 pub mod lora;
 pub mod media;

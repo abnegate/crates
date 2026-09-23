@@ -254,17 +254,19 @@ fn outputs_from_history_entry(
 
 impl Client {
     pub fn new(config: Config) -> Result<Self, Error> {
+        let client = crate::http::client(&config)?;
+        Self::with_http(config, client)
+    }
+
+    /// A client sharing `client`'s connections, for a caller that already
+    /// holds one for the same ComfyUI.
+    pub(crate) fn with_http(config: Config, client: HttpClient) -> Result<Self, Error> {
         if config.base_url.trim().is_empty() {
             return Err(Error::Configuration("COMFYUI_BASE_URL is empty"));
         }
         sanitize_weight_filename(&config.checkpoint).map_err(|_| {
             Error::Configuration("COMFYUI_CHECKPOINT must be a checkpoint filename")
         })?;
-        let client = HttpClient::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(config.request_timeout_seconds))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
         let catalog = RecipeCatalog::load(Some(config.workflow_path.as_path()))?;
         let client = Self {
             config,
@@ -738,10 +740,7 @@ impl Client {
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.config.api_token {
-            Some(token) => request.header(self.config.token_header.as_str(), token),
-            None => request,
-        }
+        crate::http::authorize(&self.config, request)
     }
 
     async fn bounded<T, F>(

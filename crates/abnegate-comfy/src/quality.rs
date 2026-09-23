@@ -1,7 +1,11 @@
 //! Scores a trained adapter against its own base and promotes the best checkpoint.
 
 use crate::config::Config;
+use crate::http::CANCEL_TIMEOUT;
+use crate::http::POLL_TIMEOUT;
 use crate::recipe::TrainingModel;
+use crate::train::MIN_WEIGHT_BYTES;
+use crate::train::PACKAGED_TRAIN_CONFIG;
 use crate::train::{Contract, Run};
 use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
@@ -14,15 +18,11 @@ use std::time::Duration;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_config.json");
 const RANK_PERCENT: &str = "0.5";
 const RANK_IMAGES: usize = 4;
 const MEASURE_PERCENTS: &str = "0.2,0.6,0.9";
 const PROBE_SEED: u64 = 1234;
-const MIN_WEIGHT_BYTES: usize = 10_000;
 const FINAL: &str = "final";
-const CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Deserialize)]
 struct Settings {
@@ -76,7 +76,25 @@ pub async fn select(
     output: &Path,
     captions: &HashMap<String, String>,
 ) -> Option<Quality> {
-    let selection = match Selection::new(config, model, run, output, captions) {
+    match crate::http::client(config) {
+        Ok(client) => select_with(&client, config, model, run, output, captions).await,
+        Err(error) => {
+            tracing::warn!(%error, "could not reach ComfyUI; the adapter stands unscored");
+            None
+        }
+    }
+}
+
+/// [`select`] on a client the caller already holds for this run.
+pub(crate) async fn select_with(
+    client: &reqwest::Client,
+    config: &Config,
+    model: &TrainingModel,
+    run: &Run,
+    output: &Path,
+    captions: &HashMap<String, String>,
+) -> Option<Quality> {
+    let selection = match Selection::new(client, config, model, run, output, captions) {
         Some(selection) => selection,
         None => {
             // Silence here reads to the caller as "the trainer produced
@@ -91,7 +109,7 @@ pub async fn select(
                 manifest = crate::train::manifest(model, captions).is_some(),
                 "quality selection could not start; the adapter stands unscored"
             );
-            crate::train::cleanup(config, run).await;
+            crate::train::cleanup_with(client, config, run).await;
             return None;
         }
     };
@@ -101,7 +119,7 @@ pub async fn select(
     if selection.probe.cleanup.load(Ordering::Acquire) {
         discard(config, sample.as_ref());
         selection.sweep();
-        crate::train::cleanup(config, run).await;
+        crate::train::cleanup_with(client, config, run).await;
     } else {
         tracing::warn!(
             prompt_namespace = %run.folder,
@@ -124,6 +142,7 @@ struct Selection<'a> {
 
 impl<'a> Selection<'a> {
     fn new(
+        client: &reqwest::Client,
         config: &'a Config,
         model: &'a TrainingModel,
         run: &Run,
@@ -135,7 +154,7 @@ impl<'a> Selection<'a> {
         let adapter = format!("{}.safetensors", run.artifact);
         artifact(&adapter, &run.artifact, &config.contract.artifact_prefix)?;
         Some(Self {
-            probe: Probe::new(config, model, run, captions, settings.resolution)?,
+            probe: Probe::new(client, config, model, run, captions, settings.resolution)?,
             settings,
             folder: run.folder.clone(),
             output: output.to_path_buf(),
@@ -341,6 +360,7 @@ struct Probe<'a> {
 
 impl<'a> Probe<'a> {
     fn new(
+        client: &reqwest::Client,
         config: &'a Config,
         model: &'a TrainingModel,
         run: &Run,
@@ -348,11 +368,7 @@ impl<'a> Probe<'a> {
         resolution: u32,
     ) -> Option<Self> {
         Some(Self {
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(config.train_timeout_seconds))
-                .build()
-                .ok()?,
+            client: client.clone(),
             config,
             model,
             manifest: crate::train::manifest(model, captions)?,
@@ -519,7 +535,7 @@ impl<'a> Probe<'a> {
                     .timeout(
                         deadline
                             .saturating_duration_since(Instant::now())
-                            .min(REQUEST_TIMEOUT),
+                            .min(POLL_TIMEOUT),
                     ),
             )
             .send()
@@ -545,7 +561,7 @@ impl<'a> Probe<'a> {
             .authorize(
                 self.client
                     .post(format!("{}/api/jobs/{prompt}/cancel", self.config.base_url))
-                    .timeout(REQUEST_TIMEOUT),
+                    .timeout(POLL_TIMEOUT),
             )
             .send()
             .await;
@@ -602,10 +618,7 @@ impl<'a> Probe<'a> {
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.config.api_token {
-            Some(token) => request.header(self.config.token_header.as_str(), token),
-            None => request,
-        }
+        crate::http::authorize(self.config, request)
     }
 }
 
@@ -976,7 +989,7 @@ mod tests {
         Probe {
             config,
             model,
-            client: reqwest::Client::new(),
+            client: crate::http::client(config).unwrap(),
             manifest: "{}".into(),
             resolution: 512,
             stem: run.artifact.clone(),
@@ -1120,6 +1133,7 @@ mod tests {
             };
             let model = flux();
             let selection = Selection::new(
+                &crate::http::client(&config).unwrap(),
                 &config,
                 &model,
                 &run,

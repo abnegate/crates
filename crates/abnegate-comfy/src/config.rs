@@ -11,6 +11,11 @@ pub const TOKEN_HEADER: &str = "X-Zone-ComfyUI-Token";
 /// one `abnegate-vision` documents.
 pub const VISION_MODEL_VARIABLE: &str = "ABNEGATE_VISION_MODEL";
 
+/// Floor on every timeout, since a zero timeout fails a request before it is sent.
+pub(crate) const MINIMUM_TIMEOUT_SECONDS: u64 = 1;
+const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 120;
+const MAXIMUM_REQUEST_TIMEOUT_SECONDS: u64 = 600;
+
 fn env_truthy(name: &str, default: bool) -> bool {
     truthy(env::var(name).ok(), default)
 }
@@ -74,7 +79,10 @@ pub struct Config {
     /// Vision model that captions LoRA training images. Empty disables captioning.
     pub caption_model: String,
     pub caption_timeout_seconds: u64,
+    /// Ceiling on any one HTTP request. Generation and training are bounded by
+    /// their own deadlines, not by this.
     pub request_timeout_seconds: u64,
+
     pub generation_timeout_seconds: u64,
     pub video_generation_timeout_seconds: u64,
     pub audio_generation_timeout_seconds: u64,
@@ -130,7 +138,7 @@ impl Default for Config {
             classifier_timeout_seconds: 3,
             caption_model: String::new(),
             caption_timeout_seconds: 60,
-            request_timeout_seconds: 15,
+            request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
             generation_timeout_seconds: 300,
             video_generation_timeout_seconds: 600,
             audio_generation_timeout_seconds: 600,
@@ -205,7 +213,13 @@ impl Config {
             classifier_timeout_seconds: env_u64("COMFYUI_CLASSIFIER_TIMEOUT_SECS", 3, 1, 30),
             caption_model: env_text("COMFYUI_CAPTION_MODEL").unwrap_or_default(),
             caption_timeout_seconds: env_u64("COMFYUI_CAPTION_TIMEOUT_SECS", 60, 5, 600),
-            request_timeout_seconds: env_u64("COMFYUI_REQUEST_TIMEOUT_SECS", 15, 1, 120),
+            request_timeout_seconds: env_u64(
+                "COMFYUI_REQUEST_TIMEOUT_SECS",
+                DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                MINIMUM_TIMEOUT_SECONDS,
+                MAXIMUM_REQUEST_TIMEOUT_SECONDS,
+            ),
+
             generation_timeout_seconds: env_u64("COMFYUI_GENERATION_TIMEOUT_SECS", 300, 10, 3600),
             video_generation_timeout_seconds: env_u64(
                 "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECS",
