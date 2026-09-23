@@ -55,12 +55,9 @@ impl<T> Default for NdjsonCodec<T> {
 }
 
 impl<T> Clone for NdjsonCodec<T> {
+    /// A clone decodes its own buffer, so it starts with nothing scanned.
     fn clone(&self) -> Self {
-        Self {
-            max_length: self.max_length,
-            scanned: self.scanned,
-            message: PhantomData,
-        }
+        Self::with_max_length(self.max_length)
     }
 }
 
@@ -96,14 +93,16 @@ impl<T: DeserializeOwned> Decoder for NdjsonCodec<T> {
                     max: self.max_length,
                 });
             }
-            if line.is_empty() {
+            if line.trim_ascii().is_empty() {
                 continue;
             }
 
             return serde_json::from_slice(&line).map(Some).map_err(|cause| {
                 ProtocolError::JsonParse {
-                    source: cause,
                     length,
+                    category: cause.classify(),
+                    line: cause.line(),
+                    column: cause.column(),
                 }
             });
         }
@@ -370,24 +369,30 @@ mod tests {
     #[test]
     fn a_rejected_line_never_reaches_the_error() {
         const SECRET: &str = "hunter2-master-key";
-        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
-        let line = format!(
-            r#"{{"type":"RunStart","job_id":"j","workspace":"/tmp","command":"ls","env":{{"APP_MASTER_KEY":"{SECRET}"}},"timeout_ms":"soon"}}"#
-        );
-        let mut buffer = BytesMut::from(format!("{line}\n").as_bytes());
+        for line in [
+            format!(
+                r#"{{"type":"RunStart","job_id":"j","workspace":"/tmp","command":"ls","env":"{SECRET}"}}"#
+            ),
+            format!(
+                r#"{{"type":"RunStart","job_id":"j","workspace":"/tmp","command":"ls","env":{{"APP_MASTER_KEY":"{SECRET}"}},"timeout_ms":"soon"}}"#
+            ),
+        ] {
+            let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
+            let mut buffer = BytesMut::from(format!("{line}\n").as_bytes());
 
-        let error = codec.decode(&mut buffer).unwrap_err();
+            let error = codec.decode(&mut buffer).unwrap_err();
 
-        assert!(!error.to_string().contains(SECRET), "{error}");
-        assert!(!format!("{error:?}").contains(SECRET), "{error:?}");
-        assert!(
-            !format!("{error:?}").contains("APP_MASTER_KEY"),
-            "{error:?}"
-        );
-        assert!(matches!(
-            error,
-            ProtocolError::JsonParse { length, .. } if length == line.len()
-        ));
+            assert!(!error.to_string().contains(SECRET), "{error}");
+            assert!(!format!("{error:?}").contains(SECRET), "{error:?}");
+            assert!(
+                std::error::Error::source(&error).is_none(),
+                "serde's message repeats the value it rejected"
+            );
+            assert!(matches!(
+                error,
+                ProtocolError::JsonParse { length, .. } if length == line.len()
+            ));
+        }
     }
 
     #[test]
@@ -598,6 +603,32 @@ mod tests {
 
         assert!(codec.decode(&mut BytesMut::new()).unwrap().is_none());
         assert!(codec.decode(&mut fresh).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_clone_decodes_a_fresh_buffer_from_its_start() {
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
+        assert!(
+            codec
+                .decode(&mut BytesMut::from("partial".as_bytes()))
+                .unwrap()
+                .is_none()
+        );
+        let mut clone = codec.clone();
+        let mut fresh = BytesMut::from(
+            "{\"type\":\"Ping\",\"id\":\"1\"}\n{\"type\":\"Ping\",\"id\":\"2\"}\n".as_bytes(),
+        );
+
+        assert!(clone.decode(&mut fresh).unwrap().is_some());
+        assert!(clone.decode(&mut fresh).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_line_of_only_whitespace_is_skipped() {
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
+        let mut buffer = BytesMut::from(" \r\n\t\n{\"type\":\"Ping\",\"id\":\"1\"}\n".as_bytes());
+
+        assert!(codec.decode(&mut buffer).unwrap().is_some());
     }
 
     #[test]

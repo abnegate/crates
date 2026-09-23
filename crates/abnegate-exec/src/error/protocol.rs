@@ -1,18 +1,23 @@
 use std::io;
 
+use serde_json::error::Category;
 use thiserror::Error;
 
 /// Errors that can occur during protocol communication.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ProtocolError {
-    /// A line was not a valid message. Only its length is kept: the line
-    /// itself carries a job's environment and stdin.
-    #[error("Failed to parse a {length}-byte JSON line")]
+    /// A line was not a valid message. Only where and how it failed is kept:
+    /// the line, and serde's description of what it found there, can both
+    /// carry a job's environment and stdin.
+    #[error(
+        "Failed to parse a {length}-byte JSON line: {category:?} error at line {line}, column {column}"
+    )]
     JsonParse {
-        #[source]
-        source: serde_json::Error,
         length: usize,
+        category: Category,
+        line: usize,
+        column: usize,
     },
 
     /// Failed to serialize JSON message
@@ -36,29 +41,17 @@ mod tests {
 
     #[test]
     fn test_protocol_error_json_parse() {
-        let json_error = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
         let error = ProtocolError::JsonParse {
-            source: json_error,
             length: 7,
+            category: Category::Syntax,
+            line: 1,
+            column: 1,
         };
-        assert_eq!(error.to_string(), "Failed to parse a 7-byte JSON line");
-    }
-
-    #[test]
-    fn a_parse_failure_names_its_cause_once() {
-        let cause = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
-        let message = cause.to_string();
-        let error = ProtocolError::JsonParse {
-            source: cause,
-            length: 7,
-        };
-
-        assert!(!error.to_string().contains(&message), "{error}");
         assert_eq!(
-            error.source().map(ToString::to_string),
-            Some(message),
-            "the cause is reachable through the chain"
+            error.to_string(),
+            "Failed to parse a 7-byte JSON line: Syntax error at line 1, column 1"
         );
+        assert!(error.source().is_none());
     }
 
     #[test]
