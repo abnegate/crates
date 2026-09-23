@@ -1,5 +1,6 @@
 mod builder;
 mod client;
+mod request;
 mod resolver;
 
 use crate::error::Result;
@@ -7,6 +8,7 @@ use std::time::Duration;
 
 pub use crate::public::builder::PublicClientBuilder;
 pub use crate::public::client::PublicClient;
+pub use crate::public::request::PublicRequest;
 
 /// A builder for a [`PublicClient`], with `timeout` bounding each request.
 ///

@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::public::request::PublicRequest;
 use crate::url::validate_public_url;
 use reqwest::Client;
 use reqwest::Method;
@@ -9,11 +10,13 @@ use reqwest::Response;
 /// A reqwest client for fetching caller-supplied URLs without reaching back
 /// inside the deployment.
 ///
-/// Every request is checked by [`validate_public_url`] before it is built, so
-/// an IP literal, which reqwest connects to without consulting any resolver,
-/// is refused before a connection is attempted. Every name the client
-/// resolves is refused if it answers only with addresses that must not be
-/// fetched, and every redirect hop is checked again before it is followed.
+/// Every request is checked by [`validate_public_url`] before it is started
+/// and again before it is sent, so an IP literal, which reqwest connects to
+/// without consulting any resolver, is refused before a connection is
+/// attempted. Every name the client resolves is refused if it answers only
+/// with addresses that must not be fetched, and every redirect hop is checked
+/// again before it is followed. The reqwest client underneath is never handed
+/// out, not even through the [`PublicRequest`] a request method returns.
 ///
 /// Build one with [`public_client`](crate::public_client) or
 /// [`public_client_builder`](crate::public_client_builder).
@@ -43,37 +46,43 @@ impl PublicClient {
 
     /// Start a `method` request to `url`, refusing a URL that must not be
     /// fetched before anything is sent.
-    pub fn request(&self, method: Method, url: &str) -> Result<RequestBuilder> {
+    pub fn request(&self, method: Method, url: &str) -> Result<PublicRequest> {
+        self.prepare(method, url).map(PublicRequest::new)
+    }
+
+    /// Start a `method` request to `url` as a reqwest builder, which carries
+    /// the client underneath and so must not leave this crate.
+    pub(crate) fn prepare(&self, method: Method, url: &str) -> Result<RequestBuilder> {
         Ok(self.client.request(method, validate_public_url(url)?))
     }
 
     /// Start a GET request to `url`.
-    pub fn get(&self, url: &str) -> Result<RequestBuilder> {
+    pub fn get(&self, url: &str) -> Result<PublicRequest> {
         self.request(Method::GET, url)
     }
 
     /// Start a HEAD request to `url`.
-    pub fn head(&self, url: &str) -> Result<RequestBuilder> {
+    pub fn head(&self, url: &str) -> Result<PublicRequest> {
         self.request(Method::HEAD, url)
     }
 
     /// Start a POST request to `url`.
-    pub fn post(&self, url: &str) -> Result<RequestBuilder> {
+    pub fn post(&self, url: &str) -> Result<PublicRequest> {
         self.request(Method::POST, url)
     }
 
     /// Start a PUT request to `url`.
-    pub fn put(&self, url: &str) -> Result<RequestBuilder> {
+    pub fn put(&self, url: &str) -> Result<PublicRequest> {
         self.request(Method::PUT, url)
     }
 
     /// Start a PATCH request to `url`.
-    pub fn patch(&self, url: &str) -> Result<RequestBuilder> {
+    pub fn patch(&self, url: &str) -> Result<PublicRequest> {
         self.request(Method::PATCH, url)
     }
 
     /// Start a DELETE request to `url`.
-    pub fn delete(&self, url: &str) -> Result<RequestBuilder> {
+    pub fn delete(&self, url: &str) -> Result<PublicRequest> {
         self.request(Method::DELETE, url)
     }
 

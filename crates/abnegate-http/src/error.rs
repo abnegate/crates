@@ -26,6 +26,14 @@ pub enum HttpError {
     #[error("Invalid URL.")]
     InvalidUrl,
 
+    /// A header name did not parse.
+    #[error("Invalid header name.")]
+    InvalidHeaderName,
+
+    /// A header value did not parse.
+    #[error("Invalid header value.")]
+    InvalidHeaderValue,
+
     /// The URL named a scheme other than `http` or `https`.
     #[error("Only http and https URLs are allowed.")]
     UnsupportedScheme,

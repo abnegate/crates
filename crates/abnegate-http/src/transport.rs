@@ -64,7 +64,7 @@ impl ReqwestHttpClient {
             request = request.body(body.to_string());
         }
 
-        let response = request.send().await?;
+        let response = self.outbound.execute(request.build()?).await?;
         let status = response.status().as_u16();
         let body = read_capped(response, self.body_limit).await?;
         let body = String::from_utf8(body)
