@@ -843,7 +843,6 @@ impl Client {
         let mut generated = Vec::with_capacity(outputs.len());
         for output in outputs {
             let filename = output.filename.clone();
-            // reqwest 0.13 dropped RequestBuilder::query; encode onto the URL.
             let url = format!(
                 "{}/view?filename={}&subfolder={}&type={}",
                 self.config.base_url,
@@ -889,9 +888,7 @@ impl Client {
         {
             tracing::warn!("Failed to cancel ComfyUI prompt {}: {}", prompt_id, error);
         }
-        // `/interrupt` is process-wide in ComfyUI and cannot safely identify a
-        // prompt. Never call it: removing queued work is safe, while an already
-        // running cancelled job finishes into ComfyUI's temporary directory.
+        // Never `/interrupt`: it is process-wide and would stop another caller's prompt.
     }
 
     async fn clear_history(&self, prompt_id: &str) {
@@ -1193,9 +1190,6 @@ fn validate_audio_workflow(workflow: &Value) -> Result<(), Error> {
             ));
         }
     }
-    // Node 5 is where the caller's prompt lands, so pin its class as tightly as
-    // the output node: any other node type with a `tags` input would otherwise
-    // pass and receive the prompt.
     if workflow.pointer("/5/class_type").and_then(Value::as_str) != Some("TextEncodeAceStepAudio") {
         return Err(Error::Configuration(
             "audio workflow must encode the prompt with TextEncodeAceStepAudio",
@@ -1294,8 +1288,6 @@ fn apply_ace_step_workflow_inputs(
     let checkpoint = sanitize_weight_filename(checkpoint)?;
     workflow["1"]["inputs"]["ckpt_name"] = json!(checkpoint);
     workflow["5"]["inputs"]["tags"] = json!(prompt);
-    // Overwrite rather than trust the graph: lyrics authored into an
-    // operator-supplied workflow would otherwise be sung over every generation.
     workflow["5"]["inputs"]["lyrics"] = json!("");
     workflow["8"]["inputs"]["seed"] = json!(seed);
     Ok(())
@@ -1994,9 +1986,6 @@ mod tests {
                 .generate("a fox", None, &mut cancel_rx, progress_tx)
                 .await
         });
-        // A cancel that lands before the client holds a prompt id returns `Cancelled`
-        // having sent nothing. The queued progress message is emitted on the statement
-        // after the id is bound, which is what makes it this test's fence.
         let queued = tokio::time::timeout(REQUEST_WAIT, progress_rx.recv())
             .await
             .expect("the client should report the prompt queued before the cancel is sent")
@@ -2060,8 +2049,6 @@ mod tests {
                 .generate("a fox", None, &mut cancel_rx, progress_tx)
                 .await
         });
-        // What is under test is cancelling a request already in flight, so the cancel
-        // waits until the server has the request rather than until a clock says so.
         wait_for_request(&server, "/prompt").await;
         cancel_tx.send(()).unwrap();
         assert!(matches!(task.await.unwrap(), Err(Error::Cancelled)));
@@ -2131,9 +2118,6 @@ mod tests {
 
     #[test]
     fn video_upscale_ignores_the_source_clip_the_loader_previews() {
-        // LoadVideo reports the uploaded input as a PreviewVideo, which is a
-        // video output living under "input". Sweeping every node would take
-        // that for the result and fail the whole job.
         let nodes = json!({
             "1": {"images": [{"filename": "upscale-in.webm", "subfolder": "", "type": "input"}], "animated": [true]},
             "5": {"images": [{"filename": "upscale_00001_.webm", "subfolder": "", "type": "output"}], "animated": [true]}
@@ -2174,15 +2158,16 @@ mod tests {
             video["3"]["inputs"]["model_name"],
             json!("4x-model.safetensors")
         );
-        // The encoder takes its rate from the source so the clip keeps its timing.
-        assert_eq!(video["5"]["inputs"]["fps"], json!(["2", 2]));
+        assert_eq!(
+            video["5"]["inputs"]["fps"],
+            json!(["2", 2]),
+            "the encoder takes its rate from the source so the clip keeps its timing"
+        );
         assert_eq!(video["5"]["class_type"], json!("SaveWEBM"));
     }
 
     #[test]
     fn the_packaged_upscale_graphs_load_when_no_file_is_configured() {
-        // An operator who never sets COMFYUI_UPSCALE_WORKFLOW_PATH still gets a
-        // working pair, and the clip graph is found beside the image one.
         let missing = Some(Path::new("/nonexistent/upscale-image-api.json"));
         for unset in [missing, None] {
             assert_eq!(
@@ -2195,7 +2180,6 @@ mod tests {
             );
         }
         let image = load_upscale_workflow(missing).unwrap();
-
         assert_eq!(image["1"]["class_type"], json!("LoadImage"));
         assert_eq!(
             image[UPSCALE_IMAGE_OUTPUT_NODE]["class_type"],
@@ -2209,7 +2193,6 @@ mod tests {
         );
         assert!(validate_upscale_image_workflow(&image).is_ok());
         assert!(validate_upscale_video_workflow(&video).is_ok());
-        // The graphs are not interchangeable.
         assert!(validate_upscale_video_workflow(&image).is_err());
         assert!(validate_upscale_image_workflow(&video).is_err());
     }

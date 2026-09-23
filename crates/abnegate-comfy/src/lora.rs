@@ -372,9 +372,7 @@ async fn train_with_pipeline(
             reason: *rejection,
         })
         .collect::<Vec<Dropped>>();
-    // Cropping comes before captioning so the vision model describes the image
-    // that will be trained on. Captioning the upload instead would have it
-    // describe a background the crop is about to remove.
+    // Crop before captioning, or the caption describes background the crop removes.
     let subject = Subject::shared(config).await;
     let groups = shots(&request.images);
     let mut survivors = request
@@ -1088,9 +1086,7 @@ where
             failed(error),
         );
     }
-    // Both renames were synced before the marker was removed. If this final
-    // directory sync fails, a restart may still see the marker and complete
-    // the already-consistent generation through `recover_publication`.
+    // Both renames are durable; a restart that still sees the marker completes them.
     let _ = sync_directory(&publications);
     Ok(())
 }
@@ -1353,11 +1349,7 @@ fn safe_directory(path: &Path) -> bool {
 /// from; a separate photo is its own, numbered past every clip's groups so the
 /// two cannot be taken for each other.
 fn shots(images: &[TrainImage]) -> Vec<usize> {
-    // Renumbered into a dense range rather than used as sent. The group is
-    // deserialized straight from the request, so counting up from the largest
-    // one overflows on usize::MAX and, saturating, would hand a photo the same
-    // shot as the clip. Renumbering cannot collide whatever arrives, and cannot
-    // run past the number of images.
+    // Renumbered densely: counting up from a caller's largest group overflows.
     let mut clips: Vec<usize> = Vec::new();
     let seen: Vec<Option<usize>> = images
         .iter()
@@ -1424,8 +1416,7 @@ fn frame_with_target(
     let raster = decode_bytes(target)?;
     let focus = subject.focus(&raster, CENTRE);
     let control = match &image.before_base64 {
-        // The control has to keep answering the target pixel for pixel, so it
-        // is cropped to the target's subject rather than to its own.
+        // Cropped on the target's focus, so the pair stays aligned pixel for pixel.
         Some(before) => Some(square(subject, &decode(before)?, side, focus)?),
         None => None,
     };
@@ -2089,9 +2080,12 @@ mod tests {
             contract: contract(),
             ..Default::default()
         };
-        // Under the limit itself, over it once ".safetensors" is on the end.
-        let long = "a".repeat(250);
-        let error = rejected(&config, request(&long, "flux-schnell", Some("ohwx"))).await;
+        let too_long_once_suffixed = "a".repeat(250);
+        let error = rejected(
+            &config,
+            request(&too_long_once_suffixed, "flux-schnell", Some("ohwx")),
+        )
+        .await;
         assert!(matches!(error, TrainError::Invalid(_)), "{error}");
 
         let named = train(
@@ -2346,8 +2340,6 @@ mod tests {
             cp "$TRAIN_DIR/control_1/0001.png" "KEPT/control-1.png" || exit 19
             printf trained > "$TRAIN_OUTPUT"
         "#;
-        // The attempt is cleaned up when the run ends, so the images have to be
-        // copied out before they can be compared against the crops they should be.
         let kept = tempfile::tempdir().expect("kept dataset");
         let command = command
             .replace("KEPT", &kept.path().display().to_string())
@@ -3315,8 +3307,6 @@ mod tests {
 
     #[test]
     fn a_group_at_the_top_of_its_range_does_not_wrap_a_photo_onto_a_clip() {
-        // The group is deserialized straight from the request, so this is a
-        // value a caller can actually send.
         let images = vec![
             upload("", Some(usize::MAX)),
             upload("", Some(usize::MAX)),
@@ -3332,9 +3322,6 @@ mod tests {
 
     #[test]
     fn a_trigger_is_matched_as_a_word_rather_than_a_substring() {
-        // A short trigger occurs inside longer words, and a substring test
-        // would read that as the trigger already being present, leaving the
-        // image to train with no trigger at all.
         assert_eq!(
             identity_caption("zrk pattern knitwear", "zrkx"),
             "zrkx, zrk pattern knitwear"
@@ -3349,8 +3336,6 @@ mod tests {
             "zrkxyz, zrkxyzed hair",
             "a longer word that merely starts with the trigger is not the trigger"
         );
-        // A trigger is not always one word. Splitting the caption into words
-        // could never match this one, and would prefix it a second time.
         assert_eq!(
             identity_caption("my-style, a portrait", "my-style"),
             "my-style, a portrait",

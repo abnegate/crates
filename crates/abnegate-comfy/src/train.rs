@@ -1227,7 +1227,6 @@ mod tests {
             api_token: Some("secret".into()),
             train_timeout_seconds: 60,
             poll_interval_milliseconds: 50,
-            // No sibling input/ directory, so staging falls through to upload.
             models_directory: std::env::temp_dir().join(format!("comfy-models-{}", Uuid::new_v4())),
             ..Default::default()
         }
@@ -1579,7 +1578,6 @@ mod tests {
         uploads(&server).await;
         queues(&server, json!({"prompt_id": prompt, "number": 1})).await;
         finishes(&server, prompt).await;
-        // ComfyUI serves its error pages with a 200, so size is the only tell.
         serves(&server, b"<html>not found</html>".to_vec()).await;
 
         let work = dataset();
@@ -1778,8 +1776,6 @@ mod tests {
         finishes(&server, prompt).await;
         serves(&server, vec![7u8; 20_000]).await;
 
-        // models_directory with a sibling input/ is the shared-volume deployment,
-        // where the dataset can simply be copied into place.
         let comfy = tempfile::tempdir().unwrap();
         let input = comfy.path().join("input");
         fs::create_dir_all(&input).unwrap();
@@ -1803,7 +1799,6 @@ mod tests {
             .filter_map(|entry| entry.ok().map(|item| item.path()))
             .collect();
         assert_eq!(staged.len(), 1, "one folder per training run");
-        // Captions ride in the graph's captions_json, so only the images stage.
         assert!(staged[0].join("targets/0000.png").is_file());
         assert!(staged[0].join("targets/0001.png").is_file());
         assert!(

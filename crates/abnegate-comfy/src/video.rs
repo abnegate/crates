@@ -59,6 +59,9 @@ const GROUP_DISTANCE: u32 = 14;
 /// Frames kept before near-duplicate rejection is allowed to stop early. Below
 /// this a static clip would train on a single pose.
 const FLOOR: usize = 8;
+/// Narrowest plane a second derivative can be taken on: one pixel with a
+/// neighbour on each side.
+const LAPLACIAN_SIDE: usize = 3;
 /// How long ffprobe may take to read a clip's duration.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long ffmpeg may take to sample a clip at most [`CEILING`] frames.
@@ -229,8 +232,6 @@ pub async fn extract(
     )
     .await?;
 
-    // Decoding, measuring, cropping and encoding hundreds of frames is seconds
-    // of CPU that would otherwise sit on a runtime thread other requests need.
     let subject = Subject::shared(config).await;
     tokio::task::spawn_blocking(move || build(&stills, sampled_fps, options, &subject))
         .await
@@ -552,8 +553,7 @@ fn diversify(candidates: &[usize], measured: &[Measured], budget: usize) -> Vec<
     };
     let mut taken = vec![false; candidates.len()];
     let mut distances = vec![u32::MAX; candidates.len()];
-    // Sized as it grows rather than reserved: the budget is small, and a
-    // capacity taken from the clip is a promise about the clip's size.
+    // The budget is caller-supplied, so it is never trusted as a capacity.
     let mut chosen = Vec::new();
     let mut next = sharpest;
     while chosen.len() < budget.min(candidates.len()) {
@@ -698,8 +698,7 @@ fn luma(pixels: &[u8]) -> Vec<f32> {
 /// Variance of the Laplacian: a blurred frame has little left after a
 /// second-derivative filter, a sharp one keeps its edges.
 fn sharpness(luma: &[f32], side: usize) -> f64 {
-    // A second derivative needs a pixel on each side of the one it is taken at.
-    if side < 3 || luma.len() < side * side {
+    if side < LAPLACIAN_SIDE || luma.len() < side * side {
         return 0.0;
     }
     let mut total = 0.0f64;
@@ -1120,8 +1119,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_decoder_that_cannot_be_run_is_reported_rather_than_swallowed() {
-        // Present but not executable: a misconfigured path, not a missing one,
-        // so it is the server's fault in a way "not installed" does not cover.
         let work = tempfile::tempdir().unwrap();
         let blocked = work.path().join("ffmpeg");
         std::fs::write(&blocked, "#!/bin/sh\nexit 0\n").unwrap();

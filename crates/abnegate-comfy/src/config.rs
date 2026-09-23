@@ -440,9 +440,6 @@ mod tests {
 
     #[test]
     fn subject_detection_stays_off_until_the_weights_are_actually_there() {
-        // from_env falls back to <models>/vision/u2net.onnx, and has to check
-        // rather than assume: a path that is not a file would fail at load and
-        // cost a request its crop.
         if env::var_os(VISION_MODEL_VARIABLE).is_some()
             || env::var_os("COMFYUI_MODELS_DIR").is_some()
         {
@@ -451,16 +448,17 @@ mod tests {
         assert_eq!(Config::from_env().vision_model, None);
     }
 
+    /// Set by Cargo, to its own binary, for every test process: a variable
+    /// that names a file without the test having to mutate the environment.
+    const SET_TO_A_FILE: &str = "CARGO";
+
     #[test]
     fn the_weights_path_is_read_from_the_variable_the_caller_names() {
-        // Cargo points CARGO at its own binary for every test process, which
-        // makes it a variable that is set and names a file without this test
-        // having to mutate the environment.
-        let Some(cargo) = env::var_os("CARGO") else {
+        let Some(cargo) = env::var_os(SET_TO_A_FILE) else {
             return;
         };
         assert_eq!(
-            Config::from_env_with_vision_model("CARGO").vision_model,
+            Config::from_env_with_vision_model(SET_TO_A_FILE).vision_model,
             Some(PathBuf::from(cargo))
         );
     }

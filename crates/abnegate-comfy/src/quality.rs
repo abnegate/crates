@@ -98,9 +98,6 @@ pub(crate) async fn select_with(
     let selection = match Selection::new(client, config, model, run, output, captions) {
         Some(selection) => selection,
         None => {
-            // Silence here reads to the caller as "the trainer produced
-            // nothing", which is what the error it raises next says. Name the
-            // step that refused instead.
             tracing::warn!(
                 artifact = %run.artifact,
                 models_directory = %config.models_directory.display(),

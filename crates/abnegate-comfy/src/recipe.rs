@@ -172,8 +172,6 @@ struct CatalogRecipe {
     #[serde(default)]
     files: Vec<String>,
     #[serde(default)]
-    base_models: Vec<String>,
-    #[serde(default)]
     filename_hints: Vec<String>,
     #[serde(default)]
     adapter: bool,
@@ -270,9 +268,6 @@ impl RecipeCatalog {
             for filename in spec.files {
                 files.insert(filename, spec.id.clone());
             }
-            // CivitAI-style family labels are catalog documentation. Matching a
-            // checkpoint uses `files` then `filename_hints`, never these labels.
-            let _ = spec.base_models;
             for hint in spec.filename_hints {
                 hints.push((hint.to_ascii_lowercase(), spec.id.clone()));
             }
@@ -359,8 +354,6 @@ impl RecipeCatalog {
     pub fn image_recipe_for(&self, checkpoint: &str) -> Result<&Recipe, Error> {
         let id = self.resolve_image_id(checkpoint);
         self.get(id)
-            // An adapter recipe drives a LoRA slot. Letting one answer for a
-            // plain checkpoint would write that checkpoint into the LoRA input.
             .filter(|recipe| recipe.kind == MediaKind::Image && !recipe.adapter)
             .ok_or(Error::Configuration(
                 "no image recipe matches this checkpoint",
@@ -829,8 +822,6 @@ mod tests {
                 .id,
             "sdxl"
         );
-        // Family labels are not checkpoint filenames; an unknown name stays
-        // on the default image recipe instead of matching "SD 1.5".
         assert_eq!(
             catalog.image_recipe_for("SD 1.5").unwrap().id,
             "flux-schnell"

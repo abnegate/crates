@@ -61,8 +61,6 @@ fn coverage(pixels: &[u8]) -> f64 {
 #[tokio::test]
 async fn a_photo_is_cropped_onto_its_subject_rather_than_its_middle() {
     let config = configured();
-    // A subject in the left tenth of a wide frame. The centre square of a
-    // 1600x900 image spans x 350 to 1250, so a centre crop misses it entirely.
     let image = scene(1600, 900, (150, 450), 120);
     let subject = Subject::shared(&config).await;
     assert!(
@@ -95,8 +93,6 @@ async fn a_photo_is_cropped_onto_its_subject_rather_than_its_middle() {
 #[tokio::test]
 async fn motion_decides_between_subjects_rather_than_inventing_one() {
     let config = configured();
-    // Two equally salient discs. Nothing in the picture says which one is being
-    // trained; in a clip, the one that moved does.
     let mut pixels = vec![226u8; (1280 * 720 * 3) as usize];
     for centre in [320u32, 960] {
         for y in 260..460u32 {
@@ -144,10 +140,6 @@ fn a_tripod_clip_is_framed_on_its_subject_rather_than_on_the_middle() {
         .stderr(std::process::Stdio::null())
         .status()
         .expect("ffmpeg must be installed to build the test clip");
-    // Nothing moves but the sensor noise, which is the tripod case: the only
-    // thing frame differencing can see is spread evenly over the picture, so it
-    // says nothing about where the subject is. The centre 360x360 of this
-    // 640x360 frame spans x 140 to 500, and the subject sits at x 117.
     let work = tempfile::tempdir().unwrap();
     let clip = work.path().join("tripod.mp4");
     let built = std::process::Command::new("ffmpeg")
@@ -201,8 +193,6 @@ fn a_tripod_clip_is_framed_on_its_subject_rather_than_on_the_middle() {
         ))
         .expect("extract without it");
 
-    // A whole disc covers 4.6% of the crop: pi times 44 squared, scaled by the
-    // 360 to 256 downscale, over 256 squared.
     assert!(
         thinnest(&centred) < 0.02,
         "the clip is meant to be one motion alone crops badly, got {:.2}%",
