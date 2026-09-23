@@ -1,7 +1,11 @@
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+
+use crate::log::PRIVATE_DIRECTORY;
+use crate::log::private_directory;
 
 const LABEL_LIMIT: usize = 64;
 const UNLABELLED: &str = "run";
@@ -24,8 +28,9 @@ pub struct ExecutionLogFiles {
 }
 
 impl ExecutionLogFiles {
-    /// Name one run's files under `root/<agent>/<UTC day>/`, creating that
-    /// directory.
+    /// Name one run's files under `root/<agent>/<UTC day>/`, creating those
+    /// two directories readable by their owner alone, and refusing either
+    /// when it is a link.
     ///
     /// The three names share a stem of timestamp, process, sequence and
     /// `label`, so concurrent runs never share a file and a run's files sort
@@ -37,13 +42,20 @@ impl ExecutionLogFiles {
         }
 
         let now = chrono::Utc::now();
-        let directory = root.join(sanitize(agent)).join(now.format(DAY).to_string());
+        let agent = root.join(sanitize(agent));
+        let directory = agent.join(now.format(DAY).to_string());
 
-        if let Err(error) = std::fs::create_dir_all(&directory) {
+        let created = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(PRIVATE_DIRECTORY)
+            .create(root)
+            .and_then(|()| private_directory(&agent))
+            .and_then(|()| private_directory(&directory));
+        if let Err(error) = created {
             tracing::warn!(
                 path = %directory.display(),
                 %error,
-                "could not create the execution log directory"
+                "could not create a private execution log directory"
             );
             return None;
         }
@@ -208,6 +220,45 @@ mod tests {
         std::fs::write(&blocker, b"not a directory").expect("a file");
 
         assert!(ExecutionLogFiles::create(&blocker, "claude", "test").is_none());
+    }
+
+    #[test]
+    fn only_the_owner_can_list_a_log_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TempDir::new().expect("a temporary directory");
+        let agent = root.path().join("claude");
+        std::fs::create_dir(&agent).expect("a shared directory");
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755))
+            .expect("permissions");
+
+        let files = ExecutionLogFiles::create(root.path(), "claude", "run").expect("log files");
+
+        let directory = files.stdout.parent().expect("a directory");
+        for path in [directory, agent.as_path()] {
+            let mode = std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700, "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn a_log_directory_that_is_a_link_disables_logging() {
+        let root = TempDir::new().expect("a temporary directory");
+        let elsewhere = TempDir::new().expect("another directory");
+        std::os::unix::fs::symlink(elsewhere.path(), root.path().join("claude"))
+            .expect("a planted link");
+
+        assert!(ExecutionLogFiles::create(root.path(), "claude", "run").is_none());
+        assert!(
+            std::fs::read_dir(elsewhere.path())
+                .expect("the link's target")
+                .next()
+                .is_none(),
+            "a log directory was created through the link"
+        );
     }
 
     #[test]

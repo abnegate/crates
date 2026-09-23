@@ -93,8 +93,8 @@ pub use crate::execution_error::ExecutionError;
 pub use crate::kind::AgentKind;
 pub use crate::lines::Lines;
 pub use crate::log::{
-    DEFAULT_LOG_DIRECTORY, EXECUTION_LOG_PREVIEW_LIMIT, ExecutionLogFiles, Journal, Record,
-    preview, resolve_log_root,
+    EXECUTION_LOG_PREVIEW_LIMIT, ExecutionLogFiles, Journal, LOG_DIRECTORY_NAME, Record,
+    default_log_directory, preview, resolve_log_root,
 };
 pub use crate::mcp::{McpAttachment, McpConfig, McpServer, McpTransport};
 pub use crate::parser::claude::{

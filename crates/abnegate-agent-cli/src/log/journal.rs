@@ -33,12 +33,15 @@ impl Journal {
         Self::default()
     }
 
-    /// Append to the journal at `path`, holding the lines a run printed to
-    /// `limit` bytes of it, or a disabled journal when it cannot be opened.
+    /// Start the journal at `path`, holding the lines a run printed to
+    /// `limit` bytes of it, or a disabled journal when it cannot be created.
+    ///
+    /// The file must not exist yet: creating it exclusively also refuses a
+    /// link planted in its place, which `O_CREAT | O_EXCL` never follows.
     pub async fn open(path: &Path, label: impl Into<String>, limit: u64) -> Self {
         let label = label.into();
         match OpenOptions::new()
-            .create(true)
+            .create_new(true)
             .append(true)
             .mode(PRIVATE)
             .open(path)
@@ -322,6 +325,24 @@ mod tests {
         );
         assert_eq!(events.last().map(String::as_str), Some("process_completed"));
         assert!(events.iter().any(|event| event == "stdout_line"));
+    }
+
+    #[tokio::test]
+    async fn a_journal_is_never_written_through_a_planted_link() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let target = directory.path().join("target");
+        std::fs::write(&target, b"untouched").expect("a target");
+        let planted = directory.path().join("events.jsonl");
+        std::os::unix::fs::symlink(&target, &planted).expect("a planted link");
+
+        let journal = Journal::open(&planted, "linked", LIMIT).await;
+        journal.append(Record::Initialized, json!({})).await;
+
+        assert!(!journal.enabled());
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("the target"),
+            "untouched"
+        );
     }
 
     #[tokio::test]
