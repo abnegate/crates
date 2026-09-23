@@ -8,11 +8,15 @@ mod token_counts;
 use abnegate_llm::Usage;
 
 use crate::event::AgentEvent;
+use crate::parser;
 use crate::parser::codex::event::Event;
 use crate::parser::codex::item::Item;
 
 const COMMAND: &str = "command_execution";
 const COMPLETED: &str = "completed";
+const ENDS_TURN: [&str; 2] = ["turn.completed", "turn.failed"];
+const COMPLETED_ITEM: &str = "item.completed";
+const MESSAGE: &str = "agent_message";
 const FAILED_TURN: &str = "the agent reported a failed turn";
 const ERROR: &str = "the agent reported an error";
 
@@ -46,7 +50,7 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
                 .or(message)
                 .unwrap_or_else(|| FAILED_TURN.to_string()),
         )),
-        Event::Error { message } => events.push(AgentEvent::Failed(
+        Event::Error { message } => events.push(AgentEvent::Diagnostic(
             message.unwrap_or_else(|| ERROR.to_string()),
         )),
         Event::Completed {
@@ -56,10 +60,29 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
     }
 }
 
+/// Whether an event too long to read, of which only `prefix` is known, is
+/// one the run cannot do without: the end of the turn, or the agent's prose,
+/// rather than a command's output or other event that can be dropped.
+pub fn essential(prefix: &str) -> bool {
+    let types = parser::types(prefix);
+    let top = |kinds: &[&str]| {
+        types
+            .iter()
+            .any(|(depth, kind)| *depth == 1 && kinds.contains(kind))
+    };
+    top(&ENDS_TURN)
+        || (top(&[COMPLETED_ITEM])
+            && types
+                .iter()
+                .any(|(depth, kind)| *depth == 2 && *kind == MESSAGE))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::essential;
     use super::interpret;
     use crate::event::AgentEvent;
+    use crate::stdout_parse_result::StdoutParseResult;
 
     /// Recorded from `codex exec --json --skip-git-repo-check -`.
     const SESSION: &str = r#"{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000001"}
@@ -68,6 +91,13 @@ mod tests {
 {"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cargo test","aggregated_output":"test result: ok. 12 passed\n","exit_code":0,"status":"completed"}}
 {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"The suite passes."}}
 {"type":"turn.completed","usage":{"input_tokens":4310,"cached_input_tokens":3900,"output_tokens":128}}"#;
+
+    /// Recorded from a run whose stream dropped and reconnected mid-turn.
+    const RECONNECTED: &str = r#"{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000003"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses))"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"The suite passes."}}
+{"type":"turn.completed","usage":{"input_tokens":2210,"cached_input_tokens":0,"output_tokens":41}}"#;
 
     /// Recorded from a run that ran out of quota.
     const QUOTA: &str = r#"{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000002"}
@@ -142,21 +172,59 @@ mod tests {
     fn an_exhausted_quota_reads_as_a_rate_limit_to_the_caller() {
         let events = interpret_all(QUOTA);
 
-        let failures: Vec<_> = events
-            .iter()
-            .filter_map(|event| match event {
-                AgentEvent::Failed(message) => Some(message.as_str()),
-                _ => None,
-            })
-            .collect();
-
-        assert_eq!(failures.len(), 2, "both the error and the failed turn");
-        for message in failures {
+        let [
+            AgentEvent::Session(_),
+            AgentEvent::Diagnostic(diagnostic),
+            AgentEvent::Failed(failure),
+        ] = events.as_slice()
+        else {
+            panic!("expected a diagnostic then the failed turn, got {events:?}");
+        };
+        for message in [diagnostic, failure] {
             assert!(
                 message.to_ascii_lowercase().contains("usage limit"),
                 "the caller cannot classify {message:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_reconnect_notice_does_not_end_a_turn_that_goes_on_to_complete() {
+        let events = interpret_all(RECONNECTED);
+
+        let terminal: Vec<&AgentEvent> = events.iter().filter(|event| event.terminal()).collect();
+        assert!(
+            matches!(terminal.as_slice(), [AgentEvent::Finished { .. }]),
+            "{events:?}"
+        );
+
+        let mut result: StdoutParseResult = events.into_iter().collect();
+        result.conclude();
+        assert!(result.failure.is_none(), "{:?}", result.failure);
+        assert!(result.finished);
+        assert_eq!(result.text, "The suite passes.");
+        assert!(
+            result
+                .diagnostic
+                .as_deref()
+                .is_some_and(|diagnostic| diagnostic.starts_with("Reconnecting"))
+        );
+    }
+
+    #[test]
+    fn an_error_with_no_turn_after_it_becomes_the_failure() {
+        let mut result: StdoutParseResult = interpret_all(
+            r#"{"type":"turn.started"}
+{"type":"error","message":"stream disconnected before completion"}"#,
+        )
+        .into_iter()
+        .collect();
+        result.conclude();
+
+        assert_eq!(
+            result.failure.as_deref(),
+            Some("stream disconnected before completion")
+        );
     }
 
     #[test]
@@ -174,14 +242,14 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_turn_or_error_with_no_wording_at_all_still_reports_a_failure() {
+    fn a_failed_turn_or_error_with_no_wording_at_all_still_reports_one() {
         let mut events = Vec::new();
         interpret(r#"{"type":"turn.failed"}"#, &mut events);
         interpret(r#"{"type":"error"}"#, &mut events);
 
         assert!(matches!(
             events.as_slice(),
-            [AgentEvent::Failed(turn), AgentEvent::Failed(error)]
+            [AgentEvent::Failed(turn), AgentEvent::Diagnostic(error)]
                 if turn == "the agent reported a failed turn" && error == "the agent reported an error"
         ));
     }
@@ -205,6 +273,24 @@ mod tests {
             &mut events,
         );
         assert!(events.is_empty(), "a start produced {events:?}");
+    }
+
+    #[test]
+    fn only_prose_or_the_end_of_a_turn_is_essential_when_too_long_to_read() {
+        for prefix in [
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"#,
+            r#"{"type":"turn.completed","usage":{"#,
+            r#"{"type":"turn.failed","error":{"message":"#,
+        ] {
+            assert!(essential(prefix), "{prefix}");
+        }
+        for prefix in [
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat big.log","aggregated_output":"#,
+            r#"{"type":"item.started","item":{"id":"item_2","type":"agent_message","text":"#,
+            r#"{"type":"error","message":"#,
+        ] {
+            assert!(!essential(prefix), "{prefix}");
+        }
     }
 
     #[test]

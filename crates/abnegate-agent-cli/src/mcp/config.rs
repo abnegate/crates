@@ -2,24 +2,49 @@ use std::collections::BTreeMap;
 use std::io;
 use std::io::Write;
 
+use crate::mcp::attachment::McpAttachment;
+use crate::mcp::placeholders::Placeholders;
+use crate::mcp::server::McpServer;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
+use serde::de::Error;
+use serde::ser::SerializeMap;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
-use tempfile::NamedTempFile;
-
-use crate::mcp::server::McpServer;
 
 const SERVERS: &str = "mcpServers";
 const PREFIX: &str = "mcp-";
 const SUFFIX: &str = ".json";
 
 /// The MCP servers a run attaches, keyed by the name the agent knows each by.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
+///
+/// It reads from the CLI's own `{"mcpServers": {...}}` document, chosen by
+/// that key being present, or from a bare map of servers, and writes the
+/// former.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct McpConfig {
     pub servers: BTreeMap<String, McpServer>,
+}
+
+impl Serialize for McpConfig {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut document = serializer.serialize_map(Some(1))?;
+        document.serialize_entry(SERVERS, &self.servers)?;
+        document.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for McpConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut document = Map::<String, Value>::deserialize(deserializer)?;
+        let servers = document.remove(SERVERS).unwrap_or(Value::Object(document));
+        BTreeMap::<String, McpServer>::deserialize(servers)
+            .map(|servers| Self { servers })
+            .map_err(D::Error::custom)
+    }
 }
 
 impl McpConfig {
@@ -34,30 +59,39 @@ impl McpConfig {
 
     /// The servers that will actually attach: those with a
     /// [valid](McpServer::valid) transport, which a strict CLI would
-    /// otherwise reject along with every other server.
+    /// otherwise reject along with every other server, and a name and tool
+    /// names safe to place in `--allowedTools`, which the CLI splits on
+    /// commas and whitespace, so a name holding either could allow a tool
+    /// nobody named.
     pub fn attachable(&self) -> impl Iterator<Item = (&str, &McpServer)> {
         self.servers
             .iter()
-            .filter(|(_, server)| server.valid())
+            .filter(|(name, server)| server.valid() && server.nameable(name))
             .map(|(name, server)| (name.as_str(), server))
     }
 
     /// Write the attachable servers to a private temporary file for
-    /// `--mcp-config`, or `None` when there are none.
-    ///
-    /// The file is readable by its owner alone and deleted when the returned
-    /// handle drops, so the handle must outlive the child that reads it.
-    pub fn render(&self) -> io::Result<Option<NamedTempFile>> {
-        for (name, _) in self.servers.iter().filter(|(_, server)| !server.valid()) {
-            tracing::warn!(
-                server = %name,
-                "skipping an MCP server: set exactly one of `command` and `url`, with a matching `type`"
-            );
+    /// `--mcp-config`, or `None` when there are none, with what the child
+    /// needs in its environment for the file to resolve.
+    pub fn render(&self) -> io::Result<Option<McpAttachment>> {
+        for (name, server) in &self.servers {
+            if !server.valid() {
+                tracing::warn!(
+                    server = %name,
+                    "skipping an MCP server: set exactly one of `command` and `url`, with a matching `type`"
+                );
+            } else if !server.nameable(name) {
+                tracing::warn!(
+                    server = %name,
+                    "skipping an MCP server: its name and tool names may hold only letters, digits, `_` and `-`"
+                );
+            }
         }
 
+        let mut placeholders = Placeholders::default();
         let servers: Map<String, Value> = self
             .attachable()
-            .map(|(name, server)| (name.to_string(), server.entry()))
+            .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders)))
             .collect();
         if servers.is_empty() {
             return Ok(None);
@@ -71,7 +105,17 @@ impl McpConfig {
             .tempfile()?;
         file.as_file_mut().write_all(&bytes)?;
         file.as_file_mut().flush()?;
-        Ok(Some(file))
+        let Placeholders {
+            environment,
+            templates,
+            references,
+        } = placeholders;
+        Ok(Some(McpAttachment {
+            file,
+            environment,
+            templates,
+            references,
+        }))
     }
 
     /// What [`McpConfig::render`] writes, safe for a log line.
@@ -89,6 +133,14 @@ impl McpConfig {
             .flat_map(|(name, server)| server.allowed_tools(name))
             .collect()
     }
+
+    /// The `--allowedTools` entries for the tools each attachable server
+    /// names, leaving out every server that names none.
+    pub fn scoped_tools(&self) -> Vec<String> {
+        self.attachable()
+            .flat_map(|(name, server)| server.scoped_tools(name))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -100,8 +152,13 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::McpConfig;
+    use crate::mcp::attachment::McpAttachment;
     use crate::mcp::server::McpServer;
     use crate::mcp::transport::McpTransport;
+
+    fn rendered(config: &McpConfig) -> McpAttachment {
+        config.render().expect("rendered").expect("an attachment")
+    }
 
     fn read(file: &NamedTempFile) -> Value {
         let mut contents = String::new();
@@ -146,8 +203,9 @@ mod tests {
                 },
             );
 
-        let file = config.render().expect("rendered").expect("a file");
-        let document = read(&file);
+        let attachment = rendered(&config);
+        let file = &attachment.file;
+        let document = read(file);
 
         let appwrite = &document["mcpServers"]["appwrite"];
         assert_eq!(appwrite["command"], "uvx");
@@ -178,15 +236,11 @@ mod tests {
 
     #[test]
     fn the_file_is_deleted_when_its_handle_drops() {
-        let file = McpConfig::default()
-            .with_server("appwrite", appwrite())
-            .render()
-            .expect("rendered")
-            .expect("a file");
-        let path = file.path().to_path_buf();
+        let attachment = rendered(&McpConfig::default().with_server("appwrite", appwrite()));
+        let path = attachment.file.path().to_path_buf();
         assert!(path.exists());
 
-        drop(file);
+        drop(attachment);
         assert!(!path.exists());
     }
 
@@ -208,13 +262,57 @@ mod tests {
             .with_server("appwrite", appwrite())
             .with_server("broken", broken());
 
-        let document = read(&config.render().expect("rendered").expect("a file"));
+        let document = read(&rendered(&config).file);
         let servers = document["mcpServers"].as_object().expect("servers");
         assert!(servers.contains_key("appwrite"));
         assert!(!servers.contains_key("broken"));
 
         assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
         assert!(config.redacted()["mcpServers"].get("broken").is_none());
+    }
+
+    #[test]
+    fn a_rendered_file_holds_no_literal_secret_and_the_attachment_carries_it() {
+        let config = McpConfig::default().with_server(
+            "grafana",
+            McpServer {
+                environment: [
+                    (
+                        "GRAFANA_TOKEN".to_string(),
+                        SecretValue::new("glsa_realsecret"),
+                    ),
+                    (
+                        "GRAFANA_URL".to_string(),
+                        SecretValue::new("${GRAFANA_URL}"),
+                    ),
+                ]
+                .into(),
+                ..appwrite()
+            },
+        );
+
+        let attachment = rendered(&config);
+
+        let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        assert!(!contents.contains("glsa_realsecret"), "{contents}");
+        let document: Value = serde_json::from_str(&contents).expect("JSON");
+        let environment = &document["mcpServers"]["grafana"]["env"];
+        let variable = environment["GRAFANA_TOKEN"]
+            .as_str()
+            .and_then(|value| value.strip_prefix("${"))
+            .and_then(|value| value.strip_suffix('}'))
+            .expect("a reference");
+        assert_eq!(
+            attachment
+                .environment
+                .get(variable)
+                .map(SecretValue::expose),
+            Some("glsa_realsecret")
+        );
+        assert_eq!(environment["GRAFANA_URL"], "${GRAFANA_URL}");
+        assert!(attachment.references.contains("GRAFANA_URL"));
+        assert!(format!("{attachment:?}").contains("[REDACTED]"));
+        assert!(!format!("{attachment:?}").contains("glsa_realsecret"));
     }
 
     #[test]
@@ -236,6 +334,21 @@ mod tests {
     }
 
     #[test]
+    fn scoped_tools_leave_out_every_server_that_names_none() {
+        let config = McpConfig::default()
+            .with_server("appwrite", appwrite())
+            .with_server(
+                "grafana",
+                McpServer {
+                    tools: vec!["list_datasources".to_string()],
+                    ..appwrite()
+                },
+            );
+
+        assert_eq!(config.scoped_tools(), ["mcp__grafana__list_datasources"]);
+    }
+
+    #[test]
     fn the_log_view_keeps_the_document_shape_without_its_secrets() {
         let config = McpConfig::default().with_server(
             "grafana",
@@ -252,6 +365,84 @@ mod tests {
         let view = config.redacted();
         assert_eq!(view["mcpServers"]["grafana"]["command"], "uvx");
         assert!(!view.to_string().contains("glsa_realsecret"));
+    }
+
+    #[test]
+    fn a_server_or_tool_name_that_could_widen_the_allowed_tools_never_attaches() {
+        let config = McpConfig::default()
+            .with_server("appwrite", appwrite())
+            .with_server("grafana Bash", appwrite())
+            .with_server("bash,Edit", appwrite())
+            .with_server(
+                "remote",
+                McpServer {
+                    tools: vec!["query Bash".to_string()],
+                    ..appwrite()
+                },
+            )
+            .with_server(
+                "scoped",
+                McpServer {
+                    tools: vec!["query".to_string(), "list,Edit".to_string()],
+                    ..appwrite()
+                },
+            );
+
+        assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
+        let document = read(&rendered(&config).file);
+        let servers: Vec<&String> = document["mcpServers"]
+            .as_object()
+            .expect("servers")
+            .keys()
+            .collect();
+        assert_eq!(servers, ["appwrite"]);
+    }
+
+    #[test]
+    fn a_configuration_reads_from_the_clis_own_document_and_writes_it_back() {
+        let wrapped: McpConfig = serde_json::from_value(serde_json::json!({
+            "mcpServers": {
+                "appwrite": {"command": "uvx", "arguments": ["mcp-server-appwrite"], "environment": {"KEY": "${KEY}"}}
+            }
+        }))
+        .expect("a configuration");
+
+        let server = &wrapped.servers["appwrite"];
+        assert_eq!(server.arguments, ["mcp-server-appwrite"]);
+        assert_eq!(
+            server.environment.get("KEY").map(SecretValue::expose),
+            Some("${KEY}")
+        );
+
+        let written = serde_json::to_value(&wrapped).expect("serialisable");
+        assert_eq!(
+            written["mcpServers"]["appwrite"]["args"][0],
+            "mcp-server-appwrite"
+        );
+        assert_eq!(
+            serde_json::from_value::<McpConfig>(written).expect("a round trip"),
+            wrapped
+        );
+    }
+
+    #[test]
+    fn a_malformed_mcp_servers_document_is_an_error_rather_than_a_server() {
+        let error = serde_json::from_value::<McpConfig>(serde_json::json!({
+            "mcpServers": {"appwrite": {"command": "uvx", "args": "not a list"}}
+        }))
+        .expect_err("a malformed document");
+
+        assert!(error.to_string().contains("invalid type"), "{error}");
+    }
+
+    #[test]
+    fn a_server_name_holding_the_separator_never_attaches() {
+        let config = McpConfig::default()
+            .with_server("my", appwrite())
+            .with_server("my__server", appwrite());
+
+        assert_eq!(config.allowed_tools(), ["mcp__my"]);
+        assert_eq!(config.attachable().count(), 1);
     }
 
     #[test]

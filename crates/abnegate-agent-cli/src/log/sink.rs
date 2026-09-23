@@ -8,6 +8,9 @@ use crate::log::PRIVATE;
 
 /// A best-effort raw log file. The first write that fails closes it, so one
 /// full disk costs a warning rather than the run.
+///
+/// The file must not exist yet: creating it exclusively also refuses a link
+/// planted in its place, which `O_CREAT | O_EXCL` never follows.
 #[derive(Debug, Default)]
 pub(crate) struct Sink {
     file: Option<File>,
@@ -19,7 +22,7 @@ impl Sink {
             return Self::default();
         };
         match OpenOptions::new()
-            .create(true)
+            .create_new(true)
             .append(true)
             .mode(PRIVATE)
             .open(path)
@@ -90,6 +93,24 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn a_file_or_a_link_already_in_the_way_is_never_written_through() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let target = directory.path().join("target");
+        std::fs::write(&target, b"untouched").expect("a target");
+        let planted = directory.path().join("run.stdout.log");
+        std::os::unix::fs::symlink(&target, &planted).expect("a planted link");
+
+        let mut sink = Sink::open(Some(&planted)).await;
+        sink.write(b"secret prose").await;
+        sink.finish().await;
+
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("the target"),
+            "untouched"
+        );
     }
 
     #[tokio::test]

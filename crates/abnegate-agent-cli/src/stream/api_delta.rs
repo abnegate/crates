@@ -3,6 +3,7 @@ use serde::Deserialize;
 /// The increment a `content_block_delta` event carries.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum ApiDelta {
     #[serde(rename = "text_delta")]
     TextDelta {

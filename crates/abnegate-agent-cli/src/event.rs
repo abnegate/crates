@@ -18,6 +18,7 @@ const FUNCTION: &str = "function";
 /// a second place to keep in step with it, so a throttled agent simply becomes
 /// a [`AgentEvent::Failed`] carrying the agent's own wording.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum AgentEvent {
     Text(String),
     Tool(ToolCall),
@@ -26,6 +27,10 @@ pub enum AgentEvent {
     Finished {
         finish_reason: Option<String>,
     },
+    /// A problem the agent reported without ending its turn, such as a
+    /// notice that it is reconnecting. It becomes the run's failure only
+    /// when the stream ends without a terminal event.
+    Diagnostic(String),
     /// The agent's own identifier for the conversation, which resumes it.
     Session(String),
     /// The answer the agent was asked to shape to a JSON schema.
@@ -112,6 +117,7 @@ mod tests {
             AgentEvent::Turns(3),
             AgentEvent::Latency(Duration::from_millis(7980)),
             AgentEvent::Tokens(CliUsage::default()),
+            AgentEvent::Diagnostic("Reconnecting... 1/5".to_string()),
         ] {
             assert!(!event.terminal(), "{event:?} ended the run");
         }

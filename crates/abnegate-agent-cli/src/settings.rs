@@ -9,6 +9,7 @@ use abnegate_secret::SecretValue;
 
 use crate::mcp::McpConfig;
 use crate::mcp::McpServer;
+use crate::tripwire::Tripwire;
 
 /// Five minutes, matching the default for any command `abnegate-exec` runs.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -20,19 +21,46 @@ pub const DEFAULT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 /// One event is a JSON object holding at most a turn's worth of text.
 pub const DEFAULT_LINE_LIMIT: usize = 1024 * 1024;
 
+/// Room for every line of a long session, and a bound on a runaway one's
+/// share of the disk.
+pub const DEFAULT_JOURNAL_LIMIT: u64 = 64 * 1024 * 1024;
+
+/// The host variables a child is given unless it
+/// [inherits the whole environment](CliSettings::inherit_environment): where
+/// to find programs, whose home it runs in, where temporary files go, and
+/// how to render text.
+pub const INHERITED_VARIABLES: [&str; 6] = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TERM"];
+
 /// Claude Code's tools that read the workspace and the web but never change
-/// anything, for a run that must leave the repository as it found it.
+/// anything, and the only built-in tools a read-only run makes available.
 pub const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
 
-/// Claude Code's tools that change the workspace or run arbitrary commands,
-/// which a read-only run denies outright.
-pub const WRITE_TOOLS: [&str; 5] = ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit"];
+/// Caller [arguments](CliSettings::arguments) a read-only run passes through
+/// that take no value. Only the long form is recognised.
+pub const READ_ONLY_SWITCHES: [&str; 4] = [
+    "--exclude-dynamic-system-prompt-sections",
+    "--fork-session",
+    "--include-partial-messages",
+    "--no-session-persistence",
+];
+
+/// Caller [arguments](CliSettings::arguments) a read-only run passes through
+/// that take one value, given either as the next argument or after `=`.
+pub const READ_ONLY_OPTIONS: [&str; 6] = [
+    "--effort",
+    "--fallback-model",
+    "--max-budget-usd",
+    "--name",
+    "--resume",
+    "--session-id",
+];
 
 /// How a [`CliProvider`](crate::CliProvider) runs its agent.
 ///
 /// `Debug` is safe to log: the credential, every injected environment value
 /// and every MCP secret print as redacted.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CliSettings {
     /// Overrides the agent's own executable name. A relative name is resolved
     /// on `PATH` by the operating system.
@@ -48,33 +76,65 @@ pub struct CliSettings {
     pub output_limit: usize,
     /// Bytes one event may occupy before the stream is treated as malformed.
     pub line_limit: usize,
-    /// Set in the child's environment after the agent's
-    /// [scrubbed](crate::AgentKind::scrubbed) variables are removed, so an
-    /// explicit value always wins.
+    /// Set in the child's environment on top of what it is given from the
+    /// host, so an explicit value always wins. Every value is treated as a
+    /// secret and scrubbed from whatever the run writes down; a setting that
+    /// is not secret belongs in `variables`.
     pub environment: BTreeMap<String, SecretValue>,
+    /// Set in the child's environment like `environment`, which wins over
+    /// them, but never scrubbed: flags such as `DISABLE_AUTOUPDATER=1`,
+    /// whose values would otherwise be redacted wherever they appear.
+    pub variables: BTreeMap<String, String>,
+    /// Give the child the host's whole environment, less the agent's
+    /// [scrubbed](crate::AgentKind::scrubbed) variables, instead of
+    /// [`INHERITED_VARIABLES`] alone.
+    ///
+    /// Off by default: the agent runs tools the model chooses, and anything
+    /// in its environment is theirs to read. Without it the child is also
+    /// given the agent's own [configuration](crate::AgentKind::configuration)
+    /// variables, its [sign-in](crate::AgentKind::credentials) variables when
+    /// the credential is [inherited](Credential::Inherited), and each host
+    /// variable an attached MCP server refers to. Anything else it needs,
+    /// such as a proxy or a certificate bundle, is set explicitly.
+    pub inherit_environment: bool,
     /// Extra flags passed through verbatim, after the streaming flags and
-    /// before the model. Nothing here is checked against the agent.
+    /// before the model. Nothing here is checked against the agent, except
+    /// in a [read-only](CliSettings::read_only) run, which refuses anything
+    /// not in [`READ_ONLY_SWITCHES`] or [`READ_ONLY_OPTIONS`].
     pub arguments: Vec<String>,
     /// A JSON schema the final answer must satisfy. Claude only.
     pub schema: Option<String>,
-    /// Appended to the agent's own system prompt. Claude only.
+    /// Appended to the agent's own system prompt, through a private
+    /// temporary file rather than the command line, whose size is limited.
+    /// Claude only.
     pub instructions: Option<String>,
     /// Tools the agent may use without asking. Claude only.
     pub permissions: Vec<String>,
-    /// Deny [`WRITE_TOOLS`] and refuse any flag that bypasses permission
-    /// prompts, so the run cannot change the workspace however it is asked
-    /// to. Claude only.
+    /// Confine the run to an allowlist, so it cannot change the workspace
+    /// however it is asked to. Claude only.
+    ///
+    /// Only the [`READ_ONLY_TOOLS`] named in `permissions` are available at
+    /// all; anything that would need permission is denied rather than asked
+    /// about; only user settings load, so a repository cannot add hooks,
+    /// permissions or plugins of its own; only the MCP servers attached here
+    /// load, and only the tools each one names are allowed, never a whole
+    /// server; and every caller argument outside [`READ_ONLY_SWITCHES`] and
+    /// [`READ_ONLY_OPTIONS`] is refused. A permission that is neither a
+    /// read-only tool nor one named MCP tool is refused too.
     pub read_only: bool,
     /// MCP servers to attach, whose tools are allowed alongside
     /// `permissions`. Claude only.
     pub mcp: McpConfig,
     /// Where each run keeps its [execution logs](crate::log). `None` keeps none.
     pub log: Option<PathBuf>,
+    /// Bytes of a run's journal the lines it printed may fill, past which
+    /// they are no longer recorded.
+    pub journal_limit: u64,
     /// A stderr line this returns true for settles the run as failed, in the
     /// line's own words, and the agent is stopped: an agent retrying against
     /// a rate limit is stopped instead of waited on until the timeout. Stdout
     /// is never checked, since the agent's prose can quote anything.
-    pub tripwire: Option<fn(&str) -> bool>,
+    pub tripwire: Option<Tripwire>,
 }
 
 impl Default for CliSettings {
@@ -87,6 +147,8 @@ impl Default for CliSettings {
             output_limit: DEFAULT_OUTPUT_LIMIT,
             line_limit: DEFAULT_LINE_LIMIT,
             environment: BTreeMap::new(),
+            variables: BTreeMap::new(),
+            inherit_environment: false,
             arguments: Vec::new(),
             schema: None,
             instructions: None,
@@ -94,6 +156,7 @@ impl Default for CliSettings {
             read_only: false,
             mcp: McpConfig::default(),
             log: None,
+            journal_limit: DEFAULT_JOURNAL_LIMIT,
             tripwire: None,
         }
     }
@@ -139,6 +202,17 @@ impl CliSettings {
         self
     }
 
+    pub fn with_variable(mut self, variable: impl Into<String>, value: impl Into<String>) -> Self {
+        self.variables.insert(variable.into(), value.into());
+        self
+    }
+
+    /// Opt in to [`CliSettings::inherit_environment`].
+    pub fn inherit_environment(mut self) -> Self {
+        self.inherit_environment = true;
+        self
+    }
+
     pub fn with_arguments<I>(mut self, arguments: I) -> Self
     where
         I: IntoIterator,
@@ -169,7 +243,8 @@ impl CliSettings {
     }
 
     /// Allow exactly [`READ_ONLY_TOOLS`], replacing any permission set so
-    /// far, and hold the run to [`CliSettings::read_only`].
+    /// far, and hold the run to [`CliSettings::read_only`]. Named MCP tools
+    /// may be allowed afterwards with [`CliSettings::with_permissions`].
     pub fn read_only(mut self) -> Self {
         self.permissions = READ_ONLY_TOOLS.map(str::to_string).to_vec();
         self.read_only = true;
@@ -186,8 +261,16 @@ impl CliSettings {
         self
     }
 
-    pub fn with_tripwire(mut self, tripwire: fn(&str) -> bool) -> Self {
-        self.tripwire = Some(tripwire);
+    pub fn with_journal_limit(mut self, limit: u64) -> Self {
+        self.journal_limit = limit;
+        self
+    }
+
+    pub fn with_tripwire(
+        mut self,
+        tripwire: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.tripwire = Some(Tripwire::new(tripwire));
         self
     }
 }
@@ -201,6 +284,7 @@ mod tests {
     use abnegate_secret::SecretValue;
 
     use super::CliSettings;
+    use super::DEFAULT_JOURNAL_LIMIT;
     use super::DEFAULT_LINE_LIMIT;
     use super::DEFAULT_OUTPUT_LIMIT;
     use super::DEFAULT_TIMEOUT;
@@ -216,6 +300,8 @@ mod tests {
         assert!(settings.working_directory.is_none());
         assert_eq!(settings.timeout, DEFAULT_TIMEOUT);
         assert!(settings.environment.is_empty());
+        assert!(settings.variables.is_empty());
+        assert!(!settings.inherit_environment);
         assert!(settings.arguments.is_empty());
         assert!(settings.schema.is_none());
         assert!(settings.instructions.is_none());
@@ -223,6 +309,7 @@ mod tests {
         assert!(!settings.read_only);
         assert!(settings.mcp.is_empty());
         assert!(settings.log.is_none());
+        assert_eq!(settings.journal_limit, DEFAULT_JOURNAL_LIMIT);
         assert!(settings.tripwire.is_none());
     }
 
@@ -286,7 +373,10 @@ mod tests {
             .with_schema("{}")
             .with_instructions("Be terse.")
             .with_working_directory("/w")
-            .with_log("/var/log/agents");
+            .with_log("/var/log/agents")
+            .with_journal_limit(4096)
+            .with_variable("DISABLE_AUTOUPDATER", "1")
+            .inherit_environment();
 
         assert_eq!(settings.arguments, ["--json-schema", "{}", "--verbose"]);
         assert_eq!(settings.permissions, ["Read", "Edit"]);
@@ -296,6 +386,15 @@ mod tests {
         assert_eq!(settings.instructions.as_deref(), Some("Be terse."));
         assert_eq!(settings.working_directory, Some(PathBuf::from("/w")));
         assert_eq!(settings.log, Some(PathBuf::from("/var/log/agents")));
+        assert!(settings.inherit_environment);
+        assert_eq!(settings.journal_limit, 4096);
+        assert_eq!(
+            settings
+                .variables
+                .get("DISABLE_AUTOUPDATER")
+                .map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]
@@ -303,8 +402,8 @@ mod tests {
         let settings = CliSettings::default().with_tripwire(|line| line.contains("429"));
         let tripwire = settings.tripwire.expect("a tripwire");
 
-        assert!(tripwire("HTTP 429 Too Many Requests"));
-        assert!(!tripwire("compiling"));
+        assert!(tripwire.trips("HTTP 429 Too Many Requests"));
+        assert!(!tripwire.trips("compiling"));
     }
 
     #[test]

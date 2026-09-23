@@ -11,6 +11,7 @@ use crate::parser::claude::CliUsage;
 
 /// The events of one run, folded into what they add up to.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct StdoutParseResult {
     /// The agent's prose, in the order it was streamed.
     pub text: String,
@@ -18,8 +19,12 @@ pub struct StdoutParseResult {
     pub tools: Vec<ToolCall>,
     pub usage: Option<Usage>,
     pub tokens: Option<CliUsage>,
-    /// The first failure the agent reported, in its own words.
+    /// The first failure the agent reported, in its own words, or the last
+    /// [diagnostic](StdoutParseResult::diagnostic) of a stream that ended
+    /// without a terminal event.
     pub failure: Option<String>,
+    /// The last problem the agent reported without ending its turn.
+    pub diagnostic: Option<String>,
     pub finish_reason: Option<String>,
     /// Whether the stream reached a terminal event, successful or not.
     pub finished: bool,
@@ -30,6 +35,9 @@ pub struct StdoutParseResult {
     pub cost: Option<f64>,
     pub turns: Option<u32>,
     pub latency: Option<Duration>,
+    /// Events too long to read that the run could do without, such as a
+    /// tool result holding an image, which were skipped.
+    pub dropped: u64,
 }
 
 impl StdoutParseResult {
@@ -52,6 +60,16 @@ impl StdoutParseResult {
             AgentEvent::Cost(cost) => self.cost = Some(cost),
             AgentEvent::Turns(turns) => self.turns = Some(turns),
             AgentEvent::Latency(latency) => self.latency = Some(latency),
+            AgentEvent::Diagnostic(message) => self.diagnostic = Some(message),
+        }
+    }
+
+    /// Settle what a stream that has ended amounted to: one that ended
+    /// without a terminal event failed with the last diagnostic the agent
+    /// reported, when it reported any.
+    pub fn conclude(&mut self) {
+        if !self.finished && self.failure.is_none() {
+            self.failure.clone_from(&self.diagnostic);
         }
     }
 
@@ -100,6 +118,7 @@ mod tests {
         assert!(result.usage.is_none());
         assert!(result.tokens.is_none());
         assert!(result.failure.is_none());
+        assert!(result.diagnostic.is_none());
         assert!(result.finish_reason.is_none());
         assert!(!result.finished);
         assert!(result.session.is_none());
@@ -107,6 +126,7 @@ mod tests {
         assert!(result.cost.is_none());
         assert!(result.turns.is_none());
         assert!(result.latency.is_none());
+        assert_eq!(result.dropped, 0);
         assert!(format!("{result:?}").contains("StdoutParseResult"));
     }
 
@@ -171,6 +191,62 @@ mod tests {
         .collect();
 
         assert!(result.finished);
+        assert_eq!(
+            result.failure.as_deref(),
+            Some("You have hit your usage limit.")
+        );
+    }
+
+    #[test]
+    fn a_diagnostic_followed_by_a_finished_turn_is_not_a_failure() {
+        let mut result: StdoutParseResult = [
+            AgentEvent::Diagnostic("Reconnecting... 1/5".to_string()),
+            AgentEvent::Text("Done.".to_string()),
+            AgentEvent::Finished {
+                finish_reason: Some("completed".to_string()),
+            },
+        ]
+        .into_iter()
+        .collect();
+        result.conclude();
+
+        assert!(result.finished);
+        assert!(result.failure.is_none());
+        assert_eq!(result.diagnostic.as_deref(), Some("Reconnecting... 1/5"));
+    }
+
+    #[test]
+    fn an_unfinished_stream_fails_with_its_last_diagnostic() {
+        let mut result: StdoutParseResult = [
+            AgentEvent::Diagnostic("Reconnecting... 1/5".to_string()),
+            AgentEvent::Diagnostic("stream disconnected before completion".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        assert!(
+            result.failure.is_none(),
+            "a diagnostic alone fails nothing yet"
+        );
+
+        result.conclude();
+
+        assert!(!result.finished);
+        assert_eq!(
+            result.failure.as_deref(),
+            Some("stream disconnected before completion")
+        );
+    }
+
+    #[test]
+    fn a_reported_failure_outranks_a_diagnostic() {
+        let mut result: StdoutParseResult = [
+            AgentEvent::Diagnostic("Reconnecting... 1/5".to_string()),
+            AgentEvent::Failed("You have hit your usage limit.".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        result.conclude();
+
         assert_eq!(
             result.failure.as_deref(),
             Some("You have hit your usage limit.")

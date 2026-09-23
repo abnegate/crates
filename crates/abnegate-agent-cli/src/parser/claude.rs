@@ -15,9 +15,14 @@ pub use crate::parser::claude::stream_event::StreamEvent;
 use serde_json::Value;
 
 use crate::event::AgentEvent;
+use crate::parser;
 
 const RESULT: &str = "result";
 const STRUCTURED_OUTPUT: &str = "structured_output";
+
+/// The events a run cannot do without: the prose, and the result that ends
+/// the turn.
+const ESSENTIAL: [&str; 2] = ["assistant", "result"];
 
 /// Translate one line of the stream, appending whatever it means.
 pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
@@ -29,6 +34,15 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
         Ok(event) => event.interpret(events),
         Err(_) => salvage(line, events),
     }
+}
+
+/// Whether an event too long to read, of which only `prefix` is known, is
+/// one the run cannot do without, rather than a tool result or other event
+/// that can be dropped.
+pub fn essential(prefix: &str) -> bool {
+    parser::types(prefix)
+        .into_iter()
+        .any(|(depth, kind)| depth == 1 && ESSENTIAL.contains(&kind))
 }
 
 /// A line that is not a stream event can still be the CLI's final JSON
@@ -54,6 +68,7 @@ mod tests {
     use std::time::Duration;
 
     use super::CliUsage;
+    use super::essential;
     use super::interpret;
     use crate::event::AgentEvent;
 
@@ -190,6 +205,23 @@ mod tests {
             let mut events = Vec::new();
             interpret(&line, &mut events);
             assert!(events.is_empty(), "{status} was treated as a failure");
+        }
+    }
+
+    #[test]
+    fn a_rate_limit_event_with_no_report_at_all_is_a_refusal() {
+        for line in [
+            r#"{"type":"rate_limit_event"}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{}}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour"}}"#,
+        ] {
+            let mut events = Vec::new();
+            interpret(line, &mut events);
+
+            let [AgentEvent::Failed(message)] = events.as_slice() else {
+                panic!("expected a refusal for {line}, got {events:?}");
+            };
+            assert!(message.starts_with("rate limit reached: {"), "{message}");
         }
     }
 
@@ -379,6 +411,24 @@ mod tests {
                 .any(|event| matches!(event, AgentEvent::Turns(3)))
         );
         assert!(matches!(events.last(), Some(AgentEvent::Finished { .. })));
+    }
+
+    #[test]
+    fn only_prose_or_a_result_is_essential_when_too_long_to_read() {
+        for prefix in [
+            r#"{"type":"assistant","message":{"id":"msg_1","type":"message","content":[{"type":"text","text":"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"#,
+        ] {
+            assert!(essential(prefix), "{prefix}");
+        }
+        for prefix in [
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":[{"type":"image","source":{"type":"base64","data":"iVBOR"#,
+            r#"{"type":"system","subtype":"init","tools":["#,
+            r#"{"type":"user","message":{"content":"{\"type\":\"result\"}"#,
+            "xxxxxxxxxxxxxxxx",
+        ] {
+            assert!(!essential(prefix), "{prefix}");
+        }
     }
 
     #[test]

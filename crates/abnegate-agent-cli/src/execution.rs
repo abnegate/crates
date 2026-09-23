@@ -13,6 +13,7 @@ use crate::stdout_parse_result::StdoutParseResult;
 /// — the schema-shaped answer, the cost, the session to resume — can read it
 /// and decide for itself.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Execution {
     /// What the agent streamed. Its failure is scrubbed of every secret the
     /// run was given; its prose is the agent's answer, left as written.
@@ -26,5 +27,10 @@ pub struct Execution {
     /// turn followed by a process that would not exit. `status` is then the
     /// stop's, not the agent's.
     pub stopped: Option<String>,
+    /// The failure that settled the run while the agent was still running —
+    /// the failure it reported, or the diagnostic that tripped
+    /// [`CliSettings::tripwire`](crate::CliSettings::tripwire) — kept whether
+    /// the agent was then stopped or exited by itself first.
+    pub failure: Option<String>,
     pub log: Option<ExecutionLogFiles>,
 }

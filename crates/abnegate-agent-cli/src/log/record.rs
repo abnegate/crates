@@ -2,6 +2,7 @@ use std::fmt;
 
 /// A kind of entry in a run's [`Journal`](crate::log::Journal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Record {
     Initialized,
     SpawnFailed,
@@ -9,6 +10,8 @@ pub enum Record {
     StdoutLine,
     StdoutClosed,
     StdoutFailed,
+    /// An event too long to read that the run could do without was skipped.
+    StdoutDropped,
     StderrLine,
     StderrClosed,
     /// The run was abandoned while the agent was still running: it reported
@@ -21,6 +24,9 @@ pub enum Record {
     /// settled the run.
     Stopped,
     Completed,
+    /// The journal reached its limit, and the lines printed after this are
+    /// not recorded.
+    Truncated,
 }
 
 impl Record {
@@ -32,6 +38,7 @@ impl Record {
             Self::StdoutLine => "stdout_line",
             Self::StdoutClosed => "stdout_stream_closed",
             Self::StdoutFailed => "stdout_read_error",
+            Self::StdoutDropped => "stdout_line_dropped",
             Self::StderrLine => "stderr_line",
             Self::StderrClosed => "stderr_stream_closed",
             Self::Abandoned => "subprocess_early_failure",
@@ -40,6 +47,7 @@ impl Record {
             Self::TimedOut => "subprocess_timed_out",
             Self::Stopped => "subprocess_terminated_after_early_failure",
             Self::Completed => "process_completed",
+            Self::Truncated => "journal_truncated",
         }
     }
 }
@@ -63,6 +71,7 @@ mod tests {
             Record::StdoutLine,
             Record::StdoutClosed,
             Record::StdoutFailed,
+            Record::StdoutDropped,
             Record::StderrLine,
             Record::StderrClosed,
             Record::Abandoned,
@@ -71,6 +80,7 @@ mod tests {
             Record::TimedOut,
             Record::Stopped,
             Record::Completed,
+            Record::Truncated,
         ];
         let mut names: Vec<&str> = records.iter().map(|record| record.as_str()).collect();
         for name in &names {

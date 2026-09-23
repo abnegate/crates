@@ -12,6 +12,7 @@ use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
 use crate::scrubber::Scrubber;
+use crate::tripwire::Tripwire;
 use crate::verdict::Verdict;
 
 const BUFFER: usize = 8 * 1024;
@@ -24,12 +25,11 @@ const BUFFER: usize = 8 * 1024;
 /// reaches its answer.
 pub(crate) struct Diagnostics {
     lines: Lines,
-    framing: bool,
     limiter: OutputLimiter,
     journal: Journal,
     raw: Sink,
     scrubber: Scrubber,
-    tripwire: Option<fn(&str) -> bool>,
+    tripwire: Option<Tripwire>,
     verdicts: Option<mpsc::Sender<Verdict>>,
     cancel: watch::Receiver<bool>,
     count: u64,
@@ -43,13 +43,12 @@ impl Diagnostics {
         journal: Journal,
         raw: Sink,
         scrubber: Scrubber,
-        tripwire: Option<fn(&str) -> bool>,
+        tripwire: Option<Tripwire>,
         verdicts: mpsc::Sender<Verdict>,
         cancel: watch::Receiver<bool>,
     ) -> Self {
         Self {
             lines: Lines::new(line_limit),
-            framing: true,
             limiter: OutputLimiter::new(output_limit),
             journal,
             raw,
@@ -96,27 +95,20 @@ impl Diagnostics {
                 self.keep(&buffer[..count]).await;
             }
         }
-        if self.framing
-            && let Ok(Some(line)) = self.lines.flush()
-        {
+        if let Ok(Some(line)) = self.lines.flush() {
             self.line(line).await;
         }
     }
 
     async fn keep(&mut self, chunk: &[u8]) {
         self.collected.extend_from_slice(chunk);
-        if !self.framing {
-            return;
-        }
         self.lines.extend(chunk);
         loop {
             match self.lines.take() {
                 Ok(Some(line)) => self.line(line).await,
                 Ok(None) => break,
                 Err(overlong) => {
-                    tracing::warn!(%overlong, "stopped logging the agent's stderr line by line");
-                    self.framing = false;
-                    break;
+                    tracing::warn!(%overlong, "left a stderr line too long to log out of the log");
                 }
             }
         }
@@ -125,7 +117,10 @@ impl Diagnostics {
     async fn line(&mut self, line: String) {
         self.count += 1;
         let scrubbed = self.scrubber.scrub(&line).into_owned();
-        if self.tripwire.is_some_and(|tripwire| tripwire(&line))
+        if self
+            .tripwire
+            .as_ref()
+            .is_some_and(|tripwire| tripwire.trips(&line))
             && let Some(verdicts) = self.verdicts.take()
         {
             let _ = verdicts.try_send(Verdict::Failed(scrubbed.clone()));
@@ -136,7 +131,7 @@ impl Diagnostics {
         self.raw.write(b"\n").await;
         if self.journal.enabled() {
             self.journal
-                .append(
+                .append_line(
                     Record::StderrLine,
                     json!({ "line_number": self.count, "line": scrubbed }),
                 )

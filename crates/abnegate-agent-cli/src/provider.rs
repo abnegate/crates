@@ -1,5 +1,6 @@
 //! A provider backed by a coding agent CLI run as a child process.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -26,8 +27,11 @@ use tokio::time::Instant;
 use tokio::time::timeout;
 use tokio::time::timeout_at;
 
+use crate::attachments::Attachments;
 use crate::diagnostics::Diagnostics;
+use crate::environment::Environment;
 use crate::execution::Execution;
+use crate::execution_error::ExecutionError;
 use crate::kind::AgentKind;
 use crate::log::EXECUTION_LOG_PREVIEW_LIMIT;
 use crate::log::ExecutionLogFiles;
@@ -35,6 +39,7 @@ use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
 use crate::log::preview;
+use crate::mcp::McpAttachment;
 use crate::outcome::Outcome;
 use crate::reader::Reader;
 use crate::reaper::Reaper;
@@ -48,6 +53,8 @@ const UNFINISHED: &str = "the agent exited without completing its event stream";
 const UNCLOSED: &str = "the agent's output stayed open after it exited";
 const UNSTOPPABLE: &str = "the agent could not be stopped";
 const LINGERED: &str = "the agent finished its turn but did not exit";
+const INSTRUCTIONS_PREFIX: &str = "instructions-";
+const INSTRUCTIONS_SUFFIX: &str = ".md";
 
 /// Drives a coding agent CLI as a completion provider.
 ///
@@ -65,7 +72,9 @@ const LINGERED: &str = "the agent finished its turn but did not exit";
 /// and a coding agent needs the network to reach its own API and forks a tree
 /// of helper processes to do its work. It does reuse that crate's
 /// process-group termination and output caps, so a run that times out or
-/// fails takes the agent's whole process tree with it.
+/// fails takes the agent's whole process tree with it, and it is given only
+/// [`INHERITED_VARIABLES`](crate::INHERITED_VARIABLES) from this process's
+/// environment unless [`CliSettings::inherit_environment`] opts in.
 #[derive(Debug)]
 pub struct CliProvider {
     name: String,
@@ -102,18 +111,34 @@ impl CliProvider {
     /// cannot be read as the agent's stream.
     ///
     /// Only a run that succeeded leaves behind what the agent forked. Any
-    /// other takes the agent's whole process group with it.
+    /// other takes the agent's whole process group with it. A run that fails
+    /// here still reports where its logs are, with every line read before it
+    /// failed flushed to them.
     pub async fn execute(
         &self,
         request: CompletionRequest<'_>,
         label: &str,
-    ) -> Result<Execution, ProviderError> {
-        let scrubber = Scrubber::new(&self.settings);
+    ) -> Result<Execution, ExecutionError> {
         let mcp = self.attach();
+        let instructions = self
+            .instructions()
+            .map_err(|error| ExecutionError::new(error, None))?;
+        let mut attachments = Attachments::default();
+        if let Some(mcp) = &mcp {
+            attachments = attachments.with_mcp(mcp.file.path());
+        }
+        if let Some(instructions) = &instructions {
+            attachments = attachments.with_instructions(instructions.path());
+        }
         let options = self
             .agent
-            .options(&self.settings, mcp.as_ref().map(NamedTempFile::path))?;
+            .options(&self.settings, &attachments)
+            .map_err(|error| ExecutionError::new(error, None))?;
         let arguments = self.agent.invocation(Some(request.model), options);
+        let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &|name| {
+            std::env::var_os(name)
+        });
+        let scrubber = Scrubber::new(environment.secrets());
 
         let files = self
             .settings
@@ -121,7 +146,7 @@ impl CliProvider {
             .as_deref()
             .and_then(|root| ExecutionLogFiles::create(root, self.agent.as_str(), label));
         let journal = match &files {
-            Some(files) => Journal::open(&files.events, label).await,
+            Some(files) => Journal::open(&files.events, label, self.settings.journal_limit).await,
             None => Journal::disabled(),
         };
         let logged: Vec<_> = arguments
@@ -149,16 +174,15 @@ impl CliProvider {
             "starting agent"
         );
 
-        let mut child = match self.command(&arguments).spawn() {
+        let mut child = match self.command(&arguments, &environment).spawn() {
             Ok(child) => child,
             Err(error) => {
                 journal
                     .append(Record::SpawnFailed, json!({ "error": error.to_string() }))
                     .await;
-                return Err(ProviderError::unavailable(
-                    &self.name,
-                    &self.executable(),
-                    error,
+                return Err(ExecutionError::new(
+                    ProviderError::unavailable(&self.name, &self.executable(), error),
+                    files,
                 ));
             }
         };
@@ -203,7 +227,7 @@ impl CliProvider {
                 journal.clone(),
                 raw,
                 scrubber.clone(),
-                self.settings.tripwire,
+                self.settings.tripwire.clone(),
                 verdicts,
                 cancelled,
             )
@@ -224,7 +248,7 @@ impl CliProvider {
             () = expiry => Outcome::TimedOut,
         };
 
-        let (status, stopped) = match self
+        let (status, stopped, failure) = match self
             .settle(
                 outcome,
                 &mut child,
@@ -238,9 +262,9 @@ impl CliProvider {
             Ok(settlement) => settlement,
             Err(error) => {
                 writer.abort();
-                reader.abort();
-                diagnostics.abort();
-                return Err(error);
+                let _ = drain(&mut reader, reaper.group(), &cancel).await;
+                let _ = drain(&mut diagnostics, reaper.group(), &cancel).await;
+                return Err(ExecutionError::new(error, files));
             }
         };
         let status = ExitStatus::from(status);
@@ -252,21 +276,35 @@ impl CliProvider {
         let stdout = match drain(&mut reader, reaper.group(), &cancel).await {
             Ok(Ok(stdout)) => stdout,
             Ok(Err(message)) | Err(message) => {
-                diagnostics.abort();
-                return Err(ProviderError::malformed(&self.name, message));
+                let _ = drain(&mut diagnostics, reaper.group(), &cancel).await;
+                return Err(ExecutionError::new(
+                    ProviderError::malformed(&self.name, message),
+                    files,
+                ));
             }
         };
         let stderr = drain(&mut diagnostics, reaper.group(), &cancel)
             .await
             .unwrap_or_default();
-        if status == ExitStatus::Code(0) && stdout.failure.is_none() && stopped.is_none() {
+        let failure = failure.or_else(|| {
+            std::iter::from_fn(|| settled.try_recv().ok()).find_map(|verdict| match verdict {
+                Verdict::Failed(reason) => Some(reason),
+                Verdict::Finished => None,
+            })
+        });
+        if status == ExitStatus::Code(0)
+            && stdout.finished
+            && stdout.failure.is_none()
+            && stopped.is_none()
+        {
             reaper.disarm();
         }
 
-        let failure = stdout
+        let reported = stdout
             .failure
             .as_deref()
-            .map(|failure| preview(failure, EXECUTION_LOG_PREVIEW_LIMIT));
+            .or(failure.as_deref())
+            .map(|reported| preview(reported, EXECUTION_LOG_PREVIEW_LIMIT));
         journal
             .append(
                 Record::Completed,
@@ -276,7 +314,7 @@ impl CliProvider {
                     "stderr_bytes": stderr.len(),
                     "finished": stdout.finished,
                     "has_structured_result": stdout.structured.is_some(),
-                    "failure": failure,
+                    "failure": reported,
                     "stopped": stopped,
                 }),
             )
@@ -287,12 +325,14 @@ impl CliProvider {
             stderr,
             status,
             stopped,
+            failure,
             log: files,
         })
     }
 
     /// Carry the wait through to an exit status, stopping the agent when the
-    /// wait ended without one, and say why it was stopped when it was.
+    /// wait ended without one, and say why it was stopped when it was and
+    /// what failure settled the run when one did.
     async fn settle(
         &self,
         outcome: Outcome,
@@ -301,9 +341,9 @@ impl CliProvider {
         journal: &Journal,
         deadline: Option<Instant>,
         label: &str,
-    ) -> Result<(std::process::ExitStatus, Option<String>), ProviderError> {
+    ) -> Result<(std::process::ExitStatus, Option<String>, Option<String>), ProviderError> {
         let verdict = match outcome {
-            Outcome::Exited(Ok(status)) => return Ok((status, None)),
+            Outcome::Exited(Ok(status)) => return Ok((status, None, None)),
             Outcome::Exited(Err(error)) => {
                 journal
                     .append(Record::WaitFailed, json!({ "error": error.to_string() }))
@@ -328,22 +368,22 @@ impl CliProvider {
             Outcome::Settled(verdict) => verdict,
         };
 
-        let reason = match &verdict {
-            Verdict::Finished => LINGERED.to_string(),
+        let (reason, failure) = match verdict {
+            Verdict::Finished => (LINGERED.to_string(), None),
             Verdict::Failed(reason) => {
-                let reason = preview(reason, EXECUTION_LOG_PREVIEW_LIMIT);
+                let reason = preview(&reason, EXECUTION_LOG_PREVIEW_LIMIT);
                 journal
                     .append(Record::Abandoned, json!({ "reason": reason }))
                     .await;
                 tracing::warn!(provider = %self.name, label, "the run failed while the agent was running; stopping it");
-                reason
+                (reason.clone(), Some(reason))
             }
         };
 
         let grace = Instant::now() + GRACE_PERIOD;
         let patience = deadline.map_or(grace, |deadline| deadline.min(grace));
         if let Ok(Ok(status)) = timeout_at(patience, child.wait()).await {
-            return Ok((status, None));
+            return Ok((status, None, failure));
         }
 
         let status = stop_agent(child, group)
@@ -355,7 +395,7 @@ impl CliProvider {
                 json!({ "exit_code": status.code(), "reason": reason }),
             )
             .await;
-        Ok((status, Some(reason)))
+        Ok((status, Some(reason), failure))
     }
 
     fn assemble(&self, execution: Execution) -> Result<Completion, ProviderError> {
@@ -364,6 +404,7 @@ impl CliProvider {
             stderr,
             status,
             stopped,
+            failure,
             ..
         } = execution;
 
@@ -373,9 +414,10 @@ impl CliProvider {
             return Err(ProviderError::agent(&self.name, message));
         }
 
-        match (stopped, stdout.finished) {
+        let unstopped = stopped.is_none();
+        match (failure.or(stopped), stdout.finished) {
             (Some(reason), false) => return Err(ProviderError::agent(&self.name, &reason)),
-            (None, _) if status != ExitStatus::Code(0) => {
+            _ if unstopped && status != ExitStatus::Code(0) => {
                 let message = if stderr.trim().is_empty() {
                     NO_DIAGNOSTICS.to_string()
                 } else {
@@ -400,13 +442,13 @@ impl CliProvider {
     /// Render the MCP servers to attach, or attach none when rendering fails:
     /// a run without its MCP tools can still answer, and fails loudly on its
     /// own if it truly needed them.
-    fn attach(&self) -> Option<NamedTempFile> {
+    fn attach(&self) -> Option<McpAttachment> {
         let mcp = &self.settings.mcp;
         if mcp.is_empty() || self.agent != AgentKind::Claude {
             return None;
         }
         match mcp.render() {
-            Ok(Some(file)) => {
+            Ok(Some(attachment)) => {
                 tracing::info!(
                     provider = %self.name,
                     servers = mcp.attachable().count(),
@@ -414,11 +456,11 @@ impl CliProvider {
                 );
                 tracing::debug!(
                     provider = %self.name,
-                    path = %file.path().display(),
+                    path = %attachment.file.path().display(),
                     config = %mcp.redacted(),
                     "rendered MCP config, secret values redacted"
                 );
-                Some(file)
+                Some(attachment)
             }
             Ok(None) => None,
             Err(error) => {
@@ -432,6 +474,30 @@ impl CliProvider {
         }
     }
 
+    /// Write the instructions to a private temporary file for the agent to
+    /// read, since `argv` has a hard size limit that instructions can reach.
+    /// The file is deleted when the returned handle drops.
+    fn instructions(&self) -> Result<Option<NamedTempFile>, ProviderError> {
+        let Some(instructions) = &self.settings.instructions else {
+            return Ok(None);
+        };
+        if self.agent != AgentKind::Claude {
+            return Ok(None);
+        }
+        let write = || -> std::io::Result<NamedTempFile> {
+            let mut file = tempfile::Builder::new()
+                .prefix(INSTRUCTIONS_PREFIX)
+                .suffix(INSTRUCTIONS_SUFFIX)
+                .tempfile()?;
+            file.as_file_mut().write_all(instructions.as_bytes())?;
+            file.as_file_mut().flush()?;
+            Ok(file)
+        };
+        write().map(Some).map_err(|error| {
+            ProviderError::io(format!("could not write the instructions: {error}"))
+        })
+    }
+
     fn executable(&self) -> String {
         self.settings.executable.as_ref().map_or_else(
             || self.agent.executable().to_string(),
@@ -439,7 +505,7 @@ impl CliProvider {
         )
     }
 
-    fn command(&self, arguments: &[String]) -> Command {
+    fn command(&self, arguments: &[String], environment: &Environment) -> Command {
         let executable = self
             .settings
             .executable
@@ -457,19 +523,7 @@ impl CliProvider {
         if let Some(directory) = &self.settings.working_directory {
             command.current_dir(directory);
         }
-
-        for variable in self.agent.scrubbed() {
-            command.env_remove(variable);
-        }
-        for (variable, value) in &self.settings.environment {
-            command.env(variable, value.expose());
-        }
-        if let (Some(variable), Some(value)) = (
-            self.settings.credential.variable(),
-            self.settings.credential.expose(),
-        ) {
-            command.env(variable, value);
-        }
+        environment.apply(&mut command);
 
         // The agent leads its own group so that stopping the run reaches the
         // language servers, searches and builds it forked, not just itself.
@@ -500,29 +554,31 @@ impl CompletionProvider for CliProvider {
 
 /// Terminate the agent's group, and kill whatever is left of it once the
 /// grace period runs out.
+///
+/// A group is identified by its leader's process id, which the system may
+/// hand to a new process once the leader is reaped and no member is left.
+/// So the group is killed while the leader is still unreaped whenever it
+/// outlives the grace period. When the leader exits within it, reaping comes
+/// first, and the kill that follows reaches stragglers safely only because a
+/// straggler still alive keeps the group's id from being reused; a group
+/// that empties in the instant between the two leaves the kill to land on
+/// whatever took the id, a race this cannot close without a process handle
+/// the platform does not offer here.
 async fn stop_agent(
     child: &mut Child,
     group: Option<&ProcessGroup>,
 ) -> Option<std::process::ExitStatus> {
-    match group {
-        Some(group) => {
-            let _ = group.terminate();
-        }
-        None => {
-            let _ = child.start_kill();
-        }
-    }
-    let status = match timeout(GRACE_PERIOD, child.wait()).await {
-        Ok(Ok(status)) => Some(status),
-        _ => {
-            let _ = child.start_kill();
-            child.wait().await.ok()
-        }
+    let Some(group) = group else {
+        let _ = child.start_kill();
+        return child.wait().await.ok();
     };
-    if let Some(group) = group {
+    let _ = group.terminate();
+    if let Ok(Ok(status)) = timeout(GRACE_PERIOD, child.wait()).await {
         let _ = group.kill();
+        return Some(status);
     }
-    status
+    let _ = group.kill();
+    child.wait().await.ok()
 }
 
 /// A reader's result once the agent has exited.
@@ -561,7 +617,6 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
-    use abnegate_exec::executor::ProcessGroup;
     use abnegate_llm::Completion;
     use abnegate_llm::CompletionProvider;
     use abnegate_llm::CompletionRequest;
@@ -580,6 +635,7 @@ mod tests {
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
     use crate::settings::CliSettings;
+    use crate::settings::INHERITED_VARIABLES;
     use crate::structured_result::StructuredResult;
 
     const ETXTBSY: i32 = 26;
@@ -909,6 +965,74 @@ sleep 120
     }
 
     #[tokio::test]
+    async fn a_timed_out_run_still_says_where_its_logs_are_and_closes_them() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let script = r#"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Partial."}]}}'
+echo 'still thinking' >&2
+sleep 120
+"#;
+        let settings = settings(&directory, script)
+            .with_timeout(Duration::from_secs(10))
+            .with_log(&root);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let failure = provider
+            .execute(request(&[Message::user("hi")]), "test-run")
+            .await
+            .expect_err("a timeout");
+
+        assert!(
+            matches!(*failure.error, ProviderError::Timeout { .. }),
+            "{failure:?}"
+        );
+        let files = failure.log.expect("the run's logs");
+        assert_eq!(
+            std::fs::read_to_string(&files.stdout).expect("the prose log"),
+            "Partial."
+        );
+        let journal = std::fs::read_to_string(&files.events).expect("the journal");
+        for record in [
+            "subprocess_timed_out",
+            "stdout_stream_closed",
+            "stderr_stream_closed",
+        ] {
+            assert!(journal.contains(record), "{record} missing: {journal}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_agent_that_ignores_termination_is_killed_with_its_group() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("straggler");
+        let script = format!(
+            r#"trap '' TERM
+sh -c 'trap "" TERM; sleep 60' &
+echo $! > '{}'
+sleep 60"#,
+            marker.display()
+        );
+        let settings = settings(&directory, &script).with_timeout(Duration::from_secs(10));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a timeout");
+
+        assert!(matches!(error, ProviderError::Timeout { .. }), "{error:?}");
+        let straggler = std::fs::read_to_string(&marker)
+            .expect("the straggler's pid")
+            .trim()
+            .to_string();
+        let started = Instant::now();
+        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!alive(&straggler), "{straggler} outlived the timeout");
+    }
+
+    #[tokio::test]
     async fn a_timeout_too_large_for_a_deadline_means_no_timeout() {
         let directory = TempDir::new().expect("a temporary directory");
         let settings = settings(&directory, CLAUDE_SESSION).with_timeout(Duration::MAX);
@@ -1041,32 +1165,134 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         );
     }
 
-    #[test]
-    fn a_nested_session_marker_is_removed_before_explicit_variables_are_set() {
-        let claude = CliProvider::agent(AgentKind::Claude, CliSettings::default());
-        let command = claude.command(&[]);
-        let variables: Vec<_> = command.as_std().get_envs().collect();
-        assert!(
-            variables
-                .iter()
-                .any(|(name, value)| *name == "CLAUDECODE" && value.is_none()),
-            "{variables:?}"
-        );
+    fn variables(path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .expect("the child's environment")
+            .lines()
+            .filter_map(|line| line.split_once('=').map(|(name, _)| name.to_string()))
+            .collect()
+    }
 
-        let explicit = CliProvider::agent(
+    fn recording_environment(recorded: &Path) -> String {
+        format!(
+            r#"env > '{}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            recorded.display()
+        )
+    }
+
+    #[tokio::test]
+    async fn a_child_is_given_only_the_allowlist_and_what_it_was_handed() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let recorded = directory.path().join("environment");
+        let settings = settings(&directory, &recording_environment(&recorded))
+            .with_environment("LINEAR_ISSUE_ID", "ENG-42")
+            .with_credential(Credential::key(
+                "ANTHROPIC_API_KEY",
+                concat!("sk-ant-", "explicit"),
+            ));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let names = variables(&recorded);
+        let shell = ["PWD", "SHLVL", "_", "OLDPWD"];
+        for name in &names {
+            assert!(
+                INHERITED_VARIABLES.contains(&name.as_str())
+                    || AgentKind::Claude.configuration().contains(&name.as_str())
+                    || shell.contains(&name.as_str())
+                    || ["LINEAR_ISSUE_ID", "ANTHROPIC_API_KEY"].contains(&name.as_str()),
+                "the child was handed {name} from the host: {names:?}"
+            );
+        }
+        assert!(names.contains(&"LINEAR_ISSUE_ID".to_string()));
+        assert!(names.contains(&"PATH".to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_opted_in_child_inherits_the_hosts_environment() {
+        let Ok(package) = std::env::var("CARGO_PKG_NAME") else {
+            return;
+        };
+        let directory = TempDir::new().expect("a temporary directory");
+        let recorded = directory.path().join("environment");
+        let script = recording_environment(&recorded);
+
+        let confined = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+        run(&confined, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+        assert!(!variables(&recorded).contains(&"CARGO_PKG_NAME".to_string()));
+
+        let inheriting = CliProvider::agent(
             AgentKind::Claude,
-            CliSettings::default().with_environment("CLAUDECODE", SecretValue::new("1")),
+            settings(&directory, &script).inherit_environment(),
         );
-        let command = explicit.command(&[]);
-        let value = command
-            .as_std()
-            .get_envs()
-            .find(|(name, _)| *name == "CLAUDECODE")
-            .and_then(|(_, value)| value);
-        assert_eq!(value.and_then(|value| value.to_str()), Some("1"));
+        run(&inheriting, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+        let contents = std::fs::read_to_string(&recorded).expect("the child's environment");
+        assert!(
+            contents.contains(&format!("CARGO_PKG_NAME={package}")),
+            "{contents}"
+        );
+        assert!(!variables(&recorded).contains(&"CLAUDECODE".to_string()));
+    }
 
-        let codex = CliProvider::agent(AgentKind::Codex, CliSettings::default());
-        assert_eq!(codex.command(&[]).as_std().get_envs().count(), 0);
+    #[tokio::test]
+    async fn an_mcp_literal_reaches_the_child_through_its_environment_not_the_file() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let copied = directory.path().join("mcp.json");
+        let recorded = directory.path().join("environment");
+        let script = format!(
+            r#"env > '{recorded}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then cp "$2" '{copied}'; fi
+  shift
+done
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            recorded = recorded.display(),
+            copied = copied.display(),
+        );
+        let settings = settings(&directory, &script).with_mcp_server(
+            "grafana",
+            McpServer {
+                command: Some("uvx".to_string()),
+                environment: [
+                    (
+                        "GRAFANA_TOKEN".to_string(),
+                        SecretValue::new("glsa_realsecret"),
+                    ),
+                    (
+                        "GRAFANA_PACKAGE".to_string(),
+                        SecretValue::new("${CARGO_PKG_NAME}"),
+                    ),
+                ]
+                .into(),
+                ..McpServer::default()
+            },
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let file = std::fs::read_to_string(&copied).expect("the MCP config");
+        assert!(!file.contains("glsa_realsecret"), "{file}");
+        let document: Value = serde_json::from_str(&file).expect("JSON");
+        assert_eq!(
+            document["mcpServers"]["grafana"]["env"]["GRAFANA_TOKEN"],
+            "${ABNEGATE_MCP_0}"
+        );
+        let environment = std::fs::read_to_string(&recorded).expect("the child's environment");
+        assert!(environment.contains("ABNEGATE_MCP_0=glsa_realsecret"));
+        if let Ok(package) = std::env::var("CARGO_PKG_NAME") {
+            assert!(environment.contains(&format!("CARGO_PKG_NAME={package}")));
+        }
     }
 
     #[tokio::test]
@@ -1092,6 +1318,48 @@ echo '{"type":"turn.completed","usage":{"input_tokens":40,"output_tokens":8}}'
     }
 
     #[tokio::test]
+    async fn a_codex_reconnect_notice_does_not_cut_a_completing_turn_short() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"thread.started","thread_id":"t1"}'
+echo '{"type":"turn.started"}'
+echo '{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion)"}'
+sleep 1
+echo '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"The suite passes."}}'
+echo '{"type":"turn.completed","usage":{"input_tokens":40,"output_tokens":8}}'
+"#;
+        let provider = CliProvider::agent(AgentKind::Codex, settings(&directory, script));
+
+        let completion = run(&provider, &[Message::user("run the tests")])
+            .await
+            .expect("an answer");
+
+        assert_eq!(
+            completion.message.content.as_deref(),
+            Some("The suite passes.")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_codex_error_with_no_turn_after_it_is_the_runs_failure() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"turn.started"}'
+echo '{"type":"error","message":"You have hit your usage limit. Try again later."}'
+"#;
+        let provider = CliProvider::agent(AgentKind::Codex, settings(&directory, script));
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a failure");
+
+        let ProviderError::Agent { message, .. } = &error else {
+            panic!("expected the agent's own failure, got {error:?}");
+        };
+        assert!(message.contains("usage limit"), "{message}");
+    }
+
+    #[tokio::test]
     async fn codex_refuses_claude_only_settings_before_starting_anything() {
         let provider = CliProvider::agent(
             AgentKind::Codex,
@@ -1110,20 +1378,108 @@ echo '{"type":"turn.completed","usage":{"input_tokens":40,"output_tokens":8}}'
         );
     }
 
+    fn oversized(event: &str, filler: &str) -> String {
+        format!(
+            r#"printf '%s' '{event}'
+head -c 5000 /dev/zero | tr '\0' 'x'
+printf '%s\n' '{filler}'"#
+        )
+    }
+
     #[tokio::test]
-    async fn a_single_oversized_event_is_reported_as_malformed_output() {
+    async fn an_oversized_tool_result_is_dropped_and_the_run_goes_on() {
         let directory = TempDir::new().expect("a temporary directory");
-        let settings = settings(&directory, "head -c 5000 /dev/zero | tr '\\0' 'x'; echo")
-            .with_line_limit(256);
+        let root = directory.path().join("logs");
+        let script = format!(
+            r#"{}
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Read the image."}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            oversized(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"base64","data":""#,
+                r#""}}]}]}}"#,
+            )
+        );
+        let settings = settings(&directory, &script)
+            .with_line_limit(1024)
+            .with_log(&root);
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(execution.stdout.dropped, 1);
+        assert_eq!(execution.stdout.text, "Read the image.");
+        let journal = std::fs::read_to_string(&execution.log.clone().expect("logs").events)
+            .expect("the journal");
+        assert!(journal.contains("stdout_line_dropped"), "{journal}");
+        let completion = provider.assemble(execution).expect("an answer");
+        assert_eq!(
+            completion.message.content.as_deref(),
+            Some("Read the image.")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_result_or_reply_is_reported_as_malformed_output() {
+        let directory = TempDir::new().expect("a temporary directory");
+        for (event, filler) in [
+            (
+                r#"{"type":"result","subtype":"success","is_error":false,"result":""#,
+                r#""}"#,
+            ),
+            (
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":""#,
+                r#""}]}}"#,
+            ),
+        ] {
+            let settings = settings(&directory, &oversized(event, filler)).with_line_limit(256);
+            let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+            let error = run(&provider, &[Message::user("hi")])
+                .await
+                .expect_err("a failure");
+
+            assert!(
+                matches!(&error, ProviderError::Malformed { message, .. } if message.contains("256 bytes")),
+                "expected malformed output for {event}, got {error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_codex_command_output_is_dropped_but_its_prose_is_not() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = format!(
+            r#"{}
+echo '{{"type":"item.completed","item":{{"id":"item_2","type":"agent_message","text":"Logged."}}}}'
+echo '{{"type":"turn.completed"}}'"#,
+            oversized(
+                r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat big.log","aggregated_output":""#,
+                r#""}}"#,
+            )
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Codex,
+            settings(&directory, &script).with_line_limit(1024),
+        );
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+        assert_eq!(completion.message.content.as_deref(), Some("Logged."));
+
+        let prose = oversized(
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":""#,
+            r#""}}"#,
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Codex,
+            settings(&directory, &prose).with_line_limit(1024),
+        );
         let error = run(&provider, &[Message::user("hi")])
             .await
             .expect_err("a failure");
-
         assert!(
-            matches!(&error, ProviderError::Malformed { message, .. } if message.contains("256 bytes")),
-            "expected malformed output, got {error:?}"
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
         );
     }
 
@@ -1227,6 +1583,40 @@ echo '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateL
     }
 
     #[tokio::test]
+    async fn a_run_that_trips_and_exits_cleanly_still_takes_what_it_forked_with_it() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("straggler");
+        let script = format!(
+            r#"sleep 60 >/dev/null 2>&1 &
+echo $! > '{}'
+echo 'API Error: 429 Too Many Requests' >&2
+sleep 1
+exit 0"#,
+            marker.display()
+        );
+        let settings = settings(&directory, &script).with_tripwire(|line| line.contains("429"));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a failure");
+        assert!(error.to_string().contains("429"), "{error}");
+
+        let straggler = std::fs::read_to_string(&marker)
+            .expect("the straggler's pid")
+            .trim()
+            .to_string();
+        let started = Instant::now();
+        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !alive(&straggler),
+            "the failed run left {straggler} running"
+        );
+    }
+
+    #[tokio::test]
     async fn a_successful_run_leaves_what_the_agent_forked_alone() {
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("server");
@@ -1296,6 +1686,37 @@ sleep 120";
             panic!("expected the tripped line as the failure, got {error:?}");
         };
         assert!(message.contains("429 Too Many Requests"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_tripped_diagnostic_survives_an_agent_that_exits_by_itself() {
+        let directory = TempDir::new().expect("a temporary directory");
+        for script in [
+            "echo 'API Error: 429 Too Many Requests' >&2\nsleep 1\nexit 0",
+            "echo 'API Error: 429 Too Many Requests' >&2\nexit 0",
+        ] {
+            let settings = settings(&directory, script).with_tripwire(|line| line.contains("429"));
+            let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+            let execution = execute(&provider, &[Message::user("hi")]).await;
+
+            assert!(
+                execution
+                    .failure
+                    .as_deref()
+                    .is_some_and(|failure| failure.contains("429")),
+                "{script}: {:?}",
+                execution.failure
+            );
+            let error = provider.assemble(execution).expect_err("a failure");
+            let ProviderError::Agent { message, .. } = &error else {
+                panic!("expected the tripped line as the failure, got {error:?}");
+            };
+            assert!(
+                message.contains("429 Too Many Requests"),
+                "{script}: {message}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1417,15 +1838,34 @@ echo '{"type":"result","subtype":"success","is_error":false}'
             pid = started => pid,
         };
 
-        let group = ProcessGroup::new(leader);
         let started = Instant::now();
-        while group.is_alive() && started.elapsed() < Duration::from_secs(5) {
+        while !running(leader).is_empty() && started.elapsed() < Duration::from_secs(5) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
-            !group.is_alive(),
-            "the agent's group outlived the cancelled run"
+            running(leader).is_empty(),
+            "the agent's group outlived the cancelled run: {:?}",
+            running(leader)
         );
+    }
+
+    /// The members of process group `group` still running. A killed leader
+    /// the runtime has yet to reap lingers as a zombie, which still counts as
+    /// a member to a signal but runs nothing.
+    fn running(group: u32) -> Vec<String> {
+        let output = std::process::Command::new("ps")
+            .args(["-A", "-o", "pid=,pgid=,stat="])
+            .output()
+            .expect("a process listing");
+        let group = group.to_string();
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let (pid, pgid, state) = (fields.next()?, fields.next()?, fields.next()?);
+                (pgid == group && !state.starts_with('Z')).then(|| pid.to_string())
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -1492,6 +1932,161 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             "${APPWRITE_API_KEY}"
         );
         assert!(!path.exists(), "the MCP config outlived the run");
+    }
+
+    /// A stand-in for Claude that loads the repository's own settings, and
+    /// runs the hook they declare, unless `--setting-sources` leaves the
+    /// project out, as the real CLI does.
+    fn honouring_project_settings(captured: &Path) -> String {
+        format!(
+            r#"printf '%s\n' "$@" > '{captured}'
+sources=user,project,local
+previous=
+for argument in "$@"; do
+  if [ "$previous" = "--setting-sources" ]; then sources="$argument"; fi
+  previous="$argument"
+done
+case ",$sources," in
+  *,project,*)
+    hook=$(sed -n 's/.*"command": *"\([^"]*\)".*/\1/p' .claude/settings.json)
+    [ -n "$hook" ] && sh -c "$hook"
+    ;;
+esac
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            captured = captured.display(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_read_only_run_never_honours_the_repositorys_hooks() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let repository = directory.path().join("repository");
+        let marker = directory.path().join("hook-ran");
+        std::fs::create_dir_all(repository.join(".claude")).expect("a settings directory");
+        std::fs::write(
+            repository.join(".claude/settings.json"),
+            format!(
+                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"type":"command","command": "touch {}"}}]}}]}}}}"#,
+                marker.display()
+            ),
+        )
+        .expect("a hook-bearing settings file");
+        let captured = directory.path().join("arguments");
+        let settings = settings(&directory, &honouring_project_settings(&captured))
+            .with_working_directory(&repository)
+            .read_only();
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        assert!(!marker.exists(), "the repository's hook ran");
+        let arguments: Vec<String> = std::fs::read_to_string(&captured)
+            .expect("the captured arguments")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        for expected in [
+            ["--setting-sources", "user"],
+            ["--tools", "Read,Grep,Glob,WebFetch,WebSearch"],
+            ["--permission-mode", "dontAsk"],
+            ["--permission-prompts", "none"],
+        ] {
+            assert!(
+                arguments.windows(2).any(|pair| pair == expected),
+                "{expected:?} missing from {arguments:?}"
+            );
+        }
+        assert!(arguments.contains(&"--strict-mcp-config".to_string()));
+        assert!(!arguments.iter().any(|argument| argument == "--settings"));
+    }
+
+    #[tokio::test]
+    async fn an_unconfined_run_leaves_the_setting_sources_to_the_agent() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let repository = directory.path().join("repository");
+        let marker = directory.path().join("hook-ran");
+        std::fs::create_dir_all(repository.join(".claude")).expect("a settings directory");
+        std::fs::write(
+            repository.join(".claude/settings.json"),
+            format!(r#"{{"command": "touch {}"}}"#, marker.display()),
+        )
+        .expect("a hook-bearing settings file");
+        let captured = directory.path().join("arguments");
+        let settings = settings(&directory, &honouring_project_settings(&captured))
+            .with_working_directory(&repository);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        assert!(
+            marker.exists(),
+            "the stand-in never loaded project settings"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_only_run_refuses_a_bypass_before_starting_anything() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("started");
+        let settings = settings(&directory, &format!("touch '{}'", marker.display()))
+            .read_only()
+            .with_arguments(["--settings", r#"{"permissions":{"allow":["Bash"]}}"#]);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a refusal");
+
+        assert!(matches!(error, ProviderError::Config { .. }), "{error:?}");
+        assert!(!marker.exists(), "the agent was started");
+    }
+
+    #[tokio::test]
+    async fn instructions_far_larger_than_argv_allows_reach_the_agent_in_a_private_file() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let recorded = directory.path().join("instructions");
+        let script = format!(
+            r#"printf '%s\n' "$@" > '{captured}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--append-system-prompt-file" ]; then
+    ls -l "$2" | cut -c1-10 > '{recorded}.mode'
+    wc -c < "$2" | tr -d ' ' > '{recorded}'
+  fi
+  shift
+done
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            captured = captured.display(),
+            recorded = recorded.display(),
+        );
+        let instructions = "Be terse. ".repeat(200 * 1024);
+        let settings = settings(&directory, &script).with_instructions(instructions.clone());
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let arguments = std::fs::read_to_string(&captured).expect("the captured arguments");
+        assert!(!arguments.contains("Be terse."));
+        assert!(arguments.contains("--append-system-prompt-file"));
+        assert_eq!(
+            std::fs::read_to_string(&recorded)
+                .expect("the instructions' size")
+                .trim(),
+            instructions.len().to_string()
+        );
+        let mode_path = directory.path().join("instructions.mode");
+        assert_eq!(
+            std::fs::read_to_string(&mode_path)
+                .expect("the instructions' mode")
+                .trim(),
+            "-rw-------"
+        );
     }
 
     #[tokio::test]
@@ -1590,6 +2185,44 @@ echo '{"type":"result","subtype":"success","is_error":false}'
                 path.display()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_secret_the_stream_escapes_or_a_short_one_never_reaches_a_log_or_an_error() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let script = r#"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"key pa\"ss\\word-123"}]}}'
+echo "rejected pin $SERVICE_PIN" >&2
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"bad pin zq7x for pa\"ss\\word-123"}'
+"#;
+        let settings = settings(&directory, script)
+            .with_log(&root)
+            .with_environment("SERVICE_PIN", "zq7x")
+            .with_credential(Credential::key("DB_PASSWORD", "pa\"ss\\word-123"));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        let files = execution.log.clone().expect("log files");
+        for path in [&files.stdout, &files.stderr, &files.events] {
+            let contents = std::fs::read_to_string(path).expect("a log file");
+            assert!(
+                !contents.contains("word-123"),
+                "{} leaked the secret: {contents}",
+                path.display()
+            );
+            assert!(
+                !contents.contains("zq7x"),
+                "{} leaked the short secret: {contents}",
+                path.display()
+            );
+        }
+        assert!(!execution.stderr.contains("zq7x"), "{}", execution.stderr);
+        let error = provider.assemble(execution).expect_err("a failure");
+        let rendered = error.to_string();
+        assert!(!rendered.contains("word-123"), "{rendered}");
+        assert!(!rendered.contains("zq7x"), "{rendered}");
     }
 
     #[tokio::test]

@@ -1,0 +1,256 @@
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+
+use abnegate_secret::SecretValue;
+
+const VARIABLE_PREFIX: &str = "ABNEGATE_MCP_";
+const OPENING: &str = "${";
+const CLOSING: char = '}';
+const DEFAULT: &str = ":-";
+
+/// What a rendered MCP configuration leaves to the child's environment: the
+/// literal values moved out of the file and the values mixing references
+/// with literal text, each under a generated variable, and the host
+/// variables the file's own `${VAR}` references name.
+#[derive(Debug, Default)]
+pub(crate) struct Placeholders {
+    pub(crate) environment: BTreeMap<String, SecretValue>,
+    pub(crate) templates: BTreeMap<String, SecretValue>,
+    pub(crate) references: BTreeSet<String>,
+}
+
+impl Placeholders {
+    /// What to write in place of `value`: `value` itself when it is empty
+    /// or a single whole reference the CLI expands, and otherwise a
+    /// reference to a generated variable, which holds the literal as it is
+    /// or, for one mixing references with literal text, the text to expand.
+    pub(crate) fn substitute(&mut self, value: &SecretValue) -> String {
+        let text = value.expose();
+        if text.is_empty() {
+            return String::new();
+        }
+        let referring = self.note(text);
+        if referring && whole_reference(text) {
+            return text.to_string();
+        }
+        let variable = format!(
+            "{VARIABLE_PREFIX}{}",
+            self.environment.len() + self.templates.len()
+        );
+        let placeholder = format!("{OPENING}{variable}{CLOSING}");
+        if referring {
+            self.templates.insert(variable, value.clone());
+        } else {
+            self.environment.insert(variable, value.clone());
+        }
+        placeholder
+    }
+
+    /// Note every variable `text` refers to, and say whether it referred to
+    /// any.
+    pub(crate) fn note(&mut self, text: &str) -> bool {
+        let mut found = false;
+        let mut rest = text;
+        while let Some(start) = rest.find(OPENING) {
+            rest = &rest[start + OPENING.len()..];
+            let Some(end) = rest.find(CLOSING) else {
+                break;
+            };
+            let expression = &rest[..end];
+            let name = expression
+                .split_once(DEFAULT)
+                .map_or(expression, |(name, _)| name);
+            if variable(name) {
+                self.references.insert(name.to_string());
+                found = true;
+            }
+            rest = &rest[end + 1..];
+        }
+        found
+    }
+}
+
+/// Whether `value` is nothing but one `${VAR}` reference, which names a
+/// secret without holding one.
+pub(crate) fn whole_reference(value: &str) -> bool {
+    value
+        .trim()
+        .strip_prefix(OPENING)
+        .and_then(|rest| rest.strip_suffix(CLOSING))
+        .is_some_and(|name| !name.contains(OPENING) && !name.contains(CLOSING))
+}
+
+/// `template` with each `${VAR}` replaced by what `lookup` gives for it, and
+/// each `${VAR:-default}` by its default when that is unset or empty, as
+/// the CLI would expand them. A variable nothing gives expands to nothing.
+pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut expanded = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find(OPENING) {
+        expanded.push_str(&rest[..start]);
+        let after = &rest[start + OPENING.len()..];
+        let Some(end) = after.find(CLOSING) else {
+            expanded.push_str(&rest[start..]);
+            return expanded;
+        };
+        let expression = &after[..end];
+        let (name, default) = match expression.split_once(DEFAULT) {
+            Some((name, default)) => (name, Some(default)),
+            None => (expression, None),
+        };
+        if variable(name) {
+            let value = lookup(name).filter(|value| !value.is_empty() || default.is_none());
+            match (value, default) {
+                (Some(value), _) => expanded.push_str(&value),
+                (None, Some(default)) => expanded.push_str(default),
+                (None, None) => {
+                    tracing::warn!(
+                        variable = name,
+                        "an MCP value refers to a variable nothing sets"
+                    );
+                }
+            }
+        } else {
+            expanded.push_str(&rest[start..start + OPENING.len() + end + 1]);
+        }
+        rest = &after[end + 1..];
+    }
+    expanded.push_str(rest);
+    expanded
+}
+
+fn variable(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use abnegate_secret::SecretValue;
+
+    use super::Placeholders;
+    use super::expand;
+    use super::whole_reference;
+
+    #[test]
+    fn a_literal_moves_to_a_generated_variable() {
+        let mut placeholders = Placeholders::default();
+
+        let first = placeholders.substitute(&SecretValue::new("glsa_realsecret"));
+        let second = placeholders.substitute(&SecretValue::new("Bearer sk-live-secret"));
+
+        assert_eq!(first, "${ABNEGATE_MCP_0}");
+        assert_eq!(second, "${ABNEGATE_MCP_1}");
+        assert_eq!(
+            placeholders
+                .environment
+                .get("ABNEGATE_MCP_0")
+                .map(SecretValue::expose),
+            Some("glsa_realsecret")
+        );
+        assert_eq!(
+            placeholders
+                .environment
+                .get("ABNEGATE_MCP_1")
+                .map(SecretValue::expose),
+            Some("Bearer sk-live-secret")
+        );
+        assert!(placeholders.references.is_empty());
+    }
+
+    #[test]
+    fn a_whole_reference_stays_and_its_variable_is_noted() {
+        let mut placeholders = Placeholders::default();
+
+        for value in ["${APPWRITE_API_KEY}", "${CF_ID:-anonymous}"] {
+            assert_eq!(placeholders.substitute(&SecretValue::new(value)), value);
+        }
+
+        assert!(placeholders.environment.is_empty());
+        assert!(placeholders.templates.is_empty());
+        assert_eq!(
+            placeholders.references.iter().collect::<Vec<_>>(),
+            ["APPWRITE_API_KEY", "CF_ID"]
+        );
+    }
+
+    #[test]
+    fn a_value_mixing_references_with_literal_text_moves_out_as_a_template() {
+        let mut placeholders = Placeholders::default();
+        let blob = "{\"id\": \"${CF_ID}\", \"secret\": \"literal-cf-secret\"}";
+
+        let first = placeholders.substitute(&SecretValue::new(blob));
+        let second = placeholders.substitute(&SecretValue::new("Bearer ${TOKEN}"));
+
+        assert_eq!(first, "${ABNEGATE_MCP_0}");
+        assert_eq!(second, "${ABNEGATE_MCP_1}");
+        assert_eq!(
+            placeholders
+                .templates
+                .get("ABNEGATE_MCP_0")
+                .map(SecretValue::expose),
+            Some(blob)
+        );
+        assert!(placeholders.environment.is_empty());
+        assert_eq!(
+            placeholders.references.iter().collect::<Vec<_>>(),
+            ["CF_ID", "TOKEN"]
+        );
+    }
+
+    #[test]
+    fn a_template_expands_as_the_cli_would() {
+        let lookup = |name: &str| match name {
+            "TOKEN" => Some("tok".to_string()),
+            "EMPTY" => Some(String::new()),
+            _ => None,
+        };
+
+        assert_eq!(expand("Bearer ${TOKEN}", &lookup), "Bearer tok");
+        assert_eq!(
+            expand("${MISSING:-anonymous}/${EMPTY:-fallback}", &lookup),
+            "anonymous/fallback"
+        );
+        assert_eq!(expand("[${MISSING}][${EMPTY}]", &lookup), "[][]");
+        assert_eq!(expand("${1BAD} and ${", &lookup), "${1BAD} and ${");
+        assert_eq!(expand("no references", &lookup), "no references");
+    }
+
+    #[test]
+    fn only_a_single_whole_reference_counts_as_one() {
+        assert!(whole_reference("${TOKEN}"));
+        assert!(whole_reference("  ${TOKEN}  "));
+        assert!(!whole_reference("Bearer ${TOKEN}"));
+        assert!(!whole_reference("${A}${B}"));
+        assert!(!whole_reference("${A}-${B}"));
+        assert!(!whole_reference("literal"));
+        assert!(!whole_reference("${"));
+    }
+
+    #[test]
+    fn an_empty_value_or_a_broken_reference_is_never_mistaken_for_a_reference() {
+        let mut placeholders = Placeholders::default();
+
+        assert_eq!(placeholders.substitute(&SecretValue::new("")), "");
+        assert_eq!(
+            placeholders.substitute(&SecretValue::new("abc${")),
+            "${ABNEGATE_MCP_0}"
+        );
+        assert_eq!(
+            placeholders.substitute(&SecretValue::new("${1BAD} ${}")),
+            "${ABNEGATE_MCP_1}"
+        );
+        assert!(placeholders.references.is_empty());
+    }
+
+    #[test]
+    fn noting_plain_text_notes_nothing() {
+        let mut placeholders = Placeholders::default();
+        assert!(!placeholders.note("mcp-server-appwrite"));
+        assert!(placeholders.note("--token=${TOKEN}"));
+        assert!(placeholders.references.contains("TOKEN"));
+    }
+}

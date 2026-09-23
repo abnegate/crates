@@ -7,12 +7,14 @@ use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+use crate::error::Overlong;
 use crate::event::AgentEvent;
 use crate::kind::AgentKind;
 use crate::lines::Lines;
 use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
+use crate::parser;
 use crate::scrubber::Scrubber;
 use crate::stdout_parse_result::StdoutParseResult;
 use crate::verdict::Verdict;
@@ -22,6 +24,10 @@ const BUFFER: usize = 8 * 1024;
 /// Reads one run's stdout to its end, and reports a [`Verdict`] the moment
 /// the stream settles the run: the agent finished, reported a failure, or its
 /// output broke one of the stream's limits.
+///
+/// An event too long to read is dropped and counted, unless it is one the
+/// run cannot do without, which fails it: a tool result the size of an image
+/// costs nothing, but a result or a reply that cannot be read does.
 ///
 /// Only the prose counts against the output limit. The rest of the stream,
 /// tool results included, is parsed and dropped, so however long a run goes
@@ -74,6 +80,7 @@ impl Reader {
         stdout: Option<ChildStdout>,
     ) -> Result<StdoutParseResult, String> {
         let outcome = self.read(stdout).await;
+        self.result.conclude();
         if let Err(reason) = &outcome {
             self.settle(Verdict::Failed(reason.clone()));
             self.journal
@@ -107,18 +114,39 @@ impl Reader {
                 break;
             }
             self.lines.extend(&buffer[..read]);
-            while let Some(line) = self.lines.take().map_err(|overlong| overlong.to_string())? {
-                self.consume(line).await?;
+            loop {
+                match self.lines.take() {
+                    Ok(Some(line)) => self.consume(line).await?,
+                    Ok(None) => break,
+                    Err(overlong) => self.skip(overlong).await?,
+                }
             }
         }
 
-        if let Some(line) = self
-            .lines
-            .flush()
-            .map_err(|overlong| overlong.to_string())?
-        {
-            self.consume(line).await?;
+        match self.lines.flush() {
+            Ok(Some(line)) => self.consume(line).await,
+            Ok(None) => Ok(()),
+            Err(overlong) => self.skip(overlong).await,
         }
+    }
+
+    /// Drop an event too long to read, unless the run cannot do without it.
+    async fn skip(&mut self, overlong: Overlong) -> Result<(), String> {
+        self.count += 1;
+        if self.agent.essential(&overlong.prefix) {
+            return Err(overlong.to_string());
+        }
+        self.result.dropped += 1;
+        let kind = parser::types(&overlong.prefix)
+            .first()
+            .map(|(_, kind)| (*kind).to_string());
+        tracing::warn!(agent = %self.agent, %overlong, kind, "dropped an event too long to read");
+        self.journal
+            .append_line(
+                Record::StdoutDropped,
+                json!({ "line_number": self.count, "limit": overlong.limit, "type": kind }),
+            )
+            .await;
         Ok(())
     }
 
@@ -127,7 +155,7 @@ impl Reader {
         if self.journal.enabled() {
             let logged = self.scrubber.scrub(&line);
             self.journal
-                .append(
+                .append_line(
                     Record::StdoutLine,
                     json!({ "line_number": self.count, "line": logged }),
                 )
@@ -156,6 +184,11 @@ impl Reader {
                     let message = self.scrubber.scrub(&message).into_owned();
                     self.settle(Verdict::Failed(message.clone()));
                     AgentEvent::Failed(message)
+                }
+                AgentEvent::Diagnostic(message) => {
+                    let message = self.scrubber.scrub(&message).into_owned();
+                    tracing::debug!(agent = %self.agent, diagnostic = %message, "agent diagnostic");
+                    AgentEvent::Diagnostic(message)
                 }
                 AgentEvent::Finished { finish_reason } => {
                     self.settle(Verdict::Finished);
