@@ -90,8 +90,10 @@ pub struct CliSettings {
     pub line_limit: usize,
     /// Set in the child's environment on top of what it is given from the
     /// host, so an explicit value always wins. Every value is treated as a
-    /// secret and scrubbed from whatever the run writes down; a setting that
-    /// is not secret belongs in `variables`.
+    /// secret and scrubbed from whatever the run writes down, as written,
+    /// JSON-escaped or percent-encoded; one the agent re-encodes any other
+    /// way, such as in base64, is not recognised. A setting that is not
+    /// secret belongs in `variables`.
     pub environment: BTreeMap<String, SecretValue>,
     /// Set in the child's environment like `environment`, which wins over
     /// them, but never scrubbed: flags such as `DISABLE_AUTOUPDATER=1`,

@@ -26,8 +26,9 @@
 //!
 //! The agent is given only [`INHERITED_VARIABLES`] from this process's
 //! environment, plus what the settings hand it, and every secret it is
-//! handed is scrubbed from what the run writes down, in the forms an agent
-//! echoes it in.
+//! handed is scrubbed from what the run writes down, as written,
+//! JSON-escaped or percent-encoded. A secret the agent re-encodes any other
+//! way, such as in base64, is not recognised.
 //!
 //! ```no_run
 //! use abnegate_agent_cli::AgentKind;

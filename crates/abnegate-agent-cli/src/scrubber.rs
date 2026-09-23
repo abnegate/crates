@@ -28,7 +28,8 @@ const FORM_SPACE: &str = "+";
 /// Each secret is looked for as written, JSON-escaped, since the agent's
 /// stream and the journal are both JSON, and percent-encoded, since agents
 /// echo URLs; a short secret is replaced only where it stands as a word of
-/// its own, and never skipped.
+/// its own, and never skipped. Any other encoding, base64 included, hides a
+/// secret from it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Scrubber {
     anywhere: Arc<[SecretValue]>,
