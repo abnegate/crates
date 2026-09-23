@@ -37,6 +37,15 @@ impl Credential {
         }
     }
 
+    /// The credential as a [`SecretValue`], for a consumer that holds it
+    /// rather than sending it at once.
+    pub fn secret(&self) -> Option<&SecretValue> {
+        match self {
+            Self::Inherited => None,
+            Self::Key { value, .. } => Some(value),
+        }
+    }
+
     /// The environment variable this credential occupies, if any.
     pub fn variable(&self) -> Option<&str> {
         match self {
@@ -48,6 +57,8 @@ impl Credential {
 
 #[cfg(test)]
 mod tests {
+    use abnegate_secret::SecretValue;
+
     use super::Credential;
 
     #[test]
@@ -68,6 +79,10 @@ mod tests {
         let credential = Credential::key("OPENAI_API_KEY", "sk-notarealkey");
         assert_eq!(credential.expose(), Some("sk-notarealkey"));
         assert_eq!(credential.variable(), Some("OPENAI_API_KEY"));
+        assert_eq!(
+            credential.secret().map(SecretValue::expose),
+            Some("sk-notarealkey")
+        );
     }
 
     #[test]

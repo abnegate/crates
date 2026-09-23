@@ -22,11 +22,7 @@
 //! use abnegate_llm::{LlmClient, LlmConfig, Message};
 //!
 //! # async fn example() -> Result<(), abnegate_llm::LlmError> {
-//! let client = LlmClient::new(LlmConfig {
-//!     base_url: "http://127.0.0.1:4000/v1".to_string(),
-//!     default_model: "qwen3".to_string(),
-//!     ..LlmConfig::default()
-//! });
+//! let client = LlmClient::new(LlmConfig::new("http://127.0.0.1:4000/v1", "qwen3", ""));
 //!
 //! let response = client.chat(&[Message::user("Say hello.")], None).await?;
 //! println!("{:?}", response.choices[0].message.content);

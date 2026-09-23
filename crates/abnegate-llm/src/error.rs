@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use abnegate_secret::redact;
 use thiserror::Error;
 
@@ -8,6 +10,7 @@ use thiserror::Error;
 /// key echoed in a rejection body or carried in a query string never reaches
 /// a log line through this type.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum LlmError {
     #[error("HTTP error: {0}")]
     Http(reqwest::Error),
@@ -19,6 +22,8 @@ pub enum LlmError {
     Stream(String),
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+    #[error("the endpoint sent nothing for {0:?}")]
+    Timeout(Duration),
 }
 
 impl From<reqwest::Error> for LlmError {

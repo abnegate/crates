@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use abnegate_secret::SecretValue;
 use async_trait::async_trait;
 
 use crate::client::LlmClient;
@@ -41,13 +42,14 @@ impl HttpProvider {
         credential: &Credential,
         model: impl Into<String>,
     ) -> Self {
-        let config = LlmConfig {
-            base_url: base_url.into(),
-            api_key: credential.expose().unwrap_or_default().to_string(),
-            default_model: model.into(),
-            ..LlmConfig::default()
-        };
-        Self::new(name, LlmClient::new(config))
+        let api_key = credential
+            .secret()
+            .cloned()
+            .unwrap_or_else(|| SecretValue::new(""));
+        Self::new(
+            name,
+            LlmClient::new(LlmConfig::new(base_url, model, api_key)),
+        )
     }
 
     /// Declare what the endpoint behind this provider actually supports.
@@ -201,6 +203,22 @@ mod tests {
         assert_eq!(provider.kind(), ProviderKind::Http);
         assert_eq!(provider.client().config().default_model, "qwen3");
         assert!(provider.client().config().api_key.is_empty());
+    }
+
+    #[test]
+    fn connect_hands_the_credential_over_without_exposing_it() {
+        let provider = HttpProvider::connect(
+            "gateway",
+            "http://127.0.0.1:4000/v1",
+            &Credential::key("GATEWAY_KEY", "sk-notarealkey-abcdefghijklmnop"),
+            "qwen3",
+        );
+
+        assert_eq!(
+            provider.client().config().api_key.expose(),
+            "sk-notarealkey-abcdefghijklmnop"
+        );
+        assert!(!format!("{:?}", provider.client()).contains("sk-notarealkey"));
     }
 
     #[test]
