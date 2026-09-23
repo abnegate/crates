@@ -24,6 +24,7 @@ use crate::context;
 use crate::context::ContextSource;
 use crate::context::Entry;
 use crate::context::Policy;
+use crate::tools::Preview;
 use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolRegistry;
@@ -404,7 +405,8 @@ impl Agent {
                     return ToolResult::error(format!("Invalid tool arguments: {error}"));
                 }
             };
-        if !callback.approve(tool_call, tool.tier()).await {
+        let preview = Preview::of(tool.as_ref(), &parameters);
+        if !callback.approve(tool_call, tool.tier(), &preview).await {
             return ToolResult::error(format!("{name} was not run: the call was not approved."));
         }
 

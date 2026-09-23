@@ -17,11 +17,7 @@ use crate::tools::ToolError;
 use crate::tools::ToolResult;
 use crate::tools::beneath;
 use crate::tools::beneath::Access;
-use crate::tools::excerpt;
 use crate::tools::reason_property;
-
-/// How much of a patch's first hunk an approval preview quotes.
-const PATCH_HUNK_CHARACTERS: usize = 80;
 
 /// Replace exact text in an existing file without rewriting the rest.
 pub struct ApplyPatchTool;
@@ -40,22 +36,26 @@ impl Tool for ApplyPatchTool {
         Tier::Host
     }
 
+    /// Every replacement, what it takes out and what it puts in, since what
+    /// goes in is the part of an edit a reader is deciding on.
     fn preview(&self, parameters: &Value) -> Option<String> {
         let parameters: ApplyPatchParameters = serde_json::from_value(parameters.clone()).ok()?;
         let hunks = parameters.hunks().ok()?;
-        let first = excerpt(&hunks[0].old_string, PATCH_HUNK_CHARACTERS);
         let scope = match parameters.replace_all {
             true => "every occurrence of ",
             false => "",
         };
-        let rest = match hunks.len() {
-            1 => String::new(),
-            all => format!(" and {} more", all - 1),
-        };
-        Some(format!(
-            "Edit {}: replace {scope}\"{first}\"{rest}.",
-            parameters.path
-        ))
+        let replacements = hunks
+            .iter()
+            .map(|hunk| {
+                format!(
+                    "replace {scope}\"{}\" with \"{}\"",
+                    hunk.old_string, hunk.new_string
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("; ");
+        Some(format!("Edit {}: {replacements}.", parameters.path))
     }
 
     fn parameters_schema(&self) -> Value {

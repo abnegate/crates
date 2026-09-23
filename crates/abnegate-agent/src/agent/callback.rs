@@ -2,6 +2,7 @@ use abnegate_llm::ToolCall;
 use async_trait::async_trait;
 
 use super::AgentPhase;
+use crate::tools::Preview;
 use crate::tools::Tier;
 use crate::tools::ToolResult;
 
@@ -31,15 +32,19 @@ pub trait AgentCallback: Send + Sync {
     /// without holding a runtime thread while it does. The run is paused
     /// until this returns.
     ///
+    /// `preview` is what the call will do, rendered from its own arguments
+    /// for the person deciding. It is whole unless
+    /// [`truncated`](Preview::truncated) is set, when its middle has been
+    /// replaced by a marker counting what was left out; `call` still holds
+    /// every argument, for an application that offers the rest.
+    ///
     /// The default refuses every tier that is
     /// [confirmed](Tier::confirmed) - host writes, commands, anything
     /// outward - and allows the rest, so an agent nobody is watching can read
     /// but not act. An application that offers such tools implements this to
-    /// put the call to its user, using
-    /// [`ToolRegistry::preview`](crate::ToolRegistry::preview) to show what it
-    /// will do.
-    async fn approve(&self, call: &ToolCall, tier: Tier) -> bool {
-        let _ = call;
+    /// put the call to its user.
+    async fn approve(&self, call: &ToolCall, tier: Tier, preview: &Preview) -> bool {
+        let _ = (call, preview);
         !tier.confirmed()
     }
 }

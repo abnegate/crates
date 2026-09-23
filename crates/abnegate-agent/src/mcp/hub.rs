@@ -250,8 +250,20 @@ mod tests {
                 &serde_json::json!({"message": "hi"}).to_string(),
             )
             .expect("a confirmed call renders what it will do");
-        assert!(preview.contains("echo__ping"), "{preview}");
-        assert!(preview.contains("\"message\":\"hi\""), "{preview}");
+        assert_eq!(preview.text, "Call `echo__ping` with {\"message\":\"hi\"}.");
+        assert!(!preview.truncated);
+
+        let padded = registry
+            .preview(
+                "echo__ping",
+                &serde_json::json!({"message": format!("{}PAYLOAD", "x".repeat(1_000))})
+                    .to_string(),
+            )
+            .expect("a confirmed call renders what it will do");
+        assert!(
+            padded.truncated && padded.text.contains("PAYLOAD"),
+            "padding does not hide what follows it: {padded:?}"
+        );
 
         drop(registry);
         drop(hub);

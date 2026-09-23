@@ -24,6 +24,7 @@ use super::Agent;
 use super::AgentConfig;
 use super::NoOpCallback;
 use crate::tools::EnvironmentPolicy;
+use crate::tools::Preview;
 use crate::tools::RunShellTool;
 use crate::tools::Tool;
 use crate::tools::ToolContext;
@@ -247,9 +248,81 @@ impl super::AgentCallback for Approving {
     fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
     fn on_response(&self, _response: &str) {}
 
-    async fn approve(&self, _call: &abnegate_llm::ToolCall, _tier: crate::tools::Tier) -> bool {
+    async fn approve(
+        &self,
+        _call: &abnegate_llm::ToolCall,
+        _tier: crate::tools::Tier,
+        _preview: &Preview,
+    ) -> bool {
         true
     }
+}
+
+/// A callback that allows everything, and keeps each preview it was shown.
+#[derive(Default)]
+struct Watching {
+    previews: Mutex<Vec<Preview>>,
+}
+
+#[async_trait]
+impl super::AgentCallback for Watching {
+    fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
+    fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
+    fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
+    fn on_response(&self, _response: &str) {}
+
+    async fn approve(
+        &self,
+        _call: &abnegate_llm::ToolCall,
+        _tier: crate::tools::Tier,
+        preview: &Preview,
+    ) -> bool {
+        self.previews
+            .lock()
+            .expect("preview log")
+            .push(preview.clone());
+        true
+    }
+}
+
+/// The approver is shown the call as it will run: whole when it fits, and
+/// flagged when a padded argument pushed part of it out of view, with the
+/// end of the call still in sight.
+#[tokio::test]
+async fn the_approver_is_shown_the_call_and_told_when_part_of_it_is_hidden() {
+    let provider = provider(vec![
+        calling(&[(RECORDING, json!({"note": "short"}))]),
+        calling(&[(
+            RECORDING,
+            json!({"padding": "x".repeat(1_000), "payload": "rm -rf ~"}),
+        )]),
+        answer("done"),
+    ])
+    .await;
+    let (tools, runs) = recording(crate::tools::Tier::Host);
+    let watching = Watching::default();
+
+    agent(&provider, tools)
+        .run("Go.", &watching)
+        .await
+        .expect("both calls are approved");
+
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+    let previews = watching.previews.lock().unwrap();
+    assert_eq!(previews.len(), 2, "{previews:?}");
+    assert_eq!(
+        previews[0],
+        Preview {
+            text: format!("Call `{RECORDING}` with {{\"note\":\"short\"}}."),
+            truncated: false,
+        }
+    );
+    assert!(previews[1].truncated, "{:?}", previews[1]);
+    assert!(
+        previews[1].text.contains("characters hidden]") && previews[1].text.contains("rm -rf ~"),
+        "{:?}",
+        previews[1]
+    );
 }
 
 /// A callback that puts each call to a person and waits for their answer.
@@ -264,7 +337,12 @@ impl super::AgentCallback for Deferring {
     fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
     fn on_response(&self, _response: &str) {}
 
-    async fn approve(&self, _call: &abnegate_llm::ToolCall, _tier: crate::tools::Tier) -> bool {
+    async fn approve(
+        &self,
+        _call: &abnegate_llm::ToolCall,
+        _tier: crate::tools::Tier,
+        _preview: &Preview,
+    ) -> bool {
         let (answer, answered) = oneshot::channel();
         if self.questions.send(answer).is_err() {
             return false;

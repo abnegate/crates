@@ -62,9 +62,11 @@ pub trait Tool: Send + Sync {
     /// allow it.
     ///
     /// Rendered from the call's own arguments, so the reader weighs the action
-    /// rather than the model's account of it. Tools whose tier is never
-    /// confirmed have nobody to render for and leave this alone.
-    fn preview(&self, _params: &Value) -> Option<String> {
+    /// rather than the model's account of it, and rendered whole: the
+    /// [`Preview`](super::Preview) built from it is what holds it to a length,
+    /// and says so when it does. A tool that leaves this alone is shown as the
+    /// call itself, its name and every argument.
+    fn preview(&self, _parameters: &Value) -> Option<String> {
         None
     }
 
