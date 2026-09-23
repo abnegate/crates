@@ -34,9 +34,15 @@ pub const INHERITED_VARIABLES: [&str; 8] = [
     "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM",
 ];
 
-/// Claude Code's tools that read the workspace and the web but never change
-/// anything, and the only built-in tools a read-only run makes available.
-pub const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
+/// Claude Code's tools that read files but never change anything, and the
+/// only built-in tools a read-only run makes available unless it
+/// [reaches the web](CliSettings::web). A read-only run allows them only
+/// inside its working directory.
+pub const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
+
+/// Claude Code's tools that reach the network: a fetch of any URL, and a web
+/// search. Only [`CliSettings::web`] allows them.
+pub const WEB_TOOLS: [&str; 2] = ["WebFetch", "WebSearch"];
 
 /// Caller [arguments](CliSettings::arguments) a read-only run passes through
 /// that take no value. Only the long form is recognised.
@@ -116,18 +122,35 @@ pub struct CliSettings {
     pub instructions: Option<String>,
     /// Tools the agent may use without asking. Claude only.
     pub permissions: Vec<String>,
-    /// Confine the run to an allowlist, so it cannot change the workspace
-    /// however it is asked to. Claude only.
+    /// Confine the run to an allowlist, so it cannot change the workspace or
+    /// read outside it however it is asked to. Claude only.
     ///
     /// Only the [`READ_ONLY_TOOLS`] named in `permissions` are available at
-    /// all; anything that would need permission is denied rather than asked
-    /// about; only user settings load, so a repository cannot add hooks,
-    /// permissions or plugins of its own; only the MCP servers attached here
-    /// load, and only the tools each one names are allowed, never a whole
-    /// server; and every caller argument outside [`READ_ONLY_SWITCHES`] and
-    /// [`READ_ONLY_OPTIONS`] is refused. A permission that is neither a
-    /// read-only tool nor one named MCP tool is refused too.
+    /// all, and they are allowed only inside the working directory, which the
+    /// CLI's restricted mode also holds every file tool to; the
+    /// [`WEB_TOOLS`] are available only with [`CliSettings::web`]; anything
+    /// that would need permission is denied rather than asked about; no
+    /// settings file loads, the user's included, so a repository cannot add
+    /// hooks, permissions or plugins of its own, and managed settings alone
+    /// apply; only the MCP servers attached here load, and only the tools
+    /// each one names are allowed, never a whole server; and every caller
+    /// argument outside [`READ_ONLY_SWITCHES`] and [`READ_ONLY_OPTIONS`] is
+    /// refused. A permission that is neither a read-only tool nor one named
+    /// MCP tool is refused too, and so is a web tool without
+    /// [`CliSettings::web`].
+    ///
+    /// Anything the agent would otherwise read from the user's settings, such
+    /// as a provider or proxy variable, is passed in `variables` or
+    /// `environment` instead.
     pub read_only: bool,
+    /// Allow the [`WEB_TOOLS`] without asking, and make them available to a
+    /// [read-only](CliSettings::read_only) run, which otherwise has neither.
+    /// Claude only.
+    ///
+    /// Off by default: either tool can carry whatever the agent has read to
+    /// any address, and a prompt injected through the workspace, or through
+    /// a page fetched along the way, chooses the address.
+    pub web: bool,
     /// MCP servers to attach, whose tools are allowed alongside
     /// `permissions`. Claude only.
     pub mcp: McpConfig,
@@ -160,6 +183,7 @@ impl Default for CliSettings {
             instructions: None,
             permissions: Vec::new(),
             read_only: false,
+            web: false,
             mcp: McpConfig::default(),
             log: None,
             journal_limit: DEFAULT_JOURNAL_LIMIT,
@@ -250,10 +274,17 @@ impl CliSettings {
 
     /// Allow exactly [`READ_ONLY_TOOLS`], replacing any permission set so
     /// far, and hold the run to [`CliSettings::read_only`]. Named MCP tools
-    /// may be allowed afterwards with [`CliSettings::with_permissions`].
+    /// may be allowed afterwards with [`CliSettings::with_permissions`], and
+    /// the web, before or after, with [`CliSettings::allow_web`].
     pub fn read_only(mut self) -> Self {
         self.permissions = READ_ONLY_TOOLS.map(str::to_string).to_vec();
         self.read_only = true;
+        self
+    }
+
+    /// Opt in to [`CliSettings::web`].
+    pub fn allow_web(mut self) -> Self {
+        self.web = true;
         self
     }
 
@@ -295,6 +326,7 @@ mod tests {
     use super::DEFAULT_OUTPUT_LIMIT;
     use super::DEFAULT_TIMEOUT;
     use super::READ_ONLY_TOOLS;
+    use super::WEB_TOOLS;
     use crate::mcp::McpServer;
 
     #[test]
@@ -313,6 +345,7 @@ mod tests {
         assert!(settings.instructions.is_none());
         assert!(settings.permissions.is_empty());
         assert!(!settings.read_only);
+        assert!(!settings.web);
         assert!(settings.mcp.is_empty());
         assert!(settings.log.is_none());
         assert_eq!(settings.journal_limit, DEFAULT_JOURNAL_LIMIT);
@@ -424,10 +457,21 @@ mod tests {
             .read_only();
 
         assert!(settings.read_only);
+        assert!(!settings.web);
         assert_eq!(settings.permissions, READ_ONLY_TOOLS);
-        assert_eq!(
-            READ_ONLY_TOOLS,
-            ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
-        );
+        assert_eq!(READ_ONLY_TOOLS, ["Read", "Grep", "Glob"]);
+    }
+
+    #[test]
+    fn the_web_is_an_opt_in_that_survives_a_read_only_run_in_either_order() {
+        assert_eq!(WEB_TOOLS, ["WebFetch", "WebSearch"]);
+        for settings in [
+            CliSettings::default().allow_web().read_only(),
+            CliSettings::default().read_only().allow_web(),
+        ] {
+            assert!(settings.web);
+            assert!(settings.read_only);
+            assert_eq!(settings.permissions, READ_ONLY_TOOLS);
+        }
     }
 }

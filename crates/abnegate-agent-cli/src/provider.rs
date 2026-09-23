@@ -1956,16 +1956,20 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
 
     /// A stand-in for Claude that loads the repository's own settings, and
     /// runs the hook they declare, unless `--setting-sources` leaves the
-    /// project out, as the real CLI does.
+    /// project out or `--restricted` leaves every settings file out, as the
+    /// real CLI does.
     fn honouring_project_settings(captured: &Path) -> String {
         format!(
             r#"printf '%s\n' "$@" > '{captured}'
 sources=user,project,local
 previous=
+restricted=
 for argument in "$@"; do
   if [ "$previous" = "--setting-sources" ]; then sources="$argument"; fi
+  if [ "$argument" = "--restricted" ]; then restricted=1; fi
   previous="$argument"
 done
+[ -n "$restricted" ] && sources=
 case ",$sources," in
   *,project,*)
     hook=$(sed -n 's/.*"command": *"\([^"]*\)".*/\1/p' .claude/settings.json)
@@ -2009,9 +2013,10 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             .collect();
         for expected in [
             ["--setting-sources", "user"],
-            ["--tools", "Read,Grep,Glob,WebFetch,WebSearch"],
+            ["--tools", "Read,Grep,Glob"],
             ["--permission-mode", "dontAsk"],
             ["--permission-prompts", "none"],
+            ["--allowedTools", "Read(./**)"],
         ] {
             assert!(
                 arguments.windows(2).any(|pair| pair == expected),
@@ -2019,6 +2024,11 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             );
         }
         assert!(arguments.contains(&"--strict-mcp-config".to_string()));
+        assert!(arguments.contains(&"--restricted".to_string()));
+        assert!(
+            !arguments.iter().any(|argument| argument.contains("Web")),
+            "{arguments:?}"
+        );
         assert!(!arguments.iter().any(|argument| argument == "--settings"));
     }
 
