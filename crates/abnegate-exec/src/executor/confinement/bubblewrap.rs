@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::error::ConfinementError;
 use super::path::text;
 use super::resolved::Resolved;
@@ -45,10 +47,6 @@ pub(super) fn arguments(resolved: &Resolved) -> Result<Vec<String>, ConfinementE
         let path = text(root)?.to_string();
         arguments.extend(["--bind".to_string(), path.clone(), path]);
     }
-    for root in &resolved.execute_roots {
-        let path = text(root)?.to_string();
-        arguments.extend(["--ro-bind".to_string(), path.clone(), path]);
-    }
     arguments.extend([
         "--chdir".to_string(),
         text(&resolved.working_dir)?.to_string(),
@@ -58,4 +56,15 @@ pub(super) fn arguments(resolved: &Resolved) -> Result<Vec<String>, ConfinementE
     arguments.extend(resolved.arguments.iter().cloned());
 
     Ok(arguments)
+}
+
+/// The options that hand the command its environment. They carry every
+/// value, so they reach bubblewrap through a descriptor rather than its argv,
+/// and replace an environment bubblewrap is started without.
+pub(super) fn environment_arguments(environment: &BTreeMap<String, String>) -> Vec<String> {
+    let mut arguments = vec!["--clearenv".to_string()];
+    for (name, value) in environment {
+        arguments.extend(["--setenv".to_string(), name.clone(), value.clone()]);
+    }
+    arguments
 }

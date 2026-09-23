@@ -21,9 +21,11 @@ pub struct JobHandle {
     /// Start time
     pub started_at: Instant,
 
-    /// Cancelling this stops the job: its process group is terminated and a
-    /// `RunError` with [`ErrorCode::Cancelled`](crate::protocol::ErrorCode)
-    /// is reported.
+    /// Cancelling this stops the job: its process group is sent SIGTERM, then
+    /// SIGKILL once the grace period has passed or the leader has exited, and
+    /// a `RunError` with [`ErrorCode::Cancelled`](crate::protocol::ErrorCode)
+    /// is reported. A job whose leader has already exited has its group
+    /// killed anyway.
     pub cancellation: CancellationToken,
 }
 

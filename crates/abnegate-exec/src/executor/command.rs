@@ -9,6 +9,7 @@ use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -24,6 +25,7 @@ use super::output_kind::OutputKind;
 use super::output_limiter::OutputLimiter;
 use super::output_stream::OutputStream;
 use super::process_group::ProcessGroup;
+use super::session;
 use super::stdin_handle::StdinHandle;
 use super::supervisor::Supervisor;
 
@@ -107,53 +109,39 @@ impl CommandExecutor {
         }
 
         let working_directory = working_dir.as_ref().unwrap_or(workspace);
+        let configure = |process: &mut Command| {
+            process
+                .current_dir(working_directory)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+        };
 
         // A job that asked to be confined never runs unconfined: an unproven
         // sandbox fails the spawn instead of falling back.
         let inherited = self.config.environment.inherited();
-        let mut process = match confinement {
+        let started_at = Instant::now();
+        let spawned = match confinement {
             Some(request) => {
                 Confinement::probe(request.mode()).await?;
-                let invocation = Confinement::new(command, args.clone(), working_directory)
+                Confinement::new(command, args.clone(), working_directory)
                     .with_roots(request)
                     .with_environment(env.clone())
                     .with_inherited_environment(inherited)
-                    .host_invocation()?;
-
-                let mut process = Command::new(&invocation.program);
-                process
-                    .args(&invocation.arguments)
-                    .env_clear()
-                    .envs(&invocation.environment);
-                process
+                    .host_invocation()?
+                    .spawn(configure)
             }
             None => {
                 let mut process = Command::new(command);
                 process.args(args).env_clear().envs(inherited).envs(env);
                 Proxy::from_env().apply(&mut process);
-                process
+                configure(&mut process);
+                session::lead(&mut process, None);
+                process.spawn()
             }
         };
-
-        process
-            .current_dir(working_directory)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        // Runs between fork and exec, where only async-signal-safe calls are
-        // permitted: `setsid` is one, and the closure allocates nothing.
-        #[allow(unsafe_code)]
-        unsafe {
-            process.pre_exec(|| {
-                nix::unistd::setsid().map_err(std::io::Error::other)?;
-                Ok(())
-            });
-        }
-
-        let started_at = Instant::now();
-        let mut child = process.spawn().map_err(ExecutorError::SpawnFailed)?;
+        let mut child = spawned.map_err(ExecutorError::SpawnFailed)?;
 
         let pid = child.id().ok_or_else(|| {
             ExecutorError::SpawnFailed(std::io::Error::other("Process has no PID"))
@@ -175,13 +163,7 @@ impl CommandExecutor {
             }
         });
 
-        let _ = sender
-            .send(OutboundMessage::RunStarted {
-                job_id: job_id.clone(),
-                pid,
-            })
-            .await;
-
+        let (started, gate) = watch::channel(false);
         let limiter = Arc::new(Mutex::new(OutputLimiter::new(
             max_output_bytes.unwrap_or(self.config.max_output_bytes),
         )));
@@ -191,6 +173,7 @@ impl CommandExecutor {
             sender: sender.clone(),
             limiter: limiter.clone(),
             buffer_size: self.config.buffer_size,
+            started: gate.clone(),
         };
         let mut streams: Vec<JoinHandle<()>> = Vec::with_capacity(2);
         if let Some(stdout) = child.stdout.take() {
@@ -202,15 +185,24 @@ impl CommandExecutor {
 
         Supervisor {
             job_id: job_id.clone(),
-            sender,
+            sender: sender.clone(),
             process_group: process_group.clone(),
             started_at,
             timeout: timeout_ms
                 .map(Duration::from_millis)
                 .unwrap_or(self.config.default_timeout),
             grace_period: self.config.grace_period,
+            started: gate,
         }
         .spawn(child, streams, cancellation.clone());
+
+        let _ = sender
+            .send(OutboundMessage::RunStarted {
+                job_id: job_id.clone(),
+                pid,
+            })
+            .await;
+        let _ = started.send(true);
 
         Ok(JobHandle {
             pid,
@@ -236,7 +228,10 @@ mod tests {
     use base64::Engine;
     use base64::prelude::BASE64_STANDARD;
 
+    use crate::executor::ConfinementMode;
     use crate::executor::EnvironmentPolicy;
+    use crate::executor::GRACE_PERIOD;
+    use crate::protocol::ConfinementRequest;
     use crate::protocol::ErrorCode;
     use crate::protocol::LogLevel;
 
@@ -311,16 +306,37 @@ mod tests {
         .expect("the run reports how it ended")
     }
 
-    /// Whether every process in `group` is gone within a second. An orphan
-    /// is reaped by init rather than by us, so it may linger for a moment.
-    async fn dies(group: &ProcessGroup) -> bool {
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while group.is_alive() {
+    /// Whether process `pid` has exited within two seconds. A zombie counts
+    /// as exited: an orphan is reaped by whichever process adopted it, which
+    /// this test does not control.
+    async fn gone(pid: u32) -> bool {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let output = Command::new("ps")
+                    .args(["-o", "stat=", "-p", &pid.to_string()])
+                    .output()
+                    .await
+                    .unwrap();
+                let state = String::from_utf8_lossy(&output.stdout);
+                if state.trim().is_empty() || state.trim_start().starts_with('Z') {
+                    return;
+                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
         .is_ok()
+    }
+
+    /// The pid a script printed as the first line of its output.
+    fn printed_pid(run: &Run) -> u32 {
+        String::from_utf8(run.stdout())
+            .unwrap()
+            .lines()
+            .next()
+            .expect("the script prints a pid first")
+            .parse()
+            .unwrap()
     }
 
     async fn run(executor: &CommandExecutor, request: &InboundMessage) -> Run {
@@ -483,6 +499,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_confined_run_layers_the_request_over_the_sandbox_over_the_policy() {
+        const NAME: &str = "executor::command::tests::a_confined_run_layers_the_request_over_the_sandbox_over_the_policy";
+        const MARKER: &str = "ABNEGATE_EXEC_TEST_MASTER_KEY";
+        if delegated_to_child(
+            NAME,
+            &[
+                (MARKER, "hunter2"),
+                ("TERM", "xterm"),
+                ("HOME", "/executor"),
+            ],
+        )
+        .await
+        {
+            return;
+        }
+        if Confinement::probe(ConfinementMode::SingleCommand)
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let request = InboundMessage::RunStart {
+            job_id: "confined-environment".to_string(),
+            workspace: root.clone(),
+            command: "/usr/bin/env".to_string(),
+            args: vec![],
+            env: HashMap::from([("LAYERED".to_string(), "request".to_string())]),
+            timeout_ms: Some(15_000),
+            max_output_bytes: None,
+            working_dir: None,
+            confinement: Some(Box::new(ConfinementRequest {
+                read_roots: vec![root.clone()],
+                write_roots: vec![root.clone()],
+                process_tree: None,
+            })),
+        };
+
+        let output = environment_of(&CommandExecutor::new(), &request).await;
+        let lines: Vec<&str> = output.lines().collect();
+
+        assert!(lines.contains(&"LAYERED=request"), "{output}");
+        assert!(lines.contains(&"TERM=xterm"), "{output}");
+        assert!(
+            lines.contains(&format!("HOME={}", root.display()).as_str()),
+            "the sandbox's own HOME outranks the executor's: {output}"
+        );
+        assert!(!output.contains(MARKER), "{output}");
+    }
+
+    #[tokio::test]
     async fn proxy_overrides_request_environment() {
         const NAME: &str = "executor::command::tests::proxy_overrides_request_environment";
         if delegated_to_child(
@@ -614,11 +682,14 @@ mod tests {
         })
         .await;
         handle.cancel();
+        let run = finish(receiver).await;
 
         assert_eq!(
             delivered.expect("a line with no newline is held back until exit"),
             b"prompt"
         );
+        assert_eq!(run.error(), Some(ErrorCode::Cancelled));
+        assert!(gone(handle.pid).await);
     }
 
     #[tokio::test]
@@ -655,7 +726,7 @@ mod tests {
             "a child that obeys SIGTERM is reported as soon as it exits, took {:?}",
             started.elapsed()
         );
-        assert!(dies(&handle.process_group).await);
+        assert!(gone(handle.pid).await);
     }
 
     #[tokio::test]
@@ -664,7 +735,7 @@ mod tests {
             ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
         );
         let (sender, receiver) = mpsc::channel(100);
-        let mut request = shell("timeout", "sleep 30 & sleep 30");
+        let mut request = shell("timeout", "sleep 30 & echo $!; sleep 30");
         if let InboundMessage::RunStart { timeout_ms, .. } = &mut request {
             *timeout_ms = Some(200);
         }
@@ -673,7 +744,110 @@ mod tests {
         let run = finish(receiver).await;
 
         assert_eq!(run.error(), Some(ErrorCode::Timeout));
-        assert!(dies(&handle.process_group).await);
+        assert!(gone(handle.pid).await);
+        assert!(gone(printed_pid(&run)).await);
+    }
+
+    /// The consumer takes `RunStarted` and then stops reading, so every
+    /// later message waits on it. Killing the child must not.
+    #[tokio::test]
+    async fn a_timeout_is_enforced_while_the_consumer_reads_nothing() {
+        let executor = CommandExecutor::with_config(
+            ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
+        );
+        let (sender, _receiver) = mpsc::channel(1);
+        let mut request = shell("unread", "sleep 30");
+        if let InboundMessage::RunStart { timeout_ms, .. } = &mut request {
+            *timeout_ms = Some(200);
+        }
+
+        let handle = executor.spawn(&request, sender).await.unwrap();
+
+        assert!(
+            gone(handle.pid).await,
+            "a consumer that stopped reading kept a timed-out child alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_child_that_exits_takes_its_group_with_it() {
+        let run = run(
+            &CommandExecutor::new(),
+            &shell("orphan", "sleep 60 > /dev/null 2>&1 & echo $!; exit 0"),
+        )
+        .await;
+
+        assert_eq!(run.exit(), Some((Some(0), None)));
+        assert!(
+            gone(printed_pid(&run)).await,
+            "a process the child left behind outlived the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_descendant_holding_the_output_open_ends_with_the_child() {
+        let started = Instant::now();
+
+        let run = run(
+            &CommandExecutor::new(),
+            &shell("holder", "sleep 60 & echo $!; exit 0"),
+        )
+        .await;
+
+        assert_eq!(run.exit(), Some((Some(0), None)));
+        assert!(
+            started.elapsed() < GRACE_PERIOD,
+            "the run waited on a descendant, took {:?}",
+            started.elapsed()
+        );
+        assert!(gone(printed_pid(&run)).await);
+    }
+
+    #[tokio::test]
+    async fn cancelling_after_the_child_exits_still_ends_its_group() {
+        let executor = CommandExecutor::new();
+        let (sender, mut receiver) = mpsc::channel(100);
+        let cancellation = CancellationToken::new();
+        executor
+            .spawn_with_cancellation(
+                &shell("late-cancel", "sleep 60 & echo $!; exit 0"),
+                sender,
+                cancellation.clone(),
+            )
+            .await
+            .unwrap();
+        let mut printed = Vec::new();
+        while !printed.contains(&b'\n') {
+            match receiver.recv().await.expect("the run reports its output") {
+                OutboundMessage::RunStdout { data, .. } => {
+                    printed.extend(BASE64_STANDARD.decode(data).unwrap())
+                }
+                OutboundMessage::RunExit { .. } | OutboundMessage::RunError { .. } => break,
+                _ => {}
+            }
+        }
+        let background: u32 = String::from_utf8(printed).unwrap().trim().parse().unwrap();
+
+        cancellation.cancel();
+        finish(receiver).await;
+
+        assert!(gone(background).await);
+    }
+
+    #[tokio::test]
+    async fn a_zero_output_limit_still_warns() {
+        let run = run(
+            &CommandExecutor::new(),
+            &limited(shell("silenced", "echo hello"), 0),
+        )
+        .await;
+
+        assert!(run.stdout().is_empty());
+        assert!(run.messages.iter().any(|message| matches!(
+            message,
+            OutboundMessage::RunLog { level: LogLevel::Warn, message, .. }
+                if message == "Output truncated at 0 bytes"
+        )));
     }
 
     #[test]
@@ -710,7 +884,7 @@ mod tests {
     #[tokio::test]
     async fn test_job_handle_cancel() {
         let executor = CommandExecutor::new();
-        let (sender, _receiver) = mpsc::channel(100);
+        let (sender, receiver) = mpsc::channel(100);
 
         let handle = executor
             .spawn(&shell("cancel-test", "sleep 10"), sender)
@@ -720,6 +894,8 @@ mod tests {
 
         handle.cancel();
         assert!(handle.is_cancelled());
+        assert_eq!(finish(receiver).await.error(), Some(ErrorCode::Cancelled));
+        assert!(gone(handle.pid).await);
     }
 
     #[tokio::test]

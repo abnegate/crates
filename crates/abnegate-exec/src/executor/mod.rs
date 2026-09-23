@@ -3,6 +3,7 @@
 //! This module provides the core functionality for spawning and managing
 //! command execution with streaming output, timeouts, and cancellation.
 
+mod admission;
 mod command;
 mod config;
 mod confinement;
@@ -10,15 +11,18 @@ mod ending;
 mod environment_policy;
 mod handshake;
 mod job_handle;
+mod leader_exit;
 mod output_kind;
 mod output_limiter;
 mod output_stream;
 mod process_group;
+mod session;
 #[cfg(test)]
 pub(crate) mod sleeper;
 mod stdin_handle;
 mod supervisor;
 
+pub use admission::Admission;
 pub use command::CommandExecutor;
 pub use config::DEFAULT_BUFFER_SIZE;
 pub use config::DEFAULT_MAX_OUTPUT_BYTES;

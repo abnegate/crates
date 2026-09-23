@@ -143,20 +143,24 @@ impl Confinement {
     }
 
     /// Translate into a backend invocation. `None` means the host has no
-    /// backend, which is an error rather than an unconfined spawn.
+    /// backend, which is an error rather than an unconfined spawn, and a
+    /// process tree on a backend that cannot bound it is refused the same way.
     pub fn invocation(&self, backend: Option<Backend>) -> Result<Invocation, ConfinementError> {
         let backend = backend.ok_or(ConfinementError::UnsupportedPlatform)?;
+        backend.require(self.mode)?;
         let resolved = self.resolve()?;
         match backend {
             Backend::Seatbelt => Ok(Invocation {
                 program: PathBuf::from(backend.executable()),
                 arguments: seatbelt::arguments(&resolved)?,
                 environment: resolved.environment,
+                descriptor_arguments: Vec::new(),
             }),
             Backend::Bubblewrap => Ok(Invocation {
                 program: PathBuf::from(backend.executable()),
                 arguments: bubblewrap::arguments(&resolved)?,
-                environment: resolved.environment,
+                environment: BTreeMap::new(),
+                descriptor_arguments: bubblewrap::environment_arguments(&resolved.environment),
             }),
         }
     }
@@ -191,6 +195,13 @@ impl Confinement {
             &command,
             write_roots.first().unwrap_or(&working_dir),
         );
+        if let Some(name) = environment.iter().find_map(|(name, value)| {
+            (name.is_empty() || name.contains(['=', '\0']) || value.contains('\0')).then_some(name)
+        }) {
+            return Err(ConfinementError::InvalidEnvironmentVariable(
+                name.escape_debug().to_string(),
+            ));
+        }
 
         Ok(Resolved {
             command,

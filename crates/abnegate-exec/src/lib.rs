@@ -3,8 +3,10 @@
 //! Sandboxed command execution with streaming output.
 //!
 //! A [`CommandExecutor`] spawns a process in its own session, streams stdout and
-//! stderr back as they arrive, enforces a timeout and an output ceiling, and
-//! terminates the whole process tree on cancellation. A [`JobRegistry`] tracks
+//! stderr back as they arrive, and enforces a timeout and an output ceiling.
+//! A run is its process group: whether the process exits, times out or is
+//! cancelled, whatever is left of its group is killed before the run is
+//! reported, so nothing it started outlives it. A [`JobRegistry`] tracks
 //! those runs by identifier so a caller can cancel one, or all of them, from
 //! elsewhere.
 //!
@@ -25,8 +27,11 @@
 //! separate process driven by whatever started it.
 //!
 //! ```
-//! use abnegate_exec::{CommandExecutor, InboundMessage, OutboundMessage};
 //! use std::collections::HashMap;
+//!
+//! use abnegate_exec::CommandExecutor;
+//! use abnegate_exec::InboundMessage;
+//! use abnegate_exec::OutboundMessage;
 //! use tokio::sync::mpsc;
 //!
 //! # async fn run() -> Result<(), abnegate_exec::ExecutorError> {
@@ -79,9 +84,14 @@
 //! Unix only. Confinement additionally needs macOS or Linux; see
 //! [`HOST_BACKEND`].
 
-#[cfg(not(unix))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_vendor = "apple"
+)))]
 compile_error!(
-    "abnegate-exec signals Unix process groups and supports Unix hosts only; confinement additionally needs macOS or Linux"
+    "abnegate-exec watches Unix process groups and supports Linux, Android, FreeBSD and Apple hosts only; confinement additionally needs macOS or Linux"
 );
 
 pub mod error;
@@ -90,15 +100,33 @@ pub mod job;
 pub mod protocol;
 pub mod proxy;
 
-pub use error::{DaemonError, ExecutorError, JobError, ProtocolError};
-pub use executor::{
-    Backend, CommandExecutor, Confinement, ConfinementError, ConfinementMode,
-    DEFAULT_ENVIRONMENT_ALLOWLIST, EnvironmentPolicy, ExecutorConfig, HOST_BACKEND, Invocation,
-    JobHandle,
-};
-pub use job::{JobRegistry, JobState};
-pub use protocol::{
-    Capability, ConfinementRequest, ErrorCode, InboundMessage, LogLevel, NdjsonCodec,
-    OutboundMessage, PROTOCOL_VERSION, ProcessTreeRequest,
-};
-pub use proxy::{DEFAULT_BYPASS, PROXY_BYPASS_ENV, PROXY_URL_ENV, Proxy};
+pub use error::DaemonError;
+pub use error::ExecutorError;
+pub use error::JobError;
+pub use error::ProtocolError;
+pub use executor::Backend;
+pub use executor::CommandExecutor;
+pub use executor::Confinement;
+pub use executor::ConfinementError;
+pub use executor::ConfinementMode;
+pub use executor::DEFAULT_ENVIRONMENT_ALLOWLIST;
+pub use executor::EnvironmentPolicy;
+pub use executor::ExecutorConfig;
+pub use executor::HOST_BACKEND;
+pub use executor::Invocation;
+pub use executor::JobHandle;
+pub use job::JobRegistry;
+pub use job::JobState;
+pub use protocol::Capability;
+pub use protocol::ConfinementRequest;
+pub use protocol::ErrorCode;
+pub use protocol::InboundMessage;
+pub use protocol::LogLevel;
+pub use protocol::NdjsonCodec;
+pub use protocol::OutboundMessage;
+pub use protocol::PROTOCOL_VERSION;
+pub use protocol::ProcessTreeRequest;
+pub use proxy::DEFAULT_BYPASS;
+pub use proxy::PROXY_BYPASS_ENV;
+pub use proxy::PROXY_URL_ENV;
+pub use proxy::Proxy;

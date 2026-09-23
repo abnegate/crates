@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use super::error::ConfinementError;
+use super::mode::ConfinementMode;
 use super::seatbelt::DENIED_FILES;
 
 const SEATBELT: &str = "/usr/bin/sandbox-exec";
@@ -82,6 +83,26 @@ impl Backend {
         match self {
             Backend::Seatbelt => true,
             Backend::Bubblewrap => false,
+        }
+    }
+}
+
+impl Backend {
+    /// Refuse a mode whose claim this backend has no mechanism to hold.
+    ///
+    /// A single-command job's claim on a backend that does not enforce a
+    /// single process is the filesystem and network confinement alone, which
+    /// every backend holds. A tree's claim is its execute bound, and nothing
+    /// can stand in for that.
+    pub(super) fn require(self, mode: ConfinementMode) -> Result<(), ConfinementError> {
+        match mode {
+            ConfinementMode::ProcessTree if !self.enforces_execute_roots() => {
+                Err(ConfinementError::Unproven(format!(
+                    "{} cannot bound which executables a process tree runs",
+                    self.executable()
+                )))
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -166,5 +187,24 @@ mod tests {
     fn test_backend_executables() {
         assert_eq!(Backend::Seatbelt.executable(), SEATBELT);
         assert_eq!(Backend::Bubblewrap.executable(), BUBBLEWRAP);
+    }
+
+    #[test]
+    fn a_tree_is_refused_where_the_backend_cannot_bound_its_execs() {
+        assert!(matches!(
+            Backend::Bubblewrap.require(ConfinementMode::ProcessTree),
+            Err(ConfinementError::Unproven(_))
+        ));
+        assert_eq!(
+            Backend::Seatbelt.require(ConfinementMode::ProcessTree),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_single_command_is_confined_on_every_backend() {
+        for backend in [Backend::Seatbelt, Backend::Bubblewrap] {
+            assert_eq!(backend.require(ConfinementMode::SingleCommand), Ok(()));
+        }
     }
 }

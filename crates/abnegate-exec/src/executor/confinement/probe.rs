@@ -9,7 +9,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tokio::net::TcpListener;
-use tokio::process::Command;
 use tokio::sync::OnceCell;
 use tokio::time::timeout;
 
@@ -157,34 +156,12 @@ async fn probe_network(backend: Backend, root: &Path) -> Result<(), ConfinementE
     Ok(())
 }
 
-/// Refuse a mode whose claim the backend has no mechanism to hold, before
-/// any probe could be mistaken for proof of it.
-///
-/// A single-command job's claim on a backend that does not enforce a single
-/// process is the filesystem and network confinement alone, which the probe
-/// does prove. A tree's claim is its execute bound, and nothing can stand in
-/// for that.
-pub(super) fn require_enforced(
-    backend: Backend,
-    mode: ConfinementMode,
-) -> Result<(), ConfinementError> {
-    match mode {
-        ConfinementMode::ProcessTree if !backend.enforces_execute_roots() => {
-            Err(ConfinementError::Unproven(format!(
-                "{} cannot bound which executables a process tree runs",
-                backend.executable()
-            )))
-        }
-        _ => Ok(()),
-    }
-}
-
 /// Prove the tree claim: everything single-command mode proves, plus that a
 /// forked descendant really runs, really cannot reach the network, and really
 /// cannot exec outside the granted directories.
 async fn run_process_tree_probe() -> Result<(), ConfinementError> {
     let backend = HOST_BACKEND.ok_or(ConfinementError::UnsupportedPlatform)?;
-    require_enforced(backend, ConfinementMode::ProcessTree)?;
+    backend.require(ConfinementMode::ProcessTree)?;
     probe_single_command().await?;
 
     if executable_file(Path::new(PROBE_SHELL)).is_none() {
@@ -441,47 +418,23 @@ async fn run_in_sandbox(
         .with_roots(&request)
         .invocation(Some(backend))?;
 
-    let run = Command::new(&invocation.program)
-        .args(&invocation.arguments)
-        .current_dir(root)
-        .env_clear()
-        .envs(&invocation.environment)
-        .stdin(Stdio::null())
-        .output();
+    let child = invocation
+        .spawn(|command| {
+            command
+                .current_dir(root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+        })
+        .map_err(probe_failure)?;
 
-    match timeout(PROBE_TIMEOUT, run).await {
+    match timeout(PROBE_TIMEOUT, child.wait_with_output()).await {
         Ok(Ok(output)) => Ok(output),
         Ok(Err(error)) => Err(probe_failure(error)),
         Err(_) => Err(ConfinementError::Unproven(format!(
             "the sandbox probe did not finish within {}s",
             PROBE_TIMEOUT.as_secs()
         ))),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_tree_is_refused_where_the_backend_cannot_bound_its_execs() {
-        assert!(matches!(
-            require_enforced(Backend::Bubblewrap, ConfinementMode::ProcessTree),
-            Err(ConfinementError::Unproven(_))
-        ));
-        assert_eq!(
-            require_enforced(Backend::Seatbelt, ConfinementMode::ProcessTree),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn a_single_command_is_confined_on_every_backend() {
-        for backend in [Backend::Seatbelt, Backend::Bubblewrap] {
-            assert_eq!(
-                require_enforced(backend, ConfinementMode::SingleCommand),
-                Ok(())
-            );
-        }
     }
 }

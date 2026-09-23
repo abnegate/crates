@@ -7,6 +7,7 @@ use base64::prelude::BASE64_STANDARD;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -23,12 +24,14 @@ use super::output_limiter::OutputLimiter;
 /// read to its end whatever happens downstream -- bytes past the limit, or
 /// after the receiver has gone, are read and dropped -- because a pipe closed
 /// early kills its writer with SIGPIPE. Only cancellation stops the reading.
+/// Nothing is read before `RunStarted` has been delivered.
 pub(super) struct OutputStream {
     pub(super) job_id: String,
     pub(super) kind: OutputKind,
     pub(super) sender: mpsc::Sender<OutboundMessage>,
     pub(super) limiter: Arc<Mutex<OutputLimiter>>,
     pub(super) buffer_size: usize,
+    pub(super) started: watch::Receiver<bool>,
 }
 
 impl OutputStream {
@@ -39,10 +42,14 @@ impl OutputStream {
         tokio::spawn(self.relay(reader, cancellation))
     }
 
-    async fn relay<R>(self, mut reader: R, cancellation: CancellationToken)
+    async fn relay<R>(mut self, mut reader: R, cancellation: CancellationToken)
     where
         R: AsyncRead + Unpin,
     {
+        tokio::select! {
+            _ = self.started.wait_for(|started| *started) => {}
+            () = cancellation.cancelled() => return,
+        }
         let mut buffer = vec![0; self.buffer_size.max(1)];
         let mut sequence: u64 = 0;
         let mut delivering = true;
@@ -60,8 +67,8 @@ impl OutputStream {
                 continue;
             }
 
-            let (accepted, written, truncated) = self.admit(count);
-            if truncated {
+            let (accepted, written, first_truncation) = self.admit(count);
+            if first_truncation {
                 delivering = self
                     .sender
                     .send(OutboundMessage::log(
@@ -85,12 +92,16 @@ impl OutputStream {
     }
 
     /// How many of `count` bytes fit under the shared limit, the total
-    /// written once they are counted, and whether this chunk is the one that
-    /// crossed the limit.
+    /// written once they are counted, and whether this chunk is the first to
+    /// lose bytes to the limit.
     fn admit(&self, count: usize) -> (usize, usize, bool) {
         let mut limiter = self.limiter.lock().unwrap_or_else(PoisonError::into_inner);
-        let (_, accepted, truncated) = limiter.check(count);
-        (accepted, limiter.bytes_written(), truncated)
+        let admission = limiter.admit(count);
+        (
+            admission.accepted,
+            limiter.bytes_written(),
+            admission.first_truncation,
+        )
     }
 
     fn chunk(&self, bytes: &[u8], sequence: u64) -> OutboundMessage {

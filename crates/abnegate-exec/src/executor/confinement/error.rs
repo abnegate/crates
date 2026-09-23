@@ -40,6 +40,12 @@ pub enum ConfinementError {
     #[error("Execute root would admit every executable on the host: {0}")]
     UnboundedExecuteRoot(String),
 
+    /// An environment variable whose name is empty or holds `=` or NUL, or
+    /// whose value holds NUL: neither can be set, and a NUL would split one
+    /// sandbox option into several
+    #[error("Invalid environment variable: {0}")]
+    InvalidEnvironmentVariable(String),
+
     /// The probe could not show the sandbox holds what the mode claims
     #[error("Confinement could not be proven: {0}")]
     Unproven(String),

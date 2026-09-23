@@ -7,6 +7,7 @@
 //! - Fail-closed spawning when confinement cannot be established
 //! - Real confined execution on hosts that can prove their sandbox
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -323,6 +324,23 @@ fn bubblewrap_arguments(confinement: &Confinement) -> Vec<String> {
     bubblewrap_invocation(confinement).arguments
 }
 
+/// The environment bubblewrap sets for the command: it clears its own, then
+/// applies each `--setenv NAME VALUE` read from the descriptor.
+fn bubblewrap_command_environment(invocation: &Invocation) -> BTreeMap<String, String> {
+    let (clear, pairs) = invocation
+        .descriptor_arguments
+        .split_first()
+        .expect("bubblewrap reads the environment from its descriptor");
+    assert_eq!(clear, "--clearenv");
+    pairs
+        .chunks(3)
+        .map(|option| {
+            assert_eq!(option[0], "--setenv", "{option:?}");
+            (option[1].clone(), option[2].clone())
+        })
+        .collect()
+}
+
 fn window(arguments: &[String], values: &[&str]) -> bool {
     arguments
         .windows(values.len())
@@ -379,17 +397,15 @@ fn test_bubblewrap_arguments_bind_the_requested_roots() {
 fn test_bubblewrap_invocation_sets_the_environment_and_working_directory() {
     let workspace = workspace();
     let invocation = bubblewrap_invocation(&confinement(&workspace.root, vec![]));
+    let environment = bubblewrap_command_environment(&invocation);
     let root = text(&workspace.root);
 
     for name in ["HOME", "TMPDIR", "TMP", "TEMP"] {
-        assert_eq!(invocation.environment.get(name), Some(&root), "{name}");
+        assert_eq!(environment.get(name), Some(&root), "{name}");
     }
+    assert_eq!(environment.get("LANG").map(String::as_str), Some("C.UTF-8"));
     assert_eq!(
-        invocation.environment.get("LANG").map(String::as_str),
-        Some("C.UTF-8")
-    );
-    assert_eq!(
-        invocation.environment.get("LC_ALL").map(String::as_str),
+        environment.get("LC_ALL").map(String::as_str),
         Some("C.UTF-8")
     );
     assert!(window(&invocation.arguments, &["--chdir", &root]));
@@ -415,15 +431,50 @@ fn test_bubblewrap_arguments_never_carry_an_environment_value() {
         invocation.arguments
     );
     assert!(!invocation.arguments.contains(&"--setenv".to_string()));
-    assert!(!invocation.arguments.contains(&"--clearenv".to_string()));
     assert_eq!(
-        invocation
-            .environment
+        bubblewrap_command_environment(&invocation)
             .get("APP_MASTER_KEY")
             .map(String::as_str),
         Some(SECRET),
-        "the value reaches the command through bubblewrap's own environment"
+        "the value reaches the command through the descriptor"
     );
+}
+
+/// Bubblewrap is dynamically linked and usually not setuid, so a variable
+/// such as `LD_PRELOAD` in its own environment runs code in the host process
+/// before any namespace exists.
+#[test]
+fn test_bubblewrap_itself_starts_without_any_caller_controlled_variable() {
+    let workspace = workspace();
+    let confinement = confinement(&workspace.root, vec![]).with_environment(HashMap::from([
+        ("LD_PRELOAD".to_string(), "/tmp/planted.so".to_string()),
+        ("GCONV_PATH".to_string(), "/tmp".to_string()),
+    ]));
+
+    let invocation = bubblewrap_invocation(&confinement);
+
+    assert!(
+        invocation.environment.is_empty(),
+        "{:?}",
+        invocation.environment.keys()
+    );
+    assert!(bubblewrap_command_environment(&invocation).contains_key("LD_PRELOAD"));
+}
+
+#[test]
+fn test_a_nul_in_an_environment_value_cannot_split_a_sandbox_option() {
+    let workspace = workspace();
+    let confinement = confinement(&workspace.root, vec![]).with_environment(HashMap::from([(
+        "INJECTED".to_string(),
+        "x\0--bind\0/\0/".to_string(),
+    )]));
+
+    for backend in [Backend::Seatbelt, Backend::Bubblewrap] {
+        assert!(matches!(
+            confinement.invocation(Some(backend)),
+            Err(ConfinementError::InvalidEnvironmentVariable(name)) if name == "INJECTED"
+        ));
+    }
 }
 
 #[test]
@@ -449,7 +500,9 @@ fn test_bubblewrap_invocation_keeps_a_caller_supplied_environment() {
     let invocation = bubblewrap_invocation(&confinement);
 
     assert_eq!(
-        invocation.environment.get("HOME").map(String::as_str),
+        bubblewrap_command_environment(&invocation)
+            .get("HOME")
+            .map(String::as_str),
         Some("/tmp")
     );
 }
@@ -844,47 +897,14 @@ fn test_seatbelt_tree_profile_does_not_make_a_write_root_executable() {
 }
 
 #[test]
-fn test_bubblewrap_tree_arguments_bind_the_execute_roots() {
+fn test_bubblewrap_refuses_a_process_tree_it_cannot_bound() {
     let workspace = workspace();
-    let arguments = bubblewrap_arguments(&tree_confinement(
-        &workspace.root,
-        vec![PathBuf::from(SHELL_DIRECTORY)],
+    let confinement = tree_confinement(&workspace.root, vec![PathBuf::from(SHELL_DIRECTORY)]);
+
+    assert!(matches!(
+        confinement.invocation(Some(Backend::Bubblewrap)),
+        Err(ConfinementError::Unproven(_))
     ));
-
-    let directory = resolved_shell_directory();
-    assert!(
-        window(&arguments, &["--ro-bind", &directory, &directory]),
-        "{arguments:?}"
-    );
-    assert!(
-        arguments.contains(&"--unshare-net".to_string()),
-        "the network stays unshared for the whole namespace, tree or not\n{arguments:?}"
-    );
-    assert!(
-        arguments.contains(&"--unshare-all".to_string()),
-        "{arguments:?}"
-    );
-}
-
-#[test]
-fn test_bubblewrap_tree_arguments_bind_an_execute_root_read_only() {
-    let base = TempDir::new().unwrap();
-    let toolchain = fs::canonicalize(base.path()).unwrap().join("toolchain");
-    fs::create_dir(&toolchain).unwrap();
-    let workspace = workspace();
-
-    let arguments =
-        bubblewrap_arguments(&tree_confinement(&workspace.root, vec![toolchain.clone()]));
-    let toolchain = text(&toolchain);
-
-    assert!(
-        window(&arguments, &["--ro-bind", &toolchain, &toolchain]),
-        "{arguments:?}"
-    );
-    assert!(
-        !window(&arguments, &["--bind", &toolchain, &toolchain]),
-        "a toolchain a tree may execute is not a toolchain it may rewrite\n{arguments:?}"
-    );
 }
 
 #[test]
@@ -894,10 +914,6 @@ fn test_a_process_tree_without_execute_roots_is_refused() {
 
     assert_eq!(
         confinement.invocation(Some(Backend::Seatbelt)),
-        Err(ConfinementError::ProcessTreeWithoutExecuteRoots)
-    );
-    assert_eq!(
-        confinement.invocation(Some(Backend::Bubblewrap)),
         Err(ConfinementError::ProcessTreeWithoutExecuteRoots)
     );
 }
@@ -1283,5 +1299,78 @@ async fn test_spawn_fails_closed_when_a_tree_cannot_be_bounded() {
             .await
             .is_empty(),
         "A refused spawn must not report a started process"
+    );
+}
+
+/// A library whose constructor leaves a marker file wherever it can write.
+#[cfg(target_os = "linux")]
+const PRELOAD_SOURCE: &str = r#"
+#include <stdio.h>
+__attribute__((constructor)) static void planted(void) {
+    FILE *marker = fopen(MARKER, "w");
+    if (marker) fclose(marker);
+}
+"#;
+
+/// Bubblewrap is dynamically linked and usually not setuid, so `LD_PRELOAD`
+/// in its own environment would run code in the host process before any
+/// namespace exists. The planted library sits outside every root and marks a
+/// directory outside every root, so only the host process could leave the
+/// marker; the unconfined control proves the library does run when preloaded.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_a_preloaded_library_never_runs_in_the_bubblewrap_host() {
+    if Confinement::probe(ConfinementMode::SingleCommand)
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let Some(compiler) = ["/usr/bin/cc", "/usr/bin/gcc"]
+        .into_iter()
+        .find(|candidate| Path::new(candidate).is_file())
+    else {
+        return;
+    };
+
+    let outside = TempDir::new().unwrap();
+    let outside = fs::canonicalize(outside.path()).unwrap();
+    let marker = outside.join("loaded");
+    let source = outside.join("planted.c");
+    let library = outside.join("planted.so");
+    fs::write(&source, PRELOAD_SOURCE).unwrap();
+    let compiled = std::process::Command::new(compiler)
+        .args(["-shared", "-fPIC", "-o"])
+        .arg(&library)
+        .arg(format!("-DMARKER=\"{}\"", marker.display()))
+        .arg(&source)
+        .status()
+        .unwrap();
+    assert!(compiled.success(), "the planted library did not compile");
+
+    let workspace = workspace();
+    let preloading = |confined: bool| InboundMessage::RunStart {
+        job_id: format!("preload-{confined}"),
+        workspace: workspace.root.clone(),
+        command: "/bin/true".to_string(),
+        args: vec![],
+        env: HashMap::from([("LD_PRELOAD".to_string(), text(&library))]),
+        timeout_ms: Some(15000),
+        max_output_bytes: None,
+        working_dir: None,
+        confinement: confined.then(|| Box::new(request(&workspace.root))),
+    };
+
+    run_confined(&preloading(false)).await;
+    assert!(
+        marker.exists(),
+        "the planted library never ran even unconfined, so this test proves nothing"
+    );
+    fs::remove_file(&marker).unwrap();
+
+    run_confined(&preloading(true)).await;
+    assert!(
+        !marker.exists(),
+        "a caller-supplied LD_PRELOAD ran code in the bubblewrap host process"
     );
 }
