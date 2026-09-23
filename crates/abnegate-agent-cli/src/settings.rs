@@ -27,9 +27,12 @@ pub const DEFAULT_JOURNAL_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// The host variables a child is given unless it
 /// [inherits the whole environment](CliSettings::inherit_environment): where
-/// to find programs, whose home it runs in, where temporary files go, and
-/// how to render text.
-pub const INHERITED_VARIABLES: [&str; 6] = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TERM"];
+/// to find programs, whose home and account it runs as, where temporary
+/// files go, and how to render text. The account matters on macOS, where the
+/// agent finds its sign-in in the Keychain under `USER`.
+pub const INHERITED_VARIABLES: [&str; 8] = [
+    "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM",
+];
 
 /// Claude Code's tools that read the workspace and the web but never change
 /// anything, and the only built-in tools a read-only run makes available.
