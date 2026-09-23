@@ -1,7 +1,11 @@
+mod outbound;
+
+use crate::body::read_capped;
 use crate::client::HttpClient;
 use crate::error::Result;
+use crate::public::PublicClient;
 use crate::response::HttpResponse;
-use crate::url::read_capped;
+use crate::transport::outbound::Outbound;
 use async_trait::async_trait;
 use reqwest::Client;
 use reqwest::Method;
@@ -12,17 +16,18 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The default [`HttpClient`], backed by reqwest.
 ///
-/// [`ReqwestHttpClient::new`] builds an unguarded client. To fetch a
-/// caller-supplied URL, build the client with
-/// [`public_client`](crate::public_client) and convert it with `From`, so the
-/// SSRF guard covers every request and every redirect hop.
+/// [`ReqwestHttpClient::new`] builds a client that trusts every URL it is
+/// handed. To fetch caller-supplied URLs, convert a
+/// [`PublicClient`](crate::PublicClient) with `From`: every request is then
+/// checked before it is sent, and every name and redirect hop is checked as
+/// it is resolved and followed.
 ///
 /// Response bodies are read up to [`ReqwestHttpClient::DEFAULT_BODY_LIMIT`]
 /// bytes unless [`ReqwestHttpClient::with_body_limit`] sets another cap, and
 /// are decoded as UTF-8 with invalid sequences replaced.
 #[derive(Debug, Clone)]
 pub struct ReqwestHttpClient {
-    client: Client,
+    outbound: Outbound,
     body_limit: usize,
 }
 
@@ -51,7 +56,7 @@ impl ReqwestHttpClient {
         headers: Vec<(&str, String)>,
         body: Option<&str>,
     ) -> Result<HttpResponse> {
-        let mut request = self.client.request(method, url);
+        let mut request = self.outbound.request(method, url)?;
         for (name, value) in headers {
             request = request.header(name, value);
         }
@@ -71,7 +76,16 @@ impl ReqwestHttpClient {
 impl From<Client> for ReqwestHttpClient {
     fn from(client: Client) -> Self {
         Self {
-            client,
+            outbound: Outbound::Trusted(client),
+            body_limit: Self::DEFAULT_BODY_LIMIT,
+        }
+    }
+}
+
+impl From<PublicClient> for ReqwestHttpClient {
+    fn from(client: PublicClient) -> Self {
+        Self {
+            outbound: Outbound::Public(client),
             body_limit: Self::DEFAULT_BODY_LIMIT,
         }
     }
@@ -119,6 +133,10 @@ impl HttpClient for ReqwestHttpClient {
 mod tests {
     use super::*;
     use crate::error::HttpError;
+    use crate::public::public_client;
+    use crate::test_support::LOOPBACK_SPELLINGS;
+    use crate::test_support::assert_untouched;
+    use crate::test_support::loopback_listener;
     use crate::test_support::serve_once;
     use std::sync::Arc;
     use wiremock::Mock;
@@ -223,6 +241,30 @@ mod tests {
 
         assert!(!error.to_string().contains("hunter2"), "{error}");
         assert!(!format!("{error:?}").contains("hunter2"), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_public_transport_refuses_every_spelling_of_loopback_before_connecting() {
+        let client = ReqwestHttpClient::from(
+            public_client(Duration::from_secs(5)).expect("a guarded client"),
+        );
+
+        for spelling in LOOPBACK_SPELLINGS {
+            let (listener, port) = loopback_listener();
+            let url = format!("http://{spelling}:{port}/");
+
+            for response in [
+                client.get(&url, Vec::new()).await,
+                client.post(&url, Vec::new(), "body").await,
+                client.put(&url, Vec::new(), "body").await,
+                client.patch(&url, Vec::new(), "body").await,
+                client.delete(&url, Vec::new()).await,
+            ] {
+                let error = response.expect_err("loopback must not be fetched");
+                assert!(matches!(error, HttpError::PrivateAddress), "{url}: {error}");
+            }
+            assert_untouched(&listener);
+        }
     }
 
     #[tokio::test]
