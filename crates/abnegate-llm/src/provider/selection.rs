@@ -1,89 +1,10 @@
 //! Choosing which provider answers a request.
 
-use std::sync::Arc;
-
 use sha2::{Digest, Sha256};
 
-use crate::provider::completion_provider::CompletionProvider;
+use crate::provider::weighted::Weighted;
 
 const MANTISSA_BITS: u32 = 53;
-
-/// A provider and its share of a weighted split.
-#[derive(Debug, Clone)]
-pub struct Weighted {
-    pub provider: Arc<dyn CompletionProvider>,
-    pub weight: f64,
-}
-
-impl Weighted {
-    pub fn new(provider: Arc<dyn CompletionProvider>, weight: f64) -> Self {
-        Self { provider, weight }
-    }
-
-    /// An arm that is never chosen by weight but can still back another up.
-    pub fn spare(provider: Arc<dyn CompletionProvider>) -> Self {
-        Self::new(provider, 0.0)
-    }
-}
-
-/// How a [`Router`](super::Router) picks the provider it starts with, and
-/// whether the rest of the list backs that provider up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SelectionStrategy {
-    /// The first provider, and only the first.
-    Primary,
-    /// One provider drawn by weight, and only that one.
-    Weighted,
-    /// Every provider in order until one answers.
-    Fallback,
-    /// One provider drawn by weight, then the rest in order behind it.
-    WeightedFallback,
-}
-
-impl SelectionStrategy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Primary => "primary",
-            Self::Weighted => "weighted",
-            Self::Fallback => "fallback",
-            Self::WeightedFallback => "weighted_fallback",
-        }
-    }
-
-    /// Reads a strategy out of configuration.
-    ///
-    /// An unknown name resolves to [`Self::Primary`] rather than failing: an
-    /// experiment whose strategy was typed wrong must still serve traffic, and
-    /// serving it from the primary provider is the choice that changes nothing.
-    /// `weighted_random` is accepted as a spelling of [`Self::Weighted`].
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "weighted" | "weighted_random" => Self::Weighted,
-            "fallback" => Self::Fallback,
-            "weighted_fallback" => Self::WeightedFallback,
-            _ => Self::Primary,
-        }
-    }
-
-    /// Whether a failure moves on to the next provider.
-    pub fn chains(self) -> bool {
-        matches!(self, Self::Fallback | Self::WeightedFallback)
-    }
-
-    /// The index this strategy starts at, given a sample in `[0, 1)`.
-    ///
-    /// The sample is a parameter rather than something drawn here so the split
-    /// is reproducible: a test can walk the whole distribution, and a caller
-    /// that wants an experiment bucket to stick to one task can derive the
-    /// sample from that task instead of from entropy.
-    pub fn start(self, providers: &[Weighted], sample: f64) -> usize {
-        match self {
-            Self::Primary | Self::Fallback => 0,
-            Self::Weighted | Self::WeightedFallback => choose(providers, sample),
-        }
-    }
-}
 
 /// Inverse-CDF selection over the weights.
 ///
@@ -150,9 +71,11 @@ pub fn sample(key: &str) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{SelectionStrategy, Weighted, choose, sample};
-    use crate::provider::testing::StubProvider;
     use std::sync::Arc;
+
+    use super::{choose, sample};
+    use crate::provider::testing::StubProvider;
+    use crate::provider::weighted::Weighted;
 
     fn arms(weights: &[f64]) -> Vec<Weighted> {
         weights
@@ -303,76 +226,5 @@ mod tests {
             counts[0] > 400 && counts[1] > 400,
             "the split was lopsided: {counts:?}"
         );
-    }
-
-    #[test]
-    fn only_the_chaining_strategies_move_past_a_failure() {
-        assert!(!SelectionStrategy::Primary.chains());
-        assert!(!SelectionStrategy::Weighted.chains());
-        assert!(SelectionStrategy::Fallback.chains());
-        assert!(SelectionStrategy::WeightedFallback.chains());
-    }
-
-    #[test]
-    fn the_unweighted_strategies_always_start_at_the_primary() {
-        let providers = arms(&[0.0, 100.0]);
-
-        for strategy in [SelectionStrategy::Primary, SelectionStrategy::Fallback] {
-            for sample in [0.0, 0.5, 0.99] {
-                assert_eq!(strategy.start(&providers, sample), 0, "{strategy:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn the_weighted_strategies_start_where_the_sample_points() {
-        let providers = arms(&[0.0, 100.0]);
-
-        for strategy in [
-            SelectionStrategy::Weighted,
-            SelectionStrategy::WeightedFallback,
-        ] {
-            assert_eq!(strategy.start(&providers, 0.5), 1, "{strategy:?}");
-        }
-    }
-
-    #[test]
-    fn every_strategy_round_trips_through_its_configured_name() {
-        for strategy in [
-            SelectionStrategy::Primary,
-            SelectionStrategy::Weighted,
-            SelectionStrategy::Fallback,
-            SelectionStrategy::WeightedFallback,
-        ] {
-            assert_eq!(SelectionStrategy::parse(strategy.as_str()), strategy);
-        }
-    }
-
-    #[test]
-    fn weighted_random_is_accepted_as_a_spelling_of_weighted() {
-        assert_eq!(
-            SelectionStrategy::parse("weighted_random"),
-            SelectionStrategy::Weighted
-        );
-    }
-
-    #[test]
-    fn a_strategy_nobody_configured_serves_from_the_primary() {
-        for value in ["", "unknown", "round_robin", "Primary", "WEIGHTED"] {
-            assert_eq!(
-                SelectionStrategy::parse(value),
-                SelectionStrategy::Primary,
-                "{value}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_strategy_is_copied_rather_than_moved() {
-        let strategy = SelectionStrategy::WeightedFallback;
-        let copied = strategy;
-
-        assert_eq!(strategy, copied);
-        assert!(format!("{strategy:?}").contains("WeightedFallback"));
     }
 }

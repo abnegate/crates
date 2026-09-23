@@ -11,7 +11,8 @@ use crate::provider::completion_provider::CompletionProvider;
 use crate::provider::error::ProviderError;
 use crate::provider::kind::ProviderKind;
 use crate::provider::request::CompletionRequest;
-use crate::provider::selection::{SelectionStrategy, Weighted};
+use crate::provider::strategy::SelectionStrategy;
+use crate::provider::weighted::Weighted;
 
 const DEFAULT_NAME: &str = "router";
 
@@ -278,8 +279,9 @@ mod tests {
     use crate::provider::error::ProviderError;
     use crate::provider::kind::ProviderKind;
     use crate::provider::request::CompletionRequest;
-    use crate::provider::selection::{SelectionStrategy, Weighted};
+    use crate::provider::strategy::SelectionStrategy;
     use crate::provider::testing::StubProvider;
+    use crate::provider::weighted::Weighted;
     use crate::wire::Message;
     use crate::wire::ToolDefinition;
     use crate::wire::Usage;
@@ -650,7 +652,7 @@ mod tests {
                 vec![Weighted::spare(
                     StubProvider::answering("local", "hi").shared(),
                 )],
-                SelectionStrategy::parse(configured),
+                configured.parse().unwrap_or_default(),
             );
 
             assert_eq!(router.strategy(), expected, "{configured}");

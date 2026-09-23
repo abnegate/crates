@@ -76,7 +76,7 @@ pub mod history;
 pub mod modality;
 mod parse_error;
 pub mod provider;
-mod reasoning;
+pub mod reasoning;
 mod wire;
 
 pub use crate::client::{LlmClient, LlmConfig, RequestOptions};
@@ -99,9 +99,9 @@ pub use crate::modality::{
 pub use crate::parse_error::ParseError;
 pub use crate::provider::{
     Capabilities, Completion, CompletionProvider, CompletionRequest, Credential, ExitStatus,
-    HttpProvider, ProviderError, ProviderKind, Router, SelectionStrategy, Weighted, choose, sample,
+    HttpProvider, ProviderError, ProviderKind, Router, SelectionStrategy, Weighted,
 };
-pub use crate::reasoning::{Effort, ReasoningEffort, classify};
+pub use crate::reasoning::{Effort, ReasoningEffort};
 pub use crate::wire::{
     ChatRequest, ChatResponse, ChatStreamChunk, Choice, ContentPart, FunctionCall,
     FunctionDefinition, GeneratedImage, ImageUrl, Message, Role, SpecificFunction, StreamChoice,
