@@ -3,6 +3,10 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::Value;
+use unicode_bidi::BidiClass;
+use unicode_bidi::bidi_class;
+use unicode_normalization::IsNormalized;
+use unicode_normalization::is_nfc_quick;
 
 use super::LINE_BREAK;
 use super::MAX_PREVIEW_CHARACTERS;
@@ -26,13 +30,22 @@ const CODE_POINT: &str = "U+";
 
 /// Format controls, the bidi overrides and isolates among them, every other
 /// code point a renderer draws nothing for, the blank Braille pattern a font
-/// draws as a space, and the combining marks drawn over a neighbouring glyph.
+/// draws as a space, the combining marks drawn over a neighbouring glyph,
+/// and the letters a renderer draws as one glyph with a neighbour: the
+/// Hangul vowel and final jamo, which compose with the syllable before them,
+/// and the prepended and spacing marks a grapheme cluster holds with its
+/// base.
 ///
 /// It overrides [`LEGIBLE`], which would pass the Braille pattern as a
-/// symbol.
+/// symbol and the jamo as letters. It leaves out the rest of
+/// `Grapheme_Cluster_Break=Extend`, so an emoji modifier such as U+1F3FD
+/// still tones the emoji before it.
 static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[\p{Cf}\p{Default_Ignorable_Code_Point}\p{M}\u{2800}]")
-        .expect("a valid Unicode class")
+    Regex::new(concat!(
+        r"[\p{Cf}\p{Default_Ignorable_Code_Point}\p{M}\u{2800}",
+        r"\p{gcb=V}\p{gcb=T}\p{gcb=Prepend}\p{gcb=SpacingMark}]",
+    ))
+    .expect("a valid Unicode class")
 });
 
 /// What a character past ASCII has to be to reach the card as itself: a
@@ -49,17 +62,20 @@ static LEGIBLE: LazyLock<Regex> =
 /// does. A control, format or invisible character in the call is shown as its
 /// code point between `⟨` and `⟩`, `⟨U+0008⟩` for a backspace, as is any
 /// whitespace but a plain space or a `\n`, the blank Braille pattern, a
-/// combining mark, any other character past ASCII that is not a letter, a
-/// number, punctuation or a symbol, a space straight after a `\` or a line
-/// break, a backtick inside a [code span](Rendering::code), and any `⟨`,
-/// `⟩`, `⟦`, `⟧` or `⏎` it carries, so the call can neither redraw the card
-/// it is shown on, pass one character off as another, hide a space a
-/// backslash escapes among the ones between words, close the span it is
-/// shown in and write the rest of the card, nor forge the marks the preview
-/// draws. An escape is one of those marks: text that reads `\u{8}` is shown
-/// as those characters, and one that reads `⟨U+0008⟩` has its fences
-/// escaped, so everything between a `⟨` and a `⟩` on the card is a character
-/// the preview escaped.
+/// combining mark, a Hangul vowel or final jamo or any other character a
+/// renderer draws as one glyph with its neighbour, a character NFC replaces
+/// or composes with the one before it, a right-to-left letter or an Arabic
+/// number, any other character past ASCII that is not a letter, a number,
+/// punctuation or a symbol, a space straight after a `\` or a line break, a
+/// backtick inside a [code span](Rendering::code), and any `⟨`, `⟩`, `⟦`,
+/// `⟧` or `⏎` it carries, so the call can neither redraw the card it is
+/// shown on, pass one character off as another, reorder the characters
+/// around it, hide a space a backslash escapes among the ones between words,
+/// close the span it is shown in and write the rest of the card, nor forge
+/// the marks the preview draws. An escape is one of those marks: text that
+/// reads `\u{8}` is shown as those characters, and one that reads
+/// `⟨U+0008⟩` has its fences escaped, so everything between a `⟨` and a `⟩`
+/// on the card is a character the preview escaped.
 ///
 /// Everything else is drawn verbatim. Nothing is squeezed, here or by the
 /// tool that rendered the call: blank space, blank lines and indentation
@@ -137,16 +153,29 @@ impl Preview {
 
 /// Whether `character` reaches the card as its [`escape`].
 ///
-/// An ASCII character is escaped when it is a control. Past ASCII only a
-/// letter, a number, punctuation or a symbol is drawn as itself, and not
-/// even one of those when it is [`INVISIBLE`]. A control or invisible
-/// character would let the call move the cursor, erase or reorder what the
-/// reader is shown, a line or paragraph separator, a Unicode space or the
-/// blank Braille pattern would pass for a plain space, a combining mark
-/// would change the letter before it, a private-use or unassigned code
-/// point has no glyph a reader could tell apart from another, and the glyphs
-/// the preview draws its own marks and escapes with would let it forge them,
-/// so none of them is shown as itself.
+/// An ASCII character is escaped when it is a control. A character past
+/// ASCII is drawn as itself only when it is all of:
+///
+/// - [`LEGIBLE`], since a private-use or unassigned code point has no glyph a
+///   reader could tell apart from another;
+/// - [`normalized`], since a renderer may draw a character NFC replaces as
+///   the one it is replaced with: U+1FEF as a backtick that closes the code
+///   span it stands in, U+037E as `;`;
+/// - not [`right_to_left`], since around one of those the bidi algorithm
+///   reorders the digits and punctuation beside it and mirrors the brackets
+///   among them, so `mv א 1` would read as `mv 1 א` and `cat א > ב` as
+///   `cat ב < א` with no control character in the call;
+/// - not [`INVISIBLE`], neither invisible nor joined to a neighbour, since a
+///   control or invisible character would let the call move the cursor,
+///   erase or reorder what the reader is shown, a line or paragraph
+///   separator, a Unicode space or the blank Braille pattern would pass for a
+///   plain space, a combining mark would change the letter before it, and a
+///   Hangul vowel or final jamo, or a mark a grapheme cluster holds with its
+///   base, would be drawn as one glyph with its neighbour, U+1100 U+1161 as
+///   U+AC00.
+///
+/// The glyphs the preview draws its own marks and escapes with are escaped
+/// as well, since shown as themselves they would let the call forge them.
 fn escaped(character: char) -> bool {
     match character {
         RETURN | CUT_OPEN | CUT_CLOSE | ESCAPE_OPEN | ESCAPE_CLOSE => true,
@@ -154,9 +183,29 @@ fn escaped(character: char) -> bool {
         _ => {
             let mut buffer = [0; 4];
             let encoded = character.encode_utf8(&mut buffer);
-            INVISIBLE.is_match(encoded) || !LEGIBLE.is_match(encoded)
+            !LEGIBLE.is_match(encoded)
+                || !normalized(character)
+                || right_to_left(character)
+                || INVISIBLE.is_match(encoded)
         }
     }
+}
+
+/// Whether NFC leaves `character` as it is wherever it stands: it is not
+/// replaced by another character, as U+212A KELVIN SIGN is by `K`, nor
+/// composed with the character before it.
+fn normalized(character: char) -> bool {
+    is_nfc_quick(once(character)) == IsNormalized::Yes
+}
+
+/// Whether `character` is a right-to-left letter or an Arabic number, which
+/// the bidi algorithm lays out right to left and takes the neutral
+/// characters and digits beside it along with.
+fn right_to_left(character: char) -> bool {
+    matches!(
+        bidi_class(character),
+        BidiClass::R | BidiClass::AL | BidiClass::AN
+    )
 }
 
 /// How one character of a call reaches the card.
@@ -652,13 +701,109 @@ mod tests {
         }
     }
 
+    /// A character NFC replaces is drawn by many renderers as the one it is
+    /// replaced with, so U+1FEF drew as a backtick and closed the code span
+    /// it stood in, U+037E drew `echo a;b` as the command it is not, and the
+    /// Kelvin, Ohm and Angstrom signs and the CJK compatibility ideographs
+    /// passed for the letters they decompose to.
+    #[test]
+    fn a_character_normalisation_replaces_is_shown_as_its_escape() {
+        for character in [
+            '\u{1fef}', '\u{37e}', '\u{212a}', '\u{2126}', '\u{212b}', '\u{f900}',
+        ] {
+            let preview = Preview::within(&format!("a{character}b"), MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(
+                preview.text,
+                format!("a{}b", escape(character)),
+                "{character:?}"
+            );
+            assert!(!preview.truncated, "{character:?}");
+        }
+    }
+
+    /// A right-to-left letter or an Arabic number is a letter, a number or
+    /// punctuation, so it was drawn as itself, and the bidi algorithm laid it
+    /// out right to left with the digits and punctuation beside it and
+    /// mirrored the brackets among them: `mv א 1` read as `mv 1 א`, and
+    /// `cat א > ב` as `cat ב < א`, with no control character in the call.
+    #[test]
+    fn a_right_to_left_letter_or_arabic_number_is_shown_as_its_escape() {
+        for character in [
+            '\u{5d0}',
+            '\u{627}',
+            '\u{661}',
+            '\u{663}',
+            '\u{5be}',
+            '\u{10800}',
+        ] {
+            let preview = Preview::within(&format!("a{character}b"), MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(
+                preview.text,
+                format!("a{}b", escape(character)),
+                "{character:?}"
+            );
+            assert!(!preview.truncated, "{character:?}");
+        }
+    }
+
+    /// A Hangul vowel or final jamo is a letter, not a mark, so it was drawn
+    /// as itself and a renderer composed it with the syllable before it:
+    /// U+1100 U+1161 drew as U+AC00, and U+AC00 U+11A8 as U+AC01. So did a
+    /// prepended or spacing mark that is a letter, such as U+0D4E MALAYALAM
+    /// LETTER DOT REPH or U+0E33 THAI CHARACTER SARA AM.
+    #[test]
+    fn a_character_a_renderer_joins_to_its_neighbour_is_shown_as_its_escape() {
+        let jamo = [
+            '\u{1161}'..='\u{11a7}',
+            '\u{11a8}'..='\u{11ff}',
+            '\u{d7b0}'..='\u{d7c6}',
+            '\u{d7cb}'..='\u{d7fb}',
+        ];
+
+        for character in jamo.into_iter().flatten().chain(['\u{d4e}', '\u{e33}']) {
+            let preview = Preview::within(&format!("a{character}b"), MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(
+                preview.text,
+                format!("a{}b", escape(character)),
+                "{character:?}"
+            );
+            assert!(!preview.truncated, "{character:?}");
+        }
+    }
+
+    #[test]
+    fn a_hangul_syllable_is_drawn_as_itself_and_a_jamo_that_would_join_it_is_escaped() {
+        for (rendered, drawn) in [
+            ("\u{1100}\u{1161}", "\u{1100}⟨U+1161⟩"),
+            ("\u{1100}\u{d7b0}", "\u{1100}⟨U+D7B0⟩"),
+            ("\u{ac00}\u{11a8}", "\u{ac00}⟨U+11A8⟩"),
+            ("\u{ac00}\u{d7cb}", "\u{ac00}⟨U+D7CB⟩"),
+            ("\u{ac00}", "\u{ac00}"),
+            ("\u{ac01}", "\u{ac01}"),
+            ("한국어", "한국어"),
+        ] {
+            let preview = Preview::within(rendered, MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(preview.text, drawn, "{rendered:?}");
+            assert!(!preview.truncated, "{rendered:?}");
+        }
+    }
+
+    #[test]
+    fn the_character_classes_compile() {
+        LazyLock::force(&INVISIBLE);
+        LazyLock::force(&LEGIBLE);
+    }
+
     #[test]
     fn letters_numbers_punctuation_and_symbols_past_ascii_are_drawn_as_themselves() {
         for text in [
             "café",
             "日本",
             "Ωμέγα",
-            "٣",
             "½",
             "—",
             "«»",

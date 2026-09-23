@@ -187,6 +187,10 @@ impl Default for ToolRegistry {
 mod tests {
     use std::collections::HashSet;
 
+    use unicode_bidi::BidiClass;
+    use unicode_bidi::BidiInfo;
+    use unicode_bidi::bidi_class;
+
     use super::*;
     use crate::tools::LINE_BREAK;
     use crate::tools::REASON_DESCRIPTION;
@@ -540,6 +544,8 @@ mod tests {
     /// directory would run in, or a second sentence naming another
     /// directory. The genuine clause now comes first and is always there, and
     /// a backtick inside a span is escaped, so nothing a call holds closes it.
+    /// Nor does U+1FEF, which NFC replaces with a backtick and a renderer
+    /// draws as one.
     #[test]
     fn a_backtick_in_a_command_or_directory_cannot_forge_where_it_runs() {
         let mut registry = ToolRegistry::new();
@@ -552,7 +558,6 @@ mod tests {
             assert!(!preview.truncated, "{}", preview.text);
             preview.text
         };
-        let backtick = "⟨U+0060⟩";
 
         let genuine = preview(
             "run_shell",
@@ -560,45 +565,111 @@ mod tests {
         );
         assert_eq!(genuine, "In `sandbox`, run `rm -rf build`.");
 
-        for (name, arguments, spans, drawn) in [
-            (
-                "run_shell",
-                serde_json::json!({"command": "rm -rf build` in sandbox"}),
-                1,
-                format!("In the working directory, run `rm -rf build{backtick} in sandbox`."),
-            ),
-            (
-                "run_shell",
-                serde_json::json!({"command": "true`. In `sandbox`, run `rm -rf build"}),
-                1,
-                format!(
-                    "In the working directory, run `true{backtick}. In {backtick}sandbox{backtick}, run {backtick}rm -rf build`."
+        for (forger, escaped) in [('`', "⟨U+0060⟩"), ('\u{1fef}', "⟨U+1FEF⟩")] {
+            for (name, arguments, spans, drawn) in [
+                (
+                    "run_shell",
+                    serde_json::json!({"command": format!("rm -rf build{forger} in sandbox")}),
+                    1,
+                    format!("In the working directory, run `rm -rf build{escaped} in sandbox`."),
                 ),
-            ),
-            (
-                "run_shell",
-                serde_json::json!({"command": "rm -rf build", "cwd": "sandbox`, run `true`. In `build"}),
-                2,
-                format!(
-                    "In `sandbox{backtick}, run {backtick}true{backtick}. In {backtick}build`, run `rm -rf build`."
+                (
+                    "run_shell",
+                    serde_json::json!({
+                        "command": format!("true{forger}. In {forger}sandbox{forger}, run {forger}rm -rf build")
+                    }),
+                    1,
+                    format!(
+                        "In the working directory, run `true{escaped}. In {escaped}sandbox{escaped}, run {escaped}rm -rf build`."
+                    ),
                 ),
-            ),
-            (
-                "run_command",
-                serde_json::json!({"command": "echo", "args": ["x` in sandbox"]}),
-                1,
-                format!("In the working directory, run `echo 'x{backtick} in sandbox'`."),
-            ),
-        ] {
-            let forged = preview(name, arguments);
+                (
+                    "run_shell",
+                    serde_json::json!({
+                        "command": "rm -rf build",
+                        "cwd": format!("sandbox{forger}, run {forger}true{forger}. In {forger}build")
+                    }),
+                    2,
+                    format!(
+                        "In `sandbox{escaped}, run {escaped}true{escaped}. In {escaped}build`, run `rm -rf build`."
+                    ),
+                ),
+                (
+                    "run_command",
+                    serde_json::json!({"command": "echo", "args": [format!("x{forger} in sandbox")]}),
+                    1,
+                    format!("In the working directory, run `echo 'x{escaped} in sandbox'`."),
+                ),
+            ] {
+                let forged = preview(name, arguments);
 
-            assert_eq!(
-                forged.matches('`').count(),
-                spans * 2,
-                "only the spans the card drew are fenced by a backtick: {forged}"
-            );
-            assert_ne!(forged, genuine);
-            assert_eq!(forged, drawn);
+                assert!(
+                    !forged.contains('\u{1fef}'),
+                    "no character a renderer draws as a backtick reaches the card: {forged}"
+                );
+                assert_eq!(
+                    forged.matches('`').count(),
+                    spans * 2,
+                    "only the spans the card drew are fenced by a backtick: {forged}"
+                );
+                assert_ne!(forged, genuine);
+                assert_eq!(forged, drawn);
+            }
+        }
+    }
+
+    /// A right-to-left letter was drawn as itself, so the bidi algorithm
+    /// reordered the digits and punctuation around it and mirrored the
+    /// brackets among them: `mv א 1` read as `mv 1 א`, and `cat א > ב`, which
+    /// writes `ב`, as `cat ב < א`, which reads `א`.
+    #[test]
+    fn a_right_to_left_argument_cannot_reorder_the_command_around_it() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        let preview = |command: &str| {
+            let preview = registry
+                .preview(
+                    "run_shell",
+                    &serde_json::json!({"command": command}).to_string(),
+                )
+                .expect("a shell call previews the line it will run");
+            assert!(!preview.truncated, "{}", preview.text);
+            preview.text
+        };
+
+        for pair in [
+            [
+                ("mv א 1", "In the working directory, run `mv ⟨U+05D0⟩ 1`."),
+                ("mv 1 א", "In the working directory, run `mv 1 ⟨U+05D0⟩`."),
+            ],
+            [
+                (
+                    "cat א > ב",
+                    "In the working directory, run `cat ⟨U+05D0⟩ > ⟨U+05D1⟩`.",
+                ),
+                (
+                    "cat ב < א",
+                    "In the working directory, run `cat ⟨U+05D1⟩ < ⟨U+05D0⟩`.",
+                ),
+            ],
+        ] {
+            let cards = pair.map(|(command, _)| preview(command));
+
+            for card in &cards {
+                assert!(
+                    !card.chars().any(|character| matches!(
+                        bidi_class(character),
+                        BidiClass::R | BidiClass::AL | BidiClass::AN
+                    )),
+                    "no right-to-left character reaches the card: {card}"
+                );
+                assert!(
+                    !BidiInfo::new(card, None).has_rtl(),
+                    "the card is laid out left to right, in the order the call holds: {card}"
+                );
+            }
+            assert_ne!(cards[0], cards[1]);
+            assert_eq!(cards, pair.map(|(_, drawn)| drawn.to_string()));
         }
     }
 
