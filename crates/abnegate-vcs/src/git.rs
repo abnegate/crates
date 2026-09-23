@@ -13,10 +13,17 @@
 //! command, so it cannot stop a run that rewrites the configuration in the
 //! instant between the check and the command; a clone every run can write is
 //! not one a credential should be sent from. A
-//! *managed* one is a local clone the caller owns outright: it is cloned,
-//! fetched, reset and given worktrees from whatever address the caller
-//! configured, including a local path, under a timeout but with the caller's
-//! own environment.
+//! *managed* one is a local clone the caller owns outright: it is cloned and
+//! fetched from whatever address the caller configured, including a local
+//! path, under a timeout and with the caller's own environment. Every worktree
+//! of it shares its configuration and hooks, and a run works in one, so it is
+//! held to the same check before it is fetched, checked out, reset or given a
+//! worktree, and every one of those commands carries the same pins; the local
+//! ones also ignore the host's configuration. A managed fetch leaves off only
+//! the pins that would blank the caller's credential helper and proxy: the
+//! clone is the caller's own and its configuration is checked against the
+//! allowlist immediately before every fetch, so the caller's global helper
+//! and proxy stay usable. The hardened commands keep every pin.
 
 mod authentication;
 mod diff_summary;
@@ -35,6 +42,7 @@ pub(crate) use crate::git::hardening::CONFIG_LISTING;
 pub(crate) use crate::git::hardening::DIFF_PREFIX;
 pub(crate) use crate::git::hardening::GITLINK_MODE;
 pub(crate) use crate::git::hardening::IGNORE_SUBMODULES;
+pub(crate) use crate::git::hardening::PINS;
 pub(crate) use crate::git::hardening::harden;
 pub(crate) use crate::git::hardening::refused;
 pub use crate::git::remote_head::RemoteHead;

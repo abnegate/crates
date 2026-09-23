@@ -8,12 +8,13 @@ use std::process::Stdio;
 /// hook, a file-system monitor, a credential helper, a signing program or a
 /// maintenance job, follow a redirect, turn off certificate checks, route
 /// through a proxy, recurse into submodules, push tags or options nobody
-/// named, or mark files so a status stops seeing them.
+/// named, mark files so a status stops seeing them, or have a checkout or
+/// switch enter a nested repository to list its changes.
 ///
 /// `http.sslCAInfo` and `http.sslCAPath` are deliberately absent: git hands an
 /// empty value to curl verbatim and every HTTPS request then fails. A
 /// repository that sets either is refused by [`refused`] instead.
-const PINS: [&str; 34] = [
+pub(crate) const PINS: [&str; 36] = [
     "-c",
     "core.hooksPath=/dev/null",
     "-c",
@@ -48,6 +49,8 @@ const PINS: [&str; 34] = [
     "gc.auto=0",
     "-c",
     "maintenance.auto=false",
+    "-c",
+    "diff.ignoreSubmodules=dirty",
 ];
 
 /// Environment every hardened command runs under, after the host's own has
@@ -251,6 +254,15 @@ mod tests {
                 .any(|flag| flag.contains("ignore-submodules=none")),
             "nothing must ask a diff to descend into a nested repository"
         );
+    }
+
+    #[test]
+    fn a_checkout_or_switch_never_enters_a_nested_repository_to_list_its_changes() {
+        let pinned = PINS
+            .windows(2)
+            .any(|pair| pair == ["-c", "diff.ignoreSubmodules=dirty"]);
+
+        assert!(pinned, "{PINS:?}");
     }
 
     #[test]

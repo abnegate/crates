@@ -1,5 +1,10 @@
 use super::*;
+use crate::git::GITLINK_MODE;
 use crate::git::WorktreeEntry;
+#[cfg(unix)]
+use std::ffi::OsStr;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use tokio::io::AsyncWriteExt;
 
 /// The status a change check runs: every untracked path, and no descent into a
@@ -11,6 +16,16 @@ const STATUS: [&str; 5] = [
     "--untracked-files=all",
     IGNORE_SUBMODULES,
 ];
+
+/// A switch to an existing local branch that neither guesses one from a
+/// remote branch nor lists the working tree's changes afterwards: listing
+/// them diffs the working tree, which enters a nested repository whose HEAD
+/// is the commit its gitlink records.
+const SWITCH: [&str; 3] = ["switch", "--quiet", "--no-guess"];
+
+/// A checkout onto a new branch that does not list the working tree's
+/// changes afterwards, for the reason [`SWITCH`] does not.
+const CREATE_BRANCH: [&str; 3] = ["checkout", "--quiet", "-b"];
 
 impl GitService {
     /// Clone into an empty, caller-owned directory. Credentials live only in the
@@ -109,7 +124,7 @@ impl GitService {
             );
         }
         let mut command = Self::hardened();
-        command.args(["checkout", "-b", branch.as_str()]);
+        command.args(CREATE_BRANCH).arg(branch.as_str());
         if exists.status.success() {
             command.arg(&remote);
         }
@@ -503,7 +518,8 @@ impl GitService {
 
         let output = Self::output(
             Self::hardened()
-                .args(["checkout", "-b", branch.as_str(), "--"])
+                .args(CREATE_BRANCH)
+                .args([branch.as_str(), "--"])
                 .current_dir(path)
                 .stderr(Stdio::piped()),
         )
@@ -518,9 +534,16 @@ impl GitService {
         Ok(())
     }
 
-    /// Stage every change in the working tree.
+    /// Stage every change in the working tree. A nested repository standing
+    /// where the index records a gitlink is refused with
+    /// [`GitError::NestedRepository`] before anything is staged: `add` checks
+    /// it for changes by starting a git inside it, under that repository's own
+    /// configuration, and no submodule setting stops it.
     pub async fn stage_all(&self, path: &Path) -> GitResult<()> {
         Self::verify_config(path).await?;
+        if let Some(nested) = Self::populated_gitlink(path).await? {
+            return Err(GitError::NestedRepository(nested));
+        }
         let output = Self::output(
             Self::hardened()
                 .args(["add", "-A"])
@@ -537,6 +560,54 @@ impl GitService {
         }
 
         Ok(())
+    }
+
+    /// The first gitlink the index records with anything standing at its
+    /// `.git`, read from the index alone. The whole index is read, from the
+    /// top of the working tree, because `add -A` stages all of it wherever it
+    /// runs. Anything at a `.git` that cannot be looked at counts as standing
+    /// there.
+    async fn populated_gitlink(path: &Path) -> GitResult<Option<PathBuf>> {
+        let top = Self::output(
+            Self::hardened()
+                .args(["rev-parse", "--show-toplevel"])
+                .current_dir(path)
+                .stdout(Stdio::piped()),
+        )
+        .await?;
+        if !top.status.success() {
+            return Err(GitError::CommandFailed(
+                "Cannot find the top of the working tree".to_string(),
+            ));
+        }
+        let top = native(top.stdout.strip_suffix(b"\n").unwrap_or(&top.stdout));
+        let listed = Self::output(
+            Self::hardened()
+                .args(["ls-files", "--stage", "-z"])
+                .current_dir(&top)
+                .stdout(Stdio::piped()),
+        )
+        .await?;
+        if !listed.status.success() {
+            return Err(GitError::CommandFailed("Cannot read the index".to_string()));
+        }
+        let gitlinks = listed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|entry| entry.starts_with(GITLINK_MODE.as_bytes()))
+            .filter_map(|entry| entry.splitn(2, |byte| *byte == b'\t').nth(1));
+        for gitlink in gitlinks {
+            let nested = top.join(native(gitlink));
+            match tokio::fs::symlink_metadata(nested.join(GIT_DIRECTORY)).await {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) => {}
+                _ => return Ok(Some(nested)),
+            }
+        }
+        Ok(None)
     }
 
     /// Commit what is staged, and say which commit it became.
@@ -670,7 +741,8 @@ impl GitService {
         Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
-                .args(["switch", "--no-guess", "--", branch.as_str()])
+                .args(SWITCH)
+                .args(["--", branch.as_str()])
                 .current_dir(path)
                 .stderr(Stdio::piped()),
         )
@@ -703,6 +775,20 @@ fn changed_paths(listing: &[u8]) -> Vec<String> {
         }
     }
     paths
+}
+
+/// A path git printed, byte for byte, so a name that is not UTF-8 still names
+/// the file git reads.
+#[cfg(unix)]
+fn native(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(OsStr::from_bytes(bytes))
+}
+
+/// A path git printed. Git keeps paths in UTF-8 wherever the platform's own
+/// are not bytes.
+#[cfg(not(unix))]
+fn native(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 /// A configuration value in double quotes, so nothing in it opens a comment
@@ -1464,6 +1550,51 @@ mod branch_tests {
         );
     }
 
+    #[test]
+    fn moving_between_branches_never_lists_the_working_tree_s_changes() {
+        for arguments in [SWITCH, CREATE_BRANCH] {
+            assert!(arguments.contains(&"--quiet"), "{arguments:?}");
+        }
+    }
+
+    /// A nested repository whose HEAD is the commit its gitlink records is
+    /// entered by a checkout or switch that lists the working tree's changes
+    /// afterwards. One git cannot read makes any command that enters it fail,
+    /// so each of these succeeding is what shows it was never entered.
+    #[tokio::test]
+    async fn moving_between_branches_never_enters_a_nested_repository() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+        let nested = repository.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        git(&nested, &["init", "-q", "-b", "main"]);
+        std::fs::write(nested.join("file"), "a\n").unwrap();
+        git(&nested, &["add", "file"]);
+        git(&nested, &["commit", "-q", "-m", "nested"]);
+        git(repository.path(), &["add", "nested"]);
+        git(repository.path(), &["commit", "-q", "-m", "record gitlink"]);
+        std::fs::write(nested.join(".git").join("index"), "unreadable").unwrap();
+        let service = GitService::new();
+
+        service
+            .create_branch(repository.path(), &branch("task/one"))
+            .await
+            .unwrap();
+        service
+            .checkout(repository.path(), &branch("main"))
+            .await
+            .unwrap();
+        service
+            .prepare_branch(repository.path(), &branch("task/two"), false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service.current_branch(repository.path()).await.unwrap(),
+            "task/two"
+        );
+    }
+
     #[tokio::test]
     async fn a_remote_url_is_read_by_its_name_and_an_option_is_only_a_name() {
         let repository = tempfile::tempdir().unwrap();
@@ -1894,6 +2025,14 @@ mod configuration_tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_path_git_printed_is_kept_byte_for_byte() {
+        let printed = b"nested/\xff name";
+
+        assert_eq!(native(printed).as_os_str().as_bytes(), printed);
+    }
+
     #[test]
     fn the_change_check_status_stays_out_of_a_nested_repository() {
         assert!(STATUS.contains(&IGNORE_SUBMODULES), "{STATUS:?}");
@@ -1938,6 +2077,61 @@ mod configuration_tests {
         assert!(
             !service.has_changes(repository.path()).await.unwrap(),
             "reading the nested repository's dirty state would require entering it"
+        );
+    }
+
+    /// A nested repository standing where the index records a gitlink refuses
+    /// the staging, from anywhere in the working tree: `add` checks such a
+    /// repository for changes by starting a git inside it, under that
+    /// repository's own configuration, whatever the submodule settings say.
+    #[tokio::test]
+    async fn a_nested_repository_standing_at_a_recorded_gitlink_refuses_the_staging() {
+        let repository = repository();
+        let head = git(repository.path(), &["rev-parse", "HEAD"]);
+        git(
+            repository.path(),
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{head},nested"),
+            ],
+        );
+        git(repository.path(), &["commit", "-q", "-m", "record gitlink"]);
+        let nested = repository.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let subdirectory = repository.path().join("subdirectory");
+        std::fs::create_dir(&subdirectory).unwrap();
+        std::fs::write(subdirectory.join("first"), "first\n").unwrap();
+        let service = GitService::new();
+
+        service.stage_all(repository.path()).await.unwrap();
+        assert_eq!(
+            git(repository.path(), &["ls-files", "--", "subdirectory/first"]),
+            "subdirectory/first",
+            "a gitlink with nothing checked out at it is staged past"
+        );
+        assert!(
+            git(repository.path(), &["ls-files", "--stage", "--", "nested"])
+                .starts_with(GITLINK_MODE),
+            "the gitlink is still recorded"
+        );
+
+        git(&nested, &["init", "-q"]);
+        std::fs::write(repository.path().join("second"), "second\n").unwrap();
+        let expected = repository.path().canonicalize().unwrap().join("nested");
+
+        for from in [repository.path(), subdirectory.as_path()] {
+            let refusal = service.stage_all(from).await;
+            assert!(
+                matches!(refusal, Err(GitError::NestedRepository(ref at)) if *at == expected),
+                "{from:?}: {refusal:?}"
+            );
+        }
+        assert_eq!(
+            git(repository.path(), &["ls-files", "--", "second"]),
+            "",
+            "add never ran"
         );
     }
 

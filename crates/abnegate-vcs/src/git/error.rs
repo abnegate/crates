@@ -31,6 +31,9 @@ pub enum GitError {
     #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
     UnsafeWorktree(PathBuf),
 
+    #[error("Refusing to stage beside the nested repository at {}", .0.display())]
+    NestedRepository(PathBuf),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
