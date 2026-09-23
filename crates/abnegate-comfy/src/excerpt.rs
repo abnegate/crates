@@ -6,8 +6,16 @@ use abnegate_secret::sanitize;
 pub(crate) const LIMIT: usize = 512;
 const ELISION: char = '…';
 
-/// The end of `text`, stripped of terminal control sequences and credentials.
-/// A failing process says why last.
+/// The start of `text`, stripped of terminal control sequences and credentials.
+pub(crate) fn head(text: &str) -> String {
+    let clean = sanitize(text.trim());
+    match clean.char_indices().nth(LIMIT) {
+        Some((cut, _)) => format!("{}{ELISION}", &clean[..cut]),
+        None => clean.into_owned(),
+    }
+}
+
+/// The end of `text`, stripped the same way. A failing process says why last.
 pub(crate) fn tail(text: &str) -> String {
     let clean = sanitize(text.trim());
     let length = clean.chars().count();
@@ -23,12 +31,16 @@ mod tests {
 
     #[test]
     fn short_text_is_quoted_whole() {
+        assert_eq!(head("  exit 3\n"), "exit 3");
         assert_eq!(tail("  exit 3\n"), "exit 3");
     }
 
     #[test]
-    fn long_text_is_cut_to_its_last_characters() {
+    fn long_text_is_cut_to_the_limit_from_the_end_that_matters() {
         let text = format!("{}{}", "a".repeat(LIMIT), "b".repeat(LIMIT));
+        let start = head(&text);
+        assert_eq!(start.chars().count(), LIMIT + 1);
+        assert!(start.starts_with('a') && start.ends_with(ELISION));
         let end = tail(&text);
         assert_eq!(end.chars().count(), LIMIT + 1);
         assert!(end.starts_with(ELISION) && end.ends_with('b'));
@@ -37,17 +49,21 @@ mod tests {
 
     #[test]
     fn a_cut_never_splits_a_character() {
-        assert_eq!(tail(&"é".repeat(LIMIT * 2)).chars().count(), LIMIT + 1);
+        let text = "é".repeat(LIMIT * 2);
+        assert_eq!(head(&text).chars().count(), LIMIT + 1);
+        assert_eq!(tail(&text).chars().count(), LIMIT + 1);
     }
 
     #[test]
     fn control_sequences_and_credentials_never_reach_the_quote() {
-        let quote = tail(concat!(
+        let text = concat!(
             "\u{1b}[31mfatal\u{1b}[0m: bad token ghp_",
             "0123456789abcdefghij0123456789abcdef"
-        ));
-        assert!(!quote.contains('\u{1b}'), "{quote:?}");
-        assert!(!quote.contains(concat!("ghp_", "0123456789")), "{quote:?}");
-        assert!(quote.starts_with("fatal"), "{quote:?}");
+        );
+        for quote in [head(text), tail(text)] {
+            assert!(!quote.contains('\u{1b}'), "{quote:?}");
+            assert!(!quote.contains(concat!("ghp_", "0123456789")), "{quote:?}");
+            assert!(quote.starts_with("fatal"), "{quote:?}");
+        }
     }
 }

@@ -5,6 +5,7 @@ mod contract;
 pub use contract::Contract;
 
 use crate::config::Config;
+use crate::excerpt;
 use crate::http::CANCEL_TIMEOUT;
 use crate::http::POLL_TIMEOUT;
 use crate::http::authorize;
@@ -311,7 +312,10 @@ async fn queue(
                 false
             };
             return Err(WaitFailure {
-                error: TrainError::Failed(format!("invalid ComfyUI prompt response: {error}")),
+                error: TrainError::Failed(format!(
+                    "invalid ComfyUI prompt response: {}",
+                    excerpt::head(&error.to_string())
+                )),
                 cleanup,
             });
         }
@@ -328,7 +332,10 @@ async fn queue(
             .unwrap_or_else(|| json!(response.node_errors));
         let cleanup = cancel_and_wait(client, config, prompt, false).await;
         return Err(WaitFailure {
-            error: TrainError::Failed(format!("ComfyUI rejected train graph: {detail:?}")),
+            error: TrainError::Failed(format!(
+                "ComfyUI rejected train graph: {}",
+                excerpt::head(&detail.to_string())
+            )),
             cleanup,
         });
     }
@@ -379,7 +386,8 @@ async fn download(
         .unwrap_or_default();
     if !is_weight_payload(content_type) {
         return Err(TrainError::Failed(format!(
-            "ComfyUI view response is not safetensors data: {content_type}"
+            "ComfyUI view response is not safetensors data: {}",
+            excerpt::head(content_type)
         )));
     }
     let bytes = response
@@ -905,7 +913,13 @@ fn train_prompt_complete(entry: &Value) -> Result<bool, TrainError> {
     if status.status_str.eq_ignore_ascii_case("error") {
         return Err(TrainError::Failed(format!(
             "ComfyUI train failed: {}",
-            entry.get("status").cloned().unwrap_or(json!({}))
+            excerpt::head(
+                &entry
+                    .get("status")
+                    .cloned()
+                    .unwrap_or(json!({}))
+                    .to_string()
+            )
         )));
     }
     Ok(status.completed == Some(true) || status.status_str.eq_ignore_ascii_case("success"))
@@ -2295,6 +2309,23 @@ mod tests {
                 .is_some()
         );
         assert!(exact_history(&json!({ Uuid::new_v4().to_string(): {} }), prompt).is_err());
+    }
+
+    #[test]
+    fn a_failure_comfyui_reports_is_quoted_bounded_and_sanitized() {
+        let entry = json!({"status": {
+            "status_str": "error",
+            "messages": [format!("\u{1b}[31m{}", "traceback line\n".repeat(10_000))]
+        }});
+        let TrainError::Failed(message) = train_prompt_complete(&entry).unwrap_err() else {
+            panic!("a failed graph is a training failure");
+        };
+        assert!(
+            message.chars().count() <= "ComfyUI train failed: ".len() + excerpt::LIMIT + 1,
+            "{} characters of ComfyUI's report reached the error",
+            message.len()
+        );
+        assert!(!message.contains('\u{1b}'));
     }
 
     #[test]
