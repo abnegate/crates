@@ -331,7 +331,7 @@ fn write_and_edit_previews_show_other_line_terminators_and_spaces_as_escapes() {
 }
 
 #[test]
-fn write_and_edit_previews_draw_a_carriage_return_line_feed_as_one_break() {
+fn write_and_edit_previews_show_the_carriage_return_of_a_carriage_return_line_feed() {
     let content = "safe()\r\nrm -rf ~";
     let write = Preview::of(
         &WriteFileTool,
@@ -342,15 +342,19 @@ fn write_and_edit_previews_draw_a_carriage_return_line_feed_as_one_break() {
         &serde_json::json!({"path": "hook.sh", "old_string": "safe()", "new_string": content}),
     );
 
+    let carriage_return = '\r'.escape_unicode();
+
     assert_eq!(
         write.text,
         format!(
-            "Write 16 characters to hook.sh, replacing whatever is there: \"safe(){LINE_BREAK}rm -rf ~\"."
+            "Write 16 characters to hook.sh, replacing whatever is there: \"safe(){carriage_return}{LINE_BREAK}rm -rf ~\"."
         )
     );
     assert_eq!(
         edit.text,
-        format!("Edit hook.sh: replace \"safe()\" with \"safe(){LINE_BREAK}rm -rf ~\".")
+        format!(
+            "Edit hook.sh: replace \"safe()\" with \"safe(){carriage_return}{LINE_BREAK}rm -rf ~\"."
+        )
     );
 }
 

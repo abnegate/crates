@@ -46,12 +46,13 @@ pub const LINE_BREAK: &str = " ⏎ ";
 /// [`LINE_BREAK`], because what separates two commands is the part of a
 /// preview a reader is deciding on.
 ///
-/// Only `\n`, with the `\r` of a `\r\n` pair, breaks a line. Any other line
-/// terminator or Unicode space is kept as itself for the preview to escape:
-/// collapsing it into a space would show one line where the file holds two,
-/// or an ordinary space where it holds something else.
+/// Only `\n` breaks a line. Every other line terminator and Unicode space,
+/// the `\r` of a `\r\n` pair among them, is kept as itself for the preview to
+/// escape: dropping or collapsing it would show one line where the file holds
+/// two, an ordinary space where it holds something else, or `cd sandbox`
+/// where `sh` reads `cd sandbox\r`.
 pub(crate) fn collapse(text: &str) -> String {
-    text.lines()
+    text.split('\n')
         .map(|line| {
             line.split([' ', '\t'])
                 .filter(|word| !word.is_empty())
@@ -105,12 +106,13 @@ mod tests {
         assert_eq!(collapse("  one\n\n\ntwo  "), "one\ntwo");
     }
 
-    /// Only `\n`, or the `\r\n` pair around it, breaks a line, and only spaces
-    /// and tabs collapse, so every other terminator and Unicode space is left
-    /// for the preview to show as what it is.
+    /// Only `\n` breaks a line, and only spaces and tabs collapse, so every
+    /// other terminator and Unicode space, a `\r` before a `\n` included, is
+    /// left for the preview to show as what it is.
     #[test]
     fn only_a_line_feed_breaks_a_line_and_only_spaces_and_tabs_collapse() {
-        assert_eq!(collapse("one\r\ntwo"), "one\ntwo");
+        assert_eq!(collapse("one\r\ntwo"), "one\r\ntwo");
+        assert_eq!(collapse("one\r\n\r\ntwo\r\n"), "one\r\n\r\ntwo\r");
         assert_eq!(collapse("one\t \ttwo"), "one two");
         for character in [
             '\r', '\u{b}', '\u{c}', '\u{85}', '\u{a0}', '\u{2028}', '\u{3000}',

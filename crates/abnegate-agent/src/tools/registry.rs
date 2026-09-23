@@ -248,6 +248,28 @@ mod tests {
         assert!(!preview.truncated);
     }
 
+    #[test]
+    fn a_shell_preview_shows_the_carriage_return_the_shell_reads_before_a_line_feed() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+
+        let preview = registry
+            .preview(
+                "run_shell",
+                &serde_json::json!({"command": "cd sandbox\r\nrm -rf ./*"}).to_string(),
+            )
+            .expect("a shell call previews the line it will run");
+
+        assert_eq!(
+            preview.text,
+            format!(
+                "Run `cd sandbox{}{LINE_BREAK}rm -rf ./*`.",
+                '\r'.escape_unicode()
+            )
+        );
+        assert!(!preview.truncated);
+    }
+
     /// The preview kept the first 400 characters of a command, so a call
     /// padded past them showed the reader the padding and hid the payload.
     #[test]
