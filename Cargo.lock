@@ -3,6 +3,23 @@
 version = 4
 
 [[package]]
+name = "abnegate-agent-cli"
+version = "0.1.0"
+dependencies = [
+ "abnegate-exec",
+ "abnegate-llm",
+ "abnegate-secret",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "abnegate-config"
 version = "0.1.0"
 dependencies = [
