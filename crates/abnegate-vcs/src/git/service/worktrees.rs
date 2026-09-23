@@ -84,8 +84,11 @@ impl GitService {
     ///
     /// Unlike [`Self::create_worktree`], which detaches, this creates or resets
     /// `branch` at `start_point`, so a later push from the worktree targets the
-    /// branch the caller named. A worktree already standing there is replaced
-    /// or refused as [`Self::create_worktree`] replaces or refuses one.
+    /// branch the caller named. The branch records no upstream, even when
+    /// `start_point` is a remote-tracking ref: git would write it into the
+    /// configuration every worktree of the clone shares. A worktree already
+    /// standing there is replaced or refused as [`Self::create_worktree`]
+    /// replaces or refuses one.
     pub async fn create_worktree_on_branch(
         &self,
         path: &Path,
@@ -115,7 +118,7 @@ impl GitService {
 
         let output = Self::output(
             Self::managed_local(path)
-                .args(["worktree", "add", "-B", branch.as_str(), "--"])
+                .args(["worktree", "add", "--no-track", "-B", branch.as_str(), "--"])
                 .arg(worktree_path)
                 .arg(start_point.as_str()),
         )
@@ -310,6 +313,7 @@ impl GitService {
 mod tests {
     use super::*;
     use crate::git::service::hardened::fixtures::branch;
+    use crate::git::service::hardened::fixtures::recording;
     use crate::worktree::fixtures::git;
     use crate::worktree::fixtures::remote;
     use tempfile::TempDir;
@@ -356,6 +360,56 @@ mod tests {
                 .await,
             Err(GitError::UnsafeWorktree(_))
         )
+    }
+
+    /// A branch a worktree is put on records no upstream, even when it
+    /// starts from a remote-tracking ref: git would write the upstream into
+    /// the configuration every worktree of the clone shares.
+    #[tokio::test]
+    async fn a_worktree_branch_started_from_a_remote_tracking_ref_records_no_upstream() {
+        let fixture = Fixture::new();
+        let clone = fixture.at("clone");
+        let service = GitService::new();
+        service
+            .ensure_repository(
+                &clone,
+                &format!("file://{}", fixture.repository.display()),
+                &branch("main"),
+            )
+            .await
+            .unwrap();
+        let worktree = fixture.at("clone-worktrees/one");
+
+        let (created, recorded) = recording(service.create_worktree_on_branch(
+            &clone,
+            &worktree,
+            &branch("task/one"),
+            &branch("origin/main"),
+        ))
+        .await;
+
+        created.unwrap();
+        assert!(
+            recorded.iter().any(|command| command.ends_with(
+                &[
+                    "worktree",
+                    "add",
+                    "--no-track",
+                    "-B",
+                    "task/one",
+                    "--",
+                    worktree.to_str().unwrap(),
+                    "origin/main",
+                ]
+                .map(String::from)
+            )),
+            "{recorded:?}"
+        );
+        assert_eq!(service.current_branch(&worktree).await.unwrap(), "task/one");
+        assert!(
+            !git(&clone, &["config", "--local", "--list"]).contains("branch.task/one."),
+            "the worktree's branch recorded an upstream"
+        );
     }
 
     #[tokio::test]

@@ -24,8 +24,10 @@ const STATUS: [&str; 5] = [
 const SWITCH: [&str; 3] = ["switch", "--quiet", "--no-guess"];
 
 /// A checkout onto a new branch that does not list the working tree's
-/// changes afterwards, for the reason [`SWITCH`] does not.
-const CREATE_BRANCH: [&str; 3] = ["checkout", "--quiet", "-b"];
+/// changes afterwards, for the reason [`SWITCH`] does not, and records no
+/// upstream for it: a branch started from a remote-tracking ref would
+/// otherwise have git write that ref into the repository's configuration.
+const CREATE_BRANCH: [&str; 4] = ["checkout", "--quiet", "--no-track", "-b"];
 
 impl GitService {
     /// Clone into an empty, caller-owned directory. Credentials live only in the
@@ -1066,6 +1068,7 @@ mod checkout_tests {
 mod publication_tests {
     use super::fixtures::branch;
     use super::fixtures::local;
+    use super::fixtures::recording;
     use super::fixtures::token;
     use super::*;
     use crate::worktree::fixtures::git;
@@ -1197,10 +1200,28 @@ mod publication_tests {
             .clone_repository(&local(&remote), &second, None)
             .await
             .unwrap();
-        service
-            .prepare_branch(&second, &branch("task/one"), true)
-            .await
-            .unwrap();
+        let (prepared, recorded) =
+            recording(service.prepare_branch(&second, &branch("task/one"), true)).await;
+        prepared.unwrap();
+        assert!(
+            recorded.iter().any(|command| command.ends_with(
+                &[
+                    "checkout",
+                    "--quiet",
+                    "--no-track",
+                    "-b",
+                    "task/one",
+                    "refs/remotes/origin/task/one",
+                    "--",
+                ]
+                .map(String::from)
+            )),
+            "{recorded:?}"
+        );
+        assert!(
+            !git(&second, &["config", "--local", "--list"]).contains("branch.task/one."),
+            "the resumed branch recorded an upstream"
+        );
         assert_eq!(
             service.revision(&second, "HEAD").await.unwrap(),
             first_commit
@@ -1581,7 +1602,7 @@ mod branch_tests {
 
     #[test]
     fn moving_between_branches_never_lists_the_working_tree_s_changes() {
-        for arguments in [SWITCH, CREATE_BRANCH] {
+        for arguments in [SWITCH.as_slice(), CREATE_BRANCH.as_slice()] {
             assert!(arguments.contains(&"--quiet"), "{arguments:?}");
         }
     }
