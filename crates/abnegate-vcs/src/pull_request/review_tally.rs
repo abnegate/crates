@@ -1,5 +1,6 @@
 use crate::pull_request::ReviewState;
 use crate::pull_request::SubmittedReview;
+use std::collections::HashMap;
 
 /// What the submitted reviews add up to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -14,7 +15,7 @@ pub struct ReviewTally {
 /// reviewer who later requests changes has withdrawn theirs.
 pub fn tally(reviews: &[SubmittedReview]) -> ReviewTally {
     let mut cycles = 0u32;
-    let mut latest: Vec<(String, ReviewState)> = Vec::new();
+    let mut latest: HashMap<&str, ReviewState> = HashMap::new();
     let mut unattributed = 0u32;
 
     for review in reviews {
@@ -30,10 +31,7 @@ pub fn tally(reviews: &[SubmittedReview]) -> ReviewTally {
 
         match reviewer {
             Some(name) if review.state.settles() => {
-                match latest.iter_mut().find(|(known, _)| known == name) {
-                    Some(entry) => entry.1 = review.state,
-                    None => latest.push((name.to_string(), review.state)),
-                }
+                latest.insert(name, review.state);
             }
             None if review.state == ReviewState::Approved => {
                 unattributed = unattributed.saturating_add(1);
@@ -43,8 +41,8 @@ pub fn tally(reviews: &[SubmittedReview]) -> ReviewTally {
     }
 
     let named = latest
-        .iter()
-        .filter(|(_, state)| *state == ReviewState::Approved)
+        .values()
+        .filter(|state| **state == ReviewState::Approved)
         .count();
 
     ReviewTally {

@@ -4,6 +4,7 @@
 /// which is a third answer rather than a missing one: a branch nobody has
 /// checked yet is not a branch known to conflict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Mergeability {
     Clean,
     Conflicted,

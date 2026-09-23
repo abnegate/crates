@@ -1,7 +1,10 @@
-/// Created PR result
+use crate::pull_request::PullRequestState;
+use std::num::NonZeroU64;
+
+/// A pull request that was just opened.
 #[derive(Debug, Clone)]
-pub struct CreatedPr {
+pub struct CreatedPullRequest {
     pub url: String,
-    pub number: i64,
-    pub state: String,
+    pub number: NonZeroU64,
+    pub state: PullRequestState,
 }

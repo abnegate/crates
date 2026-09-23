@@ -60,7 +60,7 @@ fn a_pull_request_is_titled_with_a_conventional_commit_subject() {
 #[cfg(feature = "github")]
 mod pull_requests {
     use abnegate_vcs::pull_request::Description;
-    use abnegate_vcs::pull_request::PrService;
+    use abnegate_vcs::pull_request::PullRequestService;
 
     fn task() -> uuid::Uuid {
         uuid::Uuid::parse_str("12345678-1234-1234-1234-123456789abc").unwrap()
@@ -68,7 +68,7 @@ mod pull_requests {
 
     #[test]
     fn a_repository_url_in_any_form_github_uses_yields_its_owner_and_name() {
-        let service = PrService::new();
+        let service = PullRequestService::new().unwrap();
 
         for url in [
             "https://github.com/acme-corp/my-project",
@@ -77,11 +77,9 @@ mod pull_requests {
             "git@github.com:acme-corp/my-project",
             "ssh://git@github.com/acme-corp/my-project.git",
         ] {
-            assert_eq!(
-                service.parse_github_url(url).expect(url),
-                ("acme-corp".to_string(), "my-project".to_string()),
-                "{url}"
-            );
+            let repository = service.parse_github_url(url).expect(url);
+            assert_eq!(repository.owner(), "acme-corp", "{url}");
+            assert_eq!(repository.name(), "my-project", "{url}");
         }
     }
 
@@ -90,7 +88,7 @@ mod pull_requests {
     /// service answers for.
     #[test]
     fn an_address_this_service_does_not_speak_is_not_a_repository() {
-        let service = PrService::new();
+        let service = PullRequestService::new().unwrap();
 
         for url in [
             "ftp://github.com/owner/repo",

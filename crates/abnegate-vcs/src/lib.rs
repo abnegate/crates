@@ -59,9 +59,10 @@ pub use crate::git::{DiffSummary, GitError, GitService, RemoteHead};
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::{
-    CreatedPr, Description, GitHubBranch, GitHubPullRequest, Mergeability, PrError, PrService,
-    PullRequestReception, PullRequestReference, ReviewState, ReviewTally, SubmittedReview,
-    minutes_between, tally,
+    CreatedPullRequest, Description, GitHubBranch, GitHubPullRequest, Mergeability,
+    PullRequestError, PullRequestReception, PullRequestReference, PullRequestService,
+    PullRequestState, Repository, ReviewState, ReviewTally, SubmittedReview, minutes_between,
+    tally,
 };
 pub use crate::resolution::{ConflictSide, ResolutionVerdict, judge};
 pub use crate::subject::{Kind, Subject};

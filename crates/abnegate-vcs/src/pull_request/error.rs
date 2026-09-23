@@ -1,28 +1,40 @@
+use crate::branch_name::BranchName;
+use crate::parse_error::ParseError;
 use thiserror::Error;
 
-/// PR service errors
+/// What went wrong opening or reading back a pull request.
 #[derive(Debug, Error)]
-pub enum PrError {
+#[non_exhaustive]
+pub enum PullRequestError {
     #[error("GitHub API error: {0}")]
     GitHubApi(String),
 
-    #[error("Repository not configured")]
-    NoRepository,
-
     #[error("Authentication failed")]
-    AuthFailed,
+    AuthenticationFailed,
 
-    #[error("Branch not found: {0}")]
-    BranchNotFound(String),
+    #[error("The token may not do this")]
+    Forbidden,
 
-    #[error("PR already exists for branch: {0}")]
-    PrAlreadyExists(String),
+    #[error("GitHub's rate limit was reached")]
+    RateLimited,
+
+    #[error("Not found, or not visible to this token")]
+    NotFound,
+
+    #[error("A pull request already exists for branch: {0}")]
+    PullRequestAlreadyExists(BranchName),
 
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
-    #[error("Invalid repository URL: {0}")]
-    InvalidRepoUrl(String),
+    #[error("Invalid repository URL")]
+    InvalidRepositoryUrl,
+
+    #[error("Invalid API origin: expected an HTTPS URL with no query, fragment or credentials")]
+    InvalidOrigin,
+
+    #[error(transparent)]
+    Parse(#[from] ParseError),
 }
 
-pub type PrResult<T> = Result<T, PrError>;
+pub type PullRequestResult<T> = Result<T, PullRequestError>;

@@ -1,5 +1,6 @@
 /// The verdict a reviewer submitted with a review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReviewState {
     Approved,
     ChangesRequested,

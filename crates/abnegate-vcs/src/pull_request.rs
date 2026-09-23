@@ -1,6 +1,6 @@
 //! Pull requests on GitHub, and how each one was received.
 //!
-//! [`PrService`] opens a pull request when a task completes with code changes,
+//! [`PullRequestService`] opens a pull request when a task completes with code changes,
 //! and reads back when it merged, how many rounds of review it took, who
 //! approved it, and what the reviewers actually said. It addresses GitHub's own
 //! API by default and a GitHub Enterprise origin when one is configured; either
@@ -20,23 +20,28 @@ mod mergeability;
 mod origin;
 mod reception;
 mod reference;
+mod repository;
+mod repository_detail;
 mod review_state;
 mod review_tally;
 mod service;
+mod state;
 mod submitted_review;
 
-pub use crate::pull_request::created::CreatedPr;
+pub use crate::pull_request::created::CreatedPullRequest;
 pub use crate::pull_request::description::Description;
-pub use crate::pull_request::error::PrError;
-pub use crate::pull_request::error::PrResult;
+pub use crate::pull_request::error::PullRequestError;
+pub use crate::pull_request::error::PullRequestResult;
 pub use crate::pull_request::github_branch::GitHubBranch;
 pub use crate::pull_request::github_pull_request::GitHubPullRequest;
 pub use crate::pull_request::mergeability::Mergeability;
 pub use crate::pull_request::reception::PullRequestReception;
 pub use crate::pull_request::reception::minutes_between;
 pub use crate::pull_request::reference::PullRequestReference;
+pub use crate::pull_request::repository::Repository;
 pub use crate::pull_request::review_state::ReviewState;
 pub use crate::pull_request::review_tally::ReviewTally;
 pub use crate::pull_request::review_tally::tally;
-pub use crate::pull_request::service::PrService;
+pub use crate::pull_request::service::PullRequestService;
+pub use crate::pull_request::state::PullRequestState;
 pub use crate::pull_request::submitted_review::SubmittedReview;

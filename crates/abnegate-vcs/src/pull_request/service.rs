@@ -1,28 +1,41 @@
-use crate::pull_request::CreatedPr;
+use crate::branch_name::BranchName;
+use crate::pull_request::CreatedPullRequest;
 use crate::pull_request::GitHubPullRequest;
 use crate::pull_request::Mergeability;
-use crate::pull_request::PrError;
-use crate::pull_request::PrResult;
+use crate::pull_request::PullRequestError;
 use crate::pull_request::PullRequestReception;
 use crate::pull_request::PullRequestReference;
+use crate::pull_request::PullRequestResult;
+use crate::pull_request::Repository;
 use crate::pull_request::ReviewState;
 use crate::pull_request::SubmittedReview;
-use crate::pull_request::create_request::CreatePrRequest;
+use crate::pull_request::create_request::CreateRequest;
 use crate::pull_request::github_comment::GitHubComment;
 use crate::pull_request::github_pull_request_detail::GitHubPullRequestDetail;
 use crate::pull_request::github_review::GitHubReview;
 use crate::pull_request::minutes_between;
 use crate::pull_request::origin::Origin;
 use crate::pull_request::origin::host_of;
+use crate::pull_request::repository_detail::RepositoryDetail;
 use crate::pull_request::tally;
+use abnegate_secret::SecretValue;
 use reqwest::Client;
-use serde::Deserialize;
+use reqwest::RequestBuilder;
+use reqwest::Response;
+use reqwest::StatusCode;
+use serde::de::DeserializeOwned;
+use std::num::NonZeroU64;
+use std::time::Duration;
+use url::Url;
 
 /// What this crate calls itself to the GitHub API.
 const USER_AGENT: &str = "abnegate-vcs";
 
 /// GitHub's own REST origin, which answers for repositories on `github.com`.
 const GITHUB_API_URL: &str = "https://api.github.com";
+
+/// The media type GitHub's REST API answers in.
+const ACCEPT: &str = "application/vnd.github+json";
 
 /// Rows GitHub returns per page; its maximum for these collections.
 const PAGE_SIZE: usize = 100;
@@ -32,61 +45,70 @@ const PAGE_SIZE: usize = 100;
 /// an unbounded walk would let one pathological change stall the sync.
 const MAXIMUM_PAGES: usize = 10;
 
-/// PR service for creating pull requests
-#[derive(Debug, Clone)]
-pub struct PrService {
-    client: Client,
-    origin: Origin,
-}
+/// Longest a request may take from sending to the last byte of its answer.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-impl Default for PrService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Longest a connection may take to open.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The header GitHub reports the requests left in the current window in.
+const RATE_LIMIT_REMAINING: &str = "x-ratelimit-remaining";
+
+/// What GitHub says when a pull request for the branch is already open.
+const ALREADY_EXISTS: &str = "A pull request already exists";
 
 /// Schemes a repository address may carry.
 ///
 /// The scp-like `git@host:owner/repo` has none and is read on its own terms.
 const SCHEMES: [&str; 2] = ["https", "ssh"];
 
-fn named(segment: &str) -> bool {
-    !segment.is_empty()
-        && segment != "."
-        && segment != ".."
-        && segment.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
-        })
+/// The only scheme a recorded pull request link may use.
+const HTTPS: &str = "https";
+
+/// The path segment between a repository and a pull request's number.
+const PULL: &str = "pull";
+
+/// The suffix git's own URLs carry on a repository name.
+const GIT_SUFFIX: &str = ".git";
+
+/// Opens pull requests on GitHub or a GitHub Enterprise install, and reads
+/// back how each one was received.
+#[derive(Debug, Clone)]
+pub struct PullRequestService {
+    client: Client,
+    origin: Origin,
 }
 
-impl PrService {
+impl PullRequestService {
     /// Address GitHub's own API.
-    pub fn new() -> Self {
-        Self::configured(GITHUB_API_URL.to_string())
+    pub fn new() -> PullRequestResult<Self> {
+        Self::configured(GITHUB_API_URL)
     }
 
     /// Address the origin an operator configured, for the repositories it
-    /// answers for.
-    pub fn configured(url: String) -> Self {
-        Self {
-            client: Client::new(),
-            origin: Origin::configured(url),
-        }
+    /// answers for: an HTTPS URL, with or without a trailing slash.
+    pub fn configured(url: &str) -> PullRequestResult<Self> {
+        Ok(Self {
+            client: client(true, REQUEST_TIMEOUT)?,
+            origin: Origin::configured(url)?,
+        })
     }
 
-    /// Address `url` as a stand-in for repositories on `host`.
+    /// Address `url` as a stand-in for repositories on `host`, over whatever
+    /// scheme it names.
     ///
     /// No operator setting produces one: a configured origin has to answer for
-    /// a host it can be reached at. Publication tests use this to drive the
+    /// a host it can be reached at over HTTPS. Tests use this to drive the
     /// real request path against a mock server.
-    pub fn standing_in_for(host: &str, url: String) -> Self {
-        Self {
-            client: Client::new(),
-            origin: Origin::standing_in_for(host, url),
-        }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn standing_in_for(host: &str, url: &str) -> PullRequestResult<Self> {
+        Ok(Self {
+            client: client(false, REQUEST_TIMEOUT)?,
+            origin: Origin::standing_in_for(host, url)?,
+        })
     }
 
-    /// Parse owner and repo from a repository URL.
+    /// Parse the repository a URL names.
     ///
     /// The host has to be the one this service's origin answers for, so that a
     /// GitHub Enterprise install parses its own repositories and nothing else.
@@ -105,12 +127,10 @@ impl PrService {
     /// A scheme this does not speak is refused rather than discarded: reading
     /// the owner and repo out of an `ftp://` or `http://` address treats it as
     /// a repository this service publishes to, which is not what it is.
-    pub fn parse_github_url(&self, url: &str) -> PrResult<(String, String)> {
-        let invalid = || PrError::InvalidRepoUrl(url.to_string());
+    pub fn parse_github_url(&self, url: &str) -> PullRequestResult<Repository> {
+        let invalid = || PullRequestError::InvalidRepositoryUrl;
         let url = url.trim();
 
-        // `git@host:owner/repo` is not a URL, so it is split on the colon
-        // rather than parsed. The scp-like form has no scheme to strip.
         let (authority, path) = if let Some((scheme, rest)) = url.split_once("://") {
             if !SCHEMES
                 .iter()
@@ -129,18 +149,16 @@ impl PrService {
             return Err(invalid());
         }
 
-        let path = path.trim_matches('/').trim_end_matches(".git");
+        let path = path.trim_matches('/');
+        let path = path.strip_suffix(GIT_SUFFIX).unwrap_or(path);
         let mut segments = path.split('/').filter(|segment| !segment.is_empty());
         let owner = segments.next().ok_or_else(invalid)?;
-        let repository = segments.next().ok_or_else(invalid)?;
-        // The pair is interpolated into `{base}/repos/{owner}/{repo}/...`, so a
-        // third segment or a traversal component would reach a different
-        // endpoint than the caller asked for.
-        if segments.next().is_some() || !named(owner) || !named(repository) {
+        let name = segments.next().ok_or_else(invalid)?;
+        if segments.next().is_some() {
             return Err(invalid());
         }
 
-        Ok((owner.to_string(), repository.to_string()))
+        Repository::new(owner, name).ok_or_else(invalid)
     }
 
     /// Recover where a pull request lives from the URL a run recorded.
@@ -151,216 +169,146 @@ impl PrService {
     /// request is read back from `{origin}/repos/{owner}/{repo}/pulls/{number}`
     /// -- a recorded github.com link would otherwise be read from, and
     /// authenticated against, whichever install happened to be configured.
-    pub fn pull_request(&self, url: &str) -> PrResult<PullRequestReference> {
-        let invalid = || PrError::InvalidRepoUrl(url.to_string());
-        let (scheme, rest) = url.trim().split_once("://").ok_or_else(invalid)?;
-        let (authority, path) = rest.split_once('/').ok_or_else(invalid)?;
-
-        if !matches!(scheme, "http" | "https") || !self.origin.answers_for(host_of(authority)) {
+    pub fn pull_request(&self, url: &str) -> PullRequestResult<PullRequestReference> {
+        let invalid = || PullRequestError::InvalidRepositoryUrl;
+        let url = Url::parse(url.trim()).map_err(|_| invalid())?;
+        if url.scheme() != HTTPS
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || !url
+                .host_str()
+                .is_some_and(|host| self.origin.answers_for(host))
+        {
             return Err(invalid());
         }
 
-        let mut segments = path.split('/');
+        let mut segments = url.path_segments().ok_or_else(invalid)?;
         let owner = segments.next().unwrap_or_default();
-        let repository = segments.next().unwrap_or_default().trim_end_matches(".git");
+        let name = segments.next().unwrap_or_default();
+        let name = name.strip_suffix(GIT_SUFFIX).unwrap_or(name);
         let marker = segments.next().unwrap_or_default();
-        let number: i64 = segments
+        let number: NonZeroU64 = segments
             .next()
             .unwrap_or_default()
             .parse()
             .map_err(|_| invalid())?;
-
-        if marker != "pull" || number < 1 || !named(owner) || !named(repository) {
+        if marker != PULL {
             return Err(invalid());
         }
 
-        Ok(PullRequestReference {
-            owner: owner.to_string(),
-            repository: repository.to_string(),
+        Ok(PullRequestReference::new(
+            Repository::new(owner, name).ok_or_else(invalid)?,
             number,
-        })
+        ))
     }
 
-    /// Create a pull request on GitHub
-    pub async fn create_pr(
+    /// Open a pull request from `head` into `base`.
+    pub async fn create_pull_request(
         &self,
-        owner: &str,
-        repo: &str,
-        token: &str,
-        head_branch: &str,
-        base_branch: &str,
+        repository: &Repository,
+        token: &SecretValue,
+        head: &BranchName,
+        base: &BranchName,
         title: &str,
         body: &str,
         draft: bool,
-    ) -> PrResult<CreatedPr> {
-        let url = format!("{}/repos/{}/{}/pulls", self.origin.url, owner, repo);
-
-        let request = CreatePrRequest {
-            title: title.to_string(),
-            body: body.to_string(),
-            head: head_branch.to_string(),
-            base: base_branch.to_string(),
+    ) -> PullRequestResult<CreatedPullRequest> {
+        let url = self
+            .origin
+            .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        let request = CreateRequest {
+            title,
+            body,
+            head: head.as_str(),
+            base: base.as_str(),
             draft,
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", USER_AGENT)
+        let response = authorised(self.client.post(url), token)
             .json(&request)
             .send()
             .await?;
 
         let status = response.status();
-
         if status.is_success() {
-            let pr: GitHubPullRequest = response.json().await?;
-            return Ok(CreatedPr {
-                url: pr.html_url,
-                number: pr.number,
-                state: pr.state,
+            let created: GitHubPullRequest = response.json().await?;
+            return Ok(CreatedPullRequest {
+                url: created.html_url,
+                number: created.number,
+                state: created.state,
             });
         }
 
-        // Handle error responses
-        let error_text = response.text().await.unwrap_or_default();
-
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(PrError::AuthFailed);
+        let failure = refusal(response).await;
+        match failure {
+            PullRequestError::GitHubApi(ref text)
+                if status == StatusCode::UNPROCESSABLE_ENTITY && text.contains(ALREADY_EXISTS) =>
+            {
+                Err(PullRequestError::PullRequestAlreadyExists(head.clone()))
+            }
+            failure => Err(failure),
         }
-
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(PrError::BranchNotFound(head_branch.to_string()));
-        }
-
-        if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY
-            && error_text.contains("A pull request already exists")
-        {
-            return Err(PrError::PrAlreadyExists(head_branch.to_string()));
-        }
-
-        Err(PrError::GitHubApi(format!(
-            "GitHub API returned {}: {}",
-            status, error_text
-        )))
     }
 
-    /// Get the default branch for a repository
+    /// The repository's default branch.
     pub async fn get_default_branch(
         &self,
-        owner: &str,
-        repo: &str,
-        token: &str,
-    ) -> PrResult<String> {
-        let url = format!("{}/repos/{}/{}", self.origin.url, owner, repo);
-
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", USER_AGENT)
-            .send()
+        repository: &Repository,
+        token: &SecretValue,
+    ) -> PullRequestResult<BranchName> {
+        let detail: RepositoryDetail = self
+            .get(
+                self.origin
+                    .endpoint(&["repos", repository.owner(), repository.name()]),
+                token,
+            )
             .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(PrError::GitHubApi(format!(
-                "Failed to get repo info: {} {}",
-                status, error_text
-            )));
-        }
-
-        #[derive(Deserialize)]
-        struct RepoInfo {
-            default_branch: String,
-        }
-
-        let repo_info: RepoInfo = response.json().await?;
-        Ok(repo_info.default_branch)
+        Ok(BranchName::parse(&detail.default_branch)?)
     }
 
-    /// Check if a PR already exists for a branch
-    pub async fn pr_exists_for_branch(
+    /// The URL of the open pull request from `head`, if there is one.
+    pub async fn pull_request_exists_for_branch(
         &self,
-        owner: &str,
-        repo: &str,
-        token: &str,
-        head_branch: &str,
-    ) -> PrResult<Option<String>> {
-        let url = format!(
-            "{}/repos/{}/{}/pulls?head={}:{}&state=open",
-            self.origin.url, owner, repo, owner, head_branch
-        );
+        repository: &Repository,
+        token: &SecretValue,
+        head: &BranchName,
+    ) -> PullRequestResult<Option<String>> {
+        let mut url =
+            self.origin
+                .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        url.query_pairs_mut()
+            .append_pair("head", &format!("{}:{head}", repository.owner()))
+            .append_pair("state", "open");
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", USER_AGENT)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(PrError::GitHubApi(format!(
-                "Failed to check PRs: {} {}",
-                status, error_text
-            )));
-        }
-
-        let prs: Vec<GitHubPullRequest> = response.json().await?;
-
-        if let Some(pr) = prs.first() {
-            Ok(Some(pr.html_url.clone()))
-        } else {
-            Ok(None)
-        }
+        let open: Vec<GitHubPullRequest> = self.get(url, token).await?;
+        Ok(open.into_iter().next().map(|found| found.html_url))
     }
 
-    async fn get<T: serde::de::DeserializeOwned>(&self, url: &str, token: &str) -> PrResult<T> {
-        let response = self
-            .client
-            .get(url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", USER_AGENT)
-            .send()
-            .await?;
-
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(PrError::AuthFailed);
+    async fn get<T: DeserializeOwned>(
+        &self,
+        url: Url,
+        token: &SecretValue,
+    ) -> PullRequestResult<T> {
+        let response = authorised(self.client.get(url), token).send().await?;
+        if !response.status().is_success() {
+            return Err(refusal(response).await);
         }
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(PrError::GitHubApi(format!(
-                "GitHub API returned {}: {}",
-                status, error_text
-            )));
-        }
-
         Ok(response.json().await?)
     }
 
-    async fn get_all<T: serde::de::DeserializeOwned>(
+    async fn get_all<T: DeserializeOwned>(
         &self,
-        path: &str,
-        token: &str,
-    ) -> PrResult<Vec<T>> {
+        segments: &[&str],
+        token: &SecretValue,
+    ) -> PullRequestResult<Vec<T>> {
         let mut collected: Vec<T> = Vec::new();
 
         for page in 1..=MAXIMUM_PAGES {
-            let url = format!(
-                "{}/{}?per_page={}&page={}",
-                self.origin.url, path, PAGE_SIZE, page
-            );
-            let batch: Vec<T> = self.get(&url, token).await?;
+            let mut url = self.origin.endpoint(segments);
+            url.query_pairs_mut()
+                .append_pair("per_page", &PAGE_SIZE.to_string())
+                .append_pair("page", &page.to_string());
+            let batch: Vec<T> = self.get(url, token).await?;
             let complete = batch.len() < PAGE_SIZE;
             collected.extend(batch);
             if complete {
@@ -378,14 +326,19 @@ impl PrService {
     pub async fn fetch_mergeability(
         &self,
         reference: &PullRequestReference,
-        token: &str,
-    ) -> PrResult<Mergeability> {
+        token: &SecretValue,
+    ) -> PullRequestResult<Mergeability> {
+        let number = reference.number().to_string();
+        let repository = reference.repository();
         let detail: GitHubPullRequestDetail = self
             .get(
-                &format!(
-                    "{}/repos/{}/{}/pulls/{}",
-                    self.origin.url, reference.owner, reference.repository, reference.number
-                ),
+                self.origin.endpoint(&[
+                    "repos",
+                    repository.owner(),
+                    repository.name(),
+                    "pulls",
+                    &number,
+                ]),
                 token,
             )
             .await?;
@@ -403,29 +356,24 @@ impl PrService {
     pub async fn fetch_reception(
         &self,
         reference: &PullRequestReference,
-        token: &str,
-    ) -> PrResult<PullRequestReception> {
-        let scope = format!("repos/{}/{}", reference.owner, reference.repository);
+        token: &SecretValue,
+    ) -> PullRequestResult<PullRequestReception> {
+        let number = reference.number().to_string();
+        let repository = reference.repository();
+        let pull = [
+            "repos",
+            repository.owner(),
+            repository.name(),
+            "pulls",
+            &number,
+        ];
 
-        let detail: GitHubPullRequestDetail = self
-            .get(
-                &format!("{}/{}/pulls/{}", self.origin.url, scope, reference.number),
-                token,
-            )
-            .await?;
-
+        let detail: GitHubPullRequestDetail = self.get(self.origin.endpoint(&pull), token).await?;
         let reviews: Vec<GitHubReview> = self
-            .get_all(
-                &format!("{}/pulls/{}/reviews", scope, reference.number),
-                token,
-            )
+            .get_all(&[&pull[..], &["reviews"]].concat(), token)
             .await?;
-
         let inline: Vec<GitHubComment> = self
-            .get_all(
-                &format!("{}/pulls/{}/comments", scope, reference.number),
-                token,
-            )
+            .get_all(&[&pull[..], &["comments"]].concat(), token)
             .await?;
 
         let submitted: Vec<SubmittedReview> = reviews
@@ -458,31 +406,125 @@ impl PrService {
             minutes_to_merge,
             review_cycles: tallied.cycles,
             approvals: tallied.approvals,
-            state: detail.state.filter(|value| !value.is_empty()),
+            state: detail.state,
             comments,
         })
+    }
+}
+
+/// A client that gives up on a request that stalls, and that refuses
+/// anything but HTTPS unless it is standing in for a test's mock server.
+fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
+    Ok(Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(timeout)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .https_only(https_only)
+        .build()?)
+}
+
+fn authorised(request: RequestBuilder, token: &SecretValue) -> RequestBuilder {
+    request
+        .header("Authorization", format!("Bearer {}", token.expose()))
+        .header("Accept", ACCEPT)
+}
+
+/// What an unsuccessful answer means: a token GitHub did not accept, one it
+/// accepted but will not let do this, a rate limit, a repository or pull
+/// request the token cannot see, or anything else in GitHub's own words.
+async fn refusal(response: Response) -> PullRequestError {
+    let status = response.status();
+    let exhausted = response
+        .headers()
+        .get(RATE_LIMIT_REMAINING)
+        .is_some_and(|remaining| remaining.as_bytes() == b"0");
+    match status {
+        StatusCode::UNAUTHORIZED => PullRequestError::AuthenticationFailed,
+        StatusCode::TOO_MANY_REQUESTS => PullRequestError::RateLimited,
+        StatusCode::FORBIDDEN if exhausted => PullRequestError::RateLimited,
+        StatusCode::FORBIDDEN => PullRequestError::Forbidden,
+        StatusCode::NOT_FOUND => PullRequestError::NotFound,
+        _ => {
+            let text = response.text().await.unwrap_or_default();
+            PullRequestError::GitHubApi(format!("GitHub API returned {status}: {text}"))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::PullRequestState;
+    use crate::pull_request::ReviewTally;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_partial_json;
+    use wiremock::matchers::header;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    use wiremock::matchers::query_param;
+
+    fn github() -> PullRequestService {
+        PullRequestService::new().unwrap()
+    }
+
+    fn enterprise() -> PullRequestService {
+        PullRequestService::configured("https://github.example.com/api/v3").unwrap()
+    }
+
+    fn token() -> SecretValue {
+        SecretValue::new("token")
+    }
+
+    fn pair(repository: Repository) -> (String, String) {
+        (
+            repository.owner().to_string(),
+            repository.name().to_string(),
+        )
+    }
+
+    fn acme() -> (String, String) {
+        ("acme".to_string(), "project".to_string())
+    }
+
+    async fn stand_in(server: &MockServer) -> PullRequestService {
+        PullRequestService::standing_in_for("github.com", &server.uri()).unwrap()
+    }
+
+    fn seven(service: &PullRequestService) -> PullRequestReference {
+        service
+            .pull_request("https://github.com/acme/project/pull/7")
+            .unwrap()
+    }
 
     #[test]
-    fn test_parse_github_https_url() {
-        let service = PrService::new();
-        let (owner, repo) = service
-            .parse_github_url("https://github.com/acme/project")
-            .unwrap();
-        assert_eq!(owner, "acme");
-        assert_eq!(repo, "project");
+    fn a_github_repository_url_in_every_form_names_its_owner_and_repository() {
+        for url in [
+            "https://github.com/acme/project",
+            "https://github.com/acme/project.git",
+            "git@github.com:acme/project.git",
+            "ssh://git@github.com/acme/project.git",
+        ] {
+            assert_eq!(
+                pair(github().parse_github_url(url).expect(url)),
+                acme(),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            github()
+                .parse_github_url("https://github.com/acme/project")
+                .unwrap()
+                .to_string(),
+            "acme/project"
+        );
     }
 
     /// Matching `https://github.com/` meant an Enterprise repository was
     /// refused as invalid, so `GITHUB_API_URL` alone could not reach one.
     #[test]
     fn an_enterprise_repository_parses_like_a_github_one() {
-        let service = PrService::configured("https://github.example.com/api/v3".to_string());
         for url in [
             "https://github.example.com/acme/project",
             "https://github.example.com/acme/project.git",
@@ -491,8 +533,8 @@ mod tests {
             "  https://github.example.com/acme/project/  ",
         ] {
             assert_eq!(
-                service.parse_github_url(url).expect(url),
-                ("acme".to_string(), "project".to_string()),
+                pair(enterprise().parse_github_url(url).expect(url)),
+                acme(),
                 "{url}"
             );
         }
@@ -506,12 +548,16 @@ mod tests {
         for origin in [
             "https://api.github.example.com",
             "https://github.example.com/api/v3",
+            "https://github.example.com/api/v3/",
         ] {
             assert_eq!(
-                PrService::configured(origin.to_string())
-                    .parse_github_url("https://github.example.com/acme/project")
-                    .expect(origin),
-                ("acme".to_string(), "project".to_string()),
+                pair(
+                    PullRequestService::configured(origin)
+                        .unwrap()
+                        .parse_github_url("https://github.example.com/acme/project")
+                        .expect(origin)
+                ),
+                acme(),
                 "{origin}"
             );
         }
@@ -523,7 +569,6 @@ mod tests {
     /// its access token -- sent to the Enterprise install instead.
     #[test]
     fn a_github_repository_has_no_origin_while_enterprise_is_configured() {
-        let enterprise = PrService::configured("https://github.example.com/api/v3".to_string());
         for url in [
             "https://github.com/acme/project",
             "https://github.com/acme/project.git",
@@ -531,12 +576,12 @@ mod tests {
             "https://github.com/acme/project/pull/7",
         ] {
             assert!(
-                enterprise.parse_github_url(url).is_err(),
+                enterprise().parse_github_url(url).is_err(),
                 "{url} must not be addressed at an origin that does not answer for github.com"
             );
         }
         assert!(
-            enterprise
+            enterprise()
                 .pull_request("https://github.com/acme/project/pull/7")
                 .is_err(),
             "a recorded github.com pull request must not be read from the Enterprise origin"
@@ -548,22 +593,18 @@ mod tests {
     #[test]
     fn githubs_own_origin_answers_for_github_repositories() {
         for service in [
-            PrService::new(),
-            PrService::configured(GITHUB_API_URL.to_string()),
+            github(),
+            PullRequestService::configured(GITHUB_API_URL).unwrap(),
         ] {
             assert_eq!(
-                service
-                    .parse_github_url("https://github.com/acme/project")
-                    .expect("github.com is what api.github.com answers for"),
-                ("acme".to_string(), "project".to_string())
+                pair(
+                    service
+                        .parse_github_url("https://github.com/acme/project")
+                        .expect("github.com is what api.github.com answers for")
+                ),
+                acme()
             );
-            assert_eq!(
-                service
-                    .pull_request("https://github.com/acme/project/pull/7")
-                    .expect("a github.com pull request is read from api.github.com")
-                    .number,
-                7
-            );
+            assert_eq!(seven(&service).number().get(), 7);
         }
     }
 
@@ -572,7 +613,6 @@ mod tests {
     /// its path happens to look like.
     #[test]
     fn a_repository_on_another_host_is_refused() {
-        let service = PrService::new();
         for url in [
             "https://gitlab.com/acme/project",
             "https://bitbucket.org/acme/project.git",
@@ -582,29 +622,25 @@ mod tests {
             "https://github.example.com/acme/project",
         ] {
             assert!(
-                service.parse_github_url(url).is_err(),
+                github().parse_github_url(url).is_err(),
                 "{url} was accepted for api.github.com"
             );
         }
-
-        let enterprise = PrService::configured("https://github.example.com/api/v3".to_string());
         for url in [
             "https://gitlab.com/acme/project",
             "https://github.example.com.attacker.test/acme/project",
         ] {
             assert!(
-                enterprise.parse_github_url(url).is_err(),
+                enterprise().parse_github_url(url).is_err(),
                 "a configured enterprise origin does not admit {url}"
             );
         }
     }
 
     /// The pair is interpolated into `{base}/repos/{owner}/{repo}/pulls`, so
-    /// anything that could reach a different endpoint has to be refused. The
-    /// old parser split into two and kept every remaining slash in `repo`.
+    /// anything that could reach a different endpoint has to be refused.
     #[test]
     fn a_path_that_could_reach_another_endpoint_is_refused() {
-        let service = PrService::new();
         for url in [
             "https://github.com/acme/project/extra",
             "https://github.com/acme/../admin",
@@ -612,86 +648,329 @@ mod tests {
             "https://github.com/acme",
             "https://github.com/",
             "https://github.com/acme/pro ject",
-            "not-a-url",
+            "https://github.com/acme/.git",
+            "not-a-github-url",
             "",
         ] {
             assert!(
-                service.parse_github_url(url).is_err(),
+                github().parse_github_url(url).is_err(),
                 "{url:?} must be refused"
             );
         }
     }
 
     #[test]
-    fn test_parse_github_https_url_with_git() {
-        let service = PrService::new();
-        let (owner, repo) = service
-            .parse_github_url("https://github.com/acme/project.git")
-            .unwrap();
-        assert_eq!(owner, "acme");
-        assert_eq!(repo, "project");
-    }
-
-    #[test]
-    fn test_parse_github_ssh_url() {
-        let service = PrService::new();
-        let (owner, repo) = service
-            .parse_github_url("git@github.com:acme/project.git")
-            .unwrap();
-        assert_eq!(owner, "acme");
-        assert_eq!(repo, "project");
-    }
-
-    #[test]
-    fn test_parse_invalid_url() {
-        let service = PrService::new();
-        let result = service.parse_github_url("not-a-github-url");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn a_pull_request_url_yields_its_owner_repository_and_number() {
-        let reference = PrService::new()
+    fn a_pull_request_url_yields_its_repository_and_number() {
+        let reference = github()
             .pull_request("https://github.com/acme/project/pull/42")
             .expect("a plain pull request URL must parse");
-        assert_eq!(reference.owner, "acme");
-        assert_eq!(reference.repository, "project");
-        assert_eq!(reference.number, 42);
-    }
+        assert_eq!(pair(reference.repository().clone()), acme());
+        assert_eq!(reference.number().get(), 42);
 
-    #[test]
-    fn a_pull_request_url_parses_past_a_trailing_tab_segment() {
-        let reference = PrService::new()
+        let trailing = github()
             .pull_request("https://github.com/acme/project/pull/42/files")
             .unwrap();
-        assert_eq!(reference.number, 42);
+        assert_eq!(trailing, reference);
     }
 
     #[test]
     fn a_url_that_is_not_a_pull_request_is_refused() {
-        let service = PrService::new();
         for url in [
             "https://github.com/acme/project",
             "https://github.com/acme/project/issues/42",
             "https://github.com/acme/project/pull/zero",
             "https://github.com/acme/project/pull/0",
+            "https://github.com/acme/project/pull/-1",
             "https://github.com/../project/pull/42",
+            "http://github.com/acme/project/pull/42",
+            "https://token@github.com/acme/project/pull/42",
             "https://example.test/acme/project/pull/42",
             "git@github.com:acme/project/pull/42",
             "",
         ] {
             assert!(
-                service.pull_request(url).is_err(),
+                github().pull_request(url).is_err(),
                 "{url} is not a pull request and must not parse as one"
             );
         }
     }
 
+    #[test]
+    fn an_origin_that_is_not_https_is_refused() {
+        for origin in [
+            "http://api.github.com",
+            "api.github.com",
+            "https://api.github.com/?x=1",
+        ] {
+            assert!(
+                matches!(
+                    PullRequestService::configured(origin),
+                    Err(PullRequestError::InvalidOrigin)
+                ),
+                "{origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pull_request_state_github_has_not_named_yet_is_unknown() {
+        for (state, expected) in [
+            ("\"open\"", PullRequestState::Open),
+            ("\"closed\"", PullRequestState::Closed),
+            ("\"merged-somehow\"", PullRequestState::Unknown),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<PullRequestState>(state).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn a_pull_request_numbered_zero_is_not_one() {
+        let pull = |number: u64| {
+            serde_json::json!({
+                "id": 1,
+                "number": number,
+                "html_url": "https://github.com/acme/project/pull/1",
+                "state": "open",
+                "title": "title",
+                "body": null,
+                "head": { "ref": "feature", "sha": "a" },
+                "base": { "ref": "main", "sha": "b" },
+            })
+        };
+
+        assert!(serde_json::from_value::<GitHubPullRequest>(pull(0)).is_err());
+        let parsed: GitHubPullRequest = serde_json::from_value(pull(1)).unwrap();
+        assert_eq!(parsed.head.reference, "feature");
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_is_opened_on_the_repository_it_was_parsed_from() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/project/pulls"))
+            .and(header("authorization", "Bearer token"))
+            .and(body_partial_json(serde_json::json!({
+                "head": "feature/one",
+                "base": "main",
+                "draft": true,
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 9,
+                "number": 12,
+                "html_url": "https://github.com/acme/project/pull/12",
+                "state": "open",
+                "title": "(fix): title",
+                "body": "body",
+                "head": { "ref": "feature/one", "sha": "a" },
+                "base": { "ref": "main", "sha": "b" },
+            })))
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+        let repository = service
+            .parse_github_url("https://github.com/acme/project")
+            .unwrap();
+
+        let created = service
+            .create_pull_request(
+                &repository,
+                &token(),
+                &BranchName::parse("feature/one").unwrap(),
+                &BranchName::parse("main").unwrap(),
+                "(fix): title",
+                "body",
+                true,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(created.number.get(), 12);
+        assert_eq!(created.state, PullRequestState::Open);
+        assert_eq!(created.url, "https://github.com/acme/project/pull/12");
+    }
+
+    #[tokio::test]
+    async fn an_open_pull_request_is_found_by_a_head_branch_sent_as_one_query_value() {
+        let head = "fix/a+b#1&state=closed";
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/pulls"))
+            .and(query_param("head", format!("acme:{head}")))
+            .and(query_param("state", "open"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": 9,
+                    "number": 12,
+                    "html_url": "https://github.com/acme/project/pull/12",
+                    "state": "open",
+                    "title": "title",
+                    "body": null,
+                    "head": { "ref": head, "sha": "a" },
+                    "base": { "ref": "main", "sha": "b" },
+                }])),
+            )
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+        let repository = service
+            .parse_github_url("https://github.com/acme/project")
+            .unwrap();
+
+        let found = service
+            .pull_request_exists_for_branch(
+                &repository,
+                &token(),
+                &BranchName::parse(head).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            found.as_deref(),
+            Some("https://github.com/acme/project/pull/12")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_branch_is_read_as_a_branch_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "default_branch": "trunk" })),
+            )
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+        let repository = service
+            .parse_github_url("https://github.com/acme/project")
+            .unwrap();
+
+        assert_eq!(
+            service
+                .get_default_branch(&repository, &token())
+                .await
+                .unwrap()
+                .as_str(),
+            "trunk"
+        );
+    }
+
+    /// A 403 is a token GitHub accepted but will not let do this, or a spent
+    /// rate limit; a 404 is something the token cannot see. Neither is a
+    /// token GitHub refused, and a 404 on opening is not a missing branch.
+    #[tokio::test]
+    async fn every_refusal_is_reported_as_what_it_is() {
+        for (response, expected) in [
+            (ResponseTemplate::new(401), "AuthenticationFailed"),
+            (ResponseTemplate::new(403), "Forbidden"),
+            (
+                ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
+                "RateLimited",
+            ),
+            (ResponseTemplate::new(429), "RateLimited"),
+            (ResponseTemplate::new(404), "NotFound"),
+            (
+                ResponseTemplate::new(422).set_body_string(
+                    "{\"message\":\"A pull request already exists for acme:feature.\"}",
+                ),
+                "PullRequestAlreadyExists",
+            ),
+            (ResponseTemplate::new(500), "GitHubApi"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/repos/acme/project/pulls"))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+            let repository = service
+                .parse_github_url("https://github.com/acme/project")
+                .unwrap();
+
+            let failure = service
+                .create_pull_request(
+                    &repository,
+                    &token(),
+                    &BranchName::parse("feature").unwrap(),
+                    &BranchName::parse("main").unwrap(),
+                    "title",
+                    "body",
+                    false,
+                )
+                .await
+                .unwrap_err();
+
+            assert!(
+                format!("{failure:?}").starts_with(expected),
+                "{expected}: {failure:?}"
+            );
+        }
+    }
+
+    /// A trailing slash on the configured origin used to open an empty path
+    /// segment, so every request went to `//repos/...`.
+    #[tokio::test]
+    async fn an_origin_with_a_trailing_slash_addresses_the_same_endpoints() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/repos/acme/project/pulls/7"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "mergeable": true })),
+            )
+            .mount(&server)
+            .await;
+        let service =
+            PullRequestService::standing_in_for("github.com", &format!("{}/api/v3/", server.uri()))
+                .unwrap();
+
+        assert_eq!(
+            service
+                .fetch_mergeability(&seven(&service), &token())
+                .await
+                .unwrap(),
+            Mergeability::Clean
+        );
+    }
+
+    /// A server that accepts the connection and never answers is given up on
+    /// rather than waited for, by the same client every service is built with.
+    #[tokio::test]
+    async fn a_request_that_stalls_is_given_up_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "mergeable": true }))
+                    .set_delay(Duration::from_secs(10)),
+            )
+            .mount(&server)
+            .await;
+        let service = PullRequestService {
+            client: client(false, Duration::from_millis(200)).unwrap(),
+            origin: Origin::standing_in_for("github.com", &server.uri()).unwrap(),
+        };
+        let started = std::time::Instant::now();
+
+        let failure = service
+            .fetch_mergeability(&seven(&service), &token())
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::Http(ref error) if error.is_timeout()),
+            "{failure:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     #[tokio::test]
     async fn reception_reads_the_merge_time_cycles_approvals_and_comments() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -706,6 +985,8 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/repos/acme/project/pulls/7/reviews"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 { "state": "CHANGES_REQUESTED", "body": "needs a regression test", "user": { "login": "ada" } },
                 { "state": "APPROVED", "body": "", "user": { "login": "ada" } },
@@ -723,16 +1004,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let service = PrService::standing_in_for("github.com", server.uri());
+        let service = stand_in(&server).await;
         let reception = service
-            .fetch_reception(
-                &PullRequestReference {
-                    owner: "acme".to_string(),
-                    repository: "project".to_string(),
-                    number: 7,
-                },
-                "token",
-            )
+            .fetch_reception(&seven(&service), &token())
             .await
             .expect("a reachable pull request must yield its reception");
 
@@ -741,6 +1015,7 @@ mod tests {
         assert_eq!(reception.minutes_to_merge, Some(60));
         assert_eq!(reception.review_cycles, 1);
         assert_eq!(reception.approvals, 2);
+        assert_eq!(reception.state, Some(PullRequestState::Closed));
         assert_eq!(
             reception.comments,
             vec!["needs a regression test", "rename this variable"],
@@ -750,9 +1025,6 @@ mod tests {
 
     #[tokio::test]
     async fn an_unmerged_pull_request_reports_no_merge_time() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -765,41 +1037,33 @@ mod tests {
             .mount(&server)
             .await;
 
-        Mock::given(method("GET"))
-            .and(path("/repos/acme/project/pulls/7/reviews"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(&server)
-            .await;
+        for collection in ["reviews", "comments"] {
+            Mock::given(method("GET"))
+                .and(path(format!("/repos/acme/project/pulls/7/{collection}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+                .mount(&server)
+                .await;
+        }
 
-        Mock::given(method("GET"))
-            .and(path("/repos/acme/project/pulls/7/comments"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(&server)
-            .await;
-
-        let reception = PrService::standing_in_for("github.com", server.uri())
-            .fetch_reception(
-                &PullRequestReference {
-                    owner: "acme".to_string(),
-                    repository: "project".to_string(),
-                    number: 7,
-                },
-                "token",
-            )
+        let service = stand_in(&server).await;
+        let reception = service
+            .fetch_reception(&seven(&service), &token())
             .await
             .unwrap();
 
         assert_eq!(reception.merged_at, None);
         assert_eq!(reception.minutes_to_merge, None);
-        assert_eq!(reception.state.as_deref(), Some("open"));
+        assert_eq!(reception.state, Some(PullRequestState::Open));
         assert!(reception.comments.is_empty());
+        assert_eq!(
+            tally(&[]),
+            ReviewTally::default(),
+            "no reviews tally to nothing"
+        );
     }
 
     #[tokio::test]
     async fn mergeability_distinguishes_conflicted_from_not_yet_computed() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         for (reported, expected) in [
             (serde_json::json!(true), Mergeability::Clean),
             (serde_json::json!(false), Mergeability::Conflicted),
@@ -815,15 +1079,9 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let mergeability = PrService::standing_in_for("github.com", server.uri())
-                .fetch_mergeability(
-                    &PullRequestReference {
-                        owner: "acme".to_string(),
-                        repository: "project".to_string(),
-                        number: 7,
-                    },
-                    "token",
-                )
+            let service = stand_in(&server).await;
+            let mergeability = service
+                .fetch_mergeability(&seven(&service), &token())
                 .await
                 .unwrap();
 
@@ -839,9 +1097,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_token_is_reported_as_an_authentication_failure() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/repos/acme/project/pulls/7"))
@@ -849,18 +1104,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        let failure = PrService::standing_in_for("github.com", server.uri())
-            .fetch_reception(
-                &PullRequestReference {
-                    owner: "acme".to_string(),
-                    repository: "project".to_string(),
-                    number: 7,
-                },
-                "token",
-            )
+        let service = stand_in(&server).await;
+        let failure = service
+            .fetch_reception(&seven(&service), &token())
             .await
             .expect_err("an unauthorised read must not look like an empty pull request");
 
-        assert!(matches!(failure, PrError::AuthFailed));
+        assert!(matches!(failure, PullRequestError::AuthenticationFailed));
     }
 }

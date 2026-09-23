@@ -1,3 +1,4 @@
+use crate::pull_request::PullRequestState;
 use chrono::DateTime;
 use chrono::Utc;
 
@@ -19,7 +20,7 @@ pub struct PullRequestReception {
     pub minutes_to_merge: Option<i64>,
     pub review_cycles: u32,
     pub approvals: u32,
-    pub state: Option<String>,
+    pub state: Option<PullRequestState>,
     pub comments: Vec<String>,
 }
 

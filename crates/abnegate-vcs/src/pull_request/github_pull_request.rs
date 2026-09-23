@@ -1,14 +1,16 @@
 use crate::pull_request::GitHubBranch;
+use crate::pull_request::PullRequestState;
 use serde::Deserialize;
 use serde::Serialize;
+use std::num::NonZeroU64;
 
-/// GitHub pull request response
+/// A pull request as the GitHub REST API returns it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubPullRequest {
-    pub id: i64,
-    pub number: i64,
+    pub id: u64,
+    pub number: NonZeroU64,
     pub html_url: String,
-    pub state: String,
+    pub state: PullRequestState,
     pub title: String,
     pub body: Option<String>,
     pub head: GitHubBranch,
