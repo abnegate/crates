@@ -27,7 +27,9 @@ pub(crate) use access::Access;
 use name::Name;
 use nix::errno::Errno;
 use nix::fcntl::AtFlags;
+use nix::fcntl::FcntlArg;
 use nix::fcntl::OFlag;
+use nix::fcntl::fcntl;
 use nix::fcntl::openat;
 use nix::fcntl::readlinkat;
 use nix::fcntl::renameat;
@@ -52,23 +54,40 @@ const DIRECTORY_MODE: Mode = Mode::from_bits_truncate(0o777);
 const LINKS: usize = 40;
 const PERMISSION_BITS: u32 = 0o7777;
 
+/// Open the regular file at `path`, confined beneath the working directory
+/// unless the context is unrestricted.
+///
+/// Anything else is refused, and without waiting: a FIFO or a device has no
+/// end a read would reach and no size to hold against a limit, and opening a
+/// FIFO blocks until something opens its other end.
 pub(crate) fn open(context: &ToolContext, path: &Path, access: Access) -> Result<File, ToolError> {
-    if context.unrestricted {
-        return access
-            .options()
-            .open(context.working_directory.join(path))
-            .map_err(|error| failed("open file", error));
-    }
+    let file = if context.unrestricted {
+        access.options().open(context.working_directory.join(path))
+    } else {
+        resolve(
+            &context.working_directory,
+            under(&context.working_directory, path),
+            Target::File(access),
+            false,
+        )
+        .map(File::from)
+        .map_err(reported)
+    };
+    file.and_then(regular)
+        .map_err(|error| failed("open file", error))
+}
 
-    resolve(
-        &context.working_directory,
-        under(&context.working_directory, path),
-        Target::File(access),
-        false,
-    )
-    .map(File::from)
-    .map_err(reported)
-    .map_err(|error| failed("open file", error))
+/// `file`, if it is a regular file, set back to blocking I/O.
+fn regular(file: File) -> io::Result<File> {
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let flags = OFlag::from_bits_truncate(fcntl(&file, FcntlArg::F_GETFL).map_err(reported)?);
+    fcntl(&file, FcntlArg::F_SETFL(flags - OFlag::O_NONBLOCK)).map_err(reported)?;
+    Ok(file)
 }
 
 pub(crate) fn create_dir_all(context: &ToolContext, path: &Path) -> Result<(), ToolError> {

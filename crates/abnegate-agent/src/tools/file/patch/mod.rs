@@ -1,14 +1,16 @@
 mod hunk;
 mod parameters;
 
-use std::io::Read;
 use std::path::Path;
 
 use async_trait::async_trait;
+use hunk::PatchHunk;
 pub(super) use parameters::ApplyPatchParameters;
 use serde_json::Value;
 use serde_json::json;
 
+use super::blocking;
+use super::read_text;
 use crate::tools::REASON_PARAMETER;
 use crate::tools::Tier;
 use crate::tools::Tool;
@@ -16,7 +18,6 @@ use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolResult;
 use crate::tools::beneath;
-use crate::tools::beneath::Access;
 use crate::tools::reason_property;
 
 /// Replace exact text in an existing file without rewriting the rest.
@@ -126,59 +127,52 @@ impl Tool for ApplyPatchTool {
             ));
         }
 
-        let path = Path::new(&parameters.path);
-        let mut file = beneath::open(context, path, Access::Read)?;
-
-        let metadata = file
-            .metadata()
-            .map_err(|error| ToolError::Execution(format!("Cannot read file: {error}")))?;
-        if metadata.len() > context.max_file_size as u64 {
-            return Err(ToolError::Execution(format!(
-                "File too large ({} bytes, max {})",
-                metadata.len(),
-                context.max_file_size
-            )));
-        }
-
-        let mut content = String::new();
-        file.read_to_string(&mut content)
-            .map_err(|error| ToolError::Execution(format!("Cannot read file: {error}")))?;
-        let mut replacements = Vec::new();
-
-        for (index, hunk) in hunks.iter().enumerate() {
-            let matches = content.matches(&hunk.old_string).count();
-            if matches == 0 {
-                return Err(ToolError::Execution(format!(
-                    "Hunk {} did not match any text in {}. Read the file and copy the exact text to replace.",
-                    index + 1,
-                    parameters.path
-                )));
-            }
-            if matches > 1 && !parameters.replace_all {
-                return Err(ToolError::Execution(format!(
-                    "Hunk {} matched {} times in {}. Include more surrounding context so the match is unique, or set replace_all=true.",
-                    index + 1,
-                    matches,
-                    parameters.path
-                )));
-            }
-            content = if parameters.replace_all {
-                content.replace(&hunk.old_string, &hunk.new_string)
-            } else {
-                content.replacen(&hunk.old_string, &hunk.new_string, 1)
-            };
-            replacements.push(matches);
-        }
-
-        drop(file);
-        beneath::replace(context, path, content.as_bytes())?;
-
-        let total: usize = replacements.iter().sum();
+        let path = parameters.path.clone();
+        let context = context.clone();
+        let total = blocking(move || patch(&context, &parameters, &hunks)).await?;
         Ok(ToolResult::success(format!(
-            "Updated {} ({} replacement{})",
-            parameters.path,
-            total,
+            "Updated {path} ({total} replacement{})",
             if total == 1 { "" } else { "s" }
         )))
     }
+}
+
+/// Apply `hunks` to the file the call names and write it back in one step,
+/// returning how many replacements were made.
+fn patch(
+    context: &ToolContext,
+    parameters: &ApplyPatchParameters,
+    hunks: &[PatchHunk],
+) -> Result<usize, ToolError> {
+    let path = Path::new(&parameters.path);
+    let mut content = read_text(context, path)?;
+    let mut total = 0;
+
+    for (index, hunk) in hunks.iter().enumerate() {
+        let matches = content.matches(&hunk.old_string).count();
+        if matches == 0 {
+            return Err(ToolError::Execution(format!(
+                "Hunk {} did not match any text in {}. Read the file and copy the exact text to replace.",
+                index + 1,
+                parameters.path
+            )));
+        }
+        if matches > 1 && !parameters.replace_all {
+            return Err(ToolError::Execution(format!(
+                "Hunk {} matched {} times in {}. Include more surrounding context so the match is unique, or set replace_all=true.",
+                index + 1,
+                matches,
+                parameters.path
+            )));
+        }
+        content = if parameters.replace_all {
+            content.replace(&hunk.old_string, &hunk.new_string)
+        } else {
+            content.replacen(&hunk.old_string, &hunk.new_string, 1)
+        };
+        total += matches;
+    }
+
+    beneath::replace(context, path, content.as_bytes())?;
+    Ok(total)
 }

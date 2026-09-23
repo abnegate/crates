@@ -2,7 +2,6 @@ mod parameters;
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
-use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -18,6 +17,7 @@ use tokio::time::Instant;
 use tokio::time::timeout_at;
 
 use super::confine;
+use super::read_text;
 use super::resolve;
 use super::walk::Visit;
 use super::walk::WALK_TIME_LIMIT;
@@ -26,8 +26,6 @@ use crate::tools::Tool;
 use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolResult;
-use crate::tools::beneath;
-use crate::tools::beneath::Access;
 
 pub(super) const SEARCH_MAX_RESULTS: usize = 100;
 
@@ -162,8 +160,9 @@ fn format_search_results(
 /// Lines under `root` holding `pattern`, as `path:line: text`, and why the
 /// walk stopped short of the whole tree if it did.
 ///
-/// Hidden entries, build trees and links are passed over, and every file is
-/// opened through the working directory's own descriptor.
+/// Hidden entries, build trees and links are passed over, as is any file past
+/// the context's `max_file_size`, and every file is opened through the working
+/// directory's own descriptor.
 pub(super) fn search_tree(
     root: &Path,
     pattern: &str,
@@ -225,13 +224,9 @@ fn search_file(
     if !CODE_EXTENSIONS.contains(&extension) {
         return;
     }
-    let Ok(mut file) = beneath::open(context, path, Access::Read) else {
+    let Ok(content) = read_text(context, path) else {
         return;
     };
-    let mut content = String::new();
-    if file.read_to_string(&mut content).is_err() {
-        return;
-    }
 
     let relative = path.strip_prefix(root).unwrap_or(path);
     for (index, line) in content.lines().enumerate() {
