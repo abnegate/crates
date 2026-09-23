@@ -36,6 +36,11 @@ pub enum GitError {
     #[error("Refusing to run in a repository whose configuration sets {0:?}")]
     UnsafeConfig(String),
 
+    /// A path under the repository's git directory that git writes through,
+    /// named relative to that directory.
+    #[error("Refusing a repository whose {0} is a symbolic link")]
+    LinkedPath(&'static str),
+
     #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
     UnsafeWorktree(PathBuf),
 

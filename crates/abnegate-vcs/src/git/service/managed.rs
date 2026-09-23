@@ -1874,11 +1874,11 @@ mod managed_tests {
         }
     }
 
-    /// A clone whose `.git/config` is a link to a file the check accepts is
-    /// still fetched, checked out and reset, and git writes any
-    /// configuration change through the link. Bringing the clone forward
-    /// records no upstream for its branch, so the linked file is left byte
-    /// for byte as it was.
+    /// A clone whose `.git/config` is a link, even to a file the
+    /// configuration check accepts, is refused before it is fetched, checked
+    /// out or reset. The fetch and the checkout a link made after that check
+    /// would meet record no upstream for the branch, so the linked file is
+    /// left byte for byte as it was either way.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_checkout_writes_nothing_through_a_linked_configuration() {
@@ -1914,12 +1914,32 @@ mod managed_tests {
         let inode = std::fs::metadata(&copy).unwrap().ino();
         second_commit(source.path());
 
-        service
-            .ensure_repository(&target, &url, &main)
-            .await
-            .unwrap();
-        service.checkout_reset(&target, &main).await.unwrap();
-        service.ensure_synced(&target, &url).await.unwrap();
+        let refusals = [
+            service.ensure_repository(&target, &url, &main).await.err(),
+            service.checkout_reset(&target, &main).await.err(),
+            service.ensure_synced(&target, &url).await.err(),
+        ];
+        for (operation, refusal) in refusals.iter().enumerate() {
+            assert!(
+                matches!(refusal, Some(GitError::LinkedPath("config"))),
+                "operation {operation}: {refusal:?}"
+            );
+        }
+        assert!(
+            !target.join("file2.txt").exists(),
+            "a refused clone was brought forward"
+        );
+        for mut command in [
+            GitService::fetching(&target, &main),
+            GitService::checking_out(&target, &main),
+        ] {
+            let output = GitService::output(&mut command).await.unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
 
         assert!(
             target.join("file2.txt").exists(),
@@ -1942,6 +1962,264 @@ mod managed_tests {
             inode,
             "the linked file was rewritten, if with the same content"
         );
+    }
+
+    /// Every file at or below `path`, with what each holds, read without
+    /// following a link below it.
+    #[cfg(unix)]
+    fn contents(path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut found = Vec::new();
+        let mut pending = vec![path.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            match std::fs::symlink_metadata(&next).unwrap().is_dir() {
+                true => pending.extend(
+                    std::fs::read_dir(&next)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path()),
+                ),
+                false => {
+                    let held = std::fs::read(&next).unwrap();
+                    found.push((next, held));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// The [`GitError`] an error from the blocking worktree module carries.
+    #[cfg(unix)]
+    fn carried(error: &std::io::Error) -> Option<&GitError> {
+        error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<GitError>())
+    }
+
+    /// A managed clone whose source has moved on, so bringing it forward
+    /// would write its refs, reflogs, `HEAD` and working tree, with a
+    /// symbolic link standing at `relative` under its git directory: to
+    /// `link` when given, and otherwise to what stood there, moved out of the
+    /// clone, or to a new file when nothing did. A sync and a worktree are
+    /// both refused by that name, and nothing the link points at is written.
+    #[cfg(unix)]
+    async fn refused_while_linked(relative: &'static str, link: Option<&str>) {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &url, &branch("main"))
+            .await
+            .unwrap();
+        let standing = target.join(GIT_DIRECTORY).join(relative);
+        let pointed = match link {
+            Some(link) => {
+                std::fs::remove_file(&standing).unwrap();
+                std::os::unix::fs::symlink(link, &standing).unwrap();
+                standing.parent().unwrap().join(link)
+            }
+            None => {
+                let moved = workspace.path().join("moved");
+                match std::fs::symlink_metadata(&standing) {
+                    Ok(_) => std::fs::rename(&standing, &moved).unwrap(),
+                    Err(_) => std::fs::write(&moved, "planted\n").unwrap(),
+                }
+                std::os::unix::fs::symlink(&moved, &standing).unwrap();
+                moved
+            }
+        };
+        let before = contents(&pointed);
+        second_commit(source.path());
+        let worktree = workspace.path().join("worktree");
+
+        let synced = service.ensure_synced(&target, &url).await;
+        let added = crate::worktree::add(&target, &worktree, "HEAD").unwrap_err();
+
+        assert!(
+            matches!(synced, Err(GitError::LinkedPath(refused)) if refused == relative),
+            "{relative}: {synced:?}"
+        );
+        assert!(
+            matches!(carried(&added), Some(GitError::LinkedPath(refused)) if *refused == relative),
+            "{relative}: {added:?}"
+        );
+        assert_eq!(
+            contents(&pointed),
+            before,
+            "{relative}: what the link points at was written"
+        );
+        assert!(
+            !target.join("file2.txt").exists(),
+            "{relative}: the clone was brought forward"
+        );
+        assert!(!worktree.exists(), "{relative}: a worktree was added");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_packed_refs_is_a_link_is_refused() {
+        refused_while_linked("packed-refs", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_refs_directory_is_a_link_is_refused() {
+        refused_while_linked("refs", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_branch_directory_is_a_link_is_refused() {
+        refused_while_linked("refs/heads", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_remotes_directory_is_a_link_is_refused() {
+        refused_while_linked("refs/remotes", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_origin_directory_is_a_link_is_refused() {
+        refused_while_linked("refs/remotes/origin", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_tag_directory_is_a_link_is_refused() {
+        refused_while_linked("refs/tags", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_reflog_directory_is_a_link_is_refused() {
+        refused_while_linked("logs", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_fetch_head_is_a_link_is_refused() {
+        refused_while_linked("FETCH_HEAD", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_orig_head_is_a_link_is_refused() {
+        refused_while_linked("ORIG_HEAD", None).await;
+    }
+
+    /// Git reads a `HEAD` that is a link only when it points under `refs/`,
+    /// as a link to a branch's own file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_head_is_a_link_is_refused() {
+        refused_while_linked("HEAD", Some("refs/heads/main")).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_configuration_is_a_link_is_refused() {
+        refused_while_linked("config", None).await;
+    }
+
+    /// Packed refs are an ordinary file of the clone's own, and a clone
+    /// whose refs git has packed is brought forward and given a worktree as
+    /// any other is.
+    #[tokio::test]
+    async fn a_clone_whose_refs_are_packed_is_brought_forward() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &url, &branch("main"))
+            .await
+            .unwrap();
+        git(&target, &["pack-refs", "--all"]);
+        let packed = target.join(GIT_DIRECTORY).join("packed-refs");
+        assert!(std::fs::symlink_metadata(&packed).unwrap().is_file());
+        second_commit(source.path());
+
+        service.ensure_synced(&target, &url).await.unwrap();
+        crate::worktree::add(&target, &workspace.path().join("worktree"), "HEAD").unwrap();
+
+        assert!(
+            target.join("file2.txt").exists(),
+            "the clone was brought forward"
+        );
+        assert_eq!(service.current_branch(&target).await.unwrap(), "main");
+        assert!(std::fs::symlink_metadata(&packed).unwrap().is_file());
+    }
+
+    /// A worktree shares its repository's refs, reflogs and configuration
+    /// and keeps its own `HEAD`, `ORIG_HEAD` and `FETCH_HEAD`, so a command
+    /// run in one is refused for a link in the directory it shares, and for
+    /// one in its own directory that leaves the repository's own untouched.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_worktree_is_checked_where_it_keeps_each_of_its_files() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &origin(source.path()), &main)
+            .await
+            .unwrap();
+        let worktree = workspace.path().join("cloned-worktrees").join("one");
+        service
+            .create_worktree(&target, &worktree, &main)
+            .await
+            .unwrap();
+        git(&target, &["pack-refs", "--all"]);
+        let packed = target.join(GIT_DIRECTORY).join("packed-refs");
+        let moved = workspace.path().join("moved");
+        std::fs::rename(&packed, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &packed).unwrap();
+        let before = contents(&moved);
+
+        let shared = service.current_branch(&worktree).await;
+        let blocking = crate::worktree::unfinished(&worktree, &[]).unwrap_err();
+
+        assert!(
+            matches!(shared, Err(GitError::LinkedPath("packed-refs"))),
+            "{shared:?}"
+        );
+        assert!(
+            matches!(
+                carried(&blocking),
+                Some(GitError::LinkedPath("packed-refs"))
+            ),
+            "{blocking:?}"
+        );
+        assert_eq!(contents(&moved), before);
+
+        std::fs::remove_file(&packed).unwrap();
+        std::fs::rename(&moved, &packed).unwrap();
+        let own = PathBuf::from(git(
+            &worktree,
+            &["rev-parse", "--path-format=absolute", "--git-dir"],
+        ));
+        let planted = workspace.path().join("planted");
+        std::fs::rename(own.join("ORIG_HEAD"), &planted).unwrap();
+        std::os::unix::fs::symlink(&planted, own.join("ORIG_HEAD")).unwrap();
+        let held = std::fs::read(&planted).unwrap();
+
+        let refused = service.current_branch(&worktree).await;
+
+        assert!(
+            matches!(refused, Err(GitError::LinkedPath("ORIG_HEAD"))),
+            "{refused:?}"
+        );
+        assert_eq!(service.current_branch(&target).await.unwrap(), "main");
+        assert_eq!(std::fs::read(&planted).unwrap(), held);
     }
 
     /// A remote-tracking ref pointed at a commit only the clone has is

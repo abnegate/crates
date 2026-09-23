@@ -7,6 +7,7 @@ use crate::git::DiffSummary;
 use crate::git::GitError;
 use crate::git::GitResult;
 use crate::git::IGNORE_SUBMODULES;
+use crate::git::LOCATING;
 use crate::git::NO_FETCH_HEAD;
 use crate::git::PINS;
 use crate::git::RemoteHead;
@@ -15,6 +16,7 @@ use crate::git::authentication::authenticate;
 use crate::git::group::Group;
 use crate::git::harden;
 use crate::git::refused;
+use crate::git::unlinked;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
 use std::ffi::OsStr;
@@ -225,25 +227,38 @@ impl GitService {
     }
 
     /// Refuse a repository whose own configuration holds anything beyond what
-    /// git writes for a clone, a worktree and a tracking branch. Run before
-    /// every hardened operation, because a run's git commands can write that
-    /// configuration between two of them.
+    /// git writes for a clone, a worktree and a tracking branch, with
+    /// [`GitError::UnsafeConfig`], or that has a symbolic link standing where
+    /// git writes a ref, a reflog, `HEAD` or the configuration, with
+    /// [`GitError::LinkedPath`]. Run before every hardened operation, because
+    /// a run's git commands can write the repository between two of them.
     pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
-        Self::verify(Self::hardened().current_dir(path)).await
+        Self::verify(|| {
+            let mut command = Self::hardened();
+            command.current_dir(path);
+            command
+        })
+        .await
     }
 
-    /// [`Self::verify_config`] for a command already pointed at its repository.
-    pub(crate) async fn verify(command: &mut Command) -> GitResult<()> {
-        let listed = Self::output(command.args(CONFIG_LISTING).stdout(Stdio::piped())).await?;
+    /// [`Self::verify_config`] for commands `bind` points at their repository.
+    pub(crate) async fn verify(bind: impl Fn() -> Command) -> GitResult<()> {
+        let listed = Self::output(bind().args(CONFIG_LISTING).stdout(Stdio::piped())).await?;
         if !listed.status.success() {
             return Err(GitError::CommandFailed(
                 "Cannot read the repository's configuration".to_string(),
             ));
         }
-        match refused(&listed.stdout) {
-            Some(key) => Err(GitError::UnsafeConfig(key)),
-            None => Ok(()),
+        if let Some(key) = refused(&listed.stdout) {
+            return Err(GitError::UnsafeConfig(key));
         }
+        let located = Self::output(bind().args(LOCATING).stdout(Stdio::piped())).await?;
+        if !located.status.success() {
+            return Err(GitError::CommandFailed(
+                "Cannot locate the repository's files".to_string(),
+            ));
+        }
+        unlinked(&located.stdout)
     }
 
     /// A hardened invocation that may reach `remote`, over the one transport

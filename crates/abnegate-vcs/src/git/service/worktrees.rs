@@ -680,35 +680,40 @@ mod tests {
     }
 
     /// Clearing a stale worktree runs git in the clone several times, and the
-    /// clone's configuration can change meanwhile, so it is checked again just
-    /// before the worktree is added. Here it goes missing the moment the stale
-    /// worktree's records are removed: every other git command reads a missing
-    /// configuration as an empty one, and only the check notices.
-    #[cfg(unix)]
+    /// clone can change meanwhile, so its configuration and the files git
+    /// writes through are checked again after the stale worktree is removed
+    /// and before the new one is added.
     #[tokio::test]
-    async fn the_configuration_is_checked_again_after_a_stale_worktree_is_cleared() {
+    async fn the_repository_is_checked_again_after_a_stale_worktree_is_cleared() {
         let fixture = Fixture::new();
         let worktree = fixture.worktree("area-worktrees/one").await;
-        let git_directory = fixture.repository.join(".git");
-        std::fs::rename(
-            git_directory.join("config"),
-            git_directory.join("worktrees").join("one").join("shared"),
-        )
-        .unwrap();
-        std::os::unix::fs::symlink("worktrees/one/shared", git_directory.join("config")).unwrap();
 
-        let refusal = GitService::new()
-            .create_worktree(&fixture.repository, &worktree, &branch("main"))
-            .await;
+        let (created, recorded) = recording(GitService::new().create_worktree(
+            &fixture.repository,
+            &worktree,
+            &branch("main"),
+        ))
+        .await;
 
-        assert!(
-            matches!(refusal, Err(GitError::CommandFailed(ref message)) if message.contains("configuration")),
-            "{refusal:?}"
-        );
-        assert!(
-            !worktree.exists(),
-            "no worktree was added under an unchecked configuration"
-        );
+        created.unwrap();
+        let running = |verb: &str| {
+            recorded.iter().position(|command| {
+                command
+                    .windows(2)
+                    .any(|pair| pair[0] == "worktree" && pair[1] == verb)
+            })
+        };
+        let (Some(removed), Some(added)) = (running("remove"), running("add")) else {
+            panic!("the stale worktree was not replaced: {recorded:?}");
+        };
+        let between = &recorded[removed..added];
+        for check in [CONFIG_LISTING.as_slice(), LOCATING.as_slice()] {
+            let check: Vec<String> = check.iter().map(|argument| argument.to_string()).collect();
+            assert!(
+                between.iter().any(|command| command.ends_with(&check)),
+                "{check:?} did not run between the removal and the addition: {recorded:?}"
+            );
+        }
     }
 
     #[test]

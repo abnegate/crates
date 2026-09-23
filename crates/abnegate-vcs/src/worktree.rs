@@ -21,9 +21,11 @@ use crate::commit_sha::CommitSha;
 use crate::git::CONFIG_LISTING;
 use crate::git::GITLINK_MODE;
 use crate::git::IGNORE_SUBMODULES;
+use crate::git::LOCATING;
 use crate::git::WorktreeEntry;
 use crate::git::harden;
 use crate::git::refused;
+use crate::git::unlinked;
 pub use crate::worktree::unfinished::Unfinished;
 use std::io::Read;
 #[cfg(unix)]
@@ -87,20 +89,26 @@ fn local(repository: &Path) -> Command {
 }
 
 /// Refuse a repository whose own configuration holds anything beyond what git
-/// writes for a clone, a worktree and a tracking branch: the configuration is
-/// the base clone's, which every run of the repository can write through its
-/// own git commands.
+/// writes for a clone, a worktree and a tracking branch, or that has a
+/// symbolic link standing where git writes a ref, a reflog, `HEAD` or the
+/// configuration, which it refuses with [`crate::git::GitError::LinkedPath`]:
+/// the configuration and the refs are the base clone's, which every run of
+/// the repository can write through its own git commands.
 fn verify(repository: &Path) -> std::io::Result<()> {
     let listing = run(
         local(repository).args(CONFIG_LISTING),
         "read the repository's configuration",
     )?;
-    match refused(&listing) {
-        Some(key) => Err(std::io::Error::other(format!(
+    if let Some(key) = refused(&listing) {
+        return Err(std::io::Error::other(format!(
             "refusing a repository whose configuration sets {key:?}"
-        ))),
-        None => Ok(()),
+        )));
     }
+    let located = run(
+        local(repository).args(LOCATING),
+        "locate the repository's files",
+    )?;
+    unlinked(&located).map_err(std::io::Error::other)
 }
 
 /// Run a local git command, reading at most [`MAXIMUM_OUTPUT_BYTES`] `+ 1` of
@@ -523,6 +531,7 @@ mod tests {
     use super::fixtures::git;
     use super::fixtures::remote;
     use super::*;
+    use crate::git::GitError;
 
     struct Repositories {
         _root: tempfile::TempDir,
@@ -691,9 +700,10 @@ mod tests {
         );
     }
 
-    /// Removing a worktree deletes its branch by the ref alone, so the base
-    /// clone's configuration is never rewritten, through a link wherever
-    /// `.git/config` is one.
+    /// A base clone whose `.git/config` is a link is refused before a
+    /// worktree of it is removed. Deleting the worktree's branch, which a
+    /// link made after that check would meet, removes the ref alone, so the
+    /// configuration is never rewritten through the link either way.
     #[cfg(unix)]
     #[test]
     fn removing_a_worktree_writes_nothing_through_a_linked_configuration() {
@@ -706,13 +716,30 @@ mod tests {
             &repositories.base.with_file_name("copy"),
         );
 
-        remove(&repositories.base, &path).unwrap();
+        let refusal = remove(&repositories.base, &path).unwrap_err();
 
-        assert!(!path.exists(), "the worktree was removed");
+        assert!(
+            matches!(
+                refusal
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<GitError>()),
+                Some(GitError::LinkedPath("config"))
+            ),
+            "{refusal:?}"
+        );
+        assert!(path.exists(), "a refused removal removed the worktree");
+        linked.assert_untouched();
+
+        git(
+            &repositories.base,
+            &["worktree", "remove", "--force", path.to_str().unwrap()],
+        );
+        delete_branch(&repositories.base, &BranchName::parse("task/one").unwrap()).unwrap();
+
         assert_eq!(
             git(&repositories.base, &["branch", "--list", "task/one"]),
             "",
-            "the branch went with the worktree"
+            "the branch was deleted"
         );
         linked.assert_untouched();
     }

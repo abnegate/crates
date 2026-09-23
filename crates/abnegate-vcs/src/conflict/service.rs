@@ -343,9 +343,10 @@ impl ConflictService {
         Ok(CommitSha::parse(&output)?)
     }
 
-    /// Refuse a repository whose configuration names something no pin reaches.
+    /// Refuse a repository whose configuration names something no pin
+    /// reaches, or that has a symbolic link where git writes through one.
     pub(super) async fn verify_config(&self, layout: &Layout) -> ConflictResult<()> {
-        Ok(GitService::verify(&mut self.bound(layout)).await?)
+        Ok(GitService::verify(|| self.bound(layout)).await?)
     }
 
     async fn run(&self, layout: &Layout, arguments: &[&str]) -> ConflictResult<()> {

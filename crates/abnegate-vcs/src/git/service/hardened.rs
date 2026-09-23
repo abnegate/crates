@@ -1,10 +1,7 @@
 use super::*;
 use crate::git::GITLINK_MODE;
 use crate::git::WorktreeEntry;
-#[cfg(unix)]
-use std::ffi::OsStr;
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
+use crate::git::native;
 use tokio::io::AsyncWriteExt;
 
 /// The status a change check runs: every untracked path, and no descent into a
@@ -905,29 +902,6 @@ fn changed_paths(listing: &[u8]) -> Vec<String> {
     paths
 }
 
-/// A path or ref name git printed, byte for byte, so a name that is not
-/// UTF-8 still names what git reads.
-#[cfg(unix)]
-fn native(bytes: &[u8]) -> Option<PathBuf> {
-    Some(PathBuf::from(OsStr::from_bytes(bytes)))
-}
-
-/// A path or ref name git printed, as [`utf8`] reads it: git keeps names in
-/// UTF-8 wherever the platform's own are not bytes.
-#[cfg(not(unix))]
-fn native(bytes: &[u8]) -> Option<PathBuf> {
-    utf8(bytes)
-}
-
-/// A name git printed, when it is UTF-8. One that is not names nothing a
-/// platform keeping names in UTF-8 can look up, and a lossy conversion
-/// would name something else: a ref that is not there reads as no link, and
-/// a path that is not there as nothing standing at it.
-#[cfg(any(test, not(unix)))]
-fn utf8(bytes: &[u8]) -> Option<PathBuf> {
-    std::str::from_utf8(bytes).ok().map(PathBuf::from)
-}
-
 /// A configuration value in double quotes, so nothing in it opens a comment
 /// or a section.
 fn quoted(value: &str) -> String {
@@ -1661,9 +1635,10 @@ mod publication_tests {
         assert_eq!(service.current_branch(&fourth).await.unwrap(), "task/other");
     }
 
-    /// Setting a branch aside moves its ref alone, so the clone's
-    /// configuration is never rewritten, through a link wherever
-    /// `.git/config` is one.
+    /// A clone whose `.git/config` is a link is refused before the run's
+    /// branch is prepared. Setting a branch aside, which a link made after
+    /// that check would meet, moves its ref alone, so the configuration is
+    /// never rewritten through the link either way.
     #[cfg(unix)]
     #[tokio::test]
     async fn setting_a_branch_aside_writes_nothing_through_a_linked_configuration() {
@@ -1690,22 +1665,35 @@ mod publication_tests {
         crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
         let linked = crate::worktree::fixtures::LinkedConfig::new(&base, &root.path().join("copy"));
 
-        service
+        let prepared = service
             .prepare_branch(&second, &branch("task/one"), false)
+            .await;
+
+        assert!(
+            matches!(prepared, Err(GitError::LinkedPath("config"))),
+            "{prepared:?}"
+        );
+        linked.assert_untouched();
+        assert_eq!(
+            git(&base, &["rev-parse", "refs/heads/task/one"]),
+            held,
+            "the refused preparation moved the branch"
+        );
+
+        let aside = GitService::set_aside(&base, &branch("task/one"))
             .await
             .unwrap();
 
-        assert_eq!(service.current_branch(&second).await.unwrap(), "task/one");
         assert_eq!(
             git(
                 &base,
                 &[
                     "for-each-ref",
-                    "--format=%(objectname)",
-                    "refs/heads/task/one.abandoned.*",
+                    "--format=%(refname) %(objectname)",
+                    "refs/heads/task/one*",
                 ],
             ),
-            held,
+            format!("{} {held}", aside.reference()),
             "the branch's commit is kept under a name of its own"
         );
         linked.assert_untouched();
@@ -2726,29 +2714,6 @@ mod configuration_tests {
             service.has_changes(repository.path()).await,
             Err(GitError::UnsafeConfig(_))
         ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_path_git_printed_is_kept_byte_for_byte() {
-        let printed = b"nested/\xff name";
-
-        assert_eq!(native(printed).unwrap().as_os_str().as_bytes(), printed);
-    }
-
-    #[test]
-    fn a_name_that_is_not_utf8_is_no_name_where_names_are_utf8() {
-        assert_eq!(utf8(b"refs/heads/\xff"), None);
-        assert_eq!(
-            utf8(b"refs/heads/main"),
-            Some(PathBuf::from("refs/heads/main"))
-        );
-    }
-
-    #[cfg(not(unix))]
-    #[test]
-    fn a_name_git_printed_that_is_not_utf8_names_nothing_here() {
-        assert_eq!(native(b"refs/heads/\xff"), None);
     }
 
     #[test]
