@@ -3,6 +3,7 @@ name = "abnegate-exec"
 description = "Sandboxed command execution with streaming output: seatbelt on macOS, bubblewrap on Linux, process-group cancellation and an NDJSON job protocol"
 keywords = ["sandbox", "seatbelt", "bubblewrap", "process", "executor"]
 categories = ["asynchronous", "os::unix-apis", "development-tools"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

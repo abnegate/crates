@@ -3,6 +3,7 @@ name = "abnegate-search"
 description = "SearXNG metasearch client with a web-search intent heuristic and prompt-ready result formatting"
 keywords = ["search", "searxng", "metasearch", "websearch", "client"]
 categories = ["web-programming::http-client", "api-bindings"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

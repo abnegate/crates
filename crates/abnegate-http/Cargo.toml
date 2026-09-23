@@ -3,6 +3,7 @@ name = "abnegate-http"
 description = "An HTTP client abstraction, SSRF-guarded outbound fetches, keyed rate limiting, exponential backoff and failure classification"
 keywords = ["http", "ssrf", "rate-limit", "backoff", "retry"]
 categories = ["web-programming::http-client", "network-programming"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

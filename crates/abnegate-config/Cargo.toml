@@ -3,6 +3,7 @@ name = "abnegate-config"
 description = "Typed TOML configuration for command line applications: a generic file loader that transparently decrypts sealed values, an OS keyring token store, and idempotent .env updates"
 keywords = ["config", "toml", "keyring", "dotenv", "cli"]
 categories = ["config", "command-line-interface"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

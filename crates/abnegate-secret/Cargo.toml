@@ -3,6 +3,7 @@ name = "abnegate-secret"
 description = "Secret values that zeroize on drop, redact in Debug and logs, and encrypt at rest with an AES-256-GCM envelope"
 keywords = ["secret", "redaction", "zeroize", "encryption", "credentials"]
 categories = ["cryptography", "config"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

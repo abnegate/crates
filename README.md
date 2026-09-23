@@ -33,8 +33,9 @@ Some donors carry more than the first release absorbs:
   planned follow-up; the completion `Router` is a separate type and ships now.
 - `abnegate-vcs` ships git and GitHub pull requests. GitLab and GitHub App
   authentication follow.
-- `abnegate-notify` ships Slack, Discord, webhook and SMTP delivery. Telegram,
-  WhatsApp, SMS and Pushover follow.
+- `abnegate-notify` ships Slack, Discord and SMTP (behind the `smtp` feature)
+  delivery, plus a mock mailer for tests (behind `mock`). Telegram, WhatsApp,
+  SMS and Pushover follow.
 
 ## Consuming unreleased changes
 

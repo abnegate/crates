@@ -1,8 +1,26 @@
 use serde::{Deserialize, Serialize};
 
 /// Who a message came from.
+///
+/// A role may be added in a minor release, so a `match` outside this crate
+/// needs an arm for the ones it does not know:
+///
+/// ```compile_fail,E0004
+/// use abnegate_llm::Role;
+///
+/// fn label(role: Role) -> &'static str {
+///     match role {
+///         Role::System => "system",
+///         Role::User => "user",
+///         Role::Assistant => "assistant",
+///         Role::Tool => "tool",
+///     }
+/// }
+/// # let _ = label(Role::User);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Role {
     System,
     User,

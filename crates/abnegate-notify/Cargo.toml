@@ -3,6 +3,7 @@ name = "abnegate-notify"
 description = "One notification delivered to every channel at once, with per-channel isolation and SSRF-guarded webhooks"
 keywords = ["notifications", "slack", "discord", "webhook", "smtp"]
 categories = ["asynchronous", "email", "network-programming"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

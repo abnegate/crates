@@ -3,6 +3,7 @@ name = "abnegate-vision"
 description = "Subject-aware image cropping: decode JPEG, PNG and WebP, locate the salient subject with U2-Net on ONNX Runtime, and render the crop in a single resampling pass"
 keywords = ["image", "crop", "saliency", "onnx", "u2net"]
 categories = ["multimedia::images", "computer-vision"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
