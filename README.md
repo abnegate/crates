@@ -10,17 +10,17 @@ its heavy dependencies behind features.
 
 | Crate | Description | Features | Docs |
 |---|---|---|---|
-| `abnegate-secret` | Secret values that zeroize on drop, redact in `Debug` and logs, and encrypt at rest with an AES-256-GCM envelope | `sqlx`, `rusqlite` | [![docs.rs](https://img.shields.io/docsrs/abnegate-secret)](https://docs.rs/abnegate-secret) |
-| `abnegate-http` | HTTP client trait over reqwest with SSRF validation, rate limiting, and retry backoff | none | [![docs.rs](https://img.shields.io/docsrs/abnegate-http)](https://docs.rs/abnegate-http) |
-| `abnegate-config` | TOML configuration files, `.env` upsert, and a keyring-backed token store | `keyring` | [![docs.rs](https://img.shields.io/docsrs/abnegate-config)](https://docs.rs/abnegate-config) |
-| `abnegate-exec` | Sandboxed command execution with seatbelt and bubblewrap confinement, streaming output, and an NDJSON job protocol | none | [![docs.rs](https://img.shields.io/docsrs/abnegate-exec)](https://docs.rs/abnegate-exec) |
-| `abnegate-llm` | OpenAI-compatible LLM client, modality provider traits, routing and selection, cost estimation, and model catalogue browsing | `openai`, `anthropic`, `google`, `catalog`, `download` | [![docs.rs](https://img.shields.io/docsrs/abnegate-llm)](https://docs.rs/abnegate-llm) |
+| `abnegate-secret` | Secret values that zeroize on drop, redact in Debug and logs, and encrypt at rest with an AES-256-GCM envelope | `rusqlite`, `sqlx` | [![docs.rs](https://img.shields.io/docsrs/abnegate-secret)](https://docs.rs/abnegate-secret) |
+| `abnegate-http` | An HTTP client abstraction, SSRF-guarded outbound fetches, keyed rate limiting, exponential backoff and failure classification | none | [![docs.rs](https://img.shields.io/docsrs/abnegate-http)](https://docs.rs/abnegate-http) |
+| `abnegate-config` | Typed TOML configuration for command line applications: a generic file loader that transparently decrypts sealed values, an OS keyring token store, and idempotent .env updates | `keyring` | [![docs.rs](https://img.shields.io/docsrs/abnegate-config)](https://docs.rs/abnegate-config) |
+| `abnegate-exec` | Sandboxed command execution with streaming output: seatbelt on macOS, bubblewrap on Linux, process-group cancellation and an NDJSON job protocol | none | [![docs.rs](https://img.shields.io/docsrs/abnegate-exec)](https://docs.rs/abnegate-exec) |
+| `abnegate-llm` | OpenAI-compatible chat completions with SSE streaming and weighted provider routing, modality-axis provider traits, cost estimation, local hardware profiling and model catalogue browsing | `anthropic`, `catalog`, `download`, `google`, `openai` | [![docs.rs](https://img.shields.io/docsrs/abnegate-llm)](https://docs.rs/abnegate-llm) |
 | `abnegate-agent-cli` | Drivers for coding-agent CLIs, with streaming event parsing, execution logs, and fallback chains | none | [![docs.rs](https://img.shields.io/docsrs/abnegate-agent-cli)](https://docs.rs/abnegate-agent-cli) |
 | `abnegate-agent` | Tool trait and registry, MCP hub, ReAct loop, session store, context compaction, and chat history | `mcp` | [![docs.rs](https://img.shields.io/docsrs/abnegate-agent)](https://docs.rs/abnegate-agent) |
-| `abnegate-notify` | Multi-channel notification fan-out over Slack, Discord, webhooks, email, Telegram, WhatsApp, SMS, and push | `smtp`, `telegram`, `whatsapp`, `sms`, `push` | [![docs.rs](https://img.shields.io/docsrs/abnegate-notify)](https://docs.rs/abnegate-notify) |
-| `abnegate-vcs` | Local git operations, worktrees, pull requests, conflict reproduction, and GitHub/GitLab providers | `github`, `gitlab`, `github-app` | [![docs.rs](https://img.shields.io/docsrs/abnegate-vcs)](https://docs.rs/abnegate-vcs) |
-| `abnegate-search` | SearXNG web search client | none | [![docs.rs](https://img.shields.io/docsrs/abnegate-search)](https://docs.rs/abnegate-search) |
-| `abnegate-vision` | Image understanding: subject detection and subject-aware cropping for training data | `saliency` | [![docs.rs](https://img.shields.io/docsrs/abnegate-vision)](https://docs.rs/abnegate-vision) |
+| `abnegate-notify` | One notification delivered to every channel at once, with per-channel isolation and SSRF-guarded webhooks | `smtp` | [![docs.rs](https://img.shields.io/docsrs/abnegate-notify)](https://docs.rs/abnegate-notify) |
+| `abnegate-vcs` | Git operations over the git command line: branches, worktrees, merge-conflict reproduction, dependency discovery and GitHub pull requests | `github` | [![docs.rs](https://img.shields.io/docsrs/abnegate-vcs)](https://docs.rs/abnegate-vcs) |
+| `abnegate-search` | SearXNG metasearch client with a web-search intent heuristic and prompt-ready result formatting | none | [![docs.rs](https://img.shields.io/docsrs/abnegate-search)](https://docs.rs/abnegate-search) |
+| `abnegate-vision` | Subject-aware image cropping: decode JPEG, PNG and WebP, locate the salient subject with U2-Net on ONNX Runtime, and render the crop in a single resampling pass | `saliency` | [![docs.rs](https://img.shields.io/docsrs/abnegate-vision)](https://docs.rs/abnegate-vision) |
 | `abnegate-comfy` | ComfyUI image, video, and audio generation, model inventory, and LoRA training | `saliency` | [![docs.rs](https://img.shields.io/docsrs/abnegate-comfy)](https://docs.rs/abnegate-comfy) |
 
 ## Consuming unreleased changes
