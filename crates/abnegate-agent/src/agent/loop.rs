@@ -4,6 +4,7 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::{
@@ -194,72 +195,15 @@ impl Agent {
 
                 state.add_message(message.clone());
 
-                let mut tool_results = Vec::with_capacity(tool_calls.len());
-                let mut rest = tool_calls.as_slice();
-                while !rest.is_empty() {
-                    let serial_at = rest
-                        .iter()
-                        .position(|call| self.tools.mutating(&call.function.name));
-                    let parallel_end = serial_at.unwrap_or(rest.len());
-                    if parallel_end > 0 {
-                        let (parallel, tail) = rest.split_at(parallel_end);
-                        for tool_call in parallel {
-                            callback.on_tool_call(
-                                &tool_call.function.name,
-                                &tool_call.function.arguments,
-                            );
-                        }
-                        if parallel.len() == 1 {
-                            let start = Instant::now();
-                            let result = self.execute_tool(&parallel[0]).await;
-                            self.record_tool(
-                                state,
-                                callback,
-                                &mut tool_results,
-                                &parallel[0],
-                                result,
-                                start.elapsed().as_millis() as u64,
-                            );
-                        } else {
-                            let executed = join_all(parallel.iter().map(|tool_call| async move {
-                                let start = Instant::now();
-                                let result = self.execute_tool(tool_call).await;
-                                (tool_call, result, start.elapsed().as_millis() as u64)
-                            }))
-                            .await;
-                            for (tool_call, result, duration_milliseconds) in executed {
-                                self.record_tool(
-                                    state,
-                                    callback,
-                                    &mut tool_results,
-                                    tool_call,
-                                    result,
-                                    duration_milliseconds,
-                                );
-                            }
-                        }
-                        rest = tail;
-                    }
-                    if let Some(tool_call) = rest.first() {
-                        callback
-                            .on_tool_call(&tool_call.function.name, &tool_call.function.arguments);
-                        let start = Instant::now();
-                        let result = self.execute_tool(tool_call).await;
-                        self.record_tool(
-                            state,
-                            callback,
-                            &mut tool_results,
-                            tool_call,
-                            result,
-                            start.elapsed().as_millis() as u64,
-                        );
-                        rest = &rest[1..];
-                    }
-                }
-
+                let (tool_results, ended) = self.act(state, callback, tool_calls).await;
                 step.tool_calls = Some(tool_results);
                 step = step.complete();
                 state.add_step(step);
+
+                if let Some(response) = ended {
+                    Self::respond(state, callback, &response);
+                    return Ok(());
+                }
 
                 state.phase = AgentPhase::Observing;
                 callback.on_phase_change(AgentPhase::Observing, None);
@@ -274,11 +218,7 @@ impl Agent {
                 state.add_step(step);
 
                 if choice.finish_reason.as_deref() == Some("stop") {
-                    state.phase = AgentPhase::Responding;
-                    callback.on_phase_change(AgentPhase::Responding, Some(content));
-                    callback.on_response(content);
-
-                    state.complete(content);
+                    Self::respond(state, callback, content);
                     return Ok(());
                 }
             }
@@ -288,6 +228,87 @@ impl Agent {
                 return Err(AgentError::Tool("Empty response from LLM".to_string()));
             }
         }
+    }
+
+    fn respond(state: &mut AgentState, callback: &dyn AgentCallback, response: &str) {
+        state.phase = AgentPhase::Responding;
+        callback.on_phase_change(AgentPhase::Responding, Some(response));
+        callback.on_response(response);
+        state.complete(response);
+    }
+
+    /// Run the calls one model round asked for, and say whether one of them
+    /// ended the turn, with what it returned.
+    ///
+    /// Consecutive calls that change nothing run together; anything that
+    /// mutates, or could end the turn, runs alone and in order, so a later
+    /// read sees an earlier write and nothing runs after the turn has ended.
+    /// A call left behind by the end of the turn is answered as not run, so
+    /// every call the model made still has a result.
+    async fn act(
+        &self,
+        state: &mut AgentState,
+        callback: &dyn AgentCallback,
+        calls: &[ToolCall],
+    ) -> (Vec<ToolCallResult>, Option<String>) {
+        let mut results = Vec::with_capacity(calls.len());
+        let mut rest = calls;
+        while let Some(first) = rest.first() {
+            let batch = rest
+                .iter()
+                .take_while(|call| self.batchable(&call.function.name))
+                .count();
+            if batch > 1 {
+                let (parallel, tail) = rest.split_at(batch);
+                for call in parallel {
+                    callback.on_tool_call(&call.function.name, &call.function.arguments);
+                }
+                let executed = join_all(parallel.iter().map(|call| async move {
+                    let start = Instant::now();
+                    let result = self.execute_tool(call, callback).await;
+                    (call, result, elapsed(start))
+                }))
+                .await;
+                for (call, result, duration) in executed {
+                    self.record_tool(state, callback, &mut results, call, result, duration);
+                }
+                rest = tail;
+                continue;
+            }
+
+            callback.on_tool_call(&first.function.name, &first.function.arguments);
+            let start = Instant::now();
+            let result = self.execute_tool(first, callback).await;
+            let ends = result.success && self.tools.ends_turn(&first.function.name) == Some(true);
+            let response = result.to_message();
+            self.record_tool(state, callback, &mut results, first, result, elapsed(start));
+            rest = &rest[1..];
+
+            if ends {
+                for skipped in rest {
+                    let result = ToolResult::error(format!(
+                        "Not run: {} ended the turn first.",
+                        first.function.name
+                    ));
+                    let output = result.to_message();
+                    results.push(ToolCallResult {
+                        call: skipped.clone(),
+                        result: output.clone(),
+                        success: false,
+                        duration_milliseconds: 0,
+                    });
+                    state.add_message(Message::tool_result(&skipped.id, output));
+                }
+                return (results, Some(response));
+            }
+        }
+        (results, None)
+    }
+
+    /// Whether a call may share a batch: it changes nothing and cannot end
+    /// the turn out from under the calls beside it.
+    fn batchable(&self, name: &str) -> bool {
+        !self.tools.mutating(name) && self.tools.ends_turn(name) != Some(true)
     }
 
     fn record_tool(
@@ -310,9 +331,11 @@ impl Agent {
         state.add_message(Message::tool_result(&tool_call.id, output));
     }
 
-    /// Run one call on a task of its own, so a tool that panics fails its
-    /// own call rather than the run.
-    async fn execute_tool(&self, tool_call: &ToolCall) -> ToolResult {
+    /// Run one call on a task of its own, once the callback has approved it,
+    /// for no longer than the tool's own timeout.
+    ///
+    /// A tool that panics or overruns fails its own call rather than the run.
+    async fn execute_tool(&self, tool_call: &ToolCall, callback: &dyn AgentCallback) -> ToolResult {
         let name = &tool_call.function.name;
         let Some(tool) = self.tools.get(name) else {
             return ToolResult::error(ToolError::NotFound(name.clone()).to_string());
@@ -324,19 +347,37 @@ impl Agent {
                     return ToolResult::error(format!("Invalid tool arguments: {error}"));
                 }
             };
+        if !callback.approve(tool_call, tool.tier()) {
+            return ToolResult::error(format!("{name} was not run: the call was not approved."));
+        }
 
+        let limit = tool.timeout(&self.context);
         let context = Arc::clone(&self.context);
         let task = tokio::spawn(async move { tool.execute(parameters, &context).await });
-        match task.await {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) => ToolResult::error(error.to_string()),
-            Err(error) if error.is_panic() => ToolResult::error(format!(
+        let abort = task.abort_handle();
+        match timeout(limit, task).await {
+            Ok(Ok(Ok(result))) => result,
+            Ok(Ok(Err(error))) => ToolResult::error(error.to_string()),
+            Ok(Err(error)) if error.is_panic() => ToolResult::error(format!(
                 "Tool {name} failed unexpectedly: {}",
                 panic_message(error.into_panic())
             )),
-            Err(_) => ToolResult::error(format!("Tool {name} was cancelled before it finished")),
+            Ok(Err(_)) => {
+                ToolResult::error(format!("Tool {name} was cancelled before it finished"))
+            }
+            Err(_) => {
+                abort.abort();
+                ToolResult::error(format!(
+                    "Tool {name} timed out after {} seconds and was stopped",
+                    limit.as_secs()
+                ))
+            }
         }
     }
+}
+
+fn elapsed(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The text a panic carried, when it carried any.

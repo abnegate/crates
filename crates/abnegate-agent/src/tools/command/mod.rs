@@ -10,6 +10,7 @@ pub use shell::{MAX_SLEEP_SECONDS, RunShellTool};
 
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use super::file::{confine, resolve};
 use super::job::{self, JobCommand, Jobs, WAIT_FOR};
@@ -70,6 +71,15 @@ fn background_property() -> Value {
 
 /// Longest a single shell command may run, whatever it asks for.
 pub(super) const MAX_SHELL_TIMEOUT_SECONDS: u64 = 900;
+
+/// How long one call may run: what it asked for, or `default` when it asked
+/// for nothing, held between a second and [`MAX_SHELL_TIMEOUT_SECONDS`].
+pub(super) fn call_limit(requested: Option<u64>, default: Duration) -> Duration {
+    requested.map_or(default, Duration::from_secs).clamp(
+        Duration::from_secs(1),
+        Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS),
+    )
+}
 
 /// Where the command runs, resolved and confined the way every other
 /// model-supplied path in these tools is.

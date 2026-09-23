@@ -183,3 +183,227 @@ async fn a_tool_that_panics_fails_its_call_and_the_run_carries_on() {
         "{results:?}"
     );
 }
+
+const RECORDING: &str = "recording";
+const SLOW: &str = "slow";
+const ASKING: &str = "asking";
+
+/// A tool that notes each call it runs, at the tier it is given.
+struct Recording {
+    tier: crate::tools::Tier,
+    runs: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for Recording {
+    fn name(&self) -> &str {
+        RECORDING
+    }
+
+    fn description(&self) -> &str {
+        "Records that it ran."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object", "properties": {}})
+    }
+
+    fn tier(&self) -> crate::tools::Tier {
+        self.tier
+    }
+
+    async fn execute(
+        &self,
+        _parameters: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult::success("ran"))
+    }
+}
+
+fn recording(tier: crate::tools::Tier) -> (ToolRegistry, Arc<AtomicUsize>) {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(Recording {
+        tier,
+        runs: Arc::clone(&runs),
+    }));
+    (tools, runs)
+}
+
+/// A callback that allows everything, as an application that has asked its
+/// user would.
+struct Approving;
+
+impl super::AgentCallback for Approving {
+    fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
+    fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
+    fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
+    fn on_response(&self, _response: &str) {}
+
+    fn approve(&self, _call: &abnegate_llm::ToolCall, _tier: crate::tools::Tier) -> bool {
+        true
+    }
+}
+
+/// Nothing asked before a host-tier call ran: the tier said it should be
+/// confirmed, and the loop ran it anyway. A caller that does not answer the
+/// question now gets the safe answer.
+#[tokio::test]
+async fn a_call_that_needs_confirmation_is_refused_unless_the_callback_approves_it() {
+    let script = || vec![calling(&[(RECORDING, json!({}))]), answer("done")];
+    let unwatched = provider(script()).await;
+    let (tools, runs) = recording(crate::tools::Tier::Host);
+
+    let state = agent(&unwatched, tools)
+        .run("Go.", &NoOpCallback)
+        .await
+        .expect("a refused call does not end the run");
+
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        0,
+        "the host call ran unapproved"
+    );
+    let results = tool_results(&state);
+    assert!(results[0].contains("not approved"), "{results:?}");
+
+    let watched = provider(script()).await;
+    let (tools, runs) = recording(crate::tools::Tier::Host);
+    agent(&watched, tools).run("Go.", &Approving).await.unwrap();
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "an approved call runs");
+}
+
+#[tokio::test]
+async fn a_call_that_needs_no_confirmation_runs_without_asking() {
+    let provider = provider(vec![calling(&[(RECORDING, json!({}))]), answer("done")]).await;
+    let (tools, runs) = recording(crate::tools::Tier::Read);
+
+    agent(&provider, tools)
+        .run("Go.", &NoOpCallback)
+        .await
+        .unwrap();
+
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
+struct Slow;
+
+#[async_trait]
+impl Tool for Slow {
+    fn name(&self) -> &str {
+        SLOW
+    }
+
+    fn description(&self) -> &str {
+        "Never finishes."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object", "properties": {}})
+    }
+
+    fn timeout(&self, _context: &ToolContext) -> std::time::Duration {
+        std::time::Duration::from_millis(100)
+    }
+
+    async fn execute(
+        &self,
+        _parameters: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+        Ok(ToolResult::success("finished"))
+    }
+}
+
+/// `Tool::timeout` was documented as the bound a caller applies, and the
+/// loop never applied it: a wedged tool held the run open for good.
+#[tokio::test]
+async fn a_tool_past_its_timeout_fails_its_call() {
+    let provider = provider(vec![calling(&[(SLOW, json!({}))]), answer("moved on")]).await;
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(Slow));
+
+    let started = std::time::Instant::now();
+    let state = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        agent(&provider, tools).run("Go.", &NoOpCallback),
+    )
+    .await
+    .expect("the loop does not wait on the tool")
+    .expect("a timed-out call does not end the run");
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(state.final_response.as_deref(), Some("moved on"));
+    let results = tool_results(&state);
+    assert!(results[0].contains("timed out"), "{results:?}");
+}
+
+struct Asking;
+
+#[async_trait]
+impl Tool for Asking {
+    fn name(&self) -> &str {
+        ASKING
+    }
+
+    fn description(&self) -> &str {
+        "Asks the user something."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object", "properties": {}})
+    }
+
+    fn ends_turn(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _parameters: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::success("Which colour?"))
+    }
+}
+
+/// `ends_turn` promised that nothing queued behind the call would run and no
+/// further model round would follow, and the loop ignored it.
+#[tokio::test]
+async fn a_tool_that_ends_the_turn_stops_the_loop() {
+    let provider = provider(vec![
+        calling(&[(ASKING, json!({})), (RECORDING, json!({}))]),
+        answer("should never be asked for"),
+    ])
+    .await;
+    let (mut tools, runs) = recording(crate::tools::Tier::Read);
+    tools.register(Arc::new(Asking));
+
+    let state = agent(&provider, tools)
+        .run("Go.", &NoOpCallback)
+        .await
+        .expect("the turn ends cleanly");
+
+    assert_eq!(
+        provider.received.lock().unwrap().len(),
+        1,
+        "another round followed"
+    );
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        0,
+        "a call queued behind it ran"
+    );
+    assert!(state.finished);
+    assert_eq!(state.final_response.as_deref(), Some("Which colour?"));
+    let results = tool_results(&state);
+    assert_eq!(
+        results.len(),
+        2,
+        "every call still has a result: {results:?}"
+    );
+    assert!(results[1].contains("Not run"), "{results:?}");
+}

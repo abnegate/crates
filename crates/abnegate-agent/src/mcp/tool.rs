@@ -2,11 +2,12 @@ use async_trait::async_trait;
 use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::time::timeout;
 
 use super::format::format_call_result;
 use super::session::McpSession;
-use crate::tools::{Tier, Tool, ToolContext, ToolError, ToolResult};
+use crate::tools::{TIMEOUT_SLACK, Tier, Tool, ToolContext, ToolError, ToolResult};
 
 const MAX_MCP_OUTPUT_CHARACTERS: usize = 8_000;
 const TRUNCATION_MARKER: &str = "\n[truncated]";
@@ -60,6 +61,12 @@ impl Tool for McpTool {
     /// cannot be recalled, and the reader sees it before it runs.
     fn tier(&self) -> Tier {
         Tier::Outward
+    }
+
+    /// The call's own limit, the configured command timeout, with room to
+    /// report it.
+    fn timeout(&self, context: &ToolContext) -> Duration {
+        context.command_timeout + TIMEOUT_SLACK
     }
 
     /// The method and the arguments it was given.

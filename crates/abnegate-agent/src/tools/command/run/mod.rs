@@ -7,13 +7,14 @@ use serde_json::{Value, json};
 use tokio::time::Duration;
 
 use super::{
-    BACKGROUND_PARAMETER, MAX_OUTPUT_PARAMETER, background, background_property,
-    clamp_output_characters, max_output_property, run_preview, working_directory,
+    BACKGROUND_PARAMETER, MAX_OUTPUT_PARAMETER, MAX_SHELL_TIMEOUT_SECONDS, background,
+    background_property, call_limit, clamp_output_characters, max_output_property, run_preview,
+    working_directory,
 };
 use crate::tools::job::JobCommand;
 use crate::tools::process;
 use crate::tools::{
-    ERROR_PREFIX, REASON_PARAMETER, Tier, Tool, ToolContext, ToolError, ToolResult,
+    ERROR_PREFIX, REASON_PARAMETER, TIMEOUT_SLACK, Tier, Tool, ToolContext, ToolError, ToolResult,
     reason_property, trim_middle,
 };
 
@@ -66,9 +67,8 @@ impl Tool for RunCommandTool {
         Some(run_preview(&line, parameters.working_directory.as_deref()))
     }
 
-    fn timeout(&self, context: &ToolContext) -> Duration {
-        // Loose enough never to pre-empt the per-call limit applied below.
-        context.command_timeout + Duration::from_secs(30)
+    fn timeout(&self, _context: &ToolContext) -> Duration {
+        Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS) + TIMEOUT_SLACK
     }
 
     fn parameters_schema(&self) -> Value {
@@ -90,7 +90,10 @@ impl Tool for RunCommandTool {
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 300)"
+                    "description": format!(
+                        "Wall-clock limit in seconds. Defaults to the configured command \
+                         timeout; at most {MAX_SHELL_TIMEOUT_SECONDS}."
+                    )
                 },
                 BACKGROUND_PARAMETER: background_property(),
                 MAX_OUTPUT_PARAMETER: max_output_property(),
@@ -146,9 +149,7 @@ impl Tool for RunCommandTool {
         let mut process = process::command(&parameters.command, context);
         process.args(&parameters.arguments).current_dir(&cwd);
 
-        let limit = parameters
-            .timeout_seconds
-            .map_or(context.command_timeout, Duration::from_secs);
+        let limit = call_limit(parameters.timeout_seconds, context.command_timeout);
         let output = process::run(process, limit).await?;
         let (stdout, stderr) = (output.stdout, output.stderr);
 

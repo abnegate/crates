@@ -42,6 +42,7 @@ pub use text::{
     excerpt,
 };
 pub use tier::{CONFIRMED_FROM, Tier};
+pub(crate) use tool::TIMEOUT_SLACK;
 pub use tool::Tool;
 pub use vision::is_vision_url;
 

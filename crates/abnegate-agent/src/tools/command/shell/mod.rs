@@ -9,13 +9,14 @@ use tokio::time::Duration;
 
 use super::{
     BACKGROUND_PARAMETER, MAX_OUTPUT_PARAMETER, MAX_SHELL_TIMEOUT_SECONDS, background,
-    background_property, clamp_output_characters, max_output_property, run_preview,
+    background_property, call_limit, clamp_output_characters, max_output_property, run_preview,
     working_directory,
 };
 use crate::tools::job::{JobCommand, SHELL, SHELL_COMMAND_FLAG, WAIT_FOR};
 use crate::tools::process;
 use crate::tools::{
-    REASON_PARAMETER, Tier, Tool, ToolContext, ToolError, ToolResult, reason_property, trim_middle,
+    REASON_PARAMETER, TIMEOUT_SLACK, Tier, Tool, ToolContext, ToolError, ToolResult,
+    reason_property, trim_middle,
 };
 
 /// Run a command through a real shell, with no allow-list.
@@ -34,6 +35,9 @@ pub struct RunShellTool;
 /// longer sleep reads as a wedged run rather than a waiting one. Waiting past
 /// it belongs between calls, where the loop can still see what is happening.
 pub const MAX_SLEEP_SECONDS: u64 = 60;
+
+/// How long a shell call runs when it names no limit of its own.
+const DEFAULT_SHELL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Where one command in a line ends and the next begins, plus the grouping
 /// characters a `sleep` can sit behind.
@@ -172,8 +176,7 @@ impl Tool for RunShellTool {
     }
 
     fn timeout(&self, _context: &ToolContext) -> Duration {
-        // Loose enough never to pre-empt the per-call limit enforced below.
-        Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS + 30)
+        Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS) + TIMEOUT_SLACK
     }
 
     async fn execute(
@@ -213,12 +216,7 @@ impl Tool for RunShellTool {
             return background(&command, context).await;
         }
 
-        let limit = Duration::from_secs(
-            parameters
-                .timeout_seconds
-                .unwrap_or(120)
-                .clamp(1, MAX_SHELL_TIMEOUT_SECONDS),
-        );
+        let limit = call_limit(parameters.timeout_seconds, DEFAULT_SHELL_TIMEOUT);
 
         let mut process = process::command(SHELL, context);
         process

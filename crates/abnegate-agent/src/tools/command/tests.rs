@@ -1495,3 +1495,32 @@ async fn a_program_that_runs_any_code_it_is_given_is_not_on_the_list() {
         );
     }
 }
+
+/// `run_command` took any `timeout_secs` at face value, so a call could ask
+/// to run for a year; it is now held to the shell's range, both ends.
+#[test]
+fn a_call_limit_is_held_between_a_second_and_the_shell_maximum() {
+    let default = std::time::Duration::from_secs(300);
+    assert_eq!(call_limit(None, default), default);
+    assert_eq!(
+        call_limit(Some(42), default),
+        std::time::Duration::from_secs(42)
+    );
+    assert_eq!(
+        call_limit(Some(0), default),
+        std::time::Duration::from_secs(1)
+    );
+    assert_eq!(
+        call_limit(Some(31_536_000), default),
+        std::time::Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS)
+    );
+    assert_eq!(
+        call_limit(None, std::time::Duration::from_secs(86_400)),
+        std::time::Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS)
+    );
+    assert!(
+        RunCommandTool.timeout(&create_test_context())
+            > std::time::Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS),
+        "the outer bound must not pre-empt the longest call"
+    );
+}

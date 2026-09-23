@@ -7,6 +7,10 @@ use super::{Tier, ToolContext, ToolError, ToolResult};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// What a tool that enforces its own limit adds to it for the outer bound,
+/// so the outer bound never pre-empts the inner one.
+pub(crate) const TIMEOUT_SLACK: Duration = Duration::from_secs(30);
+
 /// Something the agent can call.
 #[async_trait]
 pub trait Tool: Send + Sync {
