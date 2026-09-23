@@ -80,8 +80,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
       # Without bubblewrap abnegate-exec reports its confinement backend
-      # unusable and every test that asks the real sandbox to refuse something
-      # returns early, reporting ok.
+      # unusable, and ABNEGATE_EXEC_REQUIRE_CONFINEMENT below turns every test
+      # that asks the real sandbox to refuse something into a failure.
       - name: Install bubblewrap
         run: sudo apt-get install -y --no-install-recommends bubblewrap
 
@@ -105,6 +105,7 @@ jobs:
         run: cargo nextest run --workspace --all-targets --all-features --no-fail-fast
         env:
           RUST_BACKTRACE: 1
+          ABNEGATE_EXEC_REQUIRE_CONFINEMENT: "1"
 
       - name: Run doc tests
         run: cargo test --workspace --all-features --doc
@@ -139,6 +140,7 @@ jobs:
         run: cargo nextest run -p abnegate-exec --all-targets --no-fail-fast
         env:
           RUST_BACKTRACE: 1
+          ABNEGATE_EXEC_REQUIRE_CONFINEMENT: "1"
 
   hack:
     name: Feature Matrix

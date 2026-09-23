@@ -223,6 +223,7 @@ impl Default for CommandExecutor {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::Path;
     use std::path::PathBuf;
 
     use base64::Engine;
@@ -231,6 +232,8 @@ mod tests {
     use crate::executor::ConfinementMode;
     use crate::executor::EnvironmentPolicy;
     use crate::executor::GRACE_PERIOD;
+    use crate::executor::sandbox;
+    use crate::executor::sandbox::REQUIRE_CONFINEMENT;
     use crate::protocol::ConfinementRequest;
     use crate::protocol::ErrorCode;
     use crate::protocol::LogLevel;
@@ -359,6 +362,25 @@ mod tests {
         }
     }
 
+    /// Run `command` confined to `root`, which it may read and write.
+    fn confined(job_id: &str, root: &Path, command: &str) -> InboundMessage {
+        InboundMessage::RunStart {
+            job_id: job_id.to_string(),
+            workspace: root.to_path_buf(),
+            command: command.to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            timeout_ms: Some(15_000),
+            max_output_bytes: None,
+            working_dir: None,
+            confinement: Some(Box::new(ConfinementRequest {
+                read_roots: vec![root.to_path_buf()],
+                write_roots: vec![root.to_path_buf()],
+                process_tree: None,
+            })),
+        }
+    }
+
     fn limited(request: InboundMessage, limit: usize) -> InboundMessage {
         let InboundMessage::RunStart {
             job_id,
@@ -388,9 +410,10 @@ mod tests {
     }
 
     /// Re-run the test `name` in a child test process whose environment is
-    /// `PATH` plus `environment`, so a test can shape the executor's own
-    /// environment without mutating this process's. Returns whether this call
-    /// was the parent, which has nothing left to do once the child passes.
+    /// `PATH` and [`REQUIRE_CONFINEMENT`] plus `environment`, so a test can
+    /// shape the executor's own environment without touching this process.
+    /// Returns whether this call was the parent, which has nothing left to do
+    /// once the child passes.
     async fn delegated_to_child(name: &str, environment: &[(&str, &str)]) -> bool {
         if std::env::var(CHILD).as_deref() == Ok(name) {
             return false;
@@ -400,6 +423,7 @@ mod tests {
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env(CHILD, name)
+            .envs(std::env::var_os(REQUIRE_CONFINEMENT).map(|value| (REQUIRE_CONFINEMENT, value)))
             .envs(environment.iter().copied())
             .output()
             .await
@@ -514,29 +538,15 @@ mod tests {
         {
             return;
         }
-        if Confinement::probe(ConfinementMode::SingleCommand)
-            .await
-            .is_err()
-        {
+        if !sandbox::proven(ConfinementMode::SingleCommand).await {
             return;
         }
         let workspace = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(workspace.path()).unwrap();
-        let request = InboundMessage::RunStart {
-            job_id: "confined-environment".to_string(),
-            workspace: root.clone(),
-            command: "/usr/bin/env".to_string(),
-            args: vec![],
-            env: HashMap::from([("LAYERED".to_string(), "request".to_string())]),
-            timeout_ms: Some(15_000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: Some(Box::new(ConfinementRequest {
-                read_roots: vec![root.clone()],
-                write_roots: vec![root.clone()],
-                process_tree: None,
-            })),
-        };
+        let mut request = confined("confined-environment", &root, "/usr/bin/env");
+        if let InboundMessage::RunStart { env, .. } = &mut request {
+            env.insert("LAYERED".to_string(), "request".to_string());
+        }
 
         let output = environment_of(&CommandExecutor::new(), &request).await;
         let lines: Vec<&str> = output.lines().collect();
