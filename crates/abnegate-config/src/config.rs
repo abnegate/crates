@@ -95,9 +95,10 @@ impl<T: Serialize> Config<T> {
     /// value that still holds its envelope is written as it was, and one that
     /// would be written in the clear fails with
     /// [`ConfigError::SealedWithoutKey`] rather than reach the disk. A sealed
-    /// value whose location is gone and whose content is nowhere else fails
-    /// with [`ConfigError::SealedShapeChanged`], since it cannot be told apart
-    /// from one that moved to a new key and was edited on the way.
+    /// value whose location is gone fails with
+    /// [`ConfigError::SealedShapeChanged`] when fewer strings in the settings
+    /// hold it than the file did, or when it was empty, since it cannot be told
+    /// apart from one that moved to a new key and was edited on the way.
     ///
     /// The file is replaced atomically and is readable only by its owner; a
     /// directory created for it is too.
@@ -179,6 +180,21 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize, Serialize)]
+    struct Mirrored {
+        #[serde(alias = "api_key")]
+        token: String,
+        backup: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct Proxied {
+        #[serde(alias = "api_key")]
+        token: String,
+        #[serde(default)]
+        proxy: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
     struct Profiles {
         profiles: BTreeMap<String, Credentials>,
     }
@@ -206,9 +222,17 @@ mod tests {
     }
 
     fn sealed_file(content: impl FnOnce(&str) -> String, key: &MasterKey) -> (TempDir, PathBuf) {
+        sealed_file_holding("hunter2", content, key)
+    }
+
+    fn sealed_file_holding(
+        secret: &str,
+        content: impl FnOnce(&str) -> String,
+        key: &MasterKey,
+    ) -> (TempDir, PathBuf) {
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("config.toml");
-        let envelope = encrypt_value(&SecretValue::new("hunter2"), key).unwrap();
+        let envelope = encrypt_value(&SecretValue::new(secret), key).unwrap();
         fs::write(&path, content(&envelope)).unwrap();
         (directory, path)
     }
@@ -637,6 +661,74 @@ mod tests {
         let mut config = Loader::at(&path)
             .master_key(&key)
             .load::<Renamed>()
+            .unwrap();
+        config.value_mut().token = "correct-horse".to_string();
+        let error = config.save().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_secret_renamed_and_edited_beside_a_sealed_copy_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file(
+            |envelope| format!("api_key = \"{envelope}\"\nbackup = \"{envelope}\"\n"),
+            &key,
+        );
+        let before = fs::read_to_string(&path).unwrap();
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Mirrored>()
+            .unwrap();
+        config.value_mut().token = "correct-horse".to_string();
+        let error = config.save().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_empty_secret_renamed_and_edited_beside_an_empty_string_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file_holding(
+            "",
+            |envelope| format!("api_key = \"{envelope}\"\nproxy = \"\"\n"),
+            &key,
+        );
+        let before = fs::read_to_string(&path).unwrap();
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Proxied>()
+            .unwrap();
+        config.value_mut().token = "correct-horse".to_string();
+        let error = config.save().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_empty_secret_renamed_and_edited_beside_a_defaulted_field_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) =
+            sealed_file_holding("", |envelope| format!("api_key = \"{envelope}\"\n"), &key);
+        let before = fs::read_to_string(&path).unwrap();
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Proxied>()
             .unwrap();
         config.value_mut().token = "correct-horse".to_string();
         let error = config.save().unwrap_err();

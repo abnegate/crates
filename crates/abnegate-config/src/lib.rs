@@ -48,6 +48,12 @@
 //! when a sealed value has gone and cannot be told apart from one that was
 //! renamed and edited.
 //!
+//! A value counts as moved only while at least as many strings hold it as the
+//! file did, so a copy under another key does not vouch for it: renaming a
+//! secret that two fields shared and editing one of them is refused. An empty
+//! value is followed only by where it sat, never by content, since any empty
+//! or defaulted string would match it, so one whose key is gone is refused.
+//!
 //! ```
 //! use abnegate_config::Loader;
 //! use abnegate_secret::MasterKey;

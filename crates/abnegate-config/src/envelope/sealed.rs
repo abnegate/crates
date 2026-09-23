@@ -8,13 +8,15 @@ use crate::envelope::location::Location;
 /// It is remembered by where it sat, by what the application was handed there
 /// (the plaintext when the loader had a key, the envelope itself when it did
 /// not), by how many locations its key path reached through any array element,
-/// and by how many of those held the same content.
+/// by how many of those held the same content, and by how many strings in the
+/// whole document did.
 #[derive(Debug)]
 pub(crate) struct Sealed {
     location: Location,
     received: SecretValue,
     reach: usize,
     copies: usize,
+    document_copies: usize,
 }
 
 impl Sealed {
@@ -26,10 +28,12 @@ impl Sealed {
             received,
             reach: candidates.len(),
             copies: 0,
+            document_copies: 0,
         };
 
         Self {
             copies: unmeasured.holding(document, &candidates).len(),
+            document_copies: unmeasured.copies_in(document),
             ..unmeasured
         }
     }
@@ -40,8 +44,11 @@ impl Sealed {
 
     /// Whether `text` is what the application was handed for this value,
     /// compared in constant time.
+    ///
+    /// An empty value matches nothing: every empty string, a defaulted field
+    /// among them, would otherwise pass for it.
     pub(crate) fn matches(&self, text: &str) -> bool {
-        SecretValue::new(text) == self.received
+        !self.received.is_empty() && SecretValue::new(text) == self.received
     }
 
     /// Every location on this value's key path that has to be sealed so it is
@@ -50,24 +57,29 @@ impl Sealed {
     /// The value is looked for by content through any element of each array on
     /// the way, so it is followed when elements are added or removed. When
     /// fewer locations hold it than did on load, one of them was edited or
-    /// removed, and every location on the key path is sealed instead.
+    /// removed, and every location on the key path is sealed instead, as it
+    /// always is for an empty value.
     pub(crate) fn targets(&self, document: &Value) -> Vec<Location> {
         let candidates = self.location.expand(document);
         let holding = self.holding(document, &candidates);
 
-        if holding.len() < self.copies {
+        if self.received.is_empty() || holding.len() < self.copies {
             candidates
         } else {
             holding
         }
     }
 
-    /// Whether this value has gone from `document` altogether: its key path
-    /// reaches fewer locations than it did on load and its content is nowhere,
-    /// so it cannot be told apart from a value that moved to a new key and was
-    /// edited on the way.
+    /// Whether this value may have moved to a new key and been edited on the
+    /// way: its key path reaches fewer locations than it did on load and fewer
+    /// strings anywhere in `document` hold its content than did then.
+    ///
+    /// A copy elsewhere is not enough, since it may be a second field that
+    /// shared the secret. An empty value cannot be followed by content at all,
+    /// so it is lost as soon as its key path shrinks.
     pub(crate) fn is_lost(&self, document: &Value) -> bool {
-        self.location.expand(document).len() < self.reach && !self.is_anywhere(document)
+        self.location.expand(document).len() < self.reach
+            && (self.received.is_empty() || self.copies_in(document) < self.document_copies)
     }
 
     fn holding(&self, document: &Value, candidates: &[Location]) -> Vec<Location> {
@@ -83,12 +95,12 @@ impl Sealed {
             .collect()
     }
 
-    fn is_anywhere(&self, value: &Value) -> bool {
+    fn copies_in(&self, value: &Value) -> usize {
         match value {
-            Value::String(text) => self.matches(text),
-            Value::Table(table) => table.values().any(|child| self.is_anywhere(child)),
-            Value::Array(array) => array.iter().any(|child| self.is_anywhere(child)),
-            _ => false,
+            Value::String(text) => usize::from(self.matches(text)),
+            Value::Table(table) => table.values().map(|child| self.copies_in(child)).sum(),
+            Value::Array(array) => array.iter().map(|child| self.copies_in(child)).sum(),
+            _ => 0,
         }
     }
 }
@@ -117,6 +129,10 @@ mod tests {
 
     fn loaded(location: Location, content: &str) -> Sealed {
         Sealed::new(location, SecretValue::new("hunter2"), &document(content))
+    }
+
+    fn empty(location: Location, content: &str) -> Sealed {
+        Sealed::new(location, SecretValue::new(""), &document(content))
     }
 
     fn targets(sealed: &Sealed, content: &str) -> Vec<String> {
@@ -223,6 +239,44 @@ mod tests {
     }
 
     #[test]
+    fn a_value_whose_key_is_gone_is_lost_when_fewer_copies_remain() {
+        let sealed = loaded(password(), "password = \"hunter2\"\nbackup = \"hunter2\"");
+
+        assert!(sealed.is_lost(&document("token = \"edited\"\nbackup = \"hunter2\"")));
+    }
+
+    #[test]
+    fn a_value_whose_key_is_gone_is_not_lost_while_every_copy_remains() {
+        let sealed = loaded(password(), "password = \"hunter2\"\nbackup = \"hunter2\"");
+
+        assert!(!sealed.is_lost(&document("token = \"hunter2\"\nbackup = \"hunter2\"")));
+    }
+
+    #[test]
+    fn an_empty_value_whose_key_is_gone_is_lost_whatever_else_is_empty() {
+        let sealed = empty(password(), "password = \"\"\nproxy = \"\"");
+
+        assert!(sealed.is_lost(&document("token = \"\"\nproxy = \"\"")));
+    }
+
+    #[test]
+    fn an_empty_value_edited_where_it_sits_is_not_lost() {
+        let sealed = empty(password(), "password = \"\"");
+
+        assert!(!sealed.is_lost(&document("password = \"edited\"")));
+    }
+
+    #[test]
+    fn an_empty_array_value_seals_its_whole_key_path() {
+        let sealed = empty(hosts(0), "hosts = [\"\"]");
+
+        assert_eq!(
+            targets(&sealed, "hosts = [\"edited\", \"\"]"),
+            ["hosts[0]", "hosts[1]"]
+        );
+    }
+
+    #[test]
     fn a_value_edited_where_it_sits_is_not_lost() {
         let sealed = loaded(password(), "password = \"hunter2\"");
 
@@ -250,5 +304,12 @@ mod tests {
         assert!(sealed.matches("hunter2"));
         assert!(!sealed.matches("hunter"));
         assert!(!sealed.matches("hunter22"));
+    }
+
+    #[test]
+    fn an_empty_value_matches_nothing() {
+        let sealed = empty(password(), "password = \"\"");
+
+        assert!(!sealed.matches(""));
     }
 }
