@@ -13,6 +13,7 @@ use crate::mcp::transport::McpTransport;
 
 const PREFIX: &str = "mcp__";
 const SEPARATOR: &str = "__";
+const NAME_PUNCTUATION: [char; 2] = ['_', '-'];
 
 /// One MCP server, as a CLI's MCP configuration describes it.
 ///
@@ -54,10 +55,25 @@ impl McpServer {
         if self.tools.is_empty() {
             return vec![format!("{PREFIX}{name}")];
         }
+        self.scoped_tools(name)
+    }
+
+    /// The `--allowedTools` entries for the tools this server names, and
+    /// none for a server that names none.
+    pub fn scoped_tools(&self, name: &str) -> Vec<String> {
         self.tools
             .iter()
             .map(|tool| format!("{PREFIX}{name}{SEPARATOR}{tool}"))
             .collect()
+    }
+
+    /// Whether `permission` names one tool of one MCP server, as
+    /// [`McpServer::scoped_tools`] would, rather than a whole server.
+    pub fn scoped(permission: &str) -> bool {
+        permission
+            .strip_prefix(PREFIX)
+            .and_then(|rest| rest.split_once(SEPARATOR))
+            .is_some_and(|(server, tool)| valid_name(server) && valid_name(tool))
     }
 
     /// This server as the CLI's configuration file holds it, with every
@@ -113,6 +129,15 @@ impl McpServer {
         entry.insert("tools".to_string(), json!(self.tools));
         Value::Object(entry)
     }
+}
+
+/// Whether `name` is safe to place in an `--allowedTools` entry, which the
+/// CLI splits on commas and whitespace.
+pub(crate) fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || NAME_PUNCTUATION.contains(&character)
+        })
 }
 
 fn exposed(values: &BTreeMap<String, SecretValue>) -> Value {
@@ -235,6 +260,38 @@ mod tests {
         assert_eq!(
             scoped.allowed_tools("grafana"),
             ["mcp__grafana__list_datasources", "mcp__grafana__query"]
+        );
+    }
+
+    #[test]
+    fn only_a_single_named_tool_of_a_server_counts_as_scoped() {
+        for permission in ["mcp__grafana__query", "mcp__my-server__list_things"] {
+            assert!(McpServer::scoped(permission), "{permission}");
+        }
+        for permission in [
+            "mcp__grafana",
+            "mcp__grafana__",
+            "mcp____query",
+            "mcp__grafana__query Bash",
+            "mcp__grafana__query,Bash",
+            "mcp__grafana__*",
+            "Bash",
+            "Read",
+        ] {
+            assert!(!McpServer::scoped(permission), "{permission}");
+        }
+    }
+
+    #[test]
+    fn a_server_without_a_tool_list_has_no_scoped_tools() {
+        assert!(stdio().scoped_tools("appwrite").is_empty());
+        assert_eq!(
+            McpServer {
+                tools: vec!["query".to_string()],
+                ..stdio()
+            }
+            .scoped_tools("grafana"),
+            ["mcp__grafana__query"]
         );
     }
 

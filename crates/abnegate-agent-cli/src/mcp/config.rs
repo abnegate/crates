@@ -89,6 +89,14 @@ impl McpConfig {
             .flat_map(|(name, server)| server.allowed_tools(name))
             .collect()
     }
+
+    /// The `--allowedTools` entries for the tools each attachable server
+    /// names, leaving out every server that names none.
+    pub fn scoped_tools(&self) -> Vec<String> {
+        self.attachable()
+            .flat_map(|(name, server)| server.scoped_tools(name))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -233,6 +241,21 @@ mod tests {
             config.allowed_tools(),
             ["mcp__appwrite", "mcp__grafana__list_datasources"]
         );
+    }
+
+    #[test]
+    fn scoped_tools_leave_out_every_server_that_names_none() {
+        let config = McpConfig::default()
+            .with_server("appwrite", appwrite())
+            .with_server(
+                "grafana",
+                McpServer {
+                    tools: vec!["list_datasources".to_string()],
+                    ..appwrite()
+                },
+            );
+
+        assert_eq!(config.scoped_tools(), ["mcp__grafana__list_datasources"]);
     }
 
     #[test]

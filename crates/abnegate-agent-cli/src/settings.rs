@@ -21,12 +21,28 @@ pub const DEFAULT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 pub const DEFAULT_LINE_LIMIT: usize = 1024 * 1024;
 
 /// Claude Code's tools that read the workspace and the web but never change
-/// anything, for a run that must leave the repository as it found it.
+/// anything, and the only built-in tools a read-only run makes available.
 pub const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
 
-/// Claude Code's tools that change the workspace or run arbitrary commands,
-/// which a read-only run denies outright.
-pub const WRITE_TOOLS: [&str; 5] = ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit"];
+/// Caller [arguments](CliSettings::arguments) a read-only run passes through
+/// that take no value. Only the long form is recognised.
+pub const READ_ONLY_SWITCHES: [&str; 4] = [
+    "--exclude-dynamic-system-prompt-sections",
+    "--fork-session",
+    "--include-partial-messages",
+    "--no-session-persistence",
+];
+
+/// Caller [arguments](CliSettings::arguments) a read-only run passes through
+/// that take one value, given either as the next argument or after `=`.
+pub const READ_ONLY_OPTIONS: [&str; 6] = [
+    "--effort",
+    "--fallback-model",
+    "--max-budget-usd",
+    "--name",
+    "--resume",
+    "--session-id",
+];
 
 /// How a [`CliProvider`](crate::CliProvider) runs its agent.
 ///
@@ -54,7 +70,9 @@ pub struct CliSettings {
     /// explicit value always wins.
     pub environment: BTreeMap<String, SecretValue>,
     /// Extra flags passed through verbatim, after the streaming flags and
-    /// before the model. Nothing here is checked against the agent.
+    /// before the model. Nothing here is checked against the agent, except
+    /// in a [read-only](CliSettings::read_only) run, which refuses anything
+    /// not in [`READ_ONLY_SWITCHES`] or [`READ_ONLY_OPTIONS`].
     pub arguments: Vec<String>,
     /// A JSON schema the final answer must satisfy. Claude only.
     pub schema: Option<String>,
@@ -62,9 +80,17 @@ pub struct CliSettings {
     pub instructions: Option<String>,
     /// Tools the agent may use without asking. Claude only.
     pub permissions: Vec<String>,
-    /// Deny [`WRITE_TOOLS`] and refuse any flag that bypasses permission
-    /// prompts, so the run cannot change the workspace however it is asked
-    /// to. Claude only.
+    /// Confine the run to an allowlist, so it cannot change the workspace
+    /// however it is asked to. Claude only.
+    ///
+    /// Only the [`READ_ONLY_TOOLS`] named in `permissions` are available at
+    /// all; anything that would need permission is denied rather than asked
+    /// about; only user settings load, so a repository cannot add hooks,
+    /// permissions or plugins of its own; only the MCP servers attached here
+    /// load, and only the tools each one names are allowed, never a whole
+    /// server; and every caller argument outside [`READ_ONLY_SWITCHES`] and
+    /// [`READ_ONLY_OPTIONS`] is refused. A permission that is neither a
+    /// read-only tool nor one named MCP tool is refused too.
     pub read_only: bool,
     /// MCP servers to attach, whose tools are allowed alongside
     /// `permissions`. Claude only.
@@ -170,7 +196,8 @@ impl CliSettings {
     }
 
     /// Allow exactly [`READ_ONLY_TOOLS`], replacing any permission set so
-    /// far, and hold the run to [`CliSettings::read_only`].
+    /// far, and hold the run to [`CliSettings::read_only`]. Named MCP tools
+    /// may be allowed afterwards with [`CliSettings::with_permissions`].
     pub fn read_only(mut self) -> Self {
         self.permissions = READ_ONLY_TOOLS.map(str::to_string).to_vec();
         self.read_only = true;

@@ -1494,6 +1494,117 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         assert!(!path.exists(), "the MCP config outlived the run");
     }
 
+    /// A stand-in for Claude that loads the repository's own settings, and
+    /// runs the hook they declare, unless `--setting-sources` leaves the
+    /// project out, as the real CLI does.
+    fn honouring_project_settings(captured: &Path) -> String {
+        format!(
+            r#"printf '%s\n' "$@" > '{captured}'
+sources=user,project,local
+previous=
+for argument in "$@"; do
+  if [ "$previous" = "--setting-sources" ]; then sources="$argument"; fi
+  previous="$argument"
+done
+case ",$sources," in
+  *,project,*)
+    hook=$(sed -n 's/.*"command": *"\([^"]*\)".*/\1/p' .claude/settings.json)
+    [ -n "$hook" ] && sh -c "$hook"
+    ;;
+esac
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            captured = captured.display(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_read_only_run_never_honours_the_repositorys_hooks() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let repository = directory.path().join("repository");
+        let marker = directory.path().join("hook-ran");
+        std::fs::create_dir_all(repository.join(".claude")).expect("a settings directory");
+        std::fs::write(
+            repository.join(".claude/settings.json"),
+            format!(
+                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"type":"command","command": "touch {}"}}]}}]}}}}"#,
+                marker.display()
+            ),
+        )
+        .expect("a hook-bearing settings file");
+        let captured = directory.path().join("arguments");
+        let settings = settings(&directory, &honouring_project_settings(&captured))
+            .with_working_directory(&repository)
+            .read_only();
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        assert!(!marker.exists(), "the repository's hook ran");
+        let arguments: Vec<String> = std::fs::read_to_string(&captured)
+            .expect("the captured arguments")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        for expected in [
+            ["--setting-sources", "user"],
+            ["--tools", "Read,Grep,Glob,WebFetch,WebSearch"],
+            ["--permission-mode", "dontAsk"],
+            ["--permission-prompts", "none"],
+        ] {
+            assert!(
+                arguments.windows(2).any(|pair| pair == expected),
+                "{expected:?} missing from {arguments:?}"
+            );
+        }
+        assert!(arguments.contains(&"--strict-mcp-config".to_string()));
+        assert!(!arguments.iter().any(|argument| argument == "--settings"));
+    }
+
+    #[tokio::test]
+    async fn an_unconfined_run_leaves_the_setting_sources_to_the_agent() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let repository = directory.path().join("repository");
+        let marker = directory.path().join("hook-ran");
+        std::fs::create_dir_all(repository.join(".claude")).expect("a settings directory");
+        std::fs::write(
+            repository.join(".claude/settings.json"),
+            format!(r#"{{"command": "touch {}"}}"#, marker.display()),
+        )
+        .expect("a hook-bearing settings file");
+        let captured = directory.path().join("arguments");
+        let settings = settings(&directory, &honouring_project_settings(&captured))
+            .with_working_directory(&repository);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        assert!(
+            marker.exists(),
+            "the stand-in never loaded project settings"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_only_run_refuses_a_bypass_before_starting_anything() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("started");
+        let settings = settings(&directory, &format!("touch '{}'", marker.display()))
+            .read_only()
+            .with_arguments(["--settings", r#"{"permissions":{"allow":["Bash"]}}"#]);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a refusal");
+
+        assert!(matches!(error, ProviderError::Config { .. }), "{error:?}");
+        assert!(!marker.exists(), "the agent was started");
+    }
+
     #[tokio::test]
     async fn a_logged_run_keeps_its_prose_stderr_and_journal() {
         let directory = TempDir::new().expect("a temporary directory");
