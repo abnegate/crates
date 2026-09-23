@@ -51,6 +51,7 @@
 //!   application's own prefix.
 
 pub mod agent;
+mod application;
 pub mod chat;
 pub mod context;
 mod error;
@@ -67,6 +68,7 @@ pub use crate::agent::{
     Agent, AgentCallback, AgentConfig, AgentError, AgentPhase, AgentState, AgentStep, NoOpCallback,
     ToolCallResult,
 };
+pub use crate::application::{Application, ApplicationError, DEFAULT_APPLICATION};
 pub use crate::error::{Error, Result};
 #[cfg(feature = "mcp")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]

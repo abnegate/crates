@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::Session;
-
-/// The application name a default [`ToolContext`] keeps its own files under.
-pub const DEFAULT_APPLICATION: &str = "abnegate";
+use crate::Application;
 
 const DEFAULT_MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
@@ -33,7 +31,7 @@ pub struct ToolContext {
     /// The name the tools keep their own files under, as `.{application}/`
     /// inside `working_directory`: background job logs live in
     /// `.{application}/jobs`.
-    pub application: String,
+    pub application: Application,
 }
 
 impl Default for ToolContext {
@@ -45,7 +43,7 @@ impl Default for ToolContext {
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
             unrestricted: false,
             session: Session::Detached,
-            application: DEFAULT_APPLICATION.to_string(),
+            application: Application::default(),
         }
     }
 }
@@ -62,6 +60,6 @@ mod tests {
         );
         assert_eq!(context.max_file_size, 10 * 1024 * 1024);
         assert_eq!(context.command_timeout, Duration::from_secs(300));
-        assert_eq!(context.application, DEFAULT_APPLICATION);
+        assert_eq!(context.application, Application::default());
     }
 }

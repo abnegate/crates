@@ -8,7 +8,7 @@ use super::run::RunCommandParameters;
 use super::shell::{RunShellParameters, total_sleep};
 use super::*;
 use crate::test_support::{PROXY_TEST_CHILD, captured_logs};
-use crate::tools::{DEFAULT_APPLICATION, MAX_TOOL_MESSAGE_CHARACTERS, Session, Tool};
+use crate::tools::{MAX_TOOL_MESSAGE_CHARACTERS, Session, Tool};
 
 fn create_test_context() -> ToolContext {
     ToolContext {
@@ -18,12 +18,12 @@ fn create_test_context() -> ToolContext {
         command_timeout: std::time::Duration::from_secs(30),
         unrestricted: false,
         session: Session::Detached,
-        application: DEFAULT_APPLICATION.to_string(),
+        application: crate::Application::default(),
     }
 }
 
 fn logs(checkout: &Path) -> PathBuf {
-    job::log_directory(checkout, DEFAULT_APPLICATION)
+    job::log_directory(checkout, &crate::Application::default())
 }
 
 /// Both shelling tools hand the child only what the context names.
@@ -1026,11 +1026,11 @@ async fn a_backgrounded_shell_call_returns_the_spawn_receipt() {
         format!(
             "Started {id} (pid {pid}). Log: {}\nWait for it with wait_for, or read it with \
              tail_job.",
-            job::log_path(directory.path(), DEFAULT_APPLICATION, &id).display()
+            job::log_path(directory.path(), &crate::Application::default(), &id).display()
         )
     );
     assert!(
-        job::log_path(directory.path(), DEFAULT_APPLICATION, &id).exists(),
+        job::log_path(directory.path(), &crate::Application::default(), &id).exists(),
         "the log is where the receipt says it is"
     );
 
@@ -1103,7 +1103,7 @@ async fn a_backgrounded_command_call_returns_the_spawn_receipt() {
         "{output}"
     );
     assert!(
-        job::log_path(directory.path(), DEFAULT_APPLICATION, &id).exists(),
+        job::log_path(directory.path(), &crate::Application::default(), &id).exists(),
         "{output}"
     );
 
@@ -1274,14 +1274,14 @@ async fn a_directory_outside_the_tree_moves_the_child_and_not_the_log() {
 
     assert!(
         receipt.contains(
-            &job::log_path(&checkout, DEFAULT_APPLICATION, &id)
+            &job::log_path(&checkout, &crate::Application::default(), &id)
                 .display()
                 .to_string()
         ),
         "the receipt names a log outside the session's tree: {receipt}"
     );
     assert!(
-        job::log_path(&checkout, DEFAULT_APPLICATION, &id).exists(),
+        job::log_path(&checkout, &crate::Application::default(), &id).exists(),
         "the log is not where the receipt says it is: {receipt}"
     );
     assert!(

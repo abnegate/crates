@@ -33,6 +33,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::Application;
+
 pub const TAIL_JOB: &str = "tail_job";
 
 /// The tool an embedding application registers to block until a background
@@ -97,18 +99,18 @@ const MAX_CHARACTER_BYTES: usize = 4;
 const EXCLUDE_PATH: &str = "info/exclude";
 
 /// The directory the tools keep their own files in, inside a working tree.
-pub fn application_directory(checkout: &Path, application: &str) -> PathBuf {
-    checkout.join(format!(".{application}"))
+pub fn application_directory(checkout: &Path, application: &Application) -> PathBuf {
+    checkout.join(application.directory())
 }
 
 /// Where job logs live under the session's own working tree.
-pub fn log_directory(checkout: &Path, application: &str) -> PathBuf {
+pub fn log_directory(checkout: &Path, application: &Application) -> PathBuf {
     application_directory(checkout, application).join(JOB_LOG_DIRECTORY)
 }
 
 /// The line that keeps a task run's job logs out of its diff.
-fn excluded(application: &str) -> String {
-    format!(".{application}/")
+fn excluded(application: &Application) -> String {
+    format!("{}/", application.directory())
 }
 
 fn missing(id: &str) -> String {
@@ -122,7 +124,7 @@ pub fn mint() -> String {
 }
 
 /// Where the log for `id` belongs, under the session's own working tree.
-pub fn log_path(checkout: &Path, application: &str, id: &str) -> PathBuf {
+pub fn log_path(checkout: &Path, application: &Application, id: &str) -> PathBuf {
     log_directory(checkout, application).join(format!("{id}.{JOB_LOG_EXTENSION}"))
 }
 

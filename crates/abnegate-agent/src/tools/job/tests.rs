@@ -11,7 +11,7 @@ use super::jobs::JOBS;
 use super::limits::Limits;
 use super::*;
 use crate::test_support::captured_logs;
-use crate::tools::{DEFAULT_APPLICATION, Session, ToolContext};
+use crate::tools::{Session, ToolContext};
 
 const POLL: Duration = Duration::from_millis(20);
 const POLL_LIMIT: usize = 500;
@@ -19,15 +19,15 @@ const POLL_LIMIT: usize = 500;
 /// The directory the log directory sits in, which a teardown takes too when
 /// the logs were the only thing in it.
 fn ours(cwd: &Path) -> PathBuf {
-    application_directory(cwd, DEFAULT_APPLICATION)
+    application_directory(cwd, &crate::Application::default())
 }
 
 fn logs(cwd: &Path) -> PathBuf {
-    log_directory(cwd, DEFAULT_APPLICATION)
+    log_directory(cwd, &crate::Application::default())
 }
 
 fn excluded_line() -> String {
-    excluded(DEFAULT_APPLICATION)
+    excluded(&crate::Application::default())
 }
 
 fn job() -> JobStarted {
@@ -316,7 +316,7 @@ async fn three_reads_walk_the_log_with_no_gap_and_no_overlap() {
     settles(session, &started.id).await;
     assert_eq!(
         started.log_path,
-        log_path(cwd.path(), DEFAULT_APPLICATION, &started.id).to_string_lossy(),
+        log_path(cwd.path(), &crate::Application::default(), &started.id).to_string_lossy(),
         "the receipt names the log the reader opens"
     );
 
@@ -438,7 +438,7 @@ async fn a_child_that_never_reports_its_end_does_not_hold_the_teardown() {
     let cwd = directory();
     let session = task();
     let id = mint();
-    let log = log_path(cwd.path(), DEFAULT_APPLICATION, &id);
+    let log = log_path(cwd.path(), &crate::Application::default(), &id);
     tokio::fs::create_dir_all(logs(cwd.path()))
         .await
         .expect("the log directory is created");
@@ -515,7 +515,7 @@ async fn a_directory_the_command_names_moves_the_child_and_nothing_else() {
 
     assert_eq!(
         started.log_path,
-        log_path(&checkout, DEFAULT_APPLICATION, &started.id).to_string_lossy(),
+        log_path(&checkout, &crate::Application::default(), &started.id).to_string_lossy(),
         "the log belongs to the session's tree, whatever directory the command named"
     );
     let ran_in = Jobs::read(session, &started.id, 0, 500)
@@ -787,7 +787,7 @@ fn a_log_lives_under_the_session_working_directory() {
     assert_eq!(
         log_path(
             Path::new("/tmp/work"),
-            DEFAULT_APPLICATION,
+            &crate::Application::default(),
             "job_9f3c1a7b2e04"
         ),
         PathBuf::from("/tmp/work/.abnegate/jobs/job_9f3c1a7b2e04.log")
@@ -865,4 +865,25 @@ async fn a_job_that_ends_takes_what_it_left_running_with_it() {
     assert!(gone(sleeper).await, "sleep {sleeper} outlived its job");
 
     Jobs::kill_session(session).await;
+}
+
+/// The application directory is always one hidden name directly inside the
+/// checkout: the names that used to lead elsewhere (`./x` became `../x`, an
+/// empty one the checkout itself) are no longer applications at all.
+#[test]
+fn the_application_directory_is_one_hidden_name_inside_the_checkout() {
+    let checkout = Path::new("/tmp/work");
+    for name in ["abnegate", "zone", "my-app_2"] {
+        let application = crate::Application::new(name).unwrap();
+        let directory = application_directory(checkout, &application);
+        assert_eq!(directory.parent(), Some(checkout), "{name}");
+        assert_eq!(
+            directory.file_name().and_then(|name| name.to_str()),
+            Some(format!(".{name}").as_str())
+        );
+        assert_eq!(excluded(&application), format!(".{name}/"));
+    }
+    for name in ["./x", "", "../x", "a/b"] {
+        assert!(crate::Application::new(name).is_err(), "{name:?}");
+    }
 }

@@ -16,6 +16,7 @@ use super::{
     EXCLUDE_PATH, JobCommand, JobExited, JobStarted, JobStatus, JobTail, KILL_TIMEOUT,
     MAX_CHARACTER_BYTES, UNAVAILABLE, excluded, log_directory, log_path, mint, missing,
 };
+use crate::Application;
 use crate::tools::process::Group;
 use crate::tools::{Session, ToolContext};
 
@@ -311,7 +312,7 @@ async fn ended(mut state: watch::Receiver<JobStatus>) -> JobStatus {
 /// checkout would otherwise write into a repository it does not own. Every
 /// failure — not a checkout, no git, an unwritable file — is a silent skip,
 /// because a background job is worth more to the caller than a tidy diff.
-async fn exclude(checkout: &Path, application: &str) {
+async fn exclude(checkout: &Path, application: &Application) {
     let Ok(resolved) = Command::new("git")
         .arg("rev-parse")
         .arg("--git-path")

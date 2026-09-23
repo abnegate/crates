@@ -4,6 +4,7 @@ use tokio::fs;
 use uuid::Uuid;
 
 use super::{Session, SessionError, SessionStore, SessionSummary};
+use crate::Application;
 
 const SESSIONS_DIRECTORY: &str = "sessions";
 const SESSION_EXTENSION: &str = "json";
@@ -20,13 +21,9 @@ impl FileSessionStore {
 
     /// A store in `~/.{application}/sessions`, or nothing on a host with no
     /// home directory.
-    pub fn default_location(application: &str) -> Option<Self> {
-        dirs::home_dir().map(|home| {
-            Self::new(
-                home.join(format!(".{application}"))
-                    .join(SESSIONS_DIRECTORY),
-            )
-        })
+    pub fn default_location(application: &Application) -> Option<Self> {
+        dirs::home_dir()
+            .map(|home| Self::new(home.join(application.directory()).join(SESSIONS_DIRECTORY)))
     }
 
     async fn ensure_directory(&self) -> Result<(), SessionError> {
@@ -132,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_file_session_store_default_location() {
-        let store = FileSessionStore::default_location("agent");
+        let store = FileSessionStore::default_location(&Application::new("agent").unwrap());
         if let Some(home) = dirs::home_dir() {
             let store = store.expect("a home directory holds a default location");
             assert_eq!(store.directory, home.join(".agent").join("sessions"));

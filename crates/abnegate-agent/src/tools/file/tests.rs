@@ -13,7 +13,7 @@ use super::search::{SEARCH_MAX_RESULTS, search_tree};
 use super::write::WriteFileParameters;
 use super::{ApplyPatchTool, ListFilesTool, ReadFileTool, SearchCodeTool, WriteFileTool};
 use crate::test_support::captured_logs;
-use crate::tools::{DEFAULT_APPLICATION, Session, Tier, Tool, ToolContext};
+use crate::tools::{Session, Tier, Tool, ToolContext};
 
 const ATTEMPTS: usize = 2_000;
 /// Roughly the gap between a tool's check and the open that follows it, so
@@ -38,7 +38,7 @@ fn create_test_context(directory: &Path) -> ToolContext {
         command_timeout: std::time::Duration::from_secs(30),
         unrestricted: false,
         session: Session::Detached,
-        application: DEFAULT_APPLICATION.to_string(),
+        application: crate::Application::default(),
     }
 }
 

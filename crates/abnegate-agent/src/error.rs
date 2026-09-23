@@ -2,6 +2,7 @@ use abnegate_llm::LlmError;
 use thiserror::Error;
 
 use crate::agent::AgentError;
+use crate::application::ApplicationError;
 use crate::chat;
 use crate::context::ContextError;
 #[cfg(feature = "mcp")]
@@ -19,6 +20,8 @@ pub enum Error {
     Tool(#[from] ToolError),
     #[error("Agent error: {0}")]
     Agent(#[from] AgentError),
+    #[error("Application error: {0}")]
+    Application(#[from] ApplicationError),
     #[error("Context error: {0}")]
     Context(#[from] ContextError),
     #[error("Session error: {0}")]
