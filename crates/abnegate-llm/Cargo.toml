@@ -1,0 +1,40 @@
+[package]
+name = "abnegate-llm"
+description = "Provider-agnostic LLM model catalogue, browsing and GGUF download"
+keywords = ["llm", "models", "catalog", "huggingface", "ollama"]
+categories = ["api-bindings", "web-programming::http-client"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+catalog = ["dep:async-trait", "dep:once_cell", "dep:regex", "dep:scraper", "dep:urlencoding"]
+download = ["catalog"]
+
+[dependencies]
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true }
+once_cell = { workspace = true, optional = true }
+regex = { workspace = true, optional = true }
+reqwest = { workspace = true }
+scraper = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+urlencoding = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+wiremock = { workspace = true }
