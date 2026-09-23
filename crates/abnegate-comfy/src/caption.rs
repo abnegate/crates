@@ -178,13 +178,11 @@ impl Captioner {
     }
 
     async fn ask(&self, message: Message, max_tokens: u32) -> Option<String> {
-        let client = LlmClient::new(LlmConfig {
-            base_url: self.host.clone(),
-            api_key: self.key.expose().to_string(),
-            default_model: self.model.clone(),
-            temperature: 0.0,
-            max_tokens,
-        });
+        let client = LlmClient::new(
+            LlmConfig::new(self.host.clone(), self.model.clone(), self.key.clone())
+                .with_temperature(0.0)
+                .with_max_tokens(max_tokens),
+        );
         let result = tokio::time::timeout(
             self.timeout,
             client.chat_with_model(&self.model, &[message], None),
