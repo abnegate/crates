@@ -14,6 +14,16 @@
 //! costs nothing here because the same frame differences already decide which
 //! frames are worth keeping.
 
+mod clip;
+mod frame;
+mod frame_request;
+mod options;
+
+pub use clip::Clip;
+pub use frame::Frame;
+pub use frame_request::FrameRequest;
+pub use options::Options;
+
 use crate::config::Config;
 use crate::lora::{TrainError, png};
 use crate::subject::Subject;
@@ -21,9 +31,7 @@ use abnegate_vision::crop::{self, Region, Rendered, Target};
 use abnegate_vision::gravity::{self, Point};
 use abnegate_vision::{Raster, decode};
 use base64::Engine;
-use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
-use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -108,84 +116,6 @@ const CONTAINERS: [Container; 6] = [
         demuxer: "avi",
     },
 ];
-
-/// How a clip is turned into training images.
-#[derive(Clone, Copy, Debug)]
-pub struct Options {
-    /// Frames kept per second of video.
-    pub fps: u32,
-    /// Side of the square crop every frame is rendered at.
-    pub resolution: u32,
-    /// Mirror alternate frames within each second.
-    pub mirror: bool,
-    /// Frames kept in total. The packaged trainer caps its step count, so past
-    /// this each extra frame is seen fewer times without adding variety the
-    /// selection has not already taken.
-    pub limit: usize,
-}
-
-/// A clip submitted for training.
-#[derive(Deserialize)]
-pub struct FrameRequest {
-    pub filename: String,
-    pub bytes_base64: String,
-    /// Frames kept per second. Falls back to the configured rate.
-    #[serde(default)]
-    pub fps: Option<u32>,
-    /// Mirror alternate frames. Worth turning off for a subject carrying text
-    /// or anything else a mirror would render backwards.
-    #[serde(default)]
-    pub mirror: Option<bool>,
-}
-
-impl fmt::Debug for FrameRequest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("FrameRequest")
-            .field("filename", &self.filename)
-            .field("bytes_base64", &self.bytes_base64.len())
-            .field("fps", &self.fps)
-            .field("mirror", &self.mirror)
-            .finish()
-    }
-}
-
-/// One training image pulled from a clip.
-#[derive(Clone, Serialize)]
-pub struct Frame {
-    pub filename: String,
-    pub bytes_base64: String,
-    #[serde(rename = "timestamp_ms")]
-    pub timestamp_milliseconds: u64,
-    pub mirrored: bool,
-    /// Frames sharing a group are the same shot, so one caption describes them
-    /// all and the vision model only has to look at one of them.
-    pub group: usize,
-}
-
-impl fmt::Debug for Frame {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Frame")
-            .field("filename", &self.filename)
-            .field("bytes_base64", &self.bytes_base64.len())
-            .field("timestamp_milliseconds", &self.timestamp_milliseconds)
-            .field("mirrored", &self.mirrored)
-            .field("group", &self.group)
-            .finish()
-    }
-}
-
-/// What one clip yielded.
-#[derive(Clone, Debug, Serialize)]
-pub struct Clip {
-    pub frames: Vec<Frame>,
-    /// Frames pulled out of the video before selection.
-    pub sampled: usize,
-    /// Rate those frames were pulled at, which drops below the requested rate
-    /// only when the clip is long enough to hit the sampling ceiling.
-    pub sampled_fps: f64,
-}
 
 /// Everything one sampled frame is judged on. The pixels are not kept: only the
 /// frames that survive selection are decoded a second time to be cropped.

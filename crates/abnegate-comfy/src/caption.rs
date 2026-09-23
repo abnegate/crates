@@ -7,11 +7,17 @@
 //! two passes: name the subject shared by every image, then describe each image
 //! while excluding that subject.
 
+mod draft;
+mod image;
+mod request;
+
+pub use draft::Draft;
+pub use image::CaptionImage;
+pub use request::CaptionRequest;
+
 use abnegate_llm::{LlmClient, LlmConfig, Message};
 use abnegate_secret::SecretValue;
-use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -54,68 +60,6 @@ const STOPWORDS: &[&str] = &[
     "this", "has", "have", "is", "are", "was", "were", "one", "two", "some", "very", "small",
     "large", "big", "tiny",
 ];
-
-#[derive(Debug, Deserialize)]
-pub struct CaptionRequest {
-    #[serde(default)]
-    pub trigger: Option<String>,
-    pub images: Vec<CaptionImage>,
-}
-
-#[derive(Deserialize)]
-pub struct CaptionImage {
-    pub filename: String,
-    pub bytes_base64: String,
-    #[serde(default)]
-    pub caption: String,
-    /// Images sharing a group show the same shot, so one description covers
-    /// them all. Video frames arrive grouped; separate photos do not.
-    #[serde(default)]
-    pub group: Option<usize>,
-}
-
-impl fmt::Debug for CaptionImage {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("CaptionImage")
-            .field("filename", &self.filename)
-            .field("bytes_base64", &self.bytes_base64.len())
-            .field("caption", &self.caption)
-            .field("group", &self.group)
-            .finish()
-    }
-}
-
-/// One image on its way to a caption.
-#[derive(Clone)]
-pub struct Draft {
-    /// Inline data URL, the only image shape a vision model takes.
-    pub image: String,
-    pub caption: String,
-    /// Drafts sharing a group are described once and captioned alike.
-    pub group: usize,
-}
-
-impl fmt::Debug for Draft {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Draft")
-            .field("image", &self.image.len())
-            .field("caption", &self.caption)
-            .field("group", &self.group)
-            .finish()
-    }
-}
-
-impl Draft {
-    pub fn new(filename: &str, base64: &str, caption: &str, group: usize) -> Self {
-        Self {
-            image: data_url(filename, base64),
-            caption: caption.to_string(),
-            group,
-        }
-    }
-}
 
 /// Inline data URL, the only image shape an OpenAI-compatible vision model takes.
 pub fn data_url(filename: &str, base64: &str) -> String {

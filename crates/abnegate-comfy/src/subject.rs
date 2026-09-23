@@ -11,8 +11,11 @@
 //! frame on whatever moved, which is what they did before autogravity was
 //! wired in at all.
 
+mod error;
 #[cfg(feature = "saliency")]
 mod models;
+
+pub use error::Error;
 
 use crate::config::Config;
 use abnegate_vision::crop::{self, Rendered, Target};
@@ -114,15 +117,6 @@ impl Subject {
         let region = crop::plan(raster.oriented_size(), target, focus)?;
         Ok(crop::render(raster, region, target)?)
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum Error {
-    #[error(transparent)]
-    Decode(#[from] decode::Error),
-    #[error(transparent)]
-    Crop(#[from] crop::Error),
 }
 
 /// Bias below this share of its peak is background, not the subject. Ignoring

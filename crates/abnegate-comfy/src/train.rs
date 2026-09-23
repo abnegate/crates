@@ -1,8 +1,13 @@
 //! HTTP client that runs packaged LoRA training graphs on ComfyUI.
 
+mod config;
 mod contract;
+mod run;
 
+pub use config::TrainConfig;
+pub use config::packaged_config;
 pub use contract::Contract;
+pub use run::Run;
 
 use crate::config::Config;
 use crate::excerpt;
@@ -52,52 +57,6 @@ pub const FOLDER_PREFIX: &str = "zone-train-";
 pub const ARTIFACT_PREFIX: &str = "zone-lora-";
 /// Default namespace of the input folder a quality probe stages its sample in.
 pub const PROBE_PREFIX: &str = "zone-probe-";
-
-#[derive(Debug, Deserialize)]
-pub struct TrainConfig {
-    passes_per_image: u32,
-    min_steps: u32,
-    max_steps: u32,
-    rank: u32,
-    learning_rate: f64,
-    lora_dtype: String,
-    training_dtype: String,
-    resolution: u32,
-    bypass_mode: bool,
-    gradient_checkpointing: bool,
-    checkpoint_depth: u32,
-    seed: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Run {
-    pub folder: String,
-    pub artifact: String,
-}
-
-impl Run {
-    /// A fresh pair of names under `contract`'s namespaces.
-    pub fn new(contract: &Contract) -> Self {
-        Self {
-            folder: format!("{}{}", contract.folder_prefix, Uuid::new_v4()),
-            artifact: format!("{}{}", contract.artifact_prefix, Uuid::new_v4()),
-        }
-    }
-
-    /// Refuses names that are not a v4 UUID under `contract`'s namespaces,
-    /// and any name at all under a contract that fails [`Contract::validate`].
-    pub fn validate(&self, contract: &Contract) -> Result<(), TrainError> {
-        contract.validate()?;
-        validate_run_name(&self.folder, &contract.folder_prefix)?;
-        validate_run_name(&self.artifact, &contract.artifact_prefix)
-    }
-}
-
-impl Default for Run {
-    fn default() -> Self {
-        Self::new(&Contract::default())
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -160,26 +119,6 @@ impl From<TrainError> for Failure {
             error,
             cleanup: true,
         }
-    }
-}
-
-pub fn packaged_config() -> Result<TrainConfig, TrainError> {
-    serde_json::from_str(PACKAGED_TRAIN_CONFIG)
-        .map_err(|error| TrainError::Failed(format!("train config: {error}")))
-}
-
-impl TrainConfig {
-    /// Side of the square every training image is read back at.
-    pub fn resolution(&self) -> u32 {
-        self.resolution
-    }
-
-    /// Steps for a dataset of this size, clamped to the configured bounds.
-    pub fn steps(&self, image_count: usize) -> u32 {
-        u32::try_from(image_count.max(1))
-            .unwrap_or(u32::MAX)
-            .saturating_mul(self.passes_per_image)
-            .clamp(self.min_steps, self.max_steps)
     }
 }
 
@@ -1160,17 +1099,6 @@ pub(crate) fn architecture(model: &TrainingModel) -> &'static str {
         TrainingModel::Flux { .. } => "flux",
         TrainingModel::QwenEdit { .. } => "qwen_edit",
     }
-}
-
-fn validate_run_name(name: &str, prefix: &str) -> Result<(), TrainError> {
-    let Some(id) = name.strip_prefix(prefix) else {
-        return Err(TrainError::Invalid("invalid training run namespace"));
-    };
-    let uuid = Uuid::parse_str(id).map_err(|_| TrainError::Invalid("invalid training run UUID"))?;
-    if uuid.get_version_num() != 4 || uuid.to_string() != id {
-        return Err(TrainError::Invalid("invalid training run UUID"));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

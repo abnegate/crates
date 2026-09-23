@@ -1,5 +1,9 @@
 //! Scores a trained adapter against its own base and promotes the best checkpoint.
 
+mod calibration;
+
+pub use calibration::QualityCalibration;
+
 use crate::config::Config;
 use crate::http::CANCEL_TIMEOUT;
 use crate::http::POLL_TIMEOUT;
@@ -44,15 +48,6 @@ pub struct Quality {
     pub checkpoint: String,
     pub measured: bool,
     pub calibration: QualityCalibration,
-}
-
-/// Whether callers may compare the score with the FLUX health thresholds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum QualityCalibration {
-    FluxHealthBands,
-    Uncalibrated,
 }
 
 struct Candidate {

@@ -1,7 +1,14 @@
 //! Scan the ComfyUI models directory and join files to packaged recipes.
 
+mod item;
+mod weight_document;
+mod weight_sidecar;
+
+pub use item::InventoryItem;
+pub(crate) use weight_document::WeightDocument;
+pub use weight_sidecar::WeightSidecar;
+
 use crate::recipe::{MediaKind, Recipe, RecipeCatalog, RequiredFile, sanitize_weight_filename};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -19,36 +26,6 @@ const SCAN_DIRECTORIES: &[(&str, &str)] = &[
     ("diffusion_models", "diffusion_model"),
     ("loras", "lora"),
 ];
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WeightSidecar {
-    pub recipe_id: String,
-    #[serde(default, rename = "hf_base")]
-    pub huggingface_base: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct WeightDocument {
-    #[serde(flatten)]
-    pub sidecar: WeightSidecar,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct InventoryItem {
-    pub filename: String,
-    pub recipe_id: String,
-    pub kind: String,
-    pub label: String,
-    pub directory: String,
-    pub size: u64,
-    pub modified_at: Option<String>,
-    pub ready: bool,
-    pub required_files: Vec<String>,
-    pub adapter: bool,
-    pub prompt_mode: String,
-}
 
 pub fn scan(models_directory: &Path, catalog: &RecipeCatalog) -> Vec<InventoryItem> {
     let mut items = Vec::new();

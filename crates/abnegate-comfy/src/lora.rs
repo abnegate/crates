@@ -2,13 +2,32 @@
 //! ComfyUI; [`Config::train_command`] hands the dataset to an external trainer
 //! instead.
 
+mod dropped;
+mod remediation;
+mod remediation_outcome;
+mod screening;
+mod train_base;
+mod train_error;
+mod train_image;
+mod train_outcome;
+mod train_request;
+
+pub use dropped::Dropped;
+pub use remediation::Remediation;
+pub use remediation_outcome::RemediationOutcome;
+pub use screening::Screening;
+pub use train_base::TrainBase;
+pub use train_error::TrainError;
+pub use train_image::TrainImage;
+pub use train_outcome::TrainOutcome;
+pub use train_request::TrainRequest;
+
 use crate::caption::{Captioner, Draft};
 use crate::client::{Client, SourceImage};
 use crate::config::Config;
 use crate::inventory::{
     PUBLICATION_DIRECTORY, WeightDocument, WeightSidecar, publication_marker, sidecar_path,
 };
-use crate::quality::Quality;
 use crate::recipe::{RecipeCatalog, TrainingModel, sanitize_weight_filename};
 use crate::subject::{CENTRE, Subject};
 use crate::train::{Contract, Run};
@@ -17,7 +36,6 @@ use abnegate_vision::gravity::Point;
 use abnegate_vision::{Raster, Rendered, decode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -31,107 +49,6 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 use uuid::Uuid;
-
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum TrainError {
-    #[error("training is not configured")]
-    Disabled,
-    #[error("invalid training request: {0}")]
-    Invalid(&'static str),
-    #[error("invalid training configuration: {0}")]
-    Configuration(&'static str),
-    #[error("training failed: {0}")]
-    Failed(String),
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TrainRequest {
-    pub name: String,
-    pub base: String,
-    #[serde(default)]
-    pub trigger: Option<String>,
-    pub images: Vec<TrainImage>,
-}
-
-#[derive(Deserialize)]
-pub struct TrainImage {
-    pub filename: String,
-    pub caption: String,
-    pub bytes_base64: String,
-    #[serde(default)]
-    pub before_base64: Option<String>,
-    /// Images sharing a group are the same shot and are captioned together.
-    /// Frames pulled from a clip arrive grouped; separate photos do not.
-    #[serde(default)]
-    pub group: Option<usize>,
-}
-
-impl fmt::Debug for TrainImage {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("TrainImage")
-            .field("filename", &self.filename)
-            .field("caption", &self.caption)
-            .field("bytes_base64", &self.bytes_base64.len())
-            .field(
-                "before_base64",
-                &self.before_base64.as_ref().map(String::len),
-            )
-            .field("group", &self.group)
-            .finish()
-    }
-}
-
-/// A finished run: the adapter on disk and, when ComfyUI could be asked, how
-/// far it beats the base it was trained from.
-#[derive(Debug, Serialize)]
-pub struct TrainOutcome {
-    pub path: PathBuf,
-    pub quality: Option<Quality>,
-    pub dataset: Vec<crate::dataset::Finding>,
-    pub screening: Screening,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Screening {
-    pub kept: usize,
-    pub dropped: Vec<Dropped>,
-    pub attempted: Vec<Remediation>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Dropped {
-    pub filename: String,
-    pub reason: crate::screening::Rejection,
-}
-
-/// The result of trying the configured image upscaler before rejecting a target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum RemediationOutcome {
-    Used,
-    StillRejected,
-    Failed,
-}
-
-/// One target the pipeline tried to repair before selecting the training set.
-#[derive(Debug, PartialEq, Eq, Serialize)]
-pub struct Remediation {
-    pub source_index: usize,
-    pub filename: String,
-    pub reason: crate::screening::Rejection,
-    pub outcome: RemediationOutcome,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(PartialEq))]
-pub struct TrainBase {
-    pub id: String,
-    pub label: String,
-    pub edit: bool,
-}
 
 struct ScreenedImage {
     original: usize,

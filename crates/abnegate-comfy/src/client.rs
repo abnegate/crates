@@ -1,11 +1,22 @@
 //! Direct ComfyUI API client. Graphs come from packaged recipes; chat only
 //! supplies prompt, seed, checkpoint filename, and an optional source image.
 
+mod error;
+mod generated_image;
+mod source_image;
+mod source_video;
+
+pub use error::Error;
+pub use generated_image::GeneratedImage;
+pub use source_image::MAX_SOURCE_IMAGE_BYTES;
+pub use source_image::SourceImage;
+pub use source_video::MAX_SOURCE_VIDEO_BYTES;
+pub use source_video::SourceVideo;
+
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::fmt;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
@@ -19,10 +30,6 @@ use crate::recipe::{
     Fill, PromptMode, Recipe, RecipeCatalog, sanitize_upload_name, sanitize_weight_filename,
 };
 
-pub const MAX_SOURCE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
-/// Clips come back from the artifact store rather than a chat upload, so the
-/// cap matches what the store is willing to keep rather than a request body.
-pub const MAX_SOURCE_VIDEO_BYTES: usize = 64 * 1024 * 1024;
 const PACKAGED_VIDEO_WORKFLOW: &str = include_str!("../comfyui/workflows/wan2.2-ti2v-5b-api.json");
 const PACKAGED_I2V_WORKFLOW: &str =
     include_str!("../comfyui/workflows/wan2.2-ti2v-5b-i2v-api.json");
@@ -31,125 +38,6 @@ const PACKAGED_AUDIO_WORKFLOW: &str =
 const PACKAGED_UPSCALE_WORKFLOW: &str = include_str!("../comfyui/workflows/upscale-image-api.json");
 const PACKAGED_UPSCALE_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/upscale-video-api.json");
-
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum Error {
-    #[error("ComfyUI is disabled")]
-    Disabled,
-    #[error("invalid ComfyUI configuration: {0}")]
-    Configuration(&'static str),
-    #[error("ComfyUI request failed: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("ComfyUI returned an invalid response: {0}")]
-    InvalidResponse(&'static str),
-    #[error("generation timed out")]
-    Timeout,
-    #[error("image generation cancelled")]
-    Cancelled,
-}
-
-pub struct GeneratedImage {
-    pub bytes: bytes::Bytes,
-    pub mime: String,
-    pub filename: String,
-}
-
-impl fmt::Debug for GeneratedImage {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("GeneratedImage")
-            .field("bytes", &self.bytes.len())
-            .field("mime", &self.mime)
-            .field("filename", &self.filename)
-            .finish()
-    }
-}
-
-#[derive(Clone)]
-pub struct SourceImage {
-    pub bytes: bytes::Bytes,
-    pub mime: String,
-    pub filename: String,
-}
-
-impl fmt::Debug for SourceImage {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SourceImage")
-            .field("bytes", &self.bytes.len())
-            .field("mime", &self.mime)
-            .field("filename", &self.filename)
-            .finish()
-    }
-}
-
-impl SourceImage {
-    pub fn new(bytes: impl Into<bytes::Bytes>, mime: &str) -> Result<Self, Error> {
-        let mime = normalize_source_mime(mime)?;
-        let bytes = bytes.into();
-        if bytes.is_empty() || bytes.len() > MAX_SOURCE_IMAGE_BYTES {
-            return Err(Error::Configuration("source image is empty or too large"));
-        }
-        Ok(Self {
-            filename: format!("img2img-{}.{}", Uuid::new_v4(), extension_for_mime(&mime)),
-            bytes,
-            mime,
-        })
-    }
-
-    /// Creates an image source when only its encoded contents are available.
-    pub fn from_bytes(bytes: impl Into<bytes::Bytes>) -> Result<Self, Error> {
-        let bytes = bytes.into();
-        let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            "image/png"
-        } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-            "image/jpeg"
-        } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-            "image/webp"
-        } else {
-            return Err(Error::Configuration("source image type is not supported"));
-        };
-        Self::new(bytes, mime)
-    }
-}
-
-#[derive(Clone)]
-pub struct SourceVideo {
-    pub bytes: bytes::Bytes,
-    pub mime: String,
-    pub filename: String,
-}
-
-impl fmt::Debug for SourceVideo {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SourceVideo")
-            .field("bytes", &self.bytes.len())
-            .field("mime", &self.mime)
-            .field("filename", &self.filename)
-            .finish()
-    }
-}
-
-impl SourceVideo {
-    pub fn new(bytes: impl Into<bytes::Bytes>, mime: &str) -> Result<Self, Error> {
-        let mime = normalize_source_video_mime(mime)?;
-        let bytes = bytes.into();
-        if bytes.is_empty() || bytes.len() > MAX_SOURCE_VIDEO_BYTES {
-            return Err(Error::Configuration("source video is empty or too large"));
-        }
-        Ok(Self {
-            filename: format!(
-                "upscale-{}.{}",
-                Uuid::new_v4(),
-                extension_for_video_mime(&mime)
-            ),
-            bytes,
-            mime,
-        })
-    }
-}
 
 #[derive(Clone)]
 pub struct Client {
@@ -1291,37 +1179,6 @@ fn apply_ace_step_workflow_inputs(
     workflow["5"]["inputs"]["lyrics"] = json!("");
     workflow["8"]["inputs"]["seed"] = json!(seed);
     Ok(())
-}
-
-fn normalize_source_mime(mime: &str) -> Result<String, Error> {
-    match mime.trim().to_ascii_lowercase().as_str() {
-        "image/jpg" | "image/jpeg" => Ok("image/jpeg".to_string()),
-        "image/png" => Ok("image/png".to_string()),
-        "image/webp" => Ok("image/webp".to_string()),
-        _ => Err(Error::Configuration("source image type is not supported")),
-    }
-}
-
-fn extension_for_mime(mime: &str) -> &'static str {
-    MediaType::for_mime(mime)
-        .filter(MediaType::is_image)
-        .unwrap_or(MediaType::PNG)
-        .extension
-}
-
-fn normalize_source_video_mime(mime: &str) -> Result<String, Error> {
-    match mime.trim().to_ascii_lowercase().as_str() {
-        "video/webm" => Ok("video/webm".to_string()),
-        "video/mp4" => Ok("video/mp4".to_string()),
-        _ => Err(Error::Configuration("source video type is not supported")),
-    }
-}
-
-fn extension_for_video_mime(mime: &str) -> &'static str {
-    match mime {
-        "video/mp4" => "mp4",
-        _ => "webm",
-    }
 }
 
 fn is_model_filename(name: &str) -> bool {

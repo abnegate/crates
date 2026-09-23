@@ -3,6 +3,22 @@
 //! Chat never picks a workflow. The selected checkpoint filename resolves to a
 //! recipe; an attached image selects that recipe's `with_source` graph.
 
+mod fill;
+mod media_kind;
+mod output;
+mod prompt_mode;
+mod required_file;
+mod training_adapter;
+mod training_model;
+
+pub use fill::Fill;
+pub use media_kind::MediaKind;
+pub use output::RecipeOutput;
+pub use prompt_mode::PromptMode;
+pub use required_file::RequiredFile;
+pub use training_adapter::TrainingAdapter;
+pub use training_model::TrainingModel;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -60,60 +76,6 @@ fn packaged_workflow(name: &str) -> Option<&'static str> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum MediaKind {
-    Image,
-    Video,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum RecipeOutput {
-    PreviewImage,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum PromptMode {
-    #[default]
-    ClipScene,
-    EditInstruction,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct RequiredFile {
-    pub filename: String,
-    pub directory: String,
-}
-
-/// The exact model components a supported training graph loads.
-///
-/// This is resolved only from the catalog's explicit `training` metadata. A
-/// recipe id, prompt mode, or process-wide checkpoint is never enough to select
-/// a trainer because those are presentation and inference concerns.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum TrainingModel {
-    Flux {
-        checkpoint: String,
-    },
-    QwenEdit {
-        unet: String,
-        clip: String,
-        vae: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrainingAdapter {
-    pub recipe_id: String,
-    pub huggingface_base: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
 enum TrainingArchitecture {
     Flux,
     QwenEdit,
@@ -143,13 +105,6 @@ struct RecipeSlots {
     weights: HashMap<String, String>,
     output_node: String,
     output: RecipeOutput,
-}
-
-pub struct Fill<'a> {
-    pub prompt: &'a str,
-    pub seed: u64,
-    pub weights: HashMap<&'a str, &'a str>,
-    pub source: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
