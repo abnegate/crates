@@ -8,7 +8,7 @@ use tempfile::tempdir;
 
 use super::list::LIST_FILES_CAP;
 use super::patch::ApplyPatchParameters;
-use super::read::{FILE_PAGE_CHARACTERS, page_text};
+use super::read::{FILE_PAGE_CHARACTERS, page_text, select_lines};
 use super::search::{SEARCH_MAX_RESULTS, search_directory};
 use super::write::WriteFileParameters;
 use super::{ApplyPatchTool, ListFilesTool, ReadFileTool, SearchCodeTool, WriteFileTool};
@@ -94,6 +94,39 @@ async fn test_read_file_with_line_range() {
     assert!(output.contains("Line 3"));
     assert!(!output.contains("Line 1"));
     assert!(!output.contains("Line 4"));
+}
+
+/// A model picks the range, and one that starts past the end of a short file
+/// used to slice `lines[9..2]` and take the whole run down with it.
+#[tokio::test]
+async fn read_file_refuses_a_line_range_that_starts_past_the_end() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join("short.txt"), "one\ntwo").unwrap();
+    let context = create_test_context(directory.path());
+
+    for range in [
+        serde_json::json!({"path": "short.txt", "start_line": 10}),
+        serde_json::json!({"path": "short.txt", "start_line": 10, "end_line": 12}),
+        serde_json::json!({"path": "short.txt", "start_line": 2, "end_line": 1}),
+    ] {
+        let error = ReadFileTool
+            .execute(range.clone(), &context)
+            .await
+            .expect_err("a range with no lines in it is refused");
+        assert!(
+            matches!(error, crate::tools::ToolError::InvalidParameters(_)),
+            "{range}: {error}"
+        );
+        assert!(error.to_string().contains("2 lines"), "{range}: {error}");
+    }
+}
+
+#[test]
+fn a_line_range_is_inclusive_and_clamps_its_end_to_the_file() {
+    assert_eq!(select_lines("a\nb\nc", Some(2), Some(9)).unwrap(), "b\nc");
+    assert_eq!(select_lines("a\nb\nc", Some(3), None).unwrap(), "c");
+    assert_eq!(select_lines("a\nb\nc", Some(4), None).unwrap(), "");
+    assert!(select_lines("a\nb", Some(4), None).is_err());
 }
 
 #[test]

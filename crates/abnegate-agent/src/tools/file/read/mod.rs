@@ -82,11 +82,7 @@ impl Tool for ReadFileTool {
             .map_err(|error| ToolError::Execution(format!("Cannot read file: {error}")))?;
 
         let selected = if parameters.start_line.is_some() || parameters.end_line.is_some() {
-            let lines: Vec<&str> = content.lines().collect();
-            let start = parameters.start_line.unwrap_or(1).saturating_sub(1);
-            let end = parameters.end_line.unwrap_or(lines.len()).min(lines.len());
-
-            lines[start..end].join("\n")
+            select_lines(&content, parameters.start_line, parameters.end_line)?
         } else {
             content
         };
@@ -98,6 +94,27 @@ impl Tool for ReadFileTool {
             page, total, offset, next,
         )))
     }
+}
+
+/// Lines `start_line` to `end_line` of `content`, both 1-indexed and
+/// inclusive, with an end past the last line read as the last line.
+pub(super) fn select_lines(
+    content: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> Result<String, ToolError> {
+    let lines: Vec<&str> = content.lines().collect();
+    let first = start_line.unwrap_or(1).max(1);
+    let last = end_line.unwrap_or(lines.len());
+    let start = first - 1;
+    let end = last.min(lines.len());
+    if last < first.min(lines.len()) || start > end {
+        return Err(ToolError::InvalidParameters(format!(
+            "Lines {first} to {last} are not a range in a file of {} lines.",
+            lines.len()
+        )));
+    }
+    Ok(lines[start..end].join("\n"))
 }
 
 pub(super) fn page_text(

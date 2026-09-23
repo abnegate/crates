@@ -1,6 +1,8 @@
 use abnegate_llm::{LlmClient, Message, RequestOptions, Role, ToolCall};
 use futures::future::join_all;
+use std::any::Any;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -8,7 +10,7 @@ use super::{
     AgentCallback, AgentConfig, AgentError, AgentPhase, AgentState, AgentStep, ToolCallResult,
 };
 use crate::context::{self, ContextSource, Entry, Policy};
-use crate::tools::{ToolContext, ToolRegistry, ToolResult};
+use crate::tools::{ToolContext, ToolError, ToolRegistry, ToolResult};
 
 /// Prefix of a tool call id minted for a call the provider left unnamed or
 /// named the same as an earlier one.
@@ -20,7 +22,7 @@ pub struct Agent {
     llm: LlmClient,
     tools: ToolRegistry,
     config: AgentConfig,
-    context: ToolContext,
+    context: Arc<ToolContext>,
     policy: Policy,
     guidance: Option<String>,
 }
@@ -41,7 +43,7 @@ impl Agent {
                 source: ContextSource::Unknown,
             },
             config,
-            context,
+            context: Arc::new(context),
             guidance: None,
         }
     }
@@ -308,7 +310,13 @@ impl Agent {
         state.add_message(Message::tool_result(&tool_call.id, output));
     }
 
+    /// Run one call on a task of its own, so a tool that panics fails its
+    /// own call rather than the run.
     async fn execute_tool(&self, tool_call: &ToolCall) -> ToolResult {
+        let name = &tool_call.function.name;
+        let Some(tool) = self.tools.get(name) else {
+            return ToolResult::error(ToolError::NotFound(name.clone()).to_string());
+        };
         let parameters: serde_json::Value =
             match serde_json::from_str(&tool_call.function.arguments) {
                 Ok(parameters) => parameters,
@@ -317,15 +325,31 @@ impl Agent {
                 }
             };
 
-        match self
-            .tools
-            .execute(&tool_call.function.name, parameters, &self.context)
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => ToolResult::error(error.to_string()),
+        let context = Arc::clone(&self.context);
+        let task = tokio::spawn(async move { tool.execute(parameters, &context).await });
+        match task.await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => ToolResult::error(error.to_string()),
+            Err(error) if error.is_panic() => ToolResult::error(format!(
+                "Tool {name} failed unexpectedly: {}",
+                panic_message(error.into_panic())
+            )),
+            Err(_) => ToolResult::error(format!("Tool {name} was cancelled before it finished")),
         }
     }
+}
+
+/// The text a panic carried, when it carried any.
+fn panic_message(payload: Box<dyn Any + Send>) -> String {
+    payload
+        .downcast::<String>()
+        .map(|message| *message)
+        .or_else(|payload| {
+            payload
+                .downcast::<&str>()
+                .map(|message| message.to_string())
+        })
+        .unwrap_or_else(|_| "no message".to_string())
 }
 
 fn default_system_prompt(tools: &ToolRegistry, guidance: Option<&str>) -> String {
