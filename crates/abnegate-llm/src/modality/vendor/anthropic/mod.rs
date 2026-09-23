@@ -1,34 +1,45 @@
-use std::process::Stdio;
+//! The Anthropic messages API, or the Claude Code CLI when the credential
+//! is the CLI's own.
+
+mod auth;
+mod cli;
+
+use std::path::PathBuf;
 use std::time::Duration;
 
 use abnegate_secret::SecretValue;
 use async_trait::async_trait;
 use futures::Stream;
 
+pub use crate::modality::vendor::anthropic::auth::AnthropicAuth;
+
+use crate::modality::vendor::anthropic::cli::Cli;
+use crate::modality::vendor::transport::Transport;
 use crate::modality::{ResponseFormat, TextProvider, TextRequest, TextResponse};
 use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://api.anthropic.com";
-const CLI: &str = "claude";
 const DEFAULT_MODEL: &str = "claude-opus-5";
 const MAX_CONTEXT_TOKENS: u32 = 200_000;
-const TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+const NAME: &str = "anthropic";
 const TOOL: &str = "structured_output";
 const VERSION: &str = "2023-06-01";
+const RAW_PREVIEW_CHARACTERS: usize = 500;
+const ANSWER_PREVIEW_CHARACTERS: usize = 300;
 
-/// How a call proves who it is.
-pub enum AnthropicAuth {
-    ApiKey(SecretValue),
-    OAuthToken(SecretValue),
-    /// No credentials of our own: the installed `claude` CLI holds them.
-    ClaudeCli,
-}
-
+/// Claude, over the messages API with an API key, or through the installed
+/// `claude` CLI with an OAuth token or the CLI's own sign-in.
+///
+/// Every call has a deadline (ten minutes unless [`Self::with_timeout`] says
+/// otherwise), and the HTTP client never follows a redirect, so the
+/// `x-api-key` header cannot be carried to another host.
+#[derive(Debug, Clone)]
 pub struct AnthropicProvider {
     auth: AnthropicAuth,
     model: String,
     base_url: String,
-    client: reqwest::Client,
+    transport: Transport,
+    cli: Cli,
 }
 
 impl AnthropicProvider {
@@ -51,11 +62,22 @@ impl AnthropicProvider {
             auth,
             model: model.to_string(),
             base_url: base_url.into(),
-            client: reqwest::Client::builder()
-                .timeout(TIMEOUT)
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            transport: Transport::default(),
+            cli: Cli::default(),
         }
+    }
+
+    /// The deadline for one call, over HTTP or through the CLI.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.transport = Transport::with_timeout(timeout);
+        self.cli = self.cli.with_timeout(timeout);
+        self
+    }
+
+    /// The `claude` executable to run, when it is not the one on `PATH`.
+    pub fn with_executable(mut self, executable: impl Into<PathBuf>) -> Self {
+        self.cli = self.cli.with_executable(executable);
+        self
     }
 
     pub fn build_request_body(&self, request: &TextRequest) -> serde_json::Value {
@@ -108,43 +130,39 @@ impl AnthropicProvider {
         )
     }
 
-    fn authenticate(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    fn token(&self) -> Option<&SecretValue> {
         match &self.auth {
-            AnthropicAuth::ApiKey(key) => request.header("x-api-key", key.expose()),
-            AnthropicAuth::OAuthToken(token) => {
-                request.header("Authorization", format!("Bearer {}", token.expose()))
-            }
-            AnthropicAuth::ClaudeCli => request,
+            AnthropicAuth::OAuthToken(token) => Some(token),
+            AnthropicAuth::ApiKey(_) | AnthropicAuth::ClaudeCli => None,
         }
     }
 
     async fn send(&self, body: &serde_json::Value) -> Result<serde_json::Value, ProviderError> {
-        let request = self
-            .client
+        let mut request = self
+            .transport
             .post(format!("{}/v1/messages", self.base_url))
             .header("anthropic-version", VERSION)
-            .header("content-type", "application/json")
             .json(body);
-
-        let response = self
-            .authenticate(request)
-            .send()
-            .await
-            .map_err(|error| ProviderError::network(error.without_url()))?;
-
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let message = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".into());
-            return Err(ProviderError::api(status, message));
+        if let AnthropicAuth::ApiKey(key) = &self.auth {
+            request = request.header("x-api-key", key.expose());
         }
+        self.transport.send(request).await
+    }
 
-        response
-            .json()
-            .await
-            .map_err(|error| ProviderError::parse(error.without_url()))
+    async fn envelope(
+        &self,
+        arguments: Vec<String>,
+        prompt: &str,
+    ) -> Result<(serde_json::Value, String), ProviderError> {
+        let output = self.cli.run(NAME, &arguments, prompt, self.token()).await?;
+        let stdout = String::from_utf8_lossy(&output).into_owned();
+        let envelope = serde_json::from_str(&stdout).map_err(|error| {
+            ProviderError::parse(format!(
+                "the claude CLI did not return JSON: {error}. Raw: {}",
+                truncated(&stdout, RAW_PREVIEW_CHARACTERS)
+            ))
+        })?;
+        Ok((envelope, stdout))
     }
 
     /// Ask the CLI for an answer that satisfies `schema`.
@@ -156,42 +174,18 @@ impl AnthropicProvider {
         request: &TextRequest,
         schema: &serde_json::Value,
     ) -> Result<serde_json::Value, ProviderError> {
-        let prompt = joined_prompt(request, "\n\n");
         let schema = serde_json::to_string(schema)
             .map_err(|error| ProviderError::config(format!("unserialisable schema: {error}")))?;
+        let arguments = vec![
+            "--print".to_string(),
+            "--output-format=json".to_string(),
+            format!("--model={}", self.model),
+            format!("--json-schema={schema}"),
+        ];
 
-        let output = tokio::process::Command::new(CLI)
-            .arg("--print")
-            .arg("--output-format")
-            .arg("json")
-            .arg("--model")
-            .arg(&self.model)
-            .arg("--json-schema")
-            .arg(&schema)
-            .arg("-p")
-            .arg(&prompt)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .map_err(|error| {
-                ProviderError::network(format!(
-                    "could not run the {CLI} CLI: {error}. Install it, or choose another provider."
-                ))
-            })?;
-
-        if !output.status.success() {
-            return Err(cli_failed(&output));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let envelope: serde_json::Value = serde_json::from_str(&stdout).map_err(|error| {
-            ProviderError::parse(format!(
-                "the {CLI} CLI did not return JSON: {error}. Raw: {}",
-                truncated(&stdout, 500)
-            ))
-        })?;
-
+        let (envelope, _) = self
+            .envelope(arguments, &joined_prompt(request, "\n\n"))
+            .await?;
         Self::unwrap_cli_result(envelope)
     }
 
@@ -208,14 +202,14 @@ impl AnthropicProvider {
             .unwrap_or(envelope);
 
         match inner {
-            serde_json::Value::Null => Err(ProviderError::parse(format!(
-                "the {CLI} CLI returned no result"
-            ))),
+            serde_json::Value::Null => {
+                Err(ProviderError::parse("the claude CLI returned no result"))
+            }
             serde_json::Value::String(text) => serde_json::from_str(&text).map_err(|error| {
                 ProviderError::parse(format!(
                     "the model's answer was not the JSON the schema asked for: {error}. \
                      Answer: {}",
-                    truncated(&text, 300)
+                    truncated(&text, ANSWER_PREVIEW_CHARACTERS)
                 ))
             }),
             value => Ok(value),
@@ -231,35 +225,14 @@ impl AnthropicProvider {
                 request.system_prompt, request.user_prompt
             )
         };
+        let arguments = vec![
+            "--print".to_string(),
+            "--output-format=json".to_string(),
+            format!("--model={}", self.model),
+            "--max-turns=1".to_string(),
+        ];
 
-        let output = tokio::process::Command::new(CLI)
-            .arg("-p")
-            .arg(&prompt)
-            .arg(format!("--model={}", self.model))
-            .arg("--output-format=json")
-            .arg("--max-turns=1")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .map_err(|error| {
-                ProviderError::network(format!(
-                    "could not run the {CLI} CLI: {error}. Install it, or choose another provider."
-                ))
-            })?;
-
-        if !output.status.success() {
-            return Err(cli_failed(&output));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let envelope: serde_json::Value = serde_json::from_str(&stdout).map_err(|error| {
-            ProviderError::parse(format!(
-                "the {CLI} CLI did not return JSON: {error}. Raw: {}",
-                truncated(&stdout, 500)
-            ))
-        })?;
-
+        let (envelope, stdout) = self.envelope(arguments, &prompt).await?;
         let content = envelope
             .get("result")
             .or_else(|| envelope.get("content"))
@@ -269,16 +242,16 @@ impl AnthropicProvider {
 
         if content.is_empty() {
             return Err(ProviderError::parse(format!(
-                "the {CLI} CLI returned an empty answer. Raw: {}",
-                truncated(&stdout, 1000)
+                "the claude CLI returned an empty answer. Raw: {}",
+                truncated(&stdout, RAW_PREVIEW_CHARACTERS)
             )));
         }
 
         Ok(TextResponse {
             content,
             model: self.model.clone(),
-            input_tokens: 0,
-            output_tokens: 0,
+            input_tokens: usage(&envelope, "input_tokens"),
+            output_tokens: usage(&envelope, "output_tokens"),
             finish_reason: "end_turn".into(),
         })
     }
@@ -294,15 +267,6 @@ fn joined_prompt(request: &TextRequest, separator: &str) -> String {
     )
 }
 
-fn cli_failed(output: &std::process::Output) -> ProviderError {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    ProviderError::network(format!(
-        "the {CLI} CLI exited with {}: {}",
-        output.status,
-        truncated(&stderr, 500)
-    ))
-}
-
 fn truncated(text: &str, characters: usize) -> String {
     text.chars().take(characters).collect()
 }
@@ -311,13 +275,13 @@ fn usage(body: &serde_json::Value, field: &str) -> u32 {
     body.get("usage")
         .and_then(|usage| usage.get(field))
         .and_then(|count| count.as_u64())
-        .unwrap_or(0) as u32
+        .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 #[async_trait]
 impl TextProvider for AnthropicProvider {
     fn name(&self) -> &str {
-        "anthropic"
+        NAME
     }
 
     fn supports_structured_output(&self) -> bool {
@@ -402,10 +366,31 @@ impl TextProvider for AnthropicProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+
+    /// A stand-in `claude` that records its token, arguments and stdin next
+    /// to itself and answers with `answer`.
+    #[cfg(unix)]
+    fn fake_cli(directory: &std::path::Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = directory.join("claude");
+        let record = directory.display();
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$CLAUDE_CODE_OAUTH_TOKEN\" > '{record}/token'\nprintf '%s\\n' \"$@\" > '{record}/arguments'\ncat > '{record}/stdin'\n{body}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        executable
+    }
 
     fn provider() -> AnthropicProvider {
         AnthropicProvider::new("test-key")
@@ -654,6 +639,193 @@ mod tests {
             }
             other => panic!("expected ApiError, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn the_key_is_never_carried_across_a_redirect() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&elsewhere)
+            .await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/v1/messages", elsewhere.uri())),
+            )
+            .mount(&server)
+            .await;
+        let provider = AnthropicProvider::with_base_url(
+            AnthropicAuth::ApiKey(SecretValue::new(concat!("sk-ant-", "api03-redirected"))),
+            DEFAULT_MODEL,
+            server.uri(),
+        );
+
+        let error = provider
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, ProviderError::Api { status: 307, .. }),
+            "{error:?}"
+        );
+        assert!(
+            elsewhere.received_requests().await.unwrap().is_empty(),
+            "the request, and its key, followed the redirect"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_that_outlives_its_deadline_fails() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let provider = AnthropicProvider::with_base_url(
+            AnthropicAuth::ApiKey(SecretValue::new("sk-test")),
+            DEFAULT_MODEL,
+            server.uri(),
+        )
+        .with_timeout(Duration::from_millis(200));
+
+        let started = Instant::now();
+        let error = provider
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, ProviderError::Network { detail } if detail.contains("no answer within")),
+            "{error:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_cli_gets_the_token_in_its_environment_and_the_prompt_on_stdin() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = fake_cli(
+            directory.path(),
+            r#"printf '%s' '{"result":"from the cli","usage":{"input_tokens":3,"output_tokens":2}}'"#,
+        );
+        let provider =
+            AnthropicProvider::with_oauth("oauth-token-7f3a").with_executable(executable);
+        let prompt = format!("--help is not a flag here {}", "x".repeat(200 * 1024));
+
+        let response = provider
+            .complete(&TextRequest::new("", prompt.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(response.content, "from the cli");
+        assert_eq!(response.input_tokens, 3);
+        let read = |name: &str| std::fs::read_to_string(directory.path().join(name)).unwrap();
+        assert_eq!(read("token"), "oauth-token-7f3a");
+        assert_eq!(read("stdin"), prompt);
+        assert!(!read("arguments").contains("--help"));
+        assert!(read("arguments").contains("--max-turns=1"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_bare_cli_is_given_no_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = fake_cli(directory.path(), r#"printf '%s' '{"result":"ok"}'"#);
+        let provider = AnthropicProvider::with_model(AnthropicAuth::ClaudeCli, DEFAULT_MODEL)
+            .with_executable(executable);
+
+        provider
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap();
+
+        let token = std::fs::read_to_string(directory.path().join("token")).unwrap();
+        assert!(token.is_empty(), "{token}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failing_cli_is_reported_as_an_exit_not_a_network_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = fake_cli(directory.path(), "echo 'not signed in' >&2; exit 3");
+        let provider = AnthropicProvider::with_oauth("token").with_executable(executable);
+
+        let error = provider
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, ProviderError::Exit { status: crate::provider::ExitStatus::Code(3), message, .. } if message.contains("not signed in")),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_cli_is_reported_as_unavailable() {
+        let provider = AnthropicProvider::with_oauth("token")
+            .with_executable("/nonexistent/claude-for-this-test");
+
+        let error = provider
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, ProviderError::Unavailable { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cli_that_overruns_its_deadline_is_stopped() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = fake_cli(directory.path(), "sleep 30");
+        let provider = AnthropicProvider::with_oauth("token")
+            .with_executable(executable)
+            .with_timeout(Duration::from_millis(300));
+
+        let started = Instant::now();
+        let error = provider
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ProviderError::Timeout { .. }), "{error:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_structured_answer_is_asked_of_the_cli_with_its_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = fake_cli(
+            directory.path(),
+            r#"printf '%s' '{"structured_output":{"beats":3}}'"#,
+        );
+        let provider = AnthropicProvider::with_oauth("token").with_executable(executable);
+        let mut request = TextRequest::new("sys", "usr");
+        request.response_format = Some(ResponseFormat::Json {
+            schema: Some(serde_json::json!({ "type": "object" })),
+        });
+
+        let value = provider.complete_structured(&request).await.unwrap();
+
+        assert_eq!(value["beats"], 3);
+        let arguments = std::fs::read_to_string(directory.path().join("arguments")).unwrap();
+        assert!(
+            arguments.contains(r#"--json-schema={"type":"object"}"#),
+            "{arguments}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("stdin")).unwrap(),
+            "sys\n\nusr"
+        );
     }
 
     #[tokio::test]
