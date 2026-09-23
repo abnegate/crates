@@ -24,6 +24,9 @@ mod hardened;
 mod managed;
 mod worktrees;
 
+#[cfg(test)]
+pub(crate) use hardened::fixtures;
+
 /// Longest diff kept before truncation, in bytes.
 const MAXIMUM_DIFF_BYTES: usize = 50_000;
 
@@ -196,13 +199,12 @@ impl GitService {
     /// the command line reaches. Run before every hardened operation, because
     /// a run's git commands can write that configuration between two of them.
     pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
-        let listed = Self::output(
-            Self::hardened()
-                .args(CONFIG_LISTING)
-                .current_dir(path)
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+        Self::verify(Self::hardened().current_dir(path)).await
+    }
+
+    /// [`Self::verify_config`] for a command already pointed at its repository.
+    pub(crate) async fn verify(command: &mut Command) -> GitResult<()> {
+        let listed = Self::output(command.args(CONFIG_LISTING).stdout(Stdio::piped())).await?;
         if !listed.status.success() {
             return Err(GitError::CommandFailed(
                 "Cannot read the repository's configuration".to_string(),
@@ -218,11 +220,20 @@ impl GitService {
     /// it names, with `token` sent to that repository and nowhere else.
     pub(crate) fn connected(remote: &RepositoryUrl, token: Option<&SecretValue>) -> Command {
         let mut command = Self::hardened();
+        Self::connect(&mut command, remote, token);
+        command
+    }
+
+    /// Let a hardened command reach `remote` and nothing else.
+    pub(crate) fn connect(
+        command: &mut Command,
+        remote: &RepositoryUrl,
+        token: Option<&SecretValue>,
+    ) {
         command.env("GIT_ALLOW_PROTOCOL", remote.protocol());
         if let Some(token) = token {
-            authenticate(&mut command, remote, token);
+            authenticate(command, remote, token);
         }
-        command
     }
 
     /// Run a git command in a process group of its own, torn down with every

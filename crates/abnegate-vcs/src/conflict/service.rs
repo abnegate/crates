@@ -8,13 +8,15 @@ use crate::conflict::ConflictResult;
 use crate::conflict::ConflictedPath;
 use crate::conflict::HEAD_REF;
 use crate::conflict::has_markers;
+use crate::conflict::index;
+use crate::conflict::layout::Layout;
 use crate::conflict::resolve;
-use crate::git::authenticate;
+use crate::git::GitService;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
-use std::path::Path;
+use std::ffi::OsString;
+use std::process::Output;
 use std::process::Stdio;
 use tempfile::TempDir;
 use tokio::process::Command;
@@ -25,11 +27,11 @@ const DEFAULT_AUTHOR_NAME: &str = "abnegate-vcs";
 /// The address a repair commits under when the caller names nobody.
 const DEFAULT_AUTHOR_EMAIL: &str = "abnegate-vcs@localhost";
 
-/// The subdirectory of the throwaway root holding the reproduced merge.
-const CHECKOUT_DIRECTORY: &str = "checkout";
+/// How `git merge` reports the conflict it was asked to reproduce.
+const MERGE_CONFLICTED: i32 = 1;
 
-/// The subdirectory a repair is given as its home, cache and temporary space.
-const ISOLATION_DIRECTORY: &str = "isolation";
+/// How `git push --porcelain` marks a ref the remote refused.
+const REJECTED: &[u8] = b"!\t";
 
 /// Reproduces pull request conflicts in throwaway checkouts.
 #[derive(Debug, Clone)]
@@ -69,42 +71,48 @@ impl ConflictService {
     /// no repair at all.
     pub async fn reproduce(&self, request: &ConflictRequest) -> ConflictResult<Conflict> {
         let root = TempDir::new()?;
-        let checkout = root.path().join(CHECKOUT_DIRECTORY);
-        let isolation = root.path().join(ISOLATION_DIRECTORY);
-        std::fs::create_dir(&checkout)?;
-        std::fs::create_dir(&isolation)?;
+        let layout = Layout::under(root.path());
+        layout.create()?;
 
-        self.run(&checkout, &["init", "--quiet"]).await?;
+        let mut init = self.command(&layout);
+        init.args(["init", "--quiet", "--template=", "--separate-git-dir"])
+            .arg(&layout.git)
+            .arg(&layout.checkout);
+        self.succeed(&mut init, "init").await?;
 
-        self.run_authenticated(
-            &checkout,
-            &[
-                "fetch",
-                "--no-tags",
-                "--quiet",
-                request.remote.as_str(),
-                &format!("+refs/heads/{}:{HEAD_REF}", request.head),
-                &format!("+refs/heads/{}:{BASE_REF}", request.base),
-            ],
+        let mut fetch = self.bound(&layout);
+        GitService::connect(&mut fetch, &request.remote, request.token.as_ref());
+        fetch.args(fetch_arguments(
             &request.remote,
-            request.token.as_ref(),
-        )
-        .await?;
+            &request.head,
+            &request.base,
+        ));
+        self.succeed(&mut fetch, "fetch").await?;
 
-        let head = self.rev_parse(&checkout, HEAD_REF).await?;
-        let base = self.rev_parse(&checkout, BASE_REF).await?;
+        let head = self.rev_parse(&layout, HEAD_REF).await?;
+        let base = self.rev_parse(&layout, BASE_REF).await?;
         expect(&request.expected_head, &head, &request.head)?;
         expect(&request.expected_base, &base, &request.base)?;
 
-        self.run(&checkout, &["checkout", "--detach", "--quiet", HEAD_REF])
+        self.run(&layout, &["checkout", "--detach", "--quiet", HEAD_REF])
             .await?;
 
         let merged = self
-            .attempt(&checkout, &["merge", "--no-commit", "--no-ff", BASE_REF])
+            .attempt(&layout, &["merge", "--no-commit", "--no-ff", BASE_REF])
             .await?;
 
         let unmerged = self
-            .capture(&checkout, &["diff", "--name-only", "--diff-filter=U", "-z"])
+            .capture(
+                &layout,
+                &[
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--name-only",
+                    "--diff-filter=U",
+                    "-z",
+                ],
+            )
             .await?;
 
         let mut files = BTreeSet::new();
@@ -118,7 +126,7 @@ impl ConflictService {
         }
 
         for path in &files {
-            let resolved = resolve(&checkout, path)?;
+            let resolved = resolve(&layout.checkout, path)?;
             let text = std::fs::read_to_string(&resolved)
                 .map_err(|_| ConflictError::NotTextual(path.to_string()))?;
             if !has_markers(&text) {
@@ -126,52 +134,85 @@ impl ConflictService {
             }
         }
 
+        let index = self
+            .capture(&layout, &["ls-files", "--stage", "-z"])
+            .await?;
+
         Ok(Conflict {
             root,
-            checkout_path: checkout,
-            isolation_path: isolation,
+            layout,
+            remote: request.remote.clone(),
+            head_branch: request.head.clone(),
             head,
             base,
             files,
+            index,
         })
     }
 
-    /// Files the working tree changed that the conflict did not name.
+    /// Files the repair changed that the conflict did not name: an edit the
+    /// merge did not leave there, anything it staged or unstaged itself, and
+    /// any file it created that the repository does not ignore.
     ///
-    /// The merge staged everything that combined cleanly, so anything still
-    /// showing as modified against the index was touched after the merge — by the
-    /// repair. Only the conflicted files have any business being in that list.
+    /// Only the conflicted files have any business being in that list.
     pub async fn strays(&self, conflict: &Conflict) -> ConflictResult<Vec<String>> {
+        self.verify_config(&conflict.layout).await?;
+        let staged = self
+            .capture(&conflict.layout, &["ls-files", "--stage", "-z"])
+            .await?;
         let modified = self
-            .capture(conflict.path(), &["diff", "--name-only", "-z"])
+            .capture(
+                &conflict.layout,
+                &[
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--name-only",
+                    "-z",
+                ],
+            )
+            .await?;
+        let created = self
+            .capture(
+                &conflict.layout,
+                &["ls-files", "--others", "--exclude-standard", "-z"],
+            )
             .await?;
 
         let named: BTreeSet<&str> = conflict.files().iter().map(|path| path.as_str()).collect();
-
-        let mut strays: BTreeSet<String> = BTreeSet::new();
-        for entry in modified.split('\0').filter(|entry| !entry.is_empty()) {
-            if !named.contains(entry) {
-                strays.insert(entry.to_string());
-            }
-        }
-
+        let mut strays = index::changed(&conflict.index, &staged);
+        strays.extend(
+            modified
+                .split('\0')
+                .chain(created.split('\0'))
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string),
+        );
+        strays.retain(|path| !named.contains(path.as_str()));
         Ok(strays.into_iter().collect())
     }
 
     /// Commit the resolved merge, staging only the conflicted files.
     ///
-    /// Everything the merge combined cleanly is already in the index; adding the
-    /// conflicted files completes it. Nothing else is staged, so a file the repair
-    /// touched outside its scope cannot ride along in the commit.
+    /// The checkout is verified first, and a repair that touched anything the
+    /// conflict did not name is refused with [`ConflictError::Strays`]: the
+    /// merge staged everything that combined cleanly, so adding the conflicted
+    /// files completes the index, and nothing else may be in it.
     pub async fn apply(&self, conflict: &Conflict, message: &str) -> ConflictResult<CommitSha> {
+        conflict.verify(self).await?;
+        let strays = self.strays(conflict).await?;
+        if !strays.is_empty() {
+            return Err(ConflictError::Strays(strays));
+        }
+
         let mut arguments: Vec<&str> = vec!["add", "--"];
         arguments.extend(conflict.files().iter().map(|path| path.as_str()));
-        self.run(conflict.path(), &arguments).await?;
+        self.run(&conflict.layout, &arguments).await?;
 
         let name = format!("user.name={}", self.author_name);
         let email = format!("user.email={}", self.author_email);
         self.run(
-            conflict.path(),
+            &conflict.layout,
             &[
                 "-c",
                 &name,
@@ -186,79 +227,115 @@ impl ConflictService {
         )
         .await?;
 
-        self.rev_parse(conflict.path(), "HEAD").await
+        self.rev_parse(&conflict.layout, "HEAD").await
     }
 
-    /// Push the repaired head, refusing anything that is not a fast-forward.
+    /// Push the applied repair to the branch and repository it was reproduced
+    /// from, refusing anything that is not a fast-forward, and say which
+    /// commit was pushed.
     ///
-    /// A branch somebody else advanced during the repair rejects the push rather
+    /// Only a merge of the reproduced head and base is pushed: a checkout
+    /// whose HEAD is anything else was not repaired by [`Self::apply`]. A
+    /// branch somebody else advanced during the repair rejects the push rather
     /// than losing their commits, because nothing here ever forces.
     pub async fn publish(
         &self,
         conflict: &Conflict,
-        remote: &RepositoryUrl,
         token: Option<&SecretValue>,
-        branch: &BranchName,
-    ) -> ConflictResult<()> {
-        self.run_authenticated(
-            conflict.path(),
-            &[
-                "push",
-                "--quiet",
-                remote.as_str(),
-                &format!("HEAD:{}", branch.reference()),
-            ],
-            remote,
-            token,
-        )
-        .await
+    ) -> ConflictResult<CommitSha> {
+        self.verify_config(&conflict.layout).await?;
+        let lineage = self
+            .capture(
+                &conflict.layout,
+                &["rev-list", "--parents", "--max-count=1", "HEAD", "--"],
+            )
+            .await?;
+        let lineage = lineage
+            .split_whitespace()
+            .map(CommitSha::parse)
+            .collect::<Result<Vec<CommitSha>, _>>()?;
+        let [commit, first, second] = lineage.as_slice() else {
+            return Err(ConflictError::NotApplied);
+        };
+        if *first != conflict.head || *second != conflict.base {
+            return Err(ConflictError::NotApplied);
+        }
+        let commit = commit.clone();
+
+        let mut push = self.bound(&conflict.layout);
+        GitService::connect(&mut push, &conflict.remote, token);
+        push.args(push_arguments(
+            &conflict.remote,
+            &commit,
+            &conflict.head_branch,
+        ));
+        let output = self.execute(&mut push).await?;
+        if output.status.success() {
+            return Ok(commit);
+        }
+        let rejected = output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .any(|line| line.starts_with(REJECTED));
+        match rejected {
+            true => Err(ConflictError::Rejected),
+            false => Err(ConflictError::CommandFailed(
+                "git push failed; verify repository access".to_string(),
+            )),
+        }
     }
 
     pub(super) async fn rev_parse(
         &self,
-        checkout: &Path,
+        layout: &Layout,
         reference: &str,
     ) -> ConflictResult<CommitSha> {
         let output = self
-            .capture(checkout, &["rev-parse", &format!("{reference}^{{commit}}")])
+            .capture(
+                layout,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--end-of-options",
+                    &format!("{reference}^{{commit}}"),
+                ],
+            )
             .await?;
         Ok(CommitSha::parse(&output)?)
     }
 
-    async fn run(&self, checkout: &Path, arguments: &[&str]) -> ConflictResult<()> {
-        self.capture(checkout, arguments).await.map(|_| ())
+    /// Refuse a repository whose configuration names something no pin reaches.
+    pub(super) async fn verify_config(&self, layout: &Layout) -> ConflictResult<()> {
+        Ok(GitService::verify(&mut self.bound(layout)).await?)
     }
 
-    /// Run a command that reaches the network, authenticating by header.
-    async fn run_authenticated(
-        &self,
-        checkout: &Path,
-        arguments: &[&str],
-        remote: &RepositoryUrl,
-        token: Option<&SecretValue>,
-    ) -> ConflictResult<()> {
-        let mut command = self.command(checkout, arguments);
-        command.env("GIT_ALLOW_PROTOCOL", remote.protocol());
-        if let Some(token) = token {
-            authenticate(&mut command, remote, token);
-        }
-        let output = command.output().await?;
-        if !output.status.success() {
-            return Err(ConflictError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
-        Ok(())
+    async fn run(&self, layout: &Layout, arguments: &[&str]) -> ConflictResult<()> {
+        self.capture(layout, arguments).await.map(drop)
     }
 
-    async fn capture(&self, checkout: &Path, arguments: &[&str]) -> ConflictResult<String> {
-        let output = self.command(checkout, arguments).output().await?;
-        if !output.status.success() {
-            return Err(ConflictError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
+    async fn capture(&self, layout: &Layout, arguments: &[&str]) -> ConflictResult<String> {
+        let mut command = self.bound(layout);
+        command.args(arguments);
+        let output = self.succeed(&mut command, arguments[0]).await?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Run a command whose failure is an error, reported by the operation's
+    /// name alone: git's own output quotes paths and remote messages the
+    /// repository controls.
+    async fn succeed(&self, command: &mut Command, operation: &str) -> ConflictResult<Output> {
+        let output = self.execute(command).await?;
+        if !output.status.success() {
+            tracing::debug!(
+                operation,
+                error = %String::from_utf8_lossy(&output.stderr),
+                "A conflict repair's git command failed"
+            );
+            return Err(ConflictError::CommandFailed(format!(
+                "git {operation} failed"
+            )));
+        }
+        Ok(output)
     }
 
     /// Run a merge whose failure is an answer rather than an error.
@@ -267,55 +344,89 @@ impl ConflictService {
     /// a missing ref, an unusable identity, a broken checkout — is an error,
     /// and reporting it as "merged cleanly" turns a broken environment into a
     /// silent no-op that looks exactly like a branch needing no repair.
-    async fn attempt(&self, checkout: &Path, arguments: &[&str]) -> ConflictResult<bool> {
-        let output = self.command(checkout, arguments).output().await?;
+    async fn attempt(&self, layout: &Layout, arguments: &[&str]) -> ConflictResult<bool> {
+        let mut command = self.bound(layout);
+        command.args(arguments);
+        let output = self.execute(&mut command).await?;
         if output.status.success() {
             return Ok(true);
         }
-        if output.status.code() == Some(1) {
+        if output.status.code() == Some(MERGE_CONFLICTED) {
             return Ok(false);
         }
         Err(ConflictError::CommandFailed(format!(
-            "git {} exited with {}: {}",
-            arguments.join(" "),
+            "git {} exited with {}",
+            arguments[0],
             output
                 .status
                 .code()
-                .map_or_else(|| "a signal".to_string(), |code| code.to_string()),
-            String::from_utf8_lossy(&output.stderr).trim()
+                .map_or_else(|| "a signal".to_string(), |code| code.to_string())
         )))
     }
 
-    fn command(&self, checkout: &Path, arguments: &[&str]) -> Command {
-        let mut command = Command::new("git");
+    /// Every command runs under the git service's timeout, in a process group
+    /// torn down with it when it is abandoned.
+    async fn execute(&self, command: &mut Command) -> ConflictResult<Output> {
+        Ok(GitService::output(command).await?)
+    }
+
+    /// A hardened command bound to the throwaway repository and work tree by
+    /// path, so nothing in the checkout decides which repository it reads.
+    fn bound(&self, layout: &Layout) -> Command {
+        let mut command = self.command(layout);
         command
-            .current_dir(checkout)
-            .env_clear()
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_ASKPASS", "")
-            .env("HOME", checkout)
-            .env("LC_ALL", "C")
-            // env_clear removed any identity and the global config is
-            // /dev/null, so git has none to fall back on. A host whose git
-            // cannot synthesise one from the passwd entry refuses to merge or
-            // commit at all, which is most CI runners.
+            .arg(prefixed("--git-dir=", &layout.git))
+            .arg(prefixed("--work-tree=", &layout.checkout));
+        command
+    }
+
+    /// A hardened command with the repair's identity and an empty home
+    /// outside everything the repair can write.
+    fn command(&self, layout: &Layout) -> Command {
+        let mut command = GitService::hardened();
+        command
+            .current_dir(&layout.checkout)
+            .env("HOME", &layout.home)
             .env("GIT_AUTHOR_NAME", &self.author_name)
             .env("GIT_AUTHOR_EMAIL", &self.author_email)
             .env("GIT_COMMITTER_NAME", &self.author_name)
             .env("GIT_COMMITTER_EMAIL", &self.author_email)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
-        if let Some(path) = std::env::var_os("PATH") {
-            command.env("PATH", path);
-        }
-        for argument in arguments {
-            command.arg(OsStr::new(argument));
-        }
         command
     }
+}
+
+/// `git fetch` of exactly the two branches, into refs of the throwaway
+/// repository's own, with the remote after the end of the options.
+fn fetch_arguments(remote: &RepositoryUrl, head: &BranchName, base: &BranchName) -> Vec<String> {
+    vec![
+        "fetch".to_string(),
+        "--no-tags".to_string(),
+        "--quiet".to_string(),
+        "--".to_string(),
+        remote.to_string(),
+        format!("+{}:{HEAD_REF}", head.reference()),
+        format!("+{}:{BASE_REF}", base.reference()),
+    ]
+}
+
+/// `git push` of one commit to one branch, never forced, with the remote
+/// after the end of the options.
+fn push_arguments(remote: &RepositoryUrl, commit: &CommitSha, branch: &BranchName) -> Vec<String> {
+    vec![
+        "push".to_string(),
+        "--porcelain".to_string(),
+        "--".to_string(),
+        remote.to_string(),
+        format!("{commit}:{}", branch.reference()),
+    ]
+}
+
+fn prefixed(option: &str, path: &std::path::Path) -> OsString {
+    let mut argument = OsString::from(option);
+    argument.push(path);
+    argument
 }
 
 fn expect(
@@ -325,9 +436,9 @@ fn expect(
 ) -> ConflictResult<()> {
     match expected {
         Some(expected) if expected != actual => Err(ConflictError::Moved {
-            branch: branch.to_string(),
-            expected: expected.to_string(),
-            actual: actual.to_string(),
+            branch: branch.clone(),
+            expected: expected.clone(),
+            actual: actual.clone(),
         }),
         _ => Ok(()),
     }
@@ -337,14 +448,8 @@ fn expect(
 mod tests {
     use super::*;
 
-    /// The identity a repair commits under reaches git through the environment
-    /// as well as the command line, so a caller that named one is obeyed by
-    /// both the merge and the commit.
-    #[test]
-    fn the_author_a_repair_commits_under_is_the_callers_to_name() {
-        let service = ConflictService::new().with_author("Ada", "ada@example.test");
-        let command = service.command(Path::new("."), &["status"]);
-        let environment: Vec<(String, String)> = command
+    fn environment(command: &Command) -> Vec<(String, String)> {
+        command
             .as_std()
             .get_envs()
             .filter_map(|(key, value)| {
@@ -353,7 +458,21 @@ mod tests {
                     value?.to_string_lossy().into_owned(),
                 ))
             })
-            .collect();
+            .collect()
+    }
+
+    fn remote() -> RepositoryUrl {
+        RepositoryUrl::parse("https://github.com/owner/repository").unwrap()
+    }
+
+    /// The identity a repair commits under reaches git through the environment
+    /// as well as the command line, so a caller that named one is obeyed by
+    /// both the merge and the commit.
+    #[test]
+    fn the_author_a_repair_commits_under_is_the_callers_to_name() {
+        let root = TempDir::new().unwrap();
+        let service = ConflictService::new().with_author("Ada", "ada@example.test");
+        let environment = environment(&service.command(&Layout::under(root.path())));
 
         assert!(
             environment.contains(&("GIT_AUTHOR_NAME".to_string(), "Ada".to_string())),
@@ -366,5 +485,124 @@ mod tests {
             )),
             "{environment:?}"
         );
+    }
+
+    #[test]
+    fn every_command_is_hardened_and_bound_to_a_repository_outside_the_checkout() {
+        let root = TempDir::new().unwrap();
+        let layout = Layout::under(root.path());
+        let command = ConflictService::new().bound(&layout);
+        let arguments: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        let environment = environment(&command);
+
+        assert!(arguments.contains(&format!("--git-dir={}", layout.git.display())));
+        assert!(arguments.contains(&format!("--work-tree={}", layout.checkout.display())));
+        assert!(arguments.contains(&"core.hooksPath=/dev/null".to_string()));
+        assert!(!layout.git.starts_with(&layout.checkout));
+        for expected in [
+            ("HOME", layout.home.display().to_string()),
+            ("GIT_ALLOW_PROTOCOL", "https".to_string()),
+            ("GIT_LITERAL_PATHSPECS", "1".to_string()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null".to_string()),
+        ] {
+            assert!(
+                environment.contains(&(expected.0.to_string(), expected.1.clone())),
+                "{expected:?} in {environment:?}"
+            );
+        }
+        assert!(!layout.home.starts_with(&layout.checkout));
+        assert!(!layout.home.starts_with(&layout.isolation));
+    }
+
+    #[test]
+    fn the_remote_comes_after_the_end_of_the_options() {
+        let head = BranchName::parse("feature").unwrap();
+        let base = BranchName::parse("main").unwrap();
+        let commit = CommitSha::parse(&"a".repeat(40)).unwrap();
+
+        for arguments in [
+            fetch_arguments(&remote(), &head, &base),
+            push_arguments(&remote(), &commit, &head),
+        ] {
+            let end = arguments.iter().position(|argument| argument == "--");
+            let remote = arguments
+                .iter()
+                .position(|argument| argument == "https://github.com/owner/repository.git");
+            assert!(
+                matches!((end, remote), (Some(end), Some(remote)) if end < remote),
+                "{arguments:?}"
+            );
+        }
+        assert_eq!(
+            push_arguments(&remote(), &commit, &head).last().unwrap(),
+            &format!("{commit}:refs/heads/feature")
+        );
+    }
+
+    #[test]
+    fn a_request_never_prints_its_token() {
+        let request = ConflictRequest {
+            remote: remote(),
+            token: Some(SecretValue::new(concat!("ghp_", "sensitive"))),
+            head: BranchName::parse("feature").unwrap(),
+            base: BranchName::parse("main").unwrap(),
+            expected_head: None,
+            expected_base: None,
+        };
+
+        assert!(!format!("{request:?}").contains(concat!("ghp_", "sensitive")));
+    }
+
+    /// Abandoning a repair's git command takes every helper it started with
+    /// it, as abandoning one of the git service's own does.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_abandoned_command_takes_its_helpers_with_it() {
+        use crate::git::fixtures::TEARDOWN_BUDGET;
+        use crate::git::fixtures::alive;
+        use crate::git::fixtures::marker;
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = TempDir::new().unwrap();
+        std::fs::write(
+            fixture.path().join("git"),
+            "#!/bin/sh\n/bin/sleep 60 &\necho $! > \"$FIXTURE/helper\"\nwait\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            fixture.path().join("git"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let root = TempDir::new().unwrap();
+        let layout = Layout::under(root.path());
+        layout.create().unwrap();
+        let service = ConflictService::new();
+        let mut command = service.bound(&layout);
+        command
+            .env("PATH", fixture.path())
+            .env("FIXTURE", fixture.path());
+
+        let operation = tokio::spawn(async move { service.execute(&mut command).await });
+        let helper = marker(fixture.path(), "helper").await;
+        operation.abort();
+        assert!(operation.await.unwrap_err().is_cancelled());
+        let stopped = tokio::time::timeout(TEARDOWN_BUDGET, async {
+            while alive(helper) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok();
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(helper as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+
+        assert!(stopped, "a helper outlived the abandoned repair command");
     }
 }

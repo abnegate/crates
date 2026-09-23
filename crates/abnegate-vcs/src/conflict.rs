@@ -13,6 +13,8 @@
 
 mod conflicted_path;
 mod error;
+mod index;
+mod layout;
 mod marker;
 mod request;
 mod service;
@@ -24,6 +26,7 @@ pub use crate::conflict::conflicted_path::resolve;
 pub use crate::conflict::conflicted_path::validate;
 pub use crate::conflict::error::ConflictError;
 pub use crate::conflict::error::ConflictResult;
+use crate::conflict::layout::Layout;
 pub use crate::conflict::marker::BASE_MARKER;
 pub use crate::conflict::marker::OURS_MARKER;
 pub use crate::conflict::marker::SPLIT_MARKER;
@@ -31,22 +34,29 @@ pub use crate::conflict::marker::THEIRS_MARKER;
 pub use crate::conflict::marker::has_markers;
 pub use crate::conflict::request::ConflictRequest;
 pub use crate::conflict::service::ConflictService;
+use crate::repository_url::RepositoryUrl;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-/// The ref a fetched head lands on inside the throwaway checkout.
-pub(crate) const HEAD_REF: &str = "refs/conflict/head";
+/// The ref a fetched head lands on inside the throwaway repository.
+const HEAD_REF: &str = "refs/conflict/head";
 
-/// The ref a fetched base lands on inside the throwaway checkout.
-pub(crate) const BASE_REF: &str = "refs/conflict/base";
+/// The ref a fetched base lands on inside the throwaway repository.
+const BASE_REF: &str = "refs/conflict/base";
+
+/// The ref git records the commit being merged in.
+const MERGE_HEAD: &str = "MERGE_HEAD";
 
 /// A reproduced conflict, and the throwaway directory holding it.
 ///
-/// Dropping this deletes both the checkout and the isolation directory a repair
-/// was pointed at, so a repair cannot leave a half-merged tree or a stray home
-/// directory behind on disk.
+/// The repository lives beside the checkout rather than inside it, so nothing
+/// a repair writes into the checkout -- a `.git` of its own, a hook, a
+/// configuration -- is read by the git commands that check and commit the
+/// repair. Dropping this deletes the checkout, the repository and the
+/// isolation directory a repair was pointed at, so a repair cannot leave a
+/// half-merged tree or a stray home directory behind on disk.
 #[derive(Debug)]
 pub struct Conflict {
     #[allow(
@@ -54,21 +64,34 @@ pub struct Conflict {
         reason = "held so the throwaway directory outlives the repair"
     )]
     root: TempDir,
-    checkout_path: PathBuf,
-    isolation_path: PathBuf,
+    layout: Layout,
+    remote: RepositoryUrl,
+    head_branch: BranchName,
     head: CommitSha,
     base: CommitSha,
     files: Vec<ConflictedPath>,
+    index: String,
 }
 
 impl Conflict {
+    /// The checkout a repair edits.
     pub fn path(&self) -> &Path {
-        &self.checkout_path
+        &self.layout.checkout
     }
 
     /// The directory a repair may use as its home, cache and temporary space.
     pub fn isolation(&self) -> &Path {
-        &self.isolation_path
+        &self.layout.isolation
+    }
+
+    /// The repository the head was fetched from and the repair is published to.
+    pub fn remote(&self) -> &RepositoryUrl {
+        &self.remote
+    }
+
+    /// The branch the repair is published to.
+    pub fn head_branch(&self) -> &BranchName {
+        &self.head_branch
     }
 
     pub fn head(&self) -> &CommitSha {
@@ -125,19 +148,27 @@ impl Conflict {
         ConflictedPath::parse(&text)
     }
 
-    /// Confirm the checkout still holds the exact commits it was prepared with.
+    /// Confirm the repository still holds the exact merge it was prepared with:
+    /// HEAD on the head that was fetched, and the merge of the base still in
+    /// progress.
     ///
-    /// Run after an agent has edited the tree: a repair that was applied to a
-    /// checkout somebody moved underneath it is not a repair of this conflict.
+    /// Run after a repair has edited the tree: a repair applied to a checkout
+    /// somebody moved underneath it is not a repair of this conflict.
     pub async fn verify(&self, service: &ConflictService) -> ConflictResult<()> {
-        let checked_out = service.rev_parse(self.path(), "HEAD").await?;
-        let head = service.rev_parse(self.path(), HEAD_REF).await?;
-        let base = service.rev_parse(self.path(), BASE_REF).await?;
+        service.verify_config(&self.layout).await?;
+        let checked_out = service.rev_parse(&self.layout, "HEAD").await?;
+        let head = service.rev_parse(&self.layout, HEAD_REF).await?;
+        let base = service.rev_parse(&self.layout, BASE_REF).await?;
+        let merging = service.rev_parse(&self.layout, MERGE_HEAD).await;
 
-        if checked_out != self.head || head != self.head || base != self.base {
-            return Err(ConflictError::CheckoutMoved);
+        let unmoved = checked_out == self.head
+            && head == self.head
+            && base == self.base
+            && merging.is_ok_and(|merging| merging == self.base);
+        match unmoved {
+            true => Ok(()),
+            false => Err(ConflictError::CheckoutMoved),
         }
-        Ok(())
     }
 }
 

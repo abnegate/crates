@@ -736,29 +736,29 @@ pub(super) fn split_nul(output: &[u8]) -> Vec<String> {
 }
 
 #[cfg(test)]
-pub(super) mod fixtures {
+pub(crate) mod fixtures {
     use super::*;
 
-    pub(in crate::git) fn local(path: &Path) -> RepositoryUrl {
+    pub(crate) fn local(path: &Path) -> RepositoryUrl {
         RepositoryUrl::local(path).unwrap()
     }
 
-    pub(in crate::git) fn branch(name: &str) -> BranchName {
+    pub(crate) fn branch(name: &str) -> BranchName {
         BranchName::parse(name).unwrap()
     }
 
-    pub(in crate::git) fn token() -> SecretValue {
+    pub(crate) fn token() -> SecretValue {
         SecretValue::new("sensitive-token")
     }
 
     /// These fixtures share the machine with every other test binary, and under
     /// coverage instrumentation all of it is slower. The budgets only bound how
     /// long a genuine regression takes to surface, so they are generous.
-    pub(in crate::git) const SPAWN_BUDGET: Duration = Duration::from_secs(30);
-    pub(in crate::git) const TEARDOWN_BUDGET: Duration = Duration::from_secs(10);
+    pub(crate) const SPAWN_BUDGET: Duration = Duration::from_secs(30);
+    pub(crate) const TEARDOWN_BUDGET: Duration = Duration::from_secs(10);
 
     #[cfg(unix)]
-    pub(in crate::git) async fn marker(directory: &Path, name: &str) -> u32 {
+    pub(crate) async fn marker(directory: &Path, name: &str) -> u32 {
         tokio::time::timeout(SPAWN_BUDGET, async {
             loop {
                 if let Ok(value) = tokio::fs::read_to_string(directory.join(name)).await
@@ -774,7 +774,7 @@ pub(super) mod fixtures {
     }
 
     #[cfg(unix)]
-    pub(in crate::git) fn alive(pid: u32) -> bool {
+    pub(crate) fn alive(pid: u32) -> bool {
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
     }
 }

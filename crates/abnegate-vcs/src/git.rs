@@ -23,7 +23,6 @@ mod hardening;
 mod remote_head;
 mod service;
 
-pub(crate) use crate::git::authentication::authenticate;
 pub use crate::git::diff_summary::DiffSummary;
 pub use crate::git::error::GitError;
 pub use crate::git::error::GitResult;
@@ -32,3 +31,5 @@ pub(crate) use crate::git::hardening::harden;
 pub(crate) use crate::git::hardening::refused;
 pub use crate::git::remote_head::RemoteHead;
 pub use crate::git::service::GitService;
+#[cfg(test)]
+pub(crate) use crate::git::service::fixtures;

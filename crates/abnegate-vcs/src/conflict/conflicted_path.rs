@@ -5,8 +5,9 @@ use std::path::PathBuf;
 
 /// A repository-relative path git reported as unmerged.
 ///
-/// Slash separated, never absolute, never leaving the repository, and free of
-/// the characters that turn a path into a glob or an option.
+/// Slash separated, never absolute, never leaving the repository, never an
+/// option and never a control character. Globs and pathspec magic need no
+/// refusing: every git command here takes pathspecs literally.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConflictedPath(String);
 
@@ -17,14 +18,7 @@ impl ConflictedPath {
             || value.starts_with('-')
             || value.contains('\\')
             || value.contains("//")
-            || value.bytes().any(|byte| {
-                byte <= b' '
-                    || byte == 0x7f
-                    || matches!(
-                        byte,
-                        b',' | b'(' | b')' | b'*' | b'?' | b'[' | b']' | b'{' | b'}'
-                    )
-            })
+            || value.chars().any(char::is_control)
             || value
                 .split('/')
                 .any(|part| part.is_empty() || part == "." || part == "..");
@@ -97,7 +91,9 @@ mod tests {
 
     #[test]
     fn a_conflicted_path_must_stay_inside_the_repository() {
-        assert!(ConflictedPath::parse("src/main.rs").is_ok());
+        for accepted in ["src/main.rs", "src/[ab] *.rs", ":(top)x", "docs/a (1).md"] {
+            assert_eq!(ConflictedPath::parse(accepted).unwrap().as_str(), accepted);
+        }
         for invalid in [
             "",
             "/etc/passwd",
@@ -105,8 +101,8 @@ mod tests {
             "src/../../outside",
             "src/./main.rs",
             "src\\main.rs",
-            "src/*.rs",
-            "src/ma in.rs",
+            "src/ma\nin.rs",
+            "src/\u{7f}",
             "-oops",
         ] {
             assert!(
