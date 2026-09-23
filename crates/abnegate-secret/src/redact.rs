@@ -38,9 +38,14 @@ const SECRET_KEY_WORDS: &[&str] = &[
 /// value assigned to those still has to look like a secret to be redacted.
 /// A value assigned to one of these does not -- a chosen passphrase is low
 /// entropy by nature, and a hexadecimal master key reads as a digest.
+///
+/// A key matches when it contains one of these once its separators are
+/// dropped, so `--oauth2-bearer=<token>` reads as `oauth2bearer` and names
+/// the bearer credential as `--bearer=<token>` does.
 const NAMED_SECRET_KEY_WORDS: &[&str] = &[
     "accesskey",
     "apikey",
+    BEARER,
     "credential",
     "encryptionkey",
     "masterkey",
@@ -59,9 +64,10 @@ const NAMED_SECRET_KEY_WORDS: &[&str] = &[
 /// credential itself, as `MASTER_KEY_FILE=/etc/example/master.key` does.
 const REFERENCE_KEY_SUFFIXES: &[&str] = &["dir", "directory", "file", "path"];
 
-/// The authorization scheme that introduces a credential both in a header and
-/// as a flag, as `Authorization: Bearer <token>` and `--oauth2-bearer <token>`
-/// do.
+/// The authorization scheme that introduces a credential in a header and as a
+/// flag, as `Authorization: Bearer <token>` and `--oauth2-bearer <token>` do,
+/// and that names the credential assigned to it, as `--oauth2-bearer=<token>`
+/// does.
 const BEARER: &str = "bearer";
 
 /// The authorization scheme that introduces a credential in a header, as
@@ -732,6 +738,7 @@ mod shapes_that_carry_no_prefix {
     #[test]
     fn a_token_after_a_bearer_flag_does_not_survive() {
         let token = concat!("ya29", "a0AfH6SMBx3jd8");
+        let dotted = concat!("ya29", ".a0AfH6SMBx3jd8", ".Qk9HVVNfVE9LRU4");
         for (line, expected) in [
             (
                 format!("curl --oauth2-bearer {token}"),
@@ -749,8 +756,37 @@ mod shapes_that_carry_no_prefix {
                 format!("curl -H \"Authorization: Bearer {token}\" https://example.com"),
                 format!("curl -H \"Authorization: Bearer {REDACTED}\" https://example.com"),
             ),
+            (
+                format!("tool --bearer={token}"),
+                format!("tool --bearer={REDACTED}"),
+            ),
+            (
+                format!("curl --oauth2-bearer={dotted} https://example.com"),
+                format!("curl --oauth2-bearer={REDACTED} https://example.com"),
+            ),
+            (
+                format!("curl --oauth2-bearer=\"{dotted}\" https://example.com"),
+                format!("curl --oauth2-bearer=\"{REDACTED}\" https://example.com"),
+            ),
         ] {
             assert_eq!(redact(&line), expected);
+        }
+    }
+
+    /// `bearer` names the credential assigned to it just as `token` does, so
+    /// an assignment in prose is judged alike for either: `token bearer=owner`
+    /// stays, as `token=owner` does, because the value is too short to be a
+    /// credential, while a longer value is redacted whatever it looks like.
+    #[test]
+    fn a_value_assigned_to_bearer_is_judged_as_one_assigned_to_token() {
+        assert_eq!(redact("token bearer=owner"), "token bearer=owner");
+        for key in ["token", "bearer"] {
+            let short = format!("issued to {key}=owner");
+            assert_eq!(redact(&short), short);
+            assert_eq!(
+                redact(&format!("issued to {key}=account-holder")),
+                format!("issued to {key}={REDACTED}")
+            );
         }
     }
 
@@ -760,6 +796,7 @@ mod shapes_that_carry_no_prefix {
             "mysql --user root --password --database application",
             "curl --basic https://example.com",
             "curl --basic https://example.com/status",
+            "curl --basic=https://example.com",
             "tool --bearer --verbose",
             "docker login --password-stdin --username application",
         ] {
