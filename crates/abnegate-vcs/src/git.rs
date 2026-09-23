@@ -14,16 +14,19 @@
 //! instant between the check and the command; a clone every run can write is
 //! not one a credential should be sent from. A
 //! *managed* one is a local clone the caller owns outright: it is cloned and
-//! fetched from whatever address the caller configured, including a local
-//! path, under a timeout and with the caller's own environment. Every worktree
-//! of it shares its configuration and hooks, and a run works in one, so it is
-//! held to the same check before it is fetched, checked out, reset or given a
-//! worktree, and every one of those commands carries the same pins; the local
-//! ones also ignore the host's configuration. A managed fetch leaves off only
-//! the pins that would blank the caller's credential helper and proxy: the
-//! clone is the caller's own and its configuration is checked against the
-//! allowlist immediately before every fetch, so the caller's global helper
-//! and proxy stay usable. The hardened commands keep every pin.
+//! fetched from the address the caller configured, over a local path, HTTPS
+//! or SSH and no other transport, under a timeout and with the caller's own
+//! environment. Every worktree of it shares its configuration and hooks, and a
+//! run works in one, so it is held to the same check before it is fetched,
+//! checked out, reset or given a worktree, and every one of those commands
+//! carries the same pins; the local ones also ignore the host's
+//! configuration. A fetch also goes ahead only while the clone's `origin` is
+//! still exactly the address the caller configured, so a run cannot point it
+//! at a host of its choosing. A managed fetch leaves off only the pins that
+//! would blank the caller's credential helper and proxy: the clone is the
+//! caller's own and its configuration is checked against the allowlist
+//! immediately before every fetch, so the caller's global helper and proxy
+//! stay usable. The hardened commands keep every pin.
 
 mod authentication;
 mod diff_summary;

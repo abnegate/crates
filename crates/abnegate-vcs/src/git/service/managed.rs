@@ -44,18 +44,22 @@ impl GitService {
 
     /// A git invocation that reaches a managed clone's configured remote with
     /// the caller's own environment, so a local path, an SSH remote, a
-    /// credential helper or a proxy the caller set up still works.
+    /// credential helper or a proxy the caller set up still works, over no
+    /// transport but those in [`MANAGED_PROTOCOLS`].
     ///
     /// The clone's hooks and configuration are shared by every worktree of it,
     /// and a run works in one, so a hook a run left would otherwise run as the
     /// host on the next fetch. Every pin a hardened command carries is applied
     /// but the two in [`LEFT_TO_CALLER`]: a managed clone is the caller's own,
-    /// and [`Self::verify_config`] checks its configuration against the
-    /// allowlist immediately before every fetch, so a helper or proxy the
-    /// clone's configuration names is refused there while the caller's global
-    /// ones stay usable. The hardened commands keep every pin.
+    /// and [`Self::verify_remote`] checks its configuration against the
+    /// allowlist and its `origin` against the address the caller configured
+    /// immediately before every fetch, so a helper or proxy the clone's
+    /// configuration names, or an address a run wrote there, is refused while
+    /// the caller's global ones stay usable. The hardened commands keep every
+    /// pin.
     pub(super) fn managed_remote(path: &Path) -> Command {
         let mut command = Self::managed_command(Some(path));
+        command.env("GIT_ALLOW_PROTOCOL", MANAGED_PROTOCOLS);
         let (pins, _) = PINS.as_chunks::<2>();
         for pin in pins
             .iter()
@@ -84,6 +88,19 @@ impl GitService {
     fn setting_head(path: &Path) -> Command {
         let mut command = Self::managed_remote(path);
         command.args(["remote", "set-head", "--auto", "--", ORIGIN]);
+        command
+    }
+
+    /// A new managed clone of `address` at `target`, over no transport but
+    /// those in [`MANAGED_PROTOCOLS`], which every later fetch into it is
+    /// held to.
+    fn cloning(address: &OsStr, target: &Path) -> Command {
+        let mut command = Self::managed_command(None);
+        command
+            .env("GIT_ALLOW_PROTOCOL", MANAGED_PROTOCOLS)
+            .args(["clone", "--"])
+            .arg(address)
+            .arg(target);
         command
     }
 
@@ -127,7 +144,9 @@ impl GitService {
     }
 
     /// Ensure a managed clone exists at `path` and is up to date on
-    /// `default_branch`, cloning it from `url` when it is not there yet.
+    /// `default_branch`, cloning it from `url` when it is not there yet. A
+    /// clone whose `origin` is no longer `url` is refused with
+    /// [`GitError::UnsafeConfig`] rather than fetched.
     pub async fn ensure_repository(
         &self,
         path: &Path,
@@ -135,7 +154,7 @@ impl GitService {
         default_branch: &BranchName,
     ) -> GitResult<()> {
         match path.exists() {
-            true => self.pull(path, default_branch).await,
+            true => self.pull(path, url, default_branch).await,
             false => self.clone_managed(url, path).await,
         }
     }
@@ -144,14 +163,16 @@ impl GitService {
     /// resetting anything, and say what the remote's default branch is.
     ///
     /// `refs/remotes/origin/HEAD` is refreshed first so the answer reflects what
-    /// the remote reports rather than what the clone was last told.
+    /// the remote reports rather than what the clone was last told. A clone
+    /// whose `origin` is no longer `url` is refused as
+    /// [`Self::ensure_repository`] refuses it.
     pub async fn ensure_fetched(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         match path.exists() {
-            true => self.fetch_all(path).await?,
+            true => self.fetch_all(path, url).await?,
             false => self.clone_managed(url, path).await?,
         }
 
-        self.update_remote_head(path).await;
+        self.update_remote_head(path, url).await;
 
         Ok(self.detect_default_branch(path).await)
     }
@@ -189,13 +210,32 @@ impl GitService {
         }
     }
 
+    /// Refuse a managed clone before anything reaches its remote: one whose
+    /// configuration [`Self::verify_config`] refuses, or one whose `origin`
+    /// names anything but the one address a clone of `url` is made from.
+    /// Every worktree of the clone shares that configuration, so a run could
+    /// otherwise point the next fetch at a host of its choosing, and the
+    /// caller's own credential helper would be asked to answer for it. The
+    /// listing must hold that address alone: git reads an empty value after
+    /// it as clearing the list, and then looks for `origin` elsewhere.
+    async fn verify_remote(path: &Path, url: &str) -> GitResult<()> {
+        Self::verify_config(path).await?;
+        let expected = [address(url)?.as_encoded_bytes(), b"\0"].concat();
+        let listed = Self::output(Self::managed_local(path).args(ORIGIN_LISTING)).await?;
+        match listed.status.success() && listed.stdout == expected {
+            true => Ok(()),
+            false => Err(GitError::UnsafeConfig(ORIGIN_URL.to_string())),
+        }
+    }
+
     /// Fetch every remote ref into a managed clone without touching its
     /// working tree. A clone whose configuration holds anything beyond what
-    /// git writes for one is refused with [`GitError::UnsafeConfig`] first.
-    pub async fn fetch_all(&self, path: &Path) -> GitResult<()> {
+    /// git writes for one, or whose `origin` is no longer `url`, is refused
+    /// with [`GitError::UnsafeConfig`] first.
+    pub async fn fetch_all(&self, path: &Path, url: &str) -> GitResult<()> {
         tracing::debug!(repository = ?path, "Fetching all remote refs");
 
-        Self::verify_config(path).await?;
+        Self::verify_remote(path, url).await?;
         let output = Self::output(&mut Self::fetching_all(path)).await?;
 
         if !output.status.success() {
@@ -211,10 +251,10 @@ impl GitService {
 
     /// Fetch one branch from `origin` into a managed clone, refusing one
     /// configured as [`Self::fetch_all`] refuses it.
-    pub async fn fetch_branch(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
+    pub async fn fetch_branch(&self, path: &Path, url: &str, branch: &BranchName) -> GitResult<()> {
         tracing::debug!(repository = ?path, %branch, "Fetching branch");
 
-        Self::verify_config(path).await?;
+        Self::verify_remote(path, url).await?;
         let output = Self::output(&mut Self::fetching(path, branch)).await?;
 
         if !output.status.success() {
@@ -227,7 +267,8 @@ impl GitService {
         Ok(())
     }
 
-    /// Clone a managed repository from any address the caller can reach.
+    /// Clone a managed repository from any address the caller can reach over
+    /// a local path, HTTPS or SSH.
     async fn clone_managed(&self, url: &str, target: &Path) -> GitResult<()> {
         tracing::info!(url, target = ?target, "Cloning repository");
 
@@ -235,12 +276,7 @@ impl GitService {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let output = Self::output(
-            Self::managed_command(None)
-                .args(["clone", "--", url])
-                .arg(target),
-        )
-        .await?;
+        let output = Self::output(&mut Self::cloning(&address(url)?, target)).await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
@@ -253,11 +289,12 @@ impl GitService {
         Ok(())
     }
 
-    /// Fetch `branch` and advance a managed clone's working tree to it.
-    async fn pull(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
+    /// Fetch `branch` and advance a managed clone's working tree to it,
+    /// refusing a clone configured as [`Self::fetch_all`] refuses it.
+    async fn pull(&self, path: &Path, url: &str, branch: &BranchName) -> GitResult<()> {
         tracing::debug!(repository = ?path, %branch, "Pulling latest changes");
 
-        Self::verify_config(path).await?;
+        Self::verify_remote(path, url).await?;
         let output = Self::output(&mut Self::fetching(path, branch)).await?;
 
         if !output.status.success() {
@@ -342,8 +379,8 @@ impl GitService {
     /// default branch. Best effort: it reaches the network, and a caller that
     /// cannot reach it is no worse off than before. A clone configured as
     /// [`Self::fetch_all`] refuses is left as it was.
-    async fn update_remote_head(&self, path: &Path) {
-        if let Err(error) = Self::verify_config(path).await {
+    async fn update_remote_head(&self, path: &Path, url: &str) {
+        if let Err(error) = Self::verify_remote(path, url).await {
             tracing::warn!(repository = ?path, %error, "Refusing to update origin/HEAD");
             return;
         }
@@ -379,16 +416,34 @@ fn default_branch_of(reference: &[u8]) -> BranchName {
         .unwrap_or_else(fallback_default_branch)
 }
 
+/// The address a managed clone of `url` is made from, and so the one its
+/// `origin` must still name: a relative local path made absolute, as
+/// `git clone` would record it, and every other address as given. Git reads
+/// an address as a local path when it has no colon, or a slash before its
+/// first one; anything else is a URL or an SSH address.
+fn address(url: &str) -> GitResult<OsString> {
+    let local = url.find(':').is_none_or(|colon| url[..colon].contains('/'));
+    match !url.is_empty() && local && Path::new(url).is_relative() {
+        true => Ok(GitService::make_absolute(Path::new(url))?.into_os_string()),
+        false => Ok(OsString::from(url)),
+    }
+}
+
 #[cfg(test)]
 mod managed_tests {
     use super::*;
+    use crate::git::service::hardened::fixtures::arguments;
     use crate::git::service::hardened::fixtures::branch;
+    use crate::git::service::hardened::fixtures::recording;
     use crate::worktree::fixtures::git;
     use tempfile::TempDir;
 
     /// A host no resolver answers for, so a clone from it fails without
     /// reaching the network.
     const UNREACHABLE: &str = "https://nonexistent.invalid/repository.git";
+
+    /// [`UNREACHABLE`] over plain HTTP.
+    const PLAIN: &str = "http://nonexistent.invalid/repository.git";
 
     fn repository(path: &Path) {
         git(path, &["init", "-b", "main"]);
@@ -407,12 +462,26 @@ mod managed_tests {
         format!("file://{}", path.display())
     }
 
-    fn arguments(command: &Command) -> Vec<String> {
-        command
-            .as_std()
-            .get_args()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect()
+    /// Whether any recorded git command reached a remote.
+    fn reached_remote(recorded: &[Vec<String>]) -> bool {
+        recorded.iter().flatten().any(|argument| {
+            matches!(
+                argument.as_str(),
+                "fetch" | "set-head" | "clone" | "ls-remote"
+            )
+        })
+    }
+
+    /// Whether `path`'s object store holds `object`.
+    fn holds(path: &Path, object: &str) -> bool {
+        std::process::Command::new("git")
+            .args(["cat-file", "-e", object])
+            .current_dir(path)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap()
+            .success()
     }
 
     #[test]
@@ -661,14 +730,15 @@ mod managed_tests {
         repository(source.path());
         let workspace = TempDir::new().unwrap();
         let target = workspace.path().join("cloned");
+        let url = origin(source.path());
         let service = GitService::new();
 
         service
-            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .ensure_repository(&target, &url, &branch("main"))
             .await
             .unwrap();
         git(source.path(), &["branch", "new-feature"]);
-        service.fetch_all(&target).await.unwrap();
+        service.fetch_all(&target, &url).await.unwrap();
 
         let branches = git(&target, &["branch", "-r"]);
         assert!(branches.contains("origin/new-feature"), "{branches}");
@@ -680,7 +750,7 @@ mod managed_tests {
         let temporary = TempDir::new().unwrap();
 
         let refusal = service
-            .fetch_branch(temporary.path(), &branch("main"))
+            .fetch_branch(temporary.path(), UNREACHABLE, &branch("main"))
             .await
             .unwrap_err()
             .to_string();
@@ -700,14 +770,15 @@ mod managed_tests {
 
         let workspace = TempDir::new().unwrap();
         let target = workspace.path().join("cloned");
+        let url = origin(source.path());
         let service = GitService::new();
         service
-            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .ensure_repository(&target, &url, &branch("main"))
             .await
             .unwrap();
 
         service
-            .fetch_branch(&target, &branch("feature-y"))
+            .fetch_branch(&target, &url, &branch("feature-y"))
             .await
             .unwrap();
         assert!(
@@ -716,7 +787,7 @@ mod managed_tests {
         );
 
         let missing = service
-            .fetch_branch(&target, &branch("nonexistent-branch"))
+            .fetch_branch(&target, &url, &branch("nonexistent-branch"))
             .await
             .unwrap_err()
             .to_string();
@@ -1035,9 +1106,12 @@ mod managed_tests {
         git(&target, &["config", "alias.co", "checkout"]);
 
         let refusals = [
-            service.fetch_all(&target).await.err(),
-            service.fetch_branch(&target, &branch("main")).await.err(),
-            service.pull(&target, &branch("main")).await.err(),
+            service.fetch_all(&target, &url).await.err(),
+            service
+                .fetch_branch(&target, &url, &branch("main"))
+                .await
+                .err(),
+            service.pull(&target, &url, &branch("main")).await.err(),
             service.checkout_reset(&target, &branch("main")).await.err(),
             service
                 .ensure_repository(&target, &url, &branch("main"))
@@ -1063,21 +1137,237 @@ mod managed_tests {
         repository(source.path());
         let workspace = TempDir::new().unwrap();
         let target = workspace.path().join("cloned");
+        let url = origin(source.path());
         let service = GitService::new();
         service
-            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .ensure_repository(&target, &url, &branch("main"))
             .await
             .unwrap();
         let head = target.join(".git").join(REMOTE_HEAD);
         git(&target, &["symbolic-ref", "--delete", REMOTE_HEAD]);
         git(&target, &["config", "alias.co", "checkout"]);
 
-        service.update_remote_head(&target).await;
+        service.update_remote_head(&target, &url).await;
         assert!(!head.exists(), "the refused clone's remote head was set");
 
         git(&target, &["config", "--unset", "alias.co"]);
-        service.update_remote_head(&target).await;
+        service.update_remote_head(&target, &url).await;
         assert!(head.exists(), "an accepted clone's remote head is set");
+    }
+
+    /// A clone's `origin` sits in the configuration every worktree of it
+    /// shares, so a run can point it at another address, and a fetch would
+    /// then ask the caller's own credential helper to answer for that host.
+    /// Every operation that reaches the remote refuses a clone whose `origin`
+    /// is not exactly the one address the caller configured, before any git
+    /// command reaches a remote.
+    #[tokio::test]
+    async fn a_managed_clone_whose_origin_is_not_the_configured_address_is_never_fetched() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let elsewhere = TempDir::new().unwrap();
+        repository(elsewhere.path());
+        second_commit(elsewhere.path());
+        let unfetched = git(elsewhere.path(), &["rev-parse", "HEAD"]);
+        let workspace = TempDir::new().unwrap();
+        let url = origin(source.path());
+        let other = origin(elsewhere.path());
+        let service = GitService::new();
+        let rewrites: [(&str, Vec<&str>); 6] = [
+            ("replaced", vec!["config", ORIGIN_URL, &other]),
+            (
+                "replaced over https",
+                vec!["config", ORIGIN_URL, UNREACHABLE],
+            ),
+            ("joined", vec!["config", "--add", ORIGIN_URL, &other]),
+            ("repeated", vec!["config", "--add", ORIGIN_URL, &url]),
+            ("emptied", vec!["config", "--add", ORIGIN_URL, ""]),
+            ("removed", vec!["config", "--unset-all", ORIGIN_URL]),
+        ];
+
+        for (index, (rewrite, arguments)) in rewrites.iter().enumerate() {
+            let target = workspace.path().join(index.to_string());
+            service
+                .ensure_repository(&target, &url, &branch("main"))
+                .await
+                .unwrap();
+            git(&target, arguments);
+            git(&target, &["symbolic-ref", "--delete", REMOTE_HEAD]);
+            let main = branch("main");
+
+            let refusals = [
+                recording(async { service.fetch_all(&target, &url).await.err() }).await,
+                recording(async { service.fetch_branch(&target, &url, &main).await.err() }).await,
+                recording(async { service.pull(&target, &url, &main).await.err() }).await,
+                recording(async { service.ensure_repository(&target, &url, &main).await.err() })
+                    .await,
+                recording(async { service.ensure_fetched(&target, &url).await.err() }).await,
+                recording(async { service.ensure_synced(&target, &url).await.err() }).await,
+            ];
+            let ((), head) = recording(service.update_remote_head(&target, &url)).await;
+
+            for (operation, (refusal, recorded)) in refusals.iter().enumerate() {
+                assert!(
+                    matches!(refusal, Some(GitError::UnsafeConfig(key)) if key == ORIGIN_URL),
+                    "{rewrite}, operation {operation}: {refusal:?}"
+                );
+                assert!(
+                    !reached_remote(recorded),
+                    "{rewrite}, operation {operation}: {recorded:?}"
+                );
+            }
+            assert!(!reached_remote(&head), "{rewrite}: {head:?}");
+            assert!(
+                !target.join(".git").join(REMOTE_HEAD).exists(),
+                "{rewrite}: the remote head was set"
+            );
+            assert!(
+                !holds(&target, &unfetched),
+                "{rewrite}: a commit only the written address has was fetched"
+            );
+        }
+    }
+
+    /// The recorder that shows a refused clone is never fetched does see the
+    /// fetch into one whose `origin` is still the configured address.
+    #[tokio::test]
+    async fn a_managed_clone_whose_origin_is_the_configured_address_is_fetched() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &url, &branch("main"))
+            .await
+            .unwrap();
+        second_commit(source.path());
+        let fetched = git(source.path(), &["rev-parse", "HEAD"]);
+
+        let (outcome, recorded) = recording(service.ensure_fetched(&target, &url)).await;
+
+        assert_eq!(outcome.unwrap().as_str(), "main");
+        for verb in ["fetch", "set-head"] {
+            assert!(
+                recorded.iter().flatten().any(|argument| argument == verb),
+                "{verb}: {recorded:?}"
+            );
+        }
+        assert!(holds(&target, &fetched), "the new commit was fetched");
+    }
+
+    /// Git records a relative local path as an absolute one, so the address a
+    /// clone is checked against is made absolute the same way, and a caller
+    /// that names its source relatively can still fetch into the clone.
+    #[tokio::test]
+    async fn a_managed_clone_made_from_a_relative_path_is_fetched_from_it_again() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let current = std::env::current_dir().unwrap();
+        let relative = current
+            .components()
+            .skip(1)
+            .map(|_| Path::new(".."))
+            .collect::<PathBuf>()
+            .join(source.path().strip_prefix("/").unwrap());
+        let url = relative.to_str().unwrap();
+        let service = GitService::new();
+
+        service
+            .ensure_repository(&target, url, &branch("main"))
+            .await
+            .unwrap();
+        second_commit(source.path());
+        service
+            .ensure_repository(&target, url, &branch("main"))
+            .await
+            .unwrap();
+
+        assert!(
+            target.join("file2.txt").exists(),
+            "the clone was brought forward"
+        );
+    }
+
+    #[test]
+    fn a_relative_local_path_is_the_only_address_made_absolute() {
+        let current = std::env::current_dir().unwrap();
+        for unchanged in [
+            "",
+            "https://github.com/owner/repository.git",
+            "ssh://git@host.test/owner/repository.git",
+            "git@host.test:owner/repository.git",
+            "file:///absolute/repository",
+            "/absolute/repository",
+        ] {
+            assert_eq!(address(unchanged).unwrap(), unchanged, "{unchanged}");
+        }
+        for relative in ["repository", "../repository", "./directory:with-colon"] {
+            assert_eq!(
+                address(relative).unwrap(),
+                current.join(relative).into_os_string(),
+                "{relative}"
+            );
+        }
+    }
+
+    /// A managed clone is cloned and fetched over a local path, HTTPS or SSH,
+    /// the transports its address can name, and never over plain HTTP.
+    #[tokio::test]
+    async fn a_managed_clone_is_reached_over_a_local_path_https_or_ssh_only() {
+        let path = Path::new("/repository");
+        let commands = [
+            GitService::fetching_all(path),
+            GitService::fetching(path, &branch("main")),
+            GitService::setting_head(path),
+            GitService::cloning(OsStr::new(UNREACHABLE), path),
+        ];
+        for command in &commands {
+            let allowed = command
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == "GIT_ALLOW_PROTOCOL")
+                .and_then(|(_, value)| value);
+            assert_eq!(
+                allowed,
+                Some(OsStr::new("file:https:ssh")),
+                "{:?}",
+                arguments(command)
+            );
+        }
+
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let service = GitService::new();
+        let refusal = service
+            .ensure_repository(&workspace.path().join("plain"), PLAIN, &branch("main"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("transport 'http' not allowed"),
+            "{refusal}"
+        );
+
+        let target = workspace.path().join("cloned");
+        service
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .await
+            .unwrap();
+        git(&target, &["config", ORIGIN_URL, PLAIN]);
+        let refusal = service
+            .fetch_all(&target, PLAIN)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("transport 'http' not allowed"),
+            "{refusal}"
+        );
     }
 
     /// A checkout or reset carries every pin. A fetch carries every pin but
@@ -1224,9 +1514,9 @@ mod managed_tests {
         second_commit(source.path());
         git(source.path(), &["branch", "feature"]);
 
-        service.fetch_all(&target).await.unwrap();
+        service.fetch_all(&target, &url).await.unwrap();
         service
-            .fetch_branch(&target, &branch("feature"))
+            .fetch_branch(&target, &url, &branch("feature"))
             .await
             .unwrap();
         service
