@@ -407,6 +407,8 @@ async fn a_checkout_whose_git_file_names_another_clone_s_stale_record_is_refused
             "init",
             "-q",
             "--bare",
+            "-b",
+            "main",
             FILES,
             "--",
             published.to_str().unwrap(),
