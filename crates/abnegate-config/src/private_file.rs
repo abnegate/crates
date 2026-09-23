@@ -1,4 +1,6 @@
 use std::fs::DirBuilder;
+#[cfg(unix)]
+use std::fs::File;
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -14,7 +16,8 @@ const DIRECTORY_MODE: u32 = 0o700;
 ///
 /// The contents are written to a temporary file in the destination directory,
 /// which is created owner-only before a byte is written, and then renamed over
-/// the destination. A reader never sees a partial file, and a symlink at the
+/// the destination; on Unix the directory is then synced so the rename
+/// survives a crash. A reader never sees a partial file, and a symlink at the
 /// destination is replaced rather than followed.
 pub(crate) struct PrivateFile<'path> {
     path: &'path Path,
@@ -41,7 +44,7 @@ impl<'path> PrivateFile<'path> {
         temporary.as_file().sync_all()?;
         temporary.persist(self.path)?;
 
-        Ok(())
+        sync_directory(directory)
     }
 
     fn directory(&self) -> &Path {
@@ -64,6 +67,16 @@ fn create_directory(directory: &Path) -> io::Result<()> {
     }
 
     builder.create(directory)
+}
+
+#[cfg(unix)]
+fn sync_directory(directory: &Path) -> io::Result<()> {
+    File::open(directory)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -156,6 +169,28 @@ mod tests {
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_the_directory_cannot_be_synced_for_is_reported() {
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TempDir::new().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return;
+        }
+        let path = directory.path().join("secret.txt");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+
+        let result = PrivateFile::new(&path).write(b"contents");
+
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            matches!(&result, Err(ConfigError::Write { path: reported, .. }) if reported == &path),
+            "{result:?}"
         );
     }
 
