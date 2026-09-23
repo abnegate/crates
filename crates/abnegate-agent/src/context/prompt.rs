@@ -19,9 +19,9 @@ const PROMPT_HEADROOM: usize = 2048;
 fn tag(role: Role) -> &'static str {
     match role {
         Role::System => "<|system|>",
-        Role::User => "<|user|>",
         Role::Assistant => "<|assistant|>",
         Role::Tool => "<|tool|>",
+        _ => "<|user|>",
     }
 }
 
