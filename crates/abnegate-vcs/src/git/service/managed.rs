@@ -113,12 +113,16 @@ impl GitService {
 
     /// A new managed clone of `address` at `target`, over no transport but
     /// those in [`MANAGED_PROTOCOLS`], which every later fetch into it is
-    /// held to.
+    /// held to. A local path is cloned through the transport as its
+    /// `file://` form would be, into a full copy of its objects: git would
+    /// otherwise copy or link the source's files, and with them the
+    /// `objects/info/alternates` of a source made with `--shared` or
+    /// `--reference`, which every later command on the clone refuses.
     fn cloning(address: &OsStr, target: &Path) -> Command {
         let mut command = Self::managed_command(None);
         command
             .env("GIT_ALLOW_PROTOCOL", MANAGED_PROTOCOLS)
-            .args(["clone", "--template=", "--"])
+            .args(["clone", "--no-local", "--template=", "--"])
             .arg(address)
             .arg(target);
         command
@@ -703,8 +707,11 @@ mod managed_tests {
     /// A template directory is the caller's to configure, and a link in it
     /// would be copied into the clone's git directory, where every later
     /// command refuses it; the hooks a template carries never run anyway.
+    /// A local source's own files are not copied either, so nothing it holds
+    /// beyond its objects and refs, such as the stores it borrows objects
+    /// from, reaches the clone.
     #[tokio::test]
-    async fn a_managed_clone_copies_nothing_from_a_template_directory() {
+    async fn a_managed_clone_copies_nothing_from_a_template_directory_or_its_source_s_files() {
         let source = TempDir::new().unwrap();
         repository(source.path());
         let workspace = TempDir::new().unwrap();
@@ -712,7 +719,7 @@ mod managed_tests {
 
         let (cloned, recorded) = recording(GitService::new().ensure_repository(
             &target,
-            &origin(source.path()),
+            source.path().to_str().unwrap(),
             &branch("main"),
         ))
         .await;
@@ -722,11 +729,67 @@ mod managed_tests {
             .iter()
             .find(|command| command.iter().any(|argument| argument == "clone"))
             .expect("the repository was cloned");
-        let template = clone.iter().position(|argument| argument == "--template=");
         let options = clone.iter().position(|argument| argument == "--");
+        for option in ["--template=", "--no-local"] {
+            let position = clone.iter().position(|argument| argument == option);
+            assert!(
+                position.is_some_and(|position| options.is_some_and(|options| position < options)),
+                "{option}: {clone:?}"
+            );
+        }
+    }
+
+    /// A local repository made with `--shared` or `--reference` names the
+    /// store it borrows objects from in `objects/info/alternates`, and a
+    /// clone that copies its files copies that too, which every later
+    /// command on the clone refuses. A managed clone of one is a full copy
+    /// of its own that borrows nothing, and stays in step with it.
+    #[tokio::test]
+    async fn a_managed_clone_of_a_repository_that_borrows_objects_borrows_none() {
+        let root = TempDir::new().unwrap();
+        let store = root.path().join("store");
+        std::fs::create_dir(&store).unwrap();
+        repository(&store);
+        let source = root.path().join("source");
+        git(
+            root.path(),
+            &[
+                "clone",
+                "-q",
+                "--shared",
+                "--",
+                store.to_str().unwrap(),
+                source.to_str().unwrap(),
+            ],
+        );
+        second_commit(&source);
+        let alternates = |path: &Path| {
+            std::fs::symlink_metadata(path.join(".git/objects/info/alternates")).is_ok()
+        };
+        assert!(alternates(&source), "the source borrows no objects");
+        let target = root.path().join("cloned");
+        let url = source.to_str().unwrap();
+        let service = GitService::new();
+
+        let synced = service.ensure_synced(&target, url).await;
+
+        assert_eq!(synced.unwrap().as_str(), "main");
+        assert!(!alternates(&target), "the clone borrows the source's store");
+        assert_eq!(
+            service
+                .current_branch(&Checkout::base(&target))
+                .await
+                .unwrap(),
+            "main"
+        );
+        git(&target, &["fsck", "--connectivity-only"]);
+        std::fs::write(source.join("file3.txt"), "third file\n").unwrap();
+        git(&source, &["add", "."]);
+        git(&source, &["commit", "-m", "third commit"]);
+        service.ensure_synced(&target, url).await.unwrap();
         assert!(
-            template.is_some_and(|template| options.is_some_and(|options| template < options)),
-            "{clone:?}"
+            git(&target, &["log", "--oneline"]).contains("third commit"),
+            "the sync brought the new commit"
         );
     }
 
