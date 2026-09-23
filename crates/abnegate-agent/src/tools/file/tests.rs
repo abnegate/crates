@@ -359,6 +359,75 @@ fn write_and_edit_previews_show_the_carriage_return_of_a_carriage_return_line_fe
     );
 }
 
+/// Content was squeezed before it reached the card: the blank run a line
+/// opens with dropped, every other run cut to one space. Two files of the
+/// same length that differ only in indentation, a Python block against the
+/// top level or a Makefile recipe's tab against a space, read alike, and
+/// neither was flagged as cut.
+#[test]
+fn write_and_edit_previews_draw_the_indentation_their_content_holds() {
+    let space = "⟨U+0020⟩";
+    let tab = "⟨U+0009⟩";
+    let pairs = [
+        [
+            (
+                "if ready:\n    launch()\n    cleanup()",
+                format!("if ready:{LINE_BREAK}{space}   launch(){LINE_BREAK}{space}   cleanup()"),
+            ),
+            (
+                "if ready:\n        launch()\ncleanup()",
+                format!("if ready:{LINE_BREAK}{space}       launch(){LINE_BREAK}cleanup()"),
+            ),
+        ],
+        [
+            (
+                "build:\n\tcargo  build",
+                format!("build:{LINE_BREAK}{tab}cargo  build"),
+            ),
+            (
+                "build:\n cargo  build",
+                format!("build:{LINE_BREAK}{space}cargo  build"),
+            ),
+        ],
+    ];
+
+    for pair in &pairs {
+        let characters = pair[0].0.chars().count();
+        let previews: Vec<(String, String)> = pair
+            .iter()
+            .map(|(content, drawn)| {
+                assert_eq!(content.chars().count(), characters, "{content:?}");
+                let write = Preview::of(
+                    &WriteFileTool,
+                    &serde_json::json!({"path": "script", "content": content}),
+                );
+                let edit = Preview::of(
+                    &ApplyPatchTool,
+                    &serde_json::json!({"path": "script", "old_string": "todo", "new_string": content}),
+                );
+
+                assert_eq!(
+                    write.text,
+                    format!(
+                        "Write {characters} characters to script, replacing whatever is there: \"{drawn}\"."
+                    ),
+                    "{content:?}"
+                );
+                assert_eq!(
+                    edit.text,
+                    format!("Edit script: replace \"todo\" with \"{drawn}\"."),
+                    "{content:?}"
+                );
+                assert!(!write.truncated && !edit.truncated, "{content:?}");
+                (write.text, edit.text)
+            })
+            .collect();
+
+        assert_ne!(previews[0].0, previews[1].0, "{pair:?}");
+        assert_ne!(previews[0].1, previews[1].1, "{pair:?}");
+    }
+}
+
 /// Blank space and blank lines after a backslash were squeezed or dropped,
 /// so a write or an edit whose script `sh` runs differently reached the
 /// reader as the same preview.

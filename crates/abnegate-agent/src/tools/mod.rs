@@ -53,7 +53,6 @@ pub use text::LINE_BREAK;
 pub use text::MAX_PREVIEW_CHARACTERS;
 pub use text::MAX_TOOL_MESSAGE_CHARACTERS;
 pub use text::MAX_TOOL_OUTPUT_CHARACTERS;
-pub(crate) use text::collapse;
 pub(crate) use text::quote;
 pub(crate) use text::trim_middle;
 pub(crate) use text::word;

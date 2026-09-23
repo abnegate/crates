@@ -17,11 +17,11 @@
 //! results back, until it answers. A call whose tier needs confirming runs
 //! only once [`AgentCallback::approve`] allows it, which by default it does
 //! not; the approver is handed a [`tools::Preview`] of what the call will do,
-//! flagged whenever part of it had to be left out. Every call is held to its
-//! tool's own timeout, and stopped with the run if the run is dropped. Each
-//! request goes through [`context::prepare`], which folds consumed history
-//! into a checkpoint when the model's context would overflow, without ever
-//! editing the history.
+//! verbatim but for its escapes and flagged whenever part of it had to be
+//! left out. Every call is held to its tool's own timeout, and stopped with
+//! the run if the run is dropped. Each request goes through
+//! [`context::prepare`], which folds consumed history into a checkpoint when
+//! the model's context would overflow, without ever editing the history.
 //!
 //! [`chat`] is the storage boundary a multi-turn chat session needs, leased so
 //! only one response is ever live per chat; [`session`] saves and reloads agent

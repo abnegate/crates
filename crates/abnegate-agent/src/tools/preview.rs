@@ -43,10 +43,14 @@ static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
 /// the marks the preview draws. An escape is one of those marks: text that
 /// reads `\u{8}` is shown as those characters, and one that reads
 /// `⟨U+0008⟩` has its fences escaped, so everything between a `⟨` and a `⟩`
-/// on the card is a character the preview escaped. Blank space is drawn as
-/// it was rendered, never squeezed here: only the content of a write or an
-/// edit reaches it collapsed, and a command, a word, a path or an argument
-/// reaches it as it is. The
+/// on the card is a character the preview escaped.
+///
+/// Everything else is drawn verbatim. Nothing is squeezed, here or by the
+/// tool that rendered the call: blank space, blank lines and indentation
+/// reach the card as the call holds them, since two calls that differ only
+/// there - a Python block against the top level, a Makefile recipe's tab
+/// against a space - do different things. The character budget is what
+/// bounds the card, and [`truncated`](Self::truncated) says when it did. The
 /// [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always holds
 /// every argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
