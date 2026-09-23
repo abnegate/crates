@@ -16,6 +16,7 @@ mod entry;
 mod exited;
 mod jobs;
 mod limits;
+mod log;
 mod started;
 mod status;
 mod tail;
@@ -128,7 +129,12 @@ pub fn mint() -> String {
 
 /// Where the log for `id` belongs, under the session's own working tree.
 pub fn log_path(checkout: &Path, application: &Application, id: &str) -> PathBuf {
-    log_directory(checkout, application).join(format!("{id}.{JOB_LOG_EXTENSION}"))
+    log_directory(checkout, application).join(log_name(id))
+}
+
+/// The log's own name inside the log directory.
+fn log_name(id: &str) -> String {
+    format!("{id}.{JOB_LOG_EXTENSION}")
 }
 
 /// What a backgrounded shell call returns to the model.
