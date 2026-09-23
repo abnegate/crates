@@ -3,6 +3,7 @@
 use crate::config::Config;
 use crate::config::MINIMUM_TIMEOUT_SECONDS;
 use reqwest::RequestBuilder;
+use reqwest::header::HeaderValue;
 use reqwest::redirect::Policy;
 use std::time::Duration;
 
@@ -27,10 +28,20 @@ pub(crate) fn request_timeout(config: &Config) -> Duration {
     Duration::from_secs(config.request_timeout_seconds.max(MINIMUM_TIMEOUT_SECONDS))
 }
 
+/// Marks the token sensitive so reqwest and hyper keep it out of their own
+/// `Debug` output.
 pub(crate) fn authorize(config: &Config, request: RequestBuilder) -> RequestBuilder {
-    match &config.api_token {
-        Some(token) => request.header(config.token_header.as_str(), token),
-        None => request,
+    let Some(token) = &config.api_token else {
+        return request;
+    };
+    match HeaderValue::from_str(token.expose()) {
+        Ok(mut value) => {
+            value.set_sensitive(true);
+            request.header(config.token_header.as_str(), value)
+        }
+        // Handing reqwest the unparseable value fails the request at send
+        // instead of sending it without the token.
+        Err(_) => request.header(config.token_header.as_str(), token.expose()),
     }
 }
 
@@ -78,6 +89,39 @@ mod tests {
         assert!(
             elsewhere.received_requests().await.unwrap().is_empty(),
             "the token must not follow a redirect to another host"
+        );
+    }
+
+    #[test]
+    fn the_token_header_is_marked_sensitive() {
+        let config = Config {
+            api_token: Some("secret".into()),
+            ..Config::default()
+        };
+        let request = authorize(
+            &config,
+            client(&config).unwrap().get("http://127.0.0.1:9/prompt"),
+        )
+        .build()
+        .unwrap();
+        let header = request.headers().get(&config.token_header).unwrap();
+        assert!(header.is_sensitive());
+        assert_eq!(header, "secret");
+    }
+
+    #[test]
+    fn a_token_that_is_not_a_header_value_fails_the_request_rather_than_dropping_it() {
+        let config = Config {
+            api_token: Some("line\nbreak".into()),
+            ..Config::default()
+        };
+        assert!(
+            authorize(
+                &config,
+                client(&config).unwrap().get("http://127.0.0.1:9/prompt")
+            )
+            .build()
+            .is_err()
         );
     }
 

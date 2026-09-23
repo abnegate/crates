@@ -28,6 +28,8 @@ saliency = ["abnegate-vision/saliency"]
 
 [dependencies]
 abnegate-llm = { path = "../abnegate-llm", version = "0.1.0" }
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
+
 abnegate-vision = { path = "../abnegate-vision", version = "0.1.0" }
 base64 = { workspace = true }
 bytes = { workspace = true }

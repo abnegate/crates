@@ -1,6 +1,7 @@
 //! Settings read from `COMFYUI_*` environment variables.
 
 use crate::train::Contract;
+use abnegate_secret::SecretValue;
 use std::env;
 
 /// Default header that carries [`Config::api_token`], the one the proxy in
@@ -48,6 +49,10 @@ fn text(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn token(value: Option<String>) -> Option<SecretValue> {
+    text(value).map(SecretValue::new)
+}
+
 fn bounded(value: Option<String>, default: u64, min: u64, max: u64) -> u64 {
     value
         .and_then(|value| value.parse().ok())
@@ -60,7 +65,7 @@ fn bounded(value: Option<String>, default: u64, min: u64, max: u64) -> u64 {
 pub struct Config {
     pub enabled: bool,
     pub base_url: String,
-    pub api_token: Option<String>,
+    pub api_token: Option<SecretValue>,
     /// Header [`Config::api_token`] is sent in.
     pub token_header: String,
     pub workflow_path: std::path::PathBuf,
@@ -176,9 +181,7 @@ impl Config {
                 .unwrap_or_else(|_| "http://comfyui:8188".to_string())
                 .trim_end_matches('/')
                 .to_string(),
-            api_token: env::var("COMFYUI_API_TOKEN")
-                .ok()
-                .filter(|token| !token.trim().is_empty()),
+            api_token: token(env::var("COMFYUI_API_TOKEN").ok()),
             token_header: env_text("COMFYUI_TOKEN_HEADER")
                 .unwrap_or_else(|| TOKEN_HEADER.to_string()),
             workflow_path: env::var("COMFYUI_WORKFLOW_PATH")
@@ -364,6 +367,28 @@ mod tests {
             Config::from_env_with_vision_model("CARGO").vision_model,
             Some(std::path::PathBuf::from(cargo))
         );
+    }
+
+    #[test]
+    fn the_token_never_appears_in_debug_output() {
+        let config = Config {
+            api_token: Some(SecretValue::new("comfy-token-0123456789")),
+            ..Config::default()
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("comfy-token-0123456789"), "{rendered}");
+    }
+
+    #[test]
+    fn the_token_is_stored_as_it_is_checked_without_surrounding_whitespace() {
+        assert_eq!(
+            token(Some("  comfy-token \n".into()))
+                .as_ref()
+                .map(SecretValue::expose),
+            Some("comfy-token")
+        );
+        assert_eq!(token(Some(" \t ".into())), None);
+        assert_eq!(token(None), None);
     }
 
     #[test]

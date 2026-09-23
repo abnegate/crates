@@ -12,6 +12,7 @@ use crate::quality::Quality;
 use crate::recipe::{RecipeCatalog, TrainingModel, sanitize_weight_filename};
 use crate::subject::{CENTRE, Subject};
 use crate::train::{Contract, Run};
+use abnegate_secret::SecretValue;
 use abnegate_vision::gravity::Point;
 use abnegate_vision::{Raster, Rendered, decode};
 use serde::{Deserialize, Serialize};
@@ -232,7 +233,7 @@ pub fn available_bases(catalog: &RecipeCatalog, models_directory: &Path) -> Vec<
 pub async fn train(
     config: &Config,
     litellm_host: String,
-    litellm_key: String,
+    litellm_key: SecretValue,
     request: TrainRequest,
 ) -> Result<TrainOutcome, TrainError> {
     train_with_remediation(
@@ -248,7 +249,7 @@ pub async fn train(
 async fn train_with_remediation(
     config: &Config,
     litellm_host: String,
-    litellm_key: String,
+    litellm_key: SecretValue,
     request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
 ) -> Result<TrainOutcome, TrainError> {
@@ -259,7 +260,7 @@ async fn train_with_remediation(
 async fn train_with_screening(
     config: &Config,
     litellm_host: String,
-    litellm_key: String,
+    litellm_key: SecretValue,
     request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
 ) -> Result<TrainOutcome, TrainError> {
@@ -269,7 +270,7 @@ async fn train_with_screening(
 async fn train_with_pipeline(
     config: &Config,
     litellm_host: String,
-    litellm_key: String,
+    litellm_key: SecretValue,
     request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
     repair_rejections: bool,
@@ -1609,9 +1610,14 @@ mod tests {
     #[tokio::test]
     async fn train_writes_adapter_with_configured_command() {
         let (_root, config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
-        let outcome = train(&config, String::new(), String::new(), identity("my-style"))
-            .await
-            .unwrap();
+        let outcome = train(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("my-style"),
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.path.file_name().unwrap(), "my-style.safetensors");
         assert_eq!(fs::read(&outcome.path).unwrap(), b"lora");
         assert!(
@@ -1632,7 +1638,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("default-prefix"),
             keep_all,
         )
@@ -1652,7 +1658,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("renamed-prefix"),
             keep_all,
         )
@@ -1676,7 +1682,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("legacy-style"),
             keep_all,
         )
@@ -1704,7 +1710,7 @@ mod tests {
     }
 
     async fn rejected(config: &Config, request: TrainRequest) -> TrainError {
-        train(config, String::new(), String::new(), request)
+        train(config, String::new(), SecretValue::new(""), request)
             .await
             .expect_err("this request should not have trained")
     }
@@ -1868,7 +1874,7 @@ mod tests {
             .clone();
         let mut pair = request("my-edit", &edit_base, Some("ohwx"));
         pair.images[0].before_base64 = Some(encoded_at(8, 8));
-        train(&config, String::new(), String::new(), pair)
+        train(&config, String::new(), SecretValue::new(""), pair)
             .await
             .expect("an edit base trains on before and after together");
         let _ = fs::remove_dir_all(root);
@@ -1885,7 +1891,7 @@ mod tests {
         };
         let mut blank = request("my-style", "flux-schnell", Some("ohwx"));
         blank.images[0].caption = String::new();
-        train(&config, String::new(), String::new(), blank)
+        train(&config, String::new(), SecretValue::new(""), blank)
             .await
             .expect("with no caption model, the trigger alone still has to reach the dataset");
         let _ = fs::remove_dir_all(root);
@@ -1908,7 +1914,7 @@ mod tests {
         let named = train(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             request("already.safetensors", "flux-schnell", Some("ohwx")),
         )
         .await
@@ -2005,7 +2011,7 @@ mod tests {
         let outcome = train(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             request("graph-style", "flux-schnell", Some("ohwx")),
         )
         .await
@@ -2054,7 +2060,7 @@ mod tests {
         let (_root, config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
         let mut request = identity("my-style");
         request.trigger = None;
-        let error = train(&config, String::new(), String::new(), request)
+        let error = train(&config, String::new(), SecretValue::new(""), request)
             .await
             .unwrap_err();
         assert!(matches!(error, TrainError::Invalid(_)));
@@ -2095,10 +2101,15 @@ mod tests {
             edit(vec![image("target", "  ", Some("reference"))]),
         ];
         for request in cases {
-            let error =
-                train_with_screening(&config, String::new(), String::new(), request, keep_all)
-                    .await
-                    .unwrap_err();
+            let error = train_with_screening(
+                &config,
+                String::new(),
+                SecretValue::new(""),
+                request,
+                keep_all,
+            )
+            .await
+            .unwrap_err();
             assert!(matches!(error, TrainError::Invalid(_)), "got {error:?}");
         }
         assert!(training_entries(&config).is_empty());
@@ -2145,7 +2156,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             captioner.uri(),
-            "key".to_string(),
+            SecretValue::new("key"),
             edit(vec![
                 image("target-zero", " change zero ", Some("reference-zero")),
                 image("target-one", "change one", Some("reference-one")),
@@ -2254,7 +2265,7 @@ mod tests {
         let outcome = train_with_remediation(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("repaired"),
             reject_tiny,
         )
@@ -2445,7 +2456,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             edit(vec![
                 image("target-zero", " change zero ", Some("reference-zero")),
                 image("target-one", "change one", Some("reference-one")),
@@ -2574,7 +2585,7 @@ mod tests {
         let outcome = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("identity"),
             keep_all,
         )
@@ -2584,9 +2595,15 @@ mod tests {
 
         let mut paired = identity("paired-identity");
         paired.images[0].before_base64 = Some(encoded(colour("reference")));
-        let error = train_with_screening(&config, String::new(), String::new(), paired, keep_all)
-            .await
-            .unwrap_err();
+        let error = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            paired,
+            keep_all,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(error, TrainError::Invalid(_)));
         assert!(training_entries(&config).is_empty());
     }
@@ -2597,7 +2614,7 @@ mod tests {
         let first = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("stable"),
             keep_all,
         )
@@ -2609,7 +2626,7 @@ mod tests {
         let error = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("stable"),
             keep_all,
         )
@@ -2625,7 +2642,7 @@ mod tests {
         let third = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("stable"),
             keep_all,
         )
@@ -2887,7 +2904,7 @@ mod tests {
         train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("isolated"),
             keep_all,
         )
@@ -2904,9 +2921,15 @@ mod tests {
         let mut request = identity("unsupported");
         request.base = "sd15".to_string();
 
-        let error = train_with_screening(&config, String::new(), String::new(), request, keep_all)
-            .await
-            .unwrap_err();
+        let error = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            request,
+            keep_all,
+        )
+        .await
+        .unwrap_err();
 
         assert!(matches!(error, TrainError::Invalid(_)));
         assert!(training_entries(&config).is_empty());
@@ -2944,7 +2967,7 @@ mod tests {
         let error = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("must-not-train"),
             keep_all,
         )
@@ -3032,7 +3055,7 @@ mod tests {
         let error = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("escape"),
             keep_all,
         )
@@ -3058,7 +3081,7 @@ mod tests {
         let error = train_with_screening(
             &config,
             String::new(),
-            String::new(),
+            SecretValue::new(""),
             identity("linked"),
             keep_all,
         )

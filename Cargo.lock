@@ -54,6 +54,7 @@ name = "abnegate-comfy"
 version = "0.1.0"
 dependencies = [
  "abnegate-llm",
+ "abnegate-secret",
  "abnegate-vision",
  "base64 0.23.1",
  "bytes",

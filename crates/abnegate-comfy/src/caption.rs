@@ -8,6 +8,7 @@
 //! while excluding that subject.
 
 use abnegate_llm::{LlmClient, LlmConfig, Message};
+use abnegate_secret::SecretValue;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -111,11 +112,11 @@ pub struct Captioner {
     model: String,
     timeout: Duration,
     host: String,
-    key: String,
+    key: SecretValue,
 }
 
 impl Captioner {
-    pub fn new(config: &Config, litellm_host: String, litellm_key: String) -> Self {
+    pub fn new(config: &Config, litellm_host: String, litellm_key: SecretValue) -> Self {
         Self {
             model: config.caption_model.clone(),
             timeout: Duration::from_secs(config.caption_timeout_seconds),
@@ -211,7 +212,7 @@ impl Captioner {
     async fn ask(&self, message: Message, max_tokens: u32) -> Option<String> {
         let client = LlmClient::new(LlmConfig {
             base_url: self.host.clone(),
-            api_key: self.key.clone(),
+            api_key: self.key.expose().to_string(),
             default_model: self.model.clone(),
             temperature: 0.0,
             max_tokens,
@@ -324,7 +325,7 @@ fn tidy(answer: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn config(model: &str) -> Config {
@@ -526,6 +527,25 @@ mod tests {
             "the caption itself still drops identity: {}",
             images[0].caption
         );
+    }
+
+    #[tokio::test]
+    async fn the_litellm_key_reaches_the_authorization_header_intact() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer sk-litellm-0123456789"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(answer("a teapot robot")))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let captioner = Captioner::new(
+            &config("vision"),
+            server.uri(),
+            SecretValue::new("sk-litellm-0123456789"),
+        );
+        let mut images = vec![Draft::new("a.png", "aaa", "", 0)];
+        captioner.fill(&mut images, "zrkxyz").await;
     }
 
     #[tokio::test]

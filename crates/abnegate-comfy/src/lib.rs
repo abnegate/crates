@@ -37,7 +37,8 @@
 //! # Ok(())
 //! # }
 //! # fn litellm_host() -> String { String::new() }
-//! # fn litellm_key() -> String { String::new() }
+//! # fn litellm_key() -> abnegate_secret::SecretValue { abnegate_secret::SecretValue::new("") }
+
 //! ```
 //!
 //! A clip can stand in for that image set. [`extract`] samples it above the
