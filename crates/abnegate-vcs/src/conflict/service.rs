@@ -11,6 +11,7 @@ use crate::conflict::has_markers;
 use crate::conflict::index;
 use crate::conflict::layout::Layout;
 use crate::conflict::resolve;
+use crate::conflict::validate;
 use crate::git::GitService;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
@@ -197,13 +198,16 @@ impl ConflictService {
     /// The checkout is verified first, and a repair that touched anything the
     /// conflict did not name is refused with [`ConflictError::Strays`]: the
     /// merge staged everything that combined cleanly, so adding the conflicted
-    /// files completes the index, and nothing else may be in it.
+    /// files completes the index, and nothing else may be in it. Each
+    /// conflicted file must still be a regular file inside the checkout, so a
+    /// repair cannot commit a link in its place.
     pub async fn apply(&self, conflict: &Conflict, message: &str) -> ConflictResult<CommitSha> {
         conflict.verify(self).await?;
         let strays = self.strays(conflict).await?;
         if !strays.is_empty() {
             return Err(ConflictError::Strays(strays));
         }
+        validate(conflict.path(), conflict.files())?;
 
         let mut arguments: Vec<&str> = vec!["add", "--"];
         arguments.extend(conflict.files().iter().map(|path| path.as_str()));
@@ -317,7 +321,7 @@ impl ConflictService {
         let mut command = self.bound(layout);
         command.args(arguments);
         let output = self.succeed(&mut command, arguments[0]).await?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// Run a command whose failure is an error, reported by the operation's

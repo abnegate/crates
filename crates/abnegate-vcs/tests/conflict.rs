@@ -583,3 +583,55 @@ async fn publishing_over_a_branch_that_moved_is_rejected() {
     ));
     assert_eq!(git(origin.path(), &["rev-parse", "feature"]), moved);
 }
+
+/// A conflicted file the repair replaced with a link is refused rather than
+/// committed as one.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_conflicted_file_replaced_by_a_link_is_never_committed() {
+    let origin = conflicting_origin();
+    let service = ConflictService::new();
+    let conflict = service.reproduce(&request(origin.path())).await.unwrap();
+    let file = conflict.path().join("src/value.rs");
+    std::fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", &file).unwrap();
+
+    assert!(matches!(
+        service.apply(&conflict, "(fix): merge").await,
+        Err(ConflictError::UnsafePath(_))
+    ));
+    assert_eq!(
+        git(conflict.path(), &["rev-parse", "HEAD"]),
+        conflict.head().as_str(),
+        "nothing was committed"
+    );
+}
+
+/// git's own listings are read exactly as written, so a conflicted file
+/// whose name starts with a space is the file repaired, not a neighbour.
+#[tokio::test]
+async fn a_conflicted_file_whose_name_starts_with_a_space_is_read_exactly() {
+    let origin = TempDir::new().unwrap();
+    let path = origin.path();
+    let name = " lead.rs";
+    git(path, &["init", "--quiet", "--initial-branch", "main"]);
+    write(path, name, "fn value() -> u32 {\n    0\n}\n");
+    commit(path, "initial");
+    git(path, &["checkout", "--quiet", "-b", "feature"]);
+    write(path, name, THEIRS);
+    commit(path, "feature changes the value");
+    git(path, &["checkout", "--quiet", "main"]);
+    write(path, name, OURS);
+    commit(path, "main changes the value too");
+
+    let service = ConflictService::new();
+    let conflict = service.reproduce(&request(path)).await.unwrap();
+    assert_eq!(conflict.files(), &[ConflictedPath::parse(name).unwrap()]);
+
+    std::fs::write(
+        conflict.path().join(name),
+        "fn value() -> u32 {\n    1\n}\n\nfn other() -> u32 {\n    2\n}\n",
+    )
+    .unwrap();
+    service.apply(&conflict, "(fix): merge").await.unwrap();
+}
