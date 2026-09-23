@@ -65,6 +65,7 @@ mod environment;
 mod error;
 mod event;
 mod execution;
+mod execution_error;
 mod kind;
 mod lines;
 pub mod log;
@@ -88,6 +89,7 @@ pub use crate::delivery::Delivery;
 pub use crate::error::Overlong;
 pub use crate::event::AgentEvent;
 pub use crate::execution::Execution;
+pub use crate::execution_error::ExecutionError;
 pub use crate::kind::AgentKind;
 pub use crate::lines::Lines;
 pub use crate::log::{

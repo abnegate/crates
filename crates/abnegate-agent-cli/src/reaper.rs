@@ -6,6 +6,15 @@ use abnegate_exec::executor::ProcessGroup;
 ///
 /// `kill_on_drop` reaches only the direct child, so a cancelled run would
 /// otherwise orphan everything the agent forked.
+///
+/// A run holds this alongside the child and drops it first, so a cancelled
+/// run kills the group while its leader is still unreaped and the group's id
+/// cannot belong to anyone else. A run that failed after its leader exited
+/// by itself kills the group once its output is drained; that reaches
+/// stragglers safely because a live straggler keeps the id from being
+/// reused, and an emptied group whose id was taken in the meantime is the
+/// residual risk, which only a process handle the platform does not offer
+/// here could close.
 #[derive(Debug)]
 pub(crate) struct Reaper {
     group: Option<ProcessGroup>,

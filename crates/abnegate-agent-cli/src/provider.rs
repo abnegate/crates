@@ -28,6 +28,7 @@ use tokio::time::timeout_at;
 use crate::diagnostics::Diagnostics;
 use crate::environment::Environment;
 use crate::execution::Execution;
+use crate::execution_error::ExecutionError;
 use crate::kind::AgentKind;
 use crate::log::EXECUTION_LOG_PREVIEW_LIMIT;
 use crate::log::ExecutionLogFiles;
@@ -105,17 +106,22 @@ impl CliProvider {
     /// cannot be read as the agent's stream.
     ///
     /// Only a run that succeeded leaves behind what the agent forked. Any
-    /// other takes the agent's whole process group with it.
+    /// other takes the agent's whole process group with it. A run that fails
+    /// here still reports where its logs are, with every line read before it
+    /// failed flushed to them.
     pub async fn execute(
         &self,
         request: CompletionRequest<'_>,
         label: &str,
-    ) -> Result<Execution, ProviderError> {
+    ) -> Result<Execution, ExecutionError> {
         let mcp = self.attach();
-        let options = self.agent.options(
-            &self.settings,
-            mcp.as_ref().map(|attachment| attachment.file.path()),
-        )?;
+        let options = self
+            .agent
+            .options(
+                &self.settings,
+                mcp.as_ref().map(|attachment| attachment.file.path()),
+            )
+            .map_err(|error| ExecutionError::new(error, None))?;
         let arguments = self.agent.invocation(Some(request.model), options);
         let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &|name| {
             std::env::var_os(name)
@@ -162,10 +168,9 @@ impl CliProvider {
                 journal
                     .append(Record::SpawnFailed, json!({ "error": error.to_string() }))
                     .await;
-                return Err(ProviderError::unavailable(
-                    &self.name,
-                    &self.executable(),
-                    error,
+                return Err(ExecutionError::new(
+                    ProviderError::unavailable(&self.name, &self.executable(), error),
+                    files,
                 ));
             }
         };
@@ -245,9 +250,9 @@ impl CliProvider {
             Ok(settlement) => settlement,
             Err(error) => {
                 writer.abort();
-                reader.abort();
-                diagnostics.abort();
-                return Err(error);
+                let _ = drain(&mut reader, reaper.group(), &cancel).await;
+                let _ = drain(&mut diagnostics, reaper.group(), &cancel).await;
+                return Err(ExecutionError::new(error, files));
             }
         };
         let status = ExitStatus::from(status);
@@ -259,8 +264,11 @@ impl CliProvider {
         let stdout = match drain(&mut reader, reaper.group(), &cancel).await {
             Ok(Ok(stdout)) => stdout,
             Ok(Err(message)) | Err(message) => {
-                diagnostics.abort();
-                return Err(ProviderError::malformed(&self.name, message));
+                let _ = drain(&mut diagnostics, reaper.group(), &cancel).await;
+                return Err(ExecutionError::new(
+                    ProviderError::malformed(&self.name, message),
+                    files,
+                ));
             }
         };
         let stderr = drain(&mut diagnostics, reaper.group(), &cancel)
@@ -506,29 +514,31 @@ impl CompletionProvider for CliProvider {
 
 /// Terminate the agent's group, and kill whatever is left of it once the
 /// grace period runs out.
+///
+/// A group is identified by its leader's process id, which the system may
+/// hand to a new process once the leader is reaped and no member is left.
+/// So the group is killed while the leader is still unreaped whenever it
+/// outlives the grace period. When the leader exits within it, reaping comes
+/// first, and the kill that follows reaches stragglers safely only because a
+/// straggler still alive keeps the group's id from being reused; a group
+/// that empties in the instant between the two leaves the kill to land on
+/// whatever took the id, a race this cannot close without a process handle
+/// the platform does not offer here.
 async fn stop_agent(
     child: &mut Child,
     group: Option<&ProcessGroup>,
 ) -> Option<std::process::ExitStatus> {
-    match group {
-        Some(group) => {
-            let _ = group.terminate();
-        }
-        None => {
-            let _ = child.start_kill();
-        }
-    }
-    let status = match timeout(GRACE_PERIOD, child.wait()).await {
-        Ok(Ok(status)) => Some(status),
-        _ => {
-            let _ = child.start_kill();
-            child.wait().await.ok()
-        }
+    let Some(group) = group else {
+        let _ = child.start_kill();
+        return child.wait().await.ok();
     };
-    if let Some(group) = group {
+    let _ = group.terminate();
+    if let Ok(Ok(status)) = timeout(GRACE_PERIOD, child.wait()).await {
         let _ = group.kill();
+        return Some(status);
     }
-    status
+    let _ = group.kill();
+    child.wait().await.ok()
 }
 
 /// A reader's result once the agent has exited.
@@ -913,6 +923,74 @@ sleep 120
             "expected a timeout, got {error:?}"
         );
         assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_run_still_says_where_its_logs_are_and_closes_them() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let script = r#"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Partial."}]}}'
+echo 'still thinking' >&2
+sleep 120
+"#;
+        let settings = settings(&directory, script)
+            .with_timeout(Duration::from_secs(10))
+            .with_log(&root);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let failure = provider
+            .execute(request(&[Message::user("hi")]), "test-run")
+            .await
+            .expect_err("a timeout");
+
+        assert!(
+            matches!(*failure.error, ProviderError::Timeout { .. }),
+            "{failure:?}"
+        );
+        let files = failure.log.expect("the run's logs");
+        assert_eq!(
+            std::fs::read_to_string(&files.stdout).expect("the prose log"),
+            "Partial."
+        );
+        let journal = std::fs::read_to_string(&files.events).expect("the journal");
+        for record in [
+            "subprocess_timed_out",
+            "stdout_stream_closed",
+            "stderr_stream_closed",
+        ] {
+            assert!(journal.contains(record), "{record} missing: {journal}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_agent_that_ignores_termination_is_killed_with_its_group() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("straggler");
+        let script = format!(
+            r#"trap '' TERM
+sh -c 'trap "" TERM; sleep 60' &
+echo $! > '{}'
+sleep 60"#,
+            marker.display()
+        );
+        let settings = settings(&directory, &script).with_timeout(Duration::from_secs(10));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a timeout");
+
+        assert!(matches!(error, ProviderError::Timeout { .. }), "{error:?}");
+        let straggler = std::fs::read_to_string(&marker)
+            .expect("the straggler's pid")
+            .trim()
+            .to_string();
+        let started = Instant::now();
+        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!alive(&straggler), "{straggler} outlived the timeout");
     }
 
     #[tokio::test]
@@ -1979,11 +2057,11 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         let script = r#"
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"key pa\"ss\\word-123"}]}}'
 echo "rejected pin $SERVICE_PIN" >&2
-printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"bad pin 4711 for pa\"ss\\word-123"}'
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"bad pin zq7x for pa\"ss\\word-123"}'
 "#;
         let settings = settings(&directory, script)
             .with_log(&root)
-            .with_environment("SERVICE_PIN", "4711")
+            .with_environment("SERVICE_PIN", "zq7x")
             .with_credential(Credential::key("DB_PASSWORD", "pa\"ss\\word-123"));
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
@@ -1998,16 +2076,16 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
                 path.display()
             );
             assert!(
-                !contents.contains("4711"),
+                !contents.contains("zq7x"),
                 "{} leaked the short secret: {contents}",
                 path.display()
             );
         }
-        assert!(!execution.stderr.contains("4711"), "{}", execution.stderr);
+        assert!(!execution.stderr.contains("zq7x"), "{}", execution.stderr);
         let error = provider.assemble(execution).expect_err("a failure");
         let rendered = error.to_string();
         assert!(!rendered.contains("word-123"), "{rendered}");
-        assert!(!rendered.contains("4711"), "{rendered}");
+        assert!(!rendered.contains("zq7x"), "{rendered}");
     }
 
     #[tokio::test]
