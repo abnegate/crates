@@ -15,6 +15,7 @@ use crate::error::LlmError;
 /// read as a throttled request and a rejected key must still read as a
 /// rejected key by the time it reaches the retry policy.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProviderError {
     #[error("{provider}: {source}")]
     Http {
@@ -248,6 +249,7 @@ impl ProviderError {
 /// A signalled process has no exit code, and reporting one as `-1` loses the
 /// difference between a crash and a command that genuinely returned `-1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExitStatus {
     Code(i32),
     Signalled,

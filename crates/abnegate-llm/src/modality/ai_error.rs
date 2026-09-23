@@ -5,6 +5,7 @@ use crate::provider::ProviderError;
 
 /// What went wrong when asking a model.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AiError {
     /// This run has no provider. Not a failure, a configuration.
     NoProvider {

@@ -9,6 +9,7 @@ pub const MAX_PAGE_SIZE: usize = 100;
 
 /// One page of browse results and the cursor that continues it.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ModelPage {
     pub models: Vec<ModelEntry>,
     #[serde(default)]

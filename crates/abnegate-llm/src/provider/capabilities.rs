@@ -5,6 +5,7 @@
 /// lets [`Router`](super::Router) route around the providers that cannot meet
 /// it, rather than matching on provider names.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Capabilities {
     pub structured_output: bool,
     pub tool_permissions: bool,
@@ -31,6 +32,36 @@ impl Capabilities {
         streaming_events: true,
         cost_reporting: true,
     };
+
+    /// These capabilities with schema-constrained output added.
+    pub const fn with_structured_output(mut self) -> Self {
+        self.structured_output = true;
+        self
+    }
+
+    /// These capabilities with per-tool permission prompts added.
+    pub const fn with_tool_permissions(mut self) -> Self {
+        self.tool_permissions = true;
+        self
+    }
+
+    /// These capabilities with custom instructions added.
+    pub const fn with_custom_instructions(mut self) -> Self {
+        self.custom_instructions = true;
+        self
+    }
+
+    /// These capabilities with streamed events added.
+    pub const fn with_streaming_events(mut self) -> Self {
+        self.streaming_events = true;
+        self
+    }
+
+    /// These capabilities with cost reporting added.
+    pub const fn with_cost_reporting(mut self) -> Self {
+        self.cost_reporting = true;
+        self
+    }
 
     /// What both sets support, which is what a caller can rely on when either
     /// one may end up serving the request.
@@ -101,6 +132,21 @@ mod tests {
                 ..Capabilities::ALL
             }
             .satisfies(required)
+        );
+    }
+
+    #[test]
+    fn a_set_is_built_one_capability_at_a_time() {
+        const STREAMING: Capabilities = Capabilities::NONE.with_streaming_events();
+        const { assert!(STREAMING.streaming_events && !STREAMING.structured_output) };
+        assert_eq!(
+            Capabilities::NONE
+                .with_structured_output()
+                .with_tool_permissions()
+                .with_custom_instructions()
+                .with_streaming_events()
+                .with_cost_reporting(),
+            Capabilities::ALL
         );
     }
 

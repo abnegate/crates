@@ -9,6 +9,7 @@ use abnegate_secret::SecretValue;
 /// in a child environment that the agent may echo into its own logs. So
 /// [`Credential::Inherited`] is a first-class choice rather than an empty key.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub enum Credential {
     /// The host's existing session. Nothing is injected into the child.
     #[default]

@@ -6,6 +6,7 @@ use serde::Serialize;
 
 /// One model as a catalogue describes it.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ModelEntry {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

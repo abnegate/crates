@@ -29,6 +29,7 @@ impl Weighted {
 /// How a [`Router`](super::Router) picks the provider it starts with, and
 /// whether the rest of the list backs that provider up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SelectionStrategy {
     /// The first provider, and only the first.
     Primary,

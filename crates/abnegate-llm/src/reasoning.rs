@@ -57,6 +57,7 @@ const MANY_STEPS: usize = 3;
 /// User-facing effort. Auto inspects the request; Off skips thinking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ReasoningEffort {
     #[default]
     Auto,
@@ -102,6 +103,7 @@ impl ReasoningEffort {
 
 /// Provider `reasoning_effort` once Auto and Off have been resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Effort {
     Low,
     Medium,

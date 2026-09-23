@@ -7,6 +7,7 @@ use crate::wire::stream_tool_call::StreamToolCall;
 
 /// What one streaming chunk adds to the reply.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[non_exhaustive]
 pub struct StreamDelta {
     pub role: Option<Role>,
     pub content: Option<String>,
