@@ -5,7 +5,7 @@ pub(super) use parameters::ApplyPatchParameters;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Read;
 use std::path::Path;
 
 use crate::tools::beneath::{self, Access};
@@ -119,7 +119,8 @@ impl Tool for ApplyPatchTool {
             ));
         }
 
-        let mut file = beneath::open(context, Path::new(&parameters.path), Access::Update)?;
+        let path = Path::new(&parameters.path);
+        let mut file = beneath::open(context, path, Access::Read)?;
 
         let metadata = file
             .metadata()
@@ -162,10 +163,8 @@ impl Tool for ApplyPatchTool {
             replacements.push(matches);
         }
 
-        file.set_len(0)
-            .and_then(|()| file.seek(SeekFrom::Start(0)))
-            .and_then(|_| file.write_all(content.as_bytes()))
-            .map_err(|error| ToolError::Execution(format!("Cannot write file: {error}")))?;
+        drop(file);
+        beneath::replace(context, path, content.as_bytes())?;
 
         let total: usize = replacements.iter().sum();
         Ok(ToolResult::success(format!(

@@ -1044,6 +1044,108 @@ async fn apply_patch_replaces_unique_text() {
     );
 }
 
+fn inode(path: &Path) -> u64 {
+    std::os::unix::fs::MetadataExt::ino(&fs::metadata(path).unwrap())
+}
+
+fn mode(path: &Path) -> u32 {
+    std::os::unix::fs::PermissionsExt::mode(&fs::metadata(path).unwrap().permissions()) & 0o7777
+}
+
+fn patch(path: &str, old: &str, new: &str) -> serde_json::Value {
+    serde_json::json!({"path": path, "old_string": old, "new_string": new, "reason": "Fix it."})
+}
+
+/// The patched text lands in a new file renamed over the old one, never in
+/// the old file truncated to nothing and rewritten: a write that failed
+/// part-way through that used to leave the file empty.
+#[tokio::test]
+async fn apply_patch_renames_a_complete_file_into_place() {
+    let directory = tempdir().unwrap();
+    let file = directory.path().join("main.rs");
+    fs::write(&file, "fn main() { a(); }\n").unwrap();
+    fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o640)).unwrap();
+    let before = inode(&file);
+    let context = create_test_context(directory.path());
+
+    let result = ApplyPatchTool
+        .execute(patch("main.rs", "a()", "b()"), &context)
+        .await
+        .unwrap();
+
+    assert!(result.success, "{result:?}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "fn main() { b(); }\n");
+    assert_ne!(inode(&file), before, "the file was rewritten in place");
+    assert_eq!(
+        mode(&file),
+        0o640,
+        "the replacement kept the file's permissions"
+    );
+    let left: Vec<_> = fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["main.rs"], "a temporary file was left behind");
+}
+
+#[tokio::test]
+async fn a_rejected_patch_leaves_the_file_exactly_as_it_was() {
+    let directory = tempdir().unwrap();
+    let file = directory.path().join("main.rs");
+    let original = "fn main() { a(); a(); }\n";
+    fs::write(&file, original).unwrap();
+    let before = inode(&file);
+    let context = create_test_context(directory.path());
+
+    for rejected in [
+        patch("main.rs", "missing()", "b()"),
+        patch("main.rs", "a()", "b()"),
+    ] {
+        let error = ApplyPatchTool
+            .execute(rejected, &context)
+            .await
+            .expect_err("the patch does not apply");
+        assert!(error.to_string().contains("Hunk 1"), "{error}");
+    }
+
+    assert_eq!(fs::read(&file).unwrap(), original.as_bytes());
+    assert_eq!(inode(&file), before);
+}
+
+/// A link inside the tree is followed to the file it names, which is the
+/// one patched; the link itself stays a link.
+#[cfg(unix)]
+#[tokio::test]
+async fn apply_patch_through_a_link_edits_the_file_it_names() {
+    let directory = tempdir().unwrap();
+    fs::create_dir(directory.path().join("real")).unwrap();
+    let file = directory.path().join("real/main.rs");
+    fs::write(&file, "one\n").unwrap();
+    std::os::unix::fs::symlink("real/main.rs", directory.path().join("alias.rs")).unwrap();
+
+    for context in [create_test_context(directory.path()), {
+        let mut unrestricted = create_test_context(directory.path());
+        unrestricted.unrestricted = true;
+        unrestricted
+    }] {
+        let current = fs::read_to_string(&file).unwrap();
+        let next = format!("{}!", current.trim_end());
+        let result = ApplyPatchTool
+            .execute(patch("alias.rs", current.trim_end(), &next), &context)
+            .await
+            .unwrap();
+        assert!(result.success, "{result:?}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), format!("{next}\n"));
+        assert!(
+            fs::symlink_metadata(directory.path().join("alias.rs"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link was replaced by a file"
+        );
+    }
+}
+
 #[tokio::test]
 async fn apply_patch_rejects_ambiguous_matches() {
     let directory = tempdir().unwrap();

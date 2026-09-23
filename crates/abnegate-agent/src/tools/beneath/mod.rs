@@ -13,14 +13,17 @@ mod target;
 pub(crate) use access::Access;
 
 use nix::errno::Errno;
-use nix::fcntl::{AtFlags, OFlag, openat, readlinkat};
-use nix::sys::stat::{Mode, SFlag, fstatat, mkdirat};
+use nix::fcntl::{AtFlags, OFlag, openat, readlinkat, renameat};
+use nix::sys::stat::{Mode, SFlag, fchmod, fstatat, mkdirat};
+use nix::unistd::{UnlinkatFlags, unlinkat};
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Write};
 use std::os::fd::OwnedFd;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path};
+use uuid::Uuid;
 
 use super::{ToolContext, ToolError};
 use name::Name;
@@ -32,6 +35,7 @@ const ESCAPED: Errno = Errno::EXDEV;
 const FILE_MODE: Mode = Mode::from_bits_truncate(0o666);
 const DIRECTORY_MODE: Mode = Mode::from_bits_truncate(0o777);
 const LINKS: usize = 40;
+const PERMISSION_BITS: u32 = 0o7777;
 
 pub(crate) fn open(context: &ToolContext, path: &Path, access: Access) -> Result<File, ToolError> {
     if context.unrestricted {
@@ -67,6 +71,88 @@ pub(crate) fn create_dir_all(context: &ToolContext, path: &Path) -> Result<(), T
     .map(drop)
     .map_err(reported)
     .map_err(|error| failed("create directory", error))
+}
+
+/// Replace the file at `path` with `contents` in one step.
+///
+/// The new contents are written and synced to a file beside the old one,
+/// which is then renamed over it, so a failure part-way through leaves the
+/// old file whole rather than truncated. A link is followed to the file it
+/// names, which is the one replaced, and the replacement keeps that file's
+/// permissions.
+pub(crate) fn replace(
+    context: &ToolContext,
+    path: &Path,
+    contents: &[u8],
+) -> Result<(), ToolError> {
+    if context.unrestricted {
+        return replace_on_host(&context.working_directory.join(path), contents)
+            .map_err(|error| failed("write file", error));
+    }
+
+    let (directory, name) = entry(
+        &context.working_directory,
+        under(&context.working_directory, path),
+    )
+    .map_err(reported)
+    .map_err(|error| failed("write file", error))?;
+    replace_in(&directory, &name, contents).map_err(|error| failed("write file", error))
+}
+
+fn replace_on_host(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let target = path.canonicalize()?;
+    let permissions = fs::metadata(&target)?.permissions();
+    let temporary = target.with_file_name(temporary_name(target.file_name().unwrap_or_default()));
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(permissions.mode() & PERMISSION_BITS)
+        .open(&temporary)
+        .and_then(|mut file| {
+            file.set_permissions(permissions)?;
+            file.write_all(contents)?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&temporary, &target));
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    written
+}
+
+fn replace_in(directory: &OwnedFd, name: &OsStr, contents: &[u8]) -> io::Result<()> {
+    let status = fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(reported)?;
+    let mode = Mode::from_bits_truncate(status.st_mode);
+    let temporary = temporary_name(name);
+    let descriptor = openat(
+        directory,
+        temporary.as_os_str(),
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        mode,
+    )
+    .map_err(reported)?;
+    let written = fchmod(&descriptor, mode)
+        .map_err(reported)
+        .and_then(|()| {
+            let mut file = File::from(descriptor);
+            file.write_all(contents)?;
+            file.sync_all()
+        })
+        .and_then(|()| {
+            renameat(directory, temporary.as_os_str(), directory, name).map_err(reported)
+        });
+    if written.is_err() {
+        let _ = unlinkat(directory, temporary.as_os_str(), UnlinkatFlags::NoRemoveDir);
+    }
+    written
+}
+
+/// A hidden name beside `name` that no other writer will pick.
+fn temporary_name(name: &OsStr) -> OsString {
+    let mut temporary = OsString::from(".");
+    temporary.push(name);
+    temporary.push(format!(".{}.tmp", Uuid::new_v4().simple()));
+    temporary
 }
 
 fn failed(what: &str, error: io::Error) -> ToolError {
@@ -188,6 +274,58 @@ fn walk(root: &Path, path: &Path, target: Target, create: bool) -> Result<OwnedF
         Target::Directory => Ok(held.pop().unwrap_or(root)),
         Target::File(_) => Err(Errno::EISDIR),
     }
+}
+
+/// The directory holding the file `path` names, and its name there, with
+/// every link on the way followed beneath the root, the last one included.
+fn entry(root: &Path, path: &Path) -> Result<(OwnedFd, OsString), Errno> {
+    let root = directory(root)?;
+    let mut held: Vec<OwnedFd> = Vec::new();
+    let mut pending = names(path)?;
+    let mut links = LINKS;
+
+    while let Some(name) = pending.pop_front() {
+        let name = match name {
+            Name::Parent => {
+                if held.pop().is_none() {
+                    return Err(ESCAPED);
+                }
+                continue;
+            }
+            Name::Entry(name) => name,
+        };
+
+        let directory = held.last().unwrap_or(&root);
+        let link = if pending.is_empty() {
+            let status = fstatat(directory, name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW)?;
+            if SFlag::from_bits_truncate(status.st_mode) & SFlag::S_IFMT == SFlag::S_IFLNK {
+                linked(directory, name.as_os_str(), Errno::ELOOP)?
+            } else {
+                None
+            }
+        } else {
+            match descend(directory, name.as_os_str(), false) {
+                Ok(opened) => {
+                    held.push(opened);
+                    continue;
+                }
+                Err(error) => match linked(directory, name.as_os_str(), error)? {
+                    Some(link) => Some(link),
+                    None => return Err(error),
+                },
+            }
+        };
+
+        let Some(link) = link else {
+            return Ok((held.pop().unwrap_or(root), name));
+        };
+        links = links.checked_sub(1).ok_or(Errno::ELOOP)?;
+        for name in names(Path::new(&link))?.into_iter().rev() {
+            pending.push_front(name);
+        }
+    }
+
+    Err(Errno::EISDIR)
 }
 
 fn names(path: &Path) -> Result<VecDeque<Name>, Errno> {
