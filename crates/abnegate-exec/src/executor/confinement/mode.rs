@@ -2,6 +2,7 @@ use crate::protocol::ConfinementRequest;
 
 /// How much of a process tree a confined job may create.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfinementMode {
     /// One executable runs and nothing else. Forking and further execs are
     /// denied outright.

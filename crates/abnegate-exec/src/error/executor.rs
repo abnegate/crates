@@ -7,6 +7,7 @@ use crate::protocol::ErrorCode;
 
 /// Errors that can occur during command execution.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ExecutorError {
     /// Failed to spawn the command process
     #[error("Failed to spawn process")]

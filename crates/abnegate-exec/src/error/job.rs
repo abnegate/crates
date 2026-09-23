@@ -4,6 +4,7 @@ use crate::protocol::ErrorCode;
 
 /// Errors related to job management.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum JobError {
     /// Job not found
     #[error("Job not found: {0}")]

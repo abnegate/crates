@@ -10,6 +10,7 @@ use super::protocol::ProtocolError;
 
 /// Top-level error type for the daemon.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DaemonError {
     /// Protocol error
     #[error("Protocol error: {0}")]

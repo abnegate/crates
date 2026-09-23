@@ -15,6 +15,7 @@ use super::confinement_request::ConfinementRequest;
 /// credential.
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum InboundMessage {
     /// Handshake message to establish connection
     Hello {

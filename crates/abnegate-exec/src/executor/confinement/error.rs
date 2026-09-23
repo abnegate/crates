@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Errors raised while preparing or proving confinement.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfinementError {
     #[error("Confinement is not supported on this platform")]
     UnsupportedPlatform,

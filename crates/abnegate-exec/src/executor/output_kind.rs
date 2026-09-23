@@ -1,5 +1,6 @@
 /// Output stream type
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum OutputKind {
     Stdout,
     Stderr,

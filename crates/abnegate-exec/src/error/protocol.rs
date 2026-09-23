@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Errors that can occur during protocol communication.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProtocolError {
     /// A line was not a valid message. Only its length is kept: the line
     /// itself carries a job's environment and stdin.

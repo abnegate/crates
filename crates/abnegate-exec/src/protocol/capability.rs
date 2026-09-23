@@ -1,5 +1,6 @@
 /// Runner capabilities advertised during handshake
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Capability {
     /// Can cancel running jobs
     Cancel,

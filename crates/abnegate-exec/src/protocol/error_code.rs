@@ -4,6 +4,7 @@ use serde::Serialize;
 /// Error codes for structured error reporting
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ErrorCode {
     /// Protocol-level error (invalid message format)
     InvalidMessage,

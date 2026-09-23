@@ -12,6 +12,7 @@ const BUBBLEWRAP: &str = "/usr/bin/bwrap";
 
 /// The OS mechanism used to confine a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Backend {
     Seatbelt,
     Bubblewrap,

@@ -7,6 +7,7 @@ use super::log_level::LogLevel;
 /// Messages sent from the Runner to the backend
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum OutboundMessage {
     /// Response to Hello message
     HelloAck {

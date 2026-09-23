@@ -7,6 +7,7 @@ use crate::protocol::ErrorCode;
 
 /// Represents the current state of a job.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum JobState {
     /// Job is being set up
     Starting { created_at: Instant },
