@@ -37,6 +37,11 @@ pub enum ExecutorError {
     #[error("Failed to set up process group: {0}")]
     ProcessGroupFailed(String),
 
+    /// A pid that would make `kill(-pid, ...)` reach more than one job's
+    /// process group: `0`, `1`, the caller's own group, or one past `i32`
+    #[error("Not a job's process group: {0}")]
+    InvalidProcessGroup(u32),
+
     /// Confinement was requested but could not be established
     #[error("Confinement unavailable: {0}")]
     ConfinementUnavailable(#[from] ConfinementError),
@@ -61,6 +66,7 @@ impl ExecutorError {
             ExecutorError::OutputLimitExceeded { .. } => ErrorCode::OutputLimitExceeded,
             ExecutorError::InvalidWorkspace(_) => ErrorCode::InvalidWorkspace,
             ExecutorError::ProcessGroupFailed(_) => ErrorCode::InternalError,
+            ExecutorError::InvalidProcessGroup(_) => ErrorCode::InternalError,
             ExecutorError::ConfinementUnavailable(_) => ErrorCode::ConfinementUnavailable,
             ExecutorError::Io(_) => ErrorCode::InternalError,
             ExecutorError::ChannelClosed => ErrorCode::InternalError,

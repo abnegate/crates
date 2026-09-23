@@ -42,6 +42,16 @@ impl JobEntry {
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancellation.clone()
     }
+
+    /// Move to `state`, forgetting the process group and stdin once the job
+    /// has finished.
+    pub(super) fn transition(&mut self, state: JobState) {
+        if state.is_terminal() {
+            self.process_group = None;
+            self.stdin = None;
+        }
+        self.state = state;
+    }
 }
 
 impl Default for JobEntry {

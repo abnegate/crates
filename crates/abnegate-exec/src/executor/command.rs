@@ -159,7 +159,7 @@ impl CommandExecutor {
             ExecutorError::SpawnFailed(std::io::Error::other("Process has no PID"))
         })?;
 
-        let process_group = ProcessGroup::new(pid);
+        let process_group = ProcessGroup::try_from(pid)?;
 
         let stdin = child.stdin.take().map(|mut writer| {
             let (stdin_sender, mut stdin_receiver) = mpsc::channel::<Vec<u8>>(STDIN_CAPACITY);
