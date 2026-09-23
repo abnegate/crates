@@ -14,10 +14,12 @@ impl PullRequestReference {
         Self { repository, number }
     }
 
+    /// The repository it lives in.
     pub fn repository(&self) -> &Repository {
         &self.repository
     }
 
+    /// Its number in that repository.
     pub fn number(&self) -> NonZeroU64 {
         self.number
     }

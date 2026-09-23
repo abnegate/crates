@@ -5,7 +5,9 @@ use std::collections::HashMap;
 /// What the submitted reviews add up to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ReviewTally {
+    /// Reviews that requested changes.
     pub cycles: u32,
+    /// Distinct reviewers whose latest verdict was an approval.
     pub approvals: u32,
 }
 

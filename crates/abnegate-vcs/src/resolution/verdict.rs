@@ -2,6 +2,7 @@ use crate::resolution::ConflictSide;
 
 /// What a repaired file is, judged against the conflicted file it came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ResolutionVerdict {
     Resolved,
     NoConflict,
@@ -11,10 +12,12 @@ pub enum ResolutionVerdict {
 }
 
 impl ResolutionVerdict {
+    /// Whether the repair may be committed.
     pub fn accepted(self) -> bool {
         self == ResolutionVerdict::Resolved
     }
 
+    /// The verdict, as a stable identifier.
     pub fn as_str(self) -> &'static str {
         match self {
             ResolutionVerdict::Resolved => "resolved",

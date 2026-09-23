@@ -15,12 +15,19 @@ pub fn minutes_between(opened: &str, merged: &str) -> Option<i64> {
 /// back out of a run's artifacts by the learning loop rather than by a person.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PullRequestReception {
+    /// When it was opened.
     pub opened_at: Option<String>,
+    /// When it merged, if it did.
     pub merged_at: Option<String>,
+    /// Whole minutes from opening to merging, if it merged.
     pub minutes_to_merge: Option<i64>,
+    /// Rounds of review that sent it back.
     pub review_cycles: u32,
+    /// Distinct reviewers whose latest verdict approved it.
     pub approvals: u32,
+    /// Whether it is open.
     pub state: Option<PullRequestState>,
+    /// What reviewers wrote, in reviews and on lines.
     pub comments: Vec<String>,
 }
 

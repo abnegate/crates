@@ -10,6 +10,7 @@ pub struct Unfinished {
 }
 
 impl Unfinished {
+    /// Whether removing the worktree would lose anything.
     pub fn any(self) -> bool {
         self.uncommitted || self.unpublished
     }

@@ -1,4 +1,5 @@
 use crate::branch_name::BranchName;
+use crate::branch_name::HEADS;
 use crate::commit_sha::CommitSha;
 use crate::git::CONFIG_LISTING;
 use crate::git::DiffSummary;
@@ -68,9 +69,6 @@ const REMOTE_HEAD: &str = "refs/remotes/origin/HEAD";
 
 /// Every branch the remote has, tracked under [`REMOTE_TRACKING`].
 const FETCH_REFSPEC: &str = "+refs/heads/*:refs/remotes/origin/*";
-
-/// The namespace a local branch lives in.
-const HEADS: &str = "refs/heads/";
 
 /// How `ls-remote --symref` introduces the ref a symbolic ref points at.
 const SYMBOLIC_REFERENCE: &str = "ref: ";

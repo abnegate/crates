@@ -19,10 +19,12 @@ impl Repository {
         })
     }
 
+    /// The account or organisation the repository belongs to.
     pub fn owner(&self) -> &str {
         &self.owner
     }
 
+    /// The repository's name, without `.git`.
     pub fn name(&self) -> &str {
         &self.name
     }

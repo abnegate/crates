@@ -15,6 +15,7 @@ pub enum Manifest {
 }
 
 impl Manifest {
+    /// The package manager, by the name it goes by.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Composer => "composer",

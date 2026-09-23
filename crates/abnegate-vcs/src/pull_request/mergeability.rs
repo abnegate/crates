@@ -20,6 +20,7 @@ impl Mergeability {
         }
     }
 
+    /// Whether the branch is known to conflict with its base.
     pub fn conflicted(self) -> bool {
         self == Mergeability::Conflicted
     }

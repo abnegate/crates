@@ -22,8 +22,11 @@ pub enum ConflictError {
 
     #[error("{branch} is at {actual}, not the expected {expected}")]
     Moved {
+        /// The branch that moved.
         branch: BranchName,
+        /// The commit the caller expected it at.
         expected: CommitSha,
+        /// The commit it was found at.
         actual: CommitSha,
     },
 
@@ -49,4 +52,5 @@ pub enum ConflictError {
     Io(#[from] std::io::Error),
 }
 
+/// A conflict operation, or what went wrong with it.
 pub type ConflictResult<T> = Result<T, ConflictError>;

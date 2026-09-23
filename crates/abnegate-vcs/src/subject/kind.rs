@@ -33,6 +33,7 @@ impl Kind {
     /// change rather than announcing one that was never made.
     pub const UNCLASSIFIED: Self = Self::Chore;
 
+    /// The kind as a subject line spells it.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Feat => "feat",

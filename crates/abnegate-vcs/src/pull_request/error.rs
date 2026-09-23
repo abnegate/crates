@@ -37,4 +37,5 @@ pub enum PullRequestError {
     Parse(#[from] ParseError),
 }
 
+/// A pull request operation, or what went wrong with it.
 pub type PullRequestResult<T> = Result<T, PullRequestError>;

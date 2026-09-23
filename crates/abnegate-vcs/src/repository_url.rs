@@ -66,6 +66,7 @@ impl RepositoryUrl {
         })
     }
 
+    /// The normalised address.
     pub fn as_str(&self) -> &str {
         self.url.as_str()
     }

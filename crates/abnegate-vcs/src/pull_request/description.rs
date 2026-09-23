@@ -7,14 +7,20 @@ use uuid::Uuid;
 /// it touched. A run that reported nothing leaves its section out rather than
 /// heading an empty one.
 pub struct Description<'a> {
+    /// What was wrong, as the task described it.
     pub problem: &'a str,
+    /// The run's own account of what it did, if it gave one.
     pub report: Option<&'a str>,
+    /// The files it changed, if they are listed.
     pub changes: Option<&'a str>,
+    /// The task that opened the pull request.
     pub task: Uuid,
+    /// Where the task can be read, if it can.
     pub url: Option<&'a str>,
 }
 
 impl Description<'_> {
+    /// The pull request body, in Markdown.
     pub fn render(&self) -> String {
         let mut body = format!("## Problem\n\n{}\n\n", self.problem.trim());
 

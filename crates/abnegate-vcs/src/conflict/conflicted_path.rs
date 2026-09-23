@@ -29,6 +29,7 @@ impl ConflictedPath {
         Ok(Self(value.to_string()))
     }
 
+    /// The path as git reported it.
     pub fn as_str(&self) -> &str {
         &self.0
     }

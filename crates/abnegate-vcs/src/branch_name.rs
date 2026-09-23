@@ -13,7 +13,7 @@ const FORBIDDEN_CHARACTERS: [char; 8] = ['~', '^', ':', '?', '*', '[', '\\', ' '
 const LOCK_SUFFIX: &str = ".lock";
 
 /// The namespace a branch lives in.
-const HEADS: &str = "refs/heads/";
+pub(crate) const HEADS: &str = "refs/heads/";
 
 /// Names git reserves for itself rather than for a branch.
 const RESERVED: [&str; 2] = ["@", "HEAD"];
@@ -56,6 +56,7 @@ impl BranchName {
         Self(value.to_string())
     }
 
+    /// The name as git spells it.
     pub fn as_str(&self) -> &str {
         &self.0
     }

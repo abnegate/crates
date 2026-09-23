@@ -68,10 +68,12 @@ impl Subject {
         (!summary.is_empty()).then_some(Self { kind, summary })
     }
 
+    /// The kind of change announced.
     pub fn kind(&self) -> Kind {
         self.kind
     }
 
+    /// What the change did.
     pub fn summary(&self) -> &str {
         &self.summary
     }

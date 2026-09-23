@@ -282,7 +282,9 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{clone, git, remote};
+    use super::fixtures::clone;
+    use super::fixtures::git;
+    use super::fixtures::remote;
     use super::*;
 
     struct Repositories {

@@ -94,14 +94,17 @@ impl Conflict {
         &self.head_branch
     }
 
+    /// The commit the head branch was at when the conflict was reproduced.
     pub fn head(&self) -> &CommitSha {
         &self.head
     }
 
+    /// The commit the base branch was at when the conflict was reproduced.
     pub fn base(&self) -> &CommitSha {
         &self.base
     }
 
+    /// Every path git reported as unmerged, sorted.
     pub fn files(&self) -> &[ConflictedPath] {
         &self.files
     }

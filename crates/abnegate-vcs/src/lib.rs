@@ -10,8 +10,8 @@
 //! [`subject::Subject`] names a change the way a conventional-commit history
 //! names one; [`discovery::DependencyDiscovery`] reads package manifests for
 //! the dependencies one organisation has on itself. With the `github` feature,
-//! [`pull_request::PrService`] opens and reads back pull requests over the
-//! GitHub REST API.
+//! `pull_request::PullRequestService` opens and reads back pull requests over
+//! the GitHub REST API.
 //!
 //! Nothing here holds application state, so a task runner can drive it directly.
 //!
@@ -22,15 +22,19 @@
 //!
 //! let git = GitService::new();
 //! let branch = git.generate_branch_name(Uuid::new_v4(), "add rate limiting")?;
-//! # let _ = (git.is_git_repo(repository).await?, branch);
+//! # let _ = (git.is_git_repository(repository).await?, branch);
 //! # Ok(())
 //! # }
 //! ```
 //!
 //! # Features
 //!
-//! - `github`: [`pull_request`], which opens pull requests on GitHub or a
+//! - `github`: `pull_request`, which opens pull requests on GitHub or a
 //!   GitHub Enterprise install and reads back how each one was received.
+//! - `test-support`: `RepositoryUrl::local` and
+//!   `pull_request::PullRequestService::standing_in_for`, which reach a
+//!   repository on the local disk or a mock API server. Nothing a caller
+//!   configures produces either, so only a test should enable it.
 
 mod branch_name;
 mod commit_sha;
@@ -48,22 +52,71 @@ pub mod worktree;
 
 pub use crate::branch_name::BranchName;
 pub use crate::commit_sha::CommitSha;
+pub use crate::conflict::Conflict;
+pub use crate::conflict::ConflictError;
+pub use crate::conflict::ConflictRequest;
+pub use crate::conflict::ConflictService;
+pub use crate::conflict::ConflictedPath;
+pub use crate::discovery::DependencyDiscovery;
+pub use crate::discovery::DiscoveredDependency;
+pub use crate::discovery::Manifest;
+pub use crate::git::DiffSummary;
+pub use crate::git::GitError;
+pub use crate::git::GitService;
+pub use crate::git::RemoteHead;
 pub use crate::parse_error::ParseError;
-pub use crate::repository_url::RepositoryUrl;
-
-pub use crate::conflict::{
-    Conflict, ConflictError, ConflictRequest, ConflictService, ConflictedPath,
-};
-pub use crate::discovery::{DependencyDiscovery, DiscoveredDependency, Manifest};
-pub use crate::git::{DiffSummary, GitError, GitService, RemoteHead};
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::{
-    CreatedPullRequest, Description, GitHubBranch, GitHubPullRequest, Mergeability,
-    PullRequestError, PullRequestReception, PullRequestReference, PullRequestService,
-    PullRequestState, Repository, ReviewState, ReviewTally, SubmittedReview, minutes_between,
-    tally,
-};
-pub use crate::resolution::{ConflictSide, ResolutionVerdict, judge};
-pub use crate::subject::{Kind, Subject};
+pub use crate::pull_request::CreatedPullRequest;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Description;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::GitHubBranch;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::GitHubPullRequest;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Mergeability;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::PullRequestError;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::PullRequestReception;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::PullRequestReference;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::PullRequestService;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::PullRequestState;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Repository;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::ReviewState;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::ReviewTally;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::SubmittedReview;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::minutes_between;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::tally;
+pub use crate::repository_url::RepositoryUrl;
+pub use crate::resolution::ConflictSide;
+pub use crate::resolution::ResolutionVerdict;
+pub use crate::resolution::judge;
+pub use crate::subject::Kind;
+pub use crate::subject::Subject;
 pub use crate::worktree::Unfinished;

@@ -23,6 +23,7 @@ impl CommitSha {
         }
     }
 
+    /// The identifier as lowercase hex.
     pub fn as_str(&self) -> &str {
         &self.0
     }

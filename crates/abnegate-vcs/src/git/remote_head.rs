@@ -6,6 +6,8 @@ use crate::commit_sha::CommitSha;
 /// from a ref every run of it shares.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteHead {
+    /// The branch the remote names as its default.
     pub branch: BranchName,
+    /// The commit at that branch's tip.
     pub commit: CommitSha,
 }

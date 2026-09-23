@@ -179,7 +179,7 @@ impl GitService {
     }
 
     /// Whether git considers `path` to be inside a working tree.
-    pub async fn is_git_repo(&self, path: &Path) -> GitResult<bool> {
+    pub async fn is_git_repository(&self, path: &Path) -> GitResult<bool> {
         let output = Self::output(
             Self::hardened()
                 .args(["rev-parse", "--is-inside-work-tree"])

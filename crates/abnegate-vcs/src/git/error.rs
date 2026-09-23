@@ -35,4 +35,5 @@ pub enum GitError {
     Io(#[from] std::io::Error),
 }
 
+/// A git operation, or what went wrong with it.
 pub type GitResult<T> = Result<T, GitError>;
