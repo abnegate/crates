@@ -1,10 +1,7 @@
 use super::*;
 use crate::git::GITLINK_MODE;
 use crate::git::WorktreeEntry;
-#[cfg(unix)]
-use std::ffi::OsStr;
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
+use crate::git::native;
 use tokio::io::AsyncWriteExt;
 
 /// The status a change check runs: every untracked path, and no descent into a
@@ -150,8 +147,12 @@ impl GitService {
     }
 
     /// Refuse a checkout whose HEAD names a branch that is itself a symbolic
-    /// ref, with [`GitError::SymbolicBranch`]: git moves that branch through
-    /// the link, onto whatever ref it names. A detached HEAD is its own ref.
+    /// ref: git moves that branch through the link, onto whatever ref it
+    /// names. The refusal is [`GitError::SymbolicBranch`] when the branch's
+    /// name is one a [`BranchName`] carries, and [`GitError::SymbolicHead`]
+    /// when it is not, since the repository chose that name. A HEAD whose
+    /// branch this platform cannot name cannot be checked, and is refused as
+    /// unreadable. A detached HEAD is its own ref.
     async fn refuse_linked_head(path: &Path) -> GitResult<()> {
         let head = Self::output(
             Self::hardened()
@@ -170,13 +171,18 @@ impl GitService {
             }
         }
         let reference = head.stdout.strip_suffix(b"\n").unwrap_or(&head.stdout);
-        if !Self::is_symbolic(path, native(reference)).await? {
+        let Some(name) = native(reference) else {
+            return Err(GitError::CommandFailed(
+                "Cannot read the checkout's HEAD".to_string(),
+            ));
+        };
+        if !Self::is_symbolic(path, name).await? {
             return Ok(());
         }
-        let name = String::from_utf8_lossy(reference);
-        Err(GitError::SymbolicBranch(BranchName::parse(
-            name.strip_prefix(HEADS).unwrap_or(&name),
-        )?))
+        let branch = std::str::from_utf8(reference)
+            .ok()
+            .and_then(|name| BranchName::parse(name.strip_prefix(HEADS).unwrap_or(name)).ok());
+        Err(branch.map_or(GitError::SymbolicHead, GitError::SymbolicBranch))
     }
 
     /// Move `branch` to a name of its own, `<branch>.abandoned.<time>`, in one
@@ -359,7 +365,14 @@ impl GitService {
             Self::verify_config(path).await?;
             let mut command = Self::connected(url, token);
             command
-                .args(["fetch", "--prune", "--", url.as_str(), FETCH_REFSPEC])
+                .args([
+                    "fetch",
+                    "--prune",
+                    NO_FETCH_HEAD,
+                    "--",
+                    url.as_str(),
+                    FETCH_REFSPEC,
+                ])
                 .current_dir(path);
             match Self::finish(&mut command).await {
                 Ok(()) => return Ok(()),
@@ -469,7 +482,7 @@ impl GitService {
             false => (1, format!("[extensions]\n{extensions}")),
         };
         let content = format!(
-            "[core]\n\trepositoryformatversion = {version}\n\tbare = false\n\tlogallrefupdates = true\n{core}{extensions}[remote \"{ORIGIN}\"]\n\turl = {}\n\tfetch = {FETCH_REFSPEC}\n",
+            "[core]\n\trepositoryformatversion = {version}\n\tbare = false\n{core}{extensions}[remote \"{ORIGIN}\"]\n\turl = {}\n\tfetch = {FETCH_REFSPEC}\n",
             quoted(url.as_str())
         );
         replace_atomically(&file, &content).await
@@ -663,7 +676,7 @@ impl GitService {
     /// `.git`, read from the index alone. The whole index is read, from the
     /// top of the working tree, because `add -A` stages all of it wherever it
     /// runs. Anything at a `.git` that cannot be looked at counts as standing
-    /// there.
+    /// there, and so does a gitlink whose path this platform cannot name.
     async fn populated_gitlink(path: &Path) -> GitResult<Option<PathBuf>> {
         let top = Self::output(
             Self::hardened()
@@ -677,7 +690,10 @@ impl GitService {
                 "Cannot find the top of the working tree".to_string(),
             ));
         }
-        let top = native(top.stdout.strip_suffix(b"\n").unwrap_or(&top.stdout));
+        let top =
+            native(top.stdout.strip_suffix(b"\n").unwrap_or(&top.stdout)).ok_or_else(|| {
+                GitError::CommandFailed("Cannot find the top of the working tree".to_string())
+            })?;
         let listed = Self::output(
             Self::hardened()
                 .args(["ls-files", "--stage", "-z"])
@@ -694,7 +710,10 @@ impl GitService {
             .filter(|entry| entry.starts_with(GITLINK_MODE.as_bytes()))
             .filter_map(|entry| entry.splitn(2, |byte| *byte == b'\t').nth(1));
         for gitlink in gitlinks {
-            let nested = top.join(native(gitlink));
+            let Some(relative) = native(gitlink) else {
+                return Ok(Some(top.join(String::from_utf8_lossy(gitlink).as_ref())));
+            };
+            let nested = top.join(relative);
             match tokio::fs::symlink_metadata(nested.join(GIT_DIRECTORY)).await {
                 Err(error)
                     if matches!(
@@ -881,20 +900,6 @@ fn changed_paths(listing: &[u8]) -> Vec<String> {
         }
     }
     paths
-}
-
-/// A path or ref name git printed, byte for byte, so a name that is not
-/// UTF-8 still names what git reads.
-#[cfg(unix)]
-fn native(bytes: &[u8]) -> PathBuf {
-    PathBuf::from(OsStr::from_bytes(bytes))
-}
-
-/// A path or ref name git printed. Git keeps names in UTF-8 wherever the
-/// platform's own are not bytes.
-#[cfg(not(unix))]
-fn native(bytes: &[u8]) -> PathBuf {
-    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 /// A configuration value in double quotes, so nothing in it opens a comment
@@ -1455,6 +1460,10 @@ mod publication_tests {
         service.fetch(&base, &local(&genuine), None).await.unwrap();
         let refs = git(&base, &["for-each-ref", "refs/remotes/origin/"]);
         assert!(!refs.contains("origin/gone"), "{refs}");
+        assert!(
+            !base.join(GIT_DIRECTORY).join("FETCH_HEAD").exists(),
+            "the fetch wrote FETCH_HEAD"
+        );
     }
 
     /// The default branch and its tip come from the remote; a redirected
@@ -1544,6 +1553,7 @@ mod publication_tests {
             "{listed}"
         );
         assert!(listed.contains("core.filemode="), "{listed}");
+        assert!(!listed.contains("logallrefupdates"), "{listed}");
         assert_eq!(
             git(&base, &["status", "--porcelain"]),
             "",
@@ -1625,9 +1635,10 @@ mod publication_tests {
         assert_eq!(service.current_branch(&fourth).await.unwrap(), "task/other");
     }
 
-    /// Setting a branch aside moves its ref alone, so the clone's
-    /// configuration is never rewritten, through a link wherever
-    /// `.git/config` is one.
+    /// A clone whose `.git/config` is a link is refused before the run's
+    /// branch is prepared. Setting a branch aside, which a link made after
+    /// that check would meet, moves its ref alone, so the configuration is
+    /// never rewritten through the link either way.
     #[cfg(unix)]
     #[tokio::test]
     async fn setting_a_branch_aside_writes_nothing_through_a_linked_configuration() {
@@ -1654,22 +1665,35 @@ mod publication_tests {
         crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
         let linked = crate::worktree::fixtures::LinkedConfig::new(&base, &root.path().join("copy"));
 
-        service
+        let prepared = service
             .prepare_branch(&second, &branch("task/one"), false)
+            .await;
+
+        assert!(
+            matches!(prepared, Err(GitError::LinkedPath("config"))),
+            "{prepared:?}"
+        );
+        linked.assert_untouched();
+        assert_eq!(
+            git(&base, &["rev-parse", "refs/heads/task/one"]),
+            held,
+            "the refused preparation moved the branch"
+        );
+
+        let aside = GitService::set_aside(&base, &branch("task/one"))
             .await
             .unwrap();
 
-        assert_eq!(service.current_branch(&second).await.unwrap(), "task/one");
         assert_eq!(
             git(
                 &base,
                 &[
                     "for-each-ref",
-                    "--format=%(objectname)",
-                    "refs/heads/task/one.abandoned.*",
+                    "--format=%(refname) %(objectname)",
+                    "refs/heads/task/one*",
                 ],
             ),
-            held,
+            format!("{} {held}", aside.reference()),
             "the branch's commit is kept under a name of its own"
         );
         linked.assert_untouched();
@@ -1935,6 +1959,33 @@ mod branch_tests {
         ));
     }
 
+    /// A branch a hardened command makes starts no reflog: git would write
+    /// one under `logs/`, following a link standing in the place of any
+    /// directory or file on the way.
+    #[tokio::test]
+    async fn a_new_branch_starts_no_reflog() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+
+        GitService::new()
+            .create_branch(repository.path(), &branch("feature/one"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(repository.path(), &["symbolic-ref", "HEAD"]),
+            "refs/heads/feature/one"
+        );
+        assert!(
+            !repository
+                .path()
+                .join(GIT_DIRECTORY)
+                .join("logs/refs/heads/feature")
+                .exists(),
+            "the new branch started a reflog"
+        );
+    }
+
     /// A new branch whose name is already a link to a branch that does not
     /// exist is refused: `show-ref` does not see such a link, and creating
     /// the branch would write through it and make the branch it names.
@@ -2093,7 +2144,53 @@ mod branch_tests {
             start,
             "the commit landed on the branch the link names"
         );
-        assert!(committed.is_err(), "{committed:?}");
+        assert!(
+            matches!(committed, Err(GitError::SymbolicHead)),
+            "{committed:?}"
+        );
+    }
+
+    /// A checked-out branch that is a link, under a name git accepts and a
+    /// branch name may not carry, is refused without that name: the
+    /// repository chose it, and a refusal is read by whoever the caller
+    /// shows it to.
+    #[tokio::test]
+    async fn committing_on_a_link_under_a_name_no_branch_may_carry_is_refused_unnamed() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+        let start = git(repository.path(), &["rev-parse", "HEAD"]);
+        git(repository.path(), &["branch", "other"]);
+        std::fs::write(repository.path().join("work.txt"), "work\n").unwrap();
+        let service = GitService::new();
+        service.stage_all(repository.path()).await.unwrap();
+
+        for name in ["-planted", "HEAD", "@", "planted\u{85}"] {
+            let reference = format!("refs/heads/{name}");
+            git(
+                repository.path(),
+                &["symbolic-ref", &reference, "refs/heads/other"],
+            );
+            git(repository.path(), &["symbolic-ref", "HEAD", &reference]);
+
+            let refusal = service.commit(repository.path(), "work").await.unwrap_err();
+
+            assert!(
+                matches!(refusal, GitError::SymbolicHead),
+                "{name:?}: {refusal:?}"
+            );
+            assert!(
+                !refusal.to_string().contains(name),
+                "{name:?}: the refusal carries the name: {refusal}"
+            );
+        }
+        assert_eq!(
+            git(
+                repository.path(),
+                &["for-each-ref", "--format=%(objectname)", "refs/heads/other"],
+            ),
+            start,
+            "the commit landed on the branch the link names"
+        );
     }
 
     #[tokio::test]
@@ -2617,14 +2714,6 @@ mod configuration_tests {
             service.has_changes(repository.path()).await,
             Err(GitError::UnsafeConfig(_))
         ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_path_git_printed_is_kept_byte_for_byte() {
-        let printed = b"nested/\xff name";
-
-        assert_eq!(native(printed).as_os_str().as_bytes(), printed);
     }
 
     #[test]

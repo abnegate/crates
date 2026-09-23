@@ -21,9 +21,11 @@ use crate::commit_sha::CommitSha;
 use crate::git::CONFIG_LISTING;
 use crate::git::GITLINK_MODE;
 use crate::git::IGNORE_SUBMODULES;
+use crate::git::LOCATING;
 use crate::git::WorktreeEntry;
 use crate::git::harden;
 use crate::git::refused;
+use crate::git::unlinked;
 pub use crate::worktree::unfinished::Unfinished;
 use std::io::Read;
 #[cfg(unix)]
@@ -87,20 +89,26 @@ fn local(repository: &Path) -> Command {
 }
 
 /// Refuse a repository whose own configuration holds anything beyond what git
-/// writes for a clone, a worktree and a tracking branch: the configuration is
-/// the base clone's, which every run of the repository can write through its
-/// own git commands.
+/// writes for a clone, a worktree and a tracking branch, or that has a
+/// symbolic link standing where git writes a ref, a reflog, `HEAD` or the
+/// configuration, which it refuses with [`crate::git::GitError::LinkedPath`]:
+/// the configuration and the refs are the base clone's, which every run of
+/// the repository can write through its own git commands.
 fn verify(repository: &Path) -> std::io::Result<()> {
     let listing = run(
         local(repository).args(CONFIG_LISTING),
         "read the repository's configuration",
     )?;
-    match refused(&listing) {
-        Some(key) => Err(std::io::Error::other(format!(
+    if let Some(key) = refused(&listing) {
+        return Err(std::io::Error::other(format!(
             "refusing a repository whose configuration sets {key:?}"
-        ))),
-        None => Ok(()),
+        )));
     }
+    let located = run(
+        local(repository).args(LOCATING),
+        "locate the repository's files",
+    )?;
+    unlinked(&located).map_err(std::io::Error::other)
 }
 
 /// Run a local git command, reading at most [`MAXIMUM_OUTPUT_BYTES`] `+ 1` of
@@ -412,9 +420,10 @@ pub(crate) mod fixtures {
     use std::path::PathBuf;
     use std::process::Command;
 
-    /// Run git in a fixture with a fixed identity, panicking on failure.
-    pub fn git(path: &Path, arguments: &[&str]) -> String {
-        let output = Command::new("git")
+    /// Git in a fixture with a fixed identity and no host configuration.
+    fn command(path: &Path, arguments: &[&str]) -> Command {
+        let mut command = Command::new("git");
+        command
             .env("GIT_AUTHOR_NAME", "Fixture")
             .env("GIT_AUTHOR_EMAIL", "fixture@example.test")
             .env("GIT_COMMITTER_NAME", "Fixture")
@@ -423,9 +432,13 @@ pub(crate) mod fixtures {
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_TERMINAL_PROMPT", "0")
             .args(arguments)
-            .current_dir(path)
-            .output()
-            .expect("git runs");
+            .current_dir(path);
+        command
+    }
+
+    /// Run git in a fixture with a fixed identity, panicking on failure.
+    pub fn git(path: &Path, arguments: &[&str]) -> String {
+        let output = command(path, arguments).output().expect("git runs");
         assert!(
             output.status.success(),
             "git {arguments:?} in {}: {}",
@@ -433,6 +446,15 @@ pub(crate) mod fixtures {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// Run git in a fixture as [`git`] does, and say whether it succeeded.
+    pub fn attempt(path: &Path, arguments: &[&str]) -> bool {
+        command(path, arguments)
+            .output()
+            .expect("git runs")
+            .status
+            .success()
     }
 
     /// A repository with one commit on `main`, the shape a remote has.
@@ -509,6 +531,7 @@ mod tests {
     use super::fixtures::git;
     use super::fixtures::remote;
     use super::*;
+    use crate::git::GitError;
 
     struct Repositories {
         _root: tempfile::TempDir,
@@ -677,9 +700,10 @@ mod tests {
         );
     }
 
-    /// Removing a worktree deletes its branch by the ref alone, so the base
-    /// clone's configuration is never rewritten, through a link wherever
-    /// `.git/config` is one.
+    /// A base clone whose `.git/config` is a link is refused before a
+    /// worktree of it is removed. Deleting the worktree's branch, which a
+    /// link made after that check would meet, removes the ref alone, so the
+    /// configuration is never rewritten through the link either way.
     #[cfg(unix)]
     #[test]
     fn removing_a_worktree_writes_nothing_through_a_linked_configuration() {
@@ -692,13 +716,30 @@ mod tests {
             &repositories.base.with_file_name("copy"),
         );
 
-        remove(&repositories.base, &path).unwrap();
+        let refusal = remove(&repositories.base, &path).unwrap_err();
 
-        assert!(!path.exists(), "the worktree was removed");
+        assert!(
+            matches!(
+                refusal
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<GitError>()),
+                Some(GitError::LinkedPath("config"))
+            ),
+            "{refusal:?}"
+        );
+        assert!(path.exists(), "a refused removal removed the worktree");
+        linked.assert_untouched();
+
+        git(
+            &repositories.base,
+            &["worktree", "remove", "--force", path.to_str().unwrap()],
+        );
+        delete_branch(&repositories.base, &BranchName::parse("task/one").unwrap()).unwrap();
+
         assert_eq!(
             git(&repositories.base, &["branch", "--list", "task/one"]),
             "",
-            "the branch went with the worktree"
+            "the branch was deleted"
         );
         linked.assert_untouched();
     }

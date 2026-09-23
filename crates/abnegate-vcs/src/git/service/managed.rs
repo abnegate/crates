@@ -79,6 +79,7 @@ impl GitService {
         command.args([
             "fetch",
             "--prune",
+            NO_FETCH_HEAD,
             IGNORE_CONFIGURED_REFSPECS,
             "--",
             ORIGIN,
@@ -92,7 +93,13 @@ impl GitService {
     fn fetching(path: &Path, branch: &BranchName) -> Command {
         let mut command = Self::managed_remote(path);
         command
-            .args(["fetch", IGNORE_CONFIGURED_REFSPECS, "--", ORIGIN])
+            .args([
+                "fetch",
+                NO_FETCH_HEAD,
+                IGNORE_CONFIGURED_REFSPECS,
+                "--",
+                ORIGIN,
+            ])
             .arg(tracking_refspec(branch));
         command
     }
@@ -117,10 +124,12 @@ impl GitService {
         command
     }
 
-    /// `branch` checked out at its remote-tracking ref, whatever it held,
-    /// without recording that ref as its upstream: git would write the
-    /// upstream into the clone's configuration, and through a link wherever
-    /// `.git/config` is one.
+    /// `branch` checked out at its remote-tracking ref, whatever it, the
+    /// index and the working tree held, without recording that ref as its
+    /// upstream: git would write the upstream into the clone's configuration,
+    /// and through a link wherever `.git/config` is one. Unlike
+    /// `reset --hard`, it writes no `ORIG_HEAD`, which git would write
+    /// through a symbolic ref standing there onto whatever branch it names.
     fn checking_out(path: &Path, branch: &BranchName) -> Command {
         let mut command = Self::managed_local(path);
         command.args([
@@ -129,18 +138,6 @@ impl GitService {
             "--no-track",
             "-B",
             branch.as_str(),
-            &format!("{REMOTE_TRACKING}{branch}"),
-            "--",
-        ]);
-        command
-    }
-
-    /// The index and working tree reset to `branch`'s remote-tracking ref.
-    fn resetting(path: &Path, branch: &BranchName) -> Command {
-        let mut command = Self::managed_local(path);
-        command.args([
-            "reset",
-            "--hard",
             &format!("{REMOTE_TRACKING}{branch}"),
             "--",
         ]);
@@ -183,7 +180,10 @@ impl GitService {
     /// `refs/remotes/origin/HEAD` is refreshed first so the answer reflects what
     /// the remote reports rather than what the clone was last told. A clone
     /// whose `origin` is no longer `url` is refused as
-    /// [`Self::ensure_repository`] refuses it.
+    /// [`Self::ensure_repository`] refuses it, and a default branch whose
+    /// remote-tracking ref is a symbolic ref is refused with
+    /// [`GitError::SymbolicBranch`]: following the link would name whatever
+    /// branch it points at.
     pub async fn ensure_fetched(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         match path.exists() {
             true => self.fetch_all(path, url).await?,
@@ -192,7 +192,7 @@ impl GitService {
 
         self.update_remote_head(path, url).await;
 
-        Ok(self.detect_default_branch(path).await)
+        Self::default_branch(path).await
     }
 
     /// Ensure a managed clone is current *and* its working tree is advanced to
@@ -202,7 +202,8 @@ impl GitService {
     /// whose `origin` no longer fetches every branch the remote has is
     /// refused with [`GitError::UnsafeConfig`] rather than widened back, and
     /// its configuration, or whatever file a link there points to, is left
-    /// as it was.
+    /// as it was. A default branch whose remote-tracking ref is a symbolic
+    /// ref is refused with [`GitError::SymbolicBranch`].
     pub async fn ensure_synced(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         let default_branch = self.ensure_fetched(path, url).await?;
         self.checkout_reset(path, &default_branch).await?;
@@ -334,32 +335,26 @@ impl GitService {
         Ok(())
     }
 
-    /// Check out `branch` and hard-reset the working tree to `origin/<branch>`.
+    /// Check out `branch` at `origin/<branch>`, with the index and working
+    /// tree set to it.
     ///
     /// Assumes the refs are already fetched, and discards anything the working
-    /// tree holds: only a managed clone may be reset this way. Both steps are
-    /// local, so they run hardened, after the clone's configuration is checked
-    /// and a `branch` that is a symbolic ref is refused with
+    /// tree or the index holds: only a managed clone may be reset this way.
+    /// The checkout is local, so it runs hardened, after the clone's
+    /// configuration is checked and a `branch` that is a symbolic ref, or
+    /// whose remote-tracking ref is one, is refused with
     /// [`GitError::SymbolicBranch`].
     async fn checkout_reset(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         Self::verify_config(path).await?;
         if Self::is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
+        Self::refuse_linked_tracking(path, branch).await?;
         let output = Self::output(&mut Self::checking_out(path, branch)).await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
                 "git checkout failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
-
-        let output = Self::output(&mut Self::resetting(path, branch)).await?;
-
-        if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git reset failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             )));
         }
@@ -375,31 +370,48 @@ impl GitService {
     }
 
     /// The remote's default branch, read from `refs/remotes/origin/HEAD`, or
-    /// `main` when the ref cannot be read.
+    /// `main` when the ref cannot be read or names a remote-tracking ref that
+    /// is itself a symbolic ref.
     pub async fn detect_default_branch(&self, path: &Path) -> BranchName {
-        let output =
-            Self::output(Self::managed_command(Some(path)).args(["symbolic-ref", REMOTE_HEAD]))
-                .await;
+        Self::default_branch(path)
+            .await
+            .unwrap_or_else(|_| fallback_default_branch())
+    }
 
-        match output {
+    /// The branch `refs/remotes/origin/HEAD` names, read one link deep:
+    /// following a chain through a remote-tracking ref that is itself a link
+    /// would answer with whatever branch the last link names. A branch whose
+    /// remote-tracking ref is a symbolic ref is refused with
+    /// [`GitError::SymbolicBranch`], and one that cannot be read is `main`.
+    async fn default_branch(path: &Path) -> GitResult<BranchName> {
+        let output = Self::output(Self::managed_command(Some(path)).args(DEFAULT_BRANCH)).await;
+        let branch = match output {
             Ok(result) if result.status.success() => default_branch_of(&result.stdout),
             _ => fallback_default_branch(),
-        }
+        };
+        Self::refuse_linked_tracking(path, &branch).await?;
+        Ok(branch)
     }
 
     /// [`Self::detect_default_branch`] for a caller that cannot await, such as
     /// one building a file-system index.
     pub fn detect_default_branch_blocking(&self, path: &Path) -> BranchName {
-        let output = std::process::Command::new("git")
-            .args(["symbolic-ref", REMOTE_HEAD])
-            .current_dir(path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output();
-
-        match output {
+        let read = |arguments: &[&str]| {
+            std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+        };
+        let branch = match read(&DEFAULT_BRANCH) {
             Ok(result) if result.status.success() => default_branch_of(&result.stdout),
+            _ => return fallback_default_branch(),
+        };
+        let tracking = format!("{REMOTE_TRACKING}{branch}");
+        match read(&["symbolic-ref", "--quiet", &tracking]) {
+            Ok(result) if result.status.code() == Some(NOT_SYMBOLIC) => branch,
             _ => fallback_default_branch(),
         }
     }
@@ -432,6 +444,13 @@ impl GitService {
 
 /// The branch a repository is assumed to be on when nothing says otherwise.
 const FALLBACK_DEFAULT_BRANCH: &str = "main";
+
+/// Reads the ref `refs/remotes/origin/HEAD` names, and not the ref at the end
+/// of a chain of them.
+const DEFAULT_BRANCH: [&str; 3] = ["symbolic-ref", "--no-recurse", REMOTE_HEAD];
+
+/// How `symbolic-ref --quiet` says a ref is not a symbolic ref.
+const NOT_SYMBOLIC: i32 = 1;
 
 fn fallback_default_branch() -> BranchName {
     BranchName::literal(FALLBACK_DEFAULT_BRANCH)
@@ -469,6 +488,7 @@ mod managed_tests {
     use crate::git::service::hardened::fixtures::arguments;
     use crate::git::service::hardened::fixtures::branch;
     use crate::git::service::hardened::fixtures::recording;
+    use crate::worktree::fixtures::attempt;
     use crate::worktree::fixtures::git;
     use tempfile::TempDir;
 
@@ -709,8 +729,8 @@ mod managed_tests {
     }
 
     /// A managed clone whose default branch became a link is not brought
-    /// forward: `checkout -B` and `reset --hard` would reset the branch the
-    /// link names to the remote's.
+    /// forward: `checkout -B` would reset the branch the link names to the
+    /// remote's.
     #[tokio::test]
     async fn a_managed_clone_whose_default_branch_is_a_link_is_not_brought_forward() {
         let source = TempDir::new().unwrap();
@@ -813,6 +833,219 @@ mod managed_tests {
                 "{outcome:?}"
             );
         }
+    }
+
+    /// `reset --hard` records the commit it moves from in `ORIG_HEAD`, and
+    /// writes it through a symbolic ref standing there onto the branch that
+    /// ref names, one another worktree may have checked out. A clone is
+    /// brought forward without writing `ORIG_HEAD` at all.
+    #[tokio::test]
+    async fn bringing_a_clone_forward_leaves_the_branch_orig_head_names() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+        let other = workspace.path().join("other");
+        git(
+            &target,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "task/other",
+                other.to_str().unwrap(),
+            ],
+        );
+        git(&other, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        let kept = git(&other, &["rev-parse", "HEAD"]);
+        git(
+            &target,
+            &["symbolic-ref", "ORIG_HEAD", "refs/heads/task/other"],
+        );
+
+        for operation in 0..2 {
+            git(
+                source.path(),
+                &[
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    &format!("advance {operation}"),
+                ],
+            );
+
+            match operation {
+                0 => service
+                    .ensure_repository(&target, &url, &main)
+                    .await
+                    .unwrap(),
+                _ => service
+                    .ensure_synced(&target, &url)
+                    .await
+                    .map(drop)
+                    .unwrap(),
+            }
+
+            assert_eq!(
+                git(
+                    &target,
+                    &[
+                        "for-each-ref",
+                        "--format=%(objectname)",
+                        "refs/heads/task/other"
+                    ],
+                ),
+                kept,
+                "operation {operation}: the branch ORIG_HEAD names was moved"
+            );
+            assert_eq!(
+                git(&target, &["rev-parse", "HEAD"]),
+                git(source.path(), &["rev-parse", "HEAD"]),
+                "operation {operation}: the clone was brought forward"
+            );
+        }
+        assert_eq!(git(&other, &["rev-parse", "HEAD"]), kept);
+        assert_eq!(
+            git(&target, &["symbolic-ref", "--no-recurse", "ORIG_HEAD"]),
+            "refs/heads/task/other",
+            "ORIG_HEAD was written"
+        );
+    }
+
+    /// Bringing a clone forward discards whatever its working tree and index
+    /// held: a changed file, a staged file the remote's branch does not have,
+    /// and a merge left in conflict.
+    #[tokio::test]
+    async fn bringing_a_clone_forward_discards_a_dirty_tree_and_a_stale_index() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+        git(&target, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(target.join("README.md"), "side\n").unwrap();
+        git(&target, &["commit", "-q", "-am", "side"]);
+        git(&target, &["checkout", "-q", "main"]);
+        std::fs::write(target.join("README.md"), "mine\n").unwrap();
+        git(&target, &["commit", "-q", "-am", "mine"]);
+        assert!(
+            !attempt(&target, &["merge", "-q", "side"]),
+            "the merge is left in conflict"
+        );
+        std::fs::write(target.join("staged.txt"), "staged\n").unwrap();
+        git(&target, &["add", "staged.txt"]);
+        std::fs::write(target.join("README.md"), "changed\n").unwrap();
+        second_commit(source.path());
+
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(&target, &["status", "--porcelain", "--untracked-files=all"]),
+            ""
+        );
+        assert_eq!(
+            git(&target, &["ls-files", "--stage"]),
+            git(source.path(), &["ls-files", "--stage"]),
+            "the index is the remote branch's"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("README.md")).unwrap(),
+            "# test\n"
+        );
+        assert!(!target.join("staged.txt").exists());
+        assert!(!target.join(GIT_DIRECTORY).join("MERGE_HEAD").exists());
+        assert_eq!(
+            git(&target, &["rev-parse", "HEAD"]),
+            git(source.path(), &["rev-parse", "HEAD"])
+        );
+    }
+
+    /// A default branch whose remote-tracking ref is a link to another
+    /// branch's reads, through `origin/HEAD` and then the link, as that other
+    /// branch, and bringing it forward would discard the commits only its
+    /// local branch holds. The default branch is read one link deep, and a
+    /// clone is never brought forward onto a remote-tracking ref that is a
+    /// link.
+    #[tokio::test]
+    async fn a_default_branch_whose_tracking_ref_is_a_link_is_not_synced() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        git(source.path(), &["branch", "task/other"]);
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+        let kept = git(
+            &target,
+            &["commit-tree", "-p", "HEAD", "-m", "work", "HEAD^{tree}"],
+        );
+        git(&target, &["update-ref", "refs/heads/task/other", &kept]);
+        git(
+            &target,
+            &["update-ref", "--no-deref", "-d", "refs/remotes/origin/main"],
+        );
+        git(
+            &target,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/main",
+                "refs/remotes/origin/task/other",
+            ],
+        );
+        second_commit(source.path());
+        let head = git(&target, &["rev-parse", "HEAD"]);
+
+        let synced = service.ensure_synced(&target, &url).await;
+        let reset = service.checkout_reset(&target, &main).await;
+
+        assert_eq!(
+            git(
+                &target,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/task/other"
+                ],
+            ),
+            kept,
+            "the branch the link names was brought forward over its own commit"
+        );
+        assert_eq!(
+            git(&target, &["symbolic-ref", "--no-recurse", "HEAD"]),
+            "refs/heads/main"
+        );
+        assert_eq!(git(&target, &["rev-parse", "HEAD"]), head);
+        for outcome in [synced.map(drop), reset] {
+            assert!(
+                matches!(outcome, Err(GitError::SymbolicBranch(ref refused)) if *refused == main),
+                "{outcome:?}"
+            );
+        }
+        assert_eq!(service.detect_default_branch(&target).await, main);
+        assert_eq!(service.detect_default_branch_blocking(&target), main);
     }
 
     #[tokio::test]
@@ -1501,6 +1734,10 @@ mod managed_tests {
                 .collect();
             assert!(!fetches.is_empty(), "operation {operation}: {recorded:?}");
             for fetch in fetches {
+                assert!(
+                    fetch.iter().any(|argument| argument == NO_FETCH_HEAD),
+                    "operation {operation}: {fetch:?}"
+                );
                 let refmap = fetch.iter().position(|argument| argument == "--refmap=");
                 assert_eq!(
                     refmap.map(|refmap| &fetch[refmap + 1..]),
@@ -1509,6 +1746,10 @@ mod managed_tests {
                 );
             }
         }
+        assert!(
+            !target.join(GIT_DIRECTORY).join("FETCH_HEAD").exists(),
+            "a fetch wrote FETCH_HEAD"
+        );
     }
 
     /// A clone's refspec sits in the configuration every worktree of it
@@ -1633,11 +1874,11 @@ mod managed_tests {
         }
     }
 
-    /// A clone whose `.git/config` is a link to a file the check accepts is
-    /// still fetched, checked out and reset, and git writes any
-    /// configuration change through the link. Bringing the clone forward
-    /// records no upstream for its branch, so the linked file is left byte
-    /// for byte as it was.
+    /// A clone whose `.git/config` is a link, even to a file the
+    /// configuration check accepts, is refused before it is fetched, checked
+    /// out or reset. The fetch and the checkout a link made after that check
+    /// would meet record no upstream for the branch, so the linked file is
+    /// left byte for byte as it was either way.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_checkout_writes_nothing_through_a_linked_configuration() {
@@ -1673,12 +1914,32 @@ mod managed_tests {
         let inode = std::fs::metadata(&copy).unwrap().ino();
         second_commit(source.path());
 
-        service
-            .ensure_repository(&target, &url, &main)
-            .await
-            .unwrap();
-        service.checkout_reset(&target, &main).await.unwrap();
-        service.ensure_synced(&target, &url).await.unwrap();
+        let refusals = [
+            service.ensure_repository(&target, &url, &main).await.err(),
+            service.checkout_reset(&target, &main).await.err(),
+            service.ensure_synced(&target, &url).await.err(),
+        ];
+        for (operation, refusal) in refusals.iter().enumerate() {
+            assert!(
+                matches!(refusal, Some(GitError::LinkedPath("config"))),
+                "operation {operation}: {refusal:?}"
+            );
+        }
+        assert!(
+            !target.join("file2.txt").exists(),
+            "a refused clone was brought forward"
+        );
+        for mut command in [
+            GitService::fetching(&target, &main),
+            GitService::checking_out(&target, &main),
+        ] {
+            let output = GitService::output(&mut command).await.unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
 
         assert!(
             target.join("file2.txt").exists(),
@@ -1701,6 +1962,264 @@ mod managed_tests {
             inode,
             "the linked file was rewritten, if with the same content"
         );
+    }
+
+    /// Every file at or below `path`, with what each holds, read without
+    /// following a link below it.
+    #[cfg(unix)]
+    fn contents(path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut found = Vec::new();
+        let mut pending = vec![path.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            match std::fs::symlink_metadata(&next).unwrap().is_dir() {
+                true => pending.extend(
+                    std::fs::read_dir(&next)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path()),
+                ),
+                false => {
+                    let held = std::fs::read(&next).unwrap();
+                    found.push((next, held));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// The [`GitError`] an error from the blocking worktree module carries.
+    #[cfg(unix)]
+    fn carried(error: &std::io::Error) -> Option<&GitError> {
+        error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<GitError>())
+    }
+
+    /// A managed clone whose source has moved on, so bringing it forward
+    /// would write its refs, reflogs, `HEAD` and working tree, with a
+    /// symbolic link standing at `relative` under its git directory: to
+    /// `link` when given, and otherwise to what stood there, moved out of the
+    /// clone, or to a new file when nothing did. A sync and a worktree are
+    /// both refused by that name, and nothing the link points at is written.
+    #[cfg(unix)]
+    async fn refused_while_linked(relative: &'static str, link: Option<&str>) {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &url, &branch("main"))
+            .await
+            .unwrap();
+        let standing = target.join(GIT_DIRECTORY).join(relative);
+        let pointed = match link {
+            Some(link) => {
+                std::fs::remove_file(&standing).unwrap();
+                std::os::unix::fs::symlink(link, &standing).unwrap();
+                standing.parent().unwrap().join(link)
+            }
+            None => {
+                let moved = workspace.path().join("moved");
+                match std::fs::symlink_metadata(&standing) {
+                    Ok(_) => std::fs::rename(&standing, &moved).unwrap(),
+                    Err(_) => std::fs::write(&moved, "planted\n").unwrap(),
+                }
+                std::os::unix::fs::symlink(&moved, &standing).unwrap();
+                moved
+            }
+        };
+        let before = contents(&pointed);
+        second_commit(source.path());
+        let worktree = workspace.path().join("worktree");
+
+        let synced = service.ensure_synced(&target, &url).await;
+        let added = crate::worktree::add(&target, &worktree, "HEAD").unwrap_err();
+
+        assert!(
+            matches!(synced, Err(GitError::LinkedPath(refused)) if refused == relative),
+            "{relative}: {synced:?}"
+        );
+        assert!(
+            matches!(carried(&added), Some(GitError::LinkedPath(refused)) if *refused == relative),
+            "{relative}: {added:?}"
+        );
+        assert_eq!(
+            contents(&pointed),
+            before,
+            "{relative}: what the link points at was written"
+        );
+        assert!(
+            !target.join("file2.txt").exists(),
+            "{relative}: the clone was brought forward"
+        );
+        assert!(!worktree.exists(), "{relative}: a worktree was added");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_packed_refs_is_a_link_is_refused() {
+        refused_while_linked("packed-refs", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_refs_directory_is_a_link_is_refused() {
+        refused_while_linked("refs", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_branch_directory_is_a_link_is_refused() {
+        refused_while_linked("refs/heads", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_remotes_directory_is_a_link_is_refused() {
+        refused_while_linked("refs/remotes", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_origin_directory_is_a_link_is_refused() {
+        refused_while_linked("refs/remotes/origin", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_tag_directory_is_a_link_is_refused() {
+        refused_while_linked("refs/tags", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_reflog_directory_is_a_link_is_refused() {
+        refused_while_linked("logs", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_fetch_head_is_a_link_is_refused() {
+        refused_while_linked("FETCH_HEAD", None).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_orig_head_is_a_link_is_refused() {
+        refused_while_linked("ORIG_HEAD", None).await;
+    }
+
+    /// Git reads a `HEAD` that is a link only when it points under `refs/`,
+    /// as a link to a branch's own file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_head_is_a_link_is_refused() {
+        refused_while_linked("HEAD", Some("refs/heads/main")).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clone_whose_configuration_is_a_link_is_refused() {
+        refused_while_linked("config", None).await;
+    }
+
+    /// Packed refs are an ordinary file of the clone's own, and a clone
+    /// whose refs git has packed is brought forward and given a worktree as
+    /// any other is.
+    #[tokio::test]
+    async fn a_clone_whose_refs_are_packed_is_brought_forward() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &url, &branch("main"))
+            .await
+            .unwrap();
+        git(&target, &["pack-refs", "--all"]);
+        let packed = target.join(GIT_DIRECTORY).join("packed-refs");
+        assert!(std::fs::symlink_metadata(&packed).unwrap().is_file());
+        second_commit(source.path());
+
+        service.ensure_synced(&target, &url).await.unwrap();
+        crate::worktree::add(&target, &workspace.path().join("worktree"), "HEAD").unwrap();
+
+        assert!(
+            target.join("file2.txt").exists(),
+            "the clone was brought forward"
+        );
+        assert_eq!(service.current_branch(&target).await.unwrap(), "main");
+        assert!(std::fs::symlink_metadata(&packed).unwrap().is_file());
+    }
+
+    /// A worktree shares its repository's refs, reflogs and configuration
+    /// and keeps its own `HEAD`, `ORIG_HEAD` and `FETCH_HEAD`, so a command
+    /// run in one is refused for a link in the directory it shares, and for
+    /// one in its own directory that leaves the repository's own untouched.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_worktree_is_checked_where_it_keeps_each_of_its_files() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &origin(source.path()), &main)
+            .await
+            .unwrap();
+        let worktree = workspace.path().join("cloned-worktrees").join("one");
+        service
+            .create_worktree(&target, &worktree, &main)
+            .await
+            .unwrap();
+        git(&target, &["pack-refs", "--all"]);
+        let packed = target.join(GIT_DIRECTORY).join("packed-refs");
+        let moved = workspace.path().join("moved");
+        std::fs::rename(&packed, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &packed).unwrap();
+        let before = contents(&moved);
+
+        let shared = service.current_branch(&worktree).await;
+        let blocking = crate::worktree::unfinished(&worktree, &[]).unwrap_err();
+
+        assert!(
+            matches!(shared, Err(GitError::LinkedPath("packed-refs"))),
+            "{shared:?}"
+        );
+        assert!(
+            matches!(
+                carried(&blocking),
+                Some(GitError::LinkedPath("packed-refs"))
+            ),
+            "{blocking:?}"
+        );
+        assert_eq!(contents(&moved), before);
+
+        std::fs::remove_file(&packed).unwrap();
+        std::fs::rename(&moved, &packed).unwrap();
+        let own = PathBuf::from(git(
+            &worktree,
+            &["rev-parse", "--path-format=absolute", "--git-dir"],
+        ));
+        let planted = workspace.path().join("planted");
+        std::fs::rename(own.join("ORIG_HEAD"), &planted).unwrap();
+        std::os::unix::fs::symlink(&planted, own.join("ORIG_HEAD")).unwrap();
+        let held = std::fs::read(&planted).unwrap();
+
+        let refused = service.current_branch(&worktree).await;
+
+        assert!(
+            matches!(refused, Err(GitError::LinkedPath("ORIG_HEAD"))),
+            "{refused:?}"
+        );
+        assert_eq!(service.current_branch(&target).await.unwrap(), "main");
+        assert_eq!(std::fs::read(&planted).unwrap(), held);
     }
 
     /// A remote-tracking ref pointed at a commit only the clone has is
@@ -1900,7 +2419,7 @@ mod managed_tests {
         );
     }
 
-    /// A checkout or reset carries every pin. A fetch carries every pin but
+    /// A checkout carries every pin. A fetch carries every pin but
     /// the two that would blank the caller's own credential helper and proxy,
     /// and nothing more.
     #[test]
@@ -1918,10 +2437,7 @@ mod managed_tests {
             GitService::fetching(path, &main),
             GitService::setting_head(path),
         ];
-        let local = [
-            GitService::checking_out(path, &main),
-            GitService::resetting(path, &main),
-        ];
+        let local = [GitService::checking_out(path, &main)];
         let pins = PINS.map(String::from);
         let remote_pins: Vec<String> = PINS
             .as_chunks::<2>()
@@ -1959,7 +2475,7 @@ mod managed_tests {
             assert!(arguments.starts_with(&pins), "{arguments:?}");
             assert!(
                 configured_globally(command),
-                "a checkout or reset ignores the host's configuration: {arguments:?}"
+                "a checkout ignores the host's configuration: {arguments:?}"
             );
         }
     }

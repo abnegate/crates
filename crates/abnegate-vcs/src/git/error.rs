@@ -25,11 +25,21 @@ pub enum GitError {
     #[error("Refusing to write the branch {0} through a symbolic ref")]
     SymbolicBranch(BranchName),
 
+    /// [`GitError::SymbolicBranch`] for a checked-out branch whose name git
+    /// accepts and a [`BranchName`] may not carry, which is left unnamed.
+    #[error("Refusing to write the checked-out branch through a symbolic ref")]
+    SymbolicHead,
+
     #[error(transparent)]
     Parse(#[from] ParseError),
 
     #[error("Refusing to run in a repository whose configuration sets {0:?}")]
     UnsafeConfig(String),
+
+    /// A path under the repository's git directory that git writes through,
+    /// named relative to that directory.
+    #[error("Refusing a repository whose {0} is a symbolic link")]
+    LinkedPath(&'static str),
 
     #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
     UnsafeWorktree(PathBuf),
