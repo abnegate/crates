@@ -1,7 +1,7 @@
 [package]
 name = "abnegate-http"
-description = "An HTTP client abstraction over reqwest, and SSRF-guarded fetches of caller-supplied URLs"
-keywords = ["http", "client", "ssrf", "reqwest"]
+description = "An HTTP client abstraction, SSRF-guarded outbound fetches, keyed rate limiting, exponential backoff and failure classification"
+keywords = ["http", "ssrf", "rate-limit", "backoff", "retry"]
 categories = ["web-programming::http-client", "network-programming"]
 version.workspace = true
 edition.workspace = true
@@ -18,6 +18,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 async-trait = { workspace = true }
+dashmap = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -25,4 +27,5 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+uuid = { workspace = true }
 wiremock = { workspace = true }
