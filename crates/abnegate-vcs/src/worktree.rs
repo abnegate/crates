@@ -32,6 +32,9 @@ const AREA_SUFFIX: &str = "-worktrees";
 /// What a path segment that may not carry a separator falls back to.
 const REPLACEMENT: &str = "_";
 
+/// The file a repository's own ignore rules live in.
+const IGNORE_FILE: &str = ".gitignore";
+
 /// A git invocation with the pins and environment the hardened
 /// [`crate::git::GitService`] commands run with, that additionally may use no
 /// transport at all, so nothing here can reach the network -- not even a lazy
@@ -126,9 +129,10 @@ pub fn is_worktree(path: &Path) -> bool {
 /// changes from the status; files git does not track from the directory
 /// itself, excluding only what the repository's own `.gitignore` files cover
 /// -- those rules are what the repository declares disposable, and a rule a
-/// run adds to one is itself a change the check sees -- and not what an
-/// excludes file or `info/exclude` does; and every entry marked
-/// assume-unchanged or skip-worktree, whose changes a status never reports.
+/// run adds is itself a change the check sees, a new `.gitignore` included
+/// even when it ignores itself -- and not what an excludes file or
+/// `info/exclude` does; and every entry marked assume-unchanged or
+/// skip-worktree, whose changes a status never reports.
 pub fn unfinished(path: &Path, known: &[&str]) -> std::io::Result<Unfinished> {
     verify(path)?;
     let tracked = run(
@@ -150,6 +154,10 @@ pub fn unfinished(path: &Path, known: &[&str]) -> std::io::Result<Unfinished> {
         ]),
         "list the worktree's untracked files",
     )?;
+    let everything = run(
+        local(path).args(["ls-files", "--others", "-z"]),
+        "list every file the worktree does not track",
+    )?;
     let marked = run(
         local(path).args(["ls-files", "-v", "-z"]),
         "read the worktree's index",
@@ -160,9 +168,21 @@ pub fn unfinished(path: &Path, known: &[&str]) -> std::io::Result<Unfinished> {
     )?;
     let head = String::from_utf8_lossy(&head).trim().to_string();
     Ok(Unfinished {
-        uncommitted: !tracked.is_empty() || !untracked.is_empty() || hides_changes(&marked),
+        uncommitted: !tracked.is_empty()
+            || !untracked.is_empty()
+            || adds_ignore_rules(&everything)
+            || hides_changes(&marked),
         unpublished: !known.iter().any(|commit| *commit == head),
     })
+}
+
+/// Whether a listing of untracked files holds a `.gitignore`, anywhere: a new
+/// one is itself a change, and one that ignores itself hides every other file
+/// beneath it from the listing that honours it.
+fn adds_ignore_rules(listing: &[u8]) -> bool {
+    listing
+        .split(|byte| *byte == 0)
+        .any(|entry| entry.rsplit(|byte| *byte == b'/').next() == Some(IGNORE_FILE.as_bytes()))
 }
 
 /// Whether an `ls-files -v` listing marks any entry assume-unchanged, which it
@@ -681,6 +701,27 @@ mod tests {
             assert!(
                 environment.contains(&(key.to_string(), Some(value.to_string()))),
                 "{key}={value} in {environment:?}"
+            );
+        }
+    }
+
+    /// A `.gitignore` a run adds that ignores itself hides everything beneath
+    /// it from a listing that honours `.gitignore` files, so a new one counts
+    /// on its own.
+    #[test]
+    fn a_new_ignore_file_that_hides_itself_still_counts() {
+        for directory in ["", "nested/"] {
+            let repositories = repositories();
+            let path = repositories.worktrees.join("run");
+            add(&repositories.base, &path, "origin/HEAD").unwrap();
+            let start = git(&path, &["rev-parse", "HEAD"]);
+            std::fs::create_dir_all(path.join(directory)).unwrap();
+            std::fs::write(path.join(format!("{directory}.gitignore")), "*\n").unwrap();
+            std::fs::write(path.join(format!("{directory}work.txt")), "unsaved\n").unwrap();
+
+            assert!(
+                unfinished(&path, &[&start]).unwrap().uncommitted,
+                "{directory:?}"
             );
         }
     }

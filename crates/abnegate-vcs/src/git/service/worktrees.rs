@@ -7,6 +7,19 @@ use std::path::Component;
 /// [`GitService::remove_worktree`] will delete anything inside it by hand.
 const WORKTREE_AREA_SUFFIX: &str = "-worktrees";
 
+/// What marks the top of a work tree.
+const GIT_MARKER: &str = ".git";
+
+/// How a worktree's `.git` file introduces the directory git keeps it in.
+const GIT_POINTER: &str = "gitdir: ";
+
+/// The directory of a repository's own records of its worktrees.
+const WORKTREE_RECORDS: &str = "worktrees";
+
+fn refuse(worktree_path: &Path) -> GitError {
+    GitError::UnsafeWorktree(worktree_path.to_path_buf())
+}
+
 impl GitService {
     /// Add a worktree of a managed clone at `worktree_path`, in detached HEAD
     /// state at `checkout_ref`.
@@ -133,6 +146,11 @@ impl GitService {
 
         tracing::debug!(repository = ?path, worktree = ?worktree_path, "Removing worktree");
 
+        let disposable = match std::fs::symlink_metadata(worktree_path) {
+            Ok(_) => Some(self.disposable(path, worktree_path).await),
+            Err(_) => None,
+        };
+
         let output = Self::output(
             Self::managed_command(Some(path))
                 .args(["worktree", "remove", "--force", "--"])
@@ -146,7 +164,7 @@ impl GitService {
         }
 
         if std::fs::symlink_metadata(worktree_path).is_ok() {
-            let disposable = self.disposable(path, worktree_path).await?;
+            let disposable = disposable.unwrap_or_else(|| Err(refuse(worktree_path)))?;
             tracing::warn!(worktree = ?disposable, "Deleting a worktree git would not remove");
             tokio::fs::remove_dir_all(&disposable).await?;
         }
@@ -158,9 +176,11 @@ impl GitService {
     }
 
     /// The real path of `worktree_path` when it may be deleted by hand, as
-    /// [`Self::remove_worktree`] describes.
+    /// [`Self::remove_worktree`] describes. Decided before git is asked to
+    /// remove it, because git forgets a worktree it could not finish deleting
+    /// and the registration is the evidence.
     async fn disposable(&self, path: &Path, worktree_path: &Path) -> GitResult<PathBuf> {
-        let refuse = || GitError::UnsafeWorktree(worktree_path.to_path_buf());
+        let refuse = || refuse(worktree_path);
         let details = std::fs::symlink_metadata(worktree_path)?;
         if details.file_type().is_symlink() || !details.is_dir() {
             return Err(refuse());
@@ -188,16 +208,55 @@ impl GitService {
         if !listed.status.success() {
             return Err(refuse());
         }
-        let registered = WorktreeEntry::parse(&listed.stdout)
-            .into_iter()
-            .skip(1)
-            .find(|entry| {
-                entry.path == target || entry.path.canonicalize().is_ok_and(|real| real == target)
-            });
+        let mut registered = None;
+        for entry in WorktreeEntry::parse(&listed.stdout).into_iter().skip(1) {
+            let real = entry
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| entry.path.clone());
+            if real == target {
+                registered = Some(entry);
+            } else if real.starts_with(&target) {
+                return Err(refuse());
+            }
+        }
         match registered {
-            Some(entry) if !entry.locked => Ok(target),
+            Some(entry) if !entry.locked && self.belongs(path, &target).await? => Ok(target),
             _ => Err(refuse()),
         }
+    }
+
+    /// Whether the directory at `target` is this repository's worktree rather
+    /// than something else that now stands where one was registered: its
+    /// `.git` is either gone, as a crashed run leaves it, or a file pointing
+    /// into this repository's own worktree records.
+    async fn belongs(&self, path: &Path, target: &Path) -> GitResult<bool> {
+        let marker = target.join(GIT_MARKER);
+        let Ok(details) = std::fs::symlink_metadata(&marker) else {
+            return Ok(true);
+        };
+        if !details.is_file() {
+            return Ok(false);
+        }
+        let common = Self::output(Self::managed_command(Some(path)).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ]))
+        .await?;
+        if !common.status.success() {
+            return Ok(false);
+        }
+        let records = PathBuf::from(String::from_utf8_lossy(&common.stdout).trim())
+            .join(WORKTREE_RECORDS)
+            .canonicalize()?;
+        let pointer = std::fs::read_to_string(&marker)?;
+        let recorded = pointer
+            .trim()
+            .strip_prefix(GIT_POINTER)
+            .map(|recorded| target.join(recorded))
+            .and_then(|recorded| recorded.canonicalize().ok());
+        Ok(recorded.is_some_and(|recorded| recorded.starts_with(&records)))
     }
 
     /// Clear the way for a worktree at `worktree_path` by removing the one
@@ -465,5 +524,41 @@ mod tests {
         }
         assert!(plain.join("precious").exists());
         assert!(destination.join("README").exists());
+    }
+
+    /// A registration proves only that a worktree once stood at a path. A
+    /// separate clone standing there now is somebody else's, and is kept.
+    #[tokio::test]
+    async fn a_clone_standing_where_a_worktree_was_registered_is_not_deleted() {
+        let fixture = Fixture::new();
+        let worktree = fixture.worktree("area-worktrees/one").await;
+        std::fs::remove_dir_all(&worktree).unwrap();
+        std::fs::create_dir(&worktree).unwrap();
+        remote(&worktree);
+
+        assert!(refused(&fixture, &worktree).await);
+        assert!(worktree.join("README").exists());
+        assert!(worktree.join(".git").is_dir());
+    }
+
+    /// Deleting a directory by hand deletes everything inside it, so one
+    /// holding another registered worktree -- a locked one, here -- is kept.
+    #[tokio::test]
+    async fn a_worktree_holding_another_registered_worktree_is_not_deleted_by_hand() {
+        let fixture = Fixture::new();
+        let outer = fixture.worktree("area-worktrees/outer").await;
+        let inner = outer.join("inner");
+        GitService::new()
+            .create_worktree(&fixture.repository, &inner, &branch("main"))
+            .await
+            .unwrap();
+        git(
+            &fixture.repository,
+            &["worktree", "lock", inner.to_str().unwrap()],
+        );
+        std::fs::remove_file(outer.join(".git")).unwrap();
+
+        assert!(refused(&fixture, &outer).await);
+        assert!(inner.join("README").exists());
     }
 }
