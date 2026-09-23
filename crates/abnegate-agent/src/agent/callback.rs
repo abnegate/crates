@@ -33,10 +33,11 @@ pub trait AgentCallback: Send + Sync {
     /// until this returns.
     ///
     /// `preview` is what the call will do, rendered from its own arguments
-    /// for the person deciding. It is whole unless
-    /// [`truncated`](Preview::truncated) is set, when its middle has been
-    /// replaced by a marker counting what was left out; `call` still holds
-    /// every argument, for an application that offers the rest.
+    /// for the person deciding, verbatim but for its escapes: nothing in it is
+    /// squeezed. It is whole unless [`truncated`](Preview::truncated) is set,
+    /// when its middle has been replaced by a marker counting what was left
+    /// out; `call` still holds every argument, for an application that offers
+    /// the rest.
     ///
     /// The default refuses every tier that is
     /// [confirmed](Tier::confirmed) - host writes, commands, anything

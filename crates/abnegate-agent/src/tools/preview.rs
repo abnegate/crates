@@ -6,7 +6,9 @@ use serde_json::Value;
 
 use super::LINE_BREAK;
 use super::MAX_PREVIEW_CHARACTERS;
+use super::Rendering;
 use super::Tool;
+use super::rendering::BACKTICK;
 
 /// The glyph [`LINE_BREAK`] draws a line break with.
 const RETURN: char = '⏎';
@@ -22,11 +24,21 @@ const ESCAPE_CLOSE: char = '⟩';
 /// What an [`escape`] writes before the hex digits of its code point.
 const CODE_POINT: &str = "U+";
 
-/// Format controls, the bidi overrides and isolates among them, and every
-/// other code point a renderer draws nothing for.
+/// Format controls, the bidi overrides and isolates among them, every other
+/// code point a renderer draws nothing for, the blank Braille pattern a font
+/// draws as a space, and the combining marks drawn over a neighbouring glyph.
+///
+/// It overrides [`LEGIBLE`], which would pass the Braille pattern as a
+/// symbol.
 static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[\p{Cf}\p{Default_Ignorable_Code_Point}]").expect("a valid Unicode class")
+    Regex::new(r"[\p{Cf}\p{Default_Ignorable_Code_Point}\p{M}\u{2800}]")
+        .expect("a valid Unicode class")
 });
+
+/// What a character past ASCII has to be to reach the card as itself: a
+/// letter, a number, punctuation or a symbol.
+static LEGIBLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[\p{L}\p{N}\p{P}\p{S}]").expect("a valid Unicode class"));
 
 /// What a call will do, as the reader deciding whether to allow it sees it.
 ///
@@ -36,17 +48,25 @@ static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
 /// out of view reads as a call that was cut, never as the whole of what it
 /// does. A control, format or invisible character in the call is shown as its
 /// code point between `⟨` and `⟩`, `⟨U+0008⟩` for a backspace, as is any
-/// whitespace but a plain space or a `\n`, a space straight after a `\` or a
-/// line break, and any `⟨`, `⟩`, `⟦`, `⟧` or `⏎` it carries, so the call can
-/// neither redraw the card it is shown on, pass one character off as another,
-/// hide a space a backslash escapes among the ones between words, nor forge
-/// the marks the preview draws. An escape is one of those marks: text that
-/// reads `\u{8}` is shown as those characters, and one that reads
-/// `⟨U+0008⟩` has its fences escaped, so everything between a `⟨` and a `⟩`
-/// on the card is a character the preview escaped. Blank space is drawn as
-/// it was rendered, never squeezed here: only the content of a write or an
-/// edit reaches it collapsed, and a command, a word, a path or an argument
-/// reaches it as it is. The
+/// whitespace but a plain space or a `\n`, the blank Braille pattern, a
+/// combining mark, any other character past ASCII that is not a letter, a
+/// number, punctuation or a symbol, a space straight after a `\` or a line
+/// break, a backtick inside a [code span](Rendering::code), and any `⟨`,
+/// `⟩`, `⟦`, `⟧` or `⏎` it carries, so the call can neither redraw the card
+/// it is shown on, pass one character off as another, hide a space a
+/// backslash escapes among the ones between words, close the span it is
+/// shown in and write the rest of the card, nor forge the marks the preview
+/// draws. An escape is one of those marks: text that reads `\u{8}` is shown
+/// as those characters, and one that reads `⟨U+0008⟩` has its fences
+/// escaped, so everything between a `⟨` and a `⟩` on the card is a character
+/// the preview escaped.
+///
+/// Everything else is drawn verbatim. Nothing is squeezed, here or by the
+/// tool that rendered the call: blank space, blank lines and indentation
+/// reach the card as the call holds them, since two calls that differ only
+/// there - a Python block against the top level, a Makefile recipe's tab
+/// against a space - do different things. The character budget is what
+/// bounds the card, and [`truncated`](Self::truncated) says when it did. The
 /// [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always holds
 /// every argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +92,26 @@ impl Preview {
     /// marker is paid for out of the budget, so a cut preview is no longer
     /// than one that fits.
     pub fn within(rendered: &str, max_characters: usize) -> Self {
-        let glyphs = glyphs(rendered);
+        Self::drawn(&Rendering::from(rendered), max_characters)
+    }
+
+    /// What `tool` will do with `parameters`: its own account of the call,
+    /// or the call itself when it gives none.
+    ///
+    /// A tool with nothing of its own to say - a remote MCP method has no
+    /// catalog entry a reader would recognise it by - is shown as its name
+    /// and every argument it was given.
+    pub fn of(tool: &dyn Tool, parameters: &Value) -> Self {
+        let rendering = tool
+            .preview(parameters)
+            .unwrap_or_else(|| call(tool.name(), parameters));
+        Self::drawn(&rendering, MAX_PREVIEW_CHARACTERS)
+    }
+
+    /// `rendering` held to `max_characters`, as [`within`](Self::within)
+    /// holds plain text.
+    fn drawn(rendering: &Rendering, max_characters: usize) -> Self {
+        let glyphs = glyphs(rendering);
         let length: usize = glyphs.iter().map(|glyph| glyph.width()).sum();
         if length <= max_characters {
             return Self {
@@ -94,36 +133,28 @@ impl Preview {
             truncated: true,
         }
     }
-
-    /// What `tool` will do with `parameters`: its own account of the call,
-    /// or the call itself when it gives none.
-    ///
-    /// A tool with nothing of its own to say - a remote MCP method has no
-    /// catalog entry a reader would recognise it by - is shown as its name
-    /// and every argument it was given.
-    pub fn of(tool: &dyn Tool, parameters: &Value) -> Self {
-        let rendered = tool
-            .preview(parameters)
-            .unwrap_or_else(|| call(tool.name(), parameters));
-        Self::new(&rendered)
-    }
 }
 
 /// Whether `character` reaches the card as its [`escape`].
 ///
-/// A control or invisible character would let the call move the cursor, erase
-/// or reorder what the reader is shown, a line or paragraph separator or a
-/// Unicode space would pass for a plain space, and the glyphs the preview
-/// draws its own marks and escapes with would let it forge them, so none of
-/// them is shown as itself.
+/// An ASCII character is escaped when it is a control. Past ASCII only a
+/// letter, a number, punctuation or a symbol is drawn as itself, and not
+/// even one of those when it is [`INVISIBLE`]. A control or invisible
+/// character would let the call move the cursor, erase or reorder what the
+/// reader is shown, a line or paragraph separator, a Unicode space or the
+/// blank Braille pattern would pass for a plain space, a combining mark
+/// would change the letter before it, a private-use or unassigned code
+/// point has no glyph a reader could tell apart from another, and the glyphs
+/// the preview draws its own marks and escapes with would let it forge them,
+/// so none of them is shown as itself.
 fn escaped(character: char) -> bool {
     match character {
         RETURN | CUT_OPEN | CUT_CLOSE | ESCAPE_OPEN | ESCAPE_CLOSE => true,
         _ if character.is_ascii() => character.is_ascii_control(),
         _ => {
-            character.is_control()
-                || character.is_whitespace()
-                || INVISIBLE.is_match(character.encode_utf8(&mut [0; 4]))
+            let mut buffer = [0; 4];
+            let encoded = character.encode_utf8(&mut buffer);
+            INVISIBLE.is_match(encoded) || !LEGIBLE.is_match(encoded)
         }
     }
 }
@@ -140,17 +171,20 @@ enum Glyph {
 }
 
 impl Glyph {
-    /// How `character` is shown when `previous` comes before it.
+    /// How `character` is shown when `previous` comes before it, and whether
+    /// it lies `inside` a code span.
     ///
     /// A space straight after a `\` or a line break is escaped as well. The
     /// shell reads the first as part of a word and the second as blank space
     /// a continued line opens with, but shown as itself the first reads as
     /// the space between two words and the second is lost in the space
-    /// [`LINE_BREAK`] ends with.
-    fn of(character: char, previous: Option<char>) -> Self {
+    /// [`LINE_BREAK`] ends with. So is a backtick inside a code span, which
+    /// shown as itself would close the span.
+    fn of(character: char, previous: Option<char>, inside: bool) -> Self {
         match character {
             '\n' => Self::Break,
             ' ' if matches!(previous, Some('\\' | '\n')) => Self::Escaped(character),
+            BACKTICK if inside => Self::Escaped(character),
             _ if escaped(character) => Self::Escaped(character),
             _ => Self::Plain(character),
         }
@@ -195,12 +229,13 @@ fn escape_width(character: char) -> usize {
     [ESCAPE_OPEN, ESCAPE_CLOSE].len() + CODE_POINT.len() + digits
 }
 
-/// Every character of `text` as the card shows it.
-fn glyphs(text: &str) -> Vec<Glyph> {
-    let previous = once(None).chain(text.chars().map(Some));
-    text.chars()
+/// Every character of `rendering` as the card shows it.
+fn glyphs(rendering: &Rendering) -> Vec<Glyph> {
+    let previous = once(None).chain(rendering.characters().map(|(character, _)| Some(character)));
+    rendering
+        .characters()
         .zip(previous)
-        .map(|(character, previous)| Glyph::of(character, previous))
+        .map(|((character, inside), previous)| Glyph::of(character, previous, inside))
         .collect()
 }
 
@@ -226,14 +261,15 @@ fn hidden(characters: usize) -> String {
     format!(" {CUT_OPEN}{characters} characters hidden{CUT_CLOSE} ")
 }
 
-fn call(name: &str, parameters: &Value) -> String {
+fn call(name: &str, parameters: &Value) -> Rendering {
     let empty = parameters.is_null()
         || parameters
             .as_object()
             .is_some_and(|arguments| arguments.is_empty());
+    let named = Rendering::from("Call ").code(name);
     match empty {
-        true => format!("Call `{name}` with no arguments."),
-        false => format!("Call `{name}` with {parameters}."),
+        true => named.text(" with no arguments."),
+        false => named.text(&format!(" with {parameters}.")),
     }
 }
 
@@ -559,6 +595,85 @@ mod tests {
         }
     }
 
+    /// The blank Braille pattern is a symbol a renderer draws as nothing, so
+    /// it passed for the space between two words, and a combining mark was
+    /// drawn over the character before it, where a reader saw one letter
+    /// with an accent, a strike or a ring in place of the two the call holds.
+    #[test]
+    fn a_blank_braille_pattern_and_every_combining_mark_is_shown_as_its_escape() {
+        for character in [
+            '\u{2800}',
+            '\u{300}',
+            '\u{301}',
+            '\u{338}',
+            '\u{483}',
+            '\u{903}',
+            '\u{20dd}',
+            '\u{20e5}',
+            '\u{302a}',
+            '\u{1d167}',
+        ] {
+            let preview = Preview::within(&format!("cargo{character}test"), MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(
+                preview.text,
+                format!("cargo{}test", escape(character)),
+                "{character:?}"
+            );
+            assert!(!preview.truncated, "{character:?}");
+        }
+    }
+
+    /// Only a letter, a number, punctuation or a symbol is drawn as itself
+    /// past ASCII. Whatever else a call holds, a private-use or unassigned
+    /// code point or a filler a font draws as nothing, has no glyph a reader
+    /// could tell apart from another.
+    #[test]
+    fn a_character_that_is_not_a_letter_number_punctuation_or_symbol_is_shown_as_its_escape() {
+        for character in [
+            '\u{378}',
+            '\u{e000}',
+            '\u{f8ff}',
+            '\u{fdd0}',
+            '\u{ffff}',
+            '\u{115f}',
+            '\u{3164}',
+            '\u{ffa0}',
+            '\u{f0000}',
+            '\u{10ffff}',
+        ] {
+            let preview = Preview::within(&format!("a{character}b"), MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(
+                preview.text,
+                format!("a{}b", escape(character)),
+                "{character:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn letters_numbers_punctuation_and_symbols_past_ascii_are_drawn_as_themselves() {
+        for text in [
+            "café",
+            "日本",
+            "Ωμέγα",
+            "٣",
+            "½",
+            "—",
+            "«»",
+            "€",
+            "→",
+            "😀",
+            "👍🏽",
+        ] {
+            let preview = Preview::within(text, MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(preview.text, text, "{text:?}");
+            assert!(!preview.truncated, "{text:?}");
+        }
+    }
+
     #[test]
     fn an_escape_is_as_wide_as_it_is_drawn() {
         for character in [
@@ -593,6 +708,60 @@ mod tests {
         assert_eq!(
             Preview::of(&ReadFileTool, &json!({})).text,
             "Call `read_file` with no arguments."
+        );
+        assert_eq!(
+            call("read`file", &json!({"path": "a`b"})),
+            Rendering::from("Call ")
+                .code("read`file")
+                .text(" with {\"path\":\"a`b\"}.")
+        );
+    }
+
+    /// Only a backtick inside a code span is escaped: the tool's own words and
+    /// call text it sets outside a span are drawn as they are.
+    #[test]
+    fn a_backtick_is_escaped_inside_a_code_span_and_drawn_as_itself_outside_one() {
+        let backtick = escape(BACKTICK);
+        let rendering = Rendering::from("In ")
+            .code("a`b")
+            .text(", run ")
+            .code("`echo` hi`")
+            .text(" and `this`.");
+
+        let preview = Preview::drawn(&rendering, MAX_PREVIEW_CHARACTERS);
+
+        assert_eq!(
+            preview.text,
+            format!("In `a{backtick}b`, run `{backtick}echo{backtick} hi{backtick}` and `this`.")
+        );
+        assert!(!preview.truncated);
+        assert_eq!(
+            Preview::within("run `echo` hi`", MAX_PREVIEW_CHARACTERS).text,
+            "run `echo` hi`"
+        );
+    }
+
+    #[test]
+    fn a_cut_inside_a_code_span_keeps_its_escaped_backticks_whole() {
+        let backtick = escape(BACKTICK);
+        let rendering = Rendering::from("run ").code(&"`".repeat(1_000)).text(".");
+
+        let preview = Preview::drawn(&rendering, MAX_PREVIEW_CHARACTERS);
+
+        assert!(preview.truncated);
+        assert!(
+            preview.text.chars().count() <= MAX_PREVIEW_CHARACTERS,
+            "{}",
+            preview.text
+        );
+        let (head, hidden, tail) = parts(&preview.text);
+        let head = head.strip_prefix("run `").expect("the span opens the head");
+        let tail = tail.strip_suffix("`.").expect("the span closes the tail");
+        assert_eq!(head.replace(&backtick, ""), "", "{head}");
+        assert_eq!(tail.replace(&backtick, ""), "", "{tail}");
+        assert_eq!(
+            head.matches(&backtick).count() + hidden + tail.matches(&backtick).count(),
+            1_000
         );
     }
 }

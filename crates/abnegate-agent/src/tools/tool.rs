@@ -4,6 +4,7 @@ use abnegate_llm::ToolDefinition;
 use async_trait::async_trait;
 use serde_json::Value;
 
+use super::Rendering;
 use super::Tier;
 use super::ToolContext;
 use super::ToolError;
@@ -62,13 +63,16 @@ pub trait Tool: Send + Sync {
     /// allow it.
     ///
     /// Rendered from the call's own arguments, so the reader weighs the action
-    /// rather than the model's account of it, and rendered whole: the
-    /// [`Preview`](super::Preview) built from it is what holds it to a length,
-    /// and says so when it does. It draws blank space as it finds it, so
-    /// squeezing the free text a tool shows is the tool's to do. A tool that
-    /// leaves this alone is shown as the call itself, its name and every
-    /// argument.
-    fn preview(&self, _parameters: &Value) -> Option<String> {
+    /// rather than the model's account of it, and rendered whole and
+    /// verbatim: every argument shown as the call holds it, blank space,
+    /// blank lines and indentation included, never squeezed. The
+    /// [`Preview`](super::Preview) built from it escapes what cannot be drawn
+    /// as itself, holds it to a length and says so when it does. Call text
+    /// whose extent the reader has to see, a command or the directory it runs
+    /// in, goes in a [code span](super::Rendering::code), which no backtick it
+    /// holds can close. A tool that leaves this alone is shown as the call
+    /// itself, its name and every argument.
+    fn preview(&self, _parameters: &Value) -> Option<Rendering> {
         None
     }
 

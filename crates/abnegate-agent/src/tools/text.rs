@@ -1,9 +1,5 @@
 use std::borrow::Cow;
 use std::iter::repeat_n;
-use std::sync::LazyLock;
-
-use regex::Captures;
-use regex::Regex;
 
 /// Budget a tool spends on output it pages or trims for itself: a `read_file`
 /// page, a captured command log.
@@ -36,78 +32,16 @@ pub(crate) const ERROR_PREFIX: &str = "Error: ";
 /// marked and counted and the preview flagged, never silently from the end.
 pub const MAX_PREVIEW_CHARACTERS: usize = 400;
 
-/// Stands in for a line break that has been collapsed away.
+/// How a [`Preview`](super::Preview) draws a line break.
 ///
 /// A shell runs one command per line, so two lines joined by a space read as a
-/// single command the reader was never shown. The break survives the collapse
-/// as something they can see, and a call carrying the glyph itself has it
-/// escaped, so every one a reader sees is a real break.
+/// single command the reader was never shown. The break is drawn as something
+/// they can see, and a call carrying the glyph itself has it escaped, so every
+/// one a reader sees is a real break.
 pub const LINE_BREAK: &str = " ⏎ ";
-
-/// A run of the blank space [`collapse`] squeezes.
-static BLANK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new("[ \t]+").expect("a valid blank space pattern"));
 
 /// What opens and closes a span [`quote`] draws.
 const QUOTE: char = '"';
-
-/// Collapse the blank space in `text`, the content of a write or an edit.
-///
-/// Content arrives with newlines and runs of whitespace, indentation above
-/// all, that would push the part worth reading off the card. A run of
-/// spaces and tabs inside a line becomes one space, one at either end of a
-/// line goes, and so do blank lines; the lines left keep one `\n` between
-/// them, for a [`Preview`](super::Preview) to draw as [`LINE_BREAK`], because
-/// what separates two commands is the part of a preview a reader is deciding
-/// on.
-///
-/// What a backslash escapes is kept as it is: a run straight after an
-/// unescaped `\`, and the line after one that ends in an unescaped `\`,
-/// blank or not, with the run it opens with. `sh` reads `echo first \` as a
-/// line continued by the next, `echo first \ ` as a command of its own, and a
-/// blank line after a `\` as the end of the command, while `rm -rf ~/tmp\  ~`
-/// names two paths where `rm -rf ~/tmp\ ~` names one, so squeezing any of
-/// them in a script showed the reader a script other than the one written.
-///
-/// Only `\n` breaks a line. Every other line terminator and Unicode space,
-/// the `\r` of a `\r\n` pair among them, is kept as itself for the preview to
-/// escape: dropping or collapsing it would show one line where the file holds
-/// two, an ordinary space where it holds something else, or `cd sandbox`
-/// where `sh` reads `cd sandbox\r`.
-pub(crate) fn collapse(text: &str) -> String {
-    let mut lines: Vec<Cow<'_, str>> = Vec::new();
-    let mut continued = false;
-    for line in text.split('\n') {
-        let squeezed = squeeze(line, continued);
-        if continued || !squeezed.is_empty() {
-            lines.push(squeezed);
-        }
-        continued = escapes(line);
-    }
-    lines.join("\n")
-}
-
-/// `line` with its blank space collapsed, but for the run straight after an
-/// unescaped `\` and, when the line is `continued` from one ending in an
-/// unescaped `\`, the run it opens with.
-fn squeeze(line: &str, continued: bool) -> Cow<'_, str> {
-    BLANK.replace_all(line, |captures: &Captures<'_>| {
-        let blank = captures.get_match();
-        if escapes(&line[..blank.start()]) || (continued && blank.start() == 0) {
-            &line[blank.range()]
-        } else if blank.start() == 0 || blank.end() == line.len() {
-            ""
-        } else {
-            " "
-        }
-    })
-}
-
-/// Whether `text` ends in a backslash that escapes what follows it: one not
-/// itself escaped by the backslash before it.
-fn escapes(text: &str) -> bool {
-    text.bytes().rev().take_while(|&byte| byte == b'\\').count() % 2 == 1
-}
 
 /// `text` between double quotes, for a preview to show content in: the text
 /// a write puts in a file, or what an edit takes out and puts in.
@@ -199,70 +133,6 @@ pub(crate) fn trim_middle(text: &str, max_characters: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Blank space inside one line is noise that pushes the readable part off
-    /// the card, so it still collapses.
-    #[test]
-    fn blank_space_inside_a_line_still_collapses() {
-        assert_eq!(collapse("cargo    test   --all"), "cargo test --all");
-        assert_eq!(collapse("  one\n\n\ntwo  "), "one\ntwo");
-    }
-
-    /// Only `\n` breaks a line, and only spaces and tabs collapse, so every
-    /// other terminator and Unicode space, a `\r` before a `\n` included, is
-    /// left for the preview to show as what it is.
-    #[test]
-    fn only_a_line_feed_breaks_a_line_and_only_spaces_and_tabs_collapse() {
-        assert_eq!(collapse("one\r\ntwo"), "one\r\ntwo");
-        assert_eq!(collapse("one\r\n\r\ntwo\r\n"), "one\r\n\r\ntwo\r");
-        assert_eq!(collapse("one\t \ttwo"), "one two");
-        for character in [
-            '\r', '\u{b}', '\u{c}', '\u{85}', '\u{a0}', '\u{2028}', '\u{3000}',
-        ] {
-            let text = format!("one{character}two");
-            assert_eq!(collapse(&text), text, "{character:?}");
-            assert_eq!(
-                collapse(&format!("one{character}")),
-                format!("one{character}"),
-                "{character:?}"
-            );
-        }
-    }
-
-    /// Blank space a backslash escapes was squeezed or dropped like any
-    /// other, so `echo first \ ` and a blank line after `echo first \`, each
-    /// ending the command, collapsed to the `echo first \` that continues it,
-    /// and `rm -rf ~/tmp\  ~`, a path and the home directory, to the one path
-    /// `rm -rf ~/tmp\ ~`.
-    #[test]
-    fn blank_space_and_blank_lines_a_backslash_escapes_are_kept() {
-        for text in [
-            "echo first \\\necho second",
-            "echo first \\ \necho second",
-            "echo first \\\t \necho second",
-            "echo first \\\n\necho second",
-            "echo first \\\n   \necho second",
-            "rm -rf ~/tmp\\  ~",
-            "rm -rf ~/tmp\\\n  ~",
-            "echo first \\\n",
-            "echo \\\\\\  done",
-        ] {
-            assert_eq!(collapse(text), text, "{text:?}");
-        }
-        assert_eq!(
-            collapse("  echo  first \\   \n\n   echo   second  "),
-            "echo first \\   \necho second"
-        );
-    }
-
-    /// A backslash escaped by the one before it escapes nothing, so the blank
-    /// space and blank lines after it collapse as they do after any word.
-    #[test]
-    fn blank_space_after_an_escaped_backslash_still_collapses() {
-        assert_eq!(collapse("echo \\\\   done"), "echo \\\\ done");
-        assert_eq!(collapse("echo \\\\  \n\n  done"), "echo \\\\\ndone");
-        assert_eq!(collapse("echo \\\\\n   done"), "echo \\\\\ndone");
-    }
 
     #[test]
     fn a_quoted_span_escapes_every_quote_it_holds_and_the_backslashes_before_one() {

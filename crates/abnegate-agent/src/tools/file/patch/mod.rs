@@ -12,13 +12,13 @@ use serde_json::json;
 use super::blocking;
 use super::read_text;
 use crate::tools::REASON_PARAMETER;
+use crate::tools::Rendering;
 use crate::tools::Tier;
 use crate::tools::Tool;
 use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolResult;
 use crate::tools::beneath;
-use crate::tools::collapse;
 use crate::tools::quote;
 use crate::tools::reason_property;
 use crate::tools::word;
@@ -41,9 +41,10 @@ impl Tool for ApplyPatchTool {
     }
 
     /// Every replacement, what it takes out and what it puts in, since what
-    /// goes in is the part of an edit a reader is deciding on. The text has
-    /// its blank space collapsed; the path is drawn as it is.
-    fn preview(&self, parameters: &Value) -> Option<String> {
+    /// goes in is the part of an edit a reader is deciding on. The text and
+    /// the path are drawn verbatim but for the preview's escapes, so two
+    /// edits that differ only in indentation never read alike.
+    fn preview(&self, parameters: &Value) -> Option<Rendering> {
         let parameters: ApplyPatchParameters = serde_json::from_value(parameters.clone()).ok()?;
         let hunks = parameters.hunks().ok()?;
         let scope = match parameters.replace_all {
@@ -55,13 +56,16 @@ impl Tool for ApplyPatchTool {
             .map(|hunk| {
                 format!(
                     "replace {scope}{} with {}",
-                    collapse(&quote(&hunk.old_string)),
-                    collapse(&quote(&hunk.new_string))
+                    quote(&hunk.old_string),
+                    quote(&hunk.new_string)
                 )
             })
             .collect::<Vec<String>>()
             .join("; ");
-        Some(format!("Edit {}: {replacements}.", word(&parameters.path)))
+        Some(Rendering::from(format!(
+            "Edit {}: {replacements}.",
+            word(&parameters.path)
+        )))
     }
 
     fn parameters_schema(&self) -> Value {

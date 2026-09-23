@@ -15,6 +15,7 @@ pub use shell::MAX_SLEEP_SECONDS;
 pub use shell::RunShellTool;
 
 use super::MAX_TOOL_OUTPUT_CHARACTERS;
+use super::Rendering;
 use super::ToolContext;
 use super::ToolError;
 use super::ToolResult;
@@ -24,7 +25,6 @@ use super::job;
 use super::job::JobCommand;
 use super::job::Jobs;
 use super::job::WAIT_FOR;
-use super::word;
 
 pub(super) const MAX_OUTPUT_PARAMETER: &str = "max_output_chars";
 const BACKGROUND_PARAMETER: &str = "background";
@@ -118,15 +118,23 @@ async fn background(command: &JobCommand, context: &ToolContext) -> Result<ToolR
         .map_err(ToolError::Execution)
 }
 
-/// The command line as it will run, for an approval card.
+/// Where a call runs when it names no directory, as a card names it.
+const DEFAULT_DIRECTORY: &str = "the working directory";
+
+/// The directory a command runs in and the command line as it will run, for
+/// an approval card.
 ///
-/// Rendered whole: a [`Preview`](super::Preview) too long for the card is cut
-/// in the middle, so the directory goes after the command, where it stays in
-/// view however long the command is. The directory is a [`word`], so one
-/// holding a space reads as the single path it is.
-fn run_preview(line: &str, directory: Option<&str>) -> String {
-    match directory {
-        Some(directory) => format!("Run `{line}` in {}.", word(directory)),
-        None => format!("Run `{line}`."),
-    }
+/// The directory is always named, the working directory too, and comes
+/// first, so the clause a reader meets first is the genuine one and a clause
+/// the command writes can only ever be a second. Each is a
+/// [code span](Rendering::code), whose extent is on the card and which no
+/// backtick it holds can close, so neither can end early and write a clause
+/// of its own. Rendered whole: a [`Preview`](super::Preview) too long for the
+/// card is cut in the middle, and the directory stays in view at its head.
+fn run_preview(line: &str, directory: Option<&str>) -> Rendering {
+    let clause = match directory {
+        Some(directory) => Rendering::from("In ").code(directory),
+        None => Rendering::from("In ").text(DEFAULT_DIRECTORY),
+    };
+    clause.text(", run ").code(line).text(".")
 }

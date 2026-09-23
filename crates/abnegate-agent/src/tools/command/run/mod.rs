@@ -20,6 +20,7 @@ use super::run_preview;
 use super::working_directory;
 use crate::tools::ERROR_PREFIX;
 use crate::tools::REASON_PARAMETER;
+use crate::tools::Rendering;
 use crate::tools::TIMEOUT_SLACK;
 use crate::tools::Tier;
 use crate::tools::Tool;
@@ -72,9 +73,10 @@ impl Tool for RunCommandTool {
         Tier::Host
     }
 
-    /// The program and each argument as the shell word it is, blank space
-    /// and all, so where one argument ends and the next begins is on the card.
-    fn preview(&self, parameters: &Value) -> Option<String> {
+    /// The directory it runs in, then the program and each argument as the
+    /// shell word it is, blank space and all, so where one argument ends and
+    /// the next begins is on the card.
+    fn preview(&self, parameters: &Value) -> Option<Rendering> {
         let parameters: RunCommandParameters = serde_json::from_value(parameters.clone()).ok()?;
         let line = once(&parameters.command)
             .chain(&parameters.arguments)
