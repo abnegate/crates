@@ -35,9 +35,9 @@ pub fn render(messages: &[Message]) -> String {
         }
         let label = match message.role {
             Role::System => SYSTEM,
-            Role::User => USER,
             Role::Assistant => ASSISTANT,
             Role::Tool => TOOL,
+            _ => USER,
         };
         if !prompt.is_empty() {
             prompt.push_str("\n\n");
