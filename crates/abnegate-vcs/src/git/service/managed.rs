@@ -173,7 +173,10 @@ impl GitService {
     /// `refs/remotes/origin/HEAD` is refreshed first so the answer reflects what
     /// the remote reports rather than what the clone was last told. A clone
     /// whose `origin` is no longer `url` is refused as
-    /// [`Self::ensure_repository`] refuses it.
+    /// [`Self::ensure_repository`] refuses it, and a default branch whose
+    /// remote-tracking ref is a symbolic ref is refused with
+    /// [`GitError::SymbolicBranch`]: following the link would name whatever
+    /// branch it points at.
     pub async fn ensure_fetched(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         match path.exists() {
             true => self.fetch_all(path, url).await?,
@@ -182,7 +185,7 @@ impl GitService {
 
         self.update_remote_head(path, url).await;
 
-        Ok(self.detect_default_branch(path).await)
+        Self::default_branch(path).await
     }
 
     /// Ensure a managed clone is current *and* its working tree is advanced to
@@ -192,7 +195,8 @@ impl GitService {
     /// whose `origin` no longer fetches every branch the remote has is
     /// refused with [`GitError::UnsafeConfig`] rather than widened back, and
     /// its configuration, or whatever file a link there points to, is left
-    /// as it was.
+    /// as it was. A default branch whose remote-tracking ref is a symbolic
+    /// ref is refused with [`GitError::SymbolicBranch`].
     pub async fn ensure_synced(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         let default_branch = self.ensure_fetched(path, url).await?;
         self.checkout_reset(path, &default_branch).await?;
@@ -330,13 +334,15 @@ impl GitService {
     /// Assumes the refs are already fetched, and discards anything the working
     /// tree or the index holds: only a managed clone may be reset this way.
     /// The checkout is local, so it runs hardened, after the clone's
-    /// configuration is checked and a `branch` that is a symbolic ref is
-    /// refused with [`GitError::SymbolicBranch`].
+    /// configuration is checked and a `branch` that is a symbolic ref, or
+    /// whose remote-tracking ref is one, is refused with
+    /// [`GitError::SymbolicBranch`].
     async fn checkout_reset(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         Self::verify_config(path).await?;
         if Self::is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
+        Self::refuse_linked_tracking(path, branch).await?;
         let output = Self::output(&mut Self::checking_out(path, branch)).await?;
 
         if !output.status.success() {
@@ -357,31 +363,48 @@ impl GitService {
     }
 
     /// The remote's default branch, read from `refs/remotes/origin/HEAD`, or
-    /// `main` when the ref cannot be read.
+    /// `main` when the ref cannot be read or names a remote-tracking ref that
+    /// is itself a symbolic ref.
     pub async fn detect_default_branch(&self, path: &Path) -> BranchName {
-        let output =
-            Self::output(Self::managed_command(Some(path)).args(["symbolic-ref", REMOTE_HEAD]))
-                .await;
+        Self::default_branch(path)
+            .await
+            .unwrap_or_else(|_| fallback_default_branch())
+    }
 
-        match output {
+    /// The branch `refs/remotes/origin/HEAD` names, read one link deep:
+    /// following a chain through a remote-tracking ref that is itself a link
+    /// would answer with whatever branch the last link names. A branch whose
+    /// remote-tracking ref is a symbolic ref is refused with
+    /// [`GitError::SymbolicBranch`], and one that cannot be read is `main`.
+    async fn default_branch(path: &Path) -> GitResult<BranchName> {
+        let output = Self::output(Self::managed_command(Some(path)).args(DEFAULT_BRANCH)).await;
+        let branch = match output {
             Ok(result) if result.status.success() => default_branch_of(&result.stdout),
             _ => fallback_default_branch(),
-        }
+        };
+        Self::refuse_linked_tracking(path, &branch).await?;
+        Ok(branch)
     }
 
     /// [`Self::detect_default_branch`] for a caller that cannot await, such as
     /// one building a file-system index.
     pub fn detect_default_branch_blocking(&self, path: &Path) -> BranchName {
-        let output = std::process::Command::new("git")
-            .args(["symbolic-ref", REMOTE_HEAD])
-            .current_dir(path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output();
-
-        match output {
+        let read = |arguments: &[&str]| {
+            std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+        };
+        let branch = match read(&DEFAULT_BRANCH) {
             Ok(result) if result.status.success() => default_branch_of(&result.stdout),
+            _ => return fallback_default_branch(),
+        };
+        let tracking = format!("{REMOTE_TRACKING}{branch}");
+        match read(&["symbolic-ref", "--quiet", &tracking]) {
+            Ok(result) if result.status.code() == Some(NOT_SYMBOLIC) => branch,
             _ => fallback_default_branch(),
         }
     }
@@ -414,6 +437,13 @@ impl GitService {
 
 /// The branch a repository is assumed to be on when nothing says otherwise.
 const FALLBACK_DEFAULT_BRANCH: &str = "main";
+
+/// Reads the ref `refs/remotes/origin/HEAD` names, and not the ref at the end
+/// of a chain of them.
+const DEFAULT_BRANCH: [&str; 3] = ["symbolic-ref", "--no-recurse", REMOTE_HEAD];
+
+/// How `symbolic-ref --quiet` says a ref is not a symbolic ref.
+const NOT_SYMBOLIC: i32 = 1;
 
 fn fallback_default_branch() -> BranchName {
     BranchName::literal(FALLBACK_DEFAULT_BRANCH)
@@ -939,6 +969,76 @@ mod managed_tests {
             git(&target, &["rev-parse", "HEAD"]),
             git(source.path(), &["rev-parse", "HEAD"])
         );
+    }
+
+    /// A default branch whose remote-tracking ref is a link to another
+    /// branch's reads, through `origin/HEAD` and then the link, as that other
+    /// branch, and bringing it forward would discard the commits only its
+    /// local branch holds. The default branch is read one link deep, and a
+    /// clone is never brought forward onto a remote-tracking ref that is a
+    /// link.
+    #[tokio::test]
+    async fn a_default_branch_whose_tracking_ref_is_a_link_is_not_synced() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        git(source.path(), &["branch", "task/other"]);
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+        let kept = git(
+            &target,
+            &["commit-tree", "-p", "HEAD", "-m", "work", "HEAD^{tree}"],
+        );
+        git(&target, &["update-ref", "refs/heads/task/other", &kept]);
+        git(
+            &target,
+            &["update-ref", "--no-deref", "-d", "refs/remotes/origin/main"],
+        );
+        git(
+            &target,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/main",
+                "refs/remotes/origin/task/other",
+            ],
+        );
+        second_commit(source.path());
+        let head = git(&target, &["rev-parse", "HEAD"]);
+
+        let synced = service.ensure_synced(&target, &url).await;
+        let reset = service.checkout_reset(&target, &main).await;
+
+        assert_eq!(
+            git(
+                &target,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/task/other"
+                ],
+            ),
+            kept,
+            "the branch the link names was brought forward over its own commit"
+        );
+        assert_eq!(
+            git(&target, &["symbolic-ref", "--no-recurse", "HEAD"]),
+            "refs/heads/main"
+        );
+        assert_eq!(git(&target, &["rev-parse", "HEAD"]), head);
+        for outcome in [synced.map(drop), reset] {
+            assert!(
+                matches!(outcome, Err(GitError::SymbolicBranch(ref refused)) if *refused == main),
+                "{outcome:?}"
+            );
+        }
+        assert_eq!(service.detect_default_branch(&target).await, main);
+        assert_eq!(service.detect_default_branch_blocking(&target), main);
     }
 
     #[tokio::test]
