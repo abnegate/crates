@@ -11,6 +11,8 @@ use nix::sys::signal::kill;
 use nix::unistd::Pid;
 use serde_json::Value;
 use serde_json::json;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::Request;
@@ -238,15 +240,66 @@ fn recording(tier: crate::tools::Tier) -> (ToolRegistry, Arc<AtomicUsize>) {
 /// user would.
 struct Approving;
 
+#[async_trait]
 impl super::AgentCallback for Approving {
     fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
     fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
     fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
     fn on_response(&self, _response: &str) {}
 
-    fn approve(&self, _call: &abnegate_llm::ToolCall, _tier: crate::tools::Tier) -> bool {
+    async fn approve(&self, _call: &abnegate_llm::ToolCall, _tier: crate::tools::Tier) -> bool {
         true
     }
+}
+
+/// A callback that puts each call to a person and waits for their answer.
+struct Deferring {
+    questions: mpsc::UnboundedSender<oneshot::Sender<bool>>,
+}
+
+#[async_trait]
+impl super::AgentCallback for Deferring {
+    fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
+    fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
+    fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
+    fn on_response(&self, _response: &str) {}
+
+    async fn approve(&self, _call: &abnegate_llm::ToolCall, _tier: crate::tools::Tier) -> bool {
+        let (answer, answered) = oneshot::channel();
+        if self.questions.send(answer).is_err() {
+            return false;
+        }
+        answered.await.unwrap_or(false)
+    }
+}
+
+/// `approve` was synchronous, so waiting there for a person held a runtime
+/// thread for as long as they took, and on a single-threaded runtime left
+/// nothing to deliver their answer. It is awaited now: the answer here comes
+/// from another task on the same thread.
+#[tokio::test]
+async fn an_approval_waits_for_its_answer_without_holding_the_runtime() {
+    let provider = provider(vec![calling(&[(RECORDING, json!({}))]), answer("done")]).await;
+    let (tools, runs) = recording(crate::tools::Tier::Host);
+    let (questions, mut asked) = mpsc::unbounded_channel::<oneshot::Sender<bool>>();
+    let person = tokio::spawn(async move {
+        let answer = asked.recv().await.expect("the call is put to the person");
+        answer
+            .send(true)
+            .expect("the loop is waiting for the answer");
+    });
+
+    let state = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        agent(&provider, tools).run("Go.", &Deferring { questions }),
+    )
+    .await
+    .expect("waiting for an approval does not wedge the runtime")
+    .expect("an approved call does not end the run");
+
+    person.await.expect("the person answered");
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "the approved call ran");
+    assert_eq!(state.final_response.as_deref(), Some("done"));
 }
 
 /// Nothing asked before a host-tier call ran: the tier said it should be

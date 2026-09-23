@@ -404,7 +404,7 @@ impl Agent {
                     return ToolResult::error(format!("Invalid tool arguments: {error}"));
                 }
             };
-        if !callback.approve(tool_call, tool.tier()) {
+        if !callback.approve(tool_call, tool.tier()).await {
             return ToolResult::error(format!("{name} was not run: the call was not approved."));
         }
 
