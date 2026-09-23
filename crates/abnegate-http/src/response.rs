@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 pub struct HttpResponse {
     /// The response status code.
     pub status: u16,
-    /// The response body, decoded as text.
+    /// The response body, decoded as UTF-8 with invalid sequences replaced.
     pub body: String,
 }
 

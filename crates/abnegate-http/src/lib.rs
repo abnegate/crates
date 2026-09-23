@@ -34,6 +34,8 @@ mod client;
 mod error;
 mod limit;
 mod response;
+#[cfg(test)]
+mod test_support;
 mod transport;
 mod url;
 
