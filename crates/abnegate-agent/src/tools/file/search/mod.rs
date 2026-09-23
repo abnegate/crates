@@ -2,11 +2,11 @@ mod parameters;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-use super::{confine, descendable, resolve};
+use super::walk::{Visit, WALK_TIME_LIMIT, Walk};
+use super::{confine, resolve};
 use crate::tools::beneath::{self, Access};
 use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 use parameters::SearchCodeParameters;
@@ -91,144 +91,140 @@ impl Tool for SearchCodeTool {
             return Ok(result);
         }
 
-        let pattern = if parameters.case_sensitive {
-            parameters.pattern.clone()
-        } else {
-            parameters.pattern.to_lowercase()
-        };
-
-        let mut results = Vec::new();
-        search_directory(
-            &search_path,
-            &search_path,
-            &pattern,
-            parameters.case_sensitive,
-            &mut results,
-            max_results,
-            context,
-        )?;
-        Ok(format_search_results(results, max_results))
+        let context = context.clone();
+        tokio::task::spawn_blocking(move || {
+            let (results, stopped) = search_tree(
+                &search_path,
+                &parameters.pattern,
+                parameters.case_sensitive,
+                max_results,
+                &context,
+            );
+            format_search_results(results, max_results, stopped)
+        })
+        .await
+        .map_err(|error| ToolError::Execution(format!("The search did not finish: {error}")))
     }
 }
 
-fn format_search_results(results: Vec<String>, max_results: usize) -> ToolResult {
-    if results.is_empty() {
-        ToolResult::success("No matches found")
+fn format_search_results(
+    results: Vec<String>,
+    max_results: usize,
+    stopped: Option<&'static str>,
+) -> ToolResult {
+    let mut output = if results.is_empty() {
+        "No matches found".to_string()
     } else {
         let truncated = if results.len() >= max_results {
-            format!("\n\n... (truncated at {} results)", max_results)
+            format!("\n\n... (truncated at {max_results} results)")
         } else {
             String::new()
         };
-        ToolResult::success(format!(
-            "Found {} matches:\n\n{}{}",
+        format!(
+            "Found {} matches:\n\n{}{truncated}",
             results.len(),
             results.join("\n"),
-            truncated
-        ))
+        )
+    };
+    if let Some(reason) = stopped {
+        output.push_str(&format!("\n[search stopped early: {reason}]"));
     }
+    ToolResult::success(output)
 }
 
-pub(super) fn search_directory(
-    directory: &Path,
-    base: &Path,
+/// Lines under `root` holding `pattern`, as `path:line: text`, and why the
+/// walk stopped short of the whole tree if it did.
+///
+/// Hidden entries, build trees and links are passed over, and every file is
+/// opened through the working directory's own descriptor.
+pub(super) fn search_tree(
+    root: &Path,
+    pattern: &str,
+    case_sensitive: bool,
+    max_results: usize,
+    context: &ToolContext,
+) -> (Vec<String>, Option<&'static str>) {
+    let pattern = if case_sensitive {
+        pattern.to_string()
+    } else {
+        pattern.to_lowercase()
+    };
+    let mut results = Vec::new();
+    let mut walk = Walk::new(WALK_TIME_LIMIT);
+    let _ = walk.run(root, |entry, file_type| {
+        if results.len() >= max_results {
+            return Visit::Stop;
+        }
+        let name = entry.file_name();
+        let name = name.to_str().unwrap_or_default();
+        if name.starts_with('.') {
+            return Visit::Skip;
+        }
+        if file_type.is_dir() {
+            return match SKIPPED_DIRECTORIES.contains(&name) {
+                true => Visit::Skip,
+                false => Visit::Descend,
+            };
+        }
+        if file_type.is_file() {
+            search_file(
+                &entry.path(),
+                root,
+                &pattern,
+                case_sensitive,
+                &mut results,
+                max_results,
+                context,
+            );
+        }
+        Visit::Skip
+    });
+    (results, walk.stopped())
+}
+
+fn search_file(
+    path: &Path,
+    root: &Path,
     pattern: &str,
     case_sensitive: bool,
     results: &mut Vec<String>,
     max_results: usize,
     context: &ToolContext,
-) -> Result<(), ToolError> {
-    if results.len() >= max_results {
-        return Ok(());
+) {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    if !CODE_EXTENSIONS.contains(&extension) {
+        return;
     }
-
-    let Ok(entries) = fs::read_dir(directory) else {
-        return Ok(());
+    let Ok(mut file) = beneath::open(context, path, Access::Read) else {
+        return;
     };
-
-    for entry in entries {
-        if results.len() >= max_results {
-            break;
-        }
-
-        let Ok(entry) = entry else {
-            continue;
-        };
-
-        let path = entry.path();
-
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with('.'))
-        {
-            continue;
-        }
-
-        if path.is_dir() {
-            if !descendable(&path, context) {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default();
-            if SKIPPED_DIRECTORIES.contains(&name) {
-                continue;
-            }
-
-            search_directory(
-                &path,
-                base,
-                pattern,
-                case_sensitive,
-                results,
-                max_results,
-                context,
-            )?;
-        } else if path.is_file() {
-            let extension = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or_default();
-            if !CODE_EXTENSIONS.contains(&extension) {
-                continue;
-            }
-
-            let Ok(mut file) = beneath::open(context, &path, Access::Read) else {
-                continue;
-            };
-            let mut content = String::new();
-            if file.read_to_string(&mut content).is_err() {
-                continue;
-            }
-
-            let relative = path.strip_prefix(base).unwrap_or(&path);
-
-            for (index, line) in content.lines().enumerate() {
-                if results.len() >= max_results {
-                    break;
-                }
-
-                let matches = if case_sensitive {
-                    line.contains(pattern)
-                } else {
-                    line.to_lowercase().contains(pattern)
-                };
-
-                if matches {
-                    results.push(format!(
-                        "{}:{}: {}",
-                        relative.display(),
-                        index + 1,
-                        line.trim()
-                    ));
-                }
-            }
-        }
+    let mut content = String::new();
+    if file.read_to_string(&mut content).is_err() {
+        return;
     }
 
-    Ok(())
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    for (index, line) in content.lines().enumerate() {
+        if results.len() >= max_results {
+            return;
+        }
+        let matches = if case_sensitive {
+            line.contains(pattern)
+        } else {
+            line.to_lowercase().contains(pattern)
+        };
+        if matches {
+            results.push(format!(
+                "{}:{}: {}",
+                relative.display(),
+                index + 1,
+                line.trim()
+            ));
+        }
+    }
 }
 
 async fn search_ripgrep(
@@ -284,7 +280,7 @@ async fn search_ripgrep(
         }
         results.push(normalize_ripgrep_line(line, search_path));
     }
-    Some(format_search_results(results, max_results))
+    Some(format_search_results(results, max_results, None))
 }
 
 fn normalize_ripgrep_line(line: &str, search_path: &Path) -> String {

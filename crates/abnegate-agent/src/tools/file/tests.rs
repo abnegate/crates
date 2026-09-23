@@ -9,7 +9,7 @@ use tempfile::tempdir;
 use super::list::LIST_FILES_CAP;
 use super::patch::ApplyPatchParameters;
 use super::read::{FILE_PAGE_CHARACTERS, page_text, select_lines};
-use super::search::{SEARCH_MAX_RESULTS, search_directory};
+use super::search::{SEARCH_MAX_RESULTS, search_tree};
 use super::write::WriteFileParameters;
 use super::{ApplyPatchTool, ListFilesTool, ReadFileTool, SearchCodeTool, WriteFileTool};
 use crate::test_support::captured_logs;
@@ -511,6 +511,71 @@ async fn list_files_does_not_follow_a_symlink_out_of_cwd() {
     assert!(!output.contains("id_rsa"), "the walk left cwd: {output}");
 }
 
+/// Run `tool` on a thread of its own and give up on it after `limit`.
+///
+/// A walk that never ends also never yields, so a timeout on the same
+/// runtime would never get to fire: the waiting has to happen elsewhere.
+fn finishes_within(
+    tool: Arc<dyn Tool>,
+    parameters: serde_json::Value,
+    context: ToolContext,
+    limit: Duration,
+) -> Option<crate::tools::ToolResult> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let result = runtime.block_on(tool.execute(parameters, &context));
+        let _ = sender.send(result);
+    });
+    receiver
+        .recv_timeout(limit)
+        .ok()
+        .map(|result| result.expect("the tool answers"))
+}
+
+/// `a` and `b` both point back at the directory holding them, so a walk that
+/// follows links has two ways down at every level and never reaches the
+/// bottom. It used to do exactly that, on the runtime thread, where not even
+/// the tool timeout could stop it.
+#[cfg(unix)]
+#[test]
+fn a_walk_through_links_that_loop_back_ends() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join("own.rs"), "open sesame please\n").unwrap();
+    std::os::unix::fs::symlink(".", directory.path().join("a")).unwrap();
+    std::os::unix::fs::symlink(".", directory.path().join("b")).unwrap();
+    let context = create_test_context(directory.path());
+
+    let listed = finishes_within(
+        Arc::new(ListFilesTool),
+        serde_json::json!({"path": ".", "recursive": true}),
+        context.clone(),
+        Duration::from_secs(10),
+    )
+    .expect("listing a tree that loops back ends");
+    let listing = listed.output.unwrap();
+    assert!(listing.contains("own.rs"), "{listing}");
+    assert!(
+        !listing.contains("a/"),
+        "the walk followed a link: {listing}"
+    );
+
+    let started = Instant::now();
+    let (found, stopped) = search_tree(
+        &context.working_directory,
+        "open sesame please",
+        true,
+        SEARCH_MAX_RESULTS,
+        &context,
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(stopped, None);
+}
+
 #[tokio::test]
 async fn search_code_refuses_a_path_outside_cwd() {
     let outside = tempdir().unwrap();
@@ -551,17 +616,13 @@ fn the_search_walk_does_not_follow_a_symlink_out_of_cwd() {
     let context = create_test_context(inside.path());
     let root = context.working_directory.clone();
 
-    let mut results = Vec::new();
-    search_directory(
-        &root,
+    let (results, _) = search_tree(
         &root,
         "open sesame please",
         true,
-        &mut results,
         SEARCH_MAX_RESULTS,
         &context,
-    )
-    .expect("a walk of cwd");
+    );
 
     let output = results.join("\n");
     assert!(output.contains("own.sh"), "{output}");
@@ -571,8 +632,8 @@ fn the_search_walk_does_not_follow_a_symlink_out_of_cwd() {
     );
 }
 
-/// The directory case above is caught by `descendable`; a link to a *file*
-/// takes the other branch, which read whatever `is_file` resolved to.
+/// A link to a *file* is not a file to the walk either, so what it points at
+/// is never read.
 #[cfg(unix)]
 #[test]
 fn the_search_walk_does_not_read_a_symlink_to_a_file_out_of_cwd() {
@@ -585,17 +646,13 @@ fn the_search_walk_does_not_read_a_symlink_to_a_file_out_of_cwd() {
     let context = create_test_context(inside.path());
     let root = context.working_directory.clone();
 
-    let mut results = Vec::new();
-    search_directory(
-        &root,
+    let (results, _) = search_tree(
         &root,
         "open sesame please",
         true,
-        &mut results,
         SEARCH_MAX_RESULTS,
         &context,
-    )
-    .expect("a walk of cwd");
+    );
 
     let output = results.join("\n");
     assert!(output.contains("own.rs"), "{output}");
@@ -1344,13 +1401,10 @@ async fn search_code_never_reads_an_entry_swapped_out_of_cwd() {
 
     let mut disclosed = Vec::new();
     for _ in 0..ATTEMPTS {
-        let mut results = Vec::new();
-        let _ = search_directory(
-            &context.working_directory,
+        let (results, _) = search_tree(
             &context.working_directory,
             SECRET,
             true,
-            &mut results,
             SEARCH_MAX_RESULTS,
             &context,
         );

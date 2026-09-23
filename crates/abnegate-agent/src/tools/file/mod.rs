@@ -6,6 +6,7 @@ mod read;
 mod search;
 #[cfg(test)]
 mod tests;
+mod walk;
 mod write;
 
 pub use list::ListFilesTool;
@@ -80,12 +81,4 @@ fn normalize(path: &Path) -> PathBuf {
         }
     }
     normalized
-}
-
-/// Whether a directory entry may be descended into.
-///
-/// `Path::is_dir` follows symlinks, so a link in the tree pointing outside it
-/// would otherwise be walked as if it were part of the tree.
-pub(super) fn descendable(path: &Path, context: &ToolContext) -> bool {
-    path.is_dir() && confine(&resolve(path), context).is_ok()
 }
