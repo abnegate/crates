@@ -3,6 +3,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::Value;
+use unicode_bidi::BidiClass;
+use unicode_bidi::bidi_class;
 use unicode_normalization::IsNormalized;
 use unicode_normalization::is_nfc_quick;
 
@@ -52,17 +54,18 @@ static LEGIBLE: LazyLock<Regex> =
 /// code point between `⟨` and `⟩`, `⟨U+0008⟩` for a backspace, as is any
 /// whitespace but a plain space or a `\n`, the blank Braille pattern, a
 /// combining mark, a character NFC replaces or composes with the one before
-/// it, any other character past ASCII that is not a letter, a number,
-/// punctuation or a symbol, a space straight after a `\` or a line break, a
-/// backtick inside a [code span](Rendering::code), and any `⟨`, `⟩`, `⟦`,
-/// `⟧` or `⏎` it carries, so the call can neither redraw the card it is
-/// shown on, pass one character off as another, hide a space a backslash
-/// escapes among the ones between words, close the span it is shown in and
-/// write the rest of the card, nor forge the marks the preview draws. An
-/// escape is one of those marks: text that reads `\u{8}` is shown as those
-/// characters, and one that reads `⟨U+0008⟩` has its fences escaped, so
-/// everything between a `⟨` and a `⟩` on the card is a character the
-/// preview escaped.
+/// it, a right-to-left letter or an Arabic number, any other character past
+/// ASCII that is not a letter, a number, punctuation or a symbol, a space
+/// straight after a `\` or a line break, a backtick inside a
+/// [code span](Rendering::code), and any `⟨`, `⟩`, `⟦`, `⟧` or `⏎` it
+/// carries, so the call can neither redraw the card it is shown on, pass one
+/// character off as another, reorder the characters around it, hide a space
+/// a backslash escapes among the ones between words, close the span it is
+/// shown in and write the rest of the card, nor forge the marks the preview
+/// draws. An escape is one of those marks: text that reads `\u{8}` is shown
+/// as those characters, and one that reads `⟨U+0008⟩` has its fences
+/// escaped, so everything between a `⟨` and a `⟩` on the card is a character
+/// the preview escaped.
 ///
 /// Everything else is drawn verbatim. Nothing is squeezed, here or by the
 /// tool that rendered the call: blank space, blank lines and indentation
@@ -148,6 +151,10 @@ impl Preview {
 /// - [`normalized`], since a renderer may draw a character NFC replaces as
 ///   the one it is replaced with: U+1FEF as a backtick that closes the code
 ///   span it stands in, U+037E as `;`;
+/// - not [`right_to_left`], since around one of those the bidi algorithm
+///   reorders the digits and punctuation beside it and mirrors the brackets
+///   among them, so `mv א 1` would read as `mv 1 א` and `cat א > ב` as
+///   `cat ב < א` with no control character in the call;
 /// - not [`INVISIBLE`], since a control or invisible character would let the
 ///   call move the cursor, erase or reorder what the reader is shown, a line
 ///   or paragraph separator, a Unicode space or the blank Braille pattern
@@ -163,7 +170,10 @@ fn escaped(character: char) -> bool {
         _ => {
             let mut buffer = [0; 4];
             let encoded = character.encode_utf8(&mut buffer);
-            !LEGIBLE.is_match(encoded) || !normalized(character) || INVISIBLE.is_match(encoded)
+            !LEGIBLE.is_match(encoded)
+                || !normalized(character)
+                || right_to_left(character)
+                || INVISIBLE.is_match(encoded)
         }
     }
 }
@@ -173,6 +183,16 @@ fn escaped(character: char) -> bool {
 /// composed with the character before it.
 fn normalized(character: char) -> bool {
     is_nfc_quick(once(character)) == IsNormalized::Yes
+}
+
+/// Whether `character` is a right-to-left letter or an Arabic number, which
+/// the bidi algorithm lays out right to left and takes the neutral
+/// characters and digits beside it along with.
+fn right_to_left(character: char) -> bool {
+    matches!(
+        bidi_class(character),
+        BidiClass::R | BidiClass::AL | BidiClass::AN
+    )
 }
 
 /// How one character of a call reaches the card.
@@ -689,13 +709,38 @@ mod tests {
         }
     }
 
+    /// A right-to-left letter or an Arabic number is a letter, a number or
+    /// punctuation, so it was drawn as itself, and the bidi algorithm laid it
+    /// out right to left with the digits and punctuation beside it and
+    /// mirrored the brackets among them: `mv א 1` read as `mv 1 א`, and
+    /// `cat א > ב` as `cat ב < א`, with no control character in the call.
+    #[test]
+    fn a_right_to_left_letter_or_arabic_number_is_shown_as_its_escape() {
+        for character in [
+            '\u{5d0}',
+            '\u{627}',
+            '\u{661}',
+            '\u{663}',
+            '\u{5be}',
+            '\u{10800}',
+        ] {
+            let preview = Preview::within(&format!("a{character}b"), MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(
+                preview.text,
+                format!("a{}b", escape(character)),
+                "{character:?}"
+            );
+            assert!(!preview.truncated, "{character:?}");
+        }
+    }
+
     #[test]
     fn letters_numbers_punctuation_and_symbols_past_ascii_are_drawn_as_themselves() {
         for text in [
             "café",
             "日本",
             "Ωμέγα",
-            "٣",
             "½",
             "—",
             "«»",

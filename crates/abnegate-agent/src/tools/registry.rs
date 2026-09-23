@@ -187,6 +187,10 @@ impl Default for ToolRegistry {
 mod tests {
     use std::collections::HashSet;
 
+    use unicode_bidi::BidiClass;
+    use unicode_bidi::BidiInfo;
+    use unicode_bidi::bidi_class;
+
     use super::*;
     use crate::tools::LINE_BREAK;
     use crate::tools::REASON_DESCRIPTION;
@@ -611,6 +615,61 @@ mod tests {
                 assert_ne!(forged, genuine);
                 assert_eq!(forged, drawn);
             }
+        }
+    }
+
+    /// A right-to-left letter was drawn as itself, so the bidi algorithm
+    /// reordered the digits and punctuation around it and mirrored the
+    /// brackets among them: `mv א 1` read as `mv 1 א`, and `cat א > ב`, which
+    /// writes `ב`, as `cat ב < א`, which reads `א`.
+    #[test]
+    fn a_right_to_left_argument_cannot_reorder_the_command_around_it() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        let preview = |command: &str| {
+            let preview = registry
+                .preview(
+                    "run_shell",
+                    &serde_json::json!({"command": command}).to_string(),
+                )
+                .expect("a shell call previews the line it will run");
+            assert!(!preview.truncated, "{}", preview.text);
+            preview.text
+        };
+
+        for pair in [
+            [
+                ("mv א 1", "In the working directory, run `mv ⟨U+05D0⟩ 1`."),
+                ("mv 1 א", "In the working directory, run `mv 1 ⟨U+05D0⟩`."),
+            ],
+            [
+                (
+                    "cat א > ב",
+                    "In the working directory, run `cat ⟨U+05D0⟩ > ⟨U+05D1⟩`.",
+                ),
+                (
+                    "cat ב < א",
+                    "In the working directory, run `cat ⟨U+05D1⟩ < ⟨U+05D0⟩`.",
+                ),
+            ],
+        ] {
+            let cards = pair.map(|(command, _)| preview(command));
+
+            for card in &cards {
+                assert!(
+                    !card.chars().any(|character| matches!(
+                        bidi_class(character),
+                        BidiClass::R | BidiClass::AL | BidiClass::AN
+                    )),
+                    "no right-to-left character reaches the card: {card}"
+                );
+                assert!(
+                    !BidiInfo::new(card, None).has_rtl(),
+                    "the card is laid out left to right, in the order the call holds: {card}"
+                );
+            }
+            assert_ne!(cards[0], cards[1]);
+            assert_eq!(cards, pair.map(|(_, drawn)| drawn.to_string()));
         }
     }
 

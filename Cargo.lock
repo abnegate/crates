@@ -27,6 +27,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-bidi",
  "unicode-normalization",
  "urlencoding",
  "uuid",
