@@ -2,21 +2,18 @@
 
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
-use base64::prelude::*;
-use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::ExecutorError;
 use crate::protocol::InboundMessage;
-use crate::protocol::LogLevel;
 use crate::protocol::OutboundMessage;
 use crate::proxy::Proxy;
 
@@ -25,8 +22,13 @@ use super::confinement::Confinement;
 use super::job_handle::JobHandle;
 use super::output_kind::OutputKind;
 use super::output_limiter::OutputLimiter;
+use super::output_stream::OutputStream;
 use super::process_group::ProcessGroup;
 use super::stdin_handle::StdinHandle;
+use super::supervisor::Supervisor;
+
+/// Capacity of the queue between a [`StdinHandle`] and the child's stdin.
+const STDIN_CAPACITY: usize = 100;
 
 /// Command executor that spawns processes and streams output.
 #[derive(Debug, Clone)]
@@ -59,45 +61,35 @@ impl CommandExecutor {
     pub async fn spawn(
         &self,
         request: &InboundMessage,
-        tx: mpsc::Sender<OutboundMessage>,
+        sender: mpsc::Sender<OutboundMessage>,
     ) -> Result<JobHandle, ExecutorError> {
-        let (
+        self.spawn_with_cancellation(request, sender, CancellationToken::new())
+            .await
+    }
+
+    /// Spawn a command that stops when `cancellation` is cancelled.
+    ///
+    /// Pass the token [`JobRegistry::register`](crate::job::JobRegistry::register)
+    /// returned, so that cancelling the job through the registry stops it.
+    pub async fn spawn_with_cancellation(
+        &self,
+        request: &InboundMessage,
+        sender: mpsc::Sender<OutboundMessage>,
+        cancellation: CancellationToken,
+    ) -> Result<JobHandle, ExecutorError> {
+        let InboundMessage::RunStart {
             job_id,
             workspace,
             command,
             args,
             env,
-            working_dir,
             timeout_ms,
             max_output_bytes,
+            working_dir,
             confinement,
-        ) = match request {
-            InboundMessage::RunStart {
-                job_id,
-                workspace,
-                command,
-                args,
-                env,
-                working_dir,
-                timeout_ms,
-                max_output_bytes,
-                confinement,
-            } => (
-                job_id.clone(),
-                workspace.clone(),
-                command.clone(),
-                args.clone(),
-                env.clone(),
-                working_dir.clone(),
-                *timeout_ms,
-                *max_output_bytes,
-                confinement.clone(),
-            ),
-            _ => {
-                return Err(ExecutorError::InvalidWorkspace(
-                    "Expected RunStart message".to_string(),
-                ));
-            }
+        } = request
+        else {
+            return Err(ExecutorError::NotRunStart);
         };
 
         if !workspace.exists() {
@@ -114,15 +106,15 @@ impl CommandExecutor {
             )));
         }
 
-        let cwd = working_dir.as_ref().unwrap_or(&workspace);
+        let working_directory = working_dir.as_ref().unwrap_or(workspace);
 
         // A job that asked to be confined never runs unconfined: an unproven
         // sandbox fails the spawn instead of falling back.
         let inherited = self.config.environment.inherited();
-        let mut process = match &confinement {
+        let mut process = match confinement {
             Some(request) => {
                 Confinement::probe(request.mode()).await?;
-                let invocation = Confinement::new(&command, args.clone(), cwd)
+                let invocation = Confinement::new(command, args.clone(), working_directory)
                     .with_roots(request)
                     .with_environment(env.clone())
                     .with_inherited_environment(inherited)
@@ -136,19 +128,15 @@ impl CommandExecutor {
                 process
             }
             None => {
-                let mut process = Command::new(&command);
-                process
-                    .args(&args)
-                    .env_clear()
-                    .envs(inherited)
-                    .envs(env.iter());
+                let mut process = Command::new(command);
+                process.args(args).env_clear().envs(inherited).envs(env);
                 Proxy::from_env().apply(&mut process);
                 process
             }
         };
 
         process
-            .current_dir(cwd)
+            .current_dir(working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -173,231 +161,63 @@ impl CommandExecutor {
 
         let process_group = ProcessGroup::new(pid);
 
-        let stdin = child.stdin.take();
-        let stdin_handle = if let Some(mut stdin_writer) = stdin {
-            let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(100);
-
+        let stdin = child.stdin.take().map(|mut writer| {
+            let (stdin_sender, mut stdin_receiver) = mpsc::channel::<Vec<u8>>(STDIN_CAPACITY);
             tokio::spawn(async move {
-                while let Some(data) = stdin_rx.recv().await {
-                    if stdin_writer.write_all(&data).await.is_err() {
-                        break;
-                    }
-                    if stdin_writer.flush().await.is_err() {
+                while let Some(data) = stdin_receiver.recv().await {
+                    if writer.write_all(&data).await.is_err() || writer.flush().await.is_err() {
                         break;
                     }
                 }
             });
+            StdinHandle {
+                sender: stdin_sender,
+            }
+        });
 
-            Some(StdinHandle { tx: stdin_tx })
-        } else {
-            None
-        };
-
-        let _ = tx
+        let _ = sender
             .send(OutboundMessage::RunStarted {
                 job_id: job_id.clone(),
                 pid,
             })
             .await;
 
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let limiter = Arc::new(Mutex::new(OutputLimiter::new(
+            max_output_bytes.unwrap_or(self.config.max_output_bytes),
+        )));
+        let stream = |kind: OutputKind| OutputStream {
+            job_id: job_id.clone(),
+            kind,
+            sender: sender.clone(),
+            limiter: limiter.clone(),
+            buffer_size: self.config.buffer_size,
+        };
+        let mut streams: Vec<JoinHandle<()>> = Vec::with_capacity(2);
+        if let Some(stdout) = child.stdout.take() {
+            streams.push(stream(OutputKind::Stdout).spawn(stdout, cancellation.clone()));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            streams.push(stream(OutputKind::Stderr).spawn(stderr, cancellation.clone()));
+        }
 
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        let max_output = max_output_bytes.unwrap_or(self.config.max_output_bytes);
-
-        let stdout_task = stdout.map(|stdout_reader| {
-            self.spawn_output_streamer(
-                job_id.clone(),
-                stdout_reader,
-                OutputKind::Stdout,
-                tx.clone(),
-                cancelled.clone(),
-                max_output,
-            )
-        });
-
-        let stderr_task = stderr.map(|stderr_reader| {
-            self.spawn_output_streamer(
-                job_id.clone(),
-                stderr_reader,
-                OutputKind::Stderr,
-                tx.clone(),
-                cancelled.clone(),
-                max_output,
-            )
-        });
-
-        let timeout = timeout_ms
-            .map(Duration::from_millis)
-            .unwrap_or(self.config.default_timeout);
-        let grace_period = self.config.grace_period;
-        let pg = process_group.clone();
-        let job_id_clone = job_id.clone();
-        let cancelled_clone = cancelled.clone();
-
-        tokio::spawn(async move {
-            let drain_output = async {
-                if let Some(task) = stdout_task {
-                    let _ = task.await;
-                }
-                if let Some(task) = stderr_task {
-                    let _ = task.await;
-                }
-            };
-
-            tokio::select! {
-                exit_result = child.wait() => {
-                    drain_output.await;
-                    match exit_result {
-                        Ok(status) => {
-                            let duration_ms = started_at.elapsed().as_millis() as u64;
-                            let _ = tx.send(OutboundMessage::RunExit {
-                                job_id: job_id_clone,
-                                exit_code: status.code(),
-                                signal: None, // TODO: extract signal from status
-                                duration_ms,
-                            }).await;
-                        }
-                        Err(e) => {
-                            let _ = tx.send(OutboundMessage::error(
-                                job_id_clone,
-                                crate::protocol::ErrorCode::InternalError,
-                                format!("Wait failed: {}", e),
-                            )).await;
-                        }
-                    }
-                }
-
-                _ = tokio::time::sleep(timeout) => {
-                    if !cancelled_clone.load(Ordering::SeqCst) {
-                        let _ = tx.send(OutboundMessage::log(
-                            job_id_clone.clone(),
-                            LogLevel::Warn,
-                            format!("Command timed out after {}ms, killing", timeout.as_millis()),
-                            None,
-                        )).await;
-
-                        let _ = pg.graceful_kill(grace_period).await;
-
-                        let _ = tx.send(OutboundMessage::error(
-                            job_id_clone,
-                            crate::protocol::ErrorCode::Timeout,
-                            format!("Command timed out after {}ms", timeout.as_millis()),
-                        )).await;
-                    }
-                }
-
-                _ = async {
-                    loop {
-                        if cancelled_clone.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                } => {
-                    let _ = pg.graceful_kill(grace_period).await;
-
-                    let duration_ms = started_at.elapsed().as_millis() as u64;
-                    let _ = tx.send(OutboundMessage::error(
-                        job_id_clone,
-                        crate::protocol::ErrorCode::Cancelled,
-                        format!("Command cancelled after {}ms", duration_ms),
-                    )).await;
-                }
-            }
-        });
+        Supervisor {
+            job_id: job_id.clone(),
+            sender,
+            process_group: process_group.clone(),
+            started_at,
+            timeout: timeout_ms
+                .map(Duration::from_millis)
+                .unwrap_or(self.config.default_timeout),
+            grace_period: self.config.grace_period,
+        }
+        .spawn(child, streams, cancellation.clone());
 
         Ok(JobHandle {
             pid,
             process_group,
-            stdin: stdin_handle,
+            stdin,
             started_at,
-            cancelled,
-        })
-    }
-
-    /// Spawn a task to stream output from a reader
-    fn spawn_output_streamer<R>(
-        &self,
-        job_id: String,
-        reader: R,
-        kind: OutputKind,
-        tx: mpsc::Sender<OutboundMessage>,
-        cancelled: Arc<AtomicBool>,
-        max_output_bytes: usize,
-    ) -> tokio::task::JoinHandle<()>
-    where
-        R: tokio::io::AsyncRead + Unpin + Send + 'static,
-    {
-        let buffer_size = self.config.buffer_size;
-
-        tokio::spawn(async move {
-            let mut reader = BufReader::with_capacity(buffer_size, reader);
-            let mut limiter = OutputLimiter::new(max_output_bytes);
-            let mut sequence = 0u64;
-
-            loop {
-                if cancelled.load(Ordering::SeqCst) {
-                    break;
-                }
-
-                let mut line = String::new();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let (can_write, bytes_to_write, should_warn) = limiter.check(n);
-
-                        if should_warn {
-                            let _ = tx
-                                .send(OutboundMessage::log(
-                                    job_id.clone(),
-                                    LogLevel::Warn,
-                                    format!(
-                                        "Output truncated at {} bytes",
-                                        limiter.bytes_written()
-                                    ),
-                                    None,
-                                ))
-                                .await;
-                        }
-
-                        if can_write && bytes_to_write > 0 {
-                            let data = if bytes_to_write < n {
-                                &line[..bytes_to_write]
-                            } else {
-                                &line
-                            };
-
-                            let encoded = BASE64_STANDARD.encode(data.as_bytes());
-                            sequence += 1;
-
-                            let msg = match kind {
-                                OutputKind::Stdout => OutboundMessage::RunStdout {
-                                    job_id: job_id.clone(),
-                                    data: encoded,
-                                    sequence,
-                                },
-                                OutputKind::Stderr => OutboundMessage::RunStderr {
-                                    job_id: job_id.clone(),
-                                    data: encoded,
-                                    sequence,
-                                },
-                            };
-
-                            if tx.send(msg).await.is_err() {
-                                break;
-                            }
-                        }
-
-                        if !can_write {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
+            cancellation,
         })
     }
 }
@@ -413,11 +233,143 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    use base64::Engine;
+    use base64::prelude::BASE64_STANDARD;
+
     use crate::executor::EnvironmentPolicy;
+    use crate::protocol::ErrorCode;
+    use crate::protocol::LogLevel;
 
     use super::*;
 
     const CHILD: &str = "ABNEGATE_EXEC_TEST_CHILD";
+    const RUN_LIMIT: Duration = Duration::from_secs(10);
+
+    /// Everything one run reported, in the order it arrived.
+    #[derive(Default)]
+    struct Run {
+        messages: Vec<OutboundMessage>,
+    }
+
+    impl Run {
+        fn stdout(&self) -> Vec<u8> {
+            self.bytes(|message| match message {
+                OutboundMessage::RunStdout { data, .. } => Some(data),
+                _ => None,
+            })
+        }
+
+        fn stderr(&self) -> Vec<u8> {
+            self.bytes(|message| match message {
+                OutboundMessage::RunStderr { data, .. } => Some(data),
+                _ => None,
+            })
+        }
+
+        fn bytes(&self, data: impl Fn(&OutboundMessage) -> Option<&String>) -> Vec<u8> {
+            self.messages
+                .iter()
+                .filter_map(data)
+                .flat_map(|data| BASE64_STANDARD.decode(data).unwrap())
+                .collect()
+        }
+
+        fn exit(&self) -> Option<(Option<i32>, Option<i32>)> {
+            self.messages.iter().find_map(|message| match message {
+                OutboundMessage::RunExit {
+                    exit_code, signal, ..
+                } => Some((*exit_code, *signal)),
+                _ => None,
+            })
+        }
+
+        fn error(&self) -> Option<ErrorCode> {
+            self.messages.iter().find_map(|message| match message {
+                OutboundMessage::RunError { error_code, .. } => Some(*error_code),
+                _ => None,
+            })
+        }
+    }
+
+    /// Collect messages until the run's terminal message.
+    async fn finish(mut receiver: mpsc::Receiver<OutboundMessage>) -> Run {
+        tokio::time::timeout(RUN_LIMIT, async {
+            let mut run = Run::default();
+            while let Some(message) = receiver.recv().await {
+                let terminal = matches!(
+                    message,
+                    OutboundMessage::RunExit { .. } | OutboundMessage::RunError { .. }
+                );
+                run.messages.push(message);
+                if terminal {
+                    break;
+                }
+            }
+            run
+        })
+        .await
+        .expect("the run reports how it ended")
+    }
+
+    /// Whether every process in `group` is gone within a second. An orphan
+    /// is reaped by init rather than by us, so it may linger for a moment.
+    async fn dies(group: &ProcessGroup) -> bool {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while group.is_alive() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    async fn run(executor: &CommandExecutor, request: &InboundMessage) -> Run {
+        let (sender, receiver) = mpsc::channel(100);
+        executor.spawn(request, sender).await.unwrap();
+        finish(receiver).await
+    }
+
+    fn shell(job_id: &str, script: &str) -> InboundMessage {
+        InboundMessage::RunStart {
+            job_id: job_id.to_string(),
+            workspace: PathBuf::from("/tmp"),
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            env: HashMap::new(),
+            timeout_ms: Some(10_000),
+            max_output_bytes: None,
+            working_dir: None,
+            confinement: None,
+        }
+    }
+
+    fn limited(request: InboundMessage, limit: usize) -> InboundMessage {
+        let InboundMessage::RunStart {
+            job_id,
+            workspace,
+            command,
+            args,
+            env,
+            timeout_ms,
+            working_dir,
+            confinement,
+            ..
+        } = request
+        else {
+            unreachable!("only a RunStart carries an output limit");
+        };
+        InboundMessage::RunStart {
+            job_id,
+            workspace,
+            command,
+            args,
+            env,
+            timeout_ms,
+            max_output_bytes: Some(limit),
+            working_dir,
+            confinement,
+        }
+    }
 
     /// Re-run the test `name` in a child test process whose environment is
     /// `PATH` plus `environment`, so a test can shape the executor's own
@@ -449,29 +401,6 @@ mod tests {
         true
     }
 
-    async fn stdout_of(executor: &CommandExecutor, request: &InboundMessage) -> String {
-        let (sender, mut receiver) = mpsc::channel(100);
-        executor.spawn(request, sender).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let mut output = Vec::new();
-            while let Some(message) = receiver.recv().await {
-                match message {
-                    OutboundMessage::RunStdout { data, .. } => {
-                        output.extend(BASE64_STANDARD.decode(data).unwrap())
-                    }
-                    OutboundMessage::RunExit { exit_code, .. } => {
-                        assert_eq!(exit_code, Some(0));
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            String::from_utf8(output).unwrap()
-        })
-        .await
-        .unwrap()
-    }
-
     fn environment_listing(environment: HashMap<String, String>) -> InboundMessage {
         InboundMessage::RunStart {
             job_id: "environment".to_string(),
@@ -486,6 +415,12 @@ mod tests {
         }
     }
 
+    async fn environment_of(executor: &CommandExecutor, request: &InboundMessage) -> String {
+        let run = run(executor, request).await;
+        assert_eq!(run.exit(), Some((Some(0), None)));
+        String::from_utf8(run.stdout()).unwrap()
+    }
+
     #[tokio::test]
     async fn the_default_policy_withholds_the_executor_environment() {
         const NAME: &str =
@@ -496,7 +431,7 @@ mod tests {
             return;
         }
 
-        let output = stdout_of(
+        let output = environment_of(
             &CommandExecutor::new(),
             &environment_listing(HashMap::new()),
         )
@@ -524,7 +459,7 @@ mod tests {
             ExecutorConfig::default().with_environment(EnvironmentPolicy::Inherit),
         );
 
-        let output = stdout_of(
+        let output = environment_of(
             &executor,
             &environment_listing(HashMap::from([(
                 SHADOWED.to_string(),
@@ -559,46 +494,18 @@ mod tests {
             return;
         }
 
-        let request = InboundMessage::RunStart {
-            job_id: "proxy-environment".to_string(),
-            workspace: std::env::temp_dir(),
-            command: "env".to_string(),
-            args: vec![],
-            env: HashMap::from([
+        let output = environment_of(
+            &CommandExecutor::new(),
+            &environment_listing(HashMap::from([
                 ("HTTPS_PROXY".to_string(), "http://wrong:8888".to_string()),
                 ("http_proxy".to_string(), "http://wrong:8888".to_string()),
                 ("NO_PROXY".to_string(), "*".to_string()),
                 ("no_proxy".to_string(), "*".to_string()),
                 (crate::proxy::PROXY_URL_ENV.to_string(), String::new()),
-            ]),
-            working_dir: None,
-            confinement: None,
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-        };
-        let (sender, mut receiver) = mpsc::channel(100);
-        CommandExecutor::new()
-            .spawn(&request, sender)
-            .await
-            .unwrap();
-        let output = tokio::time::timeout(Duration::from_secs(5), async {
-            let mut output = String::new();
-            while let Some(message) = receiver.recv().await {
-                match message {
-                    OutboundMessage::RunStdout { data, .. } => output.push_str(
-                        &String::from_utf8(BASE64_STANDARD.decode(data).unwrap()).unwrap(),
-                    ),
-                    OutboundMessage::RunExit { exit_code, .. } => {
-                        assert_eq!(exit_code, Some(0));
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            output
-        })
-        .await
-        .unwrap();
+            ])),
+        )
+        .await;
+
         for key in [
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -620,6 +527,153 @@ mod tests {
                 .any(|line| line == "NO_PROXY=*" || line == "no_proxy=*")
         );
         assert!(output.contains("NO_PROXY=localhost,127.0.0.1,::1"));
+    }
+
+    #[tokio::test]
+    async fn a_non_utf8_byte_does_not_cut_the_stream() {
+        let run = run(
+            &CommandExecutor::new(),
+            &shell("non-utf8", r"printf '\377'; seq 1 2000"),
+        )
+        .await;
+
+        let stdout = run.stdout();
+        assert_eq!(stdout.first(), Some(&0xFF));
+        assert!(stdout.ends_with(b"1999\n2000\n"), "{} bytes", stdout.len());
+        assert_eq!(
+            run.exit(),
+            Some((Some(0), None)),
+            "the writer was killed by a closed pipe"
+        );
+    }
+
+    #[tokio::test]
+    async fn truncating_inside_a_character_does_not_panic() {
+        let run = run(
+            &CommandExecutor::new(),
+            &limited(shell("split-character", r"printf 'a\303\251\n'"), 2),
+        )
+        .await;
+
+        assert_eq!(run.stdout(), b"a\xC3");
+        assert_eq!(run.exit(), Some((Some(0), None)));
+        assert!(run.messages.iter().any(|message| matches!(
+            message,
+            OutboundMessage::RunLog { level: LogLevel::Warn, message, .. }
+                if message == "Output truncated at 2 bytes"
+        )));
+    }
+
+    #[tokio::test]
+    async fn output_past_the_limit_is_drained_not_severed() {
+        let run = run(
+            &CommandExecutor::new(),
+            &limited(shell("drained", "seq 1 200000"), 100),
+        )
+        .await;
+
+        assert_eq!(run.stdout().len(), 100);
+        assert_eq!(
+            run.exit(),
+            Some((Some(0), None)),
+            "a writer past the limit must finish, not die of SIGPIPE"
+        );
+    }
+
+    #[tokio::test]
+    async fn stdout_and_stderr_share_one_limit() {
+        let run = run(
+            &CommandExecutor::new(),
+            &limited(
+                shell("shared-limit", "printf %0100d 0; printf %0100d 0 >&2"),
+                100,
+            ),
+        )
+        .await;
+
+        assert_eq!(run.stdout().len() + run.stderr().len(), 100);
+        assert_eq!(run.exit(), Some((Some(0), None)));
+    }
+
+    #[tokio::test]
+    async fn output_without_a_newline_is_delivered_while_the_child_runs() {
+        let executor = CommandExecutor::new();
+        let (sender, mut receiver) = mpsc::channel(100);
+        let handle = executor
+            .spawn(&shell("partial-line", "printf prompt; sleep 30"), sender)
+            .await
+            .unwrap();
+
+        let delivered = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(message) = receiver.recv().await {
+                if let OutboundMessage::RunStdout { data, .. } = message {
+                    return BASE64_STANDARD.decode(data).unwrap();
+                }
+            }
+            Vec::new()
+        })
+        .await;
+        handle.cancel();
+
+        assert_eq!(
+            delivered.expect("a line with no newline is held back until exit"),
+            b"prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signalled_child_reports_its_signal() {
+        let run = run(&CommandExecutor::new(), &shell("signalled", "kill -9 $$")).await;
+
+        assert_eq!(run.exit(), Some((None, Some(9))));
+    }
+
+    #[tokio::test]
+    async fn cancelling_stops_the_child_without_waiting_out_the_grace_period() {
+        const GRACE: Duration = Duration::from_secs(5);
+        let executor =
+            CommandExecutor::with_config(ExecutorConfig::default().with_grace_period(GRACE));
+        let (sender, receiver) = mpsc::channel(100);
+        let cancellation = CancellationToken::new();
+        let handle = executor
+            .spawn_with_cancellation(
+                &shell("cancelled", "sleep 30"),
+                sender,
+                cancellation.clone(),
+            )
+            .await
+            .unwrap();
+        let started = Instant::now();
+
+        cancellation.cancel();
+        let run = finish(receiver).await;
+
+        assert!(handle.is_cancelled());
+        assert_eq!(run.error(), Some(ErrorCode::Cancelled));
+        assert!(
+            started.elapsed() < GRACE,
+            "a child that obeys SIGTERM is reported as soon as it exits, took {:?}",
+            started.elapsed()
+        );
+        assert!(dies(&handle.process_group).await);
+    }
+
+    #[tokio::test]
+    async fn a_timeout_kills_the_whole_group() {
+        let executor = CommandExecutor::with_config(
+            ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
+        );
+        let (sender, receiver) = mpsc::channel(100);
+        let mut request = shell("timeout", "sleep 30 & sleep 30");
+        if let InboundMessage::RunStart { timeout_ms, .. } = &mut request {
+            *timeout_ms = Some(200);
+        }
+        let handle = executor.spawn(&request, sender).await.unwrap();
+
+        let run = finish(receiver).await;
+
+        assert_eq!(run.error(), Some(ErrorCode::Timeout));
+        assert!(dies(&handle.process_group).await);
     }
 
     #[test]
@@ -656,21 +710,12 @@ mod tests {
     #[tokio::test]
     async fn test_job_handle_cancel() {
         let executor = CommandExecutor::new();
-        let (tx, _rx) = mpsc::channel(100);
+        let (sender, _receiver) = mpsc::channel(100);
 
-        let request = InboundMessage::RunStart {
-            job_id: "cancel-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "sleep".to_string(),
-            args: vec!["10".to_string()],
-            env: HashMap::new(),
-            timeout_ms: Some(30000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        let handle = executor.spawn(&request, tx).await.unwrap();
+        let handle = executor
+            .spawn(&shell("cancel-test", "sleep 10"), sender)
+            .await
+            .unwrap();
         assert!(!handle.is_cancelled());
 
         handle.cancel();
@@ -680,56 +725,36 @@ mod tests {
     #[tokio::test]
     async fn test_job_handle_elapsed() {
         let executor = CommandExecutor::new();
-        let (tx, _rx) = mpsc::channel(100);
+        let (sender, _receiver) = mpsc::channel(100);
 
-        let request = InboundMessage::RunStart {
-            job_id: "elapsed-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "echo".to_string(),
-            args: vec!["test".to_string()],
-            env: HashMap::new(),
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        let handle = executor.spawn(&request, tx).await.unwrap();
+        let handle = executor
+            .spawn(&shell("elapsed-test", "echo test"), sender)
+            .await
+            .unwrap();
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let elapsed = handle.elapsed();
-        assert!(elapsed >= Duration::from_millis(50));
+        assert!(handle.elapsed() >= Duration::from_millis(50));
     }
 
     #[tokio::test]
     async fn test_duration_spans_the_whole_child() {
         const SLEPT: Duration = Duration::from_millis(100);
 
-        let executor = CommandExecutor::new();
-        let (tx, mut rx) = mpsc::channel(100);
+        let run = run(
+            &CommandExecutor::new(),
+            &shell("duration-test", &format!("sleep {}", SLEPT.as_secs_f64())),
+        )
+        .await;
 
-        let request = InboundMessage::RunStart {
-            job_id: "duration-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "sh".to_string(),
-            args: vec!["-c".to_string(), format!("sleep {}", SLEPT.as_secs_f64())],
-            env: HashMap::new(),
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        executor.spawn(&request, tx).await.unwrap();
-
-        let reported = loop {
-            let message = rx.recv().await.expect("the run reports how it ended");
-            if let OutboundMessage::RunExit { duration_ms, .. } = message {
-                break u128::from(duration_ms);
-            }
-        };
-
+        let reported = run
+            .messages
+            .iter()
+            .find_map(|message| match message {
+                OutboundMessage::RunExit { duration_ms, .. } => Some(u128::from(*duration_ms)),
+                _ => None,
+            })
+            .expect("the run reports how it ended");
         assert!(
             reported >= SLEPT.as_millis(),
             "a run that slept {}ms is reported as {reported}ms",
@@ -749,31 +774,20 @@ mod tests {
         const STALL: Duration = Duration::from_millis(300);
 
         let executor = CommandExecutor::new();
-        let (tx, mut rx) = mpsc::channel(1);
-        tx.send(OutboundMessage::log(
-            "stall".to_string(),
-            LogLevel::Info,
-            "stall".to_string(),
-            None,
-        ))
-        .await
-        .unwrap();
-
-        let request = InboundMessage::RunStart {
-            job_id: "stalled-consumer-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "sh".to_string(),
-            args: vec!["-c".to_string(), format!("sleep {}", SLEPT.as_secs_f64())],
-            env: HashMap::new(),
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender
+            .send(OutboundMessage::log(
+                "stall".to_string(),
+                LogLevel::Info,
+                "stall".to_string(),
+                None,
+            ))
+            .await
+            .unwrap();
 
         let drain = tokio::spawn(async move {
             tokio::time::sleep(STALL).await;
-            while let Some(message) = rx.recv().await {
+            while let Some(message) = receiver.recv().await {
                 if let OutboundMessage::RunExit { duration_ms, .. } = message {
                     return Some(u128::from(duration_ms));
                 }
@@ -781,7 +795,16 @@ mod tests {
             None
         });
 
-        executor.spawn(&request, tx).await.unwrap();
+        executor
+            .spawn(
+                &shell(
+                    "stalled-consumer-test",
+                    &format!("sleep {}", SLEPT.as_secs_f64()),
+                ),
+                sender,
+            )
+            .await
+            .unwrap();
         let reported = drain.await.unwrap().expect("the run reports how it ended");
 
         assert!(
@@ -790,177 +813,55 @@ mod tests {
             SLEPT.as_millis()
         );
     }
+
     #[tokio::test]
     async fn test_spawn_echo() {
-        let executor = CommandExecutor::new();
-        let (tx, mut rx) = mpsc::channel(100);
+        let run = run(&CommandExecutor::new(), &shell("test-1", "echo hello")).await;
 
-        let request = InboundMessage::RunStart {
-            job_id: "test-1".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "echo".to_string(),
-            args: vec!["hello".to_string()],
-            env: HashMap::new(),
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        let handle = executor.spawn(&request, tx).await;
-        assert!(handle.is_ok());
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let mut got_started = false;
-        let mut got_stdout = false;
-        let mut got_exit = false;
-
-        while let Ok(msg) = rx.try_recv() {
-            match msg {
-                OutboundMessage::RunStarted { job_id, .. } => {
-                    assert_eq!(job_id, "test-1");
-                    got_started = true;
-                }
-                OutboundMessage::RunStdout { job_id, data, .. } => {
-                    assert_eq!(job_id, "test-1");
-                    let decoded = BASE64_STANDARD.decode(&data).unwrap();
-                    let text = String::from_utf8(decoded).unwrap();
-                    assert!(text.contains("hello"));
-                    got_stdout = true;
-                }
-                OutboundMessage::RunExit {
-                    job_id, exit_code, ..
-                } => {
-                    assert_eq!(job_id, "test-1");
-                    assert_eq!(exit_code, Some(0));
-                    got_exit = true;
-                }
-                _ => {}
-            }
-        }
-
-        assert!(got_started);
-        assert!(got_stdout);
-        assert!(got_exit);
+        assert!(matches!(
+            run.messages.first(),
+            Some(OutboundMessage::RunStarted { job_id, .. }) if job_id == "test-1"
+        ));
+        assert_eq!(run.stdout(), b"hello\n");
+        assert_eq!(run.exit(), Some((Some(0), None)));
     }
 
     #[tokio::test]
     async fn test_spawn_with_working_dir() {
-        let executor = CommandExecutor::new();
-        let (tx, mut rx) = mpsc::channel(100);
-
-        let request = InboundMessage::RunStart {
-            job_id: "workdir-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "pwd".to_string(),
-            args: vec![],
-            env: HashMap::new(),
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-            working_dir: Some(PathBuf::from("/tmp")),
-            confinement: None,
-        };
-
-        let handle = executor.spawn(&request, tx).await;
-        assert!(handle.is_ok());
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let mut got_pwd = false;
-        while let Ok(msg) = rx.try_recv() {
-            if let OutboundMessage::RunStdout { data, .. } = msg {
-                let decoded = BASE64_STANDARD.decode(&data).unwrap();
-                let text = String::from_utf8(decoded).unwrap();
-                if text.contains("/tmp") || text.contains("/private/tmp") {
-                    got_pwd = true;
-                }
-            }
+        let mut request = shell("workdir-test", "pwd");
+        if let InboundMessage::RunStart { working_dir, .. } = &mut request {
+            *working_dir = Some(PathBuf::from("/tmp"));
         }
 
-        assert!(got_pwd);
+        let run = run(&CommandExecutor::new(), &request).await;
+
+        let output = String::from_utf8(run.stdout()).unwrap();
+        assert!(output.contains("/tmp") || output.contains("/private/tmp"));
     }
 
     #[tokio::test]
     async fn test_spawn_with_env() {
-        let executor = CommandExecutor::new();
-        let (tx, mut rx) = mpsc::channel(100);
-
-        let mut env = HashMap::new();
-        env.insert("MY_VAR".to_string(), "my_value".to_string());
-
-        let request = InboundMessage::RunStart {
-            job_id: "env-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "sh".to_string(),
-            args: vec!["-c".to_string(), "echo $MY_VAR".to_string()],
-            env,
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        let handle = executor.spawn(&request, tx).await;
-        assert!(handle.is_ok());
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let mut got_env_value = false;
-        while let Ok(msg) = rx.try_recv() {
-            if let OutboundMessage::RunStdout { data, .. } = msg {
-                let decoded = BASE64_STANDARD.decode(&data).unwrap();
-                let text = String::from_utf8(decoded).unwrap();
-                if text.contains("my_value") {
-                    got_env_value = true;
-                }
-            }
+        let mut request = shell("env-test", "echo $MY_VAR");
+        if let InboundMessage::RunStart { env, .. } = &mut request {
+            env.insert("MY_VAR".to_string(), "my_value".to_string());
         }
 
-        assert!(got_env_value);
+        let run = run(&CommandExecutor::new(), &request).await;
+
+        assert_eq!(run.stdout(), b"my_value\n");
     }
 
     #[tokio::test]
     async fn test_spawn_stderr_output() {
-        let executor = CommandExecutor::new();
-        let (tx, mut rx) = mpsc::channel(100);
+        let run = run(
+            &CommandExecutor::new(),
+            &shell("stderr-test", "echo error >&2"),
+        )
+        .await;
 
-        let request = InboundMessage::RunStart {
-            job_id: "stderr-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "sh".to_string(),
-            args: vec!["-c".to_string(), "echo error >&2".to_string()],
-            env: HashMap::new(),
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        let handle = executor.spawn(&request, tx).await;
-        assert!(handle.is_ok());
-
-        let got_stderr_before_exit = tokio::time::timeout(Duration::from_secs(5), async {
-            let mut got_stderr = false;
-            while let Some(msg) = rx.recv().await {
-                if let OutboundMessage::RunStderr { data, .. } = &msg {
-                    let decoded = BASE64_STANDARD.decode(data).unwrap();
-                    let text = String::from_utf8(decoded).unwrap();
-                    if text.contains("error") {
-                        got_stderr = true;
-                    }
-                }
-                if matches!(msg, OutboundMessage::RunExit { .. }) {
-                    return got_stderr;
-                }
-            }
-            got_stderr
-        })
-        .await
-        .expect("timed out waiting for RunExit");
-
-        assert!(
-            got_stderr_before_exit,
+        assert_eq!(
+            run.stderr(),
+            b"error\n",
             "stderr must be delivered before RunExit"
         );
     }
@@ -968,175 +869,92 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_workspace() {
         let executor = CommandExecutor::new();
-        let (tx, _rx) = mpsc::channel(100);
+        let (sender, _receiver) = mpsc::channel(100);
+        let mut request = shell("test-2", "true");
+        if let InboundMessage::RunStart { workspace, .. } = &mut request {
+            *workspace = PathBuf::from("/nonexistent/path");
+        }
 
-        let request = InboundMessage::RunStart {
-            job_id: "test-2".to_string(),
-            workspace: PathBuf::from("/nonexistent/path"),
-            command: "echo".to_string(),
-            args: vec![],
-            env: HashMap::new(),
-            timeout_ms: None,
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        let result = executor.spawn(&request, tx).await;
-        assert!(result.is_err());
-
-        match result.unwrap_err() {
-            ExecutorError::InvalidWorkspace(msg) => {
-                assert!(msg.contains("does not exist"));
+        match executor.spawn(&request, sender).await {
+            Err(ExecutorError::InvalidWorkspace(message)) => {
+                assert!(message.contains("does not exist"));
             }
-            e => panic!("Wrong error type: {:?}", e),
+            other => panic!("Wrong result: {other:?}"),
         }
     }
 
     #[tokio::test]
     async fn test_spawn_workspace_is_file() {
         let executor = CommandExecutor::new();
-        let (tx, _rx) = mpsc::channel(100);
+        let (sender, _receiver) = mpsc::channel(100);
+        let mut request = shell("file-workspace-test", "true");
+        if let InboundMessage::RunStart { workspace, .. } = &mut request {
+            *workspace = PathBuf::from("/etc/passwd");
+        }
 
-        let request = InboundMessage::RunStart {
-            job_id: "file-workspace-test".to_string(),
-            workspace: PathBuf::from("/etc/passwd"),
-            command: "echo".to_string(),
-            args: vec![],
-            env: HashMap::new(),
-            timeout_ms: None,
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        let result = executor.spawn(&request, tx).await;
-        assert!(result.is_err());
-
-        match result.unwrap_err() {
-            ExecutorError::InvalidWorkspace(msg) => {
-                assert!(msg.contains("not a directory"));
+        match executor.spawn(&request, sender).await {
+            Err(ExecutorError::InvalidWorkspace(message)) => {
+                assert!(message.contains("not a directory"));
             }
-            e => panic!("Wrong error type: {:?}", e),
+            other => panic!("Wrong result: {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn test_spawn_wrong_message_type() {
+    async fn a_message_other_than_run_start_is_an_invalid_message() {
         let executor = CommandExecutor::new();
-        let (tx, _rx) = mpsc::channel(100);
+        let (sender, _receiver) = mpsc::channel(100);
 
-        let request = InboundMessage::Ping {
-            id: "1".to_string(),
-        };
+        let result = executor
+            .spawn(
+                &InboundMessage::Ping {
+                    id: "1".to_string(),
+                },
+                sender,
+            )
+            .await;
 
-        let result = executor.spawn(&request, tx).await;
-        assert!(result.is_err());
-
-        match result.unwrap_err() {
-            ExecutorError::InvalidWorkspace(msg) => {
-                assert!(msg.contains("Expected RunStart"));
+        match result {
+            Err(error @ ExecutorError::NotRunStart) => {
+                assert_eq!(error.to_error_code(), ErrorCode::InvalidMessage);
             }
-            e => panic!("Wrong error type: {:?}", e),
+            other => panic!("Wrong result: {other:?}"),
         }
     }
 
     #[tokio::test]
     async fn test_spawn_non_zero_exit() {
-        let executor = CommandExecutor::new();
-        let (tx, mut rx) = mpsc::channel(100);
+        let run = run(&CommandExecutor::new(), &shell("nonzero-test", "exit 42")).await;
 
-        let request = InboundMessage::RunStart {
-            job_id: "nonzero-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "sh".to_string(),
-            args: vec!["-c".to_string(), "exit 42".to_string()],
-            env: HashMap::new(),
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        let _handle = executor.spawn(&request, tx).await.unwrap();
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let mut exit_code = None;
-        while let Ok(msg) = rx.try_recv() {
-            if let OutboundMessage::RunExit {
-                exit_code: code, ..
-            } = msg
-            {
-                exit_code = code;
-            }
-        }
-
-        assert_eq!(exit_code, Some(42));
+        assert_eq!(run.exit(), Some((Some(42), None)));
     }
 
     #[tokio::test]
     async fn test_spawn_invalid_command() {
         let executor = CommandExecutor::new();
-        let (tx, _rx) = mpsc::channel(100);
+        let (sender, _receiver) = mpsc::channel(100);
+        let mut request = shell("invalid-command-test", "");
+        if let InboundMessage::RunStart { command, .. } = &mut request {
+            *command = "/nonexistent/binary/that/doesnt/exist".to_string();
+        }
 
-        let request = InboundMessage::RunStart {
-            job_id: "invalid-cmd-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "/nonexistent/binary/that/doesnt/exist".to_string(),
-            args: vec![],
-            env: HashMap::new(),
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        };
-
-        let result = executor.spawn(&request, tx).await;
-        assert!(result.is_err());
-
-        match result.unwrap_err() {
-            ExecutorError::SpawnFailed(_) => {}
-            e => panic!("Wrong error type: {:?}", e),
+        match executor.spawn(&request, sender).await {
+            Err(ExecutorError::SpawnFailed(_)) => {}
+            other => panic!("Wrong result: {other:?}"),
         }
     }
 
     #[tokio::test]
     async fn test_spawn_with_custom_output_limit() {
-        let executor = CommandExecutor::new();
-        let (tx, mut rx) = mpsc::channel(100);
+        let run = run(
+            &CommandExecutor::new(),
+            &limited(
+                shell("limit-test", "for i in $(seq 1 100); do echo line$i; done"),
+                100,
+            ),
+        )
+        .await;
 
-        let request = InboundMessage::RunStart {
-            job_id: "limit-test".to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "sh".to_string(),
-            args: vec![
-                "-c".to_string(),
-                "for i in $(seq 1 100); do echo line$i; done".to_string(),
-            ],
-            env: HashMap::new(),
-            timeout_ms: Some(5000),
-            max_output_bytes: Some(100),
-            working_dir: None,
-            confinement: None,
-        };
-
-        let _handle = executor.spawn(&request, tx).await.unwrap();
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let mut total_output = 0;
-        while let Ok(msg) = rx.try_recv() {
-            if let OutboundMessage::RunStdout { data, .. } = msg {
-                let decoded = BASE64_STANDARD.decode(&data).unwrap();
-                total_output += decoded.len();
-            }
-        }
-
-        assert!(
-            total_output <= 200,
-            "Output was not limited: {} bytes",
-            total_output
-        );
+        assert_eq!(run.stdout().len(), 100);
     }
 }

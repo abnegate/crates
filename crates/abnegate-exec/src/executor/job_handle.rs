@@ -1,8 +1,7 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+
+use tokio_util::sync::CancellationToken;
 
 use super::process_group::ProcessGroup;
 use super::stdin_handle::StdinHandle;
@@ -22,8 +21,10 @@ pub struct JobHandle {
     /// Start time
     pub started_at: Instant,
 
-    /// Cancellation flag
-    pub cancelled: Arc<AtomicBool>,
+    /// Cancelling this stops the job: its process group is terminated and a
+    /// `RunError` with [`ErrorCode::Cancelled`](crate::protocol::ErrorCode)
+    /// is reported.
+    pub cancellation: CancellationToken,
 }
 
 impl JobHandle {
@@ -34,12 +35,12 @@ impl JobHandle {
 
     /// Cancel the job
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+        self.cancellation.cancel();
     }
 
     /// Check if cancelled
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        self.cancellation.is_cancelled()
     }
 
     /// Get elapsed time since start

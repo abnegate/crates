@@ -5,13 +5,13 @@ use crate::error::ExecutorError;
 /// Handle to a running job's stdin
 #[derive(Debug)]
 pub struct StdinHandle {
-    pub(super) tx: mpsc::Sender<Vec<u8>>,
+    pub(super) sender: mpsc::Sender<Vec<u8>>,
 }
 
 impl StdinHandle {
     /// Send data to the process's stdin
     pub async fn send(&self, data: Vec<u8>) -> Result<(), ExecutorError> {
-        self.tx
+        self.sender
             .send(data)
             .await
             .map_err(|_| ExecutorError::ChannelClosed)
@@ -29,38 +29,38 @@ mod tests {
 
     #[tokio::test]
     async fn test_stdin_handle_send() {
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(10);
-        let stdin_handle = StdinHandle { tx };
+        let (sender, mut receiver) = mpsc::channel::<Vec<u8>>(10);
+        let stdin_handle = StdinHandle { sender };
 
         let result = stdin_handle.send(b"hello".to_vec()).await;
         assert!(result.is_ok());
 
-        let received = rx.recv().await.unwrap();
+        let received = receiver.recv().await.unwrap();
         assert_eq!(received, b"hello".to_vec());
     }
 
     #[tokio::test]
     async fn test_stdin_handle_send_closed_channel() {
-        let (tx, rx) = mpsc::channel::<Vec<u8>>(10);
-        let stdin_handle = StdinHandle { tx };
+        let (sender, receiver) = mpsc::channel::<Vec<u8>>(10);
+        let stdin_handle = StdinHandle { sender };
 
-        drop(rx);
+        drop(receiver);
 
         let result = stdin_handle.send(b"hello".to_vec()).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             ExecutorError::ChannelClosed => {}
-            e => panic!("Expected ChannelClosed, got {:?}", e),
+            error => panic!("Expected ChannelClosed, got {error:?}"),
         }
     }
 
     #[tokio::test]
     async fn test_stdin_handle_close() {
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(10);
-        let stdin_handle = StdinHandle { tx };
+        let (sender, mut receiver) = mpsc::channel::<Vec<u8>>(10);
+        let stdin_handle = StdinHandle { sender };
 
         stdin_handle.close();
 
-        assert!(rx.recv().await.is_none());
+        assert!(receiver.recv().await.is_none());
     }
 }

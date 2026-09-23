@@ -1,4 +1,5 @@
-/// Tracks output limits and truncation state for a single job.
+/// Tracks output limits and truncation state for a single job, across all of
+/// its streams.
 #[derive(Debug)]
 pub struct OutputLimiter {
     /// Maximum bytes allowed

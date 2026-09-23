@@ -35,6 +35,8 @@ pub enum InboundMessage {
         env: HashMap<String, String>,
         #[serde(default)]
         timeout_ms: Option<u64>,
+        /// Ceiling on stdout and stderr together; absent uses the
+        /// executor's default
         #[serde(default)]
         max_output_bytes: Option<usize>,
         #[serde(default)]

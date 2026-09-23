@@ -6,13 +6,16 @@
 mod command;
 mod config;
 mod confinement;
+mod ending;
 mod environment_policy;
 mod handshake;
 mod job_handle;
 mod output_kind;
 mod output_limiter;
+mod output_stream;
 mod process_group;
 mod stdin_handle;
+mod supervisor;
 
 pub use command::CommandExecutor;
 pub use config::DEFAULT_BUFFER_SIZE;

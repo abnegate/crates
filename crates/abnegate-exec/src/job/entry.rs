@@ -1,8 +1,7 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::executor::ProcessGroup;
 
@@ -13,14 +12,15 @@ pub struct JobEntry {
     /// Current state of the job
     pub state: JobState,
 
-    /// Cancellation flag
-    pub cancelled: Arc<AtomicBool>,
+    /// Cancelled when the job is; pass it to
+    /// [`CommandExecutor::spawn_with_cancellation`](crate::executor::CommandExecutor::spawn_with_cancellation)
+    pub cancellation: CancellationToken,
 
     /// Process group for signaling (if running)
     pub process_group: Option<ProcessGroup>,
 
     /// Channel to send stdin data
-    pub stdin_tx: Option<mpsc::Sender<Vec<u8>>>,
+    pub stdin: Option<mpsc::Sender<Vec<u8>>>,
 
     /// When the job was registered
     pub created_at: Instant,
@@ -31,16 +31,16 @@ impl JobEntry {
     pub fn new() -> Self {
         Self {
             state: JobState::new(),
-            cancelled: Arc::new(AtomicBool::new(false)),
+            cancellation: CancellationToken::new(),
             process_group: None,
-            stdin_tx: None,
+            stdin: None,
             created_at: Instant::now(),
         }
     }
 
-    /// Get a clone of the cancellation flag
-    pub fn cancel_token(&self) -> Arc<AtomicBool> {
-        self.cancelled.clone()
+    /// Get a clone of the cancellation token
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancellation.clone()
     }
 }
 
@@ -52,33 +52,31 @@ impl Default for JobEntry {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
-
     use super::*;
 
     #[test]
     fn test_job_entry_new() {
         let entry = JobEntry::new();
         assert!(!entry.state.is_terminal());
-        assert!(!entry.cancelled.load(Ordering::SeqCst));
+        assert!(!entry.cancellation.is_cancelled());
         assert!(entry.process_group.is_none());
-        assert!(entry.stdin_tx.is_none());
+        assert!(entry.stdin.is_none());
     }
 
     #[test]
     fn test_job_entry_default() {
         let entry: JobEntry = Default::default();
         assert!(!entry.state.is_terminal());
-        assert!(!entry.cancelled.load(Ordering::SeqCst));
+        assert!(!entry.cancellation.is_cancelled());
     }
 
     #[test]
     fn test_job_entry_cancel_token() {
         let entry = JobEntry::new();
-        let token1 = entry.cancel_token();
-        let token2 = entry.cancel_token();
+        let first = entry.cancel_token();
+        let second = entry.cancel_token();
 
-        token1.store(true, Ordering::SeqCst);
-        assert!(token2.load(Ordering::SeqCst));
+        first.cancel();
+        assert!(second.is_cancelled());
     }
 }

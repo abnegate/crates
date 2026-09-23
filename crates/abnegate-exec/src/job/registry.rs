@@ -1,11 +1,9 @@
 //! Job registry for tracking active and completed jobs.
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::JobError;
 use crate::executor::ProcessGroup;
@@ -26,18 +24,17 @@ impl JobRegistry {
         }
     }
 
-    /// Register a new job.
+    /// Register a new job, leaving an existing job of the same identifier
+    /// untouched.
     ///
-    /// Returns the cancellation token if successful.
-    pub fn register(&self, job_id: String) -> Result<Arc<AtomicBool>, JobError> {
-        let entry = JobEntry::new();
-        let cancel_token = entry.cancel_token();
-
-        if self.jobs.insert(job_id.clone(), entry).is_some() {
-            return Err(JobError::AlreadyExists(job_id));
+    /// Returns the job's cancellation token. Spawn the job with
+    /// [`CommandExecutor::spawn_with_cancellation`](crate::executor::CommandExecutor::spawn_with_cancellation)
+    /// and this token, so that [`JobRegistry::cancel`] stops it.
+    pub fn register(&self, job_id: String) -> Result<CancellationToken, JobError> {
+        match self.jobs.entry(job_id) {
+            Entry::Occupied(occupied) => Err(JobError::AlreadyExists(occupied.key().clone())),
+            Entry::Vacant(vacant) => Ok(vacant.insert(JobEntry::new()).cancel_token()),
         }
-
-        Ok(cancel_token)
     }
 
     /// Check if a job exists
@@ -47,7 +44,7 @@ impl JobRegistry {
 
     /// Get the current state of a job
     pub fn get_state(&self, job_id: &str) -> Option<JobState> {
-        self.jobs.get(job_id).map(|e| e.state.clone())
+        self.jobs.get(job_id).map(|entry| entry.state.clone())
     }
 
     /// Update the state of a job
@@ -77,10 +74,10 @@ impl JobRegistry {
     }
 
     /// Set the stdin channel for a job
-    pub fn set_stdin(&self, job_id: &str, tx: mpsc::Sender<Vec<u8>>) -> Result<(), JobError> {
+    pub fn set_stdin(&self, job_id: &str, sender: mpsc::Sender<Vec<u8>>) -> Result<(), JobError> {
         match self.jobs.get_mut(job_id) {
             Some(mut entry) => {
-                entry.stdin_tx = Some(tx);
+                entry.stdin = Some(sender);
                 Ok(())
             }
             None => Err(JobError::NotFound(job_id.to_string())),
@@ -89,19 +86,19 @@ impl JobRegistry {
 
     /// Get the stdin channel for a job
     pub fn get_stdin(&self, job_id: &str) -> Option<mpsc::Sender<Vec<u8>>> {
-        self.jobs.get(job_id).and_then(|e| e.stdin_tx.clone())
+        self.jobs.get(job_id).and_then(|entry| entry.stdin.clone())
     }
 
     /// Close the stdin channel for a job
     pub fn close_stdin(&self, job_id: &str) {
         if let Some(mut entry) = self.jobs.get_mut(job_id) {
-            entry.stdin_tx = None;
+            entry.stdin = None;
         }
     }
 
     /// Get the cancellation token for a job
-    pub fn get_cancel_token(&self, job_id: &str) -> Option<Arc<AtomicBool>> {
-        self.jobs.get(job_id).map(|e| e.cancel_token())
+    pub fn get_cancel_token(&self, job_id: &str) -> Option<CancellationToken> {
+        self.jobs.get(job_id).map(|entry| entry.cancel_token())
     }
 
     /// Cancel a job.
@@ -113,13 +110,13 @@ impl JobRegistry {
             .get(job_id)
             .ok_or_else(|| JobError::NotFound(job_id.to_string()))?;
 
-        entry.cancelled.store(true, Ordering::SeqCst);
+        entry.cancellation.cancel();
 
-        if let Some(ref pg) = entry.process_group {
+        if let Some(group) = &entry.process_group {
             if force {
-                let _ = pg.kill();
+                let _ = group.kill();
             } else {
-                let _ = pg.terminate();
+                let _ = group.terminate();
             }
         }
 
@@ -130,15 +127,15 @@ impl JobRegistry {
     ///
     /// Returns the entry if it existed.
     pub fn remove(&self, job_id: &str) -> Option<JobEntry> {
-        self.jobs.remove(job_id).map(|(_, v)| v)
+        self.jobs.remove(job_id).map(|(_, entry)| entry)
     }
 
     /// Cancel all jobs and clear the registry.
     pub fn cancel_all(&self) {
         for entry in self.jobs.iter() {
-            entry.cancelled.store(true, Ordering::SeqCst);
-            if let Some(ref pg) = entry.process_group {
-                let _ = pg.kill();
+            entry.cancellation.cancel();
+            if let Some(group) = &entry.process_group {
+                let _ = group.kill();
             }
         }
         self.jobs.clear();
@@ -146,7 +143,10 @@ impl JobRegistry {
 
     /// Get the number of active (non-terminal) jobs
     pub fn active_count(&self) -> usize {
-        self.jobs.iter().filter(|e| !e.state.is_terminal()).count()
+        self.jobs
+            .iter()
+            .filter(|entry| !entry.state.is_terminal())
+            .count()
     }
 
     /// Get the total number of tracked jobs
@@ -156,7 +156,7 @@ impl JobRegistry {
 
     /// Get all job IDs
     pub fn job_ids(&self) -> Vec<String> {
-        self.jobs.iter().map(|e| e.key().clone()).collect()
+        self.jobs.iter().map(|entry| entry.key().clone()).collect()
     }
 }
 
@@ -190,7 +190,7 @@ mod tests {
         let registry = JobRegistry::new();
 
         let token = registry.register("job-1".to_string()).unwrap();
-        assert!(!token.load(Ordering::SeqCst));
+        assert!(!token.is_cancelled());
 
         assert!(registry.exists("job-1"));
         assert!(!registry.exists("job-2"));
@@ -209,8 +209,26 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::AlreadyExists(id) => assert_eq!(id, "job-1"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
+    }
+
+    #[test]
+    fn a_duplicate_registration_leaves_the_first_job_in_place() {
+        let registry = JobRegistry::new();
+        let first = registry.register("job-1".to_string()).unwrap();
+        registry
+            .update_state("job-1", JobState::running(12345))
+            .unwrap();
+
+        assert!(registry.register("job-1".to_string()).is_err());
+        registry.cancel("job-1", false).unwrap();
+
+        assert!(
+            first.is_cancelled(),
+            "the registry still reaches the job that registered first"
+        );
+        assert!(registry.get_state("job-1").unwrap().is_running());
     }
 
     #[test]
@@ -235,7 +253,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::NotFound(id) => assert_eq!(id, "nonexistent"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
     }
 
@@ -264,7 +282,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::NotFound(id) => assert_eq!(id, "nonexistent"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
     }
 
@@ -273,8 +291,8 @@ mod tests {
         let registry = JobRegistry::new();
         registry.register("job-1".to_string()).unwrap();
 
-        let (tx, _rx) = mpsc::channel::<Vec<u8>>(10);
-        let result = registry.set_stdin("job-1", tx);
+        let (sender, _receiver) = mpsc::channel::<Vec<u8>>(10);
+        let result = registry.set_stdin("job-1", sender);
         assert!(result.is_ok());
 
         let stdin = registry.get_stdin("job-1");
@@ -284,13 +302,13 @@ mod tests {
     #[tokio::test]
     async fn test_set_stdin_not_found() {
         let registry = JobRegistry::new();
-        let (tx, _rx) = mpsc::channel::<Vec<u8>>(10);
-        let result = registry.set_stdin("nonexistent", tx);
+        let (sender, _receiver) = mpsc::channel::<Vec<u8>>(10);
+        let result = registry.set_stdin("nonexistent", sender);
 
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::NotFound(id) => assert_eq!(id, "nonexistent"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
     }
 
@@ -315,8 +333,8 @@ mod tests {
         let registry = JobRegistry::new();
         registry.register("job-1".to_string()).unwrap();
 
-        let (tx, _rx) = mpsc::channel::<Vec<u8>>(10);
-        registry.set_stdin("job-1", tx).unwrap();
+        let (sender, _receiver) = mpsc::channel::<Vec<u8>>(10);
+        registry.set_stdin("job-1", sender).unwrap();
 
         assert!(registry.get_stdin("job-1").is_some());
 
@@ -338,8 +356,8 @@ mod tests {
 
         let retrieved_token = registry.get_cancel_token("job-1").unwrap();
 
-        registered_token.store(true, Ordering::SeqCst);
-        assert!(retrieved_token.load(Ordering::SeqCst));
+        registered_token.cancel();
+        assert!(retrieved_token.is_cancelled());
     }
 
     #[test]
@@ -353,11 +371,11 @@ mod tests {
         let registry = JobRegistry::new();
         let token = registry.register("job-1".to_string()).unwrap();
 
-        assert!(!token.load(Ordering::SeqCst));
+        assert!(!token.is_cancelled());
 
         registry.cancel("job-1", false).unwrap();
 
-        assert!(token.load(Ordering::SeqCst));
+        assert!(token.is_cancelled());
     }
 
     #[test]
@@ -367,7 +385,7 @@ mod tests {
 
         registry.cancel("job-1", true).unwrap();
 
-        assert!(token.load(Ordering::SeqCst));
+        assert!(token.is_cancelled());
     }
 
     #[test]
@@ -378,7 +396,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::NotFound(id) => assert_eq!(id, "nonexistent"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
     }
 
@@ -427,13 +445,13 @@ mod tests {
     #[test]
     fn test_cancel_all() {
         let registry = JobRegistry::new();
-        let t1 = registry.register("job-1".to_string()).unwrap();
-        let t2 = registry.register("job-2".to_string()).unwrap();
+        let first = registry.register("job-1".to_string()).unwrap();
+        let second = registry.register("job-2".to_string()).unwrap();
 
         registry.cancel_all();
 
-        assert!(t1.load(Ordering::SeqCst));
-        assert!(t2.load(Ordering::SeqCst));
+        assert!(first.is_cancelled());
+        assert!(second.is_cancelled());
         assert_eq!(registry.total_count(), 0);
     }
 

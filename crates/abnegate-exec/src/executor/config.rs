@@ -20,10 +20,12 @@ pub struct ExecutorConfig {
     /// Default timeout for commands that don't specify one
     pub default_timeout: Duration,
 
-    /// Maximum bytes of output to capture before truncating
+    /// Maximum bytes of stdout and stderr together to deliver. Output past it
+    /// is still read, so the command runs to completion, and then dropped.
     pub max_output_bytes: usize,
 
-    /// Buffer size for reading stdout/stderr
+    /// Largest chunk read from a pipe at once, and so the largest payload of
+    /// a single `RunStdout` or `RunStderr`
     pub buffer_size: usize,
 
     /// Grace period before SIGKILL after SIGTERM

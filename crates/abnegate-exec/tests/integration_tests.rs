@@ -504,11 +504,44 @@ async fn test_registry_cancel_token_propagation() {
     let registry = JobRegistry::new();
 
     let token = registry.register("cancel-test".to_string()).unwrap();
-    assert!(!token.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!token.is_cancelled());
 
     registry.cancel("cancel-test", false).unwrap();
 
-    assert!(token.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(token.is_cancelled());
+}
+
+#[tokio::test]
+async fn test_registry_cancel_stops_a_job_spawned_with_its_token() {
+    let registry = JobRegistry::new();
+    let executor = CommandExecutor::with_config(ExecutorConfig {
+        grace_period: Duration::from_millis(100),
+        ..Default::default()
+    });
+    let (sender, mut receiver) = mpsc::channel(100);
+
+    let token = registry.register("registry-cancel".to_string()).unwrap();
+    executor
+        .spawn_with_cancellation(
+            &create_bash_request("registry-cancel", "sleep 30"),
+            sender,
+            token,
+        )
+        .await
+        .unwrap();
+    registry.cancel("registry-cancel", false).unwrap();
+
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            OutboundMessage::RunError {
+                error_code: ErrorCode::Cancelled,
+                ..
+            }
+        )),
+        "{messages:?}"
+    );
 }
 
 #[tokio::test]
