@@ -111,20 +111,20 @@ async fn test_echo_command() {
     assert!(
         messages
             .iter()
-            .any(|m| matches!(m, OutboundMessage::RunStarted { job_id, .. } if job_id == "echo-1"))
+            .any(|message| matches!(message, OutboundMessage::RunStarted { job_id, .. } if job_id == "echo-1"))
     );
 
     let stdout_data: String = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { data, .. } => Some(decode_output_data(data)),
             _ => None,
         })
         .collect();
     assert!(stdout_data.contains("Hello World"));
 
-    assert!(messages.iter().any(|m| matches!(
-        m,
+    assert!(messages.iter().any(|message| matches!(
+        message,
         OutboundMessage::RunExit {
             exit_code: Some(0),
             ..
@@ -144,7 +144,7 @@ async fn test_stderr_output() {
 
     let stderr_data: String = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStderr { data, .. } => Some(decode_output_data(data)),
             _ => None,
         })
@@ -164,7 +164,7 @@ async fn test_mixed_stdout_stderr() {
 
     let stdout_data: String = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { data, .. } => Some(decode_output_data(data)),
             _ => None,
         })
@@ -172,7 +172,7 @@ async fn test_mixed_stdout_stderr() {
 
     let stderr_data: String = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStderr { data, .. } => Some(decode_output_data(data)),
             _ => None,
         })
@@ -193,8 +193,8 @@ async fn test_non_zero_exit_code() {
 
     let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
-    assert!(messages.iter().any(|m| matches!(
-        m,
+    assert!(messages.iter().any(|message| matches!(
+        message,
         OutboundMessage::RunExit {
             exit_code: Some(42),
             ..
@@ -229,7 +229,7 @@ async fn test_command_with_arguments() {
 
     let stdout_data: String = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { data, .. } => Some(decode_output_data(data)),
             _ => None,
         })
@@ -263,7 +263,7 @@ async fn test_environment_variables() {
 
     let stdout_data: String = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { data, .. } => Some(decode_output_data(data)),
             _ => None,
         })
@@ -297,7 +297,7 @@ async fn test_custom_working_dir() {
 
     let stdout_data: String = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { data, .. } => Some(decode_output_data(data)),
             _ => None,
         })
@@ -330,16 +330,16 @@ async fn test_command_timeout() {
     let _handle = executor.spawn(&request, sender).await.unwrap();
     let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
-    assert!(messages.iter().any(|m| matches!(
-        m,
+    assert!(messages.iter().any(|message| matches!(
+        message,
         OutboundMessage::RunError {
             error_code: ErrorCode::Timeout,
             ..
         }
     )));
 
-    assert!(messages.iter().any(|m| matches!(
-        m,
+    assert!(messages.iter().any(|message| matches!(
+        message,
         OutboundMessage::RunLog { level: LogLevel::Warn, message, .. } if message.contains("timed out")
     )));
 }
@@ -347,7 +347,7 @@ async fn test_command_timeout() {
 #[tokio::test]
 async fn test_invalid_workspace() {
     let executor = CommandExecutor::new();
-    let (sender, _rx) = mpsc::channel(100);
+    let (sender, _receiver) = mpsc::channel(100);
 
     let request = InboundMessage::RunStart {
         job_id: "bad-ws-1".to_string(),
@@ -368,7 +368,7 @@ async fn test_invalid_workspace() {
 #[tokio::test]
 async fn test_invalid_command() {
     let executor = CommandExecutor::new();
-    let (sender, _rx) = mpsc::channel(100);
+    let (sender, _receiver) = mpsc::channel(100);
 
     let request = InboundMessage::RunStart {
         job_id: "bad-cmd-1".to_string(),
@@ -416,7 +416,7 @@ async fn test_output_limit() {
 
     let total_bytes: usize = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { data, .. } => {
                 Some(BASE64_STANDARD.decode(data).unwrap_or_default().len())
             }
@@ -451,7 +451,7 @@ async fn test_sequence_numbers_monotonic() {
 
     let sequences: Vec<u64> = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { sequence, .. } => Some(*sequence),
             _ => None,
         })
@@ -557,7 +557,7 @@ async fn test_unicode_output() {
 
     let stdout_data: String = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { data, .. } => Some(decode_output_data(data)),
             _ => None,
         })
@@ -580,7 +580,7 @@ async fn test_special_shell_characters() {
 
     let stdout_data: String = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { data, .. } => Some(decode_output_data(data)),
             _ => None,
         })
@@ -599,7 +599,7 @@ async fn test_duration_tracking() {
 
     let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
-    let duration = messages.iter().find_map(|m| match m {
+    let duration = messages.iter().find_map(|message| match message {
         OutboundMessage::RunExit { duration_ms, .. } => Some(*duration_ms),
         _ => None,
     });
@@ -629,7 +629,7 @@ async fn test_pid_reported() {
 
     let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
-    let pid = messages.iter().find_map(|m| match m {
+    let pid = messages.iter().find_map(|message| match message {
         OutboundMessage::RunStarted { pid, .. } => Some(*pid),
         _ => None,
     });
@@ -652,9 +652,9 @@ async fn test_many_quick_commands() {
             let _ = executor.spawn(&request, sender).await.unwrap();
             let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
-            messages.iter().any(|m| {
+            messages.iter().any(|message| {
                 matches!(
-                    m,
+                    message,
                     OutboundMessage::RunExit {
                         exit_code: Some(0),
                         ..
@@ -687,19 +687,19 @@ async fn test_command_with_no_output() {
     assert!(
         messages
             .iter()
-            .any(|m| matches!(m, OutboundMessage::RunStarted { .. }))
+            .any(|message| matches!(message, OutboundMessage::RunStarted { .. }))
     );
-    assert!(messages.iter().any(|m| matches!(
-        m,
+    assert!(messages.iter().any(|message| matches!(
+        message,
         OutboundMessage::RunExit {
             exit_code: Some(0),
             ..
         }
     )));
 
-    let has_output = messages.iter().any(|m| {
+    let has_output = messages.iter().any(|message| {
         matches!(
-            m,
+            message,
             OutboundMessage::RunStdout { .. } | OutboundMessage::RunStderr { .. }
         )
     });
@@ -721,7 +721,7 @@ async fn test_large_output() {
 
     let total_bytes: usize = messages
         .iter()
-        .filter_map(|m| match m {
+        .filter_map(|message| match message {
             OutboundMessage::RunStdout { data, .. } => {
                 Some(BASE64_STANDARD.decode(data).unwrap().len())
             }
@@ -735,8 +735,8 @@ async fn test_large_output() {
         total_bytes
     );
 
-    assert!(messages.iter().any(|m| matches!(
-        m,
+    assert!(messages.iter().any(|message| matches!(
+        message,
         OutboundMessage::RunExit {
             exit_code: Some(0),
             ..

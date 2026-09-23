@@ -3,9 +3,25 @@ use std::env;
 use std::ffi::OsString;
 
 /// The names [`EnvironmentPolicy::default`] copies from the executor into
-/// every command.
-pub const DEFAULT_ENVIRONMENT_ALLOWLIST: [&str; 6] =
-    ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TERM"];
+/// every command: where to find programs, the user's home and scratch space,
+/// locale, terminal and time zone, the trusted certificates, and the proxy a
+/// deployment routes through.
+pub const DEFAULT_ENVIRONMENT_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "TZ",
+    "SSL_CERT_FILE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+];
 
 /// Which of the executor's own environment variables a spawned command sees.
 ///
@@ -58,14 +74,14 @@ mod tests {
 
     #[test]
     fn the_default_is_the_documented_allowlist() {
-        assert_eq!(
-            EnvironmentPolicy::default(),
-            EnvironmentPolicy::Allowlist(
-                ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TERM"]
-                    .map(String::from)
-                    .to_vec()
-            )
-        );
+        let EnvironmentPolicy::Allowlist(names) = EnvironmentPolicy::default() else {
+            panic!("the default is an allowlist");
+        };
+
+        assert_eq!(names, DEFAULT_ENVIRONMENT_ALLOWLIST);
+        for name in ["PATH", "HOME", "TMPDIR", "TERM", "HTTPS_PROXY", "no_proxy"] {
+            assert!(names.iter().any(|allowed| allowed == name), "{name}");
+        }
     }
 
     #[test]

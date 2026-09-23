@@ -32,7 +32,10 @@ impl Capability {
             Capability::ConfinementSingleProcess => {
                 backend.is_some_and(Backend::enforces_single_process)
             }
-            _ => true,
+            Capability::Cancel
+            | Capability::Stdin
+            | Capability::Logs
+            | Capability::ProcessGroup => true,
         }
     }
 }

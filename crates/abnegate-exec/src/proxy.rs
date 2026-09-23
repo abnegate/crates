@@ -2,6 +2,7 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::fmt;
 
 use tokio::process::Command;
 
@@ -16,7 +17,7 @@ pub const PROXY_BYPASS_ENV: &str = "ABNEGATE_EXEC_PROXY_BYPASS";
 
 /// The hosts a routed command reaches directly when no bypass list is given:
 /// loopback, and nothing else.
-pub const DEFAULT_BYPASS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+pub const DEFAULT_BYPASS: &[&str] = &["localhost", "127.0.0.1", "::1"];
 
 const PROXY_VARIABLES: [&str; 6] = [
     "HTTP_PROXY",
@@ -33,6 +34,7 @@ const BYPASS_SEPARATOR: &str = ",";
 ///
 /// Clients must support standard proxy environment variables. This does not
 /// constrain raw sockets or clients that explicitly disable proxy support.
+/// `Debug` never prints the URL, which can carry the proxy's credentials.
 #[derive(Clone, Default)]
 pub struct Proxy {
     url: Option<OsString>,
@@ -44,7 +46,7 @@ impl Proxy {
     pub fn new(url: impl Into<OsString>) -> Self {
         Self {
             url: Some(url.into()),
-            bypass: DEFAULT_BYPASS.map(String::from).to_vec(),
+            bypass: DEFAULT_BYPASS.iter().map(|host| host.to_string()).collect(),
         }
     }
 
@@ -96,6 +98,16 @@ impl Proxy {
         for name in BYPASS_VARIABLES.into_iter().chain([PROXY_BYPASS_ENV]) {
             command.env(name, &bypass);
         }
+    }
+}
+
+impl fmt::Debug for Proxy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Proxy")
+            .field("url", &self.url.as_ref().map(|_| "<redacted>"))
+            .field("bypass", &self.bypass)
+            .finish()
     }
 }
 
@@ -303,6 +315,14 @@ mod tests {
         let proxy = Proxy::from_settings(Some("http://proxy:3128".into()), Some(String::new()));
 
         assert!(proxy.bypass.is_empty());
+    }
+
+    #[test]
+    fn debug_never_prints_the_url() {
+        let debug = format!("{:?}", Proxy::new("http://user:hunter2@proxy:3128"));
+
+        assert!(!debug.contains("hunter2"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
     }
 
     #[test]
