@@ -1801,6 +1801,44 @@ echo '{"type":"result","subtype":"success","is_error":false}'
     }
 
     #[tokio::test]
+    async fn a_secret_the_stream_escapes_or_a_short_one_never_reaches_a_log_or_an_error() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let script = r#"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"key pa\"ss\\word-123"}]}}'
+echo "rejected pin $SERVICE_PIN" >&2
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"bad pin 4711 for pa\"ss\\word-123"}'
+"#;
+        let settings = settings(&directory, script)
+            .with_log(&root)
+            .with_environment("SERVICE_PIN", "4711")
+            .with_credential(Credential::key("DB_PASSWORD", "pa\"ss\\word-123"));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        let files = execution.log.clone().expect("log files");
+        for path in [&files.stdout, &files.stderr, &files.events] {
+            let contents = std::fs::read_to_string(path).expect("a log file");
+            assert!(
+                !contents.contains("word-123"),
+                "{} leaked the secret: {contents}",
+                path.display()
+            );
+            assert!(
+                !contents.contains("4711"),
+                "{} leaked the short secret: {contents}",
+                path.display()
+            );
+        }
+        assert!(!execution.stderr.contains("4711"), "{}", execution.stderr);
+        let error = provider.assemble(execution).expect_err("a failure");
+        let rendered = error.to_string();
+        assert!(!rendered.contains("word-123"), "{rendered}");
+        assert!(!rendered.contains("4711"), "{rendered}");
+    }
+
+    #[tokio::test]
     async fn a_provider_is_a_cli_provider_with_its_agents_capabilities() {
         let claude = CliProvider::agent(AgentKind::Claude, CliSettings::default());
         let codex = CliProvider::new("reviewer", AgentKind::Codex, CliSettings::default());
