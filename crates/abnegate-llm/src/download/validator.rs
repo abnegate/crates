@@ -9,13 +9,17 @@ use tokio::fs;
 
 const WEAK_PREFIX: &str = "W/";
 
-/// What identifies the exact file a `.part` holds the start of.
+/// What identifies the exact file a `.part` holds the start of: the URL it
+/// came from and that file's `ETag` or `Last-Modified`.
 ///
 /// A resumed request sends it as `If-Range`, so a server whose file changed
 /// since answers with the whole new file instead of the tail of it, and the
-/// two are never spliced together.
+/// two are never spliced together. A `.part` fetched from another URL is
+/// never resumed, whatever its server says about it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Validator {
+    #[serde(default)]
+    url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     entity_tag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -23,7 +27,7 @@ pub(crate) struct Validator {
 }
 
 impl Validator {
-    pub(crate) fn from_headers(headers: &HeaderMap) -> Self {
+    pub(crate) fn from_headers(url: &str, headers: &HeaderMap) -> Self {
         let read = |name| {
             headers
                 .get(name)
@@ -31,6 +35,7 @@ impl Validator {
                 .map(str::to_string)
         };
         Self {
+            url: url.to_string(),
             entity_tag: read(ETAG),
             last_modified: read(LAST_MODIFIED),
         }
@@ -52,9 +57,12 @@ impl Validator {
         PathBuf::from(name)
     }
 
-    pub(crate) async fn load(part: &Path) -> Option<Self> {
+    /// The validator kept beside `part`, when it was stored for `url`.
+    pub(crate) async fn load(part: &Path, url: &str) -> Option<Self> {
         let stored = fs::read(Self::path(part)).await.ok()?;
-        serde_json::from_slice(&stored).ok()
+        serde_json::from_slice::<Self>(&stored)
+            .ok()
+            .filter(|validator| validator.url == url)
     }
 
     pub(crate) async fn store(&self, part: &Path) -> std::io::Result<()> {
@@ -84,25 +92,50 @@ mod tests {
         headers
     }
 
+    const URL: &str = "https://models.example/model.gguf";
+
     #[test]
     fn a_strong_entity_tag_guards_the_range() {
-        let validator = Validator::from_headers(&headers(&[
-            (ETAG, "\"abc\""),
-            (LAST_MODIFIED, "Wed, 21 Oct 2015 07:28:00 GMT"),
-        ]));
+        let validator = Validator::from_headers(
+            URL,
+            &headers(&[
+                (ETAG, "\"abc\""),
+                (LAST_MODIFIED, "Wed, 21 Oct 2015 07:28:00 GMT"),
+            ]),
+        );
         assert_eq!(validator.if_range(), Some("\"abc\""));
     }
 
     #[test]
     fn a_weak_entity_tag_defers_to_the_modification_date() {
-        let validator = Validator::from_headers(&headers(&[
-            (ETAG, "W/\"abc\""),
-            (LAST_MODIFIED, "Wed, 21 Oct 2015 07:28:00 GMT"),
-        ]));
+        let validator = Validator::from_headers(
+            URL,
+            &headers(&[
+                (ETAG, "W/\"abc\""),
+                (LAST_MODIFIED, "Wed, 21 Oct 2015 07:28:00 GMT"),
+            ]),
+        );
         assert_eq!(validator.if_range(), Some("Wed, 21 Oct 2015 07:28:00 GMT"));
         assert_eq!(
-            Validator::from_headers(&headers(&[(ETAG, "W/\"abc\"")])).if_range(),
+            Validator::from_headers(URL, &headers(&[(ETAG, "W/\"abc\"")])).if_range(),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_validator_is_only_loaded_for_the_url_it_was_stored_for() {
+        let directory = tempfile::tempdir().unwrap();
+        let part = directory.path().join("model.gguf.part");
+        Validator::from_headers(URL, &headers(&[(ETAG, "\"abc\"")]))
+            .store(&part)
+            .await
+            .unwrap();
+
+        assert!(Validator::load(&part, URL).await.is_some());
+        assert!(
+            Validator::load(&part, "https://mirror.example/model.gguf")
+                .await
+                .is_none()
         );
     }
 

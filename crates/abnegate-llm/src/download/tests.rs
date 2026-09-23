@@ -21,20 +21,27 @@ fn checksum_of(bytes: &[u8]) -> Checksum {
     Checksum::new(Sha256::digest(bytes).into())
 }
 
-async fn partial(target: &Path, bytes: &[u8], entity_tag: Option<&str>) {
+async fn partial(target: &Path, bytes: &[u8], entity_tag: Option<&str>, url: &str) {
     let part = part_path(target);
     fs::write(&part, bytes).await.unwrap();
     if let Some(tag) = entity_tag {
-        fs::write(
-            Validator::path(&part),
-            format!(
-                r#"{{"entity_tag":{}}}"#,
-                serde_json::to_string(tag).unwrap()
-            ),
-        )
-        .await
-        .unwrap();
+        validator(&part, tag, url).await;
     }
+}
+
+async fn validator(part: &Path, entity_tag: &str, url: &str) {
+    fs::write(
+        Validator::path(part),
+        serde_json::json!({ "url": url, "entity_tag": entity_tag }).to_string(),
+    )
+    .await
+    .unwrap();
+}
+
+async fn stored_guard(part: &Path, url: &str) -> Option<String> {
+    Validator::load(part, url)
+        .await
+        .and_then(|validator| validator.if_range().map(str::to_string))
 }
 
 async fn download(
@@ -102,7 +109,7 @@ async fn a_resume_is_guarded_by_the_stored_validator() {
 
     let directory = tempdir().unwrap();
     let target = directory.path().join("model.gguf");
-    partial(&target, b"gguf", Some(ENTITY_TAG)).await;
+    partial(&target, b"gguf", Some(ENTITY_TAG), &server.uri()).await;
 
     let (result, progress) = download(&server, &target, Some(checksum_of(BODY))).await;
     result.unwrap();
@@ -128,7 +135,7 @@ async fn a_part_with_no_validator_is_fetched_again_rather_than_resumed() {
 
     let directory = tempdir().unwrap();
     let target = directory.path().join("model.gguf");
-    partial(&target, b"stale", None).await;
+    partial(&target, b"stale", None, &server.uri()).await;
 
     let (result, _) = download(&server, &target, None).await;
     result.unwrap();
@@ -160,13 +167,13 @@ async fn a_changed_upstream_file_replaces_the_part_instead_of_being_spliced_onto
 
     let directory = tempdir().unwrap();
     let target = directory.path().join("model.gguf");
-    partial(&target, b"gguf", Some(ENTITY_TAG)).await;
+    partial(&target, b"gguf", Some(ENTITY_TAG), &server.uri()).await;
 
     let (result, _) = download(&server, &target, None).await;
     result.unwrap();
 
     assert_eq!(fs::read(&target).await.unwrap(), b"new-model");
-    let stored = Validator::load(&part_path(&target)).await;
+    let stored = Validator::load(&part_path(&target), &server.uri()).await;
     assert!(
         stored.is_none(),
         "a finished download leaves no validator behind"
@@ -194,7 +201,7 @@ async fn a_range_that_does_not_start_where_the_part_ends_is_discarded() {
 
     let directory = tempdir().unwrap();
     let target = directory.path().join("model.gguf");
-    partial(&target, b"gguf", Some(ENTITY_TAG)).await;
+    partial(&target, b"gguf", Some(ENTITY_TAG), &server.uri()).await;
 
     let (result, _) = download(&server, &target, None).await;
     result.unwrap();
@@ -217,7 +224,7 @@ async fn a_complete_part_answered_with_416_is_finished_rather_than_failed() {
 
     let directory = tempdir().unwrap();
     let target = directory.path().join("model.gguf");
-    partial(&target, BODY, Some(ENTITY_TAG)).await;
+    partial(&target, BODY, Some(ENTITY_TAG), &server.uri()).await;
 
     let (result, progress) = download(&server, &target, Some(checksum_of(BODY))).await;
     result.unwrap();
@@ -247,7 +254,13 @@ async fn a_416_for_a_part_of_the_wrong_length_starts_over() {
 
     let directory = tempdir().unwrap();
     let target = directory.path().join("model.gguf");
-    partial(&target, b"gguf-body-and-more", Some(ENTITY_TAG)).await;
+    partial(
+        &target,
+        b"gguf-body-and-more",
+        Some(ENTITY_TAG),
+        &server.uri(),
+    )
+    .await;
 
     let (result, _) = download(&server, &target, None).await;
     result.unwrap();
@@ -291,7 +304,7 @@ async fn a_short_body_is_kept_to_resume_rather_than_installed() {
 
     let directory = tempdir().unwrap();
     let target = directory.path().join("model.gguf");
-    partial(&target, b"gguf", Some(ENTITY_TAG)).await;
+    partial(&target, b"gguf", Some(ENTITY_TAG), &server.uri()).await;
 
     let (result, _) = download(&server, &target, None).await;
 
@@ -334,4 +347,98 @@ async fn download_records_a_failing_status() {
             .is_some_and(|message| message.contains("404"))
     );
     assert!(!target.exists());
+}
+
+#[tokio::test]
+async fn a_restart_that_cannot_open_the_part_keeps_it_paired_with_its_own_validator() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"v2\"")
+                .set_body_bytes(b"new-model".to_vec()),
+        )
+        .mount(&server)
+        .await;
+
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+    let part = part_path(&target);
+    fs::create_dir(&part).await.unwrap();
+    validator(&part, ENTITY_TAG, &server.uri()).await;
+
+    let (result, _) = download(&server, &target, None).await;
+
+    assert!(matches!(result, Err(DownloadError::Io(_))), "{result:?}");
+    assert_eq!(
+        stored_guard(&part, &server.uri()).await.as_deref(),
+        Some(ENTITY_TAG),
+        "the new file's validator was stored beside the old file's bytes"
+    );
+}
+
+#[tokio::test]
+async fn a_part_left_by_another_url_is_fetched_again_rather_than_resumed() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(header_exists("range"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 4-8/9")
+                .set_body_bytes(b"-body".to_vec()),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(BODY.to_vec()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+    partial(
+        &target,
+        b"gguf",
+        Some(ENTITY_TAG),
+        "https://mirror.example/model.gguf",
+    )
+    .await;
+
+    let (result, _) = download(&server, &target, None).await;
+    result.unwrap();
+
+    assert_eq!(fs::read(&target).await.unwrap(), BODY);
+}
+
+#[tokio::test]
+async fn a_validator_that_names_no_url_is_not_trusted() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(header_exists("range"))
+        .respond_with(ResponseTemplate::new(206).set_body_bytes(b"-body".to_vec()))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(BODY.to_vec()))
+        .mount(&server)
+        .await;
+
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+    let part = part_path(&target);
+    fs::write(&part, b"gguf").await.unwrap();
+    fs::write(
+        Validator::path(&part),
+        serde_json::json!({ "entity_tag": ENTITY_TAG }).to_string(),
+    )
+    .await
+    .unwrap();
+
+    let (result, _) = download(&server, &target, None).await;
+    result.unwrap();
+
+    assert_eq!(fs::read(&target).await.unwrap(), BODY);
 }
