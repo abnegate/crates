@@ -1,10 +1,17 @@
-use chrono::{DateTime, TimeDelta, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::DateTime;
+use chrono::TimeDelta;
+use chrono::Utc;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// What is known about a stored token besides the token itself.
+///
+/// The expiry is stored as integer Unix seconds, the shape entries already in
+/// the keyring were written in.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TokenMetadata {
     pub host: String,
+    #[serde(with = "chrono::serde::ts_seconds")]
     pub expires_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
@@ -51,33 +58,44 @@ mod tests {
         let json = serde_json::to_string(&metadata()).unwrap();
 
         assert!(json.contains("api.example.com"));
-        assert!(json.contains("2023-11-14"));
+        assert!(json.contains("\"expires_at\":1700000000"), "{json}");
         assert!(json.contains("user-123"));
         assert!(json.contains("person@example.com"));
     }
 
     #[test]
-    fn metadata_deserializes() {
+    fn an_entry_written_by_the_zone_cli_still_reads() {
         let restored: TokenMetadata = serde_json::from_str(
             r#"{
-                "host": "https://api.example.com",
-                "expires_at": "2027-01-15T08:00:00Z",
-                "user_id": "abc-456",
-                "email": "person@example.com"
-            }"#,
+            "host": "https://api.zone.io",
+            "expires_at": 1800000000,
+            "user_id": "abc-456",
+            "email": "user@zone.io"
+        }"#,
         )
         .unwrap();
 
-        assert_eq!(restored.host, "https://api.example.com");
+        assert_eq!(restored.host, "https://api.zone.io");
         assert_eq!(restored.expires_at.timestamp(), 1_800_000_000);
         assert_eq!(restored.user_id, Some("abc-456".to_string()));
-        assert_eq!(restored.email, Some("person@example.com".to_string()));
+        assert_eq!(restored.email, Some("user@zone.io".to_string()));
+    }
+
+    #[test]
+    fn an_expiry_is_written_as_unix_seconds() {
+        let json = serde_json::to_value(TokenMetadata::new(
+            "https://api.example.com",
+            DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+        ))
+        .unwrap();
+
+        assert_eq!(json["expires_at"], serde_json::json!(1_800_000_000));
     }
 
     #[test]
     fn an_identity_is_optional() {
         let restored: TokenMetadata = serde_json::from_str(
-            r#"{ "host": "https://api.example.com", "expires_at": "2027-01-15T08:00:00Z" }"#,
+            r#"{ "host": "https://api.example.com", "expires_at": 1800000000 }"#,
         )
         .unwrap();
 
