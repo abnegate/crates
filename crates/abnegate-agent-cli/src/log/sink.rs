@@ -4,6 +4,8 @@ use tokio::fs::File;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
+use crate::log::PRIVATE;
+
 /// A best-effort raw log file. The first write that fails closes it, so one
 /// full disk costs a warning rather than the run.
 #[derive(Debug, Default)]
@@ -19,6 +21,7 @@ impl Sink {
         match OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(PRIVATE)
             .open(path)
             .await
         {
@@ -70,6 +73,23 @@ mod tests {
             std::fs::read_to_string(&path).expect("the log"),
             "hello world"
         );
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_can_read_a_log() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TempDir::new().expect("a temporary directory");
+        let path = directory.path().join("run.stderr.log");
+        let mut sink = Sink::open(Some(&path)).await;
+        sink.write(b"x").await;
+        sink.finish().await;
+
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[tokio::test]

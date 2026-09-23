@@ -17,7 +17,8 @@ pub enum Record {
     Exited,
     WaitFailed,
     TimedOut,
-    /// The agent was stopped after the run was abandoned.
+    /// The agent was stopped because it did not exit once its output had
+    /// settled the run.
     Stopped,
     Completed,
 }

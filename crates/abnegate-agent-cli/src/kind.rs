@@ -5,11 +5,14 @@ use std::path::Path;
 
 use abnegate_llm::Capabilities;
 use abnegate_llm::ProviderError;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::delivery::Delivery;
 use crate::event::AgentEvent;
 use crate::parser;
 use crate::settings::CliSettings;
+use crate::settings::WRITE_TOOLS;
 
 const MODEL: &str = "--model";
 const MCP_CONFIG: &str = "--mcp-config";
@@ -17,6 +20,14 @@ const STRICT_MCP_CONFIG: &str = "--strict-mcp-config";
 const JSON_SCHEMA: &str = "--json-schema";
 const APPEND_SYSTEM_PROMPT: &str = "--append-system-prompt";
 const ALLOWED_TOOLS: &str = "--allowedTools";
+const DISALLOWED_TOOLS: &str = "--disallowedTools";
+
+/// Flags that let an agent act without asking, which a read-only run refuses.
+const BYPASSES: [&str; 3] = [
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "--permission-mode",
+];
 
 /// A coding agent CLI.
 ///
@@ -24,7 +35,8 @@ const ALLOWED_TOOLS: &str = "--allowedTools";
 /// that a conversation reaches long before a context window does, and the
 /// failure mode when it does is `E2BIG` from `execve` rather than anything the
 /// agent can report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AgentKind {
     Claude,
     Codex,
@@ -124,12 +136,13 @@ impl AgentKind {
         mcp: Option<&Path>,
     ) -> Result<Vec<String>, ProviderError> {
         match self {
-            Self::Claude => Ok(claude_options(settings, mcp)),
+            Self::Claude => claude_options(settings, mcp),
             Self::Codex => {
                 let unsupported = [
                     (settings.schema.is_some(), JSON_SCHEMA),
                     (settings.instructions.is_some(), APPEND_SYSTEM_PROMPT),
                     (!settings.permissions.is_empty(), ALLOWED_TOOLS),
+                    (settings.read_only, DISALLOWED_TOOLS),
                     (!settings.mcp.is_empty(), MCP_CONFIG),
                 ]
                 .into_iter()
@@ -171,7 +184,25 @@ impl AgentKind {
     }
 }
 
-fn claude_options(settings: &CliSettings, mcp: Option<&Path>) -> Vec<String> {
+fn claude_options(
+    settings: &CliSettings,
+    mcp: Option<&Path>,
+) -> Result<Vec<String>, ProviderError> {
+    if settings.read_only
+        && let Some(bypass) = settings.arguments.iter().find(|argument| {
+            BYPASSES.iter().any(|bypass| {
+                argument.as_str() == *bypass
+                    || argument
+                        .strip_prefix(bypass)
+                        .is_some_and(|rest| rest.starts_with('='))
+            })
+        })
+    {
+        return Err(ProviderError::config(format!(
+            "a read-only run cannot pass {bypass}"
+        )));
+    }
+
     let mut options = Vec::new();
     if let Some(path) = mcp {
         options.push(MCP_CONFIG.to_string());
@@ -201,7 +232,13 @@ fn claude_options(settings: &CliSettings, mcp: Option<&Path>) -> Vec<String> {
         options.push(ALLOWED_TOOLS.to_string());
         options.push(tool);
     }
-    options
+    if settings.read_only {
+        for tool in WRITE_TOOLS {
+            options.push(DISALLOWED_TOOLS.to_string());
+            options.push(tool.to_string());
+        }
+    }
+    Ok(options)
 }
 
 impl fmt::Display for AgentKind {
@@ -345,6 +382,18 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_reads_and_writes_its_own_name_in_configuration() {
+        for agent in [AgentKind::Claude, AgentKind::Codex] {
+            let json = serde_json::to_value(agent).expect("serialisable");
+            assert_eq!(json, serde_json::json!(agent.as_str()));
+            assert_eq!(
+                serde_json::from_value::<AgentKind>(json).expect("deserialisable"),
+                agent
+            );
+        }
+    }
+
+    #[test]
     fn each_agent_reads_its_key_from_its_own_vendor_variable() {
         assert_eq!(AgentKind::Claude.variable(), "ANTHROPIC_API_KEY");
         assert_eq!(AgentKind::Codex.variable(), "OPENAI_API_KEY");
@@ -440,6 +489,60 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_run_denies_the_write_tools() {
+        let options = AgentKind::Claude
+            .options(&CliSettings::default().read_only(), None)
+            .expect("options");
+
+        let denied: Vec<&str> = options
+            .windows(2)
+            .filter(|pair| pair[0] == "--disallowedTools")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(
+            denied,
+            ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit"]
+        );
+        let allowed: Vec<&str> = options
+            .windows(2)
+            .filter(|pair| pair[0] == "--allowedTools")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(allowed, ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]);
+    }
+
+    #[test]
+    fn a_read_only_run_refuses_every_permission_bypass() {
+        for bypass in [
+            vec!["--dangerously-skip-permissions"],
+            vec!["--allow-dangerously-skip-permissions"],
+            vec!["--permission-mode", "bypassPermissions"],
+            vec!["--permission-mode=acceptEdits"],
+        ] {
+            let settings = CliSettings::default()
+                .read_only()
+                .with_arguments(bypass.clone());
+            let error = AgentKind::Claude
+                .options(&settings, None)
+                .expect_err("a refusal");
+            assert!(
+                matches!(error, ProviderError::Config { ref detail } if detail.contains(bypass[0].split('=').next().unwrap_or_default())),
+                "{bypass:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_read_only_run_keeps_harmless_extra_arguments() {
+        let settings = CliSettings::default()
+            .read_only()
+            .with_arguments(["--permission-modes-are-not-this-flag"]);
+
+        let options = AgentKind::Claude.options(&settings, None).expect("options");
+        assert_eq!(options[0], "--permission-modes-are-not-this-flag");
+    }
+
+    #[test]
     fn codex_passes_extra_arguments_through() {
         let settings = CliSettings::default().with_arguments(["--sandbox", "read-only"]);
 
@@ -458,6 +561,13 @@ mod tests {
                 "--append-system-prompt",
             ),
             (CliSettings::default().read_only(), "--allowedTools"),
+            (
+                CliSettings {
+                    read_only: true,
+                    ..CliSettings::default()
+                },
+                "--disallowedTools",
+            ),
             (
                 CliSettings::default().with_mcp_server("appwrite", McpServer::default()),
                 "--mcp-config",

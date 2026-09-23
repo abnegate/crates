@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_names_when_the_limit_resets_wherever_the_cli_put_it() {
+    fn a_refusal_quotes_its_report_with_the_reset_wherever_the_cli_put_it() {
         for line in [
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"exceeded","resetsAt":"2026-02-23T06:00:00Z","rateLimitType":"seven_day","utilization":1.0}}"#,
             r#"{"type":"rate_limit_event","resetsAt":"2026-02-23T06:00:00Z"}"#,
@@ -222,9 +222,9 @@ mod tests {
             let [AgentEvent::Failed(message)] = events.as_slice() else {
                 panic!("expected one failure for {line}, got {events:?}");
             };
-            assert!(message.contains("rate limit reached"), "{message}");
+            assert!(message.starts_with("rate limit reached: {"), "{message}");
             assert!(
-                message.contains("resets at 2026-02-23T06:00:00Z"),
+                message.contains(r#""resetsAt":"2026-02-23T06:00:00Z""#),
                 "{message}"
             );
         }
@@ -236,7 +236,7 @@ mod tests {
         );
         assert!(matches!(
             events.as_slice(),
-            [AgentEvent::Failed(message)] if message.contains("resets at 1772096400")
+            [AgentEvent::Failed(message)] if message.contains(r#""resetsAt":1772096400"#)
         ));
     }
 

@@ -1,4 +1,3 @@
-use std::fmt::Write;
 use std::time::Duration;
 
 use abnegate_llm::Usage;
@@ -12,8 +11,9 @@ use crate::parser::claude::rate_limit_info::RateLimitInfo;
 
 /// The wording a throttled run is reported with.
 ///
-/// A caller recognises a throttled run by the words in the failure, so this
-/// phrase is load-bearing and not decoration.
+/// A caller recognises a throttled run by the words in the failure, and finds
+/// when to try again in the `"resetsAt"` of the report quoted after them, so
+/// both are load-bearing and not decoration.
 const THROTTLED: &str = "rate limit reached";
 
 const FAILED: &str = "the agent reported a failed run";
@@ -162,18 +162,12 @@ fn conclusion(subtype: Option<String>, is_error: bool, result: Option<String>) -
     )
 }
 
-fn throttled(info: RateLimitInfo, resets_at: Option<serde_json::Value>) -> String {
-    let kind = info.kind.as_deref().unwrap_or("request");
-    let status = info.status.as_deref().unwrap_or("unreported");
-    let mut message = format!("{THROTTLED} ({kind}, {status}");
-    if let Some(reset) = info.resets_at.or(resets_at) {
-        let _ = match reset {
-            serde_json::Value::String(reset) => write!(message, ", resets at {reset}"),
-            reset => write!(message, ", resets at {reset}"),
-        };
+fn throttled(mut info: RateLimitInfo, resets_at: Option<serde_json::Value>) -> String {
+    if info.resets_at.is_none() {
+        info.resets_at = resets_at;
     }
-    message.push(')');
-    message
+    let report = serde_json::to_string(&info).unwrap_or_default();
+    format!("{THROTTLED}: {report}")
 }
 
 #[cfg(test)]

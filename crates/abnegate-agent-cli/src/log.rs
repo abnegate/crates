@@ -26,6 +26,9 @@ pub const EXECUTION_LOG_PREVIEW_LIMIT: usize = 2000;
 
 const ELLIPSIS: &str = "...";
 
+/// Logs hold what the agent read and said, so only their owner may read them.
+const PRIVATE: u32 = 0o600;
+
 /// The log root named by the environment variable `variable`, or
 /// [`DEFAULT_LOG_DIRECTORY`] when it is unset. A variable set to the empty
 /// string resolves to an empty path, which disables logging.

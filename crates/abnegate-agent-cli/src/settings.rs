@@ -13,8 +13,8 @@ use crate::mcp::McpServer;
 /// Five minutes, matching the default for any command `abnegate-exec` runs.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// A coding agent's stream is structured JSON, not build output, so the cap
-/// that matters is far below the ten megabytes allowed an arbitrary command.
+/// Far more prose than any answer needs, and far less than a runaway agent
+/// would otherwise hold in memory.
 pub const DEFAULT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 
 /// One event is a JSON object holding at most a turn's worth of text.
@@ -23,6 +23,10 @@ pub const DEFAULT_LINE_LIMIT: usize = 1024 * 1024;
 /// Claude Code's tools that read the workspace and the web but never change
 /// anything, for a run that must leave the repository as it found it.
 pub const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
+
+/// Claude Code's tools that change the workspace or run arbitrary commands,
+/// which a read-only run denies outright.
+pub const WRITE_TOOLS: [&str; 5] = ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit"];
 
 /// How a [`CliProvider`](crate::CliProvider) runs its agent.
 ///
@@ -37,7 +41,10 @@ pub struct CliSettings {
     pub working_directory: Option<PathBuf>,
     pub credential: Credential,
     pub timeout: Duration,
-    /// Bytes of stdout and stderr kept before the run is abandoned.
+    /// Bytes of the agent's prose, and of its diagnostics, kept. Prose past
+    /// the limit abandons the run as malformed; diagnostics past it are still
+    /// drained, and dropped. The stream around the prose is read to its end
+    /// whatever its size, since none of it is kept.
     pub output_limit: usize,
     /// Bytes one event may occupy before the stream is treated as malformed.
     pub line_limit: usize,
@@ -54,11 +61,20 @@ pub struct CliSettings {
     pub instructions: Option<String>,
     /// Tools the agent may use without asking. Claude only.
     pub permissions: Vec<String>,
+    /// Deny [`WRITE_TOOLS`] and refuse any flag that bypasses permission
+    /// prompts, so the run cannot change the workspace however it is asked
+    /// to. Claude only.
+    pub read_only: bool,
     /// MCP servers to attach, whose tools are allowed alongside
     /// `permissions`. Claude only.
     pub mcp: McpConfig,
     /// Where each run keeps its [execution logs](crate::log). `None` keeps none.
     pub log: Option<PathBuf>,
+    /// A stderr line this returns true for settles the run as failed, in the
+    /// line's own words, and the agent is stopped: an agent retrying against
+    /// a rate limit is stopped instead of waited on until the timeout. Stdout
+    /// is never checked, since the agent's prose can quote anything.
+    pub tripwire: Option<fn(&str) -> bool>,
 }
 
 impl Default for CliSettings {
@@ -75,8 +91,10 @@ impl Default for CliSettings {
             schema: None,
             instructions: None,
             permissions: Vec::new(),
+            read_only: false,
             mcp: McpConfig::default(),
             log: None,
+            tripwire: None,
         }
     }
 }
@@ -150,9 +168,11 @@ impl CliSettings {
         self
     }
 
-    /// Allow exactly [`READ_ONLY_TOOLS`], replacing any permission set so far.
+    /// Allow exactly [`READ_ONLY_TOOLS`], replacing any permission set so
+    /// far, and hold the run to [`CliSettings::read_only`].
     pub fn read_only(mut self) -> Self {
         self.permissions = READ_ONLY_TOOLS.map(str::to_string).to_vec();
+        self.read_only = true;
         self
     }
 
@@ -163,6 +183,11 @@ impl CliSettings {
 
     pub fn with_log(mut self, root: impl Into<PathBuf>) -> Self {
         self.log = Some(root.into());
+        self
+    }
+
+    pub fn with_tripwire(mut self, tripwire: fn(&str) -> bool) -> Self {
+        self.tripwire = Some(tripwire);
         self
     }
 }
@@ -195,8 +220,10 @@ mod tests {
         assert!(settings.schema.is_none());
         assert!(settings.instructions.is_none());
         assert!(settings.permissions.is_empty());
+        assert!(!settings.read_only);
         assert!(settings.mcp.is_empty());
         assert!(settings.log.is_none());
+        assert!(settings.tripwire.is_none());
     }
 
     #[test]
@@ -272,11 +299,21 @@ mod tests {
     }
 
     #[test]
+    fn a_tripwire_is_kept_as_given() {
+        let settings = CliSettings::default().with_tripwire(|line| line.contains("429"));
+        let tripwire = settings.tripwire.expect("a tripwire");
+
+        assert!(tripwire("HTTP 429 Too Many Requests"));
+        assert!(!tripwire("compiling"));
+    }
+
+    #[test]
     fn a_read_only_run_allows_exactly_the_read_only_tools() {
         let settings = CliSettings::default()
             .with_permissions(["Bash", "Edit"])
             .read_only();
 
+        assert!(settings.read_only);
         assert_eq!(settings.permissions, READ_ONLY_TOOLS);
         assert_eq!(
             READ_ONLY_TOOLS,

@@ -1,15 +1,18 @@
 //! Draining an agent's stderr.
 
 use abnegate_exec::executor::OutputLimiter;
-use abnegate_secret::redact;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::process::ChildStderr;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use crate::lines::Lines;
 use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
+use crate::scrubber::Scrubber;
+use crate::verdict::Verdict;
 
 const BUFFER: usize = 8 * 1024;
 
@@ -25,47 +28,79 @@ pub(crate) struct Diagnostics {
     limiter: OutputLimiter,
     journal: Journal,
     raw: Sink,
+    scrubber: Scrubber,
+    tripwire: Option<fn(&str) -> bool>,
+    verdicts: Option<mpsc::Sender<Verdict>>,
+    cancel: watch::Receiver<bool>,
     count: u64,
     collected: Vec<u8>,
 }
 
 impl Diagnostics {
-    pub(crate) fn new(line_limit: usize, output_limit: usize, journal: Journal, raw: Sink) -> Self {
+    pub(crate) fn new(
+        line_limit: usize,
+        output_limit: usize,
+        journal: Journal,
+        raw: Sink,
+        scrubber: Scrubber,
+        tripwire: Option<fn(&str) -> bool>,
+        verdicts: mpsc::Sender<Verdict>,
+        cancel: watch::Receiver<bool>,
+    ) -> Self {
         Self {
             lines: Lines::new(line_limit),
             framing: true,
             limiter: OutputLimiter::new(output_limit),
             journal,
             raw,
+            scrubber,
+            tripwire,
+            verdicts: Some(verdicts),
+            cancel,
             count: 0,
             collected: Vec::new(),
         }
     }
 
+    /// Everything kept, including when the read was cancelled part way.
     pub(crate) async fn run(mut self, stderr: Option<ChildStderr>) -> String {
-        if let Some(mut stderr) = stderr {
-            let mut buffer = [0_u8; BUFFER];
-            while let Ok(read) = stderr.read(&mut buffer).await {
-                if read == 0 {
-                    break;
-                }
-                let (accepted, count, _) = self.limiter.check(read);
-                if accepted {
-                    self.keep(&buffer[..count]).await;
-                }
-            }
-            if self.framing
-                && let Ok(Some(line)) = self.lines.flush()
-            {
-                self.line(line).await;
-            }
+        if let Some(stderr) = stderr {
+            self.read(stderr).await;
         }
 
         self.journal
             .append(Record::StderrClosed, json!({ "line_count": self.count }))
             .await;
         self.raw.finish().await;
-        redact(&String::from_utf8_lossy(&self.collected)).into_owned()
+        self.scrubber
+            .scrub(&String::from_utf8_lossy(&self.collected))
+            .into_owned()
+    }
+
+    async fn read(&mut self, mut stderr: ChildStderr) {
+        let mut buffer = [0_u8; BUFFER];
+        loop {
+            let read = tokio::select! {
+                biased;
+                _ = self.cancel.changed() => return,
+                read = stderr.read(&mut buffer) => read,
+            };
+            let Ok(read) = read else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            let (accepted, count, _) = self.limiter.check(read);
+            if accepted {
+                self.keep(&buffer[..count]).await;
+            }
+        }
+        if self.framing
+            && let Ok(Some(line)) = self.lines.flush()
+        {
+            self.line(line).await;
+        }
     }
 
     async fn keep(&mut self, chunk: &[u8]) {
@@ -89,15 +124,21 @@ impl Diagnostics {
 
     async fn line(&mut self, line: String) {
         self.count += 1;
-        let line = redact(&line);
-        tracing::debug!(line = %line, "agent stderr");
-        self.raw.write(line.as_bytes()).await;
+        let scrubbed = self.scrubber.scrub(&line).into_owned();
+        if self.tripwire.is_some_and(|tripwire| tripwire(&line))
+            && let Some(verdicts) = self.verdicts.take()
+        {
+            let _ = verdicts.try_send(Verdict::Failed(scrubbed.clone()));
+        }
+
+        tracing::debug!(line = %scrubbed, "agent stderr");
+        self.raw.write(scrubbed.as_bytes()).await;
         self.raw.write(b"\n").await;
         if self.journal.enabled() {
             self.journal
                 .append(
                     Record::StderrLine,
-                    json!({ "line_number": self.count, "line": line }),
+                    json!({ "line_number": self.count, "line": scrubbed }),
                 )
                 .await;
         }

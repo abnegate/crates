@@ -9,9 +9,11 @@
 //! stdin, reads the agent's newline-delimited JSON as it streams, and returns
 //! its final prose as a completion. Output is framed by [`Lines`] with a cap
 //! on any one event, parsed by the agent's own parser in [`parser`] into
-//! [`AgentEvent`]s, and folded into a [`StdoutParseResult`]. An agent that
-//! reports a failure, overruns its output limits or outlives its timeout is
-//! stopped along with every process it forked.
+//! [`AgentEvent`]s, and folded into a [`StdoutParseResult`]. Once the stream
+//! settles the run — the turn finished, the agent reported a failure, or a
+//! diagnostic tripped the caller's [`CliSettings::tripwire`] — an agent that
+//! does not exit by itself is stopped, and a run that fails in any way takes
+//! every process the agent forked with it.
 //!
 //! [`CliProvider::execute`] returns the whole [`Execution`] for a caller that
 //! needs more than prose: the answer to a [`StructuredResult::SCHEMA`], the
@@ -72,11 +74,13 @@ mod provider;
 mod question;
 mod reader;
 mod reaper;
+mod scrubber;
 mod settings;
 mod stdout_parse_result;
 pub mod stream;
 mod structured_result;
-mod transcript;
+pub mod transcript;
+mod verdict;
 
 pub use crate::delivery::Delivery;
 pub use crate::error::Overlong;
@@ -96,8 +100,8 @@ pub use crate::provider::CliProvider;
 pub use crate::question::BlockingQuestion;
 pub use crate::settings::{
     CliSettings, DEFAULT_LINE_LIMIT, DEFAULT_OUTPUT_LIMIT, DEFAULT_TIMEOUT, READ_ONLY_TOOLS,
+    WRITE_TOOLS,
 };
 pub use crate::stdout_parse_result::StdoutParseResult;
 pub use crate::stream::{ApiContentBlock, ApiDelta, ApiStreamEvent};
 pub use crate::structured_result::StructuredResult;
-pub use crate::transcript::render;

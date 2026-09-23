@@ -8,6 +8,8 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
+use crate::log::PRIVATE;
+
 /// An append-only JSONL account of one run, shared by the tasks that drive it.
 ///
 /// A disabled journal accepts every entry and writes none, so a caller never
@@ -32,6 +34,7 @@ impl Journal {
         match OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(PRIVATE)
             .open(path)
             .await
         {
@@ -133,6 +136,24 @@ mod tests {
             chrono::DateTime::parse_from_rfc3339(entry["timestamp"].as_str().expect("a time"))
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_can_read_a_journal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TempDir::new().expect("a temporary directory");
+        let path = directory.path().join("events.jsonl");
+        Journal::open(&path, "private")
+            .await
+            .append(Record::Initialized, json!({}))
+            .await;
+
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[tokio::test]

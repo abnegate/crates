@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
+use abnegate_secret::redact;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Map;
@@ -83,19 +84,25 @@ impl McpServer {
         Value::Object(entry)
     }
 
-    /// This server for a log line: structure intact, and every environment
-    /// or header value masked unless it is nothing but a `${VAR}` reference,
-    /// which names a secret without holding one.
+    /// This server for a log line: structure intact, every environment or
+    /// header value masked unless it is nothing but a `${VAR}` reference,
+    /// which names a secret without holding one, and anything credential
+    /// shaped in the arguments or the URL redacted.
     pub(crate) fn redacted(&self) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
+            let arguments: Vec<_> = self
+                .arguments
+                .iter()
+                .map(|argument| redact(argument))
+                .collect();
             entry.insert("command".to_string(), json!(command));
-            entry.insert("args".to_string(), json!(self.arguments));
+            entry.insert("args".to_string(), json!(arguments));
             if !self.environment.is_empty() {
                 entry.insert("env".to_string(), masked(&self.environment));
             }
         } else if let Some(url) = &self.url {
-            entry.insert("url".to_string(), json!(url));
+            entry.insert("url".to_string(), json!(redact(url)));
             if !self.headers.is_empty() {
                 entry.insert("headers".to_string(), masked(&self.headers));
             }
@@ -352,6 +359,24 @@ mod tests {
         assert_eq!(view["headers"]["X-Token"], "${TOKEN}");
         assert_eq!(view["url"], "https://example.com/mcp");
         assert_eq!(view["type"], "http");
+    }
+
+    #[test]
+    fn a_log_view_redacts_credentials_in_arguments_and_urls() {
+        let key = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let stdio = McpServer {
+            arguments: vec!["--api-key".to_string(), key.to_string()],
+            ..stdio()
+        };
+        let remote = McpServer {
+            url: Some(format!("https://example.com/mcp?token={key}")),
+            ..McpServer::default()
+        };
+
+        for view in [stdio.redacted(), remote.redacted()] {
+            assert!(!view.to_string().contains("sk-ant-api03-AAAA"), "{view}");
+        }
+        assert_eq!(stdio.redacted()["args"][0], "--api-key");
     }
 
     #[test]

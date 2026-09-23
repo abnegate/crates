@@ -13,14 +13,14 @@ use abnegate_llm::ExitStatus;
 use abnegate_llm::Message;
 use abnegate_llm::ProviderError;
 use abnegate_llm::ProviderKind;
-use abnegate_secret::redact;
 use async_trait::async_trait;
 use serde_json::json;
 use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 use tokio::process::Command;
-use tokio::sync::oneshot;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio::time::timeout;
@@ -38,13 +38,16 @@ use crate::log::preview;
 use crate::outcome::Outcome;
 use crate::reader::Reader;
 use crate::reaper::Reaper;
+use crate::scrubber::Scrubber;
 use crate::settings::CliSettings;
 use crate::transcript;
+use crate::verdict::Verdict;
 
 const NO_DIAGNOSTICS: &str = "the agent produced no diagnostics";
 const UNFINISHED: &str = "the agent exited without completing its event stream";
 const UNCLOSED: &str = "the agent's output stayed open after it exited";
 const UNSTOPPABLE: &str = "the agent could not be stopped";
+const LINGERED: &str = "the agent finished its turn but did not exit";
 
 /// Drives a coding agent CLI as a completion provider.
 ///
@@ -61,9 +64,8 @@ const UNSTOPPABLE: &str = "the agent could not be stopped";
 /// all network access and grants `process-exec` for a single literal command,
 /// and a coding agent needs the network to reach its own API and forks a tree
 /// of helper processes to do its work. It does reuse that crate's
-/// process-group termination and output caps, so an agent that times out, or
-/// is abandoned after reporting a failure, takes its whole process tree with
-/// it.
+/// process-group termination and output caps, so a run that times out or
+/// fails takes the agent's whole process tree with it.
 #[derive(Debug)]
 pub struct CliProvider {
     name: String,
@@ -92,17 +94,21 @@ impl CliProvider {
     /// Run the agent once and report everything it did, with `label` naming
     /// the run in its execution logs.
     ///
-    /// A run that exits on its own, or is stopped after the agent reports a
-    /// failure, is an [`Execution`] however it ended; judging it is left to
-    /// the caller, as [`CompletionProvider::complete`] does. What fails here
-    /// is only what leaves nothing to judge: settings the agent cannot honour,
-    /// an agent that cannot be started, one that outlives its timeout, and
-    /// output that cannot be read as the agent's stream.
+    /// A run that exits on its own, or is stopped once its output settled it,
+    /// is an [`Execution`] however it ended; judging it is left to the caller,
+    /// as [`CompletionProvider::complete`] does. What fails here is only what
+    /// leaves nothing to judge: settings the agent cannot honour, an agent
+    /// that cannot be started, one that outlives its timeout, and output that
+    /// cannot be read as the agent's stream.
+    ///
+    /// Only a run that succeeded leaves behind what the agent forked. Any
+    /// other takes the agent's whole process group with it.
     pub async fn execute(
         &self,
         request: CompletionRequest<'_>,
         label: &str,
     ) -> Result<Execution, ProviderError> {
+        let scrubber = Scrubber::new(&self.settings);
         let mcp = self.attach();
         let options = self
             .agent
@@ -118,7 +124,10 @@ impl CliProvider {
             Some(files) => Journal::open(&files.events, label).await,
             None => Journal::disabled(),
         };
-        let logged: Vec<_> = arguments.iter().map(|argument| redact(argument)).collect();
+        let logged: Vec<_> = arguments
+            .iter()
+            .map(|argument| scrubber.scrub(argument))
+            .collect();
         journal
             .append(
                 Record::Initialized,
@@ -170,7 +179,8 @@ impl CliProvider {
             }
         });
 
-        let (stop, mut stopped) = oneshot::channel();
+        let (verdicts, mut settled) = mpsc::channel(2);
+        let (cancel, cancelled) = watch::channel(false);
         let prose = Sink::open(files.as_ref().map(|files| files.stdout.as_path())).await;
         let raw = Sink::open(files.as_ref().map(|files| files.stderr.as_path())).await;
         let mut reader = tokio::spawn(
@@ -180,7 +190,9 @@ impl CliProvider {
                 self.settings.output_limit,
                 journal.clone(),
                 prose,
-                stop,
+                scrubber.clone(),
+                verdicts.clone(),
+                cancelled.clone(),
             )
             .run(child.stdout.take()),
         );
@@ -190,6 +202,10 @@ impl CliProvider {
                 self.settings.output_limit,
                 journal.clone(),
                 raw,
+                scrubber.clone(),
+                self.settings.tripwire,
+                verdicts,
+                cancelled,
             )
             .run(child.stderr.take()),
         );
@@ -202,12 +218,13 @@ impl CliProvider {
             }
         };
         let outcome = tokio::select! {
+            biased;
             status = child.wait() => Outcome::Exited(status),
+            Some(verdict) = settled.recv() => Outcome::Settled(verdict),
             () = expiry => Outcome::TimedOut,
-            Ok(reason) = &mut stopped => Outcome::Abandoned(reason),
         };
 
-        let status = match self
+        let (status, stopped) = match self
             .settle(
                 outcome,
                 &mut child,
@@ -218,7 +235,7 @@ impl CliProvider {
             )
             .await
         {
-            Ok(status) => status,
+            Ok(settlement) => settlement,
             Err(error) => {
                 writer.abort();
                 reader.abort();
@@ -232,19 +249,24 @@ impl CliProvider {
             .await;
 
         writer.abort();
-        let stdout = drain(&mut reader, reaper.group())
-            .await
-            .and_then(|read| read)
-            .map_err(|message| ProviderError::malformed(&self.name, message))?;
-        let stderr = drain(&mut diagnostics, reaper.group())
+        let stdout = match drain(&mut reader, reaper.group(), &cancel).await {
+            Ok(Ok(stdout)) => stdout,
+            Ok(Err(message)) | Err(message) => {
+                diagnostics.abort();
+                return Err(ProviderError::malformed(&self.name, message));
+            }
+        };
+        let stderr = drain(&mut diagnostics, reaper.group(), &cancel)
             .await
             .unwrap_or_default();
-        reaper.disarm();
+        if status == ExitStatus::Code(0) && stdout.failure.is_none() && stopped.is_none() {
+            reaper.disarm();
+        }
 
         let failure = stdout
             .failure
             .as_deref()
-            .map(|failure| preview(&redact(failure), EXECUTION_LOG_PREVIEW_LIMIT));
+            .map(|failure| preview(failure, EXECUTION_LOG_PREVIEW_LIMIT));
         journal
             .append(
                 Record::Completed,
@@ -255,6 +277,7 @@ impl CliProvider {
                     "finished": stdout.finished,
                     "has_structured_result": stdout.structured.is_some(),
                     "failure": failure,
+                    "stopped": stopped,
                 }),
             )
             .await;
@@ -263,12 +286,13 @@ impl CliProvider {
             stdout,
             stderr,
             status,
+            stopped,
             log: files,
         })
     }
 
     /// Carry the wait through to an exit status, stopping the agent when the
-    /// wait ended without one.
+    /// wait ended without one, and say why it was stopped when it was.
     async fn settle(
         &self,
         outcome: Outcome,
@@ -277,15 +301,15 @@ impl CliProvider {
         journal: &Journal,
         deadline: Option<Instant>,
         label: &str,
-    ) -> Result<std::process::ExitStatus, ProviderError> {
-        match outcome {
-            Outcome::Exited(Ok(status)) => Ok(status),
+    ) -> Result<(std::process::ExitStatus, Option<String>), ProviderError> {
+        let verdict = match outcome {
+            Outcome::Exited(Ok(status)) => return Ok((status, None)),
             Outcome::Exited(Err(error)) => {
                 journal
                     .append(Record::WaitFailed, json!({ "error": error.to_string() }))
                     .await;
                 stop_agent(child, group).await;
-                Err(ProviderError::malformed(&self.name, error))
+                return Err(ProviderError::malformed(&self.name, error));
             }
             Outcome::TimedOut => {
                 journal
@@ -296,31 +320,42 @@ impl CliProvider {
                     .await;
                 tracing::warn!(provider = %self.name, label, "agent timed out; stopping its process group");
                 stop_agent(child, group).await;
-                Err(ProviderError::Timeout {
+                return Err(ProviderError::Timeout {
                     provider: self.name.clone(),
                     seconds: self.settings.timeout.as_secs(),
-                })
+                });
             }
-            Outcome::Abandoned(reason) => {
-                let reason = preview(&redact(&reason), EXECUTION_LOG_PREVIEW_LIMIT);
+            Outcome::Settled(verdict) => verdict,
+        };
+
+        let reason = match &verdict {
+            Verdict::Finished => LINGERED.to_string(),
+            Verdict::Failed(reason) => {
+                let reason = preview(reason, EXECUTION_LOG_PREVIEW_LIMIT);
                 journal
                     .append(Record::Abandoned, json!({ "reason": reason }))
                     .await;
-                tracing::warn!(provider = %self.name, label, "abandoning the run; stopping the agent");
-                let grace = Instant::now() + GRACE_PERIOD;
-                let patience = deadline.map_or(grace, |deadline| deadline.min(grace));
-                let status = match timeout_at(patience, child.wait()).await {
-                    Ok(Ok(status)) => Some(status),
-                    _ => stop_agent(child, group).await,
-                };
-                let status =
-                    status.ok_or_else(|| ProviderError::malformed(&self.name, UNSTOPPABLE))?;
-                journal
-                    .append(Record::Stopped, json!({ "exit_code": status.code() }))
-                    .await;
-                Ok(status)
+                tracing::warn!(provider = %self.name, label, "the run failed while the agent was running; stopping it");
+                reason
             }
+        };
+
+        let grace = Instant::now() + GRACE_PERIOD;
+        let patience = deadline.map_or(grace, |deadline| deadline.min(grace));
+        if let Ok(Ok(status)) = timeout_at(patience, child.wait()).await {
+            return Ok((status, None));
         }
+
+        let status = stop_agent(child, group)
+            .await
+            .ok_or_else(|| ProviderError::malformed(&self.name, UNSTOPPABLE))?;
+        journal
+            .append(
+                Record::Stopped,
+                json!({ "exit_code": status.code(), "reason": reason }),
+            )
+            .await;
+        Ok((status, Some(reason)))
     }
 
     fn assemble(&self, execution: Execution) -> Result<Completion, ProviderError> {
@@ -328,26 +363,30 @@ impl CliProvider {
             stdout,
             stderr,
             status,
+            stopped,
             ..
         } = execution;
 
+        // The agent's own report of what went wrong beats an exit code, which
+        // says only that something did.
         if let Some(message) = &stdout.failure {
             return Err(ProviderError::agent(&self.name, message));
         }
 
-        if status != ExitStatus::Code(0) {
-            let message = if stderr.trim().is_empty() {
-                NO_DIAGNOSTICS
-            } else {
-                &stderr
-            };
-            return Err(ProviderError::exit(&self.name, status, message));
-        }
-
-        // A clean exit is not proof of a finished turn. An agent killed
-        // between its last token and its result line still exits zero.
-        if !stdout.finished {
-            return Err(ProviderError::agent(&self.name, UNFINISHED));
+        match (stopped, stdout.finished) {
+            (Some(reason), false) => return Err(ProviderError::agent(&self.name, &reason)),
+            (None, _) if status != ExitStatus::Code(0) => {
+                let message = if stderr.trim().is_empty() {
+                    NO_DIAGNOSTICS.to_string()
+                } else {
+                    preview(&stderr, EXECUTION_LOG_PREVIEW_LIMIT)
+                };
+                return Err(ProviderError::exit(&self.name, status, &message));
+            }
+            // A clean exit is not proof of a finished turn. An agent killed
+            // between its last token and its result line still exits zero.
+            (None, false) => return Err(ProviderError::agent(&self.name, UNFINISHED)),
+            (_, true) => {}
         }
 
         Ok(Completion {
@@ -489,22 +528,27 @@ async fn stop_agent(
 /// A reader's result once the agent has exited.
 ///
 /// A descendant that outlived the agent can still hold its output open, and a
-/// reader waiting for that end of file would wait forever. Such stragglers
-/// get the grace period to finish, then the rest of the group is killed.
-async fn drain<T>(task: &mut JoinHandle<T>, group: Option<&ProcessGroup>) -> Result<T, String> {
+/// reader waiting for that end of file would wait forever. Such stragglers get
+/// the grace period to finish, then the rest of the group is killed, and a
+/// reader still held open by something outside the group is told to stop with
+/// what it has.
+async fn drain<T>(
+    task: &mut JoinHandle<T>,
+    group: Option<&ProcessGroup>,
+    cancel: &watch::Sender<bool>,
+) -> Result<T, String> {
     if let Ok(joined) = timeout(GRACE_PERIOD, &mut *task).await {
         return joined.map_err(|error| error.to_string());
     }
     if let Some(group) = group {
         let _ = group.kill();
     }
-    match timeout(GRACE_PERIOD, &mut *task).await {
-        Ok(joined) => joined.map_err(|error| error.to_string()),
-        Err(_) => {
-            task.abort();
-            Err(UNCLOSED.to_string())
-        }
+    if let Ok(joined) = timeout(GRACE_PERIOD, &mut *task).await {
+        return joined.map_err(|error| error.to_string());
     }
+    tracing::warn!("{UNCLOSED}; keeping what was read");
+    let _ = cancel.send(true);
+    task.await.map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -584,6 +628,14 @@ mod tests {
                 Err(_) => return,
             }
         }
+    }
+
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
     }
 
     fn settings(directory: &TempDir, script: &str) -> CliSettings {
@@ -782,7 +834,7 @@ sleep 120
         };
         assert!(message.contains("rate limit reached"), "{message}");
         assert!(message.contains("five_hour"), "{message}");
-        assert!(message.contains("1772096400"), "{message}");
+        assert!(message.contains(r#""resetsAt":1772096400"#), "{message}");
     }
 
     #[tokio::test]
@@ -1076,10 +1128,15 @@ echo '{"type":"turn.completed","usage":{"input_tokens":40,"output_tokens":8}}'
     }
 
     #[tokio::test]
-    async fn output_past_the_limit_abandons_the_run() {
+    async fn prose_past_the_limit_abandons_the_run() {
         let directory = TempDir::new().expect("a temporary directory");
-        let settings = settings(&directory, "yes '{\"type\":\"user\"}' | head -c 100000")
-            .with_output_limit(1024);
+        let script = r#"
+for i in $(seq 1 100); do
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"0123456789012345678901234567890123456789"}]}}'
+done
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let settings = settings(&directory, script).with_output_limit(1024);
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
         let error = run(&provider, &[Message::user("hi")])
@@ -1087,9 +1144,229 @@ echo '{"type":"turn.completed","usage":{"input_tokens":40,"output_tokens":8}}'
             .expect_err("a failure");
 
         assert!(
-            matches!(&error, ProviderError::Malformed { message, .. } if message.contains("exceeded 1024 bytes")),
+            matches!(&error, ProviderError::Malformed { message, .. } if message.contains("prose exceeded 1024 bytes")),
             "expected an overflow, got {error:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_long_stream_around_short_prose_is_not_mistaken_for_runaway_output() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+yes '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"0123456789012345678901234567890123456789"}]}}' | head -n 2000
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"All read."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let settings = settings(&directory, script).with_output_limit(1024);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some("All read."));
+    }
+
+    #[tokio::test]
+    async fn a_finished_agent_that_will_not_exit_still_answers() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false}'
+sleep 120
+"#;
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
+
+        let started = Instant::now();
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "waited {:?} on a finished agent",
+            started.elapsed()
+        );
+        assert_eq!(
+            execution.stopped.as_deref(),
+            Some("the agent finished its turn but did not exit")
+        );
+        assert_eq!(execution.stdout.text, "Done.");
+
+        let completion = provider.assemble(execution).expect("the finished answer");
+        assert_eq!(completion.message.content.as_deref(), Some("Done."));
+    }
+
+    #[tokio::test]
+    async fn a_failed_run_takes_what_the_agent_forked_with_it() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("straggler");
+        let script = format!(
+            r#"sleep 60 >/dev/null 2>&1 &
+echo $! > '{}'
+echo '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour"}}}}'"#,
+            marker.display()
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a failure");
+        assert!(error.to_string().contains("rate limit reached"), "{error}");
+
+        let straggler = std::fs::read_to_string(&marker)
+            .expect("the straggler's pid")
+            .trim()
+            .to_string();
+        let started = Instant::now();
+        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !alive(&straggler),
+            "the failed run left {straggler} running"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_run_leaves_what_the_agent_forked_alone() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("server");
+        let script = format!(
+            r#"sleep 60 >/dev/null 2>&1 &
+echo $! > '{}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            marker.display()
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let server = std::fs::read_to_string(&marker)
+            .expect("the server's pid")
+            .trim()
+            .to_string();
+        assert!(alive(&server), "a successful run killed {server}");
+        let _ = std::process::Command::new("kill").arg(&server).status();
+    }
+
+    #[tokio::test]
+    async fn output_held_open_outside_the_group_keeps_what_was_read() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("escaped");
+        let script = format!(
+            r#"perl -e 'use POSIX qw(setsid); setsid(); open(my $file, ">", $ARGV[0]) or die; print $file $$; close($file); sleep 60' '{}' &
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Kept."}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            marker.display()
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+
+        let started = Instant::now();
+        let completion = run(&provider, &[Message::user("hi")]).await;
+
+        let escaped = std::fs::read_to_string(&marker).unwrap_or_default();
+        let _ = std::process::Command::new("kill")
+            .arg(escaped.trim())
+            .status();
+        assert_eq!(
+            completion.expect("an answer").message.content.as_deref(),
+            Some("Kept.")
+        );
+        assert!(started.elapsed() < Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn a_tripwire_on_stderr_stops_an_agent_retrying_against_a_limit() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = "echo 'API Error: 429 Too Many Requests, retrying in 60s' >&2
+sleep 120";
+        let settings = settings(&directory, script)
+            .with_timeout(Duration::from_secs(90))
+            .with_tripwire(|line| line.contains("429"));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let started = Instant::now();
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a failure");
+
+        assert!(started.elapsed() < Duration::from_secs(60));
+        let ProviderError::Agent { message, .. } = &error else {
+            panic!("expected the tripped line as the failure, got {error:?}");
+        };
+        assert!(message.contains("429 Too Many Requests"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn stdout_never_trips_the_tripwire() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"The handler returns 429."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let settings = settings(&directory, script).with_tripwire(|line| line.contains("429"));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+        assert_eq!(
+            completion.message.content.as_deref(),
+            Some("The handler returns 429.")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_secret_that_does_not_look_like_one_is_scrubbed_everywhere() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let script = r#"
+echo "login failed for $DB_PASSWORD" >&2
+printf '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"rejected %s"}
+' "$DB_PASSWORD"
+"#;
+        let settings = settings(&directory, script)
+            .with_log(&root)
+            .with_credential(Credential::key("DB_PASSWORD", "correct-horse-battery"));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(
+            execution.stdout.failure.as_deref(),
+            Some("rejected [REDACTED]")
+        );
+        assert!(!execution.stderr.contains("correct-horse-battery"));
+        let files = execution.log.clone().expect("log files");
+        for path in [&files.stdout, &files.stderr, &files.events] {
+            let contents = std::fs::read_to_string(path).expect("a log file");
+            assert!(
+                !contents.contains("correct-horse-battery"),
+                "{} leaked the secret",
+                path.display()
+            );
+        }
+        let error = provider.assemble(execution).expect_err("a failure");
+        assert!(!error.to_string().contains("correct-horse-battery"));
+    }
+
+    #[tokio::test]
+    async fn a_long_diagnostic_is_cut_down_in_the_error_but_kept_in_the_execution() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = "head -c 10000 /dev/zero | tr '\\0' 'e' >&2
+exit 2";
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+        assert_eq!(execution.stderr.len(), 10_000);
+
+        let error = provider.assemble(execution).expect_err("a failure");
+        let ProviderError::Exit { message, .. } = &error else {
+            panic!("expected an exit failure, got {error:?}");
+        };
+        assert!(message.len() <= 2000, "{} bytes", message.len());
+        assert!(message.ends_with("..."));
     }
 
     #[tokio::test]
