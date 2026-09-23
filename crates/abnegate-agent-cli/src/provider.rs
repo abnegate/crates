@@ -1413,6 +1413,32 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
     }
 
     #[tokio::test]
+    async fn an_oversized_tool_call_is_dropped_and_the_run_goes_on() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = format!(
+            r#"{}
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Wrote the file."}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            oversized(
+                r#"{"type":"assistant","message":{"id":"msg_1","type":"message","content":[{"type":"tool_use","id":"toolu_01","name":"Write","input":{"file_path":"/w/big.rs","content":""#,
+                r#""}}]}}"#,
+            )
+        );
+        let settings = settings(&directory, &script).with_line_limit(1024);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(execution.stdout.dropped, 1);
+        assert!(execution.stdout.finished);
+        let completion = provider.assemble(execution).expect("an answer");
+        assert_eq!(
+            completion.message.content.as_deref(),
+            Some("Wrote the file.")
+        );
+    }
+
+    #[tokio::test]
     async fn an_oversized_result_or_reply_is_reported_as_malformed_output() {
         let directory = TempDir::new().expect("a temporary directory");
         for (event, filler) in [
@@ -1930,16 +1956,20 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
 
     /// A stand-in for Claude that loads the repository's own settings, and
     /// runs the hook they declare, unless `--setting-sources` leaves the
-    /// project out, as the real CLI does.
+    /// project out or `--restricted` leaves every settings file out, as the
+    /// real CLI does.
     fn honouring_project_settings(captured: &Path) -> String {
         format!(
             r#"printf '%s\n' "$@" > '{captured}'
 sources=user,project,local
 previous=
+restricted=
 for argument in "$@"; do
   if [ "$previous" = "--setting-sources" ]; then sources="$argument"; fi
+  if [ "$argument" = "--restricted" ]; then restricted=1; fi
   previous="$argument"
 done
+[ -n "$restricted" ] && sources=
 case ",$sources," in
   *,project,*)
     hook=$(sed -n 's/.*"command": *"\([^"]*\)".*/\1/p' .claude/settings.json)
@@ -1983,9 +2013,10 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             .collect();
         for expected in [
             ["--setting-sources", "user"],
-            ["--tools", "Read,Grep,Glob,WebFetch,WebSearch"],
+            ["--tools", "Read,Grep,Glob"],
             ["--permission-mode", "dontAsk"],
             ["--permission-prompts", "none"],
+            ["--allowedTools", "Read(./**)"],
         ] {
             assert!(
                 arguments.windows(2).any(|pair| pair == expected),
@@ -1993,6 +2024,11 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             );
         }
         assert!(arguments.contains(&"--strict-mcp-config".to_string()));
+        assert!(arguments.contains(&"--restricted".to_string()));
+        assert!(
+            !arguments.iter().any(|argument| argument.contains("Web")),
+            "{arguments:?}"
+        );
         assert!(!arguments.iter().any(|argument| argument == "--settings"));
     }
 
@@ -2217,6 +2253,61 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
         let rendered = error.to_string();
         assert!(!rendered.contains("word-123"), "{rendered}");
         assert!(!rendered.contains("zq7x"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn a_secret_streamed_in_pieces_never_reaches_the_journal() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let secret = "Xk9Qz7Vw2Lp4";
+        let script = r#"
+rest="$SERVICE_TOKEN"
+while [ -n "$rest" ]; do
+  piece=$(printf '%s' "$rest" | cut -c1-3)
+  rest=$(printf '%s' "$rest" | cut -c4-)
+  printf '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"%s"}},"session_id":"6f1"}\n' "$piece"
+done
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"token %s"}]}}\n' "$SERVICE_TOKEN"
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let settings = settings(&directory, script)
+            .with_log(&root)
+            .with_arguments(["--include-partial-messages"])
+            .with_environment("SERVICE_TOKEN", secret);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        let files = execution.log.clone().expect("log files");
+        let journal: Vec<Value> = std::fs::read_to_string(&files.events)
+            .expect("the journal")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a JSON line"))
+            .collect();
+        let streamed: String = journal
+            .iter()
+            .filter_map(|entry| entry["data"]["line"].as_str())
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|line| line["event"]["delta"]["text"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            !streamed.contains(secret),
+            "the journal holds the secret in pieces: {streamed}"
+        );
+        let contents = std::fs::read_to_string(&files.events).expect("the journal");
+        for piece in ["Xk9", "Qz7", "Vw2", "Lp4"] {
+            assert!(!contents.contains(piece), "{piece} reached the journal");
+        }
+        let closed = journal
+            .iter()
+            .find(|entry| entry["event"] == "stdout_stream_closed")
+            .expect("the stream's close");
+        assert_eq!(closed["data"]["line_count"], 6);
+        assert_eq!(closed["data"]["partial_line_count"], 4);
+        assert_eq!(
+            std::fs::read_to_string(&files.stdout).expect("the prose log"),
+            "token [REDACTED]"
+        );
     }
 
     #[tokio::test]

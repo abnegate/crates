@@ -19,14 +19,16 @@
 //! needs more than prose: the answer to a [`StructuredResult::SCHEMA`], the
 //! session to resume, the cost, and where the run's [`log`] files are. A
 //! Claude run can attach [`mcp`] servers and restrict its tools, or be
-//! confined to reading with [`CliSettings::read_only`], and
+//! confined to reading its working directory with
+//! [`CliSettings::read_only`], and
 //! [`BlockingQuestion`] recovers a question the agent stopped to ask.
 //! [`stream`] reads the raw Messages API stream the CLI is built on.
 //!
 //! The agent is given only [`INHERITED_VARIABLES`] from this process's
 //! environment, plus what the settings hand it, and every secret it is
-//! handed is scrubbed from what the run writes down, in the forms an agent
-//! echoes it in.
+//! handed is scrubbed from what the run writes down, as written,
+//! JSON-escaped or percent-encoded. A secret the agent re-encodes any other
+//! way, such as in base64, is not recognised.
 //!
 //! ```no_run
 //! use abnegate_agent_cli::AgentKind;
@@ -132,6 +134,7 @@ pub use crate::settings::INHERITED_VARIABLES;
 pub use crate::settings::READ_ONLY_OPTIONS;
 pub use crate::settings::READ_ONLY_SWITCHES;
 pub use crate::settings::READ_ONLY_TOOLS;
+pub use crate::settings::WEB_TOOLS;
 pub use crate::stdout_parse_result::StdoutParseResult;
 pub use crate::stream::ApiContentBlock;
 pub use crate::stream::ApiDelta;

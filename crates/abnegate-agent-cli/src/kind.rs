@@ -16,6 +16,7 @@ use crate::settings::CliSettings;
 use crate::settings::READ_ONLY_OPTIONS;
 use crate::settings::READ_ONLY_SWITCHES;
 use crate::settings::READ_ONLY_TOOLS;
+use crate::settings::WEB_TOOLS;
 
 const MODEL: &str = "--model";
 const MCP_CONFIG: &str = "--mcp-config";
@@ -25,6 +26,7 @@ const APPEND_SYSTEM_PROMPT_FILE: &str = "--append-system-prompt-file";
 const ALLOWED_TOOLS: &str = "--allowedTools";
 const TOOLS: &str = "--tools";
 const TOOL_SEPARATOR: &str = ",";
+const RESTRICTED: &str = "--restricted";
 const SETTING_SOURCES: &str = "--setting-sources";
 const USER_SETTINGS: &str = "user";
 const PERMISSION_MODE: &str = "--permission-mode";
@@ -33,6 +35,12 @@ const PERMISSION_PROMPTS: &str = "--permission-prompts";
 const NOBODY: &str = "none";
 const FLAG: &str = "-";
 const INLINE_VALUE: char = '=';
+
+/// The one rule a read-only run allows its file tools under: a read of
+/// anything inside the working directory. The CLI matches file paths against
+/// `Read` rules alone, for `Grep` and `Glob` too, and a path given to either
+/// of those in a rule of its own is never matched.
+const WORKSPACE_READS: &str = "Read(./**)";
 
 /// A coding agent CLI.
 ///
@@ -170,7 +178,10 @@ impl AgentKind {
                 let unsupported = [
                     (settings.schema.is_some(), JSON_SCHEMA),
                     (settings.instructions.is_some(), APPEND_SYSTEM_PROMPT_FILE),
-                    (!settings.permissions.is_empty(), ALLOWED_TOOLS),
+                    (
+                        !settings.permissions.is_empty() || settings.web,
+                        ALLOWED_TOOLS,
+                    ),
                     (settings.read_only, TOOLS),
                     (!settings.mcp.is_empty(), MCP_CONFIG),
                 ]
@@ -208,6 +219,16 @@ impl AgentKind {
         }
     }
 
+    /// Whether `line` is a partial message: a piece of an event the stream
+    /// repeats whole once it is complete, which is never journaled, since a
+    /// secret split across pieces is scrubbed from none of them.
+    pub fn partial(self, line: &str) -> bool {
+        match self {
+            Self::Claude => parser::claude::partial(line),
+            Self::Codex => false,
+        }
+    }
+
     fn streaming(self) -> &'static [&'static str] {
         match self {
             Self::Claude => &["--verbose", "--output-format", "stream-json"],
@@ -242,8 +263,8 @@ fn claude_options(
         options.push(STRICT_MCP_CONFIG.to_string());
     }
     if settings.read_only {
-        options.extend([SETTING_SOURCES, USER_SETTINGS, TOOLS].map(str::to_string));
-        options.push(available_tools(&allowed));
+        options.extend([RESTRICTED, SETTING_SOURCES, USER_SETTINGS, TOOLS].map(str::to_string));
+        options.push(available_tools(settings));
         options.extend(
             [PERMISSION_MODE, DENY_UNLISTED, PERMISSION_PROMPTS, NOBODY].map(str::to_string),
         );
@@ -267,38 +288,69 @@ fn claude_options(
     Ok(options)
 }
 
-/// The permissions and attached MCP tools, each once. A read-only run
-/// allows a server's tools only where it names them, and refuses any
-/// permission that is neither a read-only tool nor one named MCP tool.
+/// The rules allowed without asking: the permissions, the web tools when
+/// [`CliSettings::web`] is set, and the attached MCP tools, each once. A
+/// read-only run allows a server's tools only where it names them, and each
+/// permission only as [`confined`] allows it.
 fn allowed_tools(settings: &CliSettings, attached: bool) -> Result<Vec<String>, ProviderError> {
     let attached = match (attached, settings.read_only) {
         (false, _) => Vec::new(),
         (true, false) => settings.mcp.allowed_tools(),
         (true, true) => settings.mcp.scoped_tools(),
     };
-    let mut tools: Vec<String> = Vec::new();
-    for tool in settings.permissions.iter().chain(&attached) {
-        if settings.read_only
-            && !READ_ONLY_TOOLS.contains(&tool.as_str())
-            && !McpServer::scoped(tool)
-        {
-            return Err(ProviderError::config(format!(
-                "a read-only run cannot allow {tool}"
-            )));
-        }
-        if !tools.contains(tool) {
-            tools.push(tool.clone());
+    let web = WEB_TOOLS
+        .into_iter()
+        .filter(|_| settings.web)
+        .map(str::to_string);
+    let mut rules: Vec<String> = Vec::new();
+    for tool in settings
+        .permissions
+        .iter()
+        .cloned()
+        .chain(web)
+        .chain(attached)
+    {
+        let rule = if settings.read_only {
+            confined(tool, settings.web)?
+        } else {
+            tool
+        };
+        if !rules.contains(&rule) {
+            rules.push(rule);
         }
     }
-    Ok(tools)
+    Ok(rules)
+}
+
+/// The rule a read-only run allows `tool` under: a read-only tool as a read
+/// inside the working directory, a web tool only when `web` is allowed, and
+/// one named MCP tool as itself. Anything else is refused.
+fn confined(tool: String, web: bool) -> Result<String, ProviderError> {
+    let name = tool.as_str();
+    let reaches_web = WEB_TOOLS.contains(&name);
+    if READ_ONLY_TOOLS.contains(&name) {
+        Ok(WORKSPACE_READS.to_string())
+    } else if reaches_web && !web {
+        Err(ProviderError::config(format!(
+            "a read-only run cannot allow {tool} unless the web is allowed"
+        )))
+    } else if reaches_web || McpServer::scoped(name) {
+        Ok(tool)
+    } else {
+        Err(ProviderError::config(format!(
+            "a read-only run cannot allow {tool}"
+        )))
+    }
 }
 
 /// The `--tools` value for a read-only run: the read-only tools it allows,
-/// and none at all when it allows none.
-fn available_tools(allowed: &[String]) -> String {
+/// then the web tools when [`CliSettings::web`] is set, and none at all when
+/// it allows neither.
+fn available_tools(settings: &CliSettings) -> String {
     READ_ONLY_TOOLS
         .into_iter()
-        .filter(|tool| allowed.iter().any(|allowed| allowed == tool))
+        .filter(|tool| settings.permissions.iter().any(|allowed| allowed == tool))
+        .chain(WEB_TOOLS.into_iter().filter(|_| settings.web))
         .collect::<Vec<_>>()
         .join(TOOL_SEPARATOR)
 }
@@ -646,25 +698,98 @@ mod tests {
             .expect("options");
 
         assert_eq!(
-            options[..10],
+            options,
             [
                 "--strict-mcp-config",
+                "--restricted",
                 "--setting-sources",
                 "user",
                 "--tools",
-                "Read,Grep,Glob,WebFetch,WebSearch",
+                "Read,Grep,Glob",
                 "--permission-mode",
                 "dontAsk",
                 "--permission-prompts",
                 "none",
                 "--allowedTools",
+                "Read(./**)",
             ]
         );
-        assert_eq!(
-            flagged(&options, "--allowedTools"),
-            ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
+    }
+
+    #[test]
+    fn a_read_only_run_never_allows_an_unscoped_read() {
+        let server = McpServer {
+            command: Some("uvx".to_string()),
+            tools: vec!["query".to_string()],
+            ..McpServer::default()
+        };
+        let mut subset = CliSettings::default().read_only();
+        subset.permissions = vec!["Grep".to_string(), "Glob".to_string()];
+        for settings in [
+            CliSettings::default().read_only(),
+            CliSettings::default().read_only().allow_web(),
+            CliSettings::default()
+                .read_only()
+                .with_permissions(["Read", "Grep", "mcp__grafana__query"])
+                .with_mcp_server("grafana", server),
+            subset,
+        ] {
+            let options = AgentKind::Claude
+                .options(
+                    &settings,
+                    &Attachments::default().with_mcp(Path::new("/tmp/mcp-1.json")),
+                )
+                .expect("options");
+
+            assert!(options.iter().any(|option| option == "--restricted"));
+            let allowed = flagged(&options, "--allowedTools");
+            let reads: Vec<&str> = allowed
+                .iter()
+                .copied()
+                .filter(|rule| !rule.starts_with("mcp__") && !rule.starts_with("Web"))
+                .collect();
+            assert_eq!(reads, ["Read(./**)"], "{options:?}");
+        }
+    }
+
+    #[test]
+    fn a_read_only_run_reaches_the_web_only_when_asked() {
+        let options = AgentKind::Claude
+            .options(&CliSettings::default().read_only(), &Attachments::default())
+            .expect("options");
+        assert!(
+            !options.iter().any(|option| option.contains("Web")),
+            "{options:?}"
         );
-        assert!(!options.iter().any(|option| option == "--disallowedTools"));
+
+        for settings in [
+            CliSettings::default().read_only().allow_web(),
+            CliSettings::default().allow_web().read_only(),
+        ] {
+            let options = AgentKind::Claude
+                .options(&settings, &Attachments::default())
+                .expect("options");
+            assert_eq!(
+                flagged(&options, "--tools"),
+                ["Read,Grep,Glob,WebFetch,WebSearch"]
+            );
+            assert_eq!(
+                flagged(&options, "--allowedTools"),
+                ["Read(./**)", "WebFetch", "WebSearch"]
+            );
+        }
+    }
+
+    #[test]
+    fn an_unconfined_run_allows_the_web_only_when_asked() {
+        let options = AgentKind::Claude
+            .options(&CliSettings::default().allow_web(), &Attachments::default())
+            .expect("options");
+
+        assert_eq!(
+            options,
+            ["--allowedTools", "WebFetch", "--allowedTools", "WebSearch"]
+        );
     }
 
     #[test]
@@ -675,6 +800,7 @@ mod tests {
             .options(&settings, &Attachments::default())
             .expect("options");
         assert_eq!(flagged(&options, "--tools"), ["Read,Grep"]);
+        assert_eq!(flagged(&options, "--allowedTools"), ["Read(./**)"]);
 
         settings.permissions.clear();
         let options = AgentKind::Claude
@@ -789,6 +915,11 @@ mod tests {
             "mcp__appwrite",
             "mcp__grafana__*",
             "Bash(git status)",
+            "Read(//**)",
+            "Read(~/.ssh/**)",
+            "Grep(./**)",
+            "WebFetch",
+            "WebSearch",
         ] {
             let settings = CliSettings::default()
                 .read_only()
@@ -839,11 +970,7 @@ mod tests {
         assert_eq!(
             flagged(&options, "--allowedTools"),
             [
-                "Read",
-                "Grep",
-                "Glob",
-                "WebFetch",
-                "WebSearch",
+                "Read(./**)",
                 "mcp__grafana__query",
                 "mcp__grafana__list_datasources",
             ]
@@ -871,6 +998,7 @@ mod tests {
                 "--append-system-prompt",
             ),
             (CliSettings::default().read_only(), "--allowedTools"),
+            (CliSettings::default().allow_web(), "--allowedTools"),
             (
                 CliSettings {
                     read_only: true,

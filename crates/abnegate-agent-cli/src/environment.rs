@@ -167,6 +167,8 @@ mod tests {
         let variables: BTreeMap<&str, &str> = [
             ("PATH", "/usr/bin:/bin"),
             ("HOME", "/home/agent"),
+            ("USER", "agent"),
+            ("LOGNAME", "agent"),
             ("AWS_SECRET_ACCESS_KEY", "aws-host-secret"),
             ("GITHUB_TOKEN", "ghp-host-token"),
             ("ANTHROPIC_API_KEY", concat!("sk-ant-", "host-key")),
@@ -219,10 +221,17 @@ mod tests {
                 "CLAUDE_CONFIG_DIR",
                 "HOME",
                 "LINEAR_ISSUE_ID",
-                "PATH"
+                "LOGNAME",
+                "PATH",
+                "USER"
             ]
         );
         assert_eq!(variables["PATH"].as_deref(), Some("/usr/bin:/bin"));
+        assert_eq!(
+            variables["USER"].as_deref(),
+            Some("agent"),
+            "the macOS Keychain finds a sign-in by its user"
+        );
         assert_eq!(
             variables["CLAUDE_CONFIG_DIR"].as_deref(),
             Some("/home/agent/.claude-work")
@@ -363,6 +372,33 @@ mod tests {
             .with_environment("CLAUDECODE", "1");
         let environment = Environment::new(AgentKind::Claude, &explicit, None, &host());
         assert_eq!(set(&environment)["CLAUDECODE"].as_deref(), Some("1"));
+    }
+
+    async fn signed_in(command: &mut Command) -> Option<bool> {
+        let output = command
+            .args(["auth", "status", "--json"])
+            .output()
+            .await
+            .expect("the installed claude CLI");
+        let status: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        status["loggedIn"].as_bool()
+    }
+
+    #[tokio::test]
+    #[ignore = "runs the installed claude CLI, which must be on PATH"]
+    async fn the_installed_claude_is_signed_in_under_the_allowlist_whenever_the_host_is() {
+        let host = signed_in(&mut Command::new("claude")).await;
+
+        let environment =
+            Environment::new(AgentKind::Claude, &CliSettings::default(), None, &|name| {
+                std::env::var_os(name)
+            });
+        let mut command = Command::new("claude");
+        environment.apply(&mut command);
+        let child = signed_in(&mut command).await;
+
+        assert!(host.is_some(), "claude auth status printed no loggedIn");
+        assert_eq!(child, host, "the allowlist changed the sign-in claude sees");
     }
 
     #[test]
