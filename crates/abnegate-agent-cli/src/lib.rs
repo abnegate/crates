@@ -109,6 +109,8 @@ pub use crate::settings::{
     INHERITED_VARIABLES, READ_ONLY_OPTIONS, READ_ONLY_SWITCHES, READ_ONLY_TOOLS,
 };
 pub use crate::stdout_parse_result::StdoutParseResult;
-pub use crate::stream::{ApiContentBlock, ApiDelta, ApiStreamEvent};
+pub use crate::stream::{
+    ApiContentBlock, ApiDelta, ApiError, ApiMessage, ApiMessageDelta, ApiStreamEvent,
+};
 pub use crate::structured_result::StructuredResult;
 pub use crate::tripwire::Tripwire;
