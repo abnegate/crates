@@ -1,0 +1,251 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use abnegate_secret::MasterKey;
+use serde::de::DeserializeOwned;
+use toml::Value;
+
+use crate::config::Config;
+use crate::envelope;
+use crate::error::ConfigError;
+use crate::path::config_path;
+
+/// Where a configuration file lives and how to unseal it.
+///
+/// Values written as `ENC[v1:...]` envelopes are decrypted on load once a
+/// master key is given; without one they are handed to the application exactly
+/// as they were written.
+pub struct Loader<'key> {
+    path: PathBuf,
+    key: Option<&'key MasterKey>,
+}
+
+impl<'key> Loader<'key> {
+    /// Load from the conventional location for `application`.
+    pub fn new(application: &str) -> Result<Self, ConfigError> {
+        Ok(Self::at(config_path(application)?))
+    }
+
+    /// Load from an exact path.
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            key: None,
+        }
+    }
+
+    /// Decrypt sealed values with `key` as they are read.
+    pub fn master_key(mut self, key: &'key MasterKey) -> Self {
+        self.key = Some(key);
+        self
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn exists(&self) -> bool {
+        self.path.is_file()
+    }
+
+    /// Read the file, failing with [`ConfigError::Missing`] when it is absent.
+    pub fn load<T: DeserializeOwned>(&self) -> Result<Config<T>, ConfigError> {
+        if !self.exists() {
+            return Err(ConfigError::Missing {
+                path: self.path.clone(),
+            });
+        }
+
+        self.read()
+    }
+
+    /// Read the file, falling back to [`Default`] when it is absent.
+    pub fn load_or_default<T: DeserializeOwned + Default>(&self) -> Result<Config<T>, ConfigError> {
+        if !self.exists() {
+            return Ok(Config::new(self.path.clone(), T::default()));
+        }
+
+        self.read()
+    }
+
+    fn read<T: DeserializeOwned>(&self) -> Result<Config<T>, ConfigError> {
+        let content = fs::read_to_string(&self.path).map_err(|source| ConfigError::Read {
+            path: self.path.clone(),
+            source,
+        })?;
+
+        let mut document: Value =
+            toml::from_str(&content).map_err(|source| ConfigError::Parse {
+                path: self.path.clone(),
+                source,
+            })?;
+
+        let sealed = match self.key {
+            Some(key) => envelope::unseal(&mut document, key)?,
+            None => Vec::new(),
+        };
+
+        let value = document.try_into().map_err(|source| ConfigError::Parse {
+            path: self.path.clone(),
+            source,
+        })?;
+
+        Ok(Config::loaded(self.path.clone(), value, sealed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use abnegate_secret::{SecretValue, encrypt_value, is_encrypted};
+    use serde::{Deserialize, Serialize};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+    struct Settings {
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        password: String,
+    }
+
+    fn written(content: &str) -> (TempDir, PathBuf) {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(&path, content).unwrap();
+        (directory, path)
+    }
+
+    #[test]
+    fn a_loader_for_an_application_points_at_its_configuration_file() {
+        let loader = Loader::new("example").unwrap();
+
+        assert!(
+            loader.path().ends_with("config.toml"),
+            "{:?}",
+            loader.path()
+        );
+    }
+
+    #[test]
+    fn a_missing_file_does_not_exist() {
+        let directory = TempDir::new().unwrap();
+
+        assert!(!Loader::at(directory.path().join("config.toml")).exists());
+    }
+
+    #[test]
+    fn a_directory_is_not_a_configuration_file() {
+        let directory = TempDir::new().unwrap();
+
+        assert!(!Loader::at(directory.path()).exists());
+    }
+
+    #[test]
+    fn loading_a_missing_file_reports_the_path() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("config.toml");
+
+        let error = Loader::at(&path).load::<Settings>().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::Missing { path: reported } if reported == &path),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_loads_as_the_default() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("config.toml");
+
+        let config = Loader::at(&path).load_or_default::<Settings>().unwrap();
+
+        assert_eq!(config.value(), &Settings::default());
+        assert_eq!(config.path(), path);
+    }
+
+    #[test]
+    fn an_existing_file_wins_over_the_default() {
+        let (_directory, path) = written("model = \"gpt-4o\"\n");
+
+        let config = Loader::at(&path).load_or_default::<Settings>().unwrap();
+
+        assert_eq!(config.value().model, "gpt-4o");
+    }
+
+    #[test]
+    fn a_malformed_file_reports_the_path() {
+        let (_directory, path) = written("invalid { toml");
+
+        let error = Loader::at(&path).load::<Settings>().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::Parse { path: reported, .. } if reported == &path),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_of_the_wrong_shape_reports_the_path() {
+        let (_directory, path) = written("model = 12\n");
+
+        let error = Loader::at(&path).load::<Settings>().unwrap_err();
+
+        assert!(matches!(error, ConfigError::Parse { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_sealed_value_arrives_as_plaintext() {
+        let key = MasterKey::generate();
+        let envelope = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let (_directory, path) = written(&format!("password = \"{envelope}\"\n"));
+
+        let config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Settings>()
+            .unwrap();
+
+        assert_eq!(config.value().password, "hunter2");
+    }
+
+    #[test]
+    fn a_sealed_value_stays_sealed_without_a_key() {
+        let key = MasterKey::generate();
+        let envelope = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let (_directory, path) = written(&format!("password = \"{envelope}\"\n"));
+
+        let config = Loader::at(&path).load::<Settings>().unwrap();
+
+        assert!(is_encrypted(&config.value().password));
+    }
+
+    #[test]
+    fn the_wrong_key_fails_the_load() {
+        let envelope = encrypt_value(&SecretValue::new("hunter2"), &MasterKey::generate()).unwrap();
+        let (_directory, path) = written(&format!("password = \"{envelope}\"\n"));
+
+        let error = Loader::at(&path)
+            .master_key(&MasterKey::generate())
+            .load::<Settings>()
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::Decrypt { field, .. } if field == "password"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_changes_nothing_for_a_file_without_envelopes() {
+        let (_directory, path) = written("model = \"gpt-4o\"\npassword = \"plain\"\n");
+
+        let config = Loader::at(&path)
+            .master_key(&MasterKey::generate())
+            .load::<Settings>()
+            .unwrap();
+
+        assert_eq!(config.value().password, "plain");
+    }
+}
