@@ -252,34 +252,23 @@ async fn train_with_pipeline(
         ));
     }
     validate_pairing(&request.images, &model)?;
-    let mut decoded = request
-        .images
-        .iter()
-        .map(|image| decode_base64(&image.bytes_base64))
-        .collect::<Result<Vec<Vec<u8>>, TrainError>>()?;
+    let images: Arc<[TrainImage]> = request.images.into();
+    let decoded = decode_uploads(Arc::clone(&images)).await?;
     let side = crate::train::packaged_config()?.resolution();
     let http =
         crate::http::client(config).map_err(|error| TrainError::Failed(error.to_string()))?;
-    let mut verdict = screening(&decoded, side);
-    validate_verdict(&verdict, request.images.len())?;
+    let (mut decoded, mut verdict) = screen(screening, decoded, side).await?;
+    validate_verdict(&verdict, images.len())?;
     let mut attempts = Vec::new();
     if repair_rejections {
         loop {
-            let fresh = remediate(
-                config,
-                &http,
-                &mut decoded,
-                &request.images,
-                &verdict,
-                &attempts,
-            )
-            .await;
+            let fresh = remediate(config, &http, &mut decoded, &images, &verdict, &attempts).await;
             if fresh.is_empty() {
                 break;
             }
             attempts.extend(fresh);
-            verdict = screening(&decoded, side);
-            validate_verdict(&verdict, request.images.len())?;
+            (decoded, verdict) = screen(screening, decoded, side).await?;
+            validate_verdict(&verdict, images.len())?;
         }
     }
     let attempted = finish_remediation(attempts, &verdict);
@@ -287,31 +276,14 @@ async fn train_with_pipeline(
         .drop
         .iter()
         .map(|(index, rejection)| Dropped {
-            filename: request.images[*index].filename.clone(),
+            filename: images[*index].filename.clone(),
             reason: *rejection,
         })
         .collect::<Vec<Dropped>>();
     // Crop before captioning, or the caption describes background the crop removes.
     let subject = Subject::shared(config).await;
-    let groups = shots(&request.images);
-    let mut survivors = request
-        .images
-        .iter()
-        .zip(&groups)
-        .enumerate()
-        .filter(|(index, _)| verdict.keep.binary_search(index).is_ok())
-        .map(|(original, (image, group))| {
-            let framed = frame_with_target(&subject, image, &decoded[original], side)?;
-            Ok(ScreenedImage {
-                original,
-                encoded: (!edit).then(|| framed.encoded()),
-                target: framed.target,
-                reference: framed.control,
-                text: image.caption.clone(),
-                group: *group,
-            })
-        })
-        .collect::<Result<Vec<ScreenedImage>, TrainError>>()?;
+    let mut survivors =
+        frame_survivors(subject, images, decoded, verdict.keep.clone(), side, edit).await?;
     if survivors.len() != verdict.keep.len() {
         return Err(TrainError::Failed(
             "screening returned an invalid survivor index".to_string(),
@@ -574,6 +546,80 @@ async fn settle(mut reader: JoinHandle<()>) {
     }
 }
 
+/// Runs CPU-bound work on the blocking pool, so decoding, screening and
+/// framing a large set never stalls a runtime worker.
+async fn blocking<T, F>(work: F) -> Result<T, TrainError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| TrainError::Failed(error.to_string()))
+}
+
+async fn decode_uploads(images: Arc<[TrainImage]>) -> Result<Vec<Vec<u8>>, TrainError> {
+    blocking(move || {
+        images
+            .iter()
+            .map(|image| decode_base64(&image.bytes_base64))
+            .collect()
+    })
+    .await?
+}
+
+/// Screens `decoded` and hands it back beside the verdict, so the set moves
+/// to the blocking pool and back rather than being copied.
+async fn screen(
+    screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
+    decoded: Vec<Vec<u8>>,
+    side: u32,
+) -> Result<(Vec<Vec<u8>>, crate::screening::Verdict), TrainError> {
+    blocking(move || {
+        let verdict = screening(&decoded, side);
+        (decoded, verdict)
+    })
+    .await
+}
+
+async fn decodable(bytes: bytes::Bytes) -> bool {
+    blocking(move || decode::decode(&bytes).is_ok())
+        .await
+        .unwrap_or(false)
+}
+
+/// Crops every image in `keep` onto its subject: a decode, a pass of the
+/// saliency model and a PNG encode each.
+async fn frame_survivors(
+    subject: Subject,
+    images: Arc<[TrainImage]>,
+    decoded: Vec<Vec<u8>>,
+    keep: Vec<usize>,
+    side: u32,
+    edit: bool,
+) -> Result<Vec<ScreenedImage>, TrainError> {
+    blocking(move || {
+        images
+            .iter()
+            .zip(shots(&images))
+            .enumerate()
+            .filter(|(index, _)| keep.binary_search(index).is_ok())
+            .map(|(original, (image, group))| {
+                let framed = frame_with_target(&subject, image, &decoded[original], side)?;
+                Ok(ScreenedImage {
+                    original,
+                    encoded: (!edit).then(|| framed.encoded()),
+                    target: framed.target,
+                    reference: framed.control,
+                    text: image.caption.clone(),
+                    group,
+                })
+            })
+            .collect()
+    })
+    .await?
+}
+
 fn validate_pairing(images: &[TrainImage], model: &TrainingModel) -> Result<(), TrainError> {
     if matches!(model, TrainingModel::QwenEdit { .. }) {
         if images.iter().any(|image| image.before_base64.is_none()) {
@@ -699,7 +745,7 @@ async fn remediate(
             tracing::warn!("LoRA image remediation returned no image");
             continue;
         };
-        if decode::decode(&repaired.bytes).is_err() {
+        if !decodable(repaired.bytes.clone()).await {
             tracing::warn!("LoRA image remediation returned an undecodable image");
             continue;
         }
@@ -1396,6 +1442,9 @@ mod tests {
     };
     use base64::Engine;
     use serde_json::{Value, json};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::thread::ThreadId;
     use wiremock::{
         Mock, MockServer, Request, ResponseTemplate,
         matchers::{method, path, path_regex},
@@ -3467,6 +3516,130 @@ mod tests {
             framed.control.as_deref(),
             Some(framed.target.as_slice()),
             "a control cropped to its own subject stops answering its target"
+        );
+    }
+
+    /// Runs `stage` beside another task on this current-thread runtime, and
+    /// says whether that task got to run before `stage` finished, which it
+    /// can only do if `stage` left the runtime's one worker free.
+    async fn beside<T>(stage: impl Future<Output = T>) -> (T, bool) {
+        let ran = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn({
+            let ran = Arc::clone(&ran);
+            async move { ran.store(true, Ordering::SeqCst) }
+        });
+        let output = stage.await;
+        let free = ran.load(Ordering::SeqCst);
+        task.await.expect("the task beside the stage finishes");
+        (output, free)
+    }
+
+    fn uploads(count: usize) -> Arc<[TrainImage]> {
+        (0..count)
+            .map(|index| TrainImage {
+                filename: format!("{index}.png"),
+                caption: "a portrait".into(),
+                bytes_base64: encoded_at(256, 256),
+                before_base64: None,
+                group: None,
+            })
+            .collect()
+    }
+
+    fn side() -> u32 {
+        crate::train::packaged_config()
+            .expect("packaged training config")
+            .resolution()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn uploads_are_decoded_without_stalling_the_runtime() {
+        let (decoded, free) = beside(decode_uploads(uploads(8))).await;
+
+        assert_eq!(decoded.expect("the uploads decode").len(), 8);
+        assert!(free, "decoding the uploads stalled the runtime's worker");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_set_is_screened_without_stalling_the_runtime() {
+        let decoded = decode_uploads(uploads(8)).await.unwrap();
+
+        let (screened, free) = beside(screen(crate::screening::screen, decoded, side())).await;
+
+        let (decoded, verdict) = screened.expect("the set is screened");
+        assert_eq!(decoded.len(), 8, "the screened set comes back whole");
+        validate_verdict(&verdict, 8).expect("the verdict partitions the set");
+        assert!(free, "screening the set stalled the runtime's worker");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn survivors_are_framed_without_stalling_the_runtime() {
+        let images = uploads(2);
+        let decoded = decode_uploads(Arc::clone(&images)).await.unwrap();
+
+        let (framed, free) = beside(frame_survivors(
+            Subject::none(),
+            images,
+            decoded,
+            vec![1],
+            side(),
+            false,
+        ))
+        .await;
+
+        let framed = framed.expect("the survivor is framed");
+        assert_eq!(framed.len(), 1);
+        assert_eq!(framed[0].original, 1);
+        assert!(framed[0].encoded.is_some(), "an identity crop is captioned");
+        assert!(free, "framing the survivors stalled the runtime's worker");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_repaired_image_is_checked_without_stalling_the_runtime() {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded_at(256, 256))
+            .unwrap();
+
+        let (readable, free) = beside(decodable(bytes.into())).await;
+
+        assert!(readable, "a PNG is decodable");
+        assert!(
+            free,
+            "checking a repaired image stalled the runtime's worker"
+        );
+    }
+
+    static SCREENED_ON: Mutex<Option<ThreadId>> = Mutex::new(None);
+
+    fn keep_all_noting_the_thread(images: &[Vec<u8>], resolution: u32) -> Verdict {
+        *SCREENED_ON.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(std::thread::current().id());
+        keep_all(images, resolution)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn training_screens_its_set_off_the_runtimes_worker() {
+        let (_root, config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
+
+        train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("screened-aside"),
+            keep_all_noting_the_thread,
+        )
+        .await
+        .expect("the set trains");
+
+        let screened_on = SCREENED_ON
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .expect("the set was screened");
+        assert_ne!(
+            screened_on,
+            std::thread::current().id(),
+            "screening ran on the runtime's only worker"
         );
     }
 }
