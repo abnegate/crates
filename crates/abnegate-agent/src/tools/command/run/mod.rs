@@ -72,6 +72,8 @@ impl Tool for RunCommandTool {
         Tier::Host
     }
 
+    /// The program and each argument as the shell word it is, blank space
+    /// and all, so where one argument ends and the next begins is on the card.
     fn preview(&self, parameters: &Value) -> Option<String> {
         let parameters: RunCommandParameters = serde_json::from_value(parameters.clone()).ok()?;
         let line = once(&parameters.command)

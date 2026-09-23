@@ -16,6 +16,7 @@ use crate::tools::ToolError;
 use crate::tools::ToolResult;
 use crate::tools::beneath;
 use crate::tools::beneath::Access;
+use crate::tools::collapse;
 use crate::tools::quote;
 use crate::tools::reason_property;
 use crate::tools::word;
@@ -38,7 +39,8 @@ impl Tool for WriteFileTool {
     }
 
     /// Where the text goes and the text itself, since what is written is the
-    /// part of a write a reader is deciding on.
+    /// part of a write a reader is deciding on. The text has its blank space
+    /// collapsed; the path is drawn as it is.
     fn preview(&self, parameters: &Value) -> Option<String> {
         let parameters: WriteFileParameters = serde_json::from_value(parameters.clone()).ok()?;
         let characters = parameters.content.chars().count();
@@ -46,12 +48,12 @@ impl Tool for WriteFileTool {
             true => format!(
                 "Append {characters} characters to {}: {}.",
                 word(&parameters.path),
-                quote(&parameters.content)
+                collapse(&quote(&parameters.content))
             ),
             false => format!(
                 "Write {characters} characters to {}, replacing whatever is there: {}.",
                 word(&parameters.path),
-                quote(&parameters.content)
+                collapse(&quote(&parameters.content))
             ),
         })
     }

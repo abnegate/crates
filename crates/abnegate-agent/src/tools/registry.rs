@@ -386,6 +386,50 @@ mod tests {
         );
     }
 
+    /// Every preview was collapsed whole, so blank space inside a quoted
+    /// argument or directory was squeezed like the space between words, and
+    /// two calls that differ only there read alike.
+    #[test]
+    fn a_command_preview_keeps_the_blank_space_inside_a_quoted_word() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunCommandTool));
+        registry.register(Arc::new(RunShellTool));
+        let preview = |name: &str, arguments: serde_json::Value| {
+            let preview = registry
+                .preview(name, &arguments.to_string())
+                .expect("a command previews what it will run");
+            assert!(!preview.truncated, "{}", preview.text);
+            preview.text
+        };
+
+        let wide = preview(
+            "run_command",
+            serde_json::json!({"command": "git", "args": ["commit", "-m", "a   b"]}),
+        );
+        let narrow = preview(
+            "run_command",
+            serde_json::json!({"command": "git", "args": ["commit", "-m", "a b"]}),
+        );
+        assert_eq!(wide, "Run `git commit -m 'a   b'`.");
+        assert_eq!(narrow, "Run `git commit -m 'a b'`.");
+        assert_ne!(wide, narrow);
+
+        assert_eq!(
+            preview(
+                "run_command",
+                serde_json::json!({"command": "echo", "args": ["a\tb", "c\n\n  d"]}),
+            ),
+            format!("Run `echo 'a⟨U+0009⟩b' 'c{LINE_BREAK}{LINE_BREAK}⟨U+0020⟩ d'`.")
+        );
+        assert_eq!(
+            preview(
+                "run_shell",
+                serde_json::json!({"command": "cargo    test", "cwd": "my   crates"}),
+            ),
+            "Run `cargo test` in 'my   crates'."
+        );
+    }
+
     /// An escape was text a command could type, so the characters `\u{8}`
     /// read as a backspace the command did not hold, and `\u{20}` as a
     /// space a backslash escapes.

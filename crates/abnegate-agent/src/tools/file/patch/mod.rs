@@ -18,6 +18,7 @@ use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolResult;
 use crate::tools::beneath;
+use crate::tools::collapse;
 use crate::tools::quote;
 use crate::tools::reason_property;
 use crate::tools::word;
@@ -40,7 +41,8 @@ impl Tool for ApplyPatchTool {
     }
 
     /// Every replacement, what it takes out and what it puts in, since what
-    /// goes in is the part of an edit a reader is deciding on.
+    /// goes in is the part of an edit a reader is deciding on. The text has
+    /// its blank space collapsed; the path is drawn as it is.
     fn preview(&self, parameters: &Value) -> Option<String> {
         let parameters: ApplyPatchParameters = serde_json::from_value(parameters.clone()).ok()?;
         let hunks = parameters.hunks().ok()?;
@@ -53,8 +55,8 @@ impl Tool for ApplyPatchTool {
             .map(|hunk| {
                 format!(
                     "replace {scope}{} with {}",
-                    quote(&hunk.old_string),
-                    quote(&hunk.new_string)
+                    collapse(&quote(&hunk.old_string)),
+                    collapse(&quote(&hunk.new_string))
                 )
             })
             .collect::<Vec<String>>()

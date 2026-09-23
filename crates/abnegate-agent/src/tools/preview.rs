@@ -7,7 +7,6 @@ use serde_json::Value;
 use super::LINE_BREAK;
 use super::MAX_PREVIEW_CHARACTERS;
 use super::Tool;
-use super::text::collapse;
 
 /// The glyph [`LINE_BREAK`] draws a line break with.
 const RETURN: char = '⏎';
@@ -44,7 +43,10 @@ static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
 /// the marks the preview draws. An escape is one of those marks: text that
 /// reads `\u{8}` is shown as those characters, and one that reads
 /// `⟨U+0008⟩` has its fences escaped, so everything between a `⟨` and a `⟩`
-/// on the card is a character the preview escaped. The
+/// on the card is a character the preview escaped. Blank space is drawn as
+/// it was rendered, never squeezed here: a tool collapses the free text it
+/// shows, a command or the content of a write, and leaves the words, paths
+/// and arguments of the call as they are. The
 /// [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always holds
 /// every argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +72,7 @@ impl Preview {
     /// marker is paid for out of the budget, so a cut preview is no longer
     /// than one that fits.
     pub fn within(rendered: &str, max_characters: usize) -> Self {
-        let glyphs = glyphs(&collapse(rendered));
+        let glyphs = glyphs(rendered);
         let length: usize = glyphs.iter().map(|glyph| glyph.width()).sum();
         if length <= max_characters {
             return Self {
@@ -256,8 +258,21 @@ mod tests {
 
     #[test]
     fn a_call_that_fits_is_shown_whole_and_not_flagged() {
-        let preview = Preview::within("cargo    test\n--all", 400);
+        let preview = Preview::within("cargo test\n--all", 400);
         assert_eq!(preview.text, format!("cargo test{LINE_BREAK}--all"));
+        assert!(!preview.truncated);
+    }
+
+    /// Every preview was collapsed whole, so blank space inside a quoted
+    /// argument or path was squeezed with the rest and `'a   b'` read as
+    /// `'a b'`. What a tool renders is drawn as it is.
+    #[test]
+    fn blank_space_is_drawn_as_it_was_rendered() {
+        let preview = Preview::within("echo 'a   b'\n\n  done", MAX_PREVIEW_CHARACTERS);
+        assert_eq!(
+            preview.text,
+            format!("echo 'a   b'{LINE_BREAK}{LINE_BREAK}⟨U+0020⟩ done")
+        );
         assert!(!preview.truncated);
     }
 
@@ -384,7 +399,6 @@ mod tests {
                 format!(r"rm -rf ~/tmp\{LINE_BREAK}{space} ~"),
             ),
             (r"echo \\ done", format!(r"echo \\{space}done")),
-            ("echo  done", "echo done".to_string()),
         ] {
             let preview = Preview::within(rendered, MAX_PREVIEW_CHARACTERS);
 

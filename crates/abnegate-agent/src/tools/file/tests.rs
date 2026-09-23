@@ -514,6 +514,43 @@ fn write_and_edit_previews_quote_a_path_a_shell_would_split() {
     );
 }
 
+/// Every preview was collapsed whole, so blank space inside a quoted path
+/// was squeezed like the space between words, and a write or an edit to
+/// `my   notes.txt` read as one to `my notes.txt`.
+#[test]
+fn write_and_edit_previews_keep_the_blank_space_inside_a_quoted_path() {
+    let write = |path: &str| {
+        Preview::of(
+            &WriteFileTool,
+            &serde_json::json!({"path": path, "content": "done"}),
+        )
+        .text
+    };
+    let edit = |path: &str| {
+        Preview::of(
+            &ApplyPatchTool,
+            &serde_json::json!({"path": path, "old_string": "todo", "new_string": "done"}),
+        )
+        .text
+    };
+
+    assert_eq!(
+        write("my   notes.txt"),
+        "Write 4 characters to 'my   notes.txt', replacing whatever is there: \"done\"."
+    );
+    assert_eq!(
+        write("my notes.txt"),
+        "Write 4 characters to 'my notes.txt', replacing whatever is there: \"done\"."
+    );
+    assert_ne!(write("my   notes.txt"), write("my notes.txt"));
+
+    assert_eq!(
+        edit("my   notes.txt"),
+        "Edit 'my   notes.txt': replace \"todo\" with \"done\"."
+    );
+    assert_ne!(edit("my   notes.txt"), edit("my notes.txt"));
+}
+
 /// An edit was previewed as the first 80 characters of the text it took out,
 /// cut without saying so, and nothing of what it put in or of any later hunk.
 #[test]

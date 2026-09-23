@@ -25,6 +25,7 @@ use crate::tools::Tool;
 use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolResult;
+use crate::tools::collapse;
 use crate::tools::job::JobCommand;
 use crate::tools::job::SHELL;
 use crate::tools::job::SHELL_COMMAND_FLAG;
@@ -152,10 +153,12 @@ impl Tool for RunShellTool {
         Tier::Host
     }
 
+    /// The command with its blank space collapsed, and the directory it runs
+    /// in as it is.
     fn preview(&self, parameters: &Value) -> Option<String> {
         let parameters: RunShellParameters = serde_json::from_value(parameters.clone()).ok()?;
         Some(run_preview(
-            &parameters.command,
+            &collapse(&parameters.command),
             parameters.working_directory.as_deref(),
         ))
     }
