@@ -859,7 +859,11 @@ mod checkout_tests {
             environment.contains(&("GIT_ALLOW_PROTOCOL".to_string(), "https".to_string())),
             "{environment:?}"
         );
+        let outside = tempfile::tempdir().unwrap();
         let listed = std::process::Command::new("git")
+            .current_dir(outside.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_CONFIG_PARAMETERS")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_COUNT", "1")
