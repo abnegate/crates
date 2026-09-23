@@ -34,6 +34,20 @@ const MERGE_CONFLICTED: i32 = 1;
 /// How `git push --porcelain` marks a ref the remote refused.
 const REJECTED: &[u8] = b"!\t";
 
+/// The link `git init --separate-git-dir` leaves in the work tree, which would
+/// let a git command a repair runs in the checkout reach the repository.
+const GIT_LINK: &str = ".git";
+
+/// Files whose rules decide what git ignores and how it converts content, so
+/// a new one is a change to the repair's scope even when it ignores itself.
+const RULE_FILES: [&str; 2] = [".gitignore", ".gitattributes"];
+
+/// The modes a regular file is staged with.
+const REGULAR_MODES: [&str; 2] = ["100644 ", "100755 "];
+
+/// How `ls-files --stage` ends the metadata of an entry that is not in conflict.
+const MERGED_STAGE: &str = " 0";
+
 /// Reproduces pull request conflicts in throwaway checkouts.
 #[derive(Debug, Clone)]
 pub struct ConflictService {
@@ -80,6 +94,7 @@ impl ConflictService {
             .arg(&layout.git)
             .arg(&layout.checkout);
         self.succeed(&mut init, "init").await?;
+        std::fs::remove_file(layout.checkout.join(GIT_LINK))?;
 
         let mut fetch = self.bound(&layout);
         GitService::connect(&mut fetch, &request.remote, request.token.as_ref());
@@ -179,6 +194,12 @@ impl ConflictService {
                 &["ls-files", "--others", "--exclude-standard", "-z"],
             )
             .await?;
+        let untracked = self
+            .capture(&conflict.layout, &["ls-files", "--others", "-z"])
+            .await?;
+        let rules = untracked
+            .split('\0')
+            .filter(|entry| RULE_FILES.iter().any(|rules| names(entry, rules)));
 
         let named: BTreeSet<&str> = conflict.files().iter().map(|path| path.as_str()).collect();
         let mut strays = index::changed(&conflict.index, &staged);
@@ -186,6 +207,7 @@ impl ConflictService {
             modified
                 .split('\0')
                 .chain(created.split('\0'))
+                .chain(rules)
                 .filter(|entry| !entry.is_empty())
                 .map(str::to_string),
         );
@@ -199,19 +221,41 @@ impl ConflictService {
     /// conflict did not name is refused with [`ConflictError::Strays`]: the
     /// merge staged everything that combined cleanly, so adding the conflicted
     /// files completes the index, and nothing else may be in it. Each
-    /// conflicted file must still be a regular file inside the checkout, so a
-    /// repair cannot commit a link in its place.
+    /// conflicted file must still be a regular file inside the checkout with
+    /// no other name, free of conflict markers, and staged as a regular file,
+    /// so a repair cannot commit a link, another file's content or an
+    /// unresolved hunk in its place.
     pub async fn apply(&self, conflict: &Conflict, message: &str) -> ConflictResult<CommitSha> {
         conflict.verify(self).await?;
         let strays = self.strays(conflict).await?;
         if !strays.is_empty() {
             return Err(ConflictError::Strays(strays));
         }
-        validate(conflict.path(), conflict.files())?;
+        for resolved in validate(conflict.path(), conflict.files())? {
+            let text = std::fs::read_to_string(&resolved)
+                .map_err(|_| ConflictError::NotTextual(resolved.display().to_string()))?;
+            if has_markers(&text) {
+                return Err(ConflictError::MarkersRemain(resolved.display().to_string()));
+            }
+        }
 
-        let mut arguments: Vec<&str> = vec!["add", "--"];
-        arguments.extend(conflict.files().iter().map(|path| path.as_str()));
-        self.run(&conflict.layout, &arguments).await?;
+        let files: Vec<&str> = conflict.files().iter().map(|path| path.as_str()).collect();
+        self.run(&conflict.layout, &[&["add", "--"][..], &files].concat())
+            .await?;
+        let staged = self
+            .capture(
+                &conflict.layout,
+                &[&["ls-files", "--stage", "-z", "--"][..], &files].concat(),
+            )
+            .await?;
+        for entry in staged.split('\0').filter(|entry| !entry.is_empty()) {
+            let (metadata, path) = entry.split_once('\t').unwrap_or((entry, entry));
+            let regular = REGULAR_MODES.iter().any(|mode| metadata.starts_with(mode))
+                && metadata.ends_with(MERGED_STAGE);
+            if !regular {
+                return Err(ConflictError::UnsafePath(path.to_string()));
+            }
+        }
 
         let name = format!("user.name={}", self.author_name);
         let email = format!("user.email={}", self.author_email);
@@ -426,6 +470,12 @@ fn push_arguments(remote: &RepositoryUrl, commit: &CommitSha, branch: &BranchNam
         remote.to_string(),
         format!("{commit}:{}", branch.reference()),
     ]
+}
+
+/// Whether a slash-separated `path` names a file called `name`, at the top or
+/// in any directory.
+fn names(path: &str, name: &str) -> bool {
+    path.rsplit('/').next() == Some(name)
 }
 
 fn prefixed(option: &str, path: &std::path::Path) -> OsString {

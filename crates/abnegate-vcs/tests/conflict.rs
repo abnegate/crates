@@ -109,10 +109,22 @@ fn repair(conflict: &Conflict) -> String {
     conflicted
 }
 
-/// The repository a checkout's `.git` file points at.
-fn repository_of(checkout: &Path) -> PathBuf {
-    let pointer = std::fs::read_to_string(checkout.join(".git")).unwrap();
-    PathBuf::from(pointer.trim().strip_prefix("gitdir: ").unwrap())
+/// The repository a conflict keeps beside its checkout. The checkout itself
+/// carries no link to it, so a test that stands in for something reaching
+/// the repository anyway names it by path.
+fn repository_of(conflict: &Conflict) -> PathBuf {
+    conflict.path().parent().unwrap().join("git")
+}
+
+/// Run git against a conflict's repository and checkout by path.
+fn inside(conflict: &Conflict, arguments: &[&str]) -> String {
+    let mut bound = vec![
+        format!("--git-dir={}", repository_of(conflict).display()),
+        format!("--work-tree={}", conflict.path().display()),
+    ];
+    bound.extend(arguments.iter().map(|argument| argument.to_string()));
+    let bound: Vec<&str> = bound.iter().map(String::as_str).collect();
+    git(conflict.path(), &bound)
 }
 
 fn request(origin: &Path) -> ConflictRequest {
@@ -219,9 +231,9 @@ async fn a_checkout_moved_underneath_the_repair_is_refused() {
     let service = ConflictService::new();
     let conflict = service.reproduce(&request(origin.path())).await.unwrap();
 
-    git(conflict.path(), &["reset", "--hard", "--quiet"]);
-    git(
-        conflict.path(),
+    inside(&conflict, &["reset", "--hard", "--quiet"]);
+    inside(
+        &conflict,
         &["checkout", "--detach", "--quiet", "refs/conflict/base"],
     );
 
@@ -310,24 +322,24 @@ async fn a_repair_that_keeps_both_sides_is_judged_resolved_and_committed_alone()
         "a stray refuses the commit rather than being left out of it"
     );
 
-    git(conflict.path(), &["checkout", "--", "README.md"]);
+    inside(&conflict, &["checkout", "--", "README.md"]);
     let committed = service
         .apply(&conflict, "(fix): merge both sides")
         .await
         .unwrap();
     assert_eq!(
         committed.as_str(),
-        git(conflict.path(), &["rev-parse", "HEAD"]),
+        inside(&conflict, &["rev-parse", "HEAD"]),
         "the commit reported is the one the checkout is on"
     );
     assert_eq!(
-        git(conflict.path(), &["rev-parse", "HEAD^1", "HEAD^2"]),
+        inside(&conflict, &["rev-parse", "HEAD^1", "HEAD^2"]),
         format!("{}\n{}", conflict.head(), conflict.base()),
         "the commit is the merge of the two sides"
     );
     assert_eq!(
-        git(
-            conflict.path(),
+        inside(
+            &conflict,
             &["diff", "--name-only", conflict.head().as_str(), "HEAD"]
         ),
         "src/value.rs",
@@ -391,7 +403,7 @@ async fn a_change_the_repair_staged_itself_is_a_stray_that_refuses_the_commit() 
     repair(&conflict);
 
     write(conflict.path(), "README.md", "# rewritten\n");
-    git(conflict.path(), &["add", "README.md"]);
+    inside(&conflict, &["add", "README.md"]);
 
     assert_eq!(
         service.strays(&conflict).await.unwrap(),
@@ -402,7 +414,7 @@ async fn a_change_the_repair_staged_itself_is_a_stray_that_refuses_the_commit() 
         Err(ConflictError::Strays(_))
     ));
     assert_eq!(
-        git(conflict.path(), &["rev-parse", "HEAD"]),
+        inside(&conflict, &["rev-parse", "HEAD"]),
         conflict.head().as_str(),
         "nothing was committed"
     );
@@ -417,7 +429,7 @@ async fn a_merge_no_longer_in_progress_is_refused() {
     let conflict = service.reproduce(&request(origin.path())).await.unwrap();
     repair(&conflict);
 
-    std::fs::remove_file(repository_of(conflict.path()).join("MERGE_HEAD")).unwrap();
+    std::fs::remove_file(repository_of(&conflict).join("MERGE_HEAD")).unwrap();
 
     assert!(matches!(
         conflict.verify(&service).await,
@@ -452,7 +464,10 @@ async fn nothing_planted_in_the_checkout_runs_when_the_repair_is_committed() {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
 
     let planted = conflict.path().join(".git");
-    std::fs::remove_file(&planted).unwrap();
+    assert!(
+        !planted.exists(),
+        "the checkout carries no link to its repository"
+    );
     std::fs::create_dir_all(planted.join("hooks")).unwrap();
     std::fs::copy(&script, planted.join("hooks").join("post-commit")).unwrap();
     std::fs::write(
@@ -469,10 +484,11 @@ async fn nothing_planted_in_the_checkout_runs_when_the_repair_is_committed() {
     assert!(!marker.exists(), "a program planted in the checkout ran");
 }
 
-/// git runs with a home of its own outside the checkout, so an ignore file
-/// the repair writes under the checkout cannot hide a file it created.
+/// git runs with a home of its own outside the checkout, and a new ignore or
+/// attributes file is itself a stray even when it ignores itself, so no rule
+/// the repair writes can hide a file it created or change how one is added.
 #[tokio::test]
-async fn an_ignore_file_the_repair_writes_cannot_hide_a_stray() {
+async fn an_ignore_or_attributes_file_the_repair_writes_cannot_hide_a_stray() {
     let origin = conflicting_origin();
     let service = ConflictService::new();
     let conflict = service.reproduce(&request(origin.path())).await.unwrap();
@@ -484,12 +500,102 @@ async fn an_ignore_file_the_repair_writes_cannot_hide_a_stray() {
         "hidden.rs\n.config/\n",
     );
     write(conflict.path(), "hidden.rs", "fn hidden() {}\n");
+    write(conflict.path(), "src/.gitignore", "*\n");
+    write(conflict.path(), "src/generated.rs", "fn generated() {}\n");
+    write(conflict.path(), "docs/.gitattributes", "* text eol=crlf\n");
+    write(conflict.path(), "docs/.gitignore", "*\n");
 
     let strays = service.strays(&conflict).await.unwrap();
-    assert!(strays.contains(&"hidden.rs".to_string()), "{strays:?}");
-    assert!(
-        strays.contains(&".config/git/ignore".to_string()),
-        "{strays:?}"
+    for expected in [
+        "hidden.rs",
+        ".config/git/ignore",
+        "src/.gitignore",
+        "docs/.gitattributes",
+        "docs/.gitignore",
+    ] {
+        assert!(
+            strays.contains(&expected.to_string()),
+            "{expected}: {strays:?}"
+        );
+    }
+}
+
+/// Something that reached the repository anyway -- the repair has no link to
+/// it, but a process that knew the path could write it -- and defined a hook
+/// there refuses the repair before anything runs.
+#[tokio::test]
+async fn a_hook_written_into_the_repository_refuses_the_repair() {
+    let origin = conflicting_origin();
+    let service = ConflictService::new();
+    let conflict = service.reproduce(&request(origin.path())).await.unwrap();
+    repair(&conflict);
+    let markers = TempDir::new().unwrap();
+    let marker = markers.path().join("ran");
+    inside(
+        &conflict,
+        &[
+            "config",
+            "hook.planted.command",
+            &format!("touch '{}'", marker.display()),
+        ],
+    );
+    inside(
+        &conflict,
+        &["config", "hook.planted.event", "post-index-change"],
+    );
+
+    assert!(matches!(
+        service.apply(&conflict, "(fix): merge").await,
+        Err(ConflictError::Git(_))
+    ));
+    assert!(matches!(
+        service.publish(&conflict, None).await,
+        Err(ConflictError::Git(_))
+    ));
+    assert!(!marker.exists(), "a hook defined in the repository ran");
+}
+
+/// A hard link carries another file's content under the conflicted file's
+/// name, and the content, not the link, is what git would commit.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_conflicted_file_replaced_by_a_hard_link_is_never_committed() {
+    let origin = conflicting_origin();
+    let service = ConflictService::new();
+    let conflict = service.reproduce(&request(origin.path())).await.unwrap();
+    let elsewhere = conflict.isolation().join("private");
+    std::fs::write(
+        &elsewhere,
+        "fn value() -> u32 {\n    1\n}\n\nfn other() -> u32 {\n    2\n}\n",
+    )
+    .unwrap();
+    let file = conflict.path().join("src/value.rs");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::hard_link(&elsewhere, &file).unwrap();
+
+    assert!(matches!(
+        service.apply(&conflict, "(fix): merge").await,
+        Err(ConflictError::UnsafePath(_))
+    ));
+    assert_eq!(
+        inside(&conflict, &["rev-parse", "HEAD"]),
+        conflict.head().as_str()
+    );
+}
+
+#[tokio::test]
+async fn a_file_that_still_carries_markers_is_never_committed() {
+    let origin = conflicting_origin();
+    let service = ConflictService::new();
+    let conflict = service.reproduce(&request(origin.path())).await.unwrap();
+
+    assert!(matches!(
+        service.apply(&conflict, "(fix): merge").await,
+        Err(ConflictError::MarkersRemain(_))
+    ));
+    assert_eq!(
+        inside(&conflict, &["rev-parse", "HEAD"]),
+        conflict.head().as_str()
     );
 }
 
@@ -523,8 +629,8 @@ async fn a_conflicted_file_named_with_spaces_and_glob_characters_is_repaired_lit
     service.apply(&conflict, "(fix): merge").await.unwrap();
 
     assert_eq!(
-        git(
-            conflict.path(),
+        inside(
+            &conflict,
             &["diff", "--name-only", conflict.head().as_str(), "HEAD"]
         ),
         name
@@ -601,7 +707,7 @@ async fn a_conflicted_file_replaced_by_a_link_is_never_committed() {
         Err(ConflictError::UnsafePath(_))
     ));
     assert_eq!(
-        git(conflict.path(), &["rev-parse", "HEAD"]),
+        inside(&conflict, &["rev-parse", "HEAD"]),
         conflict.head().as_str(),
         "nothing was committed"
     );

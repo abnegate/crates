@@ -1,5 +1,7 @@
 use crate::conflict::ConflictError;
 use crate::conflict::ConflictResult;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -44,8 +46,9 @@ impl std::fmt::Display for ConflictedPath {
 /// Resolve one repository-relative path to a real file inside `checkout`.
 ///
 /// Every component is inspected: a symlink anywhere along the way, a final
-/// component that is not a regular file, or a canonical path that leaves the
-/// checkout all mean the path cannot be repaired safely.
+/// component that is not a regular file or that has another name, or a
+/// canonical path that leaves the checkout all mean the path cannot be
+/// repaired safely.
 pub fn resolve(checkout: &Path, path: &ConflictedPath) -> ConflictResult<PathBuf> {
     let root = checkout
         .canonicalize()
@@ -62,7 +65,7 @@ pub fn resolve(checkout: &Path, path: &ConflictedPath) -> ConflictResult<PathBuf
             true => details.is_file(),
             false => details.is_dir(),
         };
-        if details.file_type().is_symlink() || !acceptable {
+        if details.file_type().is_symlink() || !acceptable || (last && linked(&details)) {
             return Err(ConflictError::UnsafePath(path.to_string()));
         }
     }
@@ -75,6 +78,18 @@ pub fn resolve(checkout: &Path, path: &ConflictedPath) -> ConflictResult<PathBuf
     }
 
     Ok(canonical)
+}
+
+/// Whether a file has another name somewhere, which a repair could have made
+/// to put another file's content where a conflicted file was.
+#[cfg(unix)]
+fn linked(details: &std::fs::Metadata) -> bool {
+    details.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn linked(_details: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// Resolve every conflicted path, refusing the whole set if any one is unsafe.

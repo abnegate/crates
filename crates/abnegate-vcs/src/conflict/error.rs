@@ -36,6 +36,9 @@ pub enum ConflictError {
     #[error("Conflicted file {0} carries no conflict markers and cannot be repaired as text")]
     NotTextual(String),
 
+    #[error("Conflicted file {0} still carries conflict markers")]
+    MarkersRemain(String),
+
     #[error("The checkout no longer holds the conflicted state it was prepared with")]
     CheckoutMoved,
 
