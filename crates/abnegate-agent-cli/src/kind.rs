@@ -208,6 +208,16 @@ impl AgentKind {
         }
     }
 
+    /// Whether `line` is a partial message: a piece of an event the stream
+    /// repeats whole once it is complete, which is never journaled, since a
+    /// secret split across pieces is scrubbed from none of them.
+    pub fn partial(self, line: &str) -> bool {
+        match self {
+            Self::Claude => parser::claude::partial(line),
+            Self::Codex => false,
+        }
+    }
+
     fn streaming(self) -> &'static [&'static str] {
         match self {
             Self::Claude => &["--verbose", "--output-format", "stream-json"],

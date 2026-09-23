@@ -3,6 +3,8 @@
 pub mod claude;
 pub mod codex;
 
+use std::ops::ControlFlow;
+
 const QUOTE: u8 = b'"';
 const ESCAPE: u8 = b'\\';
 const SEPARATOR: u8 = b':';
@@ -14,8 +16,32 @@ const TYPE: &str = "type";
 /// A top-level `"type"` sits at depth 1. A `"type"` inside a string, such as
 /// one quoted in a tool's output, is escaped there and never counted.
 pub(crate) fn types(prefix: &str) -> Vec<(usize, &str)> {
-    let bytes = prefix.as_bytes();
     let mut found = Vec::new();
+    visit(prefix, |depth, kind| {
+        found.push((depth, kind));
+        ControlFlow::Continue(())
+    });
+    found
+}
+
+/// The top-level `"type"` of the JSON object `line` holds, read no further
+/// than it takes to find it.
+pub(crate) fn kind(line: &str) -> Option<&str> {
+    let mut top = None;
+    visit(line, |depth, kind| {
+        if depth != 1 {
+            return ControlFlow::Continue(());
+        }
+        top = Some(kind);
+        ControlFlow::Break(())
+    });
+    top
+}
+
+/// Hand each `"type"` in `prefix` to `found` with its depth, in order, until
+/// it breaks.
+fn visit<'a>(prefix: &'a str, mut found: impl FnMut(usize, &'a str) -> ControlFlow<()>) {
+    let bytes = prefix.as_bytes();
     let mut depth: usize = 0;
     let mut index = 0;
     while index < bytes.len() {
@@ -32,7 +58,9 @@ pub(crate) fn types(prefix: &str) -> Vec<(usize, &str)> {
                     && let Some(opening) = next(bytes, colon + 1).filter(|&at| bytes[at] == QUOTE)
                     && let Some((value, after)) = string(prefix, opening)
                 {
-                    found.push((depth, value));
+                    if found(depth, value).is_break() {
+                        return;
+                    }
                     index = after;
                 }
                 continue;
@@ -41,7 +69,6 @@ pub(crate) fn types(prefix: &str) -> Vec<(usize, &str)> {
         }
         index += 1;
     }
-    found
 }
 
 /// The contents of the string opening at `opening`, and the index just past
@@ -66,6 +93,7 @@ fn next(bytes: &[u8], index: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use super::kind;
     use super::types;
 
     #[test]
@@ -101,5 +129,19 @@ mod tests {
         assert_eq!(types(r#"{"typ"#), []);
         assert_eq!(types("xxxxxxxx"), []);
         assert_eq!(types(r#"{"type":42}"#), []);
+    }
+
+    #[test]
+    fn the_kind_of_a_line_is_its_top_level_type_wherever_it_sits() {
+        assert_eq!(
+            kind(r#"{"type":"stream_event","event":{"type":"content_block_delta"}}"#),
+            Some("stream_event")
+        );
+        assert_eq!(
+            kind(r#"{"event":{"type":"content_block_delta"},"type":"stream_event"}"#),
+            Some("stream_event")
+        );
+        assert_eq!(kind(r#"{"event":{"type":"content_block_delta"}}"#), None);
+        assert_eq!(kind("not json"), None);
     }
 }

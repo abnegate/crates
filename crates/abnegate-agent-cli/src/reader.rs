@@ -32,6 +32,10 @@ const BUFFER: usize = 8 * 1024;
 /// Only the prose counts against the output limit. The rest of the stream,
 /// tool results included, is parsed and dropped, so however long a run goes
 /// on it costs no more memory than its answer.
+///
+/// A [partial message](AgentKind::partial) is counted but never journaled: a
+/// secret streamed across several pieces matches none of them, while the
+/// whole event that repeats them is scrubbed as one.
 pub(crate) struct Reader {
     agent: AgentKind,
     lines: Lines,
@@ -43,6 +47,7 @@ pub(crate) struct Reader {
     verdicts: Option<mpsc::Sender<Verdict>>,
     cancel: watch::Receiver<bool>,
     count: u64,
+    partials: u64,
     events: Vec<AgentEvent>,
     result: StdoutParseResult,
 }
@@ -69,6 +74,7 @@ impl Reader {
             verdicts: Some(verdicts),
             cancel,
             count: 0,
+            partials: 0,
             events: Vec::new(),
             result: StdoutParseResult::default(),
         }
@@ -90,7 +96,11 @@ impl Reader {
         self.journal
             .append(
                 Record::StdoutClosed,
-                json!({ "line_count": self.count, "finished": self.result.finished }),
+                json!({
+                    "line_count": self.count,
+                    "partial_line_count": self.partials,
+                    "finished": self.result.finished,
+                }),
             )
             .await;
         self.prose.finish().await;
@@ -152,7 +162,9 @@ impl Reader {
 
     async fn consume(&mut self, line: String) -> Result<(), String> {
         self.count += 1;
-        if self.journal.enabled() {
+        if self.agent.partial(&line) {
+            self.partials += 1;
+        } else if self.journal.enabled() {
             let logged = self.scrubber.scrub(&line);
             self.journal
                 .append_line(

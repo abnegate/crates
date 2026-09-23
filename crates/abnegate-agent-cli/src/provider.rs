@@ -2246,6 +2246,61 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
     }
 
     #[tokio::test]
+    async fn a_secret_streamed_in_pieces_never_reaches_the_journal() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let secret = "Xk9Qz7Vw2Lp4";
+        let script = r#"
+rest="$SERVICE_TOKEN"
+while [ -n "$rest" ]; do
+  piece=$(printf '%s' "$rest" | cut -c1-3)
+  rest=$(printf '%s' "$rest" | cut -c4-)
+  printf '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"%s"}},"session_id":"6f1"}\n' "$piece"
+done
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"token %s"}]}}\n' "$SERVICE_TOKEN"
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let settings = settings(&directory, script)
+            .with_log(&root)
+            .with_arguments(["--include-partial-messages"])
+            .with_environment("SERVICE_TOKEN", secret);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        let files = execution.log.clone().expect("log files");
+        let journal: Vec<Value> = std::fs::read_to_string(&files.events)
+            .expect("the journal")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a JSON line"))
+            .collect();
+        let streamed: String = journal
+            .iter()
+            .filter_map(|entry| entry["data"]["line"].as_str())
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|line| line["event"]["delta"]["text"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            !streamed.contains(secret),
+            "the journal holds the secret in pieces: {streamed}"
+        );
+        let contents = std::fs::read_to_string(&files.events).expect("the journal");
+        for piece in ["Xk9", "Qz7", "Vw2", "Lp4"] {
+            assert!(!contents.contains(piece), "{piece} reached the journal");
+        }
+        let closed = journal
+            .iter()
+            .find(|entry| entry["event"] == "stdout_stream_closed")
+            .expect("the stream's close");
+        assert_eq!(closed["data"]["line_count"], 6);
+        assert_eq!(closed["data"]["partial_line_count"], 4);
+        assert_eq!(
+            std::fs::read_to_string(&files.stdout).expect("the prose log"),
+            "token [REDACTED]"
+        );
+    }
+
+    #[tokio::test]
     async fn a_provider_is_a_cli_provider_with_its_agents_capabilities() {
         let claude = CliProvider::agent(AgentKind::Claude, CliSettings::default());
         let codex = CliProvider::new("reviewer", AgentKind::Codex, CliSettings::default());

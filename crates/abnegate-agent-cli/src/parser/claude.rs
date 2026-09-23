@@ -22,6 +22,7 @@ const STRUCTURED_OUTPUT: &str = "structured_output";
 const ENDS_TURN: &str = "result";
 const ASSISTANT: &str = "assistant";
 const TEXT: &str = "text";
+const PARTIAL: &str = "stream_event";
 
 /// How deep a content block's own `"type"` sits: in the block, in the
 /// message's `content` array, in the message, in the event.
@@ -37,6 +38,12 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
         Ok(event) => event.interpret(events),
         Err(_) => salvage(line, events),
     }
+}
+
+/// Whether `line` is a partial message, which `--include-partial-messages`
+/// adds: a piece of an event the stream repeats whole once it is complete.
+pub fn partial(line: &str) -> bool {
+    parser::kind(line) == Some(PARTIAL)
 }
 
 /// Whether an event too long to read, of which only `prefix` is known, is
@@ -87,6 +94,7 @@ mod tests {
     use super::CliUsage;
     use super::essential;
     use super::interpret;
+    use super::partial;
     use crate::event::AgentEvent;
 
     /// Recorded from `claude --verbose --output-format stream-json --print`.
@@ -463,6 +471,19 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"#,
         ] {
             assert!(!essential(prefix), "{prefix}");
+        }
+    }
+
+    #[test]
+    fn only_a_stream_event_is_a_partial_message() {
+        assert!(partial(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Xk9"}},"session_id":"6f1"}"#
+        ));
+        for line in SESSION.lines().chain([
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"{\"type\":\"stream_event\"}"}]}}"#,
+            "not json",
+        ]) {
+            assert!(!partial(line), "{line}");
         }
     }
 
