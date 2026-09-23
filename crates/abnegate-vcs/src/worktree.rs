@@ -17,9 +17,11 @@
 mod unfinished;
 
 use crate::branch_name::BranchName;
+use crate::commit_sha::CommitSha;
 use crate::git::CONFIG_LISTING;
 use crate::git::GITLINK_MODE;
 use crate::git::IGNORE_SUBMODULES;
+use crate::git::WorktreeEntry;
 use crate::git::harden;
 use crate::git::refused;
 pub use crate::worktree::unfinished::Unfinished;
@@ -320,9 +322,10 @@ pub fn branch(path: &Path) -> Option<BranchName> {
 
 /// Remove a worktree whether or not it is clean — the caller has decided,
 /// on [`unfinished`], that nothing in it is lost — and prune the repository's
-/// record of it. A branch the worktree was on is deleted with it: its commits
-/// are on the remote, that is what clean means, and a local ref left behind
-/// would refuse the next run of the same task its own branch.
+/// record of it. A branch the worktree was on is deleted with it, unless
+/// another worktree has it checked out: its commits are on the remote, that
+/// is what clean means, and a local ref left behind would refuse the next run
+/// of the same task its own branch.
 pub fn remove(repository: &Path, path: &Path) -> std::io::Result<()> {
     verify(repository)?;
     let on = branch(path);
@@ -337,14 +340,43 @@ pub fn remove(repository: &Path, path: &Path) -> std::io::Result<()> {
         "prune worktrees",
     );
     if let Some(name) = on
-        && let Err(error) = run(
-            local(repository).args(["branch", "-D", "--", name.as_str()]),
-            "delete the branch",
-        )
+        && let Err(error) = delete_branch(repository, &name)
     {
         tracing::warn!(branch = %name, %error, "Removed a worktree but could not delete its branch");
     }
     Ok(())
+}
+
+/// Delete `branch` by its ref alone, and only while it still names the
+/// commit read for it and no worktree has it checked out. `branch -D` would
+/// also drop the branch's section from the configuration, and git does that
+/// by renaming a rewritten file over it, through a link wherever
+/// `.git/config` is one, even when there is no section to drop.
+fn delete_branch(repository: &Path, branch: &BranchName) -> std::io::Result<()> {
+    let reference = branch.reference();
+    let listing = run(
+        local(repository).args(["worktree", "list", "--porcelain", "-z"]),
+        "list the repository's worktrees",
+    )?;
+    if WorktreeEntry::parse(&listing)
+        .iter()
+        .any(|entry| entry.branch.as_deref() == Some(reference.as_str()))
+    {
+        return Err(std::io::Error::other(
+            "another worktree has the branch checked out",
+        ));
+    }
+    let commit = run(
+        local(repository).args(["rev-parse", "--verify", &reference]),
+        "read the branch's commit",
+    )?;
+    let commit =
+        CommitSha::parse(&String::from_utf8_lossy(&commit)).map_err(std::io::Error::other)?;
+    run(
+        local(repository).args(["update-ref", "-d", "--", &reference, commit.as_str()]),
+        "delete the branch",
+    )
+    .map(drop)
 }
 
 /// The repository a worktree belongs to: the directory holding the `.git`
@@ -364,7 +396,11 @@ pub fn repository_of(path: &Path) -> std::io::Result<PathBuf> {
 
 #[cfg(test)]
 pub(crate) mod fixtures {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
     use std::path::Path;
+    #[cfg(unix)]
+    use std::path::PathBuf;
     use std::process::Command;
 
     /// Run git in a fixture with a fixed identity, panicking on failure.
@@ -409,6 +445,52 @@ pub(crate) mod fixtures {
                 path.to_str().unwrap(),
             ],
         );
+    }
+
+    /// A repository whose `.git/config` was replaced by a link to a copy of
+    /// it, with what the copy held and which file it was when linked.
+    #[cfg(unix)]
+    pub struct LinkedConfig {
+        copy: PathBuf,
+        content: Vec<u8>,
+        inode: u64,
+    }
+
+    #[cfg(unix)]
+    impl LinkedConfig {
+        /// Copy `repository`'s configuration to `copy` and link it there.
+        pub fn new(repository: &Path, copy: &Path) -> Self {
+            let config = repository.join(".git").join("config");
+            std::fs::copy(&config, copy).unwrap();
+            std::fs::remove_file(&config).unwrap();
+            std::os::unix::fs::symlink(copy, &config).unwrap();
+            Self {
+                copy: copy.to_path_buf(),
+                content: std::fs::read(copy).unwrap(),
+                inode: std::fs::metadata(copy).unwrap().ino(),
+            }
+        }
+
+        /// Panic unless the copy is still the same file holding the same
+        /// bytes, with no lock file git left beside it.
+        pub fn assert_untouched(&self) {
+            assert_eq!(
+                String::from_utf8_lossy(&std::fs::read(&self.copy).unwrap()),
+                String::from_utf8_lossy(&self.content),
+                "the linked file was written"
+            );
+            assert_eq!(
+                std::fs::metadata(&self.copy).unwrap().ino(),
+                self.inode,
+                "the linked file was rewritten, if with the same content"
+            );
+            let mut lock = self.copy.clone().into_os_string();
+            lock.push(".lock");
+            assert!(
+                std::fs::symlink_metadata(&lock).is_err(),
+                "a lock file was left beside the linked file"
+            );
+        }
     }
 }
 
@@ -583,6 +665,68 @@ mod tests {
         assert_eq!(
             branch(&second).as_ref().map(BranchName::as_str),
             Some("task/one")
+        );
+    }
+
+    /// Removing a worktree deletes its branch by the ref alone, so the base
+    /// clone's configuration is never rewritten, through a link wherever
+    /// `.git/config` is one.
+    #[cfg(unix)]
+    #[test]
+    fn removing_a_worktree_writes_nothing_through_a_linked_configuration() {
+        let repositories = repositories();
+        let path = repositories.worktrees.join("run");
+        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        git(&path, &["checkout", "-q", "-b", "task/one"]);
+        let linked = fixtures::LinkedConfig::new(
+            &repositories.base,
+            &repositories.base.with_file_name("copy"),
+        );
+
+        remove(&repositories.base, &path).unwrap();
+
+        assert!(!path.exists(), "the worktree was removed");
+        assert_eq!(
+            git(&repositories.base, &["branch", "--list", "task/one"]),
+            "",
+            "the branch went with the worktree"
+        );
+        linked.assert_untouched();
+    }
+
+    /// A branch another worktree has checked out stays where it is when a
+    /// worktree that was also on it is removed: deleting it would leave that
+    /// worktree on a branch with no commit.
+    #[test]
+    fn removing_a_worktree_keeps_a_branch_another_worktree_has_checked_out() {
+        let repositories = repositories();
+        let first = repositories.worktrees.join("first");
+        add(&repositories.base, &first, "origin/HEAD").unwrap();
+        git(&first, &["checkout", "-q", "-b", "task/one"]);
+        let second = repositories.worktrees.join("second");
+        git(
+            &repositories.base,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--force",
+                second.to_str().unwrap(),
+                "task/one",
+            ],
+        );
+
+        remove(&repositories.base, &first).unwrap();
+
+        assert!(!first.exists(), "the worktree was removed");
+        assert_eq!(
+            branch(&second).as_ref().map(BranchName::as_str),
+            Some("task/one")
+        );
+        assert_eq!(
+            git(&second, &["rev-parse", "--verify", "refs/heads/task/one"]),
+            git(&second, &["rev-parse", "HEAD"]),
+            "the branch the other worktree is on was kept"
         );
     }
 
