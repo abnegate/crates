@@ -1,5 +1,7 @@
 use super::*;
 use crate::git::service::hardened::fixtures::branch;
+use crate::git::service::hardened::fixtures::local;
+use crate::git::service::hardened::fixtures::token;
 use crate::worktree::fixtures::git;
 use tempfile::TempDir;
 
@@ -91,9 +93,10 @@ async fn a_worktree_whose_git_marker_is_a_link_to_another_clone_is_refused_a_com
     std::os::unix::fs::symlink(other.join(GIT_DIRECTORY), &marker).unwrap();
     staged(&checkout, "work\n");
     let listed = refs(&other);
+    let bound = Checkout::linked(&checkout, &base);
 
-    let committed = GitService::new().commit(&checkout, "work").await;
-    let blocking = crate::worktree::unfinished(&checkout, &[]);
+    let committed = GitService::new().commit(&bound, "work").await;
+    let blocking = crate::worktree::unfinished(&bound, &[]);
 
     assert_eq!(
         refs(&other),
@@ -168,11 +171,12 @@ async fn a_worktree_whose_record_names_another_clone_as_shared_is_refused_a_bran
     )
     .unwrap();
     let listed = refs(&other);
+    let bound = Checkout::linked(&checkout, &base);
 
     let created = GitService::new()
-        .create_branch(&checkout, &branch("feature/one"))
+        .create_branch(&bound, &branch("feature/one"))
         .await;
-    let blocking = crate::worktree::unfinished(&checkout, &[]);
+    let blocking = crate::worktree::unfinished(&bound, &[]);
 
     assert_eq!(
         refs(&other),
@@ -217,9 +221,10 @@ async fn a_worktree_whose_git_file_names_another_git_directory_is_refused_a_comm
         .unwrap();
         staged(&checkout, "work\n");
         let listed = refs(&other);
+        let bound = Checkout::linked(&checkout, &base);
 
-        let committed = GitService::new().commit(&checkout, "work").await;
-        let blocking = crate::worktree::unfinished(&checkout, &[]);
+        let committed = GitService::new().commit(&bound, "work").await;
+        let blocking = crate::worktree::unfinished(&bound, &[]);
 
         assert_eq!(
             refs(&other),
@@ -256,10 +261,11 @@ async fn a_worktree_whose_git_file_is_gone_is_refused_before_an_enclosing_reposi
     let service = GitService::new();
     let listed = refs(&enclosing);
     let tracked = git(&enclosing, &["ls-files"]);
+    let bound = Checkout::linked(&checkout, &base);
 
-    let staged = service.stage_all(&checkout).await;
-    let committed = service.commit(&checkout, "work").await;
-    let blocking = crate::worktree::unfinished(&checkout, &[]);
+    let staged = service.stage_all(&bound).await;
+    let committed = service.commit(&bound, "work").await;
+    let blocking = crate::worktree::unfinished(&bound, &[]);
 
     assert_eq!(
         git(&enclosing, &["ls-files"]),
@@ -313,21 +319,22 @@ async fn a_clone_and_every_worktree_git_adds_of_it_are_accepted() {
     crate::worktree::add(&base, &added, "HEAD").unwrap();
 
     service
-        .create_branch(&base, &branch("feature/base"))
+        .create_branch(&Checkout::base(&base), &branch("feature/base"))
         .await
         .unwrap();
     for checkout in [&absolute, &relative, &added] {
+        let bound = Checkout::linked(checkout, &base);
         staged(checkout, "work\n");
-        service.stage_all(checkout).await.unwrap();
-        let committed = service.commit(checkout, "work").await.unwrap();
+        service.stage_all(&bound).await.unwrap();
+        let committed = service.commit(&bound, "work").await.unwrap();
         assert_eq!(
-            service.revision(checkout, "HEAD").await.unwrap(),
+            service.revision(&bound, "HEAD").await.unwrap(),
             committed,
             "{}",
             checkout.display()
         );
         assert!(
-            !crate::worktree::unfinished(checkout, &[committed.as_str()])
+            !crate::worktree::unfinished(&bound, &[committed.as_str()])
                 .unwrap()
                 .any(),
             "{}",
@@ -335,7 +342,7 @@ async fn a_clone_and_every_worktree_git_adds_of_it_are_accepted() {
         );
     }
     assert_eq!(
-        crate::worktree::repository_of(&relative).unwrap(),
+        crate::worktree::repository_of(&Checkout::linked(&relative, &base)).unwrap(),
         base.canonicalize().unwrap()
     );
 }
@@ -358,15 +365,154 @@ async fn a_checkout_named_through_a_linked_parent_directory_is_accepted() {
     for (clone, linked, content) in [
         (base.clone(), checkout.clone(), "through the link\n"),
         (real.join("base"), real.join("one"), "by the real path\n"),
+        (
+            real.join("base"),
+            checkout.clone(),
+            "the clone by its real path\n",
+        ),
     ] {
-        assert_eq!(service.current_branch(&clone).await.unwrap(), "main");
+        let bound = Checkout::linked(&linked, &clone);
+        assert_eq!(
+            service
+                .current_branch(&Checkout::base(&clone))
+                .await
+                .unwrap(),
+            "main"
+        );
         staged(&linked, content);
-        service.stage_all(&linked).await.unwrap();
-        service.commit(&linked, "work").await.unwrap();
+        service.stage_all(&bound).await.unwrap();
+        service.commit(&bound, "work").await.unwrap();
         assert!(
-            crate::worktree::unfinished(&linked, &[]).is_ok(),
+            crate::worktree::unfinished(&bound, &[]).is_ok(),
             "{}",
             linked.display()
+        );
+    }
+}
+
+/// A worktree record a second clone kept for a checkout whose directory was
+/// deleted without a prune names the path again once a checkout of the
+/// first clone stands there. A `.git` file rewritten to name that record
+/// passes every check of the record's own layout, but hands every command
+/// the second clone's index, branch and objects, and a push the first
+/// clone's remote and credential. A checkout bound to the first clone
+/// refuses it.
+#[tokio::test]
+async fn a_checkout_whose_git_file_names_another_clone_s_stale_record_is_refused() {
+    let root = TempDir::new().unwrap();
+    let published = root.path().join("published");
+    git(
+        root.path(),
+        &[
+            "init",
+            "-q",
+            "--bare",
+            FILES,
+            "--",
+            published.to_str().unwrap(),
+        ],
+    );
+    let first_source = repository(root.path(), "first-source");
+    git(
+        &first_source,
+        &["push", "-q", "--", published.to_str().unwrap(), "main"],
+    );
+    let first = cloned(root.path(), &published, "first");
+    let second_source = repository(root.path(), "second-source");
+    let second = cloned(root.path(), &second_source, "second");
+    let path = root.path().join("one");
+    let record = own(&worktree(&second, &path, &["-b", "task/second"]));
+    std::fs::remove_dir_all(&path).unwrap();
+    worktree(&first, &path, &["-b", "task/first"]);
+    std::fs::write(
+        path.join(GIT_DIRECTORY),
+        format!("gitdir: {}\n", record.display()),
+    )
+    .unwrap();
+    std::fs::write(path.join("work.txt"), "work\n").unwrap();
+    let index = || std::fs::read(record.join("index")).ok();
+    let (second_refs, second_index, published_refs) = (refs(&second), index(), refs(&published));
+    let checkout = Checkout::linked(&path, &first);
+    let service = GitService::new();
+
+    let staged = service.stage_all(&checkout).await;
+    let committed = service.commit(&checkout, "work").await;
+    let pushed = service
+        .push_with_token(
+            &checkout,
+            &branch("task/first"),
+            &local(&published),
+            &token(),
+        )
+        .await;
+    let blocking = crate::worktree::unfinished(&checkout, &[]);
+
+    assert_eq!(refs(&second), second_refs, "the second clone's refs moved");
+    assert!(
+        second_index.is_some(),
+        "the second clone kept no index for the record"
+    );
+    assert_eq!(
+        index(),
+        second_index,
+        "the second clone's record index was written"
+    );
+    assert_eq!(
+        refs(&published),
+        published_refs,
+        "the first clone's remote was pushed to"
+    );
+    for (operation, refusal) in [staged, committed.map(drop), pushed.map(drop)]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(
+            matches!(refusal, Err(GitError::RedirectedGitDirectory)),
+            "operation {operation}: {refusal:?}"
+        );
+    }
+    assert!(
+        matches!(
+            blocking.as_ref().err().and_then(carried),
+            Some(GitError::RedirectedGitDirectory)
+        ),
+        "{blocking:?}"
+    );
+}
+
+/// A checkout named as the clone it is not -- a worktree as a base clone, a
+/// clone as a worktree of another, a worktree as one of a clone it was not
+/// added to -- is refused, since its git directories are not the ones the
+/// caller bound it to.
+#[tokio::test]
+async fn a_checkout_bound_to_a_clone_it_was_not_made_from_is_refused() {
+    let root = TempDir::new().unwrap();
+    let base = repository(root.path(), "base");
+    let other = cloned(root.path(), &base, "other");
+    let checkout = worktree(&base, &root.path().join("one"), &["--detach"]);
+    let service = GitService::new();
+
+    for (case, misbound) in [
+        Checkout::base(&checkout),
+        Checkout::linked(&other, &base),
+        Checkout::linked(&checkout, &other),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let branch = service.current_branch(&misbound).await;
+        let blocking = crate::worktree::unfinished(&misbound, &[]);
+
+        assert!(
+            matches!(branch, Err(GitError::RedirectedGitDirectory)),
+            "case {case}: {branch:?}"
+        );
+        assert!(
+            matches!(
+                blocking.as_ref().err().and_then(carried),
+                Some(GitError::RedirectedGitDirectory)
+            ),
+            "case {case}: {blocking:?}"
         );
     }
 }
@@ -386,9 +532,13 @@ async fn a_directory_below_the_top_of_a_checkout_is_refused_as_not_its_top() {
     }
     let service = GitService::new();
 
-    for (case, below) in [base.join("below"), checkout.join("below"), outside]
-        .into_iter()
-        .enumerate()
+    for (case, below) in [
+        Checkout::base(base.join("below")),
+        Checkout::linked(checkout.join("below"), &base),
+        Checkout::base(&outside),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let branch = service.current_branch(&below).await;
         let blocking = crate::worktree::unfinished(&below, &[]);
@@ -423,7 +573,10 @@ async fn a_repository_that_borrows_objects_from_another_store_is_refused() {
     let checkout = worktree(&base, &root.path().join("one"), &["-b", "task/one"]);
     let service = GitService::new();
     staged(&base, "ordinary\n");
-    service.commit(&base, "ordinary").await.unwrap();
+    service
+        .commit(&Checkout::base(&base), "ordinary")
+        .await
+        .unwrap();
     std::fs::write(
         base.join(GIT_DIRECTORY)
             .join("objects")
@@ -436,9 +589,11 @@ async fn a_repository_that_borrows_objects_from_another_store_is_refused() {
     staged(&checkout, "borrowing\n");
     let listed = refs(&base);
 
-    let committed = service.commit(&base, "borrowing").await;
-    let linked = service.commit(&checkout, "borrowing").await;
-    let blocking = crate::worktree::unfinished(&checkout, &[]);
+    let committed = service.commit(&Checkout::base(&base), "borrowing").await;
+    let linked = service
+        .commit(&Checkout::linked(&checkout, &base), "borrowing")
+        .await;
+    let blocking = crate::worktree::unfinished(&Checkout::linked(&checkout, &base), &[]);
 
     assert_eq!(refs(&base), listed, "the refused commit moved a ref");
     for (operation, refusal) in [committed, linked].into_iter().enumerate() {

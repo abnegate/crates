@@ -1,8 +1,9 @@
 # abnegate-vcs
 
 Version control over the `git` command line. `GitService` shells out to `git`
-for the clone, branch, commit, push and worktree a change needs; `worktree` adds
-and removes the detached worktrees a batch of concurrent runs works in;
+for the clone, branch, commit, push and worktree a change needs, in a `Checkout`
+named by its top and bound to the clone it was made from; `worktree` adds and
+removes the detached worktrees a batch of concurrent runs works in;
 `ConflictService` reproduces a pull request's merge conflict in a throwaway
 checkout and `resolution::judge` refuses a repair that threw a branch's work
 away; `Subject` names a change the way a conventional-commit history names one;

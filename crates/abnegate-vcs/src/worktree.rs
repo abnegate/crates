@@ -10,6 +10,13 @@
 //! shared clone is a run's to move, and a run could make its commits look
 //! published without a push.
 //!
+//! A worktree is named by a [`Checkout`] bound to the clone it was added to,
+//! by its top, where its `.git` file stands. A path below the top is refused
+//! with [`crate::GitError::NotACheckoutTop`], and a worktree whose `.git`
+//! file leads to any git directory but one of that clone's own records with
+//! [`crate::GitError::RedirectedGitDirectory`], each carried in the
+//! [`std::io::Error`] every operation here returns.
+//!
 //! Everything here is local to the disk and synchronous, so it can run inside
 //! a `Drop` as well as under `spawn_blocking`; the one network step, fetching
 //! the base clone, stays on [`crate::git::GitService`] with its timeout.
@@ -17,6 +24,7 @@
 mod unfinished;
 
 use crate::branch_name::BranchName;
+use crate::checkout::Checkout;
 use crate::commit_sha::CommitSha;
 use crate::git::Anchor;
 use crate::git::CONFIG_LISTING;
@@ -93,22 +101,21 @@ fn local(repository: &Path) -> Command {
 }
 
 /// Refuse a path that is not the top of a checkout, which it refuses with
-/// [`crate::git::GitError::NotACheckoutTop`]; a repository whose own
-/// configuration holds anything beyond what git writes for a clone, a
-/// worktree and a tracking branch; a checkout whose git
-/// directory, or the one it shares, is not the one its own `.git` names,
-/// which it refuses with [`crate::git::GitError::RedirectedGitDirectory`];
-/// one whose `.git` is a link or whose git directory holds one, which it
-/// refuses with [`crate::git::GitError::LinkedPath`]; and one that borrows
-/// objects from another store, which it refuses with
-/// [`crate::git::GitError::AlternateObjects`]: the configuration and the
-/// refs are the base clone's, which every run of the repository can write
-/// through its own git commands.
-fn verify(repository: &Path) -> std::io::Result<()> {
-    let anchor = Anchor::Checkout(repository.to_path_buf());
+/// [`crate::GitError::NotACheckoutTop`]; a repository whose own configuration
+/// holds anything beyond what git writes for a clone, a worktree and a
+/// tracking branch; a checkout whose git directory, or the one it shares, is
+/// not the one its own `.git` names or not its clone's, which it refuses
+/// with [`crate::GitError::RedirectedGitDirectory`]; one whose `.git` is a
+/// link or whose git directory holds one, which it refuses with
+/// [`crate::GitError::LinkedPath`]; and one that borrows objects from another
+/// store, which it refuses with [`crate::GitError::AlternateObjects`]: the
+/// configuration and the refs are the base clone's, which every run of the
+/// repository can write through its own git commands.
+fn verify(checkout: &Checkout) -> std::io::Result<()> {
+    let anchor = Anchor::Checkout(checkout.clone());
     anchor.marked().map_err(std::io::Error::other)?;
     let listing = run(
-        local(repository).args(CONFIG_LISTING),
+        local(checkout.top()).args(CONFIG_LISTING),
         "read the repository's configuration",
     )?;
     if let Some(key) = refused(&listing) {
@@ -117,7 +124,7 @@ fn verify(repository: &Path) -> std::io::Result<()> {
         )));
     }
     let located = run(
-        local(repository).args(LOCATING),
+        local(checkout.top()).args(LOCATING),
         "locate the repository's files",
     )?;
     anchor.admits(&located).map_err(std::io::Error::other)
@@ -228,9 +235,11 @@ pub fn path(workspace: &Path, repository_name: &str, identifier: &str) -> Option
 /// Add a detached worktree of `repository` at `path`, checked out at `start`.
 /// Detached, because the run's own branch is made afterwards by the same
 /// step that makes it in a clone, and a worktree that started on a named
-/// branch would pin that branch to itself.
+/// branch would pin that branch to itself. `repository` is the top of the
+/// base clone, and the worktree is named from then on by
+/// [`Checkout::linked`]`(path, repository)`.
 pub fn add(repository: &Path, path: &Path, start: &str) -> std::io::Result<()> {
-    verify(repository)?;
+    verify(&Checkout::base(repository))?;
     run(
         local(repository)
             .args(["worktree", "add", "--detach", "--"])
@@ -264,8 +273,13 @@ pub fn is_worktree(path: &Path) -> bool {
 /// index records, which the status is told not to descend into -- descending
 /// runs a child git under the nested repository's own configuration -- and
 /// whose presence is counted as work rather than followed.
-pub fn unfinished(path: &Path, known: &[&str]) -> std::io::Result<Unfinished> {
-    verify(path)?;
+///
+/// A `checkout` that is not named by its top, or whose git directories are
+/// not its clone's, is refused before anything is read, as the
+/// [module](self) describes.
+pub fn unfinished(checkout: &Checkout, known: &[&str]) -> std::io::Result<Unfinished> {
+    verify(checkout)?;
+    let path = checkout.top();
     let tracked = run(
         local(path).args(TRACKED_STATUS),
         "read the worktree's status",
@@ -335,11 +349,12 @@ fn hides_changes(listing: &[u8]) -> bool {
 
 /// The branch the worktree's HEAD names, or `None` when it is detached or
 /// cannot be read. Where that branch is itself a symbolic ref, it is the
-/// branch, not the ref the link names.
-pub fn branch(path: &Path) -> Option<BranchName> {
-    verify(path).ok()?;
+/// branch, not the ref the link names. A `checkout` refused as the
+/// [module](self) describes cannot be read.
+pub fn branch(checkout: &Checkout) -> Option<BranchName> {
+    verify(checkout).ok()?;
     run(
-        local(path).args(["symbolic-ref", "--quiet", "--short", "--no-recurse", "HEAD"]),
+        local(checkout.top()).args(["symbolic-ref", "--quiet", "--short", "--no-recurse", "HEAD"]),
         "read the worktree's branch",
     )
     .ok()
@@ -352,13 +367,19 @@ pub fn branch(path: &Path) -> Option<BranchName> {
 /// another worktree has it checked out: its commits are on the remote, that
 /// is what clean means, and a local ref left behind would refuse the next run
 /// of the same task its own branch.
-pub fn remove(repository: &Path, path: &Path) -> std::io::Result<()> {
-    verify(repository)?;
-    let on = branch(path);
+///
+/// The clone is refused as [`add`] refuses it before anything is removed, and
+/// the branch is read only from a worktree still bound to it: one whose
+/// `.git` names another clone's record would name that clone's branch, and
+/// a branch of this clone's that shares the name is never deleted for it.
+pub fn remove(checkout: &Checkout) -> std::io::Result<()> {
+    let repository = checkout.repository();
+    verify(&Checkout::base(repository))?;
+    let on = branch(checkout);
     run(
         local(repository)
             .args(["worktree", "remove", "--force", "--"])
-            .arg(path),
+            .arg(checkout.top()),
         "remove the worktree",
     )?;
     let _ = run(
@@ -413,12 +434,14 @@ fn delete_branch(repository: &Path, branch: &BranchName) -> std::io::Result<()> 
     .map(drop)
 }
 
-/// The repository a worktree belongs to: the directory holding the `.git`
-/// its `.git` file points into.
-pub fn repository_of(path: &Path) -> std::io::Result<PathBuf> {
-    verify(path)?;
+/// The repository a worktree belongs to, as git reads it: the directory
+/// holding the `.git` its `.git` file points into. A `checkout` refused as
+/// the [module](self) describes has none, so what is returned is always the
+/// real path of the clone it is bound to.
+pub fn repository_of(checkout: &Checkout) -> std::io::Result<PathBuf> {
+    verify(checkout)?;
     let common = run(
-        local(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+        local(checkout.top()).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
         "find the worktree's repository",
     )?;
     let common = PathBuf::from(String::from_utf8_lossy(&common).trim());
@@ -557,6 +580,13 @@ mod tests {
         worktrees: PathBuf,
     }
 
+    impl Repositories {
+        /// The worktree of the base clone at `path`, bound to it.
+        fn checkout(&self, path: &Path) -> Checkout {
+            Checkout::linked(path, &self.base)
+        }
+    }
+
     fn repositories() -> Repositories {
         let root = tempfile::tempdir().unwrap();
         let remote_path = root.path().join("remote");
@@ -585,12 +615,23 @@ mod tests {
             std::fs::read_to_string(path.join("README")).unwrap(),
             "fixture\n"
         );
-        assert_eq!(branch(&path), None, "detached, so no branch is pinned");
-        let start = git(&repositories.remote, &["rev-parse", "main"]);
-        assert_eq!(unfinished(&path, &[&start]).unwrap(), Unfinished::default());
-        assert!(!unfinished(&path, &[&start]).unwrap().any());
         assert_eq!(
-            unfinished(&path, &[]).unwrap(),
+            branch(&repositories.checkout(&path)),
+            None,
+            "detached, so no branch is pinned"
+        );
+        let start = git(&repositories.remote, &["rev-parse", "main"]);
+        assert_eq!(
+            unfinished(&repositories.checkout(&path), &[&start]).unwrap(),
+            Unfinished::default()
+        );
+        assert!(
+            !unfinished(&repositories.checkout(&path), &[&start])
+                .unwrap()
+                .any()
+        );
+        assert_eq!(
+            unfinished(&repositories.checkout(&path), &[]).unwrap(),
             Unfinished {
                 uncommitted: false,
                 unpublished: true
@@ -600,7 +641,7 @@ mod tests {
         // Git names the repository by its real path, which on macOS is not
         // the path the temporary directory was handed out under.
         assert_eq!(
-            repository_of(&path).unwrap(),
+            repository_of(&repositories.checkout(&path)).unwrap(),
             repositories.base.canonicalize().unwrap()
         );
     }
@@ -614,7 +655,7 @@ mod tests {
         git(&path, &["checkout", "-q", "-b", "task/one"]);
         std::fs::write(path.join("work.txt"), "in progress\n").unwrap();
         assert_eq!(
-            unfinished(&path, &[&start]).unwrap(),
+            unfinished(&repositories.checkout(&path), &[&start]).unwrap(),
             Unfinished {
                 uncommitted: true,
                 unpublished: false
@@ -623,7 +664,7 @@ mod tests {
         git(&path, &["add", "work.txt"]);
         git(&path, &["commit", "-q", "-m", "work"]);
         assert_eq!(
-            unfinished(&path, &[&start]).unwrap(),
+            unfinished(&repositories.checkout(&path), &[&start]).unwrap(),
             Unfinished {
                 uncommitted: false,
                 unpublished: true
@@ -637,7 +678,9 @@ mod tests {
             &["update-ref", "refs/remotes/origin/task/one", "HEAD"],
         );
         assert!(
-            unfinished(&path, &[&start]).unwrap().unpublished,
+            unfinished(&repositories.checkout(&path), &[&start])
+                .unwrap()
+                .unpublished,
             "a planted remote-tracking ref is not a publication"
         );
         // Publication as the service performs it: a push, and the service
@@ -645,11 +688,13 @@ mod tests {
         git(&path, &["push", "-q", "origin", "HEAD:refs/heads/task/one"]);
         let pushed = git(&path, &["rev-parse", "HEAD"]);
         assert_eq!(
-            unfinished(&path, &[&start, &pushed]).unwrap(),
+            unfinished(&repositories.checkout(&path), &[&start, &pushed]).unwrap(),
             Unfinished::default()
         );
         assert_eq!(
-            branch(&path).as_ref().map(BranchName::as_str),
+            branch(&repositories.checkout(&path))
+                .as_ref()
+                .map(BranchName::as_str),
             Some("task/one")
         );
         assert_eq!(
@@ -674,11 +719,18 @@ mod tests {
             ("core.excludesFile", "/dev/null"),
         ] {
             git(&path, &["config", key, value]);
-            assert!(unfinished(&path, &[&start]).is_err(), "{key}");
+            assert!(
+                unfinished(&repositories.checkout(&path), &[&start]).is_err(),
+                "{key}"
+            );
             git(&path, &["config", "--unset", key]);
         }
         std::fs::write(path.join("notes.txt"), "not yet added\n").unwrap();
-        assert!(unfinished(&path, &[&start]).unwrap().uncommitted);
+        assert!(
+            unfinished(&repositories.checkout(&path), &[&start])
+                .unwrap()
+                .uncommitted
+        );
         std::fs::remove_file(path.join("notes.txt")).unwrap();
         std::fs::write(path.join(".gitignore"), "*.log\n").unwrap();
         git(&path, &["add", ".gitignore"]);
@@ -686,7 +738,9 @@ mod tests {
         std::fs::write(path.join("build.log"), "output\n").unwrap();
         let head = git(&path, &["rev-parse", "HEAD"]);
         assert!(
-            !unfinished(&path, &[&start, &head]).unwrap().uncommitted,
+            !unfinished(&repositories.checkout(&path), &[&start, &head])
+                .unwrap()
+                .uncommitted,
             "a file the repository's own rules ignore is not work"
         );
     }
@@ -698,7 +752,7 @@ mod tests {
         add(&repositories.base, &first, "origin/HEAD").unwrap();
         git(&first, &["checkout", "-q", "-b", "task/one"]);
         std::fs::write(first.join("work.txt"), "x\n").unwrap();
-        remove(&repositories.base, &first).unwrap();
+        remove(&repositories.checkout(&first)).unwrap();
         assert!(
             !first.exists(),
             "removed even with an uncommitted file: the caller decided"
@@ -712,7 +766,9 @@ mod tests {
         add(&repositories.base, &second, "origin/HEAD").unwrap();
         git(&second, &["checkout", "-q", "-b", "task/one"]);
         assert_eq!(
-            branch(&second).as_ref().map(BranchName::as_str),
+            branch(&repositories.checkout(&second))
+                .as_ref()
+                .map(BranchName::as_str),
             Some("task/one")
         );
     }
@@ -733,7 +789,7 @@ mod tests {
             &repositories.base.with_file_name("copy"),
         );
 
-        let refusal = remove(&repositories.base, &path).unwrap_err();
+        let refusal = remove(&repositories.checkout(&path)).unwrap_err();
 
         assert!(
             matches!(
@@ -783,11 +839,13 @@ mod tests {
             ],
         );
 
-        remove(&repositories.base, &first).unwrap();
+        remove(&repositories.checkout(&first)).unwrap();
 
         assert!(!first.exists(), "the worktree was removed");
         assert_eq!(
-            branch(&second).as_ref().map(BranchName::as_str),
+            branch(&repositories.checkout(&second))
+                .as_ref()
+                .map(BranchName::as_str),
             Some("task/one")
         );
         assert_eq!(
@@ -834,7 +892,9 @@ mod tests {
         );
         assert_eq!(git(&other, &["rev-parse", "HEAD"]), held);
         assert_eq!(
-            branch(&other).as_ref().map(BranchName::as_str),
+            branch(&repositories.checkout(&other))
+                .as_ref()
+                .map(BranchName::as_str),
             Some("task/other")
         );
     }
@@ -864,9 +924,9 @@ mod tests {
         let path = repositories.worktrees.join("run");
         add(&repositories.base, &path, "origin/HEAD").unwrap();
         git(&path, &["symbolic-ref", "HEAD", "refs/heads/task/one"]);
-        let on = branch(&path);
+        let on = branch(&repositories.checkout(&path));
 
-        remove(&repositories.base, &path).unwrap();
+        remove(&repositories.checkout(&path)).unwrap();
 
         assert_eq!(
             git(
@@ -887,10 +947,10 @@ mod tests {
     fn a_missing_worktree_is_an_error_and_not_a_panic() {
         let repositories = repositories();
         let missing = repositories.worktrees.join("missing");
-        assert!(unfinished(&missing, &[]).is_err());
-        assert!(remove(&repositories.base, &missing).is_err());
-        assert!(repository_of(&missing).is_err());
-        assert_eq!(branch(&missing), None);
+        assert!(unfinished(&repositories.checkout(&missing), &[]).is_err());
+        assert!(remove(&repositories.checkout(&missing)).is_err());
+        assert!(repository_of(&repositories.checkout(&missing)).is_err());
+        assert_eq!(branch(&repositories.checkout(&missing)), None);
     }
 
     #[test]
@@ -1026,7 +1086,11 @@ mod tests {
         std::fs::write(&exclude, "notes.txt\n").unwrap();
         std::fs::write(path.join("notes.txt"), "not yet added\n").unwrap();
 
-        assert!(unfinished(&path, &[&start]).unwrap().uncommitted);
+        assert!(
+            unfinished(&repositories.checkout(&path), &[&start])
+                .unwrap()
+                .uncommitted
+        );
     }
 
     /// An entry marked assume-unchanged or skip-worktree hides its changes
@@ -1046,7 +1110,12 @@ mod tests {
                 "{mark} hides the change from a status"
             );
 
-            assert!(unfinished(&path, &[&start]).unwrap().uncommitted, "{mark}");
+            assert!(
+                unfinished(&repositories.checkout(&path), &[&start])
+                    .unwrap()
+                    .uncommitted,
+                "{mark}"
+            );
         }
     }
 
@@ -1062,7 +1131,7 @@ mod tests {
         git(&path, &["update-index", "--really-refresh"]);
         std::fs::write(path.join("README"), "changed\n").unwrap();
         assert!(
-            unfinished(&path, &[&start]).is_err(),
+            unfinished(&repositories.checkout(&path), &[&start]).is_err(),
             "the setting itself is refused"
         );
         git(
@@ -1070,7 +1139,7 @@ mod tests {
             &["config", "--unset", "core.ignoreStat"],
         );
 
-        let held = unfinished(&path, &[&start]).unwrap();
+        let held = unfinished(&repositories.checkout(&path), &[&start]).unwrap();
 
         assert!(
             held.uncommitted,
@@ -1109,9 +1178,10 @@ mod tests {
         assert!(refusal.contains("filter.planted.smudge"), "{refusal}");
         assert!(!marker.exists(), "the smudge filter ran");
         assert!(!path.exists());
-        assert!(unfinished(&repositories.base, &[]).is_err());
-        assert!(repository_of(&repositories.base).is_err());
-        assert!(remove(&repositories.base, &path).is_err());
+        let checkout = Checkout::base(&repositories.base);
+        assert!(unfinished(&checkout, &[]).is_err());
+        assert!(repository_of(&checkout).is_err());
+        assert!(remove(&repositories.checkout(&path)).is_err());
     }
 
     #[test]
@@ -1155,7 +1225,9 @@ mod tests {
             std::fs::write(path.join(format!("{directory}work.txt")), "unsaved\n").unwrap();
 
             assert!(
-                unfinished(&path, &[&start]).unwrap().uncommitted,
+                unfinished(&repositories.checkout(&path), &[&start])
+                    .unwrap()
+                    .uncommitted,
                 "{directory:?}"
             );
         }
@@ -1188,7 +1260,9 @@ mod tests {
         std::fs::create_dir(&nested).unwrap();
         git(&nested, &["init", "-q", "-b", "main"]);
         assert!(
-            unfinished(&path, &[&start]).unwrap().uncommitted,
+            unfinished(&repositories.checkout(&path), &[&start])
+                .unwrap()
+                .uncommitted,
             "an untracked nested repository is work"
         );
 
@@ -1204,7 +1278,7 @@ mod tests {
         )
         .unwrap();
 
-        let held = unfinished(&path, &[&start, &head]).unwrap();
+        let held = unfinished(&repositories.checkout(&path), &[&start, &head]).unwrap();
         assert!(
             held.uncommitted,
             "a recorded gitlink is read from the index, not by entering it: {held:?}"

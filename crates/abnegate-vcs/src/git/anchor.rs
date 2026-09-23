@@ -1,3 +1,4 @@
+use crate::checkout::Checkout;
 use crate::git::GitError;
 use crate::git::GitResult;
 use crate::git::hardening::directories;
@@ -37,10 +38,11 @@ const LONGEST_PATH: u64 = 4096;
 /// clone's refs, index and configuration.
 #[derive(Debug)]
 pub(crate) enum Anchor {
-    /// A checkout the caller named: a clone, whose `.git` is its own git
-    /// directory and the shared one at once, or a linked worktree, whose
-    /// `.git` file names its own among the records of a clone's.
-    Checkout(PathBuf),
+    /// A checkout the caller named by its top and bound to its clone: a
+    /// base clone, whose `.git` is its own git directory and the shared one
+    /// at once, or a linked worktree, whose `.git` file names its own among
+    /// the records of the clone's.
+    Checkout(Checkout),
     /// A git directory a command is bound to by path, its own and the
     /// shared one at once.
     Bound(PathBuf),
@@ -54,7 +56,7 @@ impl Anchor {
     /// encloses the path.
     pub(crate) fn marked(&self) -> GitResult<()> {
         match self {
-            Self::Checkout(checkout) => marker(checkout).map(drop),
+            Self::Checkout(checkout) => marker(checkout.top()).map(drop),
             Self::Bound(_) => Ok(()),
         }
     }
@@ -74,9 +76,12 @@ impl Anchor {
     /// following a link. A checkout's top with no `.git` is refused with
     /// [`GitError::NotACheckoutTop`], a `.git` that is a link with
     /// [`GitError::LinkedPath`], and every other mismatch, including what
-    /// cannot be looked at, with [`GitError::RedirectedGitDirectory`]. Every
-    /// path is compared by its real path, so a checkout named through a
-    /// linked directory above it is still its own.
+    /// cannot be looked at, with [`GitError::RedirectedGitDirectory`]: a
+    /// shared git directory that is not the `.git` directory of the clone
+    /// the checkout is bound to is one, however consistent the worktree
+    /// record leading to it is. Every path is compared by its real path, so
+    /// a checkout named through a linked directory above it is still its
+    /// own.
     fn holds(&self, located: &[u8]) -> GitResult<()> {
         let (own, shared) = directories(located)?;
         let (Some(own), Some(shared)) = (real(&own), real(&shared)) else {
@@ -84,11 +89,12 @@ impl Anchor {
         };
         let confirmed = match self {
             Self::Checkout(checkout) => {
-                let (marker, details) = marker(checkout)?;
-                match details.is_dir() {
-                    true => own == marker && shared == marker,
-                    false => details.is_file() && linked(&marker, &own, &shared),
-                }
+                let (marker, details) = marker(checkout.top())?;
+                cloned(checkout.repository(), &shared)
+                    && match details.is_dir() {
+                        true => own == marker && shared == marker,
+                        false => details.is_file() && linked(&marker, &own, &shared),
+                    }
             }
             Self::Bound(directory) => {
                 real(directory).is_some_and(|directory| own == directory && shared == directory)
@@ -145,11 +151,19 @@ fn absent(error: &std::io::Error) -> bool {
     )
 }
 
+/// Whether `shared` is the `.git` directory, and not a link to one, of the
+/// clone whose top is `repository`.
+fn cloned(repository: &Path, shared: &Path) -> bool {
+    let directory = repository.join(GIT_MARKER);
+    std::fs::symlink_metadata(&directory).is_ok_and(|details| details.is_dir())
+        && real(&directory).as_deref() == Some(shared)
+}
+
 /// Whether `own` and `shared` are the git directories of the linked
 /// worktree whose `.git` file stands at `marker`: `own` is a record among
-/// `shared`'s worktrees, the record names `marker` as its `.git` and
+/// `shared`'s worktrees, and the record names `marker` as its `.git` and
 /// `shared` as the directory it shares, as git reads both, relative to the
-/// record, and `shared` is the `.git` directory of the clone it stands in.
+/// record.
 fn linked(marker: &Path, own: &Path, shared: &Path) -> bool {
     let recorded = own
         .parent()
@@ -158,11 +172,6 @@ fn linked(marker: &Path, own: &Path, shared: &Path) -> bool {
     recorded == Some(shared)
         && pointed(own, GITDIR).as_deref() == Some(marker)
         && pointed(own, COMMONDIR).as_deref() == Some(shared)
-        && shared.parent().is_some_and(|clone| {
-            let directory = clone.join(GIT_MARKER);
-            std::fs::symlink_metadata(&directory).is_ok_and(|details| details.is_dir())
-                && real(&directory).as_deref() == Some(shared)
-        })
 }
 
 /// The real path of what the file `name` in the record `own` names, read

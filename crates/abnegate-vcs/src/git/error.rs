@@ -49,9 +49,9 @@ pub enum GitError {
     LinkedPath,
 
     /// A checkout whose git directory, or the one it shares, is not the one
-    /// its own `.git` names: git would read and write another repository's
-    /// refs, index and configuration from it. Which one is left unnamed: the
-    /// checkout chose that path.
+    /// its own `.git` names, or not the clone it is bound to: git would read
+    /// and write another repository's refs, index and configuration from it.
+    /// Which one is left unnamed: the checkout chose that path.
     #[error("Refusing a checkout whose git directory is not its own")]
     RedirectedGitDirectory,
 

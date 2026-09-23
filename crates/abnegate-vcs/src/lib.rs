@@ -3,7 +3,8 @@
 //! Version control over the `git` command line.
 //!
 //! [`git::GitService`] shells out to `git` for the clone, branch, commit, push
-//! and worktree a change needs; [`worktree`] adds and removes the detached
+//! and worktree a change needs, in a [`Checkout`] named by its top and bound
+//! to the clone it was made from; [`worktree`] adds and removes the detached
 //! worktrees a batch of concurrent runs works in; [`conflict::ConflictService`]
 //! reproduces a pull request's merge conflict in a throwaway checkout and
 //! [`resolution::judge`] refuses a repair that threw a branch's work away;
@@ -43,6 +44,7 @@
 //!   configures produces either, so only a test should enable it.
 
 mod branch_name;
+mod checkout;
 mod commit_sha;
 pub mod conflict;
 pub mod discovery;
@@ -57,6 +59,7 @@ pub mod subject;
 pub mod worktree;
 
 pub use crate::branch_name::BranchName;
+pub use crate::checkout::Checkout;
 pub use crate::commit_sha::CommitSha;
 pub use crate::conflict::Conflict;
 pub use crate::conflict::ConflictError;

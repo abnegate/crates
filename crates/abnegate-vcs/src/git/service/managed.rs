@@ -226,7 +226,7 @@ impl GitService {
     /// clearing the list, and then looks for `origin` elsewhere, and an empty
     /// refspec fetches `HEAD` alone.
     async fn verify_remote(path: &Path, url: &str) -> GitResult<()> {
-        Self::verify_config(path).await?;
+        Self::verify_base(path).await?;
         let expected = address(url)?;
         Self::verify_sole(path, ORIGIN_URL, expected.as_encoded_bytes()).await?;
         Self::verify_sole(path, ORIGIN_FETCH, FETCH_REFSPEC.as_bytes()).await
@@ -336,7 +336,7 @@ impl GitService {
     /// whose remote-tracking ref is one, is refused with
     /// [`GitError::SymbolicBranch`].
     async fn checkout_reset(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
-        Self::verify_config(path).await?;
+        Self::verify_base(path).await?;
         if Self::is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
@@ -615,23 +615,18 @@ mod managed_tests {
         let temporary = TempDir::new().unwrap();
         repository(temporary.path());
         let service = GitService::new();
+        let checkout = Checkout::base(temporary.path());
 
-        assert_eq!(
-            service.current_branch(temporary.path()).await.unwrap(),
-            "main"
-        );
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "main");
 
         for name in ["branch-a", "branch-b", "branch-c"] {
             git(temporary.path(), &["branch", name]);
         }
-        assert_eq!(
-            service.current_branch(temporary.path()).await.unwrap(),
-            "main"
-        );
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "main");
 
         git(temporary.path(), &["checkout", "-q", "-b", "feature/test"]);
         assert_eq!(
-            service.current_branch(temporary.path()).await.unwrap(),
+            service.current_branch(&checkout).await.unwrap(),
             "feature/test"
         );
     }
@@ -645,7 +640,7 @@ mod managed_tests {
 
         assert_eq!(
             GitService::new()
-                .current_branch(temporary.path())
+                .current_branch(&Checkout::base(temporary.path()))
                 .await
                 .unwrap(),
             "HEAD"
@@ -657,14 +652,16 @@ mod managed_tests {
         let service = GitService::new();
         let temporary = TempDir::new().unwrap();
 
-        let refusal = service.current_branch(temporary.path()).await;
+        let refusal = service
+            .current_branch(&Checkout::base(temporary.path()))
+            .await;
         assert!(
             matches!(refusal, Err(GitError::NotACheckoutTop)),
             "{refusal:?}"
         );
 
         let missing = service
-            .current_branch(Path::new("/nonexistent/path/xyz"))
+            .current_branch(&Checkout::base(Path::new("/nonexistent/path/xyz")))
             .await;
         assert!(
             matches!(missing, Err(GitError::NotACheckoutTop)),
@@ -674,7 +671,10 @@ mod managed_tests {
         let empty = TempDir::new().unwrap();
         git(empty.path(), &["init", "-q", "-b", "main"]);
         assert!(
-            service.current_branch(empty.path()).await.is_err(),
+            service
+                .current_branch(&Checkout::base(empty.path()))
+                .await
+                .is_err(),
             "a repository with no commits has no branch to resolve"
         );
     }
@@ -761,7 +761,13 @@ mod managed_tests {
             git(&target, &["log", "--oneline"]).contains("initial commit"),
             "the clone carries the history"
         );
-        assert_eq!(service.current_branch(&target).await.unwrap(), "main");
+        assert_eq!(
+            service
+                .current_branch(&Checkout::base(&target))
+                .await
+                .unwrap(),
+            "main"
+        );
 
         second_commit(source.path());
         service
@@ -1344,7 +1350,13 @@ mod managed_tests {
             "a worktree is marked by a .git file"
         );
         assert!(service.is_repository_root(&worktree));
-        assert_eq!(service.current_branch(&worktree).await.unwrap(), "HEAD");
+        assert_eq!(
+            service
+                .current_branch(&Checkout::linked(&worktree, temporary.path()))
+                .await
+                .unwrap(),
+            "HEAD"
+        );
 
         service
             .create_worktree(temporary.path(), &worktree, &branch("main"))
@@ -1397,7 +1409,13 @@ mod managed_tests {
             )
             .await
             .unwrap();
-        assert_eq!(service.current_branch(&named).await.unwrap(), "my-feature");
+        assert_eq!(
+            service
+                .current_branch(&Checkout::linked(&named, temporary.path()))
+                .await
+                .unwrap(),
+            "my-feature"
+        );
 
         service
             .create_worktree_on_branch(
@@ -1458,7 +1476,13 @@ mod managed_tests {
             )
             .await
             .unwrap();
-        assert_eq!(service.current_branch(&named).await.unwrap(), "new-branch");
+        assert_eq!(
+            service
+                .current_branch(&Checkout::linked(&named, temporary.path()))
+                .await
+                .unwrap(),
+            "new-branch"
+        );
     }
 
     #[tokio::test]
@@ -1489,15 +1513,24 @@ mod managed_tests {
             .unwrap();
 
         assert_eq!(
-            service.current_branch(&area.join("one")).await.unwrap(),
+            service
+                .current_branch(&Checkout::linked(area.join("one"), temporary.path()))
+                .await
+                .unwrap(),
             "branch-1"
         );
         assert_eq!(
-            service.current_branch(&area.join("two")).await.unwrap(),
+            service
+                .current_branch(&Checkout::linked(area.join("two"), temporary.path()))
+                .await
+                .unwrap(),
             "branch-2"
         );
         assert_eq!(
-            service.current_branch(temporary.path()).await.unwrap(),
+            service
+                .current_branch(&Checkout::base(temporary.path()))
+                .await
+                .unwrap(),
             "main"
         );
     }
@@ -1593,7 +1626,10 @@ mod managed_tests {
             .await
             .unwrap();
         assert_eq!(
-            service.current_branch(&repository_path).await.unwrap(),
+            service
+                .current_branch(&Checkout::base(&repository_path))
+                .await
+                .unwrap(),
             "main"
         );
 
@@ -1609,12 +1645,18 @@ mod managed_tests {
             .unwrap();
 
         assert_eq!(
-            service.current_branch(&worktree).await.unwrap(),
+            service
+                .current_branch(&Checkout::linked(&worktree, &repository_path))
+                .await
+                .unwrap(),
             "fix/issue-123"
         );
         assert!(service.is_repository_root(&worktree));
         assert_eq!(
-            service.current_branch(&repository_path).await.unwrap(),
+            service
+                .current_branch(&Checkout::base(&repository_path))
+                .await
+                .unwrap(),
             "main",
             "the clone stayed where it was"
         );
@@ -2288,7 +2330,13 @@ mod managed_tests {
             target.join("file2.txt").exists(),
             "the clone was brought forward"
         );
-        assert_eq!(service.current_branch(&target).await.unwrap(), "main");
+        assert_eq!(
+            service
+                .current_branch(&Checkout::base(&target))
+                .await
+                .unwrap(),
+            "main"
+        );
         assert!(std::fs::symlink_metadata(&packed).unwrap().is_file());
     }
 
@@ -2307,6 +2355,7 @@ mod managed_tests {
         let main = branch("main");
         clone_as_files(&origin(source.path()), &target);
         let worktree = workspace.path().join("cloned-worktrees").join("one");
+        let checkout = Checkout::linked(&worktree, &target);
         service
             .create_worktree(&target, &worktree, &main)
             .await
@@ -2318,8 +2367,8 @@ mod managed_tests {
         std::os::unix::fs::symlink(&moved, &packed).unwrap();
         let before = contents(&moved);
 
-        let shared = service.current_branch(&worktree).await;
-        let blocking = crate::worktree::unfinished(&worktree, &[]).unwrap_err();
+        let shared = service.current_branch(&checkout).await;
+        let blocking = crate::worktree::unfinished(&checkout, &[]).unwrap_err();
 
         assert!(matches!(shared, Err(GitError::LinkedPath)), "{shared:?}");
         assert!(
@@ -2330,7 +2379,7 @@ mod managed_tests {
 
         std::fs::remove_file(&packed).unwrap();
         std::fs::rename(&moved, &packed).unwrap();
-        assert_eq!(service.current_branch(&worktree).await.unwrap(), "HEAD");
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "HEAD");
         let own = PathBuf::from(git(
             &worktree,
             &["rev-parse", "--path-format=absolute", "--git-dir"],
@@ -2341,8 +2390,8 @@ mod managed_tests {
         let held = std::fs::read(&planted).unwrap();
 
         let refusals = [
-            service.current_branch(&worktree).await,
-            service.current_branch(&target).await,
+            service.current_branch(&checkout).await,
+            service.current_branch(&Checkout::base(&target)).await,
         ];
 
         for (operation, refusal) in refusals.iter().enumerate() {

@@ -1,5 +1,6 @@
 use crate::branch_name::BranchName;
 use crate::branch_name::HEADS;
+use crate::checkout::Checkout;
 use crate::commit_sha::CommitSha;
 use crate::git::Anchor;
 use crate::git::CONFIG_LISTING;
@@ -230,28 +231,34 @@ impl GitService {
         command
     }
 
-    /// Refuse a `path` that is not the top of a checkout, with
+    /// Refuse a path that is not the top of a checkout, with
     /// [`GitError::NotACheckoutTop`]; a repository whose own configuration
     /// holds anything beyond what git writes for a clone, a worktree and a
-    /// tracking branch, with [`GitError::UnsafeConfig`]; a checkout at `path`
-    /// whose git directory, or the one it shares, is not the one its own
-    /// `.git` names, with [`GitError::RedirectedGitDirectory`], or whose
-    /// `.git` is a link; one whose git directory holds a symbolic link
+    /// tracking branch, with [`GitError::UnsafeConfig`]; a checkout whose git
+    /// directory, or the one it shares, is not the one its own `.git` names
+    /// or not its clone's, with [`GitError::RedirectedGitDirectory`], or
+    /// whose `.git` is a link; one whose git directory holds a symbolic link
     /// anywhere git could write through it, with [`GitError::LinkedPath`];
     /// and one that borrows objects from another store, with
     /// [`GitError::AlternateObjects`]. Run before every hardened operation,
     /// because a run's git commands can write the repository between two of
     /// them.
-    pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
+    pub(crate) async fn verify_config(checkout: &Checkout) -> GitResult<()> {
         Self::verify(
             || {
                 let mut command = Self::hardened();
-                command.current_dir(path);
+                command.current_dir(checkout.top());
                 command
             },
-            Anchor::Checkout(path.to_path_buf()),
+            Anchor::Checkout(checkout.clone()),
         )
         .await
+    }
+
+    /// [`Self::verify_config`] for the base clone whose top is `path`: a
+    /// linked worktree there is refused as not being the clone.
+    pub(crate) async fn verify_base(path: &Path) -> GitResult<()> {
+        Self::verify_config(&Checkout::base(path)).await
     }
 
     /// [`Self::verify_config`] for commands `bind` points at the repository
