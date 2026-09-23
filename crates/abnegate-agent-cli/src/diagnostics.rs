@@ -12,6 +12,7 @@ use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
 use crate::scrubber::Scrubber;
+use crate::tripwire::Tripwire;
 use crate::verdict::Verdict;
 
 const BUFFER: usize = 8 * 1024;
@@ -28,7 +29,7 @@ pub(crate) struct Diagnostics {
     journal: Journal,
     raw: Sink,
     scrubber: Scrubber,
-    tripwire: Option<fn(&str) -> bool>,
+    tripwire: Option<Tripwire>,
     verdicts: Option<mpsc::Sender<Verdict>>,
     cancel: watch::Receiver<bool>,
     count: u64,
@@ -42,7 +43,7 @@ impl Diagnostics {
         journal: Journal,
         raw: Sink,
         scrubber: Scrubber,
-        tripwire: Option<fn(&str) -> bool>,
+        tripwire: Option<Tripwire>,
         verdicts: mpsc::Sender<Verdict>,
         cancel: watch::Receiver<bool>,
     ) -> Self {
@@ -116,7 +117,10 @@ impl Diagnostics {
     async fn line(&mut self, line: String) {
         self.count += 1;
         let scrubbed = self.scrubber.scrub(&line).into_owned();
-        if self.tripwire.is_some_and(|tripwire| tripwire(&line))
+        if self
+            .tripwire
+            .as_ref()
+            .is_some_and(|tripwire| tripwire.trips(&line))
             && let Some(verdicts) = self.verdicts.take()
         {
             let _ = verdicts.try_send(Verdict::Failed(scrubbed.clone()));

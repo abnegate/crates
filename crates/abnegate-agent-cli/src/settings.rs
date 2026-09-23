@@ -9,6 +9,7 @@ use abnegate_secret::SecretValue;
 
 use crate::mcp::McpConfig;
 use crate::mcp::McpServer;
+use crate::tripwire::Tripwire;
 
 /// Five minutes, matching the default for any command `abnegate-exec` runs.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -117,7 +118,7 @@ pub struct CliSettings {
     /// line's own words, and the agent is stopped: an agent retrying against
     /// a rate limit is stopped instead of waited on until the timeout. Stdout
     /// is never checked, since the agent's prose can quote anything.
-    pub tripwire: Option<fn(&str) -> bool>,
+    pub tripwire: Option<Tripwire>,
 }
 
 impl Default for CliSettings {
@@ -237,8 +238,11 @@ impl CliSettings {
         self
     }
 
-    pub fn with_tripwire(mut self, tripwire: fn(&str) -> bool) -> Self {
-        self.tripwire = Some(tripwire);
+    pub fn with_tripwire(
+        mut self,
+        tripwire: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.tripwire = Some(Tripwire::new(tripwire));
         self
     }
 }
@@ -357,8 +361,8 @@ mod tests {
         let settings = CliSettings::default().with_tripwire(|line| line.contains("429"));
         let tripwire = settings.tripwire.expect("a tripwire");
 
-        assert!(tripwire("HTTP 429 Too Many Requests"));
-        assert!(!tripwire("compiling"));
+        assert!(tripwire.trips("HTTP 429 Too Many Requests"));
+        assert!(!tripwire.trips("compiling"));
     }
 
     #[test]

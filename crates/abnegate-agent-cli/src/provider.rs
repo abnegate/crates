@@ -210,7 +210,7 @@ impl CliProvider {
                 journal.clone(),
                 raw,
                 scrubber.clone(),
-                self.settings.tripwire,
+                self.settings.tripwire.clone(),
                 verdicts,
                 cancelled,
             )
@@ -231,7 +231,7 @@ impl CliProvider {
             () = expiry => Outcome::TimedOut,
         };
 
-        let (status, stopped) = match self
+        let (status, stopped, failure) = match self
             .settle(
                 outcome,
                 &mut child,
@@ -266,14 +266,21 @@ impl CliProvider {
         let stderr = drain(&mut diagnostics, reaper.group(), &cancel)
             .await
             .unwrap_or_default();
+        let failure = failure.or_else(|| {
+            std::iter::from_fn(|| settled.try_recv().ok()).find_map(|verdict| match verdict {
+                Verdict::Failed(reason) => Some(reason),
+                Verdict::Finished => None,
+            })
+        });
         if status == ExitStatus::Code(0) && stdout.failure.is_none() && stopped.is_none() {
             reaper.disarm();
         }
 
-        let failure = stdout
+        let reported = stdout
             .failure
             .as_deref()
-            .map(|failure| preview(failure, EXECUTION_LOG_PREVIEW_LIMIT));
+            .or(failure.as_deref())
+            .map(|reported| preview(reported, EXECUTION_LOG_PREVIEW_LIMIT));
         journal
             .append(
                 Record::Completed,
@@ -283,7 +290,7 @@ impl CliProvider {
                     "stderr_bytes": stderr.len(),
                     "finished": stdout.finished,
                     "has_structured_result": stdout.structured.is_some(),
-                    "failure": failure,
+                    "failure": reported,
                     "stopped": stopped,
                 }),
             )
@@ -294,12 +301,14 @@ impl CliProvider {
             stderr,
             status,
             stopped,
+            failure,
             log: files,
         })
     }
 
     /// Carry the wait through to an exit status, stopping the agent when the
-    /// wait ended without one, and say why it was stopped when it was.
+    /// wait ended without one, and say why it was stopped when it was and
+    /// what failure settled the run when one did.
     async fn settle(
         &self,
         outcome: Outcome,
@@ -308,9 +317,9 @@ impl CliProvider {
         journal: &Journal,
         deadline: Option<Instant>,
         label: &str,
-    ) -> Result<(std::process::ExitStatus, Option<String>), ProviderError> {
+    ) -> Result<(std::process::ExitStatus, Option<String>, Option<String>), ProviderError> {
         let verdict = match outcome {
-            Outcome::Exited(Ok(status)) => return Ok((status, None)),
+            Outcome::Exited(Ok(status)) => return Ok((status, None, None)),
             Outcome::Exited(Err(error)) => {
                 journal
                     .append(Record::WaitFailed, json!({ "error": error.to_string() }))
@@ -335,22 +344,22 @@ impl CliProvider {
             Outcome::Settled(verdict) => verdict,
         };
 
-        let reason = match &verdict {
-            Verdict::Finished => LINGERED.to_string(),
+        let (reason, failure) = match verdict {
+            Verdict::Finished => (LINGERED.to_string(), None),
             Verdict::Failed(reason) => {
-                let reason = preview(reason, EXECUTION_LOG_PREVIEW_LIMIT);
+                let reason = preview(&reason, EXECUTION_LOG_PREVIEW_LIMIT);
                 journal
                     .append(Record::Abandoned, json!({ "reason": reason }))
                     .await;
                 tracing::warn!(provider = %self.name, label, "the run failed while the agent was running; stopping it");
-                reason
+                (reason.clone(), Some(reason))
             }
         };
 
         let grace = Instant::now() + GRACE_PERIOD;
         let patience = deadline.map_or(grace, |deadline| deadline.min(grace));
         if let Ok(Ok(status)) = timeout_at(patience, child.wait()).await {
-            return Ok((status, None));
+            return Ok((status, None, failure));
         }
 
         let status = stop_agent(child, group)
@@ -362,7 +371,7 @@ impl CliProvider {
                 json!({ "exit_code": status.code(), "reason": reason }),
             )
             .await;
-        Ok((status, Some(reason)))
+        Ok((status, Some(reason), failure))
     }
 
     fn assemble(&self, execution: Execution) -> Result<Completion, ProviderError> {
@@ -371,6 +380,7 @@ impl CliProvider {
             stderr,
             status,
             stopped,
+            failure,
             ..
         } = execution;
 
@@ -380,9 +390,10 @@ impl CliProvider {
             return Err(ProviderError::agent(&self.name, message));
         }
 
-        match (stopped, stdout.finished) {
+        let unstopped = stopped.is_none();
+        match (failure.or(stopped), stdout.finished) {
             (Some(reason), false) => return Err(ProviderError::agent(&self.name, &reason)),
-            (None, _) if status != ExitStatus::Code(0) => {
+            _ if unstopped && status != ExitStatus::Code(0) => {
                 let message = if stderr.trim().is_empty() {
                     NO_DIAGNOSTICS.to_string()
                 } else {
@@ -1523,6 +1534,37 @@ sleep 120";
             panic!("expected the tripped line as the failure, got {error:?}");
         };
         assert!(message.contains("429 Too Many Requests"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_tripped_diagnostic_survives_an_agent_that_exits_by_itself() {
+        let directory = TempDir::new().expect("a temporary directory");
+        for script in [
+            "echo 'API Error: 429 Too Many Requests' >&2\nsleep 1\nexit 0",
+            "echo 'API Error: 429 Too Many Requests' >&2\nexit 0",
+        ] {
+            let settings = settings(&directory, script).with_tripwire(|line| line.contains("429"));
+            let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+            let execution = execute(&provider, &[Message::user("hi")]).await;
+
+            assert!(
+                execution
+                    .failure
+                    .as_deref()
+                    .is_some_and(|failure| failure.contains("429")),
+                "{script}: {:?}",
+                execution.failure
+            );
+            let error = provider.assemble(execution).expect_err("a failure");
+            let ProviderError::Agent { message, .. } = &error else {
+                panic!("expected the tripped line as the failure, got {error:?}");
+            };
+            assert!(
+                message.contains("429 Too Many Requests"),
+                "{script}: {message}"
+            );
+        }
     }
 
     #[tokio::test]

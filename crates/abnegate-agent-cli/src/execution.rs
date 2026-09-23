@@ -27,5 +27,10 @@ pub struct Execution {
     /// turn followed by a process that would not exit. `status` is then the
     /// stop's, not the agent's.
     pub stopped: Option<String>,
+    /// The failure that settled the run while the agent was still running —
+    /// the failure it reported, or the diagnostic that tripped
+    /// [`CliSettings::tripwire`](crate::CliSettings::tripwire) — kept whether
+    /// the agent was then stopped or exited by itself first.
+    pub failure: Option<String>,
     pub log: Option<ExecutionLogFiles>,
 }

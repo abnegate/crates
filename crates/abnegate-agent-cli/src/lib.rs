@@ -81,6 +81,7 @@ mod stdout_parse_result;
 pub mod stream;
 mod structured_result;
 pub mod transcript;
+mod tripwire;
 mod verdict;
 
 pub use crate::delivery::Delivery;
@@ -106,3 +107,4 @@ pub use crate::settings::{
 pub use crate::stdout_parse_result::StdoutParseResult;
 pub use crate::stream::{ApiContentBlock, ApiDelta, ApiStreamEvent};
 pub use crate::structured_result::StructuredResult;
+pub use crate::tripwire::Tripwire;
