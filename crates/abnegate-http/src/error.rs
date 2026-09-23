@@ -5,10 +5,14 @@ pub type Result<T> = std::result::Result<T, HttpError>;
 
 /// Everything that can go wrong issuing or validating an HTTP request.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum HttpError {
     /// The underlying transport refused or failed the request.
+    ///
+    /// Converting a [`reqwest::Error`] strips the URL it carries, whose query
+    /// string often holds a key or a token.
     #[error(transparent)]
-    Request(#[from] reqwest::Error),
+    Request(reqwest::Error),
 
     /// A response body did not deserialise into the requested type.
     #[error("JSON parse error: {0}")]
@@ -63,4 +67,46 @@ pub enum HttpError {
     /// The response body could not be read to completion.
     #[error("Could not read the response body.")]
     UnreadableBody(#[source] reqwest::Error),
+}
+
+impl From<reqwest::Error> for HttpError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Request(error.without_url())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    fn chain(error: &dyn Error) -> String {
+        let mut rendered = format!("{error} {error:?}");
+        let mut source = error.source();
+        while let Some(cause) = source {
+            rendered.push_str(&format!(" {cause} {cause:?}"));
+            source = cause.source();
+        }
+        rendered
+    }
+
+    #[tokio::test]
+    async fn a_converted_transport_error_does_not_repeat_the_query_string() {
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("a client builds")
+            .get("http://127.0.0.1:1/search?key=hunter2")
+            .send()
+            .await
+            .expect_err("nothing listens there");
+        assert!(
+            chain(&error).contains("hunter2"),
+            "the probe carries no URL"
+        );
+
+        let error = HttpError::from(error);
+
+        assert!(!chain(&error).contains("hunter2"), "{}", chain(&error));
+    }
 }
