@@ -14,12 +14,10 @@ use serde_json::json;
 pub use shell::MAX_SLEEP_SECONDS;
 pub use shell::RunShellTool;
 
-use super::MAX_PREVIEW_CHARACTERS;
 use super::MAX_TOOL_OUTPUT_CHARACTERS;
 use super::ToolContext;
 use super::ToolError;
 use super::ToolResult;
-use super::excerpt;
 use super::file::confine;
 use super::file::resolve;
 use super::job;
@@ -121,12 +119,12 @@ async fn background(command: &JobCommand, context: &ToolContext) -> Result<ToolR
 
 /// The command line as it will run, for an approval card.
 ///
-/// The command is what the reader is deciding on, so it keeps the whole budget
-/// and the directory is appended after it rather than put in front of it.
+/// Rendered whole: a [`Preview`](super::Preview) too long for the card is cut
+/// in the middle, so the directory goes after the command, where it stays in
+/// view however long the command is.
 fn run_preview(line: &str, directory: Option<&str>) -> String {
-    let command = excerpt(line, MAX_PREVIEW_CHARACTERS);
     match directory {
-        Some(directory) => format!("Run `{command}` in {directory}."),
-        None => format!("Run `{command}`."),
+        Some(directory) => format!("Run `{line}` in {directory}."),
+        None => format!("Run `{line}`."),
     }
 }

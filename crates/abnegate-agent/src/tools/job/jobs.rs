@@ -1,14 +1,12 @@
 use std::future::Future;
-use std::io::SeekFrom;
+use std::io;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 use tokio::process::Command;
@@ -27,8 +25,7 @@ use super::UNAVAILABLE;
 use super::entry::Job;
 use super::excluded;
 use super::limits::Limits;
-use super::log_directory;
-use super::log_path;
+use super::log::Log;
 use super::mint;
 use super::missing;
 use crate::Application;
@@ -73,7 +70,7 @@ impl Jobs {
                 .get(id)
                 .filter(|job| job.session == session)
                 .ok_or_else(|| missing(id))?;
-            (job.log.clone(), *job.state.borrow())
+            (Arc::clone(&job.log), *job.state.borrow())
         };
         let unread = JobTail {
             output: String::new(),
@@ -81,21 +78,11 @@ impl Jobs {
             next: since,
         };
 
-        let Ok(mut file) = tokio::fs::File::open(&log).await else {
+        let Ok(Ok(buffer)) =
+            tokio::task::spawn_blocking(move || log.read(since, max_characters)).await
+        else {
             return Ok(unread);
         };
-        if file.seek(SeekFrom::Start(since)).await.is_err() {
-            return Ok(unread);
-        }
-        let mut buffer = Vec::with_capacity(max_characters);
-        if file
-            .take(max_characters as u64)
-            .read_to_end(&mut buffer)
-            .await
-            .is_err()
-        {
-            return Ok(unread);
-        }
 
         let (output, consumed) = decode(&buffer, state.settled());
         Ok(JobTail {
@@ -132,7 +119,9 @@ impl Jobs {
     /// each child to go.
     ///
     /// A job belongs to the turn or the run that started it, so this is the
-    /// last thing either one does. Returns how many jobs it ended.
+    /// last thing either one does. Returns how many jobs it ended. A job the
+    /// reaper killed for its lifetime or for flooding keeps its log until
+    /// here, so a `tail_job` in the meantime still reports how it ended.
     pub async fn kill_session(session: Session) -> usize {
         let ids: Vec<String> = JOBS
             .iter()
@@ -143,7 +132,6 @@ impl Jobs {
 
         let count = claimed.len();
         for (id, job) in claimed {
-            let log = job.log;
             let _ = job.kill.send(());
             if tokio::time::timeout(KILL_TIMEOUT, ended(job.state))
                 .await
@@ -155,7 +143,7 @@ impl Jobs {
                     "A killed job has not been reaped yet; leaving it to the process"
                 );
             }
-            discard(&log).await;
+            job.log.discard();
         }
         count
     }
@@ -173,37 +161,25 @@ impl Jobs {
             return Err(UNAVAILABLE.to_string());
         }
         let checkout = context.working_directory.as_path();
-        let directory = log_directory(checkout, &context.application);
 
-        tokio::fs::create_dir_all(&directory)
-            .await
-            .map_err(|error| format!("Cannot create {}: {error}", directory.display()))?;
+        let id = mint();
+        let log = Log::create(checkout, &context.application, &id)
+            .map_err(|error| format!("Cannot create the job log: {error}"))?;
         if matches!(session, Session::Task(_)) {
             exclude(checkout, &context.application).await;
         }
 
-        let id = mint();
-        let log = log_path(checkout, &context.application, &id);
-        let file = std::fs::File::create(&log)
-            .map_err(|error| format!("Cannot create the job log: {error}"))?;
-        let errors = file
-            .try_clone()
-            .map_err(|error| format!("Cannot create the job log: {error}"))?;
-
-        let mut process = process::command(&command.program, context);
-        process
-            .args(&command.arguments)
-            .current_dir(command.directory.as_deref().unwrap_or(checkout))
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(file))
-            .stderr(Stdio::from(errors))
-            .process_group(0)
-            .kill_on_drop(true);
-        let child = process
-            .spawn()
-            .map_err(|error| format!("Failed to start the job: {error}"))?;
+        let child = match launch(command, context, &log) {
+            Ok(child) => child,
+            Err(error) => {
+                log.discard();
+                return Err(format!("Failed to start the job: {error}"));
+            }
+        };
         let pid = child.id().unwrap_or_default();
         let group = Group::led_by(child.id());
+        let log_path = log.path().to_string_lossy().into_owned();
+        let log = Arc::new(log);
 
         let (sender, state) = watch::channel(JobStatus::Running);
         let (kill, killed) = oneshot::channel();
@@ -211,19 +187,35 @@ impl Jobs {
             id.clone(),
             Job {
                 session,
-                log: log.clone(),
+                log: Arc::clone(&log),
                 state,
                 kill,
             },
         );
-        tokio::spawn(supervise(child, group, log.clone(), limits, killed, sender));
+        tokio::spawn(supervise(child, group, log, limits, killed, sender));
 
-        Ok(JobStarted {
-            id,
-            pid,
-            log_path: log.to_string_lossy().into_owned(),
-        })
+        Ok(JobStarted { id, pid, log_path })
     }
+}
+
+/// Start `command` in a process group of its own, writing both of its
+/// streams to `log`.
+fn launch(command: &JobCommand, context: &ToolContext, log: &Log) -> io::Result<Child> {
+    let mut process = process::command(&command.program, context);
+    process
+        .args(&command.arguments)
+        .current_dir(
+            command
+                .directory
+                .as_deref()
+                .unwrap_or(&context.working_directory),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.writer()?))
+        .stderr(Stdio::from(log.writer()?))
+        .process_group(0)
+        .kill_on_drop(true);
+    process.spawn()
 }
 
 /// Hold a job to its limits, and record how it ended.
@@ -238,7 +230,7 @@ impl Jobs {
 async fn supervise(
     mut child: Child,
     mut group: Group,
-    log: PathBuf,
+    log: Arc<Log>,
     limits: Limits,
     kill: oneshot::Receiver<()>,
     state: watch::Sender<JobStatus>,
@@ -264,39 +256,12 @@ async fn supervise(
 }
 
 /// Resolves once the log has passed the ceiling it is allowed.
-async fn flooded(log: &Path, ceiling: u64, interval: Duration) {
+async fn flooded(log: &Log, ceiling: u64, interval: Duration) {
     loop {
         tokio::time::sleep(interval).await;
-        if tokio::fs::metadata(log)
-            .await
-            .is_ok_and(|log| log.len() > ceiling)
-        {
+        if log.size().is_ok_and(|size| size > ceiling) {
             return;
         }
-    }
-}
-
-/// Take a job's log with it, and the directories it needed once they are
-/// empty.
-///
-/// Nothing can read the log after this: the registry entry it was reached
-/// through is already gone, and a chat's logs sit in the operator's own
-/// checkout, where the exclude write is skipped by design. A job the reaper
-/// killed for its lifetime or for flooding keeps its log until here, so a
-/// `tail_job` in the meantime still reports how it ended.
-///
-/// `remove_dir` on a directory something else is using fails, which is the
-/// whole of the emptiness check.
-async fn discard(log: &Path) {
-    let _ = tokio::fs::remove_file(log).await;
-    let Some(jobs) = log.parent() else {
-        return;
-    };
-    if tokio::fs::remove_dir(jobs).await.is_err() {
-        return;
-    }
-    if let Some(application) = jobs.parent() {
-        let _ = tokio::fs::remove_dir(application).await;
     }
 }
 

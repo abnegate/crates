@@ -19,10 +19,12 @@ use super::AgentPhase;
 use super::AgentState;
 use super::AgentStep;
 use super::ToolCallResult;
+use super::task::Task;
 use crate::context;
 use crate::context::ContextSource;
 use crate::context::Entry;
 use crate::context::Policy;
+use crate::tools::Preview;
 use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolRegistry;
@@ -389,6 +391,8 @@ impl Agent {
     /// for no longer than the tool's own timeout.
     ///
     /// A tool that panics or overruns fails its own call rather than the run.
+    /// The task goes with the future awaiting it, so a tool that overran, or
+    /// whose run was dropped, is stopped rather than left running unseen.
     async fn execute_tool(&self, tool_call: &ToolCall, callback: &dyn AgentCallback) -> ToolResult {
         let name = &tool_call.function.name;
         let Some(tool) = self.tools.get(name) else {
@@ -401,14 +405,14 @@ impl Agent {
                     return ToolResult::error(format!("Invalid tool arguments: {error}"));
                 }
             };
-        if !callback.approve(tool_call, tool.tier()) {
+        let preview = Preview::of(tool.as_ref(), &parameters);
+        if !callback.approve(tool_call, tool.tier(), &preview).await {
             return ToolResult::error(format!("{name} was not run: the call was not approved."));
         }
 
         let limit = tool.timeout(&self.context);
         let context = Arc::clone(&self.context);
-        let task = tokio::spawn(async move { tool.execute(parameters, &context).await });
-        let abort = task.abort_handle();
+        let task = Task::spawn(async move { tool.execute(parameters, &context).await });
         match timeout(limit, task).await {
             Ok(Ok(Ok(result))) => result,
             Ok(Ok(Err(error))) => ToolResult::error(error.to_string()),
@@ -419,13 +423,10 @@ impl Agent {
             Ok(Err(_)) => {
                 ToolResult::error(format!("Tool {name} was cancelled before it finished"))
             }
-            Err(_) => {
-                abort.abort();
-                ToolResult::error(format!(
-                    "Tool {name} timed out after {} seconds and was stopped",
-                    limit.as_secs()
-                ))
-            }
+            Err(_) => ToolResult::error(format!(
+                "Tool {name} timed out after {} seconds and was stopped",
+                limit.as_secs()
+            )),
         }
     }
 }

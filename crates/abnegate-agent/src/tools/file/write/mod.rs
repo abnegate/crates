@@ -35,14 +35,19 @@ impl Tool for WriteFileTool {
         Tier::Host
     }
 
+    /// Where the text goes and the text itself, since what is written is the
+    /// part of a write a reader is deciding on.
     fn preview(&self, parameters: &Value) -> Option<String> {
         let parameters: WriteFileParameters = serde_json::from_value(parameters.clone()).ok()?;
         let characters = parameters.content.chars().count();
         Some(match parameters.append {
-            true => format!("Append {characters} characters to {}.", parameters.path),
+            true => format!(
+                "Append {characters} characters to {}: \"{}\".",
+                parameters.path, parameters.content
+            ),
             false => format!(
-                "Write {characters} characters to {}, replacing whatever is there.",
-                parameters.path
+                "Write {characters} characters to {}, replacing whatever is there: \"{}\".",
+                parameters.path, parameters.content
             ),
         })
     }

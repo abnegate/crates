@@ -78,21 +78,6 @@ impl Tool for McpTool {
         context.command_timeout + TIMEOUT_SLACK
     }
 
-    /// The method and the arguments it was given.
-    ///
-    /// A remote method has no catalog entry for a reader to recognise it by,
-    /// so the call itself is the whole of what there is to show them.
-    fn preview(&self, parameters: &Value) -> Option<String> {
-        let arguments = parameters
-            .as_object()
-            .filter(|object| !object.is_empty())
-            .and_then(|object| serde_json::to_string(object).ok());
-        Some(match arguments {
-            Some(arguments) => format!("Call `{}` with {arguments}.", self.qualified_name),
-            None => format!("Call `{}` with no arguments.", self.qualified_name),
-        })
-    }
-
     async fn execute(
         &self,
         parameters: Value,

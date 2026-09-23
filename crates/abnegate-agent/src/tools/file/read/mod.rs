@@ -1,20 +1,19 @@
 mod parameters;
 
-use std::io::Read;
-use std::path::Path;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use parameters::ReadFileParameters;
 use serde_json::Value;
 use serde_json::json;
 
+use super::blocking;
+use super::read_text;
 use crate::tools::MAX_TOOL_OUTPUT_CHARACTERS;
 use crate::tools::Tool;
 use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolResult;
-use crate::tools::beneath;
-use crate::tools::beneath::Access;
 
 /// A page of file text, the same budget every tool spends on output it pages
 /// for itself.
@@ -70,23 +69,9 @@ impl Tool for ReadFileTool {
         let parameters: ReadFileParameters = serde_json::from_value(parameters)
             .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
-        let mut file = beneath::open(context, Path::new(&parameters.path), Access::Read)?;
-
-        let metadata = file
-            .metadata()
-            .map_err(|error| ToolError::Execution(format!("Cannot read file: {error}")))?;
-
-        if metadata.len() > context.max_file_size as u64 {
-            return Err(ToolError::Execution(format!(
-                "File too large ({} bytes, max {})",
-                metadata.len(),
-                context.max_file_size
-            )));
-        }
-
-        let mut content = String::new();
-        file.read_to_string(&mut content)
-            .map_err(|error| ToolError::Execution(format!("Cannot read file: {error}")))?;
+        let path = PathBuf::from(&parameters.path);
+        let context = context.clone();
+        let content = blocking(move || read_text(&context, &path)).await?;
 
         let selected = if parameters.start_line.is_some() || parameters.end_line.is_some() {
             select_lines(&content, parameters.start_line, parameters.end_line)?

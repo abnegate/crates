@@ -6,8 +6,13 @@ use std::sync::atomic::Ordering;
 use abnegate_llm::LlmClient;
 use abnegate_llm::LlmConfig;
 use async_trait::async_trait;
+use nix::sys::signal::Signal;
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
 use serde_json::Value;
 use serde_json::json;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::Request;
@@ -18,6 +23,9 @@ use wiremock::matchers::method;
 use super::Agent;
 use super::AgentConfig;
 use super::NoOpCallback;
+use crate::tools::EnvironmentPolicy;
+use crate::tools::Preview;
+use crate::tools::RunShellTool;
 use crate::tools::Tool;
 use crate::tools::ToolContext;
 use crate::tools::ToolError;
@@ -233,15 +241,143 @@ fn recording(tier: crate::tools::Tier) -> (ToolRegistry, Arc<AtomicUsize>) {
 /// user would.
 struct Approving;
 
+#[async_trait]
 impl super::AgentCallback for Approving {
     fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
     fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
     fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
     fn on_response(&self, _response: &str) {}
 
-    fn approve(&self, _call: &abnegate_llm::ToolCall, _tier: crate::tools::Tier) -> bool {
+    async fn approve(
+        &self,
+        _call: &abnegate_llm::ToolCall,
+        _tier: crate::tools::Tier,
+        _preview: &Preview,
+    ) -> bool {
         true
     }
+}
+
+/// A callback that allows everything, and keeps each preview it was shown.
+#[derive(Default)]
+struct Watching {
+    previews: Mutex<Vec<Preview>>,
+}
+
+#[async_trait]
+impl super::AgentCallback for Watching {
+    fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
+    fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
+    fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
+    fn on_response(&self, _response: &str) {}
+
+    async fn approve(
+        &self,
+        _call: &abnegate_llm::ToolCall,
+        _tier: crate::tools::Tier,
+        preview: &Preview,
+    ) -> bool {
+        self.previews
+            .lock()
+            .expect("preview log")
+            .push(preview.clone());
+        true
+    }
+}
+
+/// The approver is shown the call as it will run: whole when it fits, and
+/// flagged when a padded argument pushed part of it out of view, with the
+/// end of the call still in sight.
+#[tokio::test]
+async fn the_approver_is_shown_the_call_and_told_when_part_of_it_is_hidden() {
+    let provider = provider(vec![
+        calling(&[(RECORDING, json!({"note": "short"}))]),
+        calling(&[(
+            RECORDING,
+            json!({"padding": "x".repeat(1_000), "payload": "rm -rf ~"}),
+        )]),
+        answer("done"),
+    ])
+    .await;
+    let (tools, runs) = recording(crate::tools::Tier::Host);
+    let watching = Watching::default();
+
+    agent(&provider, tools)
+        .run("Go.", &watching)
+        .await
+        .expect("both calls are approved");
+
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+    let previews = watching.previews.lock().unwrap();
+    assert_eq!(previews.len(), 2, "{previews:?}");
+    assert_eq!(
+        previews[0],
+        Preview {
+            text: format!("Call `{RECORDING}` with {{\"note\":\"short\"}}."),
+            truncated: false,
+        }
+    );
+    assert!(previews[1].truncated, "{:?}", previews[1]);
+    assert!(
+        previews[1].text.contains("characters hidden]") && previews[1].text.contains("rm -rf ~"),
+        "{:?}",
+        previews[1]
+    );
+}
+
+/// A callback that puts each call to a person and waits for their answer.
+struct Deferring {
+    questions: mpsc::UnboundedSender<oneshot::Sender<bool>>,
+}
+
+#[async_trait]
+impl super::AgentCallback for Deferring {
+    fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
+    fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
+    fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
+    fn on_response(&self, _response: &str) {}
+
+    async fn approve(
+        &self,
+        _call: &abnegate_llm::ToolCall,
+        _tier: crate::tools::Tier,
+        _preview: &Preview,
+    ) -> bool {
+        let (answer, answered) = oneshot::channel();
+        if self.questions.send(answer).is_err() {
+            return false;
+        }
+        answered.await.unwrap_or(false)
+    }
+}
+
+/// `approve` was synchronous, so waiting there for a person held a runtime
+/// thread for as long as they took, and on a single-threaded runtime left
+/// nothing to deliver their answer. It is awaited now: the answer here comes
+/// from another task on the same thread.
+#[tokio::test]
+async fn an_approval_waits_for_its_answer_without_holding_the_runtime() {
+    let provider = provider(vec![calling(&[(RECORDING, json!({}))]), answer("done")]).await;
+    let (tools, runs) = recording(crate::tools::Tier::Host);
+    let (questions, mut asked) = mpsc::unbounded_channel::<oneshot::Sender<bool>>();
+    let person = tokio::spawn(async move {
+        let answer = asked.recv().await.expect("the call is put to the person");
+        answer
+            .send(true)
+            .expect("the loop is waiting for the answer");
+    });
+
+    let state = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        agent(&provider, tools).run("Go.", &Deferring { questions }),
+    )
+    .await
+    .expect("waiting for an approval does not wedge the runtime")
+    .expect("an approved call does not end the run");
+
+    person.await.expect("the person answered");
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "the approved call ran");
+    assert_eq!(state.final_response.as_deref(), Some("done"));
 }
 
 /// Nothing asked before a host-tier call ran: the tier said it should be
@@ -336,6 +472,68 @@ async fn a_tool_past_its_timeout_fails_its_call() {
     assert_eq!(state.final_response.as_deref(), Some("moved on"));
     let results = tool_results(&state);
     assert!(results[0].contains("timed out"), "{results:?}");
+}
+
+/// Whether `pid` has gone within a few seconds.
+async fn gone(pid: i32) -> bool {
+    for _ in 0..300 {
+        if kill(Pid::from_raw(pid), None).is_err() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// Dropping a run dropped the handle to the task its tool call ran on, and
+/// dropping a handle detaches a task rather than stopping it: the command
+/// went on running, and everything it started with it.
+#[tokio::test]
+async fn dropping_a_run_stops_the_command_it_was_waiting_on() {
+    let directory = tempfile::tempdir().expect("a working directory");
+    let recorded = directory.path().join("dropped-run-sleeper.pid");
+    let command = format!("sleep 30 & echo $! > '{}'; wait", recorded.display());
+    let provider = provider(vec![calling(&[(
+        "run_shell",
+        json!({"command": command, "reason": "Outlive the run."}),
+    )])])
+    .await;
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(RunShellTool));
+    let context = ToolContext::default()
+        .within(directory.path())
+        .with_environment(
+            EnvironmentPolicy::empty().with("PATH", std::env::var("PATH").unwrap_or_default()),
+        );
+    let agent = Agent::new(
+        provider.client.clone(),
+        tools,
+        AgentConfig::default(),
+        context,
+    );
+
+    let mut run = Box::pin(agent.run("Go.", &Approving));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let pid = loop {
+        tokio::select! {
+            _ = &mut run => panic!("the run ended while its command was still running"),
+            () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+        }
+        let written = std::fs::read_to_string(&recorded).unwrap_or_default();
+        if let Ok(pid) = written.trim().parse::<i32>() {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the command never started"
+        );
+    };
+
+    drop(run);
+
+    let stopped = gone(pid).await;
+    let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+    assert!(stopped, "sleep {pid} outlived the run that started it");
 }
 
 struct Asking;

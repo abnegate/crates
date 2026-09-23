@@ -5,9 +5,12 @@ use tokio::process::Command;
 
 /// The names a default [`EnvironmentPolicy`] copies from this process.
 ///
-/// Enough to find programs, a home and a scratch directory, and to decode
-/// text; nothing that carries a credential.
-pub const DEFAULT_ENVIRONMENT: &[&str] = &["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TERM"];
+/// Enough to find programs, a home and a scratch directory, to know which user
+/// is running them - tools backed by the macOS keychain look the account up by
+/// `USER` - and to decode text; nothing that carries a credential.
+pub const DEFAULT_ENVIRONMENT: &[&str] = &[
+    "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM",
+];
 
 /// The environment a spawned child is given.
 ///
@@ -146,6 +149,24 @@ mod tests {
         }
         if let Some((name, _)) = unlisted() {
             assert!(!policy.contains(&name), "{name} was copied");
+        }
+    }
+
+    /// Without `USER` a keychain-backed tool cannot tell whose keychain to
+    /// open, and fails as though it had no credentials at all.
+    #[test]
+    fn the_allowlist_says_which_user_is_running() {
+        for name in ["USER", "LOGNAME"] {
+            assert!(DEFAULT_ENVIRONMENT.contains(&name), "{name}");
+            if let Ok(value) = std::env::var(name) {
+                assert_eq!(
+                    EnvironmentPolicy::allowlist()
+                        .get(name)
+                        .map(SecretValue::expose),
+                    Some(value.as_str()),
+                    "{name}"
+                );
+            }
         }
     }
 

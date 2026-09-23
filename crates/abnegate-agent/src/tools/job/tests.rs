@@ -1,7 +1,9 @@
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command as Process;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
@@ -12,6 +14,7 @@ use uuid::Uuid;
 use super::entry::Job;
 use super::jobs::JOBS;
 use super::limits::Limits;
+use super::log::Log;
 use super::*;
 use crate::test_support::captured_logs;
 use crate::tools::Session;
@@ -430,6 +433,108 @@ async fn a_teardown_leaves_a_directory_that_is_not_only_ours() {
     );
 }
 
+/// Everything a directory holds, so a test can say it holds nothing.
+fn entries(directory: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(directory)
+        .expect("the directory reads")
+        .map(|entry| entry.expect("the entry reads").path())
+        .collect()
+}
+
+/// `create_dir_all` and `File::create` resolved the log's path by name and
+/// followed every link on it, so a checkout that committed `.abnegate`, or
+/// `.abnegate/jobs`, as a symlink sent the job's output wherever the link
+/// pointed.
+#[tokio::test]
+async fn a_committed_link_on_the_way_to_the_log_is_refused() {
+    for level in [ours as fn(&Path) -> PathBuf, logs] {
+        let cwd = directory();
+        let outside = directory();
+        let link = level(cwd.path());
+        std::fs::create_dir_all(link.parent().expect("the link has a parent"))
+            .expect("the directory above the link is created");
+        std::os::unix::fs::symlink(outside.path(), &link).expect("the link is committed");
+        let session = task();
+
+        let refused = Jobs::spawn(
+            &JobCommand::shell("printf leaked"),
+            &context(session, cwd.path()),
+        )
+        .await
+        .expect_err("a job whose log would go through a link does not start");
+
+        assert!(refused.contains("symbolic link"), "{refused}");
+        assert!(
+            entries(outside.path()).is_empty(),
+            "the job wrote through {link:?}: {:?}",
+            entries(outside.path())
+        );
+        assert_eq!(Jobs::kill_session(session).await, 0);
+    }
+}
+
+/// `Jobs::read` opened the log by its path every time, so once the directory
+/// was swapped for a link the job's output was read back from wherever the
+/// link pointed, and the teardown deleted there too.
+#[tokio::test]
+async fn a_log_directory_swapped_for_a_link_is_neither_read_nor_removed_through() {
+    let cwd = directory();
+    let outside = directory();
+    let session = task();
+    let started = spawned(session, "printf original", cwd.path()).await;
+    settles(session, &started.id).await;
+
+    let planted = outside.path().join(JOB_LOG_DIRECTORY).join(
+        PathBuf::from(&started.log_path)
+            .file_name()
+            .expect("a log name"),
+    );
+    std::fs::create_dir_all(planted.parent().expect("the planted log has a parent"))
+        .expect("the planted directory is created");
+    std::fs::write(&planted, "planted").expect("the planted log is written");
+    std::fs::rename(ours(cwd.path()), cwd.path().join("moved")).expect("the directory moves");
+    std::os::unix::fs::symlink(outside.path(), ours(cwd.path())).expect("the link is swapped in");
+
+    let tail = Jobs::read(session, &started.id, 0, 500)
+        .await
+        .expect("the log reads");
+    assert_eq!(
+        tail.output, "original",
+        "the read followed the swapped-in link"
+    );
+
+    Jobs::kill_session(session).await;
+    assert_eq!(
+        std::fs::read_to_string(&planted).expect("the planted log is still there"),
+        "planted",
+        "the teardown removed a file through the link"
+    );
+    assert!(
+        !cwd.path().join("moved").join(JOB_LOG_DIRECTORY).exists(),
+        "the teardown removed the log it created, wherever that has moved to"
+    );
+}
+
+/// The log holds whatever the command printed, secrets included, so it is
+/// never readable by another user of the machine.
+#[tokio::test]
+async fn a_job_log_is_private_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let cwd = directory();
+    let session = task();
+    let started = spawned(session, "printf private", cwd.path()).await;
+    settles(session, &started.id).await;
+
+    let mode = std::fs::metadata(&started.log_path)
+        .expect("the log exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+
+    Jobs::kill_session(session).await;
+}
+
 /// The chat teardown is one point, and it holds the chat's generation
 /// permit while it runs. A child wedged in uninterruptible I/O is never
 /// reaped, so the wait for the reap is bounded: the kill has been sent by
@@ -439,20 +544,20 @@ async fn a_child_that_never_reports_its_end_does_not_hold_the_teardown() {
     let cwd = directory();
     let session = task();
     let id = mint();
-    let log = log_path(cwd.path(), &crate::Application::default(), &id);
-    tokio::fs::create_dir_all(logs(cwd.path()))
-        .await
-        .expect("the log directory is created");
-    tokio::fs::write(&log, "wedged")
-        .await
+    let written =
+        Log::create(cwd.path(), &crate::Application::default(), &id).expect("the log is created");
+    written
+        .writer()
+        .and_then(|mut writer| writer.write_all(b"wedged"))
         .expect("the job wrote something before wedging");
+    let log = written.path().to_path_buf();
     let (reports, state) = watch::channel(JobStatus::Running);
     let (kill, killed) = oneshot::channel();
     JOBS.insert(
         id.clone(),
         Job {
             session,
-            log: log.clone(),
+            log: Arc::new(written),
             state,
             kill,
         },

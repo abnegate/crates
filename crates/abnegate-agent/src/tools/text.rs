@@ -22,10 +22,11 @@ pub const MAX_TOOL_MESSAGE_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS + TOOL
 /// model reads is longer than the cap it asked for.
 pub(crate) const ERROR_PREFIX: &str = "Error: ";
 
-/// Longest a rendered approval preview may run.
+/// Longest a [`Preview`](super::Preview) runs before its middle is hidden.
 ///
-/// The reader is deciding, not reading. A preview past a screenful is one
-/// nobody finishes, and an unfinished preview is worse than none.
+/// The reader is deciding, not reading, and a preview past a screenful is one
+/// nobody finishes. What does not fit is cut from the middle, where the cut is
+/// marked and counted and the preview flagged, never silently from the end.
 pub const MAX_PREVIEW_CHARACTERS: usize = 400;
 
 /// Stands in for a line break that has been collapsed away.
@@ -35,24 +36,19 @@ pub const MAX_PREVIEW_CHARACTERS: usize = 400;
 /// as something they can see.
 pub const LINE_BREAK: &str = " ⏎ ";
 
-/// Collapse `text` onto one line and cut it to `max_characters`.
+/// Collapse `text` onto one line.
 ///
 /// A command, a message body or a patch arrives with newlines and runs of
 /// whitespace that would push the part worth reading off the card. Runs of
 /// blank space within a line go; a line break becomes [`LINE_BREAK`], because
 /// what separates two commands is the part of a preview a reader is deciding
 /// on.
-pub fn excerpt(text: &str, max_characters: usize) -> String {
-    let collapsed = text
-        .lines()
+pub(crate) fn collapse(text: &str) -> String {
+    text.lines()
         .map(|line| line.split_whitespace().collect::<Vec<&str>>().join(" "))
         .filter(|line| !line.is_empty())
         .collect::<Vec<String>>()
-        .join(LINE_BREAK);
-    match collapsed.char_indices().nth(max_characters) {
-        Some((index, _)) => format!("{}…", &collapsed[..index]),
-        None => collapsed,
-    }
+        .join(LINE_BREAK)
 }
 
 fn trim_marker(dropped: usize) -> String {
@@ -93,11 +89,8 @@ mod tests {
     /// the card, so it still collapses.
     #[test]
     fn blank_space_inside_a_line_still_collapses() {
-        assert_eq!(excerpt("cargo    test   --all", 400), "cargo test --all");
-        assert_eq!(
-            excerpt("  one\n\n\ntwo  ", 400),
-            format!("one{LINE_BREAK}two")
-        );
+        assert_eq!(collapse("cargo    test   --all"), "cargo test --all");
+        assert_eq!(collapse("  one\n\n\ntwo  "), format!("one{LINE_BREAK}two"));
     }
 
     #[test]

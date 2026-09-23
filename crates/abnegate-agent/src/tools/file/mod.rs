@@ -10,6 +10,8 @@ mod walk;
 mod write;
 
 use std::ffi::OsStr;
+use std::io;
+use std::io::Read;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -22,6 +24,8 @@ pub use write::WriteFileTool;
 
 use super::ToolContext;
 use super::ToolError;
+use super::beneath;
+use super::beneath::Access;
 
 /// Refuse a resolved path that leaves `context.working_directory`.
 ///
@@ -43,6 +47,56 @@ pub(crate) fn confine(resolved: &Path, context: &ToolContext) -> Result<(), Tool
             "Path escapes working directory".to_string(),
         ))
     }
+}
+
+/// The text of the file at `path`, refused past the context's
+/// `max_file_size`.
+///
+/// The limit is held on what is read as well as on the size the file reports,
+/// so a file growing while it is read is refused rather than cut short. This
+/// blocks, so it runs off the async workers: through [`blocking`], or inside a
+/// blocking task of the caller's own.
+pub(super) fn read_text(context: &ToolContext, path: &Path) -> Result<String, ToolError> {
+    let limit = context.max_file_size as u64;
+    let file = beneath::open(context, path, Access::Read)?;
+    let size = file.metadata().map_err(unreadable)?.len();
+    if size > limit {
+        return Err(too_large(size, context));
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large(bytes.len() as u64, context));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        unreadable(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+    })
+}
+
+fn too_large(size: u64, context: &ToolContext) -> ToolError {
+    ToolError::Execution(format!(
+        "File too large ({size} bytes, max {})",
+        context.max_file_size
+    ))
+}
+
+fn unreadable(error: io::Error) -> ToolError {
+    ToolError::Execution(format!("Cannot read file: {error}"))
+}
+
+/// Run file work on the blocking pool, where a slow disk holds a thread of
+/// its own rather than an async worker the rest of the run is waiting on.
+pub(super) async fn blocking<Value: Send + 'static>(
+    work: impl FnOnce() -> Result<Value, ToolError> + Send + 'static,
+) -> Result<Value, ToolError> {
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        ToolError::Execution(format!("The file operation did not finish: {error}"))
+    })?
 }
 
 /// `path` with `.`, `..` and symlinks resolved as far as the filesystem allows.
