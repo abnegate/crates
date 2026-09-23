@@ -85,13 +85,13 @@ impl<T: DeserializeOwned> Decoder for NdjsonCodec<T> {
                     return Ok(None);
                 }
 
-                let msg: T =
-                    serde_json::from_slice(&line).map_err(|e| ProtocolError::JsonParse {
-                        source: e,
-                        line: String::from_utf8_lossy(&line).to_string(),
+                let message: T =
+                    serde_json::from_slice(&line).map_err(|source| ProtocolError::JsonParse {
+                        source,
+                        length: line.len(),
                     })?;
 
-                Ok(Some(msg))
+                Ok(Some(message))
             }
             None => {
                 if src.len() > self.max_length {
@@ -358,11 +358,34 @@ mod tests {
         assert!(result.is_err());
 
         match result.unwrap_err() {
-            ProtocolError::JsonParse { line, .. } => {
-                assert_eq!(line, "not valid json");
+            ProtocolError::JsonParse { length, .. } => {
+                assert_eq!(length, "not valid json".len());
             }
             _ => panic!("Wrong error type"),
         }
+    }
+
+    #[test]
+    fn a_rejected_line_never_reaches_the_error() {
+        const SECRET: &str = "hunter2-master-key";
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
+        let line = format!(
+            r#"{{"type":"RunStart","job_id":"j","workspace":"/tmp","command":"ls","env":{{"APP_MASTER_KEY":"{SECRET}"}},"timeout_ms":"soon"}}"#
+        );
+        let mut buffer = BytesMut::from(format!("{line}\n").as_bytes());
+
+        let error = codec.decode(&mut buffer).unwrap_err();
+
+        assert!(!error.to_string().contains(SECRET), "{error}");
+        assert!(!format!("{error:?}").contains(SECRET), "{error:?}");
+        assert!(
+            !format!("{error:?}").contains("APP_MASTER_KEY"),
+            "{error:?}"
+        );
+        assert!(matches!(
+            error,
+            ProtocolError::JsonParse { length, .. } if length == line.len()
+        ));
     }
 
     #[test]

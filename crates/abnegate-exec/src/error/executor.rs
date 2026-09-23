@@ -9,7 +9,7 @@ use crate::protocol::ErrorCode;
 #[derive(Debug, Error)]
 pub enum ExecutorError {
     /// Failed to spawn the command process
-    #[error("Failed to spawn process: {0}")]
+    #[error("Failed to spawn process")]
     SpawnFailed(#[source] io::Error),
 
     /// Command timed out
@@ -72,6 +72,20 @@ mod tests {
         let err = ExecutorError::SpawnFailed(io_err);
         assert_eq!(err.to_error_code(), ErrorCode::SpawnFailed);
         assert!(err.to_string().contains("Failed to spawn process"));
+    }
+
+    #[test]
+    fn a_spawn_failure_names_its_cause_once() {
+        let error = ExecutorError::SpawnFailed(io::Error::new(
+            io::ErrorKind::NotFound,
+            "command not found",
+        ));
+
+        assert!(!error.to_string().contains("command not found"), "{error}");
+        assert_eq!(
+            std::error::Error::source(&error).map(ToString::to_string),
+            Some("command not found".to_string())
+        );
     }
 
     #[test]

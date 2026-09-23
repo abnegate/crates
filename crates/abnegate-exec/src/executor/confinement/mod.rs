@@ -34,6 +34,7 @@ mod workspace;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 
 use crate::protocol::ConfinementRequest;
@@ -55,7 +56,9 @@ use resolved::Resolved;
 use resolved::resolve_execute_roots;
 
 /// A command together with the filesystem it is allowed to see.
-#[derive(Debug, Clone)]
+///
+/// `Debug` prints the names in the environment and never their values.
+#[derive(Clone)]
 pub struct Confinement {
     command: String,
     arguments: Vec<String>,
@@ -178,9 +181,37 @@ impl Confinement {
     }
 }
 
+impl fmt::Debug for Confinement {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Confinement")
+            .field("command", &self.command)
+            .field("arguments", &self.arguments)
+            .field("working_dir", &self.working_dir)
+            .field("read_roots", &self.read_roots)
+            .field("write_roots", &self.write_roots)
+            .field("execute_roots", &self.execute_roots)
+            .field("mode", &self.mode)
+            .field("environment", &self.environment.keys())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_names_the_environment_without_its_values() {
+        let confinement = Confinement::new("/bin/cat", vec![], "/tmp").with_environment(
+            HashMap::from([("APP_MASTER_KEY".to_string(), "hunter2".to_string())]),
+        );
+
+        let debug = format!("{confinement:?}");
+
+        assert!(debug.contains("APP_MASTER_KEY"), "{debug}");
+        assert!(!debug.contains("hunter2"), "{debug}");
+    }
 
     #[test]
     fn test_unsupported_platform_never_produces_an_invocation() {

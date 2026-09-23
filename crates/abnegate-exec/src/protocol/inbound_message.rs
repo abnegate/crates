@@ -1,4 +1,6 @@
+use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -7,7 +9,11 @@ use serde::Serialize;
 use super::confinement_request::ConfinementRequest;
 
 /// Messages sent from the backend to the Runner
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// `Debug` prints the names in a `RunStart` environment and the length of a
+/// `RunStdin` payload, never the values themselves: either can carry a
+/// credential.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum InboundMessage {
     /// Handshake message to establish connection
@@ -60,11 +66,88 @@ pub enum InboundMessage {
     Ping { id: String },
 }
 
+impl fmt::Debug for InboundMessage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InboundMessage::Hello {
+                protocol_version,
+                capabilities,
+            } => formatter
+                .debug_struct("Hello")
+                .field("protocol_version", protocol_version)
+                .field("capabilities", capabilities)
+                .finish(),
+            InboundMessage::RunStart {
+                job_id,
+                workspace,
+                command,
+                args,
+                env,
+                timeout_ms,
+                max_output_bytes,
+                working_dir,
+                confinement,
+            } => formatter
+                .debug_struct("RunStart")
+                .field("job_id", job_id)
+                .field("workspace", workspace)
+                .field("command", command)
+                .field("args", args)
+                .field("env", &env.keys().collect::<BTreeSet<&String>>())
+                .field("timeout_ms", timeout_ms)
+                .field("max_output_bytes", max_output_bytes)
+                .field("working_dir", working_dir)
+                .field("confinement", confinement)
+                .finish(),
+            InboundMessage::RunStdin { job_id, data, eof } => formatter
+                .debug_struct("RunStdin")
+                .field("job_id", job_id)
+                .field("data", &format_args!("<{} bytes>", data.len()))
+                .field("eof", eof)
+                .finish(),
+            InboundMessage::RunCancel { job_id, force } => formatter
+                .debug_struct("RunCancel")
+                .field("job_id", job_id)
+                .field("force", force)
+                .finish(),
+            InboundMessage::Ping { id } => formatter.debug_struct("Ping").field("id", id).finish(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::protocol::OutboundMessage;
 
     use super::*;
+
+    #[test]
+    fn debug_never_prints_an_environment_value_or_stdin() {
+        let run = InboundMessage::RunStart {
+            job_id: "job".to_string(),
+            workspace: PathBuf::from("/tmp"),
+            command: "env".to_string(),
+            args: vec![],
+            env: HashMap::from([("APP_MASTER_KEY".to_string(), "hunter2".to_string())]),
+            timeout_ms: None,
+            max_output_bytes: None,
+            working_dir: None,
+            confinement: None,
+        };
+        let stdin = InboundMessage::RunStdin {
+            job_id: "job".to_string(),
+            data: "aHVudGVyMgo=".to_string(),
+            eof: false,
+        };
+
+        let run = format!("{run:?}");
+        let stdin = format!("{stdin:?}");
+
+        assert!(run.contains("APP_MASTER_KEY"), "{run}");
+        assert!(!run.contains("hunter2"), "{run}");
+        assert!(stdin.contains("<12 bytes>"), "{stdin}");
+        assert!(!stdin.contains("aHVudGVyMgo="), "{stdin}");
+    }
 
     #[test]
     fn test_hello_serialization() {

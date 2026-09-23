@@ -5,15 +5,17 @@ use thiserror::Error;
 /// Errors that can occur during protocol communication.
 #[derive(Debug, Error)]
 pub enum ProtocolError {
-    /// Failed to parse JSON message
-    #[error("Failed to parse JSON: {source} (line: {line})")]
+    /// A line was not a valid message. Only its length is kept: the line
+    /// itself carries a job's environment and stdin.
+    #[error("Failed to parse a {length}-byte JSON line")]
     JsonParse {
+        #[source]
         source: serde_json::Error,
-        line: String,
+        length: usize,
     },
 
     /// Failed to serialize JSON message
-    #[error("Failed to serialize JSON: {0}")]
+    #[error("Failed to serialize JSON")]
     JsonSerialize(#[source] serde_json::Error),
 
     /// Line exceeds maximum allowed length
@@ -27,6 +29,8 @@ pub enum ProtocolError {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error as _;
+
     use super::*;
 
     #[test]
@@ -34,10 +38,36 @@ mod tests {
         let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
         let err = ProtocolError::JsonParse {
             source: json_err,
-            line: "invalid".to_string(),
+            length: 7,
         };
-        assert!(err.to_string().contains("Failed to parse JSON"));
-        assert!(err.to_string().contains("invalid"));
+        assert_eq!(err.to_string(), "Failed to parse a 7-byte JSON line");
+    }
+
+    #[test]
+    fn a_parse_failure_names_its_cause_once() {
+        let cause = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let message = cause.to_string();
+        let error = ProtocolError::JsonParse {
+            source: cause,
+            length: 7,
+        };
+
+        assert!(!error.to_string().contains(&message), "{error}");
+        assert_eq!(
+            error.source().map(ToString::to_string),
+            Some(message),
+            "the cause is reachable through the chain"
+        );
+    }
+
+    #[test]
+    fn a_serialize_failure_names_its_cause_once() {
+        let cause = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let message = cause.to_string();
+        let error = ProtocolError::JsonSerialize(cause);
+
+        assert_eq!(error.to_string(), "Failed to serialize JSON");
+        assert_eq!(error.source().map(ToString::to_string), Some(message));
     }
 
     #[test]
