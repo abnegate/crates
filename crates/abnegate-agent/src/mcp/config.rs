@@ -167,6 +167,18 @@ impl McpConfig {
 
     /// Attach `spec` when nothing else is configured, auto-connect is on, and
     /// its command is on `PATH`.
+    ///
+    /// For an application that ships a companion server of its own and wants
+    /// it attached unless the user has configured servers themselves:
+    ///
+    /// ```
+    /// use abnegate_agent::{McpConfig, McpServerSpec};
+    ///
+    /// let config = McpConfig::with_prefix("ACME")
+    ///     .fallback(McpServerSpec::new("notes", "notes-server", ["mcp"]));
+    ///
+    /// assert!(config.servers.iter().all(|server| !server.disabled));
+    /// ```
     pub fn fallback(mut self, spec: McpServerSpec) -> Self {
         if self.auto_connect && self.servers.is_empty() && command_on_path(&spec.command) {
             self.servers.push(spec);

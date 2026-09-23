@@ -15,7 +15,7 @@ mod environment;
 mod error;
 mod file;
 pub mod job;
-mod process;
+pub(crate) mod process;
 mod reason;
 mod registry;
 mod result;

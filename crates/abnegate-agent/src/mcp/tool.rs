@@ -7,10 +7,12 @@ use tokio::time::timeout;
 
 use super::format::format_call_result;
 use super::session::McpSession;
-use crate::tools::{TIMEOUT_SLACK, Tier, Tool, ToolContext, ToolError, ToolResult};
+use crate::tools::{
+    MAX_TOOL_OUTPUT_CHARACTERS, TIMEOUT_SLACK, Tier, Tool, ToolContext, ToolError, ToolResult,
+    trim_middle,
+};
 
-const MAX_MCP_OUTPUT_CHARACTERS: usize = 8_000;
-const TRUNCATION_MARKER: &str = "\n[truncated]";
+const MAX_MCP_OUTPUT_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS;
 
 /// One tool advertised by a connected MCP server.
 pub struct McpTool {
@@ -110,19 +112,14 @@ impl Tool for McpTool {
     }
 }
 
+/// The call's result as the model reads it, keeping the start and the end of
+/// a long one: an error a server reports last is the part worth reading.
 fn tool_result_from_call(result: &CallToolResult) -> ToolResult {
-    let output = truncate_chars(&format_call_result(result), MAX_MCP_OUTPUT_CHARACTERS);
+    let output = trim_middle(&format_call_result(result), MAX_MCP_OUTPUT_CHARACTERS);
     if result.is_error.unwrap_or(false) {
         ToolResult::error(output)
     } else {
         ToolResult::success(output)
-    }
-}
-
-fn truncate_chars(text: &str, max_characters: usize) -> String {
-    match text.char_indices().nth(max_characters) {
-        Some((index, _)) => format!("{}{TRUNCATION_MARKER}", &text[..index]),
-        None => text.to_string(),
     }
 }
 
@@ -152,8 +149,10 @@ mod tests {
         assert!(error.starts_with(UNTRUSTED_MARKER), "{error}");
     }
 
+    /// The cut used to keep only the head, which dropped the end of a long
+    /// result - where a server reports what went wrong.
     #[test]
-    fn huge_call_result_is_capped_before_tool_result() {
+    fn huge_call_result_keeps_its_head_and_tail() {
         let text = format!("HEAD_MCP{}TAIL_MCP", "m".repeat(20_000));
         let result = tool_result_from_call(&CallToolResult::success(vec![ContentBlock::text(
             text.clone(),
@@ -162,22 +161,21 @@ mod tests {
         let output = result.output.expect("success output");
         assert!(output.starts_with(UNTRUSTED_MARKER), "{output}");
         assert!(output.contains("HEAD_MCP"), "{output}");
-        assert!(!output.contains("TAIL_MCP"), "{output}");
-        assert!(output.contains("[truncated]"), "{output}");
-        assert!(output.chars().count() <= MAX_MCP_OUTPUT_CHARACTERS + 32);
-        assert!(output.chars().count() < text.chars().count());
+        assert!(output.ends_with("TAIL_MCP"), "{output}");
+        assert!(output.contains("characters trimmed"), "{output}");
+        assert!(output.chars().count() <= MAX_MCP_OUTPUT_CHARACTERS);
     }
 
     #[test]
     fn huge_error_call_result_is_capped() {
         let result = tool_result_from_call(&CallToolResult::error(vec![ContentBlock::text(
-            "e".repeat(20_000),
+            format!("{}the actual failure", "e".repeat(20_000)),
         )]));
         assert!(!result.success);
         let error = result.error.expect("error payload");
         assert!(error.starts_with(UNTRUSTED_MARKER), "{error}");
-        assert!(error.contains("eeee"));
-        assert!(error.contains("[truncated]"));
-        assert!(error.chars().count() <= MAX_MCP_OUTPUT_CHARACTERS + 32);
+        assert!(error.ends_with("the actual failure"), "{error}");
+        assert!(error.contains("characters trimmed"));
+        assert!(error.chars().count() <= MAX_MCP_OUTPUT_CHARACTERS);
     }
 }

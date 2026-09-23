@@ -6,19 +6,25 @@ use crate::tools::ToolRegistry;
 /// Attach every tool from a connected hub to `registry`, and return how many
 /// were added.
 ///
-/// Names are prefixed with the server name (`docs_search`). Collisions after
-/// sanitizing, including with a tool already registered, are given a numeric
-/// suffix so one tool cannot hide another. The hub can be dropped afterwards:
-/// each tool holds its own session handle.
+/// Names are `server__tool` (`docs__search`). Collisions after sanitizing,
+/// including with a tool already registered, are given a numeric suffix so
+/// one tool cannot hide another. Only a server that contributed a tool is
+/// recorded as attached, so a server with nothing to offer earns no prompt
+/// guidance. The hub can be dropped afterwards: each tool holds its own
+/// session handle.
 pub fn register(registry: &mut ToolRegistry, hub: &McpHub) -> usize {
-    for name in hub.server_names() {
-        registry.attach(name);
-    }
     let mut used: HashSet<String> = registry.names().into_iter().map(str::to_string).collect();
-    let tools = hub.tools_avoiding(&mut used);
-    let added = tools.len();
-    for tool in tools {
-        registry.register(tool);
+    let mut added = 0;
+    for session in hub.sessions() {
+        let tools = session.tools(&mut used);
+        if tools.is_empty() {
+            continue;
+        }
+        registry.attach(session.name.clone());
+        added += tools.len();
+        for tool in tools {
+            registry.register(tool);
+        }
     }
     added
 }

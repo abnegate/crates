@@ -2,8 +2,8 @@
 //!
 //! [`McpHub::connect`] launches every configured server, completes the
 //! handshake with each, and lists what it advertises. [`register`] then adds
-//! each remote tool to a registry under a name prefixed with its server's, so
-//! one server cannot answer for another's tools or for a built-in. A server
+//! each remote tool to a registry as `server__tool`, so one server cannot
+//! answer for another's tools or for a built-in. A server
 //! that fails to start or to answer in time is logged and skipped.
 //!
 //! [`McpConfig::with_prefix`] reads the configuration from the environment
@@ -46,6 +46,8 @@ pub use error::McpError;
 pub use format::format_call_result;
 pub use guidance::{Guidance, guidance, guidance_for_tools};
 pub use hub::McpHub;
-pub use name::{qualified_tool_name, unique_qualified_tool_name};
+pub use name::{
+    MAX_TOOL_NAME_CHARACTERS, SEPARATOR, qualified_tool_name, unique_qualified_tool_name,
+};
 pub use register::{register, with_defaults_and_mcp};
 pub use spec::McpServerSpec;

@@ -5,21 +5,35 @@ use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::json;
 use std::collections::HashSet;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::process::Command;
+use tokio::io::AsyncReadExt;
+use tokio::process::{ChildStderr, Command};
 use tokio::sync::Mutex;
 
 use super::name::unique_qualified_tool_name;
 use super::tool::McpTool;
 use super::{McpError, McpServerSpec};
 use crate::tools::Tool;
+use crate::tools::process::Group;
+
+/// Most of a server's stderr logged, after which the rest is read and
+/// dropped so the server never blocks writing to it.
+const MAX_LOGGED_STDERR_BYTES: usize = 64 * 1024;
+
+const STDERR_BUFFER_BYTES: usize = 4 * 1024;
 
 /// One live stdio MCP session.
+///
+/// The server leads a process group of its own, and dropping the session
+/// kills the whole group, so a server that starts helpers of its own leaves
+/// none of them behind.
 pub(super) struct McpSession {
     pub(super) name: String,
     pub(super) remote_tools: Vec<RemoteTool>,
     client: Mutex<RunningService<RoleClient, ()>>,
+    group: Group,
 }
 
 impl McpSession {
@@ -32,6 +46,7 @@ impl McpSession {
             name,
             remote_tools,
             client: Mutex::new(client),
+            group: Group::led_by(None),
         }
     }
 
@@ -49,22 +64,29 @@ impl McpSession {
     }
 
     /// The child is given the spec's environment policy, and then the
-    /// process-level proxy policy on top of it.
+    /// process-level proxy policy on top of it. Its stderr is logged, up to a
+    /// bound, rather than written over this process's own.
     async fn handshake(spec: &McpServerSpec) -> Result<Self, McpError> {
         let mut command = Command::new(&spec.command);
-        command.kill_on_drop(true);
-        let transport = TokioChildProcess::new(command.configure(|process| {
+        command.kill_on_drop(true).process_group(0);
+        let (transport, stderr) = TokioChildProcess::builder(command.configure(|process| {
             process.args(&spec.arguments);
             spec.environment_policy().apply(process);
             Proxy::from_env().apply(process);
-            if let Some(cwd) = &spec.working_directory {
-                process.current_dir(cwd);
+            if let Some(directory) = &spec.working_directory {
+                process.current_dir(directory);
             }
         }))
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|source| McpError::Spawn {
             server: spec.name.clone(),
             source,
         })?;
+        let group = Group::led_by(transport.id());
+        if let Some(stderr) = stderr {
+            tokio::spawn(log_stderr(spec.name.clone(), stderr));
+        }
 
         let client =
             ().serve(transport)
@@ -82,7 +104,9 @@ impl McpSession {
                 message: error.to_string(),
             })?;
 
-        Ok(Self::new(spec.name.clone(), remote_tools, client))
+        let mut session = Self::new(spec.name.clone(), remote_tools, client);
+        session.group = group;
+        Ok(session)
     }
 
     pub(super) async fn call(
@@ -123,6 +147,38 @@ impl McpSession {
                 )) as Arc<dyn Tool>
             })
             .collect()
+    }
+}
+
+impl Drop for McpSession {
+    fn drop(&mut self) {
+        self.group.kill();
+    }
+}
+
+/// Log what a server writes to stderr, up to [`MAX_LOGGED_STDERR_BYTES`],
+/// and keep reading past that so it never fills the pipe.
+async fn log_stderr(server: String, mut stderr: ChildStderr) {
+    let mut buffer = vec![0; STDERR_BUFFER_BYTES];
+    let mut logged = 0;
+    loop {
+        let read = match stderr.read(&mut buffer).await {
+            Ok(0) | Err(_) => return,
+            Ok(read) => read,
+        };
+        if logged >= MAX_LOGGED_STDERR_BYTES {
+            continue;
+        }
+        let kept = read.min(MAX_LOGGED_STDERR_BYTES - logged);
+        logged += kept;
+        tracing::debug!(
+            server = %server,
+            stderr = %String::from_utf8_lossy(&buffer[..kept]).trim_end(),
+            "MCP server wrote to stderr"
+        );
+        if logged >= MAX_LOGGED_STDERR_BYTES {
+            tracing::debug!(server = %server, "MCP server stderr past its limit; dropping the rest");
+        }
     }
 }
 
@@ -216,5 +272,40 @@ mod tests {
             !output.contains(LEAKED),
             "a variable off the allowlist reached the server: {output}"
         );
+    }
+
+    /// A server that starts a helper and then fails its handshake used to
+    /// leave the helper running: only the server itself was killed.
+    #[tokio::test]
+    async fn a_server_that_goes_away_takes_what_it_started_with_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("helper");
+        let spec = McpServerSpec {
+            arguments: vec![
+                "-c".to_string(),
+                "sleep 30 & echo $! > \"$1\"; exec cat > /dev/null".to_string(),
+                "sh".to_string(),
+                pid_file.to_string_lossy().into_owned(),
+            ],
+            ..McpServerSpec::new("helper", "sh", Vec::<String>::new())
+        };
+
+        let result = McpSession::connect_with_timeout(&spec, Duration::from_millis(500)).await;
+        assert!(matches!(result, Err(McpError::Handshake { .. })));
+
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the server started its helper")
+            .trim()
+            .parse()
+            .expect("a pid");
+        let mut gone = false;
+        for _ in 0..300 {
+            if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(gone, "the helper {pid} outlived its server");
     }
 }
