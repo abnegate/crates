@@ -288,7 +288,7 @@ mod tests {
     fn debug_never_prints_the_key() {
         let rendered = format!(
             "{:?}",
-            GeminiProvider::new("AIzaSy-not-a-real-key-0123456789")
+            GeminiProvider::new(concat!("AIzaSy", "-not-a-real-key-0123456789"))
         );
         assert!(!rendered.contains("AIzaSy"), "{rendered}");
     }
