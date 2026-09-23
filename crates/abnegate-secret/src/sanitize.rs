@@ -1,7 +1,10 @@
+mod terminators;
+
 use std::borrow::Cow;
 use std::ops::RangeInclusive;
 
 use crate::redact::redact;
+use crate::sanitize::terminators::Terminators;
 
 const ESCAPE: u8 = 0x1B;
 const BELL: u8 = 0x07;
@@ -11,28 +14,43 @@ const LINE_FEED: u8 = b'\n';
 const CARRIAGE_RETURN: u8 = b'\r';
 const DELETE: u8 = 0x7F;
 const CONTROL_SEQUENCE_INTRODUCER: char = '\u{9B}';
+const C1_CONTROLS: RangeInclusive<char> = '\u{80}'..='\u{9F}';
 
-/// Characters that render as nothing, or reorder the text around them, so what
-/// a reader sees differs from what the text says: a zero-width space inside a
-/// token hides it from [`redact`], and a right-to-left override disguises code.
+/// Unicode's Default_Ignorable_Code_Point property, sorted: characters that
+/// render as nothing, or reorder the text around them, so what a reader sees
+/// differs from what the text says. A zero-width space or a tag character
+/// inside a token hides it from [`redact`], and a right-to-left override
+/// disguises code.
 const INVISIBLE_CHARACTERS: &[RangeInclusive<char>] = &[
     '\u{00AD}'..='\u{00AD}',
+    '\u{034F}'..='\u{034F}',
     '\u{061C}'..='\u{061C}',
+    '\u{115F}'..='\u{1160}',
+    '\u{17B4}'..='\u{17B5}',
+    '\u{180B}'..='\u{180F}',
     '\u{200B}'..='\u{200F}',
     '\u{202A}'..='\u{202E}',
-    '\u{2060}'..='\u{2064}',
-    '\u{2066}'..='\u{2069}',
+    '\u{2060}'..='\u{206F}',
+    '\u{3164}'..='\u{3164}',
+    '\u{FE00}'..='\u{FE0F}',
     '\u{FEFF}'..='\u{FEFF}',
+    '\u{FFA0}'..='\u{FFA0}',
+    '\u{FFF0}'..='\u{FFF8}',
+    '\u{1BCA0}'..='\u{1BCA3}',
+    '\u{1D173}'..='\u{1D17A}',
+    '\u{E0000}'..='\u{E0FFF}',
 ];
 
-/// The UTF-8 lead bytes of every C1 control and every
-/// [invisible character](INVISIBLE_CHARACTERS).
-const INSPECTED_LEADS: &[u8] = &[0xC2, 0xD8, 0xE2, 0xEF];
+/// Whether each byte is a control, or the UTF-8 lead byte of a C1 control or
+/// an [invisible character](INVISIBLE_CHARACTERS), and so must be looked at
+/// rather than copied. Tab and line feed are copied.
+const INSPECTED: [bool; 256] = inspected_bytes();
 
 /// Strip terminal control sequences and invisible formatting characters from
 /// `text` and redact any credential.
 ///
-/// Text with nothing to remove is returned untouched and unallocated.
+/// Text with nothing to remove is returned untouched and unallocated. Time is
+/// linear in the length of `text`.
 pub fn sanitize(text: &str) -> Cow<'_, str> {
     let stripped = strip_control_sequences(text);
     let redacted = match redact(&stripped) {
@@ -61,12 +79,13 @@ fn strip_control_sequences(text: &str) -> Cow<'_, str> {
     }
 
     let bytes = text.as_bytes();
+    let terminators = Terminators::find(bytes);
     let mut output = String::with_capacity(text.len());
     let mut index = 0;
 
     while index < bytes.len() {
         match bytes[index] {
-            ESCAPE => index = escape_sequence(bytes, index),
+            ESCAPE => index = escape_sequence(bytes, index, terminators),
             CARRIAGE_RETURN => {
                 output.push('\n');
                 index += if bytes.get(index + 1) == Some(&LINE_FEED) {
@@ -80,7 +99,7 @@ fn strip_control_sequences(text: &str) -> Cow<'_, str> {
                 index += 1;
             }
             0x00..=0x1F | DELETE => index += 1,
-            lead if INSPECTED_LEADS.contains(&lead) => {
+            lead if needs_inspection(lead) => {
                 let Some(character) = text[index..].chars().next() else {
                     break;
                 };
@@ -108,26 +127,64 @@ fn strip_control_sequences(text: &str) -> Cow<'_, str> {
 }
 
 fn needs_inspection(byte: u8) -> bool {
-    matches!(byte, 0x00..=0x08 | 0x0B..=0x1F | DELETE) || INSPECTED_LEADS.contains(&byte)
+    INSPECTED[usize::from(byte)]
 }
 
 fn is_invisible(character: char) -> bool {
-    INVISIBLE_CHARACTERS
-        .iter()
-        .any(|range| range.contains(&character))
+    let following = INVISIBLE_CHARACTERS.partition_point(|range| *range.start() <= character);
+    following
+        .checked_sub(1)
+        .is_some_and(|range| INVISIBLE_CHARACTERS[range].contains(&character))
+}
+
+const fn inspected_bytes() -> [bool; 256] {
+    let mut inspected = [false; 256];
+    let mut byte = 0;
+    while byte < 0x80 {
+        inspected[byte] = matches!(byte as u8, 0x00..=0x08 | 0x0B..=0x1F | DELETE);
+        byte += 1;
+    }
+    inspect_leads(&mut inspected, &C1_CONTROLS);
+    let mut range = 0;
+    while range < INVISIBLE_CHARACTERS.len() {
+        inspect_leads(&mut inspected, &INVISIBLE_CHARACTERS[range]);
+        range += 1;
+    }
+    inspected
+}
+
+/// Mark the lead byte of every character in `range`: lead bytes rise with the
+/// characters they encode, so the first and last character's bound the rest.
+const fn inspect_leads(inspected: &mut [bool; 256], range: &RangeInclusive<char>) {
+    let mut lead = lead_byte(*range.start());
+    while lead <= lead_byte(*range.end()) {
+        inspected[lead as usize] = true;
+        lead += 1;
+    }
+}
+
+const fn lead_byte(character: char) -> u8 {
+    let mut encoded = [0u8; 4];
+    character.encode_utf8(&mut encoded);
+    encoded[0]
 }
 
 /// The end of the sequence introduced by the escape at `index`.
 ///
 /// An unterminated sequence loses only its introducer, leaving the payload as
 /// ordinary text, which is what a terminal would show.
-fn escape_sequence(bytes: &[u8], index: usize) -> usize {
+fn escape_sequence(bytes: &[u8], index: usize, terminators: Terminators) -> usize {
+    let payload = index + 2;
     match bytes.get(index + 1) {
-        Some(b']') => operating_system_command(bytes, index + 2).unwrap_or(index + 2),
-        Some(b'P' | b'X' | b'^' | b'_') => device_control(bytes, index + 2).unwrap_or(index + 2),
-        Some(b'[') => control_sequence(bytes, index + 2).unwrap_or(index + 2),
+        Some(b']') => terminators
+            .operating_system_command(bytes, payload)
+            .unwrap_or(payload),
+        Some(b'P' | b'X' | b'^' | b'_') => terminators
+            .device_control(bytes, payload)
+            .unwrap_or(payload),
+        Some(b'[') => control_sequence(bytes, payload).unwrap_or(payload),
         Some(0x20..=0x2F) => intermediate_sequence(bytes, index + 1).unwrap_or(index + 1),
-        Some(0x30..=0x7E) => index + 2,
+        Some(0x30..=0x7E) => payload,
         _ => index + 1,
     }
 }
@@ -143,31 +200,6 @@ fn intermediate_sequence(bytes: &[u8], from: usize) -> Option<usize> {
         Some(0x30..=0x7E) => Some(index + 1),
         _ => None,
     }
-}
-
-fn operating_system_command(bytes: &[u8], from: usize) -> Option<usize> {
-    let mut index = from;
-    while index < bytes.len() {
-        if bytes[index] == BELL {
-            return Some(index + 1);
-        }
-        if bytes[index] == ESCAPE && bytes.get(index + 1) == Some(&BACKSLASH) {
-            return Some(index + 2);
-        }
-        index += 1;
-    }
-    None
-}
-
-fn device_control(bytes: &[u8], from: usize) -> Option<usize> {
-    let mut index = from;
-    while index < bytes.len() {
-        if bytes[index] == ESCAPE && bytes.get(index + 1) == Some(&BACKSLASH) {
-            return Some(index + 2);
-        }
-        index += 1;
-    }
-    None
 }
 
 fn control_sequence(bytes: &[u8], from: usize) -> Option<usize> {
@@ -186,10 +218,101 @@ fn control_sequence(bytes: &[u8], from: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
     use super::*;
     use crate::redact::REDACTED;
 
     const TOKEN: &str = concat!("ghp_", "0123456789abcdefghij");
+
+    /// Unicode 17's Default_Ignorable_Code_Point property, listed apart from
+    /// the table the implementation strips so that the two cannot drift.
+    const DEFAULT_IGNORABLE_CODE_POINTS: &[(char, char)] = &[
+        ('\u{00AD}', '\u{00AD}'),
+        ('\u{034F}', '\u{034F}'),
+        ('\u{061C}', '\u{061C}'),
+        ('\u{115F}', '\u{1160}'),
+        ('\u{17B4}', '\u{17B5}'),
+        ('\u{180B}', '\u{180F}'),
+        ('\u{200B}', '\u{200F}'),
+        ('\u{202A}', '\u{202E}'),
+        ('\u{2060}', '\u{206F}'),
+        ('\u{3164}', '\u{3164}'),
+        ('\u{FE00}', '\u{FE0F}'),
+        ('\u{FEFF}', '\u{FEFF}'),
+        ('\u{FFA0}', '\u{FFA0}'),
+        ('\u{FFF0}', '\u{FFF8}'),
+        ('\u{1BCA0}', '\u{1BCA3}'),
+        ('\u{1D173}', '\u{1D17A}'),
+        ('\u{E0000}', '\u{E0FFF}'),
+    ];
+
+    /// A quadratic scan of a quarter megabyte takes seconds even optimised; a
+    /// linear one takes a few milliseconds unoptimised.
+    const LINEAR_BUDGET: Duration = if cfg!(debug_assertions) {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_millis(20)
+    };
+
+    const QUARTER_MEGABYTE: usize = 256 * 1024;
+
+    #[test]
+    fn strips_every_default_ignorable_code_point() {
+        for (start, end) in DEFAULT_IGNORABLE_CODE_POINTS {
+            for character in *start..=*end {
+                let hidden = format!("fatal: {}{character}{} rejected", &TOKEN[..8], &TOKEN[8..]);
+                assert_eq!(
+                    sanitize(&hidden),
+                    format!("fatal: {REDACTED} rejected"),
+                    "U+{:04X} survived",
+                    u32::from(character)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn redacts_a_credential_split_by_a_tag_character() {
+        assert_eq!(
+            sanitize(concat!("ghp_", "0123\u{E0020}456789abcdefghij")),
+            REDACTED
+        );
+    }
+
+    #[test]
+    fn keeps_text_that_shares_a_lead_byte_with_an_invisible_character() {
+        let text = concat!(
+            "\u{00A3}20 \u{0376} \u{0628} Ti\u{1EBF}ng Vi\u{1EC7}t ",
+            "\u{3053}\u{3093}\u{306B}\u{3061}\u{306F} \u{FF21} ",
+            "\u{1F44B} \u{1D11E} \u{F0000}"
+        );
+        assert_eq!(sanitize(text), text);
+    }
+
+    #[test]
+    fn unterminated_string_sequences_are_scanned_once() {
+        for introducer in ["\u{1b}]", "\u{1b}P", "\u{1b}X", "\u{1b}^", "\u{1b}_"] {
+            let text = introducer.repeat(QUARTER_MEGABYTE / introducer.len());
+            let started = Instant::now();
+            let sanitized = sanitize(&text);
+            let elapsed = started.elapsed();
+
+            assert_eq!(sanitized, "", "{introducer:?} left a payload behind");
+            assert!(
+                elapsed < LINEAR_BUDGET,
+                "a quarter megabyte of {introducer:?} took {elapsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_string_sequence_is_closed_by_a_terminator_after_unterminated_ones() {
+        assert_eq!(sanitize("a\u{1b}Pq\u{1b}]0;title\u{7}b"), "aqb");
+        assert_eq!(sanitize("a\u{1b}]x\u{1b}Py\u{1b}\\b"), "ab");
+        assert_eq!(sanitize("a\u{1b}Pq\u{7}b"), "aqb");
+    }
 
     #[test]
     fn leaves_plain_text_alone() {
@@ -265,13 +388,25 @@ mod tests {
     }
 
     #[test]
-    fn every_invisible_character_is_inspected() {
-        for range in INVISIBLE_CHARACTERS {
+    fn every_invisible_character_and_c1_control_is_inspected() {
+        for range in INVISIBLE_CHARACTERS.iter().chain([&C1_CONTROLS]) {
             for character in range.clone() {
                 let mut encoded = [0u8; 4];
                 let lead = character.encode_utf8(&mut encoded).as_bytes()[0];
                 assert!(needs_inspection(lead), "{character:?} is never inspected");
             }
+        }
+    }
+
+    #[test]
+    fn invisible_characters_are_sorted_and_disjoint() {
+        for pair in INVISIBLE_CHARACTERS.windows(2) {
+            assert!(
+                pair[0].end() < pair[1].start(),
+                "{:?} does not precede {:?}",
+                pair[0],
+                pair[1]
+            );
         }
     }
 
