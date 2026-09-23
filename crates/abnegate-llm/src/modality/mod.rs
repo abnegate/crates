@@ -31,7 +31,7 @@ mod model3d_request;
 mod model3d_response;
 mod music_request;
 mod response_format;
-mod sfx_request;
+mod sound_effect_request;
 mod structured_response;
 mod text_provider;
 mod text_request;
@@ -68,7 +68,7 @@ pub use crate::modality::model3d_request::Model3DRequest;
 pub use crate::modality::model3d_response::Model3DResponse;
 pub use crate::modality::music_request::MusicRequest;
 pub use crate::modality::response_format::ResponseFormat;
-pub use crate::modality::sfx_request::SfxRequest;
+pub use crate::modality::sound_effect_request::SoundEffectRequest;
 pub use crate::modality::structured_response::StructuredResponse;
 pub use crate::modality::text_provider::TextProvider;
 pub use crate::modality::text_request::TextRequest;
@@ -183,11 +183,11 @@ mod tests {
             Err(ProviderError::unsupported("generate_music"))
         }
 
-        async fn generate_sfx(
+        async fn generate_sound_effect(
             &self,
-            _request: &SfxRequest,
+            _request: &SoundEffectRequest,
         ) -> Result<AudioResponse, ProviderError> {
-            Err(ProviderError::unsupported("generate_sfx"))
+            Err(ProviderError::unsupported("generate_sound_effect"))
         }
     }
 

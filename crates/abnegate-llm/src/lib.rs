@@ -91,10 +91,10 @@ pub use crate::modality::{
     EmbeddingProvider, EmbeddingProviderConfig, Exchange, ImageEditRequest, ImageProvider,
     ImageProviderConfig, ImageRequest, ImageResponse, Model3DFormat, Model3DProvider,
     Model3DProviderConfig, Model3DRequest, Model3DResponse, MusicRequest, ProviderConfig,
-    ResponseFormat, SfxRequest, StructuredResponse, TextProvider, TextProviderConfig, TextRequest,
-    TextResponse, TranscriptionProvider, TranscriptionProviderConfig, TranscriptionResponse,
-    TranscriptionSegment, VideoProvider, VideoProviderConfig, VideoRequest, VideoResponse,
-    VoiceInfo, VoiceProvider, VoiceProviderConfig, VoiceRequest,
+    ResponseFormat, SoundEffectRequest, StructuredResponse, TextProvider, TextProviderConfig,
+    TextRequest, TextResponse, TranscriptionProvider, TranscriptionProviderConfig,
+    TranscriptionResponse, TranscriptionSegment, VideoProvider, VideoProviderConfig, VideoRequest,
+    VideoResponse, VoiceInfo, VoiceProvider, VoiceProviderConfig, VoiceRequest,
 };
 pub use crate::parse_error::ParseError;
 pub use crate::provider::{

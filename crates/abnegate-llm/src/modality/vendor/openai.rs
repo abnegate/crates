@@ -120,7 +120,7 @@ impl OpenAIProvider {
         let mut body = serde_json::json!({
             "model": IMAGE_MODEL,
             "prompt": request.prompt,
-            "n": request.num_images,
+            "n": request.image_count,
             "size": format!("{}x{}", request.width, request.height),
             "response_format": "b64_json"
         });
@@ -553,7 +553,7 @@ mod tests {
             height: 1024,
             style: Some("vivid".into()),
             reference_images: Vec::new(),
-            num_images: 1,
+            image_count: 1,
         };
 
         let body = provider.build_image_request_body(&request);

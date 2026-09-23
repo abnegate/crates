@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::modality::{AudioResponse, MusicRequest, SfxRequest};
+use crate::modality::{AudioResponse, MusicRequest, SoundEffectRequest};
 use crate::provider::ProviderError;
 
 #[async_trait]
@@ -10,5 +10,8 @@ pub trait AudioProvider: Send + Sync {
     fn max_duration_seconds(&self) -> f64;
 
     async fn generate_music(&self, request: &MusicRequest) -> Result<AudioResponse, ProviderError>;
-    async fn generate_sfx(&self, request: &SfxRequest) -> Result<AudioResponse, ProviderError>;
+    async fn generate_sound_effect(
+        &self,
+        request: &SoundEffectRequest,
+    ) -> Result<AudioResponse, ProviderError>;
 }
