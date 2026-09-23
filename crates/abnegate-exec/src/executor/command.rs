@@ -121,7 +121,6 @@ impl CommandExecutor {
         // A job that asked to be confined never runs unconfined: an unproven
         // sandbox fails the spawn instead of falling back.
         let inherited = self.config.environment.inherited();
-        let started_at = Instant::now();
         let spawned = match confinement {
             Some(request) => {
                 Confinement::probe(request.mode()).await?;
@@ -142,6 +141,7 @@ impl CommandExecutor {
             }
         };
         let mut child = spawned.map_err(ExecutorError::SpawnFailed)?;
+        let started_at = Instant::now();
 
         let pid = child.id().ok_or_else(|| {
             ExecutorError::SpawnFailed(std::io::Error::other("Process has no PID"))
@@ -411,9 +411,9 @@ mod tests {
 
     /// Re-run the test `name` in a child test process whose environment is
     /// `PATH` and [`REQUIRE_CONFINEMENT`] plus `environment`, so a test can
-    /// shape the executor's own environment without touching this process.
-    /// Returns whether this call was the parent, which has nothing left to do
-    /// once the child passes.
+    /// shape the executor's own environment, or start with no sandbox verdict
+    /// cached, without touching this process. Returns whether this call was
+    /// the parent, which has nothing left to do once the child passes.
     async fn delegated_to_child(name: &str, environment: &[(&str, &str)]) -> bool {
         if std::env::var(CHILD).as_deref() == Ok(name) {
             return false;
@@ -558,6 +558,46 @@ mod tests {
             "the sandbox's own HOME outranks the executor's: {output}"
         );
         assert!(!output.contains(MARKER), "{output}");
+    }
+
+    /// The first confined job waits for the sandbox to be proven, and none of
+    /// that wait belongs to the job: its timeout and reported duration count
+    /// from the spawn. Runs in a child process, where no verdict is cached.
+    #[tokio::test]
+    async fn the_first_confined_job_is_not_charged_for_proving_the_sandbox() {
+        const NAME: &str = "executor::command::tests::the_first_confined_job_is_not_charged_for_proving_the_sandbox";
+        if delegated_to_child(NAME, &[]).await {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let (sender, receiver) = mpsc::channel(100);
+        let before = Instant::now();
+
+        let spawned = CommandExecutor::new()
+            .spawn(&confined("first-confined", &root, "/usr/bin/true"), sender)
+            .await;
+        let spawning = before.elapsed();
+
+        let handle = match spawned {
+            Ok(handle) => handle,
+            Err(ExecutorError::ConfinementUnavailable(error)) => {
+                assert!(
+                    !sandbox::required(ConfinementMode::SingleCommand),
+                    "{REQUIRE_CONFINEMENT} is set, but this host cannot prove its sandbox: {error}"
+                );
+                return;
+            }
+            Err(error) => panic!("{error}"),
+        };
+        let run = finish(receiver).await;
+        let clock = handle.started_at.duration_since(before);
+
+        assert_eq!(run.exit(), Some((Some(0), None)), "{:?}", run.messages);
+        assert!(
+            clock >= spawning / 2,
+            "the job's clock started {clock:?} into a {spawning:?} spawn, before the sandbox was proven"
+        );
     }
 
     #[tokio::test]
