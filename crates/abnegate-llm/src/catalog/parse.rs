@@ -1,31 +1,36 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
 use std::cmp::Ordering;
+use std::sync::LazyLock;
 
-static PARAM_SIZE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(?:^|[^A-Za-z0-9])(\d+(?:\.\d+)?)\s*[bB]\b").expect("param size regex")
+static PARAMETER_SIZE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[^A-Za-z0-9])(\d+(?:\.\d+)?)\s*[bB]\b").expect("parameter size pattern")
 });
-static PARAM_SIZE_CHIP_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^\d+(?:\.\d+)?[bB]$").expect("param size chip regex"));
-static BILLION_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*billion").expect("billion regex"));
+static PARAMETER_SIZE_CHIP_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^\d+(?:\.\d+)?[bB]$").expect("parameter size chip pattern"));
+static BILLION_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*billion").expect("billion pattern"));
 /// Longer GGUF tags first so `Q4_K_M` wins over a shorter neighbour.
-static QUANT_RE: Lazy<Regex> = Lazy::new(|| {
+static QUANTIZATION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)(?:^|[^A-Za-z0-9])(IQ1_S|IQ1_M|IQ2_XXS|IQ2_XS|IQ2_S|IQ2_M|IQ3_XXS|IQ3_XS|IQ3_S|IQ3_M|IQ4_XS|IQ4_NL|Q2_K_S|Q2_K|Q3_K_L|Q3_K_M|Q3_K_S|Q4_K_M|Q4_K_S|Q4_1|Q4_0|Q5_K_M|Q5_K_S|Q5_1|Q5_0|Q6_K|Q8_0|BF16|F16|F32)(?:[^A-Za-z0-9]|$)",
     )
-    .expect("quant regex")
+    .expect("quantization pattern")
 });
 
 /// Parameter size read out of a model name, such as `7B` or `1B · 3B`.
-pub fn extract_param_size(name: &str) -> Option<String> {
-    format_param_sizes(extract_all_param_sizes(name))
-        .or_else(|| BILLION_RE.captures(name).map(|cap| format!("{}B", &cap[1])))
+pub fn extract_parameter_size(name: &str) -> Option<String> {
+    format_parameter_sizes(extract_all_parameter_sizes(name)).or_else(|| {
+        BILLION_PATTERN
+            .captures(name)
+            .map(|cap| format!("{}B", &cap[1]))
+    })
 }
 
 /// Quantization tag read out of a GGUF filename, such as `Q5_K_M`.
 pub fn extract_quantization(filename: &str) -> Option<String> {
-    QUANT_RE.captures(filename).map(|cap| cap[1].to_uppercase())
+    QUANTIZATION_PATTERN
+        .captures(filename)
+        .map(|cap| cap[1].to_uppercase())
 }
 
 /// Model family read out of a model name.
@@ -70,33 +75,33 @@ pub fn extract_model_family(name: &str) -> Option<String> {
     None
 }
 
-pub(crate) fn extract_all_param_sizes(text: &str) -> Vec<String> {
+pub(crate) fn extract_all_parameter_sizes(text: &str) -> Vec<String> {
     let mut sizes = Vec::new();
-    for capture in PARAM_SIZE_RE.captures_iter(text) {
+    for capture in PARAMETER_SIZE_PATTERN.captures_iter(text) {
         let formatted = format!("{}B", &capture[1]);
         if !sizes.iter().any(|existing| existing == &formatted) {
             sizes.push(formatted);
         }
     }
-    sort_param_sizes(&mut sizes);
+    sort_parameter_sizes(&mut sizes);
     sizes
 }
 
-pub(crate) fn collect_param_size_labels(text: &str, chips: Vec<String>) -> Vec<String> {
-    let mut sizes = extract_all_param_sizes(text);
+pub(crate) fn collect_parameter_size_labels(text: &str, chips: Vec<String>) -> Vec<String> {
+    let mut sizes = extract_all_parameter_sizes(text);
     for chip in chips {
         let formatted = chip.to_uppercase();
         if !sizes.iter().any(|existing| existing == &formatted) {
             sizes.push(formatted);
         }
     }
-    sort_param_sizes(&mut sizes);
+    sort_parameter_sizes(&mut sizes);
     sizes.dedup();
     sizes
 }
 
-pub(crate) fn format_param_sizes(mut sizes: Vec<String>) -> Option<String> {
-    sort_param_sizes(&mut sizes);
+pub(crate) fn format_parameter_sizes(mut sizes: Vec<String>) -> Option<String> {
+    sort_parameter_sizes(&mut sizes);
     sizes.dedup();
     match sizes.len() {
         0 => None,
@@ -106,15 +111,15 @@ pub(crate) fn format_param_sizes(mut sizes: Vec<String>) -> Option<String> {
     }
 }
 
-fn sort_param_sizes(sizes: &mut [String]) {
+fn sort_parameter_sizes(sizes: &mut [String]) {
     sizes.sort_by(|left, right| {
-        param_size_value(left)
-            .partial_cmp(&param_size_value(right))
+        parameter_size_value(left)
+            .partial_cmp(&parameter_size_value(right))
             .unwrap_or(Ordering::Equal)
     });
 }
 
-fn param_size_value(label: &str) -> f64 {
+fn parameter_size_value(label: &str) -> f64 {
     label
         .trim()
         .trim_end_matches(['B', 'b'])
@@ -122,18 +127,18 @@ fn param_size_value(label: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-pub(crate) fn is_param_size_chip(text: &str) -> bool {
-    PARAM_SIZE_CHIP_RE.is_match(text.trim())
+pub(crate) fn is_parameter_size_chip(text: &str) -> bool {
+    PARAMETER_SIZE_CHIP_PATTERN.is_match(text.trim())
 }
 
 pub(crate) fn normalize_parameter_label(raw: &str) -> String {
-    if let Some(capture) = BILLION_RE.captures(raw) {
+    if let Some(capture) = BILLION_PATTERN.captures(raw) {
         return format!("{}B", &capture[1]);
     }
-    extract_param_size(raw).unwrap_or_else(|| raw.to_string())
+    extract_parameter_size(raw).unwrap_or_else(|| raw.to_string())
 }
 
-pub(crate) fn parse_param_billions(raw: &str) -> Option<f64> {
+pub(crate) fn parse_parameter_billions(raw: &str) -> Option<f64> {
     let lowered = raw.to_lowercase();
 
     if let Some(prefix) = lowered.split("billion").next()
@@ -191,15 +196,15 @@ pub(crate) fn parse_param_billions(raw: &str) -> Option<f64> {
     }
 }
 
-pub(crate) fn download_param_billions(label: &str) -> Option<f64> {
+pub(crate) fn download_parameter_billions(label: &str) -> Option<f64> {
     label
         .split_once('·')
         .map(|(prefix, _)| prefix.trim())
-        .and_then(parse_param_billions)
+        .and_then(parse_parameter_billions)
 }
 
 fn quantization_token(label: &str) -> Option<&str> {
-    QUANT_RE
+    QUANTIZATION_PATTERN
         .captures(label)
         .and_then(|capture| capture.get(1).map(|token| token.as_str()))
 }
@@ -256,45 +261,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_param_size_reads_names() {
-        assert_eq!(extract_param_size("llama-7b"), Some("7B".to_string()));
+    fn extract_parameter_size_reads_names() {
+        assert_eq!(extract_parameter_size("llama-7b"), Some("7B".to_string()));
         assert_eq!(
-            extract_param_size("mistral-13B-v2"),
+            extract_parameter_size("mistral-13B-v2"),
             Some("13B".to_string())
         );
-        assert_eq!(extract_param_size("qwen-72b-chat"), Some("72B".to_string()));
-        assert_eq!(extract_param_size("phi-3b"), Some("3B".to_string()));
-        assert_eq!(extract_param_size("model-without-size"), None);
         assert_eq!(
-            extract_param_size("llama-70b-chat"),
+            extract_parameter_size("qwen-72b-chat"),
+            Some("72B".to_string())
+        );
+        assert_eq!(extract_parameter_size("phi-3b"), Some("3B".to_string()));
+        assert_eq!(extract_parameter_size("model-without-size"), None);
+        assert_eq!(
+            extract_parameter_size("llama-70b-chat"),
             Some("70B".to_string())
         );
         assert_eq!(
-            extract_param_size("granite 3B 8B 30B"),
+            extract_parameter_size("granite 3B 8B 30B"),
             Some("3B · 8B · 30B".to_string())
         );
-        assert_eq!(extract_param_size("8 billion"), Some("8B".to_string()));
+        assert_eq!(extract_parameter_size("8 billion"), Some("8B".to_string()));
         assert_eq!(
-            extract_param_size("Qwen3-Coder-30B-A3B-Instruct-GGUF"),
+            extract_parameter_size("Qwen3-Coder-30B-A3B-Instruct-GGUF"),
             Some("30B".to_string())
         );
     }
 
     #[test]
-    fn extract_param_size_reads_repository_names() {
+    fn extract_parameter_size_reads_repository_names() {
         assert_eq!(
-            extract_param_size("Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"),
+            extract_parameter_size("Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"),
             Some("7B".to_string())
         );
         assert_eq!(
-            extract_param_size("meta-llama/Llama-3-13B-GGUF"),
+            extract_parameter_size("meta-llama/Llama-3-13B-GGUF"),
             Some("13B".to_string())
         );
         assert_eq!(
-            extract_param_size("model-1.5b-instruct"),
+            extract_parameter_size("model-1.5b-instruct"),
             Some("1.5B".to_string())
         );
-        assert_eq!(extract_param_size("no-params-here"), None);
+        assert_eq!(extract_parameter_size("no-params-here"), None);
     }
 
     #[test]
@@ -380,13 +388,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_param_billions_reads_labels() {
-        assert_eq!(parse_param_billions("7B"), Some(7.0));
-        assert_eq!(parse_param_billions("3.8B"), Some(3.8));
-        assert_eq!(parse_param_billions("7 billion"), Some(7.0));
-        assert_eq!(parse_param_billions("137M"), Some(0.137));
-        assert_eq!(parse_param_billions("335 million"), Some(0.335));
-        assert_eq!(parse_param_billions("unknown"), None);
+    fn parse_parameter_billions_reads_labels() {
+        assert_eq!(parse_parameter_billions("7B"), Some(7.0));
+        assert_eq!(parse_parameter_billions("3.8B"), Some(3.8));
+        assert_eq!(parse_parameter_billions("7 billion"), Some(7.0));
+        assert_eq!(parse_parameter_billions("137M"), Some(0.137));
+        assert_eq!(parse_parameter_billions("335 million"), Some(0.335));
+        assert_eq!(parse_parameter_billions("unknown"), None);
     }
 
     #[test]
@@ -405,8 +413,8 @@ mod tests {
         assert_eq!(quantization_bit_width("no-quant"), None);
         assert!(quantization_preference("Q4_K_M") < quantization_preference("Q4_0"));
         assert!(quantization_preference("Q4_0") < quantization_preference("Q4_K_S"));
-        assert_eq!(download_param_billions("8B · Q4_K_M"), Some(8.0));
-        assert_eq!(download_param_billions("Q4_K_M"), None);
+        assert_eq!(download_parameter_billions("8B · Q4_K_M"), Some(8.0));
+        assert_eq!(download_parameter_billions("Q4_K_M"), None);
     }
 
     #[test]

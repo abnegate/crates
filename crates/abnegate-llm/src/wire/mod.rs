@@ -22,6 +22,7 @@ mod stream_tool_call;
 mod tool_call;
 mod tool_choice;
 mod tool_definition;
+mod tool_mode;
 mod usage;
 
 use serde::Deserialize;
@@ -45,6 +46,7 @@ pub use crate::wire::stream_tool_call::StreamToolCall;
 pub use crate::wire::tool_call::ToolCall;
 pub use crate::wire::tool_choice::ToolChoice;
 pub use crate::wire::tool_definition::ToolDefinition;
+pub use crate::wire::tool_mode::ToolMode;
 pub use crate::wire::usage::Usage;
 
 /// Reads an explicit `null` as the default rather than failing.

@@ -1,18 +1,27 @@
+mod card_data;
+mod gguf;
+mod model;
+mod sibling;
+mod variant;
+
 use crate::catalog::capability::ModelCapability;
 use crate::catalog::capability::declared_capabilities;
 use crate::catalog::details::ModelDetails;
 use crate::catalog::entry::ModelEntry;
 use crate::catalog::error::CatalogError;
 use crate::catalog::http::build_client;
+use crate::catalog::huggingface::model::HuggingFaceModel;
+use crate::catalog::huggingface::sibling::HuggingFaceSibling;
+use crate::catalog::huggingface::variant::GgufVariant;
 use crate::catalog::medium_filter::ModelMediumFilter;
 use crate::catalog::page::MAX_PAGE_SIZE;
 use crate::catalog::page::ModelPage;
-use crate::catalog::parse::download_param_billions;
-use crate::catalog::parse::extract_all_param_sizes;
+use crate::catalog::parse::download_parameter_billions;
+use crate::catalog::parse::extract_all_parameter_sizes;
 use crate::catalog::parse::extract_model_family;
-use crate::catalog::parse::extract_param_size;
+use crate::catalog::parse::extract_parameter_size;
 use crate::catalog::parse::extract_quantization;
-use crate::catalog::parse::is_param_size_chip;
+use crate::catalog::parse::is_parameter_size_chip;
 use crate::catalog::parse::quantization_bit_width;
 use crate::catalog::parse::quantization_preference;
 use crate::catalog::provider::ModelProvider;
@@ -28,14 +37,15 @@ use crate::catalog::sort::ModelSort;
 use crate::catalog::text::format_context_tokens;
 use crate::catalog::text::humanize_label;
 use crate::catalog::text::nonempty_vec;
+use crate::catalog::text::preview;
 use crate::catalog::text::use_cases_from_pipeline;
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::Client;
-use serde::Deserialize;
+use reqwest::Url;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 /// Upstream HuggingFace models API.
 pub const DEFAULT_HUGGINGFACE_MODELS_URL: &str = "https://huggingface.co/api/models";
@@ -45,9 +55,11 @@ const WINDOW_PAGES: usize = 5;
 /// Extra scan budget for size filters, which can skip most downloads-ranked rows.
 const FILTER_MAX_PAGES: usize = 15;
 
-static GGUF_SHARD_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)-\d{5}-of-\d{5}$").expect("gguf shard regex"));
+static GGUF_SHARD_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)-\d{5}-of-\d{5}$").expect("gguf shard pattern"));
 
+const OFFSET_PREFIX: &str = "offset:";
+const EXPAND_PARAMETER: &str = "expand[]";
 const EXPANDED_FIELDS: &[&str] = &[
     "cardData",
     "gguf",
@@ -62,20 +74,17 @@ const EXPANDED_FIELDS: &[&str] = &[
 ];
 
 /// Browses the GGUF and adapter repositories HuggingFace publishes.
+#[derive(Debug, Clone)]
 pub struct HuggingFaceProvider {
     catalog_url: String,
     client: Client,
 }
 
-impl Default for HuggingFaceProvider {
-    fn default() -> Self {
-        Self::new(DEFAULT_HUGGINGFACE_MODELS_URL)
-    }
-}
-
 impl HuggingFaceProvider {
-    pub fn new(catalog_url: impl Into<String>) -> Self {
-        Self::with_proxy(catalog_url, None).expect("Failed to build HuggingFace catalog client")
+    /// A client for `catalog_url`, failing only if no HTTP client can be
+    /// built on this platform.
+    pub fn new(catalog_url: impl Into<String>) -> Result<Self, CatalogError> {
+        Self::with_proxy(catalog_url, None)
     }
 
     pub fn with_proxy(
@@ -148,7 +157,7 @@ impl ModelProvider for HuggingFaceProvider {
         // Size and medium filters, and name/size/parameter sorts, cannot be
         // applied to a single downloads-ranked page. Gather a window first,
         // refine it, then paginate with an offset cursor.
-        let offset = parse_cursor_offset(options.cursor).unwrap_or(0);
+        let offset = parse_cursor_offset(options.cursor, options.limit).unwrap_or(0);
         let needs_sorted_window = uses_local_sort(options.sort);
         let max_pages = window_pages(needs_sorted_window);
         let mut accumulated = Vec::new();
@@ -225,12 +234,12 @@ fn window_next_cursor(
 fn uses_local_sort(sort: ModelSort) -> bool {
     matches!(
         sort,
-        ModelSort::NameAsc
-            | ModelSort::NameDesc
-            | ModelSort::SizeAsc
-            | ModelSort::SizeDesc
-            | ModelSort::ParamsAsc
-            | ModelSort::ParamsDesc
+        ModelSort::NameAscending
+            | ModelSort::NameDescending
+            | ModelSort::SizeAscending
+            | ModelSort::SizeDescending
+            | ModelSort::ParametersAscending
+            | ModelSort::ParametersDescending
     )
 }
 
@@ -254,62 +263,98 @@ fn medium_tag(medium: ModelMediumFilter) -> Option<&'static str> {
     }
 }
 
-fn sort_params(sort: ModelSort) -> (&'static str, i8) {
+fn sort_parameters(sort: ModelSort) -> (&'static str, i8) {
     match sort {
-        ModelSort::UpdatedAsc => ("lastModified", 1),
-        ModelSort::UpdatedDesc => ("lastModified", -1),
-        ModelSort::DownloadsAsc => ("downloads", 1),
+        ModelSort::UpdatedAscending => ("lastModified", 1),
+        ModelSort::UpdatedDescending => ("lastModified", -1),
+        ModelSort::DownloadsAscending => ("downloads", 1),
         ModelSort::Relevance
-        | ModelSort::DownloadsDesc
-        | ModelSort::NameAsc
-        | ModelSort::NameDesc
-        | ModelSort::SizeAsc
-        | ModelSort::SizeDesc
-        | ModelSort::ParamsAsc
-        | ModelSort::ParamsDesc => ("downloads", -1),
+        | ModelSort::DownloadsDescending
+        | ModelSort::NameAscending
+        | ModelSort::NameDescending
+        | ModelSort::SizeAscending
+        | ModelSort::SizeDescending
+        | ModelSort::ParametersAscending
+        | ModelSort::ParametersDescending => ("downloads", -1),
     }
 }
 
+fn catalogue_url(catalog_url: &str) -> Result<Url, CatalogError> {
+    Url::parse(catalog_url)
+        .map_err(|error| CatalogError::InvalidUrl(format!("{catalog_url}: {error}")))
+}
+
+/// The models API query for one page.
+///
+/// Every value is percent-encoded by the URL builder, so a cursor or a search
+/// holding `&` or `=` stays one parameter. `offset:N`, and a cursor that is
+/// only digits, page by offset; any other cursor is HuggingFace's own.
 fn search_url(
     catalog_url: &str,
     options: &BrowseQuery<'_>,
     cursor: Option<&str>,
     limit: usize,
-) -> String {
-    let (sort_field, direction) = sort_params(options.sort);
-    let mut url =
-        format!("{catalog_url}?filter=gguf&sort={sort_field}&direction={direction}&limit={limit}");
-    for field in EXPANDED_FIELDS {
-        url.push_str("&expand%5B%5D=");
-        url.push_str(field);
-    }
-
-    if let Some(cursor) = cursor {
-        match cursor.strip_prefix("offset:") {
-            Some(offset) => url.push_str(&format!("&offset={offset}")),
-            None => url.push_str(&format!("&cursor={cursor}")),
+) -> Result<Url, CatalogError> {
+    let mut url = catalogue_url(catalog_url)?;
+    let (sort_field, direction) = sort_parameters(options.sort);
+    let offset = cursor.map(cursor_offset).transpose()?.flatten();
+    {
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("filter", "gguf")
+            .append_pair("sort", sort_field)
+            .append_pair("direction", &direction.to_string())
+            .append_pair("limit", &limit.to_string());
+        for field in EXPANDED_FIELDS {
+            query.append_pair(EXPAND_PARAMETER, field);
         }
-    }
 
-    let query = options
-        .query
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let search = query.or_else(|| {
-        options
-            .family
+        match (offset, cursor) {
+            (Some(offset), _) => {
+                query.append_pair("offset", &offset.to_string());
+            }
+            (None, Some(cursor)) => {
+                query.append_pair("cursor", cursor);
+            }
+            (None, None) => {}
+        }
+
+        let search = options
+            .query
             .map(str::trim)
             .filter(|value| !value.is_empty())
-    });
-    if let Some(search) = search {
-        url.push_str(&format!("&search={}", urlencoding::encode(search)));
-    }
+            .or_else(|| {
+                options
+                    .family
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            });
+        if let Some(search) = search {
+            query.append_pair("search", search);
+        }
 
-    if let Some(tag) = medium_tag(options.medium) {
-        url.push_str(&format!("&filter={}", urlencoding::encode(tag)));
+        if let Some(tag) = medium_tag(options.medium) {
+            query.append_pair("filter", tag);
+        }
     }
+    Ok(url)
+}
 
-    url
+/// The offset a cursor names, or `None` for an opaque HuggingFace cursor.
+fn cursor_offset(cursor: &str) -> Result<Option<usize>, CatalogError> {
+    if let Some(offset) = cursor.strip_prefix(OFFSET_PREFIX) {
+        return offset
+            .parse()
+            .map(Some)
+            .map_err(|_| CatalogError::Parse(format!("Invalid cursor offset: {cursor}")));
+    }
+    if !cursor.is_empty() && cursor.bytes().all(|byte| byte.is_ascii_digit()) {
+        return cursor
+            .parse()
+            .map(Some)
+            .map_err(|_| CatalogError::Parse(format!("Invalid cursor offset: {cursor}")));
+    }
+    Ok(None)
 }
 
 async fn fetch_page(
@@ -319,8 +364,8 @@ async fn fetch_page(
     cursor: Option<&str>,
     limit: usize,
 ) -> Result<(Vec<ModelEntry>, Option<String>), CatalogError> {
-    let url = search_url(catalog_url, options, cursor, limit);
-    let response = client.get(&url).send().await?;
+    let url = search_url(catalog_url, options, cursor, limit)?;
+    let response = client.get(url).send().await?;
 
     if !response.status().is_success() {
         return Err(CatalogError::Unavailable(format!(
@@ -339,7 +384,7 @@ async fn fetch_page(
         tracing::error!(
             "HuggingFace JSON parse error: {}. Body preview: {}",
             error,
-            &body[..body.len().min(500)]
+            preview(&body)
         );
         CatalogError::Parse(error.to_string())
     })?;
@@ -359,80 +404,20 @@ fn extract_cursor_from_link_header(link: &str) -> Option<String> {
         }
         let start = part.find('<')? + 1;
         let end = part.find('>')?;
-        let url = &part[start..end];
-        if let Some(cursor) = parameter(url, "cursor=") {
-            return Some(cursor.to_string());
+        let url = Url::parse(part.get(start..end)?).ok()?;
+        let parameter = |key: &str| {
+            url.query_pairs()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.into_owned())
+        };
+        if let Some(cursor) = parameter("cursor") {
+            return Some(cursor);
         }
-        if let Some(offset) = parameter(url, "offset=") {
-            return Some(format!("offset:{offset}"));
+        if let Some(offset) = parameter("offset") {
+            return Some(format!("{OFFSET_PREFIX}{offset}"));
         }
     }
     None
-}
-
-fn parameter<'a>(url: &'a str, key: &str) -> Option<&'a str> {
-    let start = url.find(key)? + key.len();
-    let rest = &url[start..];
-    Some(rest.split('&').next().unwrap_or(rest))
-}
-
-#[derive(Debug, Deserialize)]
-struct HuggingFaceModel {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(rename = "modelId", default)]
-    model_id: Option<String>,
-    #[serde(default)]
-    sha: Option<String>,
-    #[serde(rename = "lastModified", default)]
-    last_modified: Option<String>,
-    #[serde(rename = "createdAt", default)]
-    created_at: Option<String>,
-    #[serde(default)]
-    tags: Option<Vec<String>>,
-    #[serde(default)]
-    downloads: Option<u64>,
-    #[serde(default)]
-    likes: Option<u64>,
-    #[serde(default)]
-    author: Option<String>,
-    #[serde(rename = "pipeline_tag", default)]
-    pipeline_tag: Option<String>,
-    #[serde(rename = "cardData", default)]
-    card_data: Option<HuggingFaceCardData>,
-    #[serde(default)]
-    gguf: Option<HuggingFaceGguf>,
-    #[serde(default)]
-    siblings: Option<Vec<HuggingFaceSibling>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HuggingFaceSibling {
-    rfilename: String,
-    #[serde(default)]
-    size: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HuggingFaceCardData {
-    #[serde(default)]
-    license: Option<String>,
-    #[serde(rename = "pipeline_tag", default)]
-    pipeline_tag: Option<String>,
-    #[serde(default)]
-    base_model: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HuggingFaceGguf {
-    #[serde(default)]
-    total: Option<u64>,
-    #[serde(rename = "totalFileSize", default)]
-    total_file_size: Option<u64>,
-    #[serde(default)]
-    architecture: Option<String>,
-    #[serde(rename = "context_length", default)]
-    context_length: Option<u64>,
 }
 
 fn model_id(model: &HuggingFaceModel) -> String {
@@ -461,12 +446,12 @@ fn to_model(model: HuggingFaceModel) -> ModelEntry {
                 .find_map(|tag| extract_model_family(tag))
                 .or_else(|| extract_model_family(&id))
         });
-    let parameter_size = extract_param_size(&id).or_else(|| {
+    let parameter_size = extract_parameter_size(&id).or_else(|| {
         tags.iter().find_map(|tag| {
-            if is_param_size_chip(tag) {
+            if is_parameter_size_chip(tag) {
                 Some(tag.to_uppercase())
             } else {
-                extract_param_size(tag)
+                extract_parameter_size(tag)
             }
         })
     });
@@ -630,13 +615,6 @@ fn safetensors_variants(id: &str, siblings: &[HuggingFaceSibling]) -> Option<Vec
     nonempty(sizes)
 }
 
-struct GgufVariant {
-    stem: String,
-    quantization: Option<String>,
-    parameter_size: Option<String>,
-    size: Option<u64>,
-}
-
 fn is_gguf_weight_file(filename: &str) -> bool {
     let name = filename
         .rsplit('/')
@@ -652,14 +630,14 @@ fn gguf_file_stem(filename: &str) -> String {
         .strip_suffix(".gguf")
         .or_else(|| name.strip_suffix(".GGUF"))
         .unwrap_or(name);
-    GGUF_SHARD_RE.replace(stem, "").into_owned()
+    GGUF_SHARD_PATTERN.replace(stem, "").into_owned()
 }
 
-fn filename_param_size(filename: &str) -> Option<String> {
-    extract_all_param_sizes(filename)
+fn filename_parameter_size(filename: &str) -> Option<String> {
+    extract_all_parameter_sizes(filename)
         .into_iter()
         .next()
-        .or_else(|| extract_param_size(filename).filter(|label| !label.contains('·')))
+        .or_else(|| extract_parameter_size(filename).filter(|label| !label.contains('·')))
 }
 
 /// Distinct GGUF quantizations in a repository, each a separate download.
@@ -680,7 +658,7 @@ fn gguf_variants(id: &str, siblings: &[HuggingFaceSibling]) -> Option<Vec<ModelS
         files.push(GgufVariant {
             stem,
             quantization: extract_quantization(&sibling.rfilename),
-            parameter_size: filename_param_size(&sibling.rfilename),
+            parameter_size: filename_parameter_size(&sibling.rfilename),
             size: sibling.size,
         });
     }
@@ -737,8 +715,8 @@ fn gguf_variants(id: &str, siblings: &[HuggingFaceSibling]) -> Option<Vec<ModelS
 
 fn compare_downloads(left: &ModelSize, right: &ModelSize) -> Ordering {
     compare(
-        download_param_billions(&left.label),
-        download_param_billions(&right.label),
+        download_parameter_billions(&left.label),
+        download_parameter_billions(&right.label),
     )
     .then_with(|| {
         compare(
@@ -761,21 +739,22 @@ async fn fetch_adapter_page(
     base: &str,
     limit: usize,
 ) -> Result<Vec<ModelEntry>, CatalogError> {
-    let mut url = format!(
-        "{catalog_url}?filter={}&sort=downloads&direction=-1&limit={limit}",
-        urlencoding::encode(&format!("base_model:adapter:{base}"))
-    );
-    for field in EXPANDED_FIELDS {
-        if *field == "gguf" {
-            continue;
+    let mut url = catalogue_url(catalog_url)?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs
+            .append_pair("filter", &format!("base_model:adapter:{base}"))
+            .append_pair("sort", "downloads")
+            .append_pair("direction", "-1")
+            .append_pair("limit", &limit.to_string());
+        for field in EXPANDED_FIELDS.iter().filter(|field| **field != "gguf") {
+            pairs.append_pair(EXPAND_PARAMETER, field);
         }
-        url.push_str("&expand%5B%5D=");
-        url.push_str(field);
+        if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
+            pairs.append_pair("search", query);
+        }
     }
-    if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
-        url.push_str(&format!("&search={}", urlencoding::encode(query)));
-    }
-    let response = client.get(&url).send().await?;
+    let response = client.get(url).send().await?;
     if !response.status().is_success() {
         return Err(CatalogError::Unavailable(format!(
             "HuggingFace API returned status: {}",
@@ -858,13 +837,16 @@ pub async fn huggingface_repo_downloads(
     repo_id: &str,
 ) -> Result<ModelEntry, CatalogError> {
     let client = build_client(proxy_url)?;
-    let encoded = repo_id
-        .split('/')
-        .map(urlencoding::encode)
-        .collect::<Vec<_>>()
-        .join("/");
-    let url = format!("{catalog_url}/{encoded}?blobs=true&expand%5B%5D=gguf&expand%5B%5D=siblings");
-    let response = client.get(&url).send().await?;
+    let mut url = catalogue_url(catalog_url)?;
+    url.path_segments_mut()
+        .map_err(|()| CatalogError::InvalidUrl(catalog_url.to_string()))?
+        .pop_if_empty()
+        .extend(repo_id.split('/'));
+    url.query_pairs_mut()
+        .append_pair("blobs", "true")
+        .append_pair(EXPAND_PARAMETER, "gguf")
+        .append_pair(EXPAND_PARAMETER, "siblings");
+    let response = client.get(url).send().await?;
     if !response.status().is_success() {
         return Err(CatalogError::Unavailable(format!(
             "HuggingFace API returned status: {}",
@@ -918,6 +900,75 @@ mod tests {
         }
     }
 
+    fn pairs(url: &Url) -> Vec<(String, String)> {
+        url.query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect()
+    }
+
+    fn values(url: &Url, key: &str) -> Vec<String> {
+        pairs(url)
+            .into_iter()
+            .filter(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .collect()
+    }
+
+    #[test]
+    fn a_cursor_holding_query_syntax_stays_one_parameter() {
+        let options = browse(ModelSort::Relevance, None, ModelSizeFilter::All);
+
+        let url = search_url(
+            DEFAULT_HUGGINGFACE_MODELS_URL,
+            &options,
+            Some("abc&limit=500&filter=secret"),
+            20,
+        )
+        .unwrap();
+
+        assert_eq!(values(&url, "cursor"), vec!["abc&limit=500&filter=secret"]);
+        assert_eq!(values(&url, "limit"), vec!["20"]);
+        assert_eq!(values(&url, "filter"), vec!["gguf"]);
+    }
+
+    #[test]
+    fn a_bare_number_cursor_pages_by_offset() {
+        let options = browse(ModelSort::Relevance, None, ModelSizeFilter::All);
+
+        let url = search_url(DEFAULT_HUGGINGFACE_MODELS_URL, &options, Some("40"), 20).unwrap();
+
+        assert_eq!(values(&url, "offset"), vec!["40"]);
+        assert!(values(&url, "cursor").is_empty());
+    }
+
+    #[test]
+    fn a_malformed_offset_cursor_is_refused() {
+        let options = browse(ModelSort::Relevance, None, ModelSizeFilter::All);
+        assert!(
+            search_url(
+                DEFAULT_HUGGINGFACE_MODELS_URL,
+                &options,
+                Some("offset:x"),
+                20
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_cursor_from_the_link_header_is_decoded_then_encoded_once() {
+        let cursor = extract_cursor_from_link_header(
+            r#"<https://huggingface.co/api/models?cursor=eyJ2IjoxfQ%3D%3D&limit=20>; rel="next""#,
+        )
+        .unwrap();
+        assert_eq!(cursor, "eyJ2IjoxfQ==");
+
+        let options = browse(ModelSort::Relevance, None, ModelSizeFilter::All);
+        let url = search_url(DEFAULT_HUGGINGFACE_MODELS_URL, &options, Some(&cursor), 20).unwrap();
+        assert_eq!(values(&url, "cursor"), vec!["eyJ2IjoxfQ=="]);
+        assert!(url.as_str().contains("cursor=eyJ2IjoxfQ%3D%3D"), "{url}");
+    }
+
     #[test]
     fn search_url_does_not_filter_by_family_tag() {
         let family_only = search_url(
@@ -933,10 +984,10 @@ mod tests {
             },
             None,
             20,
-        );
-        assert!(family_only.contains("filter=gguf"));
-        assert!(!family_only.contains("filter=qwen"));
-        assert!(family_only.contains("search=qwen"));
+        )
+        .unwrap();
+        assert_eq!(values(&family_only, "filter"), vec!["gguf"]);
+        assert_eq!(values(&family_only, "search"), vec!["qwen"]);
 
         let with_query = search_url(
             DEFAULT_HUGGINGFACE_MODELS_URL,
@@ -951,36 +1002,49 @@ mod tests {
             },
             None,
             20,
-        );
-        assert!(with_query.contains("filter=gguf"));
-        assert!(!with_query.contains("filter=qwen"));
-        assert!(with_query.contains("search=coder"));
-        assert!(!with_query.contains("search=qwen"));
+        )
+        .unwrap();
+        assert_eq!(values(&with_query, "filter"), vec!["gguf"]);
+        assert_eq!(values(&with_query, "search"), vec!["coder"]);
     }
 
     #[test]
     fn search_url_passes_both_cursor_styles() {
         let options = browse(ModelSort::Relevance, None, ModelSizeFilter::All);
-        let cursor = search_url(DEFAULT_HUGGINGFACE_MODELS_URL, &options, Some("abc123"), 20);
-        assert!(cursor.contains("&cursor=abc123"));
+        let cursor =
+            search_url(DEFAULT_HUGGINGFACE_MODELS_URL, &options, Some("abc123"), 20).unwrap();
+        assert_eq!(values(&cursor, "cursor"), vec!["abc123"]);
 
         let offset = search_url(
             DEFAULT_HUGGINGFACE_MODELS_URL,
             &options,
             Some("offset:40"),
             20,
-        );
-        assert!(offset.contains("&offset=40"));
-        assert!(!offset.contains("cursor="));
+        )
+        .unwrap();
+        assert_eq!(values(&offset, "offset"), vec!["40"]);
+        assert!(values(&offset, "cursor").is_empty());
     }
 
     #[test]
-    fn sort_params_map_to_the_api() {
-        assert_eq!(sort_params(ModelSort::Relevance), ("downloads", -1));
-        assert_eq!(sort_params(ModelSort::UpdatedDesc), ("lastModified", -1));
-        assert_eq!(sort_params(ModelSort::UpdatedAsc), ("lastModified", 1));
-        assert_eq!(sort_params(ModelSort::DownloadsDesc), ("downloads", -1));
-        assert_eq!(sort_params(ModelSort::DownloadsAsc), ("downloads", 1));
+    fn sort_parameters_map_to_the_api() {
+        assert_eq!(sort_parameters(ModelSort::Relevance), ("downloads", -1));
+        assert_eq!(
+            sort_parameters(ModelSort::UpdatedDescending),
+            ("lastModified", -1)
+        );
+        assert_eq!(
+            sort_parameters(ModelSort::UpdatedAscending),
+            ("lastModified", 1)
+        );
+        assert_eq!(
+            sort_parameters(ModelSort::DownloadsDescending),
+            ("downloads", -1)
+        );
+        assert_eq!(
+            sort_parameters(ModelSort::DownloadsAscending),
+            ("downloads", 1)
+        );
     }
 
     #[test]
@@ -991,17 +1055,17 @@ mod tests {
             ModelSizeFilter::All
         )));
         assert!(!uses_local_window(&browse(
-            ModelSort::UpdatedDesc,
+            ModelSort::UpdatedDescending,
             Some("llama"),
             ModelSizeFilter::All
         )));
         assert!(uses_local_window(&browse(
-            ModelSort::NameAsc,
+            ModelSort::NameAscending,
             None,
             ModelSizeFilter::All
         )));
         assert!(uses_local_window(&browse(
-            ModelSort::SizeDesc,
+            ModelSort::SizeDescending,
             None,
             ModelSizeFilter::All
         )));
@@ -1031,10 +1095,10 @@ mod tests {
             Some("feature-extraction")
         );
         assert_eq!(medium_tag(ModelMediumFilter::Text), None);
-        assert!(uses_local_sort(ModelSort::ParamsDesc));
-        assert!(!uses_local_sort(ModelSort::UpdatedDesc));
-        assert!(!uses_local_sort(ModelSort::DownloadsDesc));
-        assert!(!uses_local_sort(ModelSort::DownloadsAsc));
+        assert!(uses_local_sort(ModelSort::ParametersDescending));
+        assert!(!uses_local_sort(ModelSort::UpdatedDescending));
+        assert!(!uses_local_sort(ModelSort::DownloadsDescending));
+        assert!(!uses_local_sort(ModelSort::DownloadsAscending));
         assert_eq!(window_pages(true), WINDOW_PAGES);
         assert_eq!(window_pages(false), FILTER_MAX_PAGES);
     }
@@ -1313,7 +1377,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
         let page = provider
             .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
             .await
@@ -1335,7 +1399,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_skips_the_network_for_image_generation() {
-        let provider = HuggingFaceProvider::new("http://catalog.invalid/api/models");
+        let provider = HuggingFaceProvider::new("http://catalog.invalid/api/models").unwrap();
         let page = provider
             .search(browse_with_medium(
                 ModelSort::Relevance,
@@ -1356,7 +1420,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
         let error = provider
             .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
             .await
@@ -1372,7 +1436,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
         let error = provider
             .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
             .await
@@ -1403,7 +1467,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
         let adapters = provider
             .search_adapters(
                 browse(ModelSort::Relevance, None, ModelSizeFilter::All),
@@ -1419,7 +1483,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_adapters_without_bases_makes_no_request() {
-        let provider = HuggingFaceProvider::new("http://catalog.invalid/api/models");
+        let provider = HuggingFaceProvider::new("http://catalog.invalid/api/models").unwrap();
         let adapters = provider
             .search_adapters(
                 browse(ModelSort::Relevance, None, ModelSizeFilter::All),
@@ -1477,5 +1541,25 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, CatalogError::Unavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_body_with_a_multibyte_character_at_the_preview_limit_is_a_parse_error() {
+        let _listening = tracing::subscriber::set_default(crate::catalog::listening::Listening);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("{}é", "a".repeat(499))),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let error = provider
+            .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, CatalogError::Parse(_)), "{error:?}");
     }
 }

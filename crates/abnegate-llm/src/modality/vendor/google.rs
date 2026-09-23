@@ -1,19 +1,35 @@
+//! The Gemini `generateContent` API.
+
+use std::time::Duration;
+
 use abnegate_secret::SecretValue;
 use async_trait::async_trait;
 use futures::Stream;
+use reqwest::Url;
 
-use crate::modality::{ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::modality::vendor::transport::Transport;
+use crate::modality::{
+    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
+};
 use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const DEFAULT_MODEL: &str = "gemini-2.5-pro";
+const KEY_HEADER: &str = "x-goog-api-key";
 const MAX_CONTEXT_TOKENS: u32 = 1_000_000;
 
+/// Gemini over its REST API.
+///
+/// The key travels in the `x-goog-api-key` header, never the query string,
+/// so it cannot surface in a logged URL, and the client never follows a
+/// redirect with it. Every call has a deadline, ten minutes unless
+/// [`Self::with_timeout`] says otherwise.
+#[derive(Debug, Clone)]
 pub struct GeminiProvider {
     api_key: SecretValue,
     model: String,
     base_url: String,
-    client: reqwest::Client,
+    transport: Transport,
 }
 
 impl GeminiProvider {
@@ -36,8 +52,14 @@ impl GeminiProvider {
             api_key: api_key.into(),
             model: model.to_string(),
             base_url: base_url.into(),
-            client: reqwest::Client::new(),
+            transport: Transport::default(),
         }
+    }
+
+    /// The deadline for one call.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.transport = Transport::with_timeout(timeout);
+        self
     }
 
     pub fn build_request_body(&self, request: &TextRequest) -> serde_json::Value {
@@ -63,19 +85,14 @@ impl GeminiProvider {
         body
     }
 
-    /// The endpoint for this model, with the key as a query parameter.
-    ///
-    /// The key is percent-encoded rather than interpolated, so a key holding a
-    /// reserved character cannot change the request's shape.
-    pub fn build_request_url(&self) -> String {
+    /// The endpoint for this model. It carries no credential.
+    pub fn build_request_url(&self) -> Result<Url, ProviderError> {
         let endpoint = format!("{}/{}:generateContent", self.base_url, self.model);
-        let mut url = match url::Url::parse(&endpoint) {
-            Ok(url) => url,
-            Err(_) => return endpoint,
-        };
-        url.query_pairs_mut()
-            .append_pair("key", self.api_key.expose());
-        url.to_string()
+        Url::parse(&endpoint).map_err(|error| {
+            ProviderError::config(format!(
+                "{endpoint} is not a valid Gemini endpoint: {error}"
+            ))
+        })
     }
 
     pub fn parse_response(body: &serde_json::Value) -> Result<TextResponse, ProviderError> {
@@ -114,28 +131,12 @@ impl GeminiProvider {
     }
 
     async fn send(&self, body: &serde_json::Value) -> Result<serde_json::Value, ProviderError> {
-        let response = self
-            .client
-            .post(self.build_request_url())
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|error| ProviderError::network(error.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let message = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".into());
-            return Err(ProviderError::api(status, message));
-        }
-
-        response
-            .json()
-            .await
-            .map_err(|error| ProviderError::parse(error.to_string()))
+        let request = self
+            .transport
+            .post(self.build_request_url()?)
+            .header(KEY_HEADER, self.api_key.expose())
+            .json(body);
+        self.transport.send(request).await
     }
 }
 
@@ -143,7 +144,7 @@ fn usage(body: &serde_json::Value, field: &str) -> u32 {
     body.get("usageMetadata")
         .and_then(|usage| usage.get(field))
         .and_then(|count| count.as_u64())
-        .unwrap_or(0) as u32
+        .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 #[async_trait]
@@ -168,13 +169,12 @@ impl TextProvider for GeminiProvider {
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ProviderError> {
+    ) -> Result<StructuredResponse, ProviderError> {
         let Some(ResponseFormat::Json {
             schema: Some(schema),
         }) = &request.response_format
         else {
-            let response = self.complete(request).await?;
-            return parse_content(&response.content);
+            return StructuredResponse::from_text(self.complete(request).await?);
         };
 
         let mut body = self.build_request_body(request);
@@ -190,7 +190,7 @@ impl TextProvider for GeminiProvider {
         }
 
         let json = self.send(&body).await?;
-        parse_content(&Self::parse_response(&json)?.content)
+        StructuredResponse::from_text(Self::parse_response(&json)?)
     }
 
     async fn stream_complete(
@@ -204,15 +204,9 @@ impl TextProvider for GeminiProvider {
     }
 }
 
-fn parse_content(content: &str) -> Result<serde_json::Value, ProviderError> {
-    serde_json::from_str(content).map_err(|error| {
-        ProviderError::parse(format!("failed to parse structured output: {error}"))
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use wiremock::matchers::{method, query_param};
+    use wiremock::matchers::{header, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -253,28 +247,49 @@ mod tests {
     }
 
     #[test]
-    fn the_url_names_the_model_and_carries_the_key() {
-        let url = GeminiProvider::new("my-api-key").build_request_url();
+    fn the_url_names_the_model_and_carries_no_key() {
+        let url = GeminiProvider::new("my-api-key")
+            .build_request_url()
+            .unwrap()
+            .to_string();
 
         assert!(url.starts_with(BASE_URL), "{url}");
         assert!(url.contains(DEFAULT_MODEL), "{url}");
         assert!(url.contains(":generateContent"), "{url}");
-        assert!(url.contains("key=my-api-key"), "{url}");
+        assert!(!url.contains("my-api-key"), "{url}");
+        assert!(!url.contains("key="), "{url}");
     }
 
     #[test]
     fn a_custom_model_reaches_the_url() {
-        let url = GeminiProvider::with_model("key", "gemini-2.5-flash").build_request_url();
+        let url = GeminiProvider::with_model("key", "gemini-2.5-flash")
+            .build_request_url()
+            .unwrap()
+            .to_string();
 
         assert!(url.contains("gemini-2.5-flash"), "{url}");
         assert!(!url.contains(DEFAULT_MODEL), "{url}");
     }
 
-    #[test]
-    fn a_key_holding_a_reserved_character_is_encoded_not_interpolated() {
-        let url = GeminiProvider::new("a&b=c").build_request_url();
+    #[tokio::test]
+    async fn an_endpoint_that_does_not_parse_is_refused_rather_than_sent_without_a_key() {
+        let provider = GeminiProvider::with_base_url("key", DEFAULT_MODEL, "not a url");
 
-        assert!(url.contains("key=a%26b%3Dc"), "{url}");
+        assert!(provider.build_request_url().is_err());
+        let error = provider
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ProviderError::Config { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn debug_never_prints_the_key() {
+        let rendered = format!(
+            "{:?}",
+            GeminiProvider::new("AIzaSy-not-a-real-key-0123456789")
+        );
+        assert!(!rendered.contains("AIzaSy"), "{rendered}");
     }
 
     #[test]
@@ -338,7 +353,7 @@ mod tests {
     async fn a_completion_is_sent_with_the_key_and_read_back() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(query_param("key", "sk-test"))
+            .and(header(KEY_HEADER, "sk-test"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "candidates": [{
                     "content": { "parts": [{ "text": "hello" }] },
@@ -359,6 +374,36 @@ mod tests {
         assert_eq!(response.content, "hello");
         assert_eq!(response.input_tokens, 2);
         assert_eq!(response.output_tokens, 1);
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests.iter().all(|request| request.url.query().is_none()),
+            "the key reached the query string"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_key_is_never_carried_across_a_redirect() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&elsewhere)
+            .await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(308).insert_header("location", elsewhere.uri()))
+            .mount(&server)
+            .await;
+
+        let error = GeminiProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri())
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, ProviderError::Api { status: 308, .. }),
+            "{error:?}"
+        );
+        assert!(elsewhere.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -380,9 +425,9 @@ mod tests {
             schema: Some(serde_json::json!({ "type": "object" })),
         });
 
-        let value = provider.complete_structured(&request).await.unwrap();
+        let structured = provider.complete_structured(&request).await.unwrap();
 
-        assert_eq!(value["beats"], 3);
+        assert_eq!(structured.value["beats"], 3);
     }
 
     #[tokio::test]

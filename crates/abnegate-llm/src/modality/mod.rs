@@ -1,15 +1,26 @@
 //! One trait per modality, their request and response types, the
 //! configuration that names a provider for each, and the vendor-native
 //! clients.
+//!
+//! [`TextProvider`] is the text modality's contract: a system and a user
+//! prompt in, prose or a schema-shaped [`StructuredResponse`] out. It is the
+//! contract the vendor-native clients in [`vendor`] satisfy.
+//! [`CompletionProvider`](crate::CompletionProvider) is the conversation
+//! contract an OpenAI-compatible endpoint, a [`Router`](crate::Router) or a
+//! coding agent satisfies, and [`CompletionBridge`] adapts any of those into
+//! a `TextProvider`, so an [`AiClient`] can run on a local model server or a
+//! fallback chain as readily as on a vendor API.
 
 pub mod config;
 pub mod vendor;
 
+mod ai_client;
 mod ai_error;
 mod audio_provider;
 mod audio_response;
-mod client;
+mod completion_bridge;
 mod embedding_provider;
+mod exchange;
 mod image_edit_request;
 mod image_provider;
 mod image_request;
@@ -20,7 +31,8 @@ mod model3d_request;
 mod model3d_response;
 mod music_request;
 mod response_format;
-mod sfx_request;
+mod sound_effect_request;
+mod structured_response;
 mod text_provider;
 mod text_request;
 mod text_response;
@@ -34,16 +46,18 @@ mod voice_info;
 mod voice_provider;
 mod voice_request;
 
+pub use crate::modality::ai_client::AiClient;
 pub use crate::modality::ai_error::AiError;
 pub use crate::modality::audio_provider::AudioProvider;
 pub use crate::modality::audio_response::AudioResponse;
-pub use crate::modality::client::{AiClient, Exchange};
+pub use crate::modality::completion_bridge::CompletionBridge;
 pub use crate::modality::config::{
     AudioProviderConfig, EmbeddingProviderConfig, ImageProviderConfig, Model3DProviderConfig,
     ProviderConfig, TextProviderConfig, TranscriptionProviderConfig, VideoProviderConfig,
     VoiceProviderConfig,
 };
 pub use crate::modality::embedding_provider::EmbeddingProvider;
+pub use crate::modality::exchange::Exchange;
 pub use crate::modality::image_edit_request::ImageEditRequest;
 pub use crate::modality::image_provider::ImageProvider;
 pub use crate::modality::image_request::ImageRequest;
@@ -54,7 +68,8 @@ pub use crate::modality::model3d_request::Model3DRequest;
 pub use crate::modality::model3d_response::Model3DResponse;
 pub use crate::modality::music_request::MusicRequest;
 pub use crate::modality::response_format::ResponseFormat;
-pub use crate::modality::sfx_request::SfxRequest;
+pub use crate::modality::sound_effect_request::SoundEffectRequest;
+pub use crate::modality::structured_response::StructuredResponse;
 pub use crate::modality::text_provider::TextProvider;
 pub use crate::modality::text_request::TextRequest;
 pub use crate::modality::text_response::TextResponse;
@@ -101,7 +116,7 @@ mod tests {
         async fn complete_structured(
             &self,
             _request: &TextRequest,
-        ) -> Result<serde_json::Value, ProviderError> {
+        ) -> Result<StructuredResponse, ProviderError> {
             Err(ProviderError::unsupported("complete_structured"))
         }
 
@@ -168,11 +183,11 @@ mod tests {
             Err(ProviderError::unsupported("generate_music"))
         }
 
-        async fn generate_sfx(
+        async fn generate_sound_effect(
             &self,
-            _request: &SfxRequest,
+            _request: &SoundEffectRequest,
         ) -> Result<AudioResponse, ProviderError> {
-            Err(ProviderError::unsupported("generate_sfx"))
+            Err(ProviderError::unsupported("generate_sound_effect"))
         }
     }
 

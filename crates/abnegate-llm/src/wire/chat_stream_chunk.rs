@@ -9,6 +9,7 @@ use crate::wire::usage::Usage;
 /// OpenAI-compatible providers do not all send them on every chunk, and a
 /// chunk that fails to deserialise aborts the whole stream, losing the reply.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct ChatStreamChunk {
     #[serde(default)]
     pub id: Option<String>,

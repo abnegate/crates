@@ -15,21 +15,32 @@
 
 mod capabilities;
 mod completion;
+mod completion_provider;
 mod credential;
 mod error;
+mod exit_status;
 mod http;
+mod kind;
+mod request;
 mod router;
 mod selection;
+mod strategy;
+mod weighted;
 
-#[cfg(test)]
-mod testing;
+#[cfg(any(test, feature = "testing"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
+pub mod testing;
 
 pub use crate::provider::capabilities::Capabilities;
-pub use crate::provider::completion::{
-    Completion, CompletionProvider, CompletionRequest, ProviderKind,
-};
+pub use crate::provider::completion::Completion;
+pub use crate::provider::completion_provider::CompletionProvider;
 pub use crate::provider::credential::Credential;
-pub use crate::provider::error::{ExitStatus, ProviderError};
+pub use crate::provider::error::ProviderError;
+pub use crate::provider::exit_status::ExitStatus;
 pub use crate::provider::http::HttpProvider;
+pub use crate::provider::kind::ProviderKind;
+pub use crate::provider::request::CompletionRequest;
 pub use crate::provider::router::Router;
-pub use crate::provider::selection::{SelectionStrategy, Weighted, choose, sample};
+pub use crate::provider::selection::{choose, sample};
+pub use crate::provider::strategy::SelectionStrategy;
+pub use crate::provider::weighted::Weighted;

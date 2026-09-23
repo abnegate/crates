@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use futures::Stream;
 
-use crate::modality::{ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::modality::{
+    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
+};
 use crate::provider::ProviderError;
 
 const MAX_CONTEXT_TOKENS: u32 = 100_000;
@@ -93,6 +95,10 @@ impl MockProvider {
     }
 }
 
+fn words(text: &str) -> u32 {
+    u32::try_from(text.split_whitespace().count()).unwrap_or(u32::MAX)
+}
+
 /// A file name that is recognisable from the thing it answers.
 ///
 /// `NarrativeAnalysis` becomes `narrative-analysis`: word boundaries in
@@ -140,9 +146,8 @@ impl TextProvider for MockProvider {
         let key = Self::key_for(request);
         let content = self.lookup(&key)?;
         Ok(TextResponse {
-            output_tokens: content.split_whitespace().count() as u32,
-            input_tokens: (request.system_prompt.split_whitespace().count()
-                + request.user_prompt.split_whitespace().count()) as u32,
+            output_tokens: words(&content),
+            input_tokens: words(&request.system_prompt).saturating_add(words(&request.user_prompt)),
             content,
             model: format!("mock:{key}"),
             finish_reason: "end_turn".into(),
@@ -152,14 +157,20 @@ impl TextProvider for MockProvider {
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ProviderError> {
+    ) -> Result<StructuredResponse, ProviderError> {
         let key = Self::key_for(request);
         let raw = self.lookup(&key)?;
-        serde_json::from_str(&raw).map_err(|error| {
+        let value = serde_json::from_str(&raw).map_err(|error| {
             ProviderError::parse(format!(
                 "the mock answer for '{key}' is not valid JSON: {error}. A mock answer for a \
                  structured request must be the value itself."
             ))
+        })?;
+        Ok(StructuredResponse {
+            value,
+            model: format!("mock:{key}"),
+            input_tokens: words(&request.system_prompt).saturating_add(words(&request.user_prompt)),
+            output_tokens: words(&raw),
         })
     }
 
@@ -197,12 +208,13 @@ mod tests {
         let provider = MockProvider::new(MISSING)
             .with_answer("narrative-analysis", r#"{"mandatory_beats": []}"#);
 
-        let value = provider
+        let structured = provider
             .complete_structured(&request_with_schema("NarrativeAnalysis"))
             .await
             .unwrap();
 
-        assert!(value.get("mandatory_beats").is_some());
+        assert!(structured.value.get("mandatory_beats").is_some());
+        assert_eq!(structured.model, "mock:narrative-analysis");
     }
 
     #[tokio::test]
@@ -249,12 +261,12 @@ mod tests {
         std::fs::write(directory.path().join("beat-plan.json"), r#"{"beats": 3}"#).unwrap();
 
         let provider = MockProvider::new(directory.path());
-        let value = provider
+        let structured = provider
             .complete_structured(&request_with_schema("BeatPlan"))
             .await
             .unwrap();
 
-        assert_eq!(value["beats"], 3);
+        assert_eq!(structured.value["beats"], 3);
     }
 
     #[tokio::test]

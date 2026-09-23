@@ -1,46 +1,30 @@
-//! A provider whose answers the tests decide.
-
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 
-use crate::client::RequestOptions;
 use crate::error::LlmError;
 use crate::provider::capabilities::Capabilities;
-use crate::provider::completion::{
-    Completion, CompletionProvider, CompletionRequest, ProviderKind,
-};
+use crate::provider::completion::Completion;
+use crate::provider::completion_provider::CompletionProvider;
 use crate::provider::error::ProviderError;
+use crate::provider::kind::ProviderKind;
+use crate::provider::request::CompletionRequest;
+use crate::provider::testing::behaviour::Behaviour;
+use crate::provider::testing::seen::Seen;
 use crate::wire::Message;
 use crate::wire::ToolDefinition;
 use crate::wire::Usage;
 
-/// What a [`StubProvider`] does when asked.
-#[derive(Debug, Clone)]
-pub enum Behaviour {
-    Answer(String),
-    /// Fails in a way a chain is expected to move past.
-    Fail(String),
-    /// Fails in a way a chain must not move past.
-    Reject(String),
-}
-
-/// The request a [`StubProvider`] was last handed.
-#[derive(Debug, Clone)]
-pub struct Seen {
-    pub model: String,
-    pub messages: Vec<Message>,
-    pub tools: Option<Vec<ToolDefinition>>,
-    pub options: RequestOptions,
-}
-
+/// A provider whose answers a test decides, and which remembers how often it
+/// was asked and what it was last handed.
 #[derive(Debug)]
 pub struct StubProvider {
     name: String,
     behaviour: Behaviour,
     capabilities: Capabilities,
+    kind: ProviderKind,
     usage: Option<Usage>,
     calls: AtomicUsize,
     seen: Mutex<Option<Seen>>,
@@ -52,6 +36,7 @@ impl StubProvider {
             name: name.into(),
             behaviour,
             capabilities: Capabilities::NONE,
+            kind: ProviderKind::Http,
             usage: None,
             calls: AtomicUsize::new(0),
             seen: Mutex::new(None),
@@ -72,6 +57,11 @@ impl StubProvider {
 
     pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    pub fn with_kind(mut self, kind: ProviderKind) -> Self {
+        self.kind = kind;
         self
     }
 
@@ -103,7 +93,7 @@ impl CompletionProvider for StubProvider {
     }
 
     fn kind(&self) -> ProviderKind {
-        ProviderKind::Http
+        self.kind
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -120,15 +110,17 @@ impl CompletionProvider for StubProvider {
             messages: request.messages.to_vec(),
             tools: request.tools.map(<[ToolDefinition]>::to_vec),
             options: request.options,
+            response_format: request.response_format.cloned(),
+            temperature: request.temperature,
         });
 
         match &self.behaviour {
-            Behaviour::Answer(text) => Ok(Completion {
-                provider: self.name.clone(),
-                message: Message::assistant(text.clone()),
-                usage: self.usage.clone(),
-                finish_reason: Some("stop".to_string()),
-            }),
+            Behaviour::Answer(text) => Ok(Completion::new(
+                self.name.clone(),
+                Message::assistant(text.clone()),
+            )
+            .with_usage(self.usage)
+            .with_finish_reason("stop".to_string())),
             Behaviour::Fail(message) => Err(ProviderError::Agent {
                 provider: self.name.clone(),
                 message: message.clone(),

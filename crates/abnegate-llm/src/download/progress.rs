@@ -3,6 +3,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+const PERCENT: f64 = 100.0;
+
 /// Live counters for one in-flight download.
 #[derive(Debug, Default)]
 pub struct DownloadProgress {
@@ -25,7 +27,7 @@ impl DownloadProgress {
             return 0;
         }
         let downloaded = self.downloaded_bytes.load(Ordering::Relaxed);
-        ((downloaded as f64 / total as f64) * 100.0).min(100.0) as u8
+        ((downloaded as f64 / total as f64) * PERCENT).min(PERCENT) as u8
     }
 
     pub(crate) fn fail(&self, message: String) {

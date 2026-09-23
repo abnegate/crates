@@ -2,6 +2,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::hardware::{GpuType, ModelRecommendation, RecommendedModels};
 
+#[cfg(any(target_os = "macos", test))]
+const BYTES_PER_GIGABYTE: f64 = 1024.0 * 1024.0 * 1024.0;
+#[cfg(any(target_os = "linux", test))]
+const MEGABYTES_PER_GIGABYTE: f64 = 1024.0;
+
 /// What a machine can run locally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineProfile {
@@ -15,7 +20,18 @@ pub struct MachineProfile {
 
 impl MachineProfile {
     /// This machine's profile, or a CPU-only one when it cannot be detected.
-    pub fn detect() -> Self {
+    ///
+    /// Detection runs `sysctl` or `nvidia-smi` and reads `/proc`, so it runs
+    /// on the blocking pool rather than stalling the runtime's worker.
+    pub async fn detect() -> Self {
+        tokio::task::spawn_blocking(Self::detect_blocking)
+            .await
+            .unwrap_or_else(|_| Self::cpu_only_fallback())
+    }
+
+    /// [`Self::detect`] for a caller outside an async runtime. It blocks the
+    /// calling thread for as long as the system tools take.
+    pub fn detect_blocking() -> Self {
         Self::detect_inner().unwrap_or_else(Self::cpu_only_fallback)
     }
 
@@ -28,42 +44,42 @@ impl MachineProfile {
                 36.0,
                 "M4 Max",
                 40,
-                Self::mid_apple_models(36.0),
+                Self::mid_apple_models(),
             )),
             "m4-pro-48" => Some(Self::apple_silicon_preset(
                 "Apple M4 Pro 48GB",
                 48.0,
                 "M4 Pro",
                 20,
-                Self::mid_apple_models(48.0),
+                Self::mid_apple_models(),
             )),
             "m4-pro-24" => Some(Self::apple_silicon_preset(
                 "Apple M4 Pro 24GB",
                 24.0,
                 "M4 Pro",
                 20,
-                Self::small_apple_models(24.0),
+                Self::small_apple_models(),
             )),
             "m3-max-96" => Some(Self::apple_silicon_preset(
                 "Apple M3 Max 96GB",
                 96.0,
                 "M3 Max",
                 40,
-                Self::large_apple_models(96.0),
+                Self::large_apple_models(),
             )),
             "m3-max-36" => Some(Self::apple_silicon_preset(
                 "Apple M3 Max 36GB",
                 36.0,
                 "M3 Max",
                 40,
-                Self::mid_apple_models(36.0),
+                Self::mid_apple_models(),
             )),
             "m2-ultra-192" => Some(Self::apple_silicon_preset(
                 "Apple M2 Ultra 192GB",
                 192.0,
                 "M2 Ultra",
                 76,
-                Self::ultra_apple_models(192.0),
+                Self::ultra_apple_models(),
             )),
             "m1-pro-32" => Some(Self::m1_pro_32()),
             "m1-pro-16" => Some(Self::apple_silicon_preset(
@@ -71,7 +87,7 @@ impl MachineProfile {
                 16.0,
                 "M1 Pro",
                 16,
-                Self::tiny_apple_models(16.0),
+                Self::tiny_apple_models(),
             )),
             "5900x-3080ti" => Some(Self::nvidia_5900x_3080ti()),
             "5900x-3090" => Some(Self::nvidia_desktop_preset(
@@ -176,71 +192,70 @@ impl MachineProfile {
             .args(["-n", "machdep.cpu.brand_string"])
             .output()
             .ok()?;
-        let brand_str = String::from_utf8_lossy(&brand.stdout).trim().to_string();
+        let brand = String::from_utf8_lossy(&brand.stdout).trim().to_string();
 
-        let memsize = std::process::Command::new("sysctl")
+        let memory = std::process::Command::new("sysctl")
             .args(["-n", "hw.memsize"])
             .output()
             .ok()?;
-        let mem_bytes: u64 = String::from_utf8_lossy(&memsize.stdout)
+        let memory_bytes: u64 = String::from_utf8_lossy(&memory.stdout)
             .trim()
             .parse()
             .ok()?;
-        let mem_gb = mem_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        let rounded_gb = (mem_gb / 8.0).round() * 8.0;
+        let memory_gigabytes = Self::memory_gigabytes(memory_bytes);
 
-        if brand_str.contains("Apple") {
-            let chip = if brand_str.contains("M4 Max") {
+        if brand.contains("Apple") {
+            let chip = if brand.contains("M4 Max") {
                 "M4 Max"
-            } else if brand_str.contains("M4 Pro") {
+            } else if brand.contains("M4 Pro") {
                 "M4 Pro"
-            } else if brand_str.contains("M4") {
+            } else if brand.contains("M4") {
                 "M4"
-            } else if brand_str.contains("M3 Ultra") {
+            } else if brand.contains("M3 Ultra") {
                 "M3 Ultra"
-            } else if brand_str.contains("M3 Max") {
+            } else if brand.contains("M3 Max") {
                 "M3 Max"
-            } else if brand_str.contains("M3 Pro") {
+            } else if brand.contains("M3 Pro") {
                 "M3 Pro"
-            } else if brand_str.contains("M3") {
+            } else if brand.contains("M3") {
                 "M3"
-            } else if brand_str.contains("M2 Ultra") {
+            } else if brand.contains("M2 Ultra") {
                 "M2 Ultra"
-            } else if brand_str.contains("M2 Max") {
+            } else if brand.contains("M2 Max") {
                 "M2 Max"
-            } else if brand_str.contains("M2 Pro") {
+            } else if brand.contains("M2 Pro") {
                 "M2 Pro"
-            } else if brand_str.contains("M2") {
+            } else if brand.contains("M2") {
                 "M2"
-            } else if brand_str.contains("M1 Ultra") {
+            } else if brand.contains("M1 Ultra") {
                 "M1 Ultra"
-            } else if brand_str.contains("M1 Max") {
+            } else if brand.contains("M1 Max") {
                 "M1 Max"
-            } else if brand_str.contains("M1 Pro") {
+            } else if brand.contains("M1 Pro") {
                 "M1 Pro"
-            } else if brand_str.contains("M1") {
+            } else if brand.contains("M1") {
                 "M1"
             } else {
                 "Apple Silicon"
             };
 
-            let gpu_cores = Self::estimate_gpu_cores(chip, rounded_gb);
-            let models = if rounded_gb >= 128.0 {
-                Self::ultra_apple_models(rounded_gb)
-            } else if rounded_gb >= 48.0 {
-                Self::large_apple_models(rounded_gb)
-            } else if rounded_gb >= 32.0 {
-                Self::mid_apple_models(rounded_gb)
-            } else if rounded_gb >= 24.0 {
-                Self::small_apple_models(rounded_gb)
+            let gpu_cores = Self::estimate_gpu_cores(chip);
+            let models = if memory_gigabytes >= 128.0 {
+                Self::ultra_apple_models()
+            } else if memory_gigabytes >= 48.0 {
+                Self::large_apple_models()
+            } else if memory_gigabytes >= 32.0 {
+                Self::mid_apple_models()
+            } else if memory_gigabytes >= 24.0 {
+                Self::small_apple_models()
             } else {
-                Self::tiny_apple_models(rounded_gb)
+                Self::tiny_apple_models()
             };
 
             return Some(Self {
-                name: format!("Apple {} {}GB", chip, rounded_gb as u64),
-                gpu_vram_gb: rounded_gb,
-                system_ram_gb: rounded_gb,
+                name: format!("Apple {} {}GB", chip, memory_gigabytes as u64),
+                gpu_vram_gb: memory_gigabytes,
+                system_ram_gb: memory_gigabytes,
                 unified_memory: true,
                 gpu_type: GpuType::AppleSilicon {
                     chip: chip.into(),
@@ -289,6 +304,13 @@ impl MachineProfile {
         })
     }
 
+    /// Installed memory in whole gigabytes, as the machine is sold: 36 GB
+    /// reads as 36, not rounded to a multiple of anything.
+    #[cfg(any(target_os = "macos", test))]
+    fn memory_gigabytes(bytes: u64) -> f64 {
+        (bytes as f64 / BYTES_PER_GIGABYTE).round()
+    }
+
     #[cfg(target_os = "linux")]
     fn linux_system_ram_gb() -> Option<f64> {
         let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -317,16 +339,23 @@ impl MachineProfile {
             return None;
         }
 
-        let reported = String::from_utf8_lossy(&output.stdout);
-        let mut fields = reported.trim().split(',').map(str::trim);
-        let name = fields.next()?.to_string();
+        Self::first_gpu(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// The first line of `nvidia-smi --query-gpu=name,memory.total
+    /// --format=csv,noheader,nounits`: one line per GPU, and only the first
+    /// describes the card a model is loaded on by default.
+    #[cfg(any(target_os = "linux", test))]
+    fn first_gpu(reported: &str) -> Option<(String, f64)> {
+        let mut fields = reported.lines().next()?.split(',').map(str::trim);
+        let name = fields.next().filter(|name| !name.is_empty())?.to_string();
         let megabytes: f64 = fields.next()?.parse().ok()?;
 
-        Some((name, (megabytes / 1024.0).round()))
+        Some((name, (megabytes / MEGABYTES_PER_GIGABYTE).round()))
     }
 
     #[cfg(target_os = "macos")]
-    fn estimate_gpu_cores(chip: &str, _mem_gb: f64) -> u32 {
+    fn estimate_gpu_cores(chip: &str) -> u32 {
         match chip {
             "M4 Max" => 40,
             "M4 Pro" => 20,
@@ -834,15 +863,15 @@ impl MachineProfile {
 
     fn apple_silicon_preset(
         name: &str,
-        mem_gb: f64,
+        memory_gigabytes: f64,
         chip: &str,
         gpu_cores: u32,
         models: RecommendedModels,
     ) -> Self {
         Self {
             name: name.into(),
-            gpu_vram_gb: mem_gb,
-            system_ram_gb: mem_gb,
+            gpu_vram_gb: memory_gigabytes,
+            system_ram_gb: memory_gigabytes,
             unified_memory: true,
             gpu_type: GpuType::AppleSilicon {
                 chip: chip.into(),
@@ -873,7 +902,7 @@ impl MachineProfile {
         }
     }
 
-    fn ultra_apple_models(_mem_gb: f64) -> RecommendedModels {
+    fn ultra_apple_models() -> RecommendedModels {
         RecommendedModels {
             llm: ModelRecommendation {
                 model_name: "qwen2.5:72b-instruct-q8_0".into(),
@@ -967,7 +996,7 @@ impl MachineProfile {
         }
     }
 
-    fn large_apple_models(_mem_gb: f64) -> RecommendedModels {
+    fn large_apple_models() -> RecommendedModels {
         RecommendedModels {
             llm: ModelRecommendation {
                 model_name: "qwen2.5:72b-instruct-q4_K_M".into(),
@@ -1051,7 +1080,7 @@ impl MachineProfile {
         }
     }
 
-    fn mid_apple_models(_mem_gb: f64) -> RecommendedModels {
+    fn mid_apple_models() -> RecommendedModels {
         RecommendedModels {
             llm: ModelRecommendation {
                 model_name: "qwen2.5:32b-instruct-q6_K".into(),
@@ -1125,7 +1154,7 @@ impl MachineProfile {
         }
     }
 
-    fn small_apple_models(_mem_gb: f64) -> RecommendedModels {
+    fn small_apple_models() -> RecommendedModels {
         RecommendedModels {
             llm: ModelRecommendation {
                 model_name: "qwen2.5:14b-instruct-q6_K".into(),
@@ -1199,7 +1228,7 @@ impl MachineProfile {
         }
     }
 
-    fn tiny_apple_models(_mem_gb: f64) -> RecommendedModels {
+    fn tiny_apple_models() -> RecommendedModels {
         RecommendedModels {
             llm: ModelRecommendation {
                 model_name: "qwen2.5:7b-instruct-q6_K".into(),
@@ -1415,8 +1444,43 @@ mod tests {
     }
 
     #[test]
+    fn nvidia_smi_output_for_several_gpus_describes_the_first() {
+        assert_eq!(
+            MachineProfile::first_gpu(
+                "NVIDIA GeForce RTX 4090, 24564\nNVIDIA GeForce RTX 3090, 24576\n"
+            ),
+            Some(("NVIDIA GeForce RTX 4090".to_string(), 24.0))
+        );
+        assert_eq!(
+            MachineProfile::first_gpu("NVIDIA RTX A6000, 49140\n"),
+            Some(("NVIDIA RTX A6000".to_string(), 48.0))
+        );
+        assert_eq!(MachineProfile::first_gpu(""), None);
+        assert_eq!(MachineProfile::first_gpu("No devices were found"), None);
+    }
+
+    #[test]
+    fn installed_memory_is_reported_as_sold() {
+        const GIGABYTE: u64 = 1024 * 1024 * 1024;
+        for gigabytes in [8, 16, 18, 24, 36, 48, 64, 96, 128, 192] {
+            assert_eq!(
+                MachineProfile::memory_gigabytes(gigabytes * GIGABYTE),
+                gigabytes as f64,
+                "{gigabytes} GB"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn detection_off_the_runtime_produces_a_usable_profile() {
+        let profile = MachineProfile::detect().await;
+        assert!(!profile.name.is_empty());
+        assert!(profile.system_ram_gb >= 0.0);
+    }
+
+    #[test]
     fn detection_always_produces_a_usable_profile() {
-        let profile = MachineProfile::detect();
+        let profile = MachineProfile::detect_blocking();
         assert!(!profile.name.is_empty());
         assert!(profile.recommended_models.embedding.quality_score > 0.0);
     }

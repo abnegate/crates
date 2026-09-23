@@ -4,6 +4,7 @@ use serde::Serialize;
 /// Exact capability advertised by a catalogue provider.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ModelCapability {
     Text,
     ImageInput,

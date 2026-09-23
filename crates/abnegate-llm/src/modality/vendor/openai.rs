@@ -1,4 +1,7 @@
+//! The OpenAI chat, image, embedding and transcription APIs.
+
 use std::path::Path;
+use std::time::Duration;
 
 use abnegate_secret::SecretValue;
 use async_trait::async_trait;
@@ -6,10 +9,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use futures::Stream;
 
+use crate::modality::vendor::transport::Transport;
 use crate::modality::{
     EmbeddingProvider, ImageEditRequest, ImageProvider, ImageRequest, ImageResponse,
-    ResponseFormat, TextProvider, TextRequest, TextResponse, TranscriptionProvider,
-    TranscriptionResponse, TranscriptionSegment,
+    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
+    TranscriptionProvider, TranscriptionResponse, TranscriptionSegment,
 };
 use crate::provider::ProviderError;
 
@@ -21,12 +25,27 @@ const IMAGE_MODEL: &str = "dall-e-3";
 const MAX_CONTEXT_TOKENS: u32 = 128_000;
 const MAX_RESOLUTION: (u32, u32) = (1792, 1024);
 const TRANSCRIPTION_MODEL: &str = "whisper-1";
+/// Model families that reason before answering. OpenAI rejects `max_tokens`
+/// and any `temperature` but the default for these.
+const REASONING_FAMILIES: &[&str] = &["o1", "o3", "o4", "gpt-5"];
+const STRUCTURED_SCHEMA_NAME: &str = "response";
 
+/// OpenAI over its REST API.
+///
+/// Models whose name belongs to a reasoning family (`o1`, `o3`, `o4` and
+/// `gpt-5`, with any `-` or `.` suffix, optionally behind an `owner/` prefix)
+/// are sent `max_completion_tokens` and no `temperature`, which is all those
+/// models accept; every other model gets the legacy `max_tokens` and
+/// `temperature` fields that older OpenAI-compatible servers expect.
+///
+/// Every call has a deadline, ten minutes unless [`Self::with_timeout`] says
+/// otherwise, and the client never follows a redirect with the key.
+#[derive(Debug, Clone)]
 pub struct OpenAIProvider {
     api_key: SecretValue,
     model: String,
     base_url: String,
-    client: reqwest::Client,
+    transport: Transport,
 }
 
 impl OpenAIProvider {
@@ -49,28 +68,49 @@ impl OpenAIProvider {
             api_key: api_key.into(),
             model: model.to_string(),
             base_url: base_url.into(),
-            client: reqwest::Client::new(),
+            transport: Transport::default(),
         }
+    }
+
+    /// The deadline for one call.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.transport = Transport::with_timeout(timeout);
+        self
     }
 
     pub fn build_chat_request_body(&self, request: &TextRequest) -> serde_json::Value {
         let mut body = serde_json::json!({
             "model": self.model,
-            "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
             "messages": [
                 { "role": "system", "content": request.system_prompt },
                 { "role": "user", "content": request.user_prompt }
             ]
         });
 
-        if let Some(ResponseFormat::Json { .. }) = request.response_format
-            && let Some(object) = body.as_object_mut()
-        {
-            object.insert(
-                "response_format".into(),
-                serde_json::json!({ "type": "json_object" }),
-            );
+        if is_reasoning_model(&self.model) {
+            body["max_completion_tokens"] = request.max_tokens.into();
+        } else {
+            body["max_tokens"] = request.max_tokens.into();
+            body["temperature"] = request.temperature.into();
+        }
+
+        match &request.response_format {
+            Some(ResponseFormat::Json {
+                schema: Some(schema),
+            }) => {
+                body["response_format"] = serde_json::json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": STRUCTURED_SCHEMA_NAME,
+                        "strict": true,
+                        "schema": schema
+                    }
+                });
+            }
+            Some(ResponseFormat::Json { schema: None }) => {
+                body["response_format"] = serde_json::json!({ "type": "json_object" });
+            }
+            Some(ResponseFormat::Text) | None => {}
         }
 
         body
@@ -80,7 +120,7 @@ impl OpenAIProvider {
         let mut body = serde_json::json!({
             "model": IMAGE_MODEL,
             "prompt": request.prompt,
-            "n": request.num_images,
+            "n": request.image_count,
             "size": format!("{}x{}", request.width, request.height),
             "response_format": "b64_json"
         });
@@ -132,41 +172,40 @@ impl OpenAIProvider {
         })
     }
 
-    fn post(&self, path: &str, body: &serde_json::Value) -> reqwest::RequestBuilder {
-        self.client
+    fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        self.transport
             .post(format!("{}{path}", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key.expose()))
-            .header("Content-Type", "application/json")
-            .json(body)
+            .bearer_auth(self.api_key.expose())
     }
 
-    async fn send(request: reqwest::RequestBuilder) -> Result<serde_json::Value, ProviderError> {
-        let response = request
-            .send()
-            .await
-            .map_err(|error| ProviderError::network(error.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let message = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".into());
-            return Err(ProviderError::api(status, message));
-        }
-
-        response
-            .json()
-            .await
-            .map_err(|error| ProviderError::parse(error.to_string()))
+    async fn send_json(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ProviderError> {
+        self.transport.send(self.post(path).json(body)).await
     }
+}
+
+/// Whether `model` belongs to one of [`REASONING_FAMILIES`]: the family name
+/// itself, or it followed by `-` or `.`, after any `owner/` prefix.
+fn is_reasoning_model(model: &str) -> bool {
+    let name = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    REASONING_FAMILIES.iter().any(|family| {
+        name.strip_prefix(family)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '.']))
+    })
 }
 
 fn usage(body: &serde_json::Value, field: &str) -> u32 {
     body.get("usage")
         .and_then(|usage| usage.get(field))
         .and_then(|count| count.as_u64())
-        .unwrap_or(0) as u32
+        .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 #[async_trait]
@@ -185,42 +224,15 @@ impl TextProvider for OpenAIProvider {
 
     async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
         let body = self.build_chat_request_body(request);
-        let json = Self::send(self.post("/v1/chat/completions", &body)).await?;
+        let json = self.send_json("/v1/chat/completions", &body).await?;
         Self::parse_chat_response(&json)
     }
 
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ProviderError> {
-        let Some(ResponseFormat::Json {
-            schema: Some(schema),
-        }) = &request.response_format
-        else {
-            let response = self.complete(request).await?;
-            return parse_content(&response.content);
-        };
-
-        let body = serde_json::json!({
-            "model": self.model,
-            "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
-            "messages": [
-                { "role": "system", "content": request.system_prompt },
-                { "role": "user", "content": request.user_prompt }
-            ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "response",
-                    "strict": true,
-                    "schema": schema
-                }
-            }
-        });
-
-        let json = Self::send(self.post("/v1/chat/completions", &body)).await?;
-        parse_content(&Self::parse_chat_response(&json)?.content)
+    ) -> Result<StructuredResponse, ProviderError> {
+        StructuredResponse::from_text(self.complete(request).await?)
     }
 
     async fn stream_complete(
@@ -232,12 +244,6 @@ impl TextProvider for OpenAIProvider {
             "streaming not yet implemented for OpenAI provider",
         ))
     }
-}
-
-fn parse_content(content: &str) -> Result<serde_json::Value, ProviderError> {
-    serde_json::from_str(content).map_err(|error| {
-        ProviderError::parse(format!("failed to parse structured output: {error}"))
-    })
 }
 
 #[async_trait]
@@ -256,7 +262,7 @@ impl ImageProvider for OpenAIProvider {
 
     async fn generate(&self, request: &ImageRequest) -> Result<ImageResponse, ProviderError> {
         let body = self.build_image_request_body(request);
-        let json = Self::send(self.post("/v1/images/generations", &body)).await?;
+        let json = self.send_json("/v1/images/generations", &body).await?;
 
         let image = json
             .get("data")
@@ -312,7 +318,7 @@ impl EmbeddingProvider for OpenAIProvider {
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ProviderError> {
         let body = self.build_embedding_request_body(texts);
-        let json = Self::send(self.post("/v1/embeddings", &body)).await?;
+        let json = self.send_json("/v1/embeddings", &body).await?;
 
         let data = json
             .get("data")
@@ -362,20 +368,17 @@ impl TranscriptionProvider for OpenAIProvider {
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(file_name)
             .mime_str("audio/mpeg")
-            .map_err(|error| ProviderError::network(error.to_string()))?;
+            .map_err(|error| ProviderError::config(error.without_url()))?;
 
         let form = reqwest::multipart::Form::new()
             .text("model", TRANSCRIPTION_MODEL)
             .text("response_format", "verbose_json")
             .part("file", part);
 
-        let request = self
-            .client
-            .post(format!("{}/v1/audio/transcriptions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key.expose()))
-            .multipart(form);
-
-        let json = Self::send(request).await?;
+        let json = self
+            .transport
+            .send(self.post("/v1/audio/transcriptions").multipart(form))
+            .await?;
 
         Ok(TranscriptionResponse {
             text: json
@@ -425,7 +428,7 @@ fn parse_segment(segment: &serde_json::Value) -> TranscriptionSegment {
 
 #[cfg(test)]
 mod tests {
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -443,13 +446,14 @@ mod tests {
 
     #[test]
     fn a_chat_body_carries_the_model_the_settings_and_both_messages() {
-        let provider = OpenAIProvider::new("test-key");
+        let provider = OpenAIProvider::with_model("test-key", "gpt-4o");
 
         let body = provider.build_chat_request_body(&request());
 
-        assert_eq!(body["model"], DEFAULT_MODEL);
+        assert_eq!(body["model"], "gpt-4o");
         assert_eq!(body["max_tokens"], 2048);
         assert_eq!(body["temperature"], 0.5);
+        assert!(body.get("max_completion_tokens").is_none());
 
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 2);
@@ -464,6 +468,57 @@ mod tests {
         let provider = OpenAIProvider::with_model("key", "gpt-4-turbo");
         let body = provider.build_chat_request_body(&TextRequest::new("sys", "usr"));
         assert_eq!(body["model"], "gpt-4-turbo");
+    }
+
+    #[test]
+    fn the_default_reasoning_model_gets_only_the_fields_it_accepts() {
+        let body = OpenAIProvider::new("key").build_chat_request_body(&request());
+
+        assert_eq!(body["model"], DEFAULT_MODEL);
+        assert_eq!(body["max_completion_tokens"], 2048);
+        assert!(body.get("max_tokens").is_none(), "{body}");
+        assert!(body.get("temperature").is_none(), "{body}");
+    }
+
+    #[test]
+    fn a_structured_request_to_a_reasoning_model_keeps_its_schema() {
+        let mut request = request();
+        request.response_format = Some(ResponseFormat::Json {
+            schema: Some(serde_json::json!({ "type": "object" })),
+        });
+
+        let body = OpenAIProvider::with_model("key", "o3-mini").build_chat_request_body(&request);
+
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"]["type"],
+            "object"
+        );
+        assert!(body.get("temperature").is_none(), "{body}");
+        assert!(body.get("max_tokens").is_none(), "{body}");
+    }
+
+    #[test]
+    fn reasoning_families_are_recognised_by_name() {
+        for model in [
+            "o1",
+            "o1-mini",
+            "o3",
+            "o3-mini-2025-01-31",
+            "o4-mini",
+            "gpt-5",
+            "gpt-5.4",
+            "gpt-5-mini",
+            "openai/gpt-5.4",
+            "GPT-5.4",
+        ] {
+            assert!(is_reasoning_model(model), "{model}");
+        }
+        for model in [
+            "gpt-4", "gpt-4o", "gpt-4.1", "gpt-50", "o10", "omni", "llama-o3",
+        ] {
+            assert!(!is_reasoning_model(model), "{model}");
+        }
     }
 
     #[test]
@@ -498,7 +553,7 @@ mod tests {
             height: 1024,
             style: Some("vivid".into()),
             reference_images: Vec::new(),
-            num_images: 1,
+            image_count: 1,
         };
 
         let body = provider.build_image_request_body(&request);
@@ -633,6 +688,60 @@ mod tests {
         assert_eq!(response.content, "hello");
         assert_eq!(response.input_tokens, 7);
         assert_eq!(response.output_tokens, 3);
+    }
+
+    #[tokio::test]
+    async fn a_structured_answer_is_requested_against_its_schema_and_parsed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_partial_json(serde_json::json!({
+                "max_completion_tokens": 4096,
+                "response_format": { "type": "json_schema" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "role": "assistant", "content": r#"{"beats":3}"# } }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = OpenAIProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
+        let mut request = TextRequest::new("sys", "usr");
+        request.response_format = Some(ResponseFormat::Json {
+            schema: Some(serde_json::json!({ "type": "object" })),
+        });
+
+        let structured = provider.complete_structured(&request).await.unwrap();
+
+        assert_eq!(structured.value["beats"], 3);
+    }
+
+    #[tokio::test]
+    async fn the_key_is_never_carried_across_a_redirect() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&elsewhere)
+            .await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(307).insert_header(
+                "location",
+                format!("{}/v1/chat/completions", elsewhere.uri()),
+            ))
+            .mount(&server)
+            .await;
+
+        let error = OpenAIProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri())
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, ProviderError::Api { status: 307, .. }),
+            "{error:?}"
+        );
+        assert!(elsewhere.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

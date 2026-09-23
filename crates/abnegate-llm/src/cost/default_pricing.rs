@@ -1,4 +1,4 @@
-use crate::cost::{ModelPricing, PricingUnit};
+use crate::cost::{ModelPricing, PricingUnit, TaskCategory};
 
 /// The shipped pricing table: published list prices, with a quality and speed
 /// score for each model.
@@ -11,6 +11,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "anthropic".into(),
             model: "claude-opus-5".into(),
+            category: TaskCategory::Text,
             cost_per_unit: 25.0,
             unit: PricingUnit::PerMillionTokens,
             quality_score: 0.98,
@@ -20,6 +21,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "anthropic".into(),
             model: "claude-sonnet-5".into(),
+            category: TaskCategory::Text,
             cost_per_unit: 10.0,
             unit: PricingUnit::PerMillionTokens,
             quality_score: 0.94,
@@ -29,6 +31,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "anthropic".into(),
             model: "claude-haiku-4-5".into(),
+            category: TaskCategory::Text,
             cost_per_unit: 5.0,
             unit: PricingUnit::PerMillionTokens,
             quality_score: 0.85,
@@ -38,6 +41,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "openai".into(),
             model: "gpt-5.4".into(),
+            category: TaskCategory::Text,
             cost_per_unit: 10.0,
             unit: PricingUnit::PerMillionTokens,
             quality_score: 0.95,
@@ -47,6 +51,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "google".into(),
             model: "gemini-2.5-pro".into(),
+            category: TaskCategory::Text,
             cost_per_unit: 1.25,
             unit: PricingUnit::PerMillionTokens,
             quality_score: 0.90,
@@ -56,6 +61,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "google".into(),
             model: "gemini-2.5-flash".into(),
+            category: TaskCategory::Text,
             cost_per_unit: 0.0,
             unit: PricingUnit::Free,
             quality_score: 0.85,
@@ -65,6 +71,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "ollama".into(),
             model: "llama-3.3-70b".into(),
+            category: TaskCategory::Text,
             cost_per_unit: 0.0,
             unit: PricingUnit::Free,
             quality_score: 0.82,
@@ -74,6 +81,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "fal".into(),
             model: "flux-2-pro".into(),
+            category: TaskCategory::Image,
             cost_per_unit: 0.03,
             unit: PricingUnit::PerImage,
             quality_score: 0.95,
@@ -83,6 +91,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "fal".into(),
             model: "flux-2-schnell".into(),
+            category: TaskCategory::Image,
             cost_per_unit: 0.015,
             unit: PricingUnit::PerImage,
             quality_score: 0.85,
@@ -92,6 +101,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "openai".into(),
             model: "gpt-image-1.5".into(),
+            category: TaskCategory::Image,
             cost_per_unit: 0.04,
             unit: PricingUnit::PerImage,
             quality_score: 0.95,
@@ -101,6 +111,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "local".into(),
             model: "sdxl-comfyui".into(),
+            category: TaskCategory::Image,
             cost_per_unit: 0.0,
             unit: PricingUnit::Free,
             quality_score: 0.80,
@@ -110,6 +121,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "fish_audio".into(),
             model: "fish-s1".into(),
+            category: TaskCategory::Voice,
             cost_per_unit: 0.000015,
             unit: PricingUnit::PerCharacter,
             quality_score: 0.92,
@@ -119,6 +131,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "elevenlabs".into(),
             model: "eleven-v3".into(),
+            category: TaskCategory::Voice,
             cost_per_unit: 0.00003,
             unit: PricingUnit::PerCharacter,
             quality_score: 0.95,
@@ -128,6 +141,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "local".into(),
             model: "xtts-v2".into(),
+            category: TaskCategory::Voice,
             cost_per_unit: 0.0,
             unit: PricingUnit::Free,
             quality_score: 0.70,
@@ -137,6 +151,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "suno".into(),
             model: "suno-v5".into(),
+            category: TaskCategory::Music,
             cost_per_unit: 0.05,
             unit: PricingUnit::PerSecondAudio,
             quality_score: 0.95,
@@ -146,6 +161,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "local".into(),
             model: "musicgen-large".into(),
+            category: TaskCategory::Music,
             cost_per_unit: 0.0,
             unit: PricingUnit::Free,
             quality_score: 0.60,
@@ -155,6 +171,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "tripo".into(),
             model: "tripo-v2".into(),
+            category: TaskCategory::Model3D,
             cost_per_unit: 0.10,
             unit: PricingUnit::Per3DModel,
             quality_score: 0.90,
@@ -164,6 +181,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "meshy".into(),
             model: "meshy-6".into(),
+            category: TaskCategory::Model3D,
             cost_per_unit: 0.15,
             unit: PricingUnit::Per3DModel,
             quality_score: 0.88,
@@ -173,6 +191,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "local".into(),
             model: "triposr".into(),
+            category: TaskCategory::Model3D,
             cost_per_unit: 0.0,
             unit: PricingUnit::Free,
             quality_score: 0.65,
@@ -182,6 +201,7 @@ pub fn default_pricing() -> Vec<ModelPricing> {
         ModelPricing {
             provider: "replicate".into(),
             model: "kling-v2".into(),
+            category: TaskCategory::Video,
             cost_per_unit: 0.50,
             unit: PricingUnit::PerVideoSecond,
             quality_score: 0.85,
@@ -233,6 +253,24 @@ mod tests {
         assert_eq!(flash.unit, PricingUnit::Free);
 
         assert!(pricing.iter().filter(|entry| entry.local_available).count() >= 5);
+    }
+
+    #[test]
+    fn every_model_is_filed_under_the_work_it_does() {
+        let pricing = default_pricing();
+        let category = |model: &str| {
+            pricing
+                .iter()
+                .find(|entry| entry.model == model)
+                .map(|entry| entry.category)
+        };
+
+        assert_eq!(category("claude-opus-5"), Some(TaskCategory::Text));
+        assert_eq!(category("sdxl-comfyui"), Some(TaskCategory::Image));
+        assert_eq!(category("xtts-v2"), Some(TaskCategory::Voice));
+        assert_eq!(category("musicgen-large"), Some(TaskCategory::Music));
+        assert_eq!(category("triposr"), Some(TaskCategory::Model3D));
+        assert_eq!(category("kling-v2"), Some(TaskCategory::Video));
     }
 
     #[test]

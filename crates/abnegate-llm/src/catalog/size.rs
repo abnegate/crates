@@ -3,6 +3,7 @@ use serde::Serialize;
 
 /// A concrete downloadable size for a browsed model, such as `llama3.2:1b`.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ModelSize {
     /// Name a consumer pulls to install this variant.
     pub name: String,

@@ -6,6 +6,7 @@ use crate::cost::{
 };
 use crate::hardware::MachineProfile;
 
+const LOCAL_PROVIDER: &str = "local";
 const LOCAL_SPEED_SCORE: f64 = 0.3;
 const FREE_MODEL_VALUE_MULTIPLIER: f64 = 100.0;
 const NO_LOCAL_MODEL: &str = "none";
@@ -16,29 +17,34 @@ pub struct CostEstimator;
 impl CostEstimator {
     /// A pricing table whose local entries are the ones `profile` can actually
     /// run, at $0, replacing the table's generic local entries.
+    ///
+    /// Each recommendation is filed under the category of the slot it came
+    /// from, so the machine's embedding model is never offered for text and
+    /// its image model never for voice.
     pub fn with_hardware(profile: &MachineProfile) -> Vec<ModelPricing> {
         let mut pricing = default_pricing();
         let recommended = &profile.recommended_models;
 
         let local = [
-            &recommended.llm,
-            &recommended.image,
-            &recommended.voice,
-            &recommended.music,
-            &recommended.model3d,
-            &recommended.embedding,
-            &recommended.transcription,
+            (TaskCategory::Text, &recommended.llm),
+            (TaskCategory::Image, &recommended.image),
+            (TaskCategory::Voice, &recommended.voice),
+            (TaskCategory::Music, &recommended.music),
+            (TaskCategory::Model3D, &recommended.model3d),
+            (TaskCategory::Embedding, &recommended.embedding),
+            (TaskCategory::Transcription, &recommended.transcription),
         ];
 
-        pricing.retain(|entry| !(entry.provider == "local" || entry.provider == "ollama"));
+        pricing.retain(|entry| !entry.local_available);
 
-        for recommendation in local {
+        for (category, recommendation) in local {
             if recommendation.model_name == NO_LOCAL_MODEL {
                 continue;
             }
             pricing.push(ModelPricing {
-                provider: "local".into(),
+                provider: LOCAL_PROVIDER.into(),
                 model: recommendation.model_name.clone(),
+                category,
                 cost_per_unit: 0.0,
                 unit: PricingUnit::Free,
                 quality_score: recommendation.quality_score,
@@ -50,76 +56,44 @@ impl CostEstimator {
         pricing
     }
 
+    /// Assign a model to every task under `strategy` and total the result.
+    ///
+    /// A task no model can do, or one a budget cannot cover and no local model
+    /// can take, is listed in [`CostEstimate::unassigned`] rather than dropped.
     pub fn estimate_batch_cost(
         requests: &[TaskSpec],
         pricing: &[ModelPricing],
         strategy: CostStrategy,
     ) -> CostEstimate {
-        let mut breakdown = Vec::new();
-        let mut total_usd = 0.0;
-        let mut total_quality = 0.0;
-        let mut total_items = 0u32;
-        let mut local_total = 0.0;
+        let assignments: Vec<Option<&ModelPricing>> = requests
+            .iter()
+            .map(|task| Self::choose(&strategy, task.category, pricing))
+            .collect();
+        let estimate = assemble(requests, &assignments, pricing, strategy.clone());
 
-        for task in requests {
-            let chosen = match &strategy {
-                CostStrategy::CheapestPossible => Self::cheapest_for(&task.category, pricing),
-                CostStrategy::BestQuality => Self::best_quality_for(&task.category, pricing),
-                CostStrategy::BestValue => Self::best_value_for(&task.category, pricing),
-                CostStrategy::LocalFirst => Self::local_first_for(&task.category, pricing),
-                CostStrategy::Budget { .. } => Self::best_value_for(&task.category, pricing),
-            };
-
-            if let Some(model) = chosen {
-                let unit_cost = effective_cost(model);
-                let line_total = unit_cost * f64::from(task.quantity);
-                total_usd += line_total;
-                total_quality += model.quality_score * f64::from(task.quantity);
-                total_items += task.quantity;
-
-                breakdown.push(line_item(task, model, unit_cost, line_total));
-            }
-
-            if let Some(local) = Self::cheapest_local_for(&task.category, pricing) {
-                local_total += effective_cost(local) * f64::from(task.quantity);
-            }
-        }
-
-        let local_savings = total_usd - local_total;
-        let estimate = CostEstimate {
-            total_usd,
-            breakdown,
-            strategy_used: strategy.clone(),
-            local_savings_usd: local_savings.max(0.0),
-            quality_score: average_quality(total_quality, total_items),
-        };
-
-        match &strategy {
-            CostStrategy::Budget { max_usd } => {
-                Self::apply_budget_constraint(estimate, requests, pricing, *max_usd)
+        match strategy {
+            CostStrategy::Budget { max_usd } if estimate.total_usd > max_usd => {
+                Self::apply_budget_constraint(requests, pricing, strategy, max_usd)
             }
             _ => estimate,
         }
     }
 
-    pub fn cheapest_for<'a>(
-        category: &TaskCategory,
-        pricing: &'a [ModelPricing],
-    ) -> Option<&'a ModelPricing> {
+    pub fn cheapest_for(category: TaskCategory, pricing: &[ModelPricing]) -> Option<&ModelPricing> {
         matching_models(category, pricing).min_by(|a, b| compare_cost(a, b))
     }
 
-    pub fn best_quality_for<'a>(
-        category: &TaskCategory,
-        pricing: &'a [ModelPricing],
-    ) -> Option<&'a ModelPricing> {
+    pub fn best_quality_for(
+        category: TaskCategory,
+        pricing: &[ModelPricing],
+    ) -> Option<&ModelPricing> {
         matching_models(category, pricing).max_by(|a, b| compare_quality(a, b))
     }
 
-    pub fn best_value_for<'a>(
-        category: &TaskCategory,
-        pricing: &'a [ModelPricing],
-    ) -> Option<&'a ModelPricing> {
+    pub fn best_value_for(
+        category: TaskCategory,
+        pricing: &[ModelPricing],
+    ) -> Option<&ModelPricing> {
         matching_models(category, pricing).max_by(|a, b| {
             value_score(a)
                 .partial_cmp(&value_score(b))
@@ -127,108 +101,138 @@ impl CostEstimator {
         })
     }
 
-    pub fn local_first_for<'a>(
-        category: &TaskCategory,
-        pricing: &'a [ModelPricing],
-    ) -> Option<&'a ModelPricing> {
+    pub fn local_first_for(
+        category: TaskCategory,
+        pricing: &[ModelPricing],
+    ) -> Option<&ModelPricing> {
         matching_models(category, pricing)
             .filter(|model| model.local_available)
             .max_by(|a, b| compare_quality(a, b))
             .or_else(|| Self::best_value_for(category, pricing))
     }
 
-    fn cheapest_local_for<'a>(
-        category: &TaskCategory,
+    fn choose<'a>(
+        strategy: &CostStrategy,
+        category: TaskCategory,
         pricing: &'a [ModelPricing],
     ) -> Option<&'a ModelPricing> {
+        match strategy {
+            CostStrategy::CheapestPossible => Self::cheapest_for(category, pricing),
+            CostStrategy::BestQuality => Self::best_quality_for(category, pricing),
+            CostStrategy::BestValue | CostStrategy::Budget { .. } => {
+                Self::best_value_for(category, pricing)
+            }
+            CostStrategy::LocalFirst => Self::local_first_for(category, pricing),
+        }
+    }
+
+    fn cheapest_local_for(
+        category: TaskCategory,
+        pricing: &[ModelPricing],
+    ) -> Option<&ModelPricing> {
         matching_models(category, pricing)
             .filter(|model| model.local_available)
             .min_by(|a, b| compare_cost(a, b))
     }
 
+    /// Spend the budget on the tasks whose best model scores highest first,
+    /// giving each the best model it can still afford, then the cheapest
+    /// local model, and otherwise leaving it unassigned.
     fn apply_budget_constraint(
-        mut estimate: CostEstimate,
         requests: &[TaskSpec],
         pricing: &[ModelPricing],
+        strategy: CostStrategy,
         max_usd: f64,
     ) -> CostEstimate {
-        if estimate.total_usd <= max_usd {
-            return estimate;
-        }
-
-        let mut breakdown = Vec::new();
-        let mut remaining = max_usd;
-        let mut total_quality = 0.0;
-        let mut total_items = 0u32;
-
         let mut by_quality: Vec<(usize, f64)> = requests
             .iter()
             .enumerate()
             .map(|(index, task)| {
-                let quality = Self::best_quality_for(&task.category, pricing)
+                let quality = Self::best_quality_for(task.category, pricing)
                     .map_or(0.0, |model| model.quality_score);
                 (index, quality)
             })
             .collect();
         by_quality.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
 
-        for (index, _) in &by_quality {
-            let task = &requests[*index];
-
-            let affordable = matching_models(&task.category, pricing)
-                .filter(|model| effective_cost(model) * f64::from(task.quantity) <= remaining)
-                .max_by(|a, b| compare_quality(a, b));
-
-            let chosen = match affordable {
-                Some(model) => Some(model),
-                None => Self::cheapest_local_for(&task.category, pricing),
-            };
+        let mut remaining = max_usd;
+        let mut assignments: Vec<Option<&ModelPricing>> = vec![None; requests.len()];
+        for (index, _) in by_quality {
+            let task = &requests[index];
+            let chosen = matching_models(task.category, pricing)
+                .filter(|model| model.cost_for(task.quantity) <= remaining)
+                .max_by(|a, b| compare_quality(a, b))
+                .or_else(|| Self::cheapest_local_for(task.category, pricing));
 
             if let Some(model) = chosen {
-                let unit_cost = effective_cost(model);
-                let line_total = unit_cost * f64::from(task.quantity);
-                remaining -= line_total;
-                total_quality += model.quality_score * f64::from(task.quantity);
-                total_items += task.quantity;
-
-                breakdown.push(line_item(task, model, unit_cost, line_total));
+                remaining -= model.cost_for(task.quantity);
             }
+            assignments[index] = chosen;
         }
 
-        estimate.total_usd = breakdown.iter().map(|item| item.total_cost).sum();
-        estimate.quality_score = average_quality(total_quality, total_items);
-        estimate.breakdown = breakdown;
-        estimate
+        assemble(requests, &assignments, pricing, strategy)
     }
 }
 
-fn line_item(
-    task: &TaskSpec,
-    model: &ModelPricing,
-    unit_cost: f64,
-    total_cost: f64,
-) -> CostLineItem {
-    CostLineItem {
-        task: task.label.clone(),
-        provider: model.provider.clone(),
-        model: model.model.clone(),
-        quantity: task.quantity,
-        unit_cost,
-        total_cost,
-        is_local: model.local_available && model.unit == PricingUnit::Free,
+fn assemble(
+    requests: &[TaskSpec],
+    assignments: &[Option<&ModelPricing>],
+    pricing: &[ModelPricing],
+    strategy: CostStrategy,
+) -> CostEstimate {
+    let mut breakdown = Vec::new();
+    let mut unassigned = Vec::new();
+    let mut total_usd = 0.0;
+    let mut total_quality = 0.0;
+    let mut total_items = 0_u64;
+    let mut local_savings_usd = 0.0;
+
+    for (task, assignment) in requests.iter().zip(assignments) {
+        let Some(model) = assignment else {
+            unassigned.push(task.label.clone());
+            continue;
+        };
+
+        let total_cost = model.cost_for(task.quantity);
+        total_usd += total_cost;
+        total_quality += model.quality_score * f64::from(task.quantity);
+        total_items += u64::from(task.quantity);
+
+        if let Some(local) = CostEstimator::cheapest_local_for(task.category, pricing) {
+            local_savings_usd += (total_cost - local.cost_for(task.quantity)).max(0.0);
+        }
+
+        breakdown.push(CostLineItem {
+            task: task.label.clone(),
+            provider: model.provider.clone(),
+            model: model.model.clone(),
+            quantity: task.quantity,
+            unit_cost: model.unit_cost(),
+            total_cost,
+            is_local: model.local_available && model.unit == PricingUnit::Free,
+        });
+    }
+
+    CostEstimate {
+        total_usd,
+        breakdown,
+        strategy_used: strategy,
+        local_savings_usd,
+        quality_score: average_quality(total_quality, total_items),
+        unassigned,
     }
 }
 
-fn average_quality(total_quality: f64, total_items: u32) -> f64 {
+fn average_quality(total_quality: f64, total_items: u64) -> f64 {
     if total_items == 0 {
         return 0.0;
     }
-    total_quality / f64::from(total_items)
+    total_quality / total_items as f64
 }
 
 fn compare_cost(a: &ModelPricing, b: &ModelPricing) -> Ordering {
-    effective_cost(a)
-        .partial_cmp(&effective_cost(b))
+    a.unit_cost()
+        .partial_cmp(&b.unit_cost())
         .unwrap_or(Ordering::Equal)
 }
 
@@ -238,91 +242,34 @@ fn compare_quality(a: &ModelPricing, b: &ModelPricing) -> Ordering {
         .unwrap_or(Ordering::Equal)
 }
 
-fn effective_cost(model: &ModelPricing) -> f64 {
-    if model.unit == PricingUnit::Free {
+/// Quality per quoted dollar. Models compete only within one category, so
+/// every model in a comparison is quoted in the same unit and the quote itself
+/// is the fair denominator.
+fn value_score(model: &ModelPricing) -> f64 {
+    let cost = if model.unit == PricingUnit::Free {
         0.0
     } else {
         model.cost_per_unit
-    }
-}
-
-fn value_score(model: &ModelPricing) -> f64 {
-    let cost = effective_cost(model);
+    };
     if cost <= 0.0 {
         return model.quality_score * FREE_MODEL_VALUE_MULTIPLIER;
     }
     model.quality_score / cost
 }
 
-fn matching_models<'a>(
-    category: &TaskCategory,
-    pricing: &'a [ModelPricing],
-) -> impl Iterator<Item = &'a ModelPricing> {
-    let category = category.clone();
+fn matching_models(
+    category: TaskCategory,
+    pricing: &[ModelPricing],
+) -> impl Iterator<Item = &ModelPricing> {
     pricing
         .iter()
-        .filter(move |model| matches_category(model, &category))
-}
-
-fn matches_category(model: &ModelPricing, category: &TaskCategory) -> bool {
-    match category {
-        TaskCategory::Text => {
-            matches!(
-                model.unit,
-                PricingUnit::PerMillionTokens | PricingUnit::Free
-            ) && is_text_provider(&model.provider)
-        }
-        TaskCategory::Image => {
-            matches!(model.unit, PricingUnit::PerImage | PricingUnit::Free)
-                && is_image_provider(&model.provider)
-        }
-        TaskCategory::Voice => {
-            matches!(model.unit, PricingUnit::PerCharacter | PricingUnit::Free)
-                && is_voice_provider(&model.provider)
-        }
-        TaskCategory::Music => {
-            matches!(model.unit, PricingUnit::PerSecondAudio | PricingUnit::Free)
-                && is_music_provider(&model.provider)
-        }
-        TaskCategory::Model3D => {
-            matches!(model.unit, PricingUnit::Per3DModel | PricingUnit::Free)
-                && is_model3d_provider(&model.provider)
-        }
-        TaskCategory::Video => {
-            matches!(model.unit, PricingUnit::PerVideoSecond | PricingUnit::Free)
-        }
-    }
-}
-
-fn is_text_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "anthropic" | "openai" | "google" | "ollama" | "local" | "kimi"
-    )
-}
-
-fn is_image_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "fal" | "openai" | "stability" | "local" | "replicate"
-    )
-}
-
-fn is_voice_provider(provider: &str) -> bool {
-    matches!(provider, "fish_audio" | "elevenlabs" | "local")
-}
-
-fn is_music_provider(provider: &str) -> bool {
-    matches!(provider, "suno" | "local")
-}
-
-fn is_model3d_provider(provider: &str) -> bool {
-    matches!(provider, "tripo" | "meshy" | "replicate" | "local")
+        .filter(move |model| model.category == category)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hardware::ModelRecommendation;
 
     fn task(label: &str, category: TaskCategory, quantity: u32) -> TaskSpec {
         TaskSpec {
@@ -332,10 +279,53 @@ mod tests {
         }
     }
 
+    fn priced(
+        model: &str,
+        category: TaskCategory,
+        cost_per_unit: f64,
+        unit: PricingUnit,
+        quality_score: f64,
+    ) -> ModelPricing {
+        ModelPricing {
+            provider: if unit == PricingUnit::Free {
+                LOCAL_PROVIDER.into()
+            } else {
+                "vendor".into()
+            },
+            model: model.into(),
+            category,
+            cost_per_unit,
+            unit,
+            quality_score,
+            speed_score: 0.5,
+            local_available: unit == PricingUnit::Free,
+        }
+    }
+
+    fn slots(profile: &MachineProfile) -> [(TaskCategory, &ModelRecommendation); 7] {
+        let recommended = &profile.recommended_models;
+        [
+            (TaskCategory::Text, &recommended.llm),
+            (TaskCategory::Image, &recommended.image),
+            (TaskCategory::Voice, &recommended.voice),
+            (TaskCategory::Music, &recommended.music),
+            (TaskCategory::Model3D, &recommended.model3d),
+            (TaskCategory::Embedding, &recommended.embedding),
+            (TaskCategory::Transcription, &recommended.transcription),
+        ]
+    }
+
+    fn presets() -> Vec<MachineProfile> {
+        MachineProfile::available_presets()
+            .into_iter()
+            .map(|(slug, _)| MachineProfile::from_preset(slug).expect("a listed preset"))
+            .collect()
+    }
+
     #[test]
     fn the_cheapest_image_model_is_a_free_local_one() {
         let pricing = default_pricing();
-        let cheapest = CostEstimator::cheapest_for(&TaskCategory::Image, &pricing).unwrap();
+        let cheapest = CostEstimator::cheapest_for(TaskCategory::Image, &pricing).unwrap();
         assert_eq!(cheapest.model, "sdxl-comfyui");
         assert!(cheapest.local_available);
     }
@@ -343,115 +333,150 @@ mod tests {
     #[test]
     fn the_best_image_model_is_one_of_the_two_top_scorers() {
         let pricing = default_pricing();
-        let best = CostEstimator::best_quality_for(&TaskCategory::Image, &pricing).unwrap();
+        let best = CostEstimator::best_quality_for(TaskCategory::Image, &pricing).unwrap();
         assert!(best.quality_score >= 0.95);
         assert!(best.model == "flux-2-pro" || best.model == "gpt-image-1.5");
     }
 
     #[test]
-    fn the_best_value_voice_model_is_free_or_the_cheap_paid_one() {
+    fn the_best_value_voice_model_is_the_cheap_paid_one() {
         let pricing = default_pricing();
-        let best = CostEstimator::best_value_for(&TaskCategory::Voice, &pricing).unwrap();
-        assert!(best.local_available || best.provider == "fish_audio");
+        let best = CostEstimator::best_value_for(TaskCategory::Voice, &pricing).unwrap();
+        assert_eq!(best.model, "fish-s1");
     }
 
     #[test]
-    fn every_category_has_a_cheapest_model() {
+    fn every_category_with_a_shipped_model_has_a_cheapest_model() {
         let pricing = default_pricing();
-        for category in [
-            TaskCategory::Text,
-            TaskCategory::Image,
-            TaskCategory::Voice,
-            TaskCategory::Music,
-            TaskCategory::Model3D,
-            TaskCategory::Video,
+        for (category, expected) in [
+            (TaskCategory::Text, "gemini-2.5-flash"),
+            (TaskCategory::Image, "sdxl-comfyui"),
+            (TaskCategory::Voice, "xtts-v2"),
+            (TaskCategory::Music, "musicgen-large"),
+            (TaskCategory::Model3D, "triposr"),
+            (TaskCategory::Video, "kling-v2"),
         ] {
-            let cheapest = CostEstimator::cheapest_for(&category, &pricing);
-            assert!(cheapest.is_some(), "{category:?} has no model");
-            assert!(!cheapest.unwrap().model.is_empty(), "{category:?}");
+            let cheapest = CostEstimator::cheapest_for(category, &pricing).unwrap();
+            assert_eq!(cheapest.model, expected, "{category:?}");
+            assert_eq!(cheapest.category, category);
         }
+        assert!(CostEstimator::cheapest_for(TaskCategory::Embedding, &pricing).is_none());
     }
 
     #[test]
-    fn the_cheapest_text_voice_and_music_models_cost_nothing() {
+    fn every_category_has_a_best_quality_model_of_its_own_kind() {
         let pricing = default_pricing();
-        for category in [TaskCategory::Text, TaskCategory::Voice, TaskCategory::Music] {
-            let cheapest = CostEstimator::cheapest_for(&category, &pricing).unwrap();
-            assert!(
-                effective_cost(cheapest) == 0.0 || cheapest.local_available,
-                "{category:?} picked {}",
-                cheapest.model
-            );
+        for (category, expected) in [
+            (TaskCategory::Text, "claude-opus-5"),
+            (TaskCategory::Voice, "eleven-v3"),
+            (TaskCategory::Music, "suno-v5"),
+            (TaskCategory::Model3D, "tripo-v2"),
+            (TaskCategory::Video, "kling-v2"),
+        ] {
+            let best = CostEstimator::best_quality_for(category, &pricing).unwrap();
+            assert_eq!(best.model, expected, "{category:?}");
         }
     }
 
     #[test]
-    fn every_category_has_a_best_quality_model() {
-        let pricing = default_pricing();
-        let expectations = [
-            (TaskCategory::Text, 0.9),
-            (TaskCategory::Voice, 0.92),
-            (TaskCategory::Music, 0.5),
-            (TaskCategory::Model3D, 0.65),
-            (TaskCategory::Video, 0.0),
-        ];
-
-        for (category, floor) in expectations {
-            let best = CostEstimator::best_quality_for(&category, &pricing).unwrap();
-            assert!(best.quality_score > floor, "{category:?}");
-        }
-    }
-
-    #[test]
-    fn every_category_has_a_best_value_model() {
+    fn every_category_has_a_best_value_model_of_its_own_kind() {
         let pricing = default_pricing();
         for category in [
             TaskCategory::Text,
             TaskCategory::Image,
             TaskCategory::Model3D,
         ] {
-            let best = CostEstimator::best_value_for(&category, &pricing).unwrap();
-            assert!(!best.provider.is_empty(), "{category:?}");
-            assert!(!best.model.is_empty(), "{category:?}");
+            let best = CostEstimator::best_value_for(category, &pricing).unwrap();
+            assert_eq!(best.category, category);
         }
     }
 
     #[test]
-    fn local_first_picks_a_local_model_wherever_one_exists() {
+    fn local_first_picks_the_local_model_of_each_category() {
         let pricing = default_pricing();
-        for category in [
-            TaskCategory::Text,
-            TaskCategory::Image,
-            TaskCategory::Voice,
-            TaskCategory::Music,
-            TaskCategory::Model3D,
-            TaskCategory::Video,
+        for (category, expected) in [
+            (TaskCategory::Text, "llama-3.3-70b"),
+            (TaskCategory::Image, "sdxl-comfyui"),
+            (TaskCategory::Voice, "xtts-v2"),
+            (TaskCategory::Music, "musicgen-large"),
+            (TaskCategory::Model3D, "triposr"),
         ] {
-            let chosen = CostEstimator::local_first_for(&category, &pricing).unwrap();
-            assert!(
-                chosen.local_available,
-                "{category:?} picked {}",
-                chosen.model
-            );
+            let chosen = CostEstimator::local_first_for(category, &pricing).unwrap();
+            assert_eq!(chosen.model, expected, "{category:?}");
+            assert!(chosen.local_available);
         }
+    }
+
+    #[test]
+    fn local_first_never_offers_a_free_model_of_another_kind_for_video() {
+        let pricing = default_pricing();
+        let chosen = CostEstimator::local_first_for(TaskCategory::Video, &pricing).unwrap();
+        assert_eq!(chosen.model, "kling-v2");
     }
 
     #[test]
     fn local_first_falls_back_to_best_value_when_nothing_runs_locally() {
-        let pricing = vec![ModelPricing {
-            provider: "openai".into(),
-            model: "gpt-image-1.5".into(),
-            cost_per_unit: 0.04,
-            unit: PricingUnit::PerImage,
-            quality_score: 0.95,
-            speed_score: 0.7,
-            local_available: false,
-        }];
+        let pricing = vec![priced(
+            "gpt-image-1.5",
+            TaskCategory::Image,
+            0.04,
+            PricingUnit::PerImage,
+            0.95,
+        )];
 
-        let chosen = CostEstimator::local_first_for(&TaskCategory::Image, &pricing).unwrap();
+        let chosen = CostEstimator::local_first_for(TaskCategory::Image, &pricing).unwrap();
 
         assert!(!chosen.local_available);
         assert_eq!(chosen.model, "gpt-image-1.5");
+    }
+
+    #[test]
+    fn every_preset_offers_each_local_model_only_for_its_own_category() {
+        for profile in presets() {
+            let pricing = CostEstimator::with_hardware(&profile);
+
+            for (category, recommendation) in slots(&profile) {
+                let chosen = CostEstimator::local_first_for(category, &pricing);
+                if recommendation.model_name == NO_LOCAL_MODEL {
+                    assert!(
+                        chosen.is_none_or(|model| !model.local_available),
+                        "{} has no local {category:?} model but was offered {chosen:?}",
+                        profile.name
+                    );
+                    continue;
+                }
+                let chosen = chosen.expect("a local model");
+                assert_eq!(
+                    chosen.model, recommendation.model_name,
+                    "{} picked the wrong local {category:?} model",
+                    profile.name
+                );
+                assert_eq!(chosen.category, category);
+                assert!(chosen.local_available);
+            }
+
+            let video = CostEstimator::local_first_for(TaskCategory::Video, &pricing).unwrap();
+            assert_eq!(video.model, "kling-v2", "{}", profile.name);
+        }
+    }
+
+    #[test]
+    fn every_preset_prices_each_modality_with_its_own_cheapest_model() {
+        for profile in presets() {
+            let pricing = CostEstimator::with_hardware(&profile);
+
+            for (category, recommendation) in slots(&profile) {
+                if category == TaskCategory::Text || recommendation.model_name == NO_LOCAL_MODEL {
+                    continue;
+                }
+                let cheapest = CostEstimator::cheapest_for(category, &pricing).unwrap();
+                assert_eq!(
+                    cheapest.model, recommendation.model_name,
+                    "{} priced {category:?} with the wrong model",
+                    profile.name
+                );
+            }
+        }
     }
 
     #[test]
@@ -461,6 +486,7 @@ mod tests {
         assert_eq!(estimate.total_usd, 0.0);
         assert_eq!(estimate.quality_score, 0.0);
         assert!(estimate.breakdown.is_empty());
+        assert!(estimate.unassigned.is_empty());
     }
 
     #[test]
@@ -482,6 +508,77 @@ mod tests {
             assert!(!item.provider.is_empty());
             assert!(!item.model.is_empty());
         }
+    }
+
+    #[test]
+    fn a_token_price_is_charged_per_million_tokens() {
+        let pricing = [priced(
+            "claude-opus-5",
+            TaskCategory::Text,
+            25.0,
+            PricingUnit::PerMillionTokens,
+            0.98,
+        )];
+        let tasks = [task("Script", TaskCategory::Text, 200_000)];
+
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::BestQuality);
+
+        assert_eq!(estimate.total_usd, 5.0);
+        assert_eq!(estimate.breakdown[0].total_cost, 5.0);
+        assert_eq!(estimate.breakdown[0].unit_cost, 0.000_025);
+    }
+
+    #[test]
+    fn savings_count_only_the_tasks_that_have_a_local_option() {
+        let pricing = [
+            priced(
+                "paid-image",
+                TaskCategory::Image,
+                0.04,
+                PricingUnit::PerImage,
+                0.95,
+            ),
+            priced(
+                "local-image",
+                TaskCategory::Image,
+                0.0,
+                PricingUnit::Free,
+                0.8,
+            ),
+            priced(
+                "paid-video",
+                TaskCategory::Video,
+                0.5,
+                PricingUnit::PerVideoSecond,
+                0.85,
+            ),
+        ];
+        let tasks = [
+            task("Images", TaskCategory::Image, 5),
+            task("Video", TaskCategory::Video, 10),
+        ];
+
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::BestQuality);
+
+        assert_eq!(estimate.total_usd, 0.2 + 5.0);
+        assert_eq!(estimate.local_savings_usd, 0.2);
+    }
+
+    #[test]
+    fn a_task_no_model_can_do_is_reported_rather_than_dropped() {
+        let pricing = default_pricing();
+        let tasks = [
+            task("Images", TaskCategory::Image, 1),
+            task("Search index", TaskCategory::Embedding, 100),
+        ];
+
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::BestValue);
+
+        assert_eq!(estimate.breakdown.len(), 1);
+        assert_eq!(estimate.unassigned, vec!["Search index".to_string()]);
     }
 
     #[test]
@@ -517,6 +614,7 @@ mod tests {
             CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::CheapestPossible);
 
         assert_eq!(estimate.breakdown.len(), 6);
+        assert!(estimate.unassigned.is_empty());
     }
 
     #[test]
@@ -531,7 +629,7 @@ mod tests {
             CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::BestQuality);
 
         assert!(estimate.total_usd > 0.0);
-        assert!(estimate.local_savings_usd > 0.0);
+        assert!((estimate.local_savings_usd - estimate.total_usd).abs() < 1e-12);
     }
 
     #[test]
@@ -588,6 +686,49 @@ mod tests {
     }
 
     #[test]
+    fn a_budget_reports_what_it_could_not_afford_and_recomputes_the_savings() {
+        let pricing = [
+            priced(
+                "paid-image",
+                TaskCategory::Image,
+                1.0,
+                PricingUnit::PerImage,
+                0.95,
+            ),
+            priced(
+                "local-image",
+                TaskCategory::Image,
+                0.0,
+                PricingUnit::Free,
+                0.8,
+            ),
+            priced(
+                "paid-video",
+                TaskCategory::Video,
+                2.0,
+                PricingUnit::PerVideoSecond,
+                0.85,
+            ),
+        ];
+        let tasks = [
+            task("Images", TaskCategory::Image, 2),
+            task("Video", TaskCategory::Video, 10),
+        ];
+
+        let estimate = CostEstimator::estimate_batch_cost(
+            &tasks,
+            &pricing,
+            CostStrategy::Budget { max_usd: 3.0 },
+        );
+
+        assert_eq!(estimate.total_usd, 2.0);
+        assert_eq!(estimate.unassigned, vec!["Video".to_string()]);
+        assert_eq!(estimate.local_savings_usd, 2.0);
+        assert_eq!(estimate.breakdown.len(), 1);
+        assert_eq!(estimate.breakdown[0].model, "paid-image");
+    }
+
+    #[test]
     fn a_hardware_profile_replaces_the_generic_local_entries() {
         let profile = MachineProfile::from_preset("m4-max-64").unwrap();
         let pricing = CostEstimator::with_hardware(&profile);
@@ -596,7 +737,7 @@ mod tests {
             .iter()
             .filter(|entry| entry.local_available)
             .collect();
-        assert!(!local.is_empty());
+        assert_eq!(local.len(), 7);
         for entry in &local {
             assert_eq!(entry.cost_per_unit, 0.0);
             assert_eq!(entry.unit, PricingUnit::Free);
@@ -605,8 +746,9 @@ mod tests {
 
         let llm = local
             .iter()
-            .find(|entry| entry.model.contains("qwen2.5:72b"))
+            .find(|entry| entry.category == TaskCategory::Text)
             .unwrap();
+        assert_eq!(llm.model, "qwen2.5:72b-instruct-q6_K");
         assert!((llm.quality_score - 0.92).abs() < f64::EPSILON);
     }
 
@@ -617,44 +759,27 @@ mod tests {
         let large =
             CostEstimator::with_hardware(&MachineProfile::from_preset("m4-max-64").unwrap());
 
-        let small_llm = small
-            .iter()
-            .find(|entry| entry.local_available && entry.model.contains("qwen2.5:14b"))
-            .unwrap();
-        let large_llm = large
-            .iter()
-            .find(|entry| entry.local_available && entry.model.contains("qwen2.5:72b"))
-            .unwrap();
+        let small_llm = CostEstimator::local_first_for(TaskCategory::Text, &small).unwrap();
+        let large_llm = CostEstimator::local_first_for(TaskCategory::Text, &large).unwrap();
 
+        assert!(
+            small_llm.model.contains("qwen2.5:14b"),
+            "{}",
+            small_llm.model
+        );
         assert!((small_llm.quality_score - 0.75).abs() < f64::EPSILON);
         assert!(large_llm.quality_score > small_llm.quality_score);
     }
 
     #[test]
-    fn local_first_uses_the_hardware_entries() {
+    fn local_first_uses_the_hardware_entry_for_the_category_asked_for() {
         let profile = MachineProfile::from_preset("m4-max-64").unwrap();
         let pricing = CostEstimator::with_hardware(&profile);
-        let recommended = &profile.recommended_models;
 
-        let chosen = CostEstimator::local_first_for(&TaskCategory::Image, &pricing).unwrap();
+        let chosen = CostEstimator::local_first_for(TaskCategory::Image, &pricing).unwrap();
 
-        assert!(chosen.local_available);
+        assert_eq!(chosen.model, profile.recommended_models.image.model_name);
         assert_eq!(chosen.cost_per_unit, 0.0);
-        assert!(
-            [
-                &recommended.llm,
-                &recommended.image,
-                &recommended.voice,
-                &recommended.music,
-                &recommended.model3d,
-                &recommended.embedding,
-                &recommended.transcription,
-            ]
-            .iter()
-            .any(|recommendation| recommendation.model_name == chosen.model),
-            "{} is not a model this machine was told it could run",
-            chosen.model
-        );
     }
 
     #[test]

@@ -125,12 +125,12 @@ dependencies = [
 name = "abnegate-llm"
 version = "0.1.0"
 dependencies = [
+ "abnegate-http",
  "abnegate-secret",
  "async-stream",
  "async-trait",
  "base64 0.23.1",
  "futures",
- "once_cell",
  "rand",
  "regex",
  "reqwest",
@@ -142,8 +142,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "url",
- "urlencoding",
  "wiremock",
 ]
 

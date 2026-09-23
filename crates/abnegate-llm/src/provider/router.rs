@@ -6,11 +6,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::provider::capabilities::Capabilities;
-use crate::provider::completion::{
-    Completion, CompletionProvider, CompletionRequest, ProviderKind,
-};
+use crate::provider::completion::Completion;
+use crate::provider::completion_provider::CompletionProvider;
 use crate::provider::error::ProviderError;
-use crate::provider::selection::{SelectionStrategy, Weighted};
+use crate::provider::kind::ProviderKind;
+use crate::provider::request::CompletionRequest;
+use crate::provider::strategy::SelectionStrategy;
+use crate::provider::weighted::Weighted;
 
 const DEFAULT_NAME: &str = "router";
 
@@ -53,8 +55,14 @@ impl Router {
         )
     }
 
-    /// An A/B split, with the arms not drawn standing by as backups.
+    /// An A/B split: each request goes to one arm drawn by weight, and a
+    /// failure is that arm's failure.
     pub fn weighted(providers: Vec<Weighted>) -> Self {
+        Self::new(providers, SelectionStrategy::Weighted)
+    }
+
+    /// An A/B split, with the arms not drawn standing by as backups.
+    pub fn weighted_fallback(providers: Vec<Weighted>) -> Self {
         Self::new(providers, SelectionStrategy::WeightedFallback)
     }
 
@@ -120,6 +128,10 @@ impl Router {
             .start(&candidates, sample)
             .min(candidates.len() - 1);
 
+        if !self.strategy.chains() {
+            return candidates[start].provider.complete(request).await;
+        }
+
         let mut attempted = 0;
         let mut last: Option<ProviderError> = None;
 
@@ -177,14 +189,37 @@ impl Router {
 
     /// The candidate indices to try, starting where the strategy pointed.
     fn order(&self, len: usize, start: usize) -> Vec<usize> {
-        if !self.strategy.chains() {
-            return vec![start];
-        }
-
         let mut order = Vec::with_capacity(len);
         order.push(start);
         order.extend((0..len).filter(|index| *index != start));
         order
+    }
+
+    /// The candidates any request can actually reach under this strategy.
+    ///
+    /// A primary router only ever asks its first candidate, and a weighted
+    /// split without fallback never draws an arm of zero weight unless no arm
+    /// has any; every other arm is reachable.
+    fn reachable(&self) -> Vec<Weighted> {
+        let candidates = self.candidates();
+        match self.strategy {
+            SelectionStrategy::Primary => candidates.iter().take(1).cloned().collect(),
+            SelectionStrategy::Weighted => {
+                let drawn: Vec<Weighted> = candidates
+                    .iter()
+                    .filter(|weighted| weighted.weight.is_finite() && weighted.weight > 0.0)
+                    .cloned()
+                    .collect();
+                if drawn.is_empty() {
+                    candidates.iter().take(1).cloned().collect()
+                } else {
+                    drawn
+                }
+            }
+            SelectionStrategy::Fallback | SelectionStrategy::WeightedFallback => {
+                candidates.into_owned()
+            }
+        }
     }
 }
 
@@ -194,23 +229,36 @@ impl CompletionProvider for Router {
         &self.name
     }
 
-    /// A router reports the kind of the provider it would start with, so a
-    /// caller asking "is this a CLI agent?" gets the answer for the arm most
-    /// likely to serve it rather than for the router itself.
+    /// The kind every arm a request can reach shares, or
+    /// [`ProviderKind::Mixed`] when they differ. A router with no reachable
+    /// arm reports [`ProviderKind::Http`].
     fn kind(&self) -> ProviderKind {
-        self.providers
-            .first()
-            .map_or(ProviderKind::Http, |weighted| weighted.provider.kind())
+        let mut kinds = self
+            .reachable()
+            .into_iter()
+            .map(|weighted| weighted.provider.kind());
+        let Some(first) = kinds.next() else {
+            return ProviderKind::Http;
+        };
+        if kinds.all(|kind| kind == first) {
+            first
+        } else {
+            ProviderKind::Mixed
+        }
     }
 
-    /// Likewise, a router supports what the arm most likely to serve a request
-    /// supports, and an empty router supports nothing.
+    /// What every arm a request can reach supports.
+    ///
+    /// Reporting any single arm's capabilities would let an outer router's
+    /// requirement pass here and then land on an arm that cannot meet it, so a
+    /// router promises only what all of its reachable arms share. A router with
+    /// no reachable arm supports nothing.
     fn capabilities(&self) -> Capabilities {
-        self.providers
-            .first()
-            .map_or(Capabilities::NONE, |weighted| {
-                weighted.provider.capabilities()
-            })
+        self.reachable()
+            .into_iter()
+            .map(|weighted| weighted.provider.capabilities())
+            .reduce(Capabilities::intersection)
+            .unwrap_or(Capabilities::NONE)
     }
 
     async fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, ProviderError> {
@@ -226,12 +274,14 @@ mod tests {
     use super::Router;
     use crate::client::RequestOptions;
     use crate::provider::capabilities::Capabilities;
-    use crate::provider::completion::{
-        Completion, CompletionProvider, CompletionRequest, ProviderKind,
-    };
+    use crate::provider::completion::Completion;
+    use crate::provider::completion_provider::CompletionProvider;
     use crate::provider::error::ProviderError;
-    use crate::provider::selection::{SelectionStrategy, Weighted};
+    use crate::provider::kind::ProviderKind;
+    use crate::provider::request::CompletionRequest;
+    use crate::provider::strategy::SelectionStrategy;
     use crate::provider::testing::StubProvider;
+    use crate::provider::weighted::Weighted;
     use crate::wire::Message;
     use crate::wire::ToolDefinition;
     use crate::wire::Usage;
@@ -239,12 +289,11 @@ mod tests {
     const RESERVED: u32 = 512;
 
     fn request(messages: &[Message]) -> CompletionRequest<'_> {
-        CompletionRequest {
-            model: "test-model",
+        CompletionRequest::new(
+            "test-model",
             messages,
-            tools: None,
-            options: RequestOptions { reserved: RESERVED },
-        }
+            RequestOptions { reserved: RESERVED },
+        )
     }
 
     async fn answer(router: &Router, sample: f64) -> Result<Completion, ProviderError> {
@@ -285,10 +334,10 @@ mod tests {
         let error = answer(&router, 0.5).await.expect_err("a failure");
 
         assert_eq!(backup.calls(), 0, "the backup was reached");
-        assert!(matches!(
-            error,
-            ProviderError::Exhausted { attempted: 1, .. }
-        ));
+        assert!(
+            matches!(&error, ProviderError::Agent { provider, message } if provider == "primary" && message == "upstream reset"),
+            "a lone failure is reported as itself: {error:?}"
+        );
     }
 
     #[tokio::test]
@@ -349,11 +398,11 @@ mod tests {
 
         let error = answer(&router, 0.5).await.expect_err("a failure");
 
-        let ProviderError::Exhausted { attempted, last } = &error else {
-            panic!("expected an exhausted split, got {error:?}");
-        };
-        assert_eq!(*attempted, 1);
-        assert_eq!(last.provider(), Some("control"));
+        assert!(
+            matches!(error, ProviderError::Agent { .. }),
+            "a split that does not chain reports its arm's own failure: {error:?}"
+        );
+        assert_eq!(error.provider(), Some("control"));
     }
 
     #[tokio::test]
@@ -438,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_weighted_chain_falls_back_from_the_arm_it_drew() {
-        let router = Router::weighted(vec![
+        let router = Router::weighted_fallback(vec![
             Weighted::new(
                 StubProvider::answering("control", "from control").shared(),
                 50.0,
@@ -538,12 +587,8 @@ mod tests {
 
         router
             .complete_with_sample(
-                CompletionRequest {
-                    model: "qwen3",
-                    messages: &messages,
-                    tools: Some(&tools),
-                    options: RequestOptions { reserved: 4096 },
-                },
+                CompletionRequest::new("qwen3", &messages, RequestOptions { reserved: 4096 })
+                    .with_tools(&tools),
                 0.0,
             )
             .await
@@ -562,11 +607,7 @@ mod tests {
         let router = Router::fallback(vec![
             StubProvider::failing("first", "connection reset").shared(),
             StubProvider::answering("second", "from second")
-                .with_usage(Usage {
-                    prompt_tokens: 11,
-                    completion_tokens: 22,
-                    total_tokens: 33,
-                })
+                .with_usage(Usage::new(11, 22))
                 .shared(),
         ]);
 
@@ -611,7 +652,7 @@ mod tests {
                 vec![Weighted::spare(
                     StubProvider::answering("local", "hi").shared(),
                 )],
-                SelectionStrategy::parse(configured),
+                configured.parse().unwrap_or_default(),
             );
 
             assert_eq!(router.strategy(), expected, "{configured}");
@@ -619,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn a_router_reports_the_kind_and_capabilities_of_its_first_arm() {
+    fn a_chain_supports_only_what_every_arm_supports() {
         let router = Router::new(
             vec![
                 Weighted::spare(
@@ -627,14 +668,99 @@ mod tests {
                         .with_capabilities(Capabilities::ALL)
                         .shared(),
                 ),
-                Weighted::spare(StubProvider::answering("second", "hi").shared()),
+                Weighted::spare(
+                    StubProvider::answering("second", "hi")
+                        .with_capabilities(structured())
+                        .shared(),
+                ),
             ],
             SelectionStrategy::Fallback,
         );
 
         assert_eq!(router.kind(), ProviderKind::Http);
-        assert_eq!(router.capabilities(), Capabilities::ALL);
+        assert_eq!(router.capabilities(), structured());
         assert_eq!(router.providers().len(), 2);
+    }
+
+    #[test]
+    fn a_primary_router_supports_what_its_only_reachable_arm_supports() {
+        let router = Router::new(
+            vec![
+                Weighted::spare(
+                    StubProvider::answering("first", "hi")
+                        .with_capabilities(Capabilities::ALL)
+                        .with_kind(ProviderKind::Cli)
+                        .shared(),
+                ),
+                Weighted::spare(StubProvider::answering("second", "hi").shared()),
+            ],
+            SelectionStrategy::Primary,
+        );
+
+        assert_eq!(router.capabilities(), Capabilities::ALL);
+        assert_eq!(router.kind(), ProviderKind::Cli);
+    }
+
+    #[test]
+    fn a_split_ignores_the_arms_it_can_never_draw() {
+        let router = Router::weighted(vec![
+            Weighted::new(
+                StubProvider::answering("drawn", "hi")
+                    .with_capabilities(structured())
+                    .shared(),
+                1.0,
+            ),
+            Weighted::spare(StubProvider::answering("spare", "hi").shared()),
+        ]);
+
+        assert_eq!(router.capabilities(), structured());
+    }
+
+    #[test]
+    fn a_router_over_both_kinds_says_it_is_mixed() {
+        let router = Router::fallback(vec![
+            StubProvider::answering("gateway", "hi").shared(),
+            StubProvider::answering("agent", "hi")
+                .with_kind(ProviderKind::Cli)
+                .shared(),
+        ]);
+
+        assert_eq!(router.kind(), ProviderKind::Mixed);
+    }
+
+    #[tokio::test]
+    async fn an_outer_requirement_never_reaches_an_incapable_arm_of_a_nested_split() {
+        const REQUESTS: usize = 64;
+        let incapable = Arc::new(StubProvider::answering("incapable", "plain"));
+        let inner = Router::weighted(vec![
+            Weighted::new(
+                StubProvider::answering("capable", "structured")
+                    .with_capabilities(structured())
+                    .shared(),
+                50.0,
+            ),
+            Weighted::new(incapable.clone(), 50.0),
+        ])
+        .with_name("inner");
+        let outer = Router::fallback(vec![
+            Arc::new(inner),
+            StubProvider::answering("direct", "structured")
+                .with_capabilities(structured())
+                .shared(),
+        ])
+        .requiring(structured());
+
+        for step in 0..REQUESTS {
+            answer(&outer, step as f64 / REQUESTS as f64)
+                .await
+                .expect("an answer");
+        }
+
+        assert_eq!(
+            incapable.calls(),
+            0,
+            "a requirement leaked through a nested split"
+        );
     }
 
     #[test]

@@ -11,6 +11,8 @@ pub(crate) mod mock;
 #[cfg(feature = "openai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
 pub mod openai;
+#[cfg(any(feature = "anthropic", feature = "google", feature = "openai"))]
+mod transport;
 
 #[cfg(feature = "anthropic")]
 pub use crate::modality::vendor::anthropic::{AnthropicAuth, AnthropicProvider};

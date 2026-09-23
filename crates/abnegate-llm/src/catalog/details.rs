@@ -3,6 +3,7 @@ use serde::Serialize;
 
 /// Format, family and runtime facts about a catalogued model.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ModelDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,

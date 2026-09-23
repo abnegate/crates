@@ -1,40 +1,43 @@
+mod architecture;
+mod model;
+mod response;
+
 use crate::catalog::capability::ModelCapability;
 use crate::catalog::capability::push_capability;
 use crate::catalog::details::ModelDetails;
 use crate::catalog::entry::ModelEntry;
 use crate::catalog::error::CatalogError;
 use crate::catalog::http::build_client;
+use crate::catalog::openrouter::model::OpenRouterModel;
+use crate::catalog::openrouter::response::OpenRouterResponse;
 use crate::catalog::page::ModelPage;
 use crate::catalog::parse::extract_model_family;
-use crate::catalog::parse::extract_param_size;
+use crate::catalog::parse::extract_parameter_size;
 use crate::catalog::provider::ModelProvider;
 use crate::catalog::query::BrowseQuery;
 use crate::catalog::refine::paginate_models;
 use crate::catalog::refine::parse_cursor_offset;
 use crate::catalog::refine::refine_models;
 use crate::catalog::text::collapse_whitespace;
+use crate::catalog::text::preview;
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::Deserialize;
 
 /// Upstream OpenRouter models API.
 pub const DEFAULT_OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
 
 /// Browses the hosted models OpenRouter routes to.
+#[derive(Debug, Clone)]
 pub struct OpenRouterProvider {
     catalog_url: String,
     client: Client,
 }
 
-impl Default for OpenRouterProvider {
-    fn default() -> Self {
-        Self::new(DEFAULT_OPENROUTER_MODELS_URL)
-    }
-}
-
 impl OpenRouterProvider {
-    pub fn new(catalog_url: impl Into<String>) -> Self {
-        Self::with_proxy(catalog_url, None).expect("Failed to build OpenRouter catalog client")
+    /// A client for `catalog_url`, failing only if no HTTP client can be
+    /// built on this platform.
+    pub fn new(catalog_url: impl Into<String>) -> Result<Self, CatalogError> {
+        Self::with_proxy(catalog_url, None)
     }
 
     pub fn with_proxy(
@@ -55,7 +58,7 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     async fn search(&self, options: BrowseQuery<'_>) -> Result<ModelPage, CatalogError> {
-        let offset = parse_cursor_offset(options.cursor)?;
+        let offset = parse_cursor_offset(options.cursor, options.limit)?;
         let response = self.client.get(&self.catalog_url).send().await?;
 
         if !response.status().is_success() {
@@ -70,7 +73,7 @@ impl ModelProvider for OpenRouterProvider {
             tracing::error!(
                 "OpenRouter JSON parse error: {}. Body preview: {}",
                 error,
-                &body[..body.len().min(500)]
+                preview(&body)
             );
             CatalogError::Parse(error.to_string())
         })?;
@@ -97,50 +100,9 @@ impl ModelProvider for OpenRouterProvider {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenRouterResponse {
-    data: Vec<OpenRouterModel>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenRouterModel {
-    id: String,
-    name: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    context_length: Option<u64>,
-    #[serde(default)]
-    architecture: Option<OpenRouterArchitecture>,
-    #[serde(default)]
-    supported_parameters: Option<Vec<String>>,
-}
-
-impl OpenRouterModel {
-    fn matches(&self, needle: &str) -> bool {
-        self.id.to_lowercase().contains(needle)
-            || self.name.to_lowercase().contains(needle)
-            || self
-                .description
-                .as_ref()
-                .is_some_and(|value| value.to_lowercase().contains(needle))
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenRouterArchitecture {
-    #[serde(default)]
-    tokenizer: Option<String>,
-    #[serde(default)]
-    modality: Option<String>,
-    #[serde(default)]
-    input_modalities: Option<Vec<String>>,
-    #[serde(default)]
-    output_modalities: Option<Vec<String>>,
-}
-
 fn to_model(model: OpenRouterModel) -> ModelEntry {
-    let parameter_size = extract_param_size(&model.id).or_else(|| extract_param_size(&model.name));
+    let parameter_size =
+        extract_parameter_size(&model.id).or_else(|| extract_parameter_size(&model.name));
     let family = extract_model_family(&model.id)
         .or_else(|| extract_model_family(&model.name))
         .or_else(|| {
@@ -361,7 +323,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenRouterProvider::new(server.uri());
+        let provider = OpenRouterProvider::new(server.uri()).unwrap();
         let page = provider.search(browse(Some("claude"))).await.unwrap();
 
         assert_eq!(page.models.len(), 1);
@@ -377,8 +339,25 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenRouterProvider::new(server.uri());
+        let provider = OpenRouterProvider::new(server.uri()).unwrap();
         let error = provider.search(browse(None)).await.unwrap_err();
         assert!(matches!(error, CatalogError::Unavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_body_with_a_multibyte_character_at_the_preview_limit_is_a_parse_error() {
+        let _listening = tracing::subscriber::set_default(crate::catalog::listening::Listening);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("{}é", "a".repeat(499))),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = OpenRouterProvider::new(server.uri()).unwrap();
+        let error = provider.search(browse(None)).await.unwrap_err();
+
+        assert!(matches!(error, CatalogError::Parse(_)), "{error:?}");
     }
 }

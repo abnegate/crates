@@ -6,6 +6,7 @@ use abnegate_secret::redact;
 use thiserror::Error;
 
 use crate::error::LlmError;
+use crate::provider::exit_status::ExitStatus;
 
 /// A provider failure.
 ///
@@ -15,6 +16,7 @@ use crate::error::LlmError;
 /// read as a throttled request and a rejected key must still read as a
 /// rejected key by the time it reaches the retry policy.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProviderError {
     #[error("{provider}: {source}")]
     Http {
@@ -75,6 +77,13 @@ pub enum ProviderError {
 }
 
 const REJECTED: [u16; 4] = [400, 404, 413, 422];
+const REQUEST_TIMEOUT: u16 = 408;
+const TOO_MANY_REQUESTS: u16 = 429;
+const FIRST_SERVER_ERROR: u16 = 500;
+
+fn transient_status(status: u16) -> bool {
+    status == REQUEST_TIMEOUT || status == TOO_MANY_REQUESTS || status >= FIRST_SERVER_ERROR
+}
 
 impl ProviderError {
     /// The failing provider's name, or `None` for a failure that belongs to no
@@ -120,6 +129,44 @@ impl ProviderError {
             | Self::Io { .. } => true,
             Self::Config { .. } | Self::Unconfigured | Self::Unsupported { .. } => false,
             Self::Exhausted { last, .. } => last.recoverable(),
+        }
+    }
+
+    /// An endpoint failure, with every message it carries redacted.
+    pub fn http(provider: &str, source: LlmError) -> Self {
+        Self::Http {
+            provider: provider.to_string(),
+            source: source.redacted(),
+        }
+    }
+
+    /// Whether asking the same provider again, after a pause, can plausibly
+    /// succeed: a throttle, a server-side failure, a dropped connection, a
+    /// deadline, or an answer that did not parse.
+    ///
+    /// Narrower than [`Self::recoverable`]. A rejected key is worth taking to
+    /// the next provider in a chain, which holds a different one, but asking
+    /// the same provider again only gets the same refusal.
+    pub fn transient(&self) -> bool {
+        match self {
+            Self::Http { source, .. } => match source {
+                LlmError::Api { status, .. } => transient_status(*status),
+                LlmError::Http(_) | LlmError::Stream(_) | LlmError::Timeout(_) => true,
+                _ => false,
+            },
+            Self::Api { status, .. } => transient_status(*status),
+            Self::Timeout { .. }
+            | Self::Malformed { .. }
+            | Self::Network { .. }
+            | Self::Parse { .. } => true,
+            Self::Unavailable { .. }
+            | Self::Exit { .. }
+            | Self::Agent { .. }
+            | Self::Io { .. }
+            | Self::Config { .. }
+            | Self::Unconfigured
+            | Self::Unsupported { .. } => false,
+            Self::Exhausted { last, .. } => last.transient(),
         }
     }
 
@@ -198,36 +245,11 @@ impl ProviderError {
     }
 }
 
-/// How a child process ended.
-///
-/// A signalled process has no exit code, and reporting one as `-1` loses the
-/// difference between a crash and a command that genuinely returned `-1`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExitStatus {
-    Code(i32),
-    Signalled,
-}
-
-impl fmt::Display for ExitStatus {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Code(code) => write!(formatter, "{code}"),
-            Self::Signalled => formatter.write_str("signal"),
-        }
-    }
-}
-
-impl From<std::process::ExitStatus> for ExitStatus {
-    fn from(status: std::process::ExitStatus) -> Self {
-        status.code().map_or(Self::Signalled, Self::Code)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::ExitStatus;
     use super::ProviderError;
     use crate::error::LlmError;
+    use crate::provider::exit_status::ExitStatus;
 
     #[test]
     fn a_credential_echoed_by_the_agent_never_reaches_the_message() {
@@ -243,6 +265,14 @@ mod tests {
             ProviderError::io(leaked),
             ProviderError::config(leaked),
             ProviderError::unsupported(leaked),
+            ProviderError::http(
+                "gateway",
+                LlmError::Api {
+                    status: 401,
+                    message: leaked.to_string(),
+                },
+            ),
+            ProviderError::http("gateway", LlmError::Stream(leaked.to_string())),
         ] {
             let rendered = format!("{error} {error:?}");
             assert!(
@@ -306,6 +336,37 @@ mod tests {
     }
 
     #[test]
+    fn only_a_failure_that_can_clear_by_itself_is_transient() {
+        for status in [408, 429, 500, 502, 503, 529] {
+            assert!(ProviderError::api(status, "busy").transient(), "{status}");
+            assert!(
+                ProviderError::http(
+                    "gateway",
+                    LlmError::Api {
+                        status,
+                        message: "busy".into()
+                    }
+                )
+                .transient(),
+                "{status}"
+            );
+        }
+        for status in [400, 401, 403, 404, 422] {
+            assert!(!ProviderError::api(status, "no").transient(), "{status}");
+        }
+        assert!(ProviderError::network("reset").transient());
+        assert!(
+            ProviderError::http(
+                "gateway",
+                LlmError::Timeout(std::time::Duration::from_secs(1))
+            )
+            .transient()
+        );
+        assert!(!ProviderError::config("missing key").transient());
+        assert!(!ProviderError::unavailable("claude", "claude", "not found").transient());
+    }
+
+    #[test]
     fn a_routing_failure_belongs_to_no_provider_and_is_not_retried() {
         for error in [
             ProviderError::Unconfigured,
@@ -365,11 +426,5 @@ mod tests {
             rendered.contains("required capabilities"),
             "lost the reason: {rendered}"
         );
-    }
-
-    #[test]
-    fn exit_status_keeps_a_signal_distinct_from_a_code() {
-        assert_eq!(ExitStatus::Code(2).to_string(), "2");
-        assert_eq!(ExitStatus::Signalled.to_string(), "signal");
     }
 }

@@ -1,10 +1,13 @@
+mod model;
+
 use crate::catalog::details::ModelDetails;
 use crate::catalog::entry::ModelEntry;
 use crate::catalog::error::CatalogError;
+use crate::catalog::gpt4all::model::Gpt4AllModel;
 use crate::catalog::http::build_client;
 use crate::catalog::page::ModelPage;
 use crate::catalog::parse::extract_model_family;
-use crate::catalog::parse::extract_param_size;
+use crate::catalog::parse::extract_parameter_size;
 use crate::catalog::parse::extract_quantization;
 use crate::catalog::parse::normalize_parameter_label;
 use crate::catalog::provider::ModelProvider;
@@ -15,11 +18,9 @@ use crate::catalog::refine::refine_models;
 use crate::catalog::text::html_to_plain_text;
 use crate::catalog::text::infer_use_cases;
 use crate::catalog::text::nonempty_vec;
+use crate::catalog::text::preview;
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::Deserialize;
-use serde::Deserializer;
-use serde::de;
 use std::time::Duration;
 
 /// Upstream GPT4All model catalogue.
@@ -30,20 +31,17 @@ const CATALOG_ATTEMPTS: u32 = 3;
 const RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
 /// Browses the static JSON catalogue GPT4All publishes.
+#[derive(Debug, Clone)]
 pub struct Gpt4AllProvider {
     catalog_url: String,
     client: Client,
 }
 
-impl Default for Gpt4AllProvider {
-    fn default() -> Self {
-        Self::new(DEFAULT_GPT4ALL_MODELS_URL)
-    }
-}
-
 impl Gpt4AllProvider {
-    pub fn new(catalog_url: impl Into<String>) -> Self {
-        Self::with_proxy(catalog_url, None).expect("Failed to build GPT4All catalog client")
+    /// A client for `catalog_url`, failing only if no HTTP client can be
+    /// built on this platform.
+    pub fn new(catalog_url: impl Into<String>) -> Result<Self, CatalogError> {
+        Self::with_proxy(catalog_url, None)
     }
 
     pub fn with_proxy(
@@ -64,7 +62,7 @@ impl ModelProvider for Gpt4AllProvider {
     }
 
     async fn search(&self, options: BrowseQuery<'_>) -> Result<ModelPage, CatalogError> {
-        let offset = parse_cursor_offset(options.cursor)?;
+        let offset = parse_cursor_offset(options.cursor, options.limit)?;
         let catalog = fetch_catalog(&self.catalog_url, &self.client).await?;
 
         let matched: Vec<Gpt4AllModel> = match options.query {
@@ -98,7 +96,7 @@ async fn fetch_catalog(url: &str, client: &Client) -> Result<Vec<Gpt4AllModel>, 
                     tracing::error!(
                         "GPT4All JSON parse error: {}. Body preview: {}",
                         error,
-                        &body[..body.len().min(500)]
+                        preview(&body)
                     );
                     CatalogError::Parse(error.to_string())
                 });
@@ -115,42 +113,9 @@ async fn fetch_catalog(url: &str, client: &Client) -> Result<Vec<Gpt4AllModel>, 
             tokio::time::sleep(RETRY_BACKOFF * attempt).await;
         }
     }
-    Err(last_error.expect("at least one GPT4All catalog attempt"))
-}
-
-#[derive(Debug, Deserialize)]
-struct Gpt4AllModel {
-    name: String,
-    filename: String,
-    #[serde(deserialize_with = "string_or_number")]
-    filesize: u64,
-    #[serde(default)]
-    parameters: Option<String>,
-    #[serde(rename = "type", default)]
-    model_type: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    quant: Option<String>,
-    #[serde(rename = "ramrequired", default)]
-    ram_required: Option<serde_json::Value>,
-    #[serde(default)]
-    url: Option<String>,
-}
-
-impl Gpt4AllModel {
-    fn matches(&self, needle: &str) -> bool {
-        self.name.to_lowercase().contains(needle)
-            || self.filename.to_lowercase().contains(needle)
-            || self
-                .description
-                .as_ref()
-                .is_some_and(|value| value.to_lowercase().contains(needle))
-            || self
-                .model_type
-                .as_ref()
-                .is_some_and(|value| value.to_lowercase().contains(needle))
-    }
+    Err(last_error.unwrap_or_else(|| {
+        CatalogError::Unavailable("the GPT4All catalogue was never reached".to_string())
+    }))
 }
 
 fn to_model(model: Gpt4AllModel) -> ModelEntry {
@@ -163,7 +128,7 @@ fn to_model(model: Gpt4AllModel) -> ModelEntry {
         .parameters
         .as_deref()
         .map(normalize_parameter_label)
-        .or_else(|| extract_param_size(&model.filename));
+        .or_else(|| extract_parameter_size(&model.filename));
     let quantization_level = model
         .quant
         .as_deref()
@@ -204,23 +169,6 @@ fn to_model(model: Gpt4AllModel) -> ModelEntry {
 
 /// GPT4All publishes `filesize` as a string in some entries and a number in
 /// others.
-fn string_or_number<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StringOrNumber {
-        Number(u64),
-        Text(String),
-    }
-
-    match StringOrNumber::deserialize(deserializer)? {
-        StringOrNumber::Number(value) => Ok(value),
-        StringOrNumber::Text(value) => value.parse().map_err(de::Error::custom),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,7 +271,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = Gpt4AllProvider::new(format!("{}/models3.json", server.uri()));
+        let provider = Gpt4AllProvider::new(format!("{}/models3.json", server.uri())).unwrap();
         let page = provider.search(browse(None)).await.unwrap();
 
         assert_eq!(page.models.len(), 1);
@@ -341,7 +289,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = Gpt4AllProvider::new(server.uri());
+        let provider = Gpt4AllProvider::new(server.uri()).unwrap();
         let page = provider.search(browse(Some("mistral"))).await.unwrap();
 
         assert_eq!(page.models.len(), 1);
@@ -382,9 +330,26 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = Gpt4AllProvider::new(server.uri());
+        let provider = Gpt4AllProvider::new(server.uri()).unwrap();
         let error = provider.search(browse(None)).await.unwrap_err();
 
         assert!(matches!(error, CatalogError::Unavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_body_with_a_multibyte_character_at_the_preview_limit_is_a_parse_error() {
+        let _listening = tracing::subscriber::set_default(crate::catalog::listening::Listening);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("{}é", "a".repeat(499))),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = Gpt4AllProvider::new(server.uri()).unwrap();
+        let error = provider.search(browse(None)).await.unwrap_err();
+
+        assert!(matches!(error, CatalogError::Parse(_)), "{error:?}");
     }
 }

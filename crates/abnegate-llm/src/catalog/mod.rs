@@ -3,14 +3,14 @@
 //!
 //! ```no_run
 //! use abnegate_llm::catalog::BrowseRequest;
-//! use abnegate_llm::catalog::provider;
+//! use abnegate_llm::catalog::browse;
 //!
-//! # async fn browse() -> Result<(), abnegate_llm::catalog::CatalogError> {
+//! # async fn example() -> Result<(), abnegate_llm::catalog::CatalogError> {
 //! let request = BrowseRequest {
 //!     search: Some("qwen".into()),
 //!     ..Default::default()
 //! };
-//! let page = provider("huggingface")?
+//! let page = browse("huggingface")?
 //!     .search(request.to_browse_query())
 //!     .await?;
 //!
@@ -21,22 +21,21 @@
 //! # }
 //! ```
 
+mod browse;
 mod capability;
 mod details;
-#[cfg(feature = "download")]
-mod download;
 mod entry;
 mod error;
 mod gpt4all;
 mod http;
 mod huggingface;
+#[cfg(test)]
+mod listening;
 mod medium_filter;
 mod ollama;
 mod openrouter;
 mod page;
 mod parse;
-#[cfg(feature = "download")]
-mod progress;
 mod provider;
 mod query;
 mod refine;
@@ -46,11 +45,10 @@ mod size_filter;
 mod sort;
 mod text;
 
+pub use browse::browse;
+pub use browse::browse_with_proxy;
 pub use capability::ModelCapability;
 pub use details::ModelDetails;
-#[cfg(feature = "download")]
-#[cfg_attr(docsrs, doc(cfg(feature = "download")))]
-pub use download::download_gguf;
 pub use entry::ModelEntry;
 pub use error::CatalogError;
 pub use gpt4all::DEFAULT_GPT4ALL_MODELS_URL;
@@ -70,14 +68,9 @@ pub use page::DEFAULT_PAGE_SIZE;
 pub use page::MAX_PAGE_SIZE;
 pub use page::ModelPage;
 pub use parse::extract_model_family;
-pub use parse::extract_param_size;
+pub use parse::extract_parameter_size;
 pub use parse::extract_quantization;
-#[cfg(feature = "download")]
-#[cfg_attr(docsrs, doc(cfg(feature = "download")))]
-pub use progress::DownloadProgress;
 pub use provider::ModelProvider;
-pub use provider::provider;
-pub use provider::provider_with_proxy;
 pub use query::BrowseQuery;
 pub use request::BrowseRequest;
 pub use size::ModelSize;
