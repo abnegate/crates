@@ -17,6 +17,17 @@ use crate::tools::{ToolContext, ToolError, ToolRegistry, ToolResult};
 /// named the same as an earlier one.
 const MINTED_CALL_PREFIX: &str = "call_";
 
+/// Finish reasons that mean the model meant to call a tool, or was stopped
+/// from answering, so text arriving with one and no calls is not an answer.
+///
+/// Every other reason, and none at all, ends the turn on the text that came
+/// with it: `stop`, `end_turn`, `length` and whatever a provider calls them.
+const UNFINISHED_REASONS: &[&str] = &["tool_calls", "function_call", "content_filter"];
+
+/// Rounds in a row the model may answer with nothing usable before the turn
+/// fails, since asking again sends the same request.
+pub(super) const MAX_EMPTY_RESPONSES: usize = 3;
+
 /// A ReAct loop: think, call tools, observe their results, until the model
 /// answers or the iteration budget runs out.
 pub struct Agent {
@@ -35,6 +46,10 @@ impl Agent {
         config: AgentConfig,
         context: ToolContext,
     ) -> Self {
+        let llm = match config.temperature {
+            Some(temperature) => llm.with_temperature(temperature),
+            None => llm,
+        };
         Self {
             llm,
             tools,
@@ -104,6 +119,7 @@ impl Agent {
         callback: &dyn AgentCallback,
     ) -> Result<(), AgentError> {
         let tool_definitions = self.tools.definitions();
+        let mut empty = 0;
 
         loop {
             if state.iteration >= self.config.max_iterations {
@@ -160,10 +176,10 @@ impl Agent {
                 state.tokens_used = state.tokens_used.saturating_add(usage.total_tokens);
             }
 
-            let choice = response
-                .choices
-                .first()
-                .ok_or_else(|| AgentError::Tool("No response from LLM".to_string()))?;
+            let Some(choice) = response.choices.first() else {
+                Self::unanswered(state, &mut empty, step)?;
+                continue;
+            };
 
             let mut message = choice.message.clone();
             let mut identifiers: HashSet<_> = state
@@ -194,6 +210,7 @@ impl Agent {
                 callback.on_phase_change(AgentPhase::Acting, None);
 
                 state.add_message(message.clone());
+                empty = 0;
 
                 let (tool_results, ended) = self.act(state, callback, tool_calls).await;
                 step.tool_calls = Some(tool_results);
@@ -211,23 +228,45 @@ impl Agent {
                 continue;
             }
 
-            if let Some(content) = &message.content {
-                state.add_message(message.clone());
-                step.message = Some(message.clone());
-                step = step.complete();
-                state.add_step(step);
+            let finished = choice
+                .finish_reason
+                .as_deref()
+                .is_none_or(|reason| !UNFINISHED_REASONS.contains(&reason));
+            let answer = message
+                .content
+                .clone()
+                .filter(|content| finished && !content.trim().is_empty());
+            let Some(content) = answer else {
+                step.message = Some(message);
+                Self::unanswered(state, &mut empty, step)?;
+                continue;
+            };
 
-                if choice.finish_reason.as_deref() == Some("stop") {
-                    Self::respond(state, callback, content);
-                    return Ok(());
-                }
-            }
-
-            if message.content.is_none() && message.tool_calls.is_none() {
-                state.fail("LLM returned empty response");
-                return Err(AgentError::Tool("Empty response from LLM".to_string()));
-            }
+            state.add_message(message.clone());
+            step.message = Some(message);
+            state.add_step(step.complete());
+            Self::respond(state, callback, &content);
+            return Ok(());
         }
+    }
+
+    /// Count a round that brought neither an answer nor a call, and fail the
+    /// turn once there have been [`MAX_EMPTY_RESPONSES`] in a row.
+    ///
+    /// The reply is kept on the step but not in the conversation: an empty
+    /// assistant message is not something a provider accepts back.
+    fn unanswered(
+        state: &mut AgentState,
+        empty: &mut usize,
+        step: AgentStep,
+    ) -> Result<(), AgentError> {
+        state.add_step(step.complete());
+        *empty += 1;
+        if *empty < MAX_EMPTY_RESPONSES {
+            return Ok(());
+        }
+        state.fail(AgentError::Empty.to_string());
+        Err(AgentError::Empty)
     }
 
     fn respond(state: &mut AgentState, callback: &dyn AgentCallback, response: &str) {

@@ -407,3 +407,119 @@ async fn a_tool_that_ends_the_turn_stops_the_loop() {
     );
     assert!(results[1].contains("Not run"), "{results:?}");
 }
+
+/// Only `stop` ended a turn. An answer that finished for any other reason -
+/// `length`, Anthropic's `end_turn`, or none given at all - was appended and
+/// sent straight back, round after round, until the iteration budget ran out.
+#[tokio::test]
+async fn an_answer_ends_the_turn_whatever_reason_it_finished_for() {
+    for reason in [
+        json!(null),
+        json!("length"),
+        json!("end_turn"),
+        json!("stop"),
+    ] {
+        let provider = provider(vec![completion(
+            json!({"role": "assistant", "content": "the answer"}),
+            reason.clone(),
+        )])
+        .await;
+
+        let state = agent(&provider, ToolRegistry::new())
+            .run("Go.", &NoOpCallback)
+            .await
+            .unwrap_or_else(|error| panic!("{reason}: {error}"));
+
+        assert_eq!(
+            state.final_response.as_deref(),
+            Some("the answer"),
+            "{reason}"
+        );
+        assert_eq!(provider.received.lock().unwrap().len(), 1, "{reason}");
+    }
+}
+
+/// An empty call list with no text asked for nothing, so the loop sent the
+/// same request again, fifty times over.
+#[tokio::test]
+async fn a_model_that_keeps_answering_with_nothing_fails_the_turn_soon() {
+    for reply in [
+        completion(
+            json!({"role": "assistant", "content": null, "tool_calls": []}),
+            json!("tool_calls"),
+        ),
+        completion(
+            json!({"role": "assistant", "content": "   "}),
+            json!("stop"),
+        ),
+        completion(
+            json!({"role": "assistant", "content": "calling it now"}),
+            json!("tool_calls"),
+        ),
+        json!({"id": "reply", "object": "chat.completion", "created": 0, "model": "test", "choices": []}),
+    ] {
+        let provider = provider(vec![reply.clone()]).await;
+
+        let error = agent(&provider, ToolRegistry::new())
+            .run("Go.", &NoOpCallback)
+            .await
+            .expect_err("nothing usable never becomes an answer");
+
+        assert!(
+            matches!(error, super::AgentError::Empty),
+            "{reply}: {error}"
+        );
+        assert_eq!(
+            provider.received.lock().unwrap().len(),
+            super::r#loop::MAX_EMPTY_RESPONSES,
+            "{reply}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_round_with_something_in_it_resets_the_count_of_empty_ones() {
+    let nothing = completion(
+        json!({"role": "assistant", "content": null, "tool_calls": []}),
+        json!("tool_calls"),
+    );
+    let (tools, _) = recording(crate::tools::Tier::Read);
+    let provider = provider(vec![
+        nothing.clone(),
+        nothing.clone(),
+        calling(&[(RECORDING, json!({}))]),
+        nothing.clone(),
+        nothing,
+        answer("got there"),
+    ])
+    .await;
+
+    let state = agent(&provider, tools)
+        .run("Go.", &NoOpCallback)
+        .await
+        .expect("no three empty rounds in a row");
+
+    assert_eq!(state.final_response.as_deref(), Some("got there"));
+}
+
+/// `AgentConfig::temperature` was never sent anywhere.
+#[tokio::test]
+async fn the_configured_temperature_is_the_one_requested() {
+    let provider = provider(vec![answer("done")]).await;
+    let config = AgentConfig {
+        temperature: Some(0.25),
+        ..AgentConfig::default()
+    };
+    Agent::new(
+        provider.client.clone(),
+        ToolRegistry::new(),
+        config,
+        ToolContext::default(),
+    )
+    .run("Go.", &NoOpCallback)
+    .await
+    .unwrap();
+
+    let requests = provider.received.lock().unwrap();
+    assert_eq!(requests[0]["temperature"], json!(0.25));
+}

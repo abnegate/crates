@@ -1,17 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-/// Configuration for the agent
+/// How an [`Agent`](super::Agent) runs a turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    /// Maximum number of iterations before stopping
+    /// Model rounds one turn may spend before it fails.
     pub max_iterations: usize,
-    /// Maximum total tokens to use
+    /// Tokens reserved for each reply, both in the request and in the context
+    /// budget compaction works to.
     pub max_tokens: u32,
-    /// Temperature for LLM calls
-    pub temperature: f32,
-    /// Whether to stream responses
-    pub stream: bool,
-    /// System prompt to use
+    /// Sampling temperature for this agent's requests, or the client's own
+    /// when unset.
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    /// The system prompt, or the default one listing the tools when unset.
     pub system_prompt: Option<String>,
 }
 
@@ -20,8 +21,7 @@ impl Default for AgentConfig {
         Self {
             max_iterations: 50,
             max_tokens: 4096,
-            temperature: 0.7,
-            stream: false,
+            temperature: None,
             system_prompt: None,
         }
     }
@@ -36,29 +36,8 @@ mod tests {
         let config = AgentConfig::default();
         assert_eq!(config.max_iterations, 50);
         assert_eq!(config.max_tokens, 4096);
-        assert_eq!(config.temperature, 0.7);
-        assert!(!config.stream);
+        assert_eq!(config.temperature, None);
         assert!(config.system_prompt.is_none());
-    }
-
-    #[test]
-    fn test_agent_config_custom() {
-        let config = AgentConfig {
-            max_iterations: 100,
-            max_tokens: 8192,
-            temperature: 0.3,
-            stream: true,
-            system_prompt: Some("Custom system prompt".to_string()),
-        };
-
-        assert_eq!(config.max_iterations, 100);
-        assert_eq!(config.max_tokens, 8192);
-        assert!((config.temperature - 0.3).abs() < f32::EPSILON);
-        assert!(config.stream);
-        assert_eq!(
-            config.system_prompt,
-            Some("Custom system prompt".to_string())
-        );
     }
 
     #[test]
@@ -66,8 +45,7 @@ mod tests {
         let config = AgentConfig {
             max_iterations: 75,
             max_tokens: 2048,
-            temperature: 0.5,
-            stream: false,
+            temperature: Some(0.5),
             system_prompt: Some("You are a coding assistant".to_string()),
         };
 
@@ -76,15 +54,16 @@ mod tests {
 
         assert_eq!(deserialized.max_iterations, config.max_iterations);
         assert_eq!(deserialized.max_tokens, config.max_tokens);
+        assert_eq!(deserialized.temperature, Some(0.5));
         assert_eq!(deserialized.system_prompt, config.system_prompt);
     }
 
     #[test]
-    fn test_agent_config_clone() {
-        let config = AgentConfig::default();
-        let cloned = config.clone();
-
-        assert_eq!(cloned.max_iterations, config.max_iterations);
-        assert_eq!(cloned.max_tokens, config.max_tokens);
+    fn a_config_saved_before_temperature_was_optional_still_reads() {
+        let config: AgentConfig = serde_json::from_str(
+            r#"{"max_iterations": 5, "max_tokens": 10, "stream": false, "system_prompt": null}"#,
+        )
+        .unwrap();
+        assert_eq!(config.temperature, None);
     }
 }
