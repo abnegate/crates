@@ -111,15 +111,17 @@ const REMOTE_SECTION: &str = "remote.";
 /// The section configuring a local branch.
 const BRANCH_SECTION: &str = "branch.";
 
-/// The directory a repository keeps its objects in. Its loose objects and
-/// packs run to many thousands of files, so the walk [`unlinked`] makes looks
-/// at what stands directly in it and walks only [`OBJECT_INFO`] below it.
+/// The directory a repository keeps its objects in. Its loose objects run to
+/// many thousands of files, so the walk [`unlinked`] makes looks at what
+/// stands directly in it and walks only [`OBJECTS_WALKED`] below it.
 const OBJECTS: &str = "objects";
 
-/// The one directory under [`OBJECTS`] walked whole: it holds `alternates`,
-/// naming the further stores git reads objects from, and the commit graphs
-/// git writes.
-const OBJECT_INFO: &str = "info";
+/// The directories under [`OBJECTS`] walked whole: `info` holds
+/// `alternates`, naming the further stores git reads objects from, and the
+/// commit graphs git writes; `pack` holds the few packs a clone keeps, whose
+/// times git sets through a link standing in a pack's place when it
+/// freshens one.
+const OBJECTS_WALKED: [&str; 2] = ["info", "pack"];
 
 /// Prints the worktree's own git directory and the one every worktree of
 /// its repository shares, a line each, as absolute paths. Git resolves every
@@ -185,10 +187,15 @@ fn absolute(path: &OsStr) -> OsString {
 /// git writes its refs, ref tables, reflogs, index, worktree records, commit
 /// message and configuration by name, and follows a link standing at any of
 /// them or at a directory above one. No link is followed, so each is seen
-/// where it stands; [`OBJECTS`] is looked at only as far as it says. What
-/// vanishes while the walk runs is fine. What cannot be read, and a listing
-/// that is not one absolute directory for each, are refused: what stands
-/// there cannot be known.
+/// where it stands; [`OBJECTS`] is looked at only as far as it says. Inside
+/// the directories its loose objects fan out into, only the directories
+/// themselves are looked at: git writes a loose object to a file of its
+/// own and renames it into place, but freshens one already there by
+/// setting its times, through a link standing in its place, so a link there
+/// can have git touch the times, and never the content, of the file it
+/// points at. What vanishes while the walk runs is fine. What cannot be
+/// read, and a listing that is not one absolute directory for each, are
+/// refused: what stands there cannot be known.
 pub(crate) fn unlinked(located: &[u8]) -> GitResult<()> {
     let (own, shared) = directories(located)?;
     if own != shared {
@@ -233,7 +240,12 @@ fn walk(root: &Path) -> GitResult<()> {
             if kind.is_symlink() {
                 return Err(GitError::LinkedPath);
             }
-            if kind.is_dir() && (whole || entry.file_name() == OBJECT_INFO) {
+            if kind.is_dir()
+                && (whole
+                    || OBJECTS_WALKED
+                        .iter()
+                        .any(|walked| entry.file_name() == *walked))
+            {
                 pending.push(entry.path());
             }
         }
@@ -500,7 +512,7 @@ mod tests {
     /// or at a directory above one, at every depth, with a name no refusal
     /// may carry among them.
     #[cfg(unix)]
-    const WRITTEN: [&str; 25] = [
+    const WRITTEN: [&str; 26] = [
         "HEAD",
         "ORIG_HEAD",
         "FETCH_HEAD",
@@ -525,6 +537,7 @@ mod tests {
         "objects/info/alternates",
         "objects/info/commit-graphs/graph.graph",
         "objects/pack",
+        "objects/pack/pack-one.pack",
         "objects/ab",
     ];
 
@@ -565,21 +578,22 @@ mod tests {
         }
     }
 
-    /// Loose objects and packs are named by git from their content and run
-    /// to many thousands of files, so what stands inside a directory of
-    /// them is not looked at.
+    /// Loose objects are named by git from their content and run to many
+    /// thousands of files, so what stands inside a directory of them is not
+    /// looked at; the few packs a clone keeps are.
     #[cfg(unix)]
     #[test]
-    fn the_object_store_is_walked_only_at_its_top_and_in_its_info_directory() {
-        for name in ["objects/ab/cdef", "objects/pack/pack-one.pack"] {
-            let directory = tempfile::tempdir().unwrap();
-            link(directory.path(), name);
+    fn the_object_store_is_walked_at_its_top_and_in_its_info_and_pack_directories() {
+        let loose = tempfile::tempdir().unwrap();
+        link(loose.path(), "objects/ab/cdef");
+        let packed = tempfile::tempdir().unwrap();
+        link(packed.path(), "objects/pack/pack-one.pack");
 
-            assert!(
-                unlinked(&located(directory.path(), directory.path())).is_ok(),
-                "{name}"
-            );
-        }
+        let passed = unlinked(&located(loose.path(), loose.path()));
+        let refused = unlinked(&located(packed.path(), packed.path()));
+
+        assert!(passed.is_ok(), "{passed:?}");
+        assert!(matches!(refused, Err(GitError::LinkedPath)), "{refused:?}");
     }
 
     #[test]
