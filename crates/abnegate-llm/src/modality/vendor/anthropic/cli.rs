@@ -8,6 +8,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use crate::modality::vendor::anthropic::failure::Failure;
 use crate::provider::ProviderError;
 
 const EXECUTABLE: &str = "claude";
@@ -24,7 +25,9 @@ const MAXIMUM_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
 /// The prompt is written to the child's stdin rather than its argument list,
 /// so a prompt of any length fits and one that starts with `-` is never read
 /// as a flag. The child is killed if the call is dropped or overruns its
-/// deadline, and its output is read only up to a bound.
+/// deadline, and its output is read only up to a bound. A run that exits
+/// unsuccessfully is reported as its JSON envelope describes it, and as its
+/// diagnostics only when there is no envelope.
 #[derive(Debug, Clone)]
 pub(crate) struct Cli {
     executable: PathBuf,
@@ -107,11 +110,9 @@ impl Cli {
                 .await
                 .map_err(|error| ProviderError::unavailable(provider, &executable, error))?;
             if !status.success() {
-                return Err(ProviderError::exit(
-                    provider,
-                    status.into(),
-                    &String::from_utf8_lossy(&diagnostics),
-                ));
+                return Err(
+                    Failure::exited(&output, &diagnostics).into_error(provider, status.into())
+                );
             }
             Ok(output)
         };
