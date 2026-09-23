@@ -61,8 +61,31 @@ MSRV — it is what contributors and CI build with.
   features on top; it may not change the version.
 - Anything heavy — a native library, an ONNX runtime, a database driver — goes
   behind a feature, and `default = []`.
-- `cargo hack check --workspace --feature-powerset --depth 2` has to pass, so
-  every feature combination must compile on its own.
+- `cargo hack check --workspace --feature-powerset --depth 2 --all-targets`
+  and `cargo hack clippy --workspace --each-feature --all-targets -- -D warnings`
+  have to pass, so every feature combination, tests included, must compile and
+  lint clean on its own.
+
+## Documentation
+
+docs.rs builds with every feature, but a consumer running `cargo doc` gets only
+the features it enabled, so an intra-doc link to a feature-gated item has to
+resolve without that feature too. Both builds have to pass:
+
+```sh
+RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --all-features --no-deps
+RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --workspace --no-default-features --no-deps
+```
+
+## Security posture
+
+Every crate is safe by default, and a change that weakens any of the following
+needs a reason in the commit message. Child processes receive an allowlisted
+environment by default, never the parent's whole environment. All outbound HTTP
+validates its target before connecting and refuses redirects that cross
+origins. Every error type is redacted, so an error that reaches a log never
+carries a secret. Every public enum is `#[non_exhaustive]`, so adding a variant
+is never a breaking change.
 
 ## Commits
 
@@ -83,5 +106,7 @@ cargo publish -p abnegate-secret
 ```
 
 Trusted Publishing is configured per crate on crates.io once that first version
-exists. Only then are `release = false` in `release-plz.toml` and the
-`workflow_dispatch`-only trigger on `.github/workflows/release-plz.yml` lifted.
+exists. Until then, dispatch `.github/workflows/release-plz.yml` with `publish`
+left off: it opens the release PR and never asks crates.io for a token. Only
+once every crate has Trusted Publishing are `release = false` in
+`release-plz.toml` and the `workflow_dispatch`-only trigger lifted.

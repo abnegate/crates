@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -46,6 +49,14 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+        with:
+          tool: cargo-hack@0.6.45
+
+      - name: Run Clippy on each feature in isolation
+        run: cargo hack clippy --workspace --each-feature --all-targets -- -D warnings
 
   test:
     name: Test Suite
@@ -100,6 +111,35 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+  seatbelt:
+    name: Seatbelt Confinement
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: seatbelt
+          cache-on-failure: true
+
+      - name: Assert the confinement backend is usable
+        run: /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+        with:
+          tool: cargo-nextest@0.9.146
+
+      - name: Run abnegate-exec tests under seatbelt
+        run: cargo nextest run -p abnegate-exec --all-targets --no-fail-fast
+        env:
+          RUST_BACKTRACE: 1
+
   hack:
     name: Feature Matrix
     runs-on: ubuntu-latest
@@ -122,7 +162,7 @@ jobs:
           tool: cargo-hack@0.6.45
 
       - name: Check every feature combination
-        run: cargo hack check --workspace --feature-powerset --depth 2
+        run: cargo hack check --workspace --feature-powerset --depth 2 --all-targets
 
   msrv:
     name: MSRV
@@ -214,5 +254,8 @@ jobs:
       # docs.rs builds with nightly and --cfg docsrs, and `feature(doc_cfg)` is
       # a hard error on any other channel. `+nightly` is the only thing that
       # beats rust-toolchain.toml.
-      - name: Build documentation
+      - name: Build documentation with every feature
         run: cargo +nightly doc --workspace --all-features --no-deps
+
+      - name: Build documentation without optional features
+        run: cargo +nightly doc --workspace --no-default-features --no-deps
