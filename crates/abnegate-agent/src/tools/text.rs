@@ -33,22 +33,24 @@ pub const MAX_PREVIEW_CHARACTERS: usize = 400;
 ///
 /// A shell runs one command per line, so two lines joined by a space read as a
 /// single command the reader was never shown. The break survives the collapse
-/// as something they can see.
+/// as something they can see, and a call carrying the glyph itself has it
+/// escaped, so every one a reader sees is a real break.
 pub const LINE_BREAK: &str = " ⏎ ";
 
-/// Collapse `text` onto one line.
+/// Collapse the blank space in `text`.
 ///
 /// A command, a message body or a patch arrives with newlines and runs of
 /// whitespace that would push the part worth reading off the card. Runs of
-/// blank space within a line go; a line break becomes [`LINE_BREAK`], because
-/// what separates two commands is the part of a preview a reader is deciding
-/// on.
+/// blank space within a line go and so do blank lines; the lines left keep one
+/// `\n` between them, for a [`Preview`](super::Preview) to draw as
+/// [`LINE_BREAK`], because what separates two commands is the part of a
+/// preview a reader is deciding on.
 pub(crate) fn collapse(text: &str) -> String {
     text.lines()
         .map(|line| line.split_whitespace().collect::<Vec<&str>>().join(" "))
         .filter(|line| !line.is_empty())
         .collect::<Vec<String>>()
-        .join(LINE_BREAK)
+        .join("\n")
 }
 
 fn trim_marker(dropped: usize) -> String {
@@ -90,7 +92,7 @@ mod tests {
     #[test]
     fn blank_space_inside_a_line_still_collapses() {
         assert_eq!(collapse("cargo    test   --all"), "cargo test --all");
-        assert_eq!(collapse("  one\n\n\ntwo  "), format!("one{LINE_BREAK}two"));
+        assert_eq!(collapse("  one\n\n\ntwo  "), "one\ntwo");
     }
 
     #[test]
