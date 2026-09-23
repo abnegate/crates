@@ -65,7 +65,7 @@ mod tests {
             search: Some("qwen".into()),
             cursor: None,
             limit: Some(20),
-            sort: Some(ModelSort::NameAsc),
+            sort: Some(ModelSort::NameAscending),
             family: Some("all".into()),
             size: None,
             medium: None,

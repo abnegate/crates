@@ -3,7 +3,7 @@ use crate::catalog::entry::ModelEntry;
 use crate::catalog::error::CatalogError;
 use crate::catalog::medium_filter::ModelMediumFilter;
 use crate::catalog::page::ModelPage;
-use crate::catalog::parse::parse_param_billions;
+use crate::catalog::parse::parse_parameter_billions;
 use crate::catalog::query::BrowseQuery;
 use crate::catalog::size_filter::ModelSizeFilter;
 use crate::catalog::sort::ModelSort;
@@ -99,7 +99,7 @@ pub(crate) fn model_matches_family(model: &ModelEntry, family: &str) -> bool {
 }
 
 pub(crate) fn model_matches_size(model: &ModelEntry, size: ModelSizeFilter) -> bool {
-    let Some(billions) = param_billions(model) else {
+    let Some(billions) = parameter_billions(model) else {
         return false;
     };
 
@@ -108,7 +108,7 @@ pub(crate) fn model_matches_size(model: &ModelEntry, size: ModelSizeFilter) -> b
         ModelSizeFilter::Small => billions < 4.0,
         ModelSizeFilter::Medium => (4.0..16.0).contains(&billions),
         ModelSizeFilter::Large => (16.0..40.0).contains(&billions),
-        ModelSizeFilter::Xl => billions >= 40.0,
+        ModelSizeFilter::ExtraLarge => billions >= 40.0,
     }
 }
 
@@ -147,37 +147,38 @@ pub(crate) fn model_matches_medium(model: &ModelEntry, medium: ModelMediumFilter
 fn sort_models(models: &mut [ModelEntry], sort: ModelSort) {
     match sort {
         ModelSort::Relevance => {}
-        ModelSort::NameAsc => models.sort_by_key(|model| model.name.to_lowercase()),
-        ModelSort::NameDesc => models.sort_by_key(|model| Reverse(model.name.to_lowercase())),
-        ModelSort::DownloadsAsc => {
+        ModelSort::NameAscending => models.sort_by_key(|model| model.name.to_lowercase()),
+        ModelSort::NameDescending => models.sort_by_key(|model| Reverse(model.name.to_lowercase())),
+        ModelSort::DownloadsAscending => {
             models.sort_by(|left, right| compare(left.downloads, right.downloads))
         }
-        ModelSort::DownloadsDesc => {
-            models.sort_by(|left, right| compare_desc(left.downloads, right.downloads))
+        ModelSort::DownloadsDescending => {
+            models.sort_by(|left, right| compare_descending(left.downloads, right.downloads))
         }
-        ModelSort::SizeAsc => models.sort_by(|left, right| compare(left.size, right.size)),
-        ModelSort::SizeDesc => models.sort_by(|left, right| compare_desc(left.size, right.size)),
-        ModelSort::ParamsAsc => {
-            models.sort_by(|left, right| compare(param_billions(left), param_billions(right)))
+        ModelSort::SizeAscending => models.sort_by(|left, right| compare(left.size, right.size)),
+        ModelSort::SizeDescending => {
+            models.sort_by(|left, right| compare_descending(left.size, right.size))
         }
-        ModelSort::ParamsDesc => {
-            models.sort_by(|left, right| compare_desc(param_billions(left), param_billions(right)))
-        }
-        ModelSort::UpdatedAsc => models.sort_by(|left, right| {
+        ModelSort::ParametersAscending => models
+            .sort_by(|left, right| compare(parameter_billions(left), parameter_billions(right))),
+        ModelSort::ParametersDescending => models.sort_by(|left, right| {
+            compare_descending(parameter_billions(left), parameter_billions(right))
+        }),
+        ModelSort::UpdatedAscending => models.sort_by(|left, right| {
             compare(left.modified_at.as_deref(), right.modified_at.as_deref())
         }),
-        ModelSort::UpdatedDesc => models.sort_by(|left, right| {
-            compare_desc(left.modified_at.as_deref(), right.modified_at.as_deref())
+        ModelSort::UpdatedDescending => models.sort_by(|left, right| {
+            compare_descending(left.modified_at.as_deref(), right.modified_at.as_deref())
         }),
     }
 }
 
-fn param_billions(model: &ModelEntry) -> Option<f64> {
+fn parameter_billions(model: &ModelEntry) -> Option<f64> {
     model
         .details
         .as_ref()
         .and_then(|details| details.parameter_size.as_deref())
-        .and_then(parse_param_billions)
+        .and_then(parse_parameter_billions)
 }
 
 pub(crate) fn compare<T: PartialOrd>(left: Option<T>, right: Option<T>) -> Ordering {
@@ -189,7 +190,7 @@ pub(crate) fn compare<T: PartialOrd>(left: Option<T>, right: Option<T>) -> Order
     }
 }
 
-fn compare_desc<T: PartialOrd>(left: Option<T>, right: Option<T>) -> Ordering {
+fn compare_descending<T: PartialOrd>(left: Option<T>, right: Option<T>) -> Ordering {
     if left.is_some() && right.is_some() {
         compare(left, right).reverse()
     } else {
@@ -308,7 +309,10 @@ mod tests {
         assert!(model_matches_size(&small, ModelSizeFilter::Small));
         assert!(model_matches_size(&medium, ModelSizeFilter::Medium));
         assert!(model_matches_size(&large, ModelSizeFilter::Large));
-        assert!(model_matches_size(&extra_large, ModelSizeFilter::Xl));
+        assert!(model_matches_size(
+            &extra_large,
+            ModelSizeFilter::ExtraLarge
+        ));
         assert!(!model_matches_size(&unknown, ModelSizeFilter::Small));
     }
 
@@ -390,7 +394,7 @@ mod tests {
         let text = refine_models(
             models.clone(),
             &browse_with_medium(
-                ModelSort::NameAsc,
+                ModelSort::NameAscending,
                 None,
                 ModelSizeFilter::All,
                 ModelMediumFilter::Text,
@@ -456,7 +460,11 @@ mod tests {
 
         let filtered = refine_models(
             models.clone(),
-            &browse(ModelSort::NameAsc, Some("llama"), ModelSizeFilter::All),
+            &browse(
+                ModelSort::NameAscending,
+                Some("llama"),
+                ModelSizeFilter::All,
+            ),
         );
         assert_eq!(
             filtered
@@ -475,7 +483,7 @@ mod tests {
 
         let by_parameters = refine_models(
             models,
-            &browse(ModelSort::ParamsDesc, None, ModelSizeFilter::All),
+            &browse(ModelSort::ParametersDescending, None, ModelSizeFilter::All),
         );
         assert_eq!(by_parameters[0].name, "llama-70b");
         assert_eq!(by_parameters[2].name, "llama-3b");
@@ -496,7 +504,7 @@ mod tests {
 
         let descending = refine_models(
             models.clone(),
-            &browse(ModelSort::DownloadsDesc, None, ModelSizeFilter::All),
+            &browse(ModelSort::DownloadsDescending, None, ModelSizeFilter::All),
         );
         assert_eq!(
             descending
@@ -508,7 +516,7 @@ mod tests {
 
         let ascending = refine_models(
             models,
-            &browse(ModelSort::DownloadsAsc, None, ModelSizeFilter::All),
+            &browse(ModelSort::DownloadsAscending, None, ModelSizeFilter::All),
         );
         assert_eq!(
             ascending
@@ -528,7 +536,7 @@ mod tests {
 
         let descending = refine_models(
             models.clone(),
-            &browse(ModelSort::SizeDesc, None, ModelSizeFilter::All),
+            &browse(ModelSort::SizeDescending, None, ModelSizeFilter::All),
         );
         assert_eq!(
             descending
@@ -540,7 +548,7 @@ mod tests {
 
         let ascending = refine_models(
             models,
-            &browse(ModelSort::SizeAsc, None, ModelSizeFilter::All),
+            &browse(ModelSort::SizeAscending, None, ModelSizeFilter::All),
         );
         assert_eq!(
             ascending
@@ -560,13 +568,13 @@ mod tests {
 
         let descending = refine_models(
             models.clone(),
-            &browse(ModelSort::NameDesc, None, ModelSizeFilter::All),
+            &browse(ModelSort::NameDescending, None, ModelSizeFilter::All),
         );
         assert_eq!(descending[0].name, "b");
 
         let updated = refine_models(
             models,
-            &browse(ModelSort::UpdatedAsc, None, ModelSizeFilter::All),
+            &browse(ModelSort::UpdatedAscending, None, ModelSizeFilter::All),
         );
         assert_eq!(updated[0].name, "b");
     }

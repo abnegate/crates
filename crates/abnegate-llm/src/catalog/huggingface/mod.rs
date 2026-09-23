@@ -1,18 +1,27 @@
+mod card_data;
+mod gguf;
+mod model;
+mod sibling;
+mod variant;
+
 use crate::catalog::capability::ModelCapability;
 use crate::catalog::capability::declared_capabilities;
 use crate::catalog::details::ModelDetails;
 use crate::catalog::entry::ModelEntry;
 use crate::catalog::error::CatalogError;
 use crate::catalog::http::build_client;
+use crate::catalog::huggingface::model::HuggingFaceModel;
+use crate::catalog::huggingface::sibling::HuggingFaceSibling;
+use crate::catalog::huggingface::variant::GgufVariant;
 use crate::catalog::medium_filter::ModelMediumFilter;
 use crate::catalog::page::MAX_PAGE_SIZE;
 use crate::catalog::page::ModelPage;
-use crate::catalog::parse::download_param_billions;
-use crate::catalog::parse::extract_all_param_sizes;
+use crate::catalog::parse::download_parameter_billions;
+use crate::catalog::parse::extract_all_parameter_sizes;
 use crate::catalog::parse::extract_model_family;
-use crate::catalog::parse::extract_param_size;
+use crate::catalog::parse::extract_parameter_size;
 use crate::catalog::parse::extract_quantization;
-use crate::catalog::parse::is_param_size_chip;
+use crate::catalog::parse::is_parameter_size_chip;
 use crate::catalog::parse::quantization_bit_width;
 use crate::catalog::parse::quantization_preference;
 use crate::catalog::provider::ModelProvider;
@@ -31,13 +40,12 @@ use crate::catalog::text::nonempty_vec;
 use crate::catalog::text::preview;
 use crate::catalog::text::use_cases_from_pipeline;
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::Client;
 use reqwest::Url;
-use serde::Deserialize;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 /// Upstream HuggingFace models API.
 pub const DEFAULT_HUGGINGFACE_MODELS_URL: &str = "https://huggingface.co/api/models";
@@ -47,8 +55,8 @@ const WINDOW_PAGES: usize = 5;
 /// Extra scan budget for size filters, which can skip most downloads-ranked rows.
 const FILTER_MAX_PAGES: usize = 15;
 
-static GGUF_SHARD_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)-\d{5}-of-\d{5}$").expect("gguf shard regex"));
+static GGUF_SHARD_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)-\d{5}-of-\d{5}$").expect("gguf shard pattern"));
 
 const OFFSET_PREFIX: &str = "offset:";
 const EXPAND_PARAMETER: &str = "expand[]";
@@ -66,20 +74,17 @@ const EXPANDED_FIELDS: &[&str] = &[
 ];
 
 /// Browses the GGUF and adapter repositories HuggingFace publishes.
+#[derive(Debug, Clone)]
 pub struct HuggingFaceProvider {
     catalog_url: String,
     client: Client,
 }
 
-impl Default for HuggingFaceProvider {
-    fn default() -> Self {
-        Self::new(DEFAULT_HUGGINGFACE_MODELS_URL)
-    }
-}
-
 impl HuggingFaceProvider {
-    pub fn new(catalog_url: impl Into<String>) -> Self {
-        Self::with_proxy(catalog_url, None).expect("Failed to build HuggingFace catalog client")
+    /// A client for `catalog_url`, failing only if no HTTP client can be
+    /// built on this platform.
+    pub fn new(catalog_url: impl Into<String>) -> Result<Self, CatalogError> {
+        Self::with_proxy(catalog_url, None)
     }
 
     pub fn with_proxy(
@@ -229,12 +234,12 @@ fn window_next_cursor(
 fn uses_local_sort(sort: ModelSort) -> bool {
     matches!(
         sort,
-        ModelSort::NameAsc
-            | ModelSort::NameDesc
-            | ModelSort::SizeAsc
-            | ModelSort::SizeDesc
-            | ModelSort::ParamsAsc
-            | ModelSort::ParamsDesc
+        ModelSort::NameAscending
+            | ModelSort::NameDescending
+            | ModelSort::SizeAscending
+            | ModelSort::SizeDescending
+            | ModelSort::ParametersAscending
+            | ModelSort::ParametersDescending
     )
 }
 
@@ -260,17 +265,17 @@ fn medium_tag(medium: ModelMediumFilter) -> Option<&'static str> {
 
 fn sort_parameters(sort: ModelSort) -> (&'static str, i8) {
     match sort {
-        ModelSort::UpdatedAsc => ("lastModified", 1),
-        ModelSort::UpdatedDesc => ("lastModified", -1),
-        ModelSort::DownloadsAsc => ("downloads", 1),
+        ModelSort::UpdatedAscending => ("lastModified", 1),
+        ModelSort::UpdatedDescending => ("lastModified", -1),
+        ModelSort::DownloadsAscending => ("downloads", 1),
         ModelSort::Relevance
-        | ModelSort::DownloadsDesc
-        | ModelSort::NameAsc
-        | ModelSort::NameDesc
-        | ModelSort::SizeAsc
-        | ModelSort::SizeDesc
-        | ModelSort::ParamsAsc
-        | ModelSort::ParamsDesc => ("downloads", -1),
+        | ModelSort::DownloadsDescending
+        | ModelSort::NameAscending
+        | ModelSort::NameDescending
+        | ModelSort::SizeAscending
+        | ModelSort::SizeDescending
+        | ModelSort::ParametersAscending
+        | ModelSort::ParametersDescending => ("downloads", -1),
     }
 }
 
@@ -415,65 +420,6 @@ fn extract_cursor_from_link_header(link: &str) -> Option<String> {
     None
 }
 
-#[derive(Debug, Deserialize)]
-struct HuggingFaceModel {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(rename = "modelId", default)]
-    model_id: Option<String>,
-    #[serde(default)]
-    sha: Option<String>,
-    #[serde(rename = "lastModified", default)]
-    last_modified: Option<String>,
-    #[serde(rename = "createdAt", default)]
-    created_at: Option<String>,
-    #[serde(default)]
-    tags: Option<Vec<String>>,
-    #[serde(default)]
-    downloads: Option<u64>,
-    #[serde(default)]
-    likes: Option<u64>,
-    #[serde(default)]
-    author: Option<String>,
-    #[serde(rename = "pipeline_tag", default)]
-    pipeline_tag: Option<String>,
-    #[serde(rename = "cardData", default)]
-    card_data: Option<HuggingFaceCardData>,
-    #[serde(default)]
-    gguf: Option<HuggingFaceGguf>,
-    #[serde(default)]
-    siblings: Option<Vec<HuggingFaceSibling>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HuggingFaceSibling {
-    rfilename: String,
-    #[serde(default)]
-    size: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HuggingFaceCardData {
-    #[serde(default)]
-    license: Option<String>,
-    #[serde(rename = "pipeline_tag", default)]
-    pipeline_tag: Option<String>,
-    #[serde(default)]
-    base_model: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HuggingFaceGguf {
-    #[serde(default)]
-    total: Option<u64>,
-    #[serde(rename = "totalFileSize", default)]
-    total_file_size: Option<u64>,
-    #[serde(default)]
-    architecture: Option<String>,
-    #[serde(rename = "context_length", default)]
-    context_length: Option<u64>,
-}
-
 fn model_id(model: &HuggingFaceModel) -> String {
     model
         .model_id
@@ -500,12 +446,12 @@ fn to_model(model: HuggingFaceModel) -> ModelEntry {
                 .find_map(|tag| extract_model_family(tag))
                 .or_else(|| extract_model_family(&id))
         });
-    let parameter_size = extract_param_size(&id).or_else(|| {
+    let parameter_size = extract_parameter_size(&id).or_else(|| {
         tags.iter().find_map(|tag| {
-            if is_param_size_chip(tag) {
+            if is_parameter_size_chip(tag) {
                 Some(tag.to_uppercase())
             } else {
-                extract_param_size(tag)
+                extract_parameter_size(tag)
             }
         })
     });
@@ -669,13 +615,6 @@ fn safetensors_variants(id: &str, siblings: &[HuggingFaceSibling]) -> Option<Vec
     nonempty(sizes)
 }
 
-struct GgufVariant {
-    stem: String,
-    quantization: Option<String>,
-    parameter_size: Option<String>,
-    size: Option<u64>,
-}
-
 fn is_gguf_weight_file(filename: &str) -> bool {
     let name = filename
         .rsplit('/')
@@ -691,14 +630,14 @@ fn gguf_file_stem(filename: &str) -> String {
         .strip_suffix(".gguf")
         .or_else(|| name.strip_suffix(".GGUF"))
         .unwrap_or(name);
-    GGUF_SHARD_RE.replace(stem, "").into_owned()
+    GGUF_SHARD_PATTERN.replace(stem, "").into_owned()
 }
 
-fn filename_param_size(filename: &str) -> Option<String> {
-    extract_all_param_sizes(filename)
+fn filename_parameter_size(filename: &str) -> Option<String> {
+    extract_all_parameter_sizes(filename)
         .into_iter()
         .next()
-        .or_else(|| extract_param_size(filename).filter(|label| !label.contains('·')))
+        .or_else(|| extract_parameter_size(filename).filter(|label| !label.contains('·')))
 }
 
 /// Distinct GGUF quantizations in a repository, each a separate download.
@@ -719,7 +658,7 @@ fn gguf_variants(id: &str, siblings: &[HuggingFaceSibling]) -> Option<Vec<ModelS
         files.push(GgufVariant {
             stem,
             quantization: extract_quantization(&sibling.rfilename),
-            parameter_size: filename_param_size(&sibling.rfilename),
+            parameter_size: filename_parameter_size(&sibling.rfilename),
             size: sibling.size,
         });
     }
@@ -776,8 +715,8 @@ fn gguf_variants(id: &str, siblings: &[HuggingFaceSibling]) -> Option<Vec<ModelS
 
 fn compare_downloads(left: &ModelSize, right: &ModelSize) -> Ordering {
     compare(
-        download_param_billions(&left.label),
-        download_param_billions(&right.label),
+        download_parameter_billions(&left.label),
+        download_parameter_billions(&right.label),
     )
     .then_with(|| {
         compare(
@@ -1091,12 +1030,21 @@ mod tests {
     fn sort_parameters_map_to_the_api() {
         assert_eq!(sort_parameters(ModelSort::Relevance), ("downloads", -1));
         assert_eq!(
-            sort_parameters(ModelSort::UpdatedDesc),
+            sort_parameters(ModelSort::UpdatedDescending),
             ("lastModified", -1)
         );
-        assert_eq!(sort_parameters(ModelSort::UpdatedAsc), ("lastModified", 1));
-        assert_eq!(sort_parameters(ModelSort::DownloadsDesc), ("downloads", -1));
-        assert_eq!(sort_parameters(ModelSort::DownloadsAsc), ("downloads", 1));
+        assert_eq!(
+            sort_parameters(ModelSort::UpdatedAscending),
+            ("lastModified", 1)
+        );
+        assert_eq!(
+            sort_parameters(ModelSort::DownloadsDescending),
+            ("downloads", -1)
+        );
+        assert_eq!(
+            sort_parameters(ModelSort::DownloadsAscending),
+            ("downloads", 1)
+        );
     }
 
     #[test]
@@ -1107,17 +1055,17 @@ mod tests {
             ModelSizeFilter::All
         )));
         assert!(!uses_local_window(&browse(
-            ModelSort::UpdatedDesc,
+            ModelSort::UpdatedDescending,
             Some("llama"),
             ModelSizeFilter::All
         )));
         assert!(uses_local_window(&browse(
-            ModelSort::NameAsc,
+            ModelSort::NameAscending,
             None,
             ModelSizeFilter::All
         )));
         assert!(uses_local_window(&browse(
-            ModelSort::SizeDesc,
+            ModelSort::SizeDescending,
             None,
             ModelSizeFilter::All
         )));
@@ -1147,10 +1095,10 @@ mod tests {
             Some("feature-extraction")
         );
         assert_eq!(medium_tag(ModelMediumFilter::Text), None);
-        assert!(uses_local_sort(ModelSort::ParamsDesc));
-        assert!(!uses_local_sort(ModelSort::UpdatedDesc));
-        assert!(!uses_local_sort(ModelSort::DownloadsDesc));
-        assert!(!uses_local_sort(ModelSort::DownloadsAsc));
+        assert!(uses_local_sort(ModelSort::ParametersDescending));
+        assert!(!uses_local_sort(ModelSort::UpdatedDescending));
+        assert!(!uses_local_sort(ModelSort::DownloadsDescending));
+        assert!(!uses_local_sort(ModelSort::DownloadsAscending));
         assert_eq!(window_pages(true), WINDOW_PAGES);
         assert_eq!(window_pages(false), FILTER_MAX_PAGES);
     }
@@ -1429,7 +1377,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
         let page = provider
             .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
             .await
@@ -1451,7 +1399,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_skips_the_network_for_image_generation() {
-        let provider = HuggingFaceProvider::new("http://catalog.invalid/api/models");
+        let provider = HuggingFaceProvider::new("http://catalog.invalid/api/models").unwrap();
         let page = provider
             .search(browse_with_medium(
                 ModelSort::Relevance,
@@ -1472,7 +1420,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
         let error = provider
             .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
             .await
@@ -1488,7 +1436,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
         let error = provider
             .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
             .await
@@ -1519,7 +1467,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
         let adapters = provider
             .search_adapters(
                 browse(ModelSort::Relevance, None, ModelSizeFilter::All),
@@ -1535,7 +1483,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_adapters_without_bases_makes_no_request() {
-        let provider = HuggingFaceProvider::new("http://catalog.invalid/api/models");
+        let provider = HuggingFaceProvider::new("http://catalog.invalid/api/models").unwrap();
         let adapters = provider
             .search_adapters(
                 browse(ModelSort::Relevance, None, ModelSizeFilter::All),
@@ -1606,7 +1554,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
         let error = provider
             .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
             .await

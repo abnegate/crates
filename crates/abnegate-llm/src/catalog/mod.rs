@@ -3,14 +3,14 @@
 //!
 //! ```no_run
 //! use abnegate_llm::catalog::BrowseRequest;
-//! use abnegate_llm::catalog::provider;
+//! use abnegate_llm::catalog::browse;
 //!
-//! # async fn browse() -> Result<(), abnegate_llm::catalog::CatalogError> {
+//! # async fn example() -> Result<(), abnegate_llm::catalog::CatalogError> {
 //! let request = BrowseRequest {
 //!     search: Some("qwen".into()),
 //!     ..Default::default()
 //! };
-//! let page = provider("huggingface")?
+//! let page = browse("huggingface")?
 //!     .search(request.to_browse_query())
 //!     .await?;
 //!
@@ -21,6 +21,7 @@
 //! # }
 //! ```
 
+mod browse;
 mod capability;
 mod details;
 mod entry;
@@ -44,6 +45,8 @@ mod size_filter;
 mod sort;
 mod text;
 
+pub use browse::browse;
+pub use browse::browse_with_proxy;
 pub use capability::ModelCapability;
 pub use details::ModelDetails;
 pub use entry::ModelEntry;
@@ -65,11 +68,9 @@ pub use page::DEFAULT_PAGE_SIZE;
 pub use page::MAX_PAGE_SIZE;
 pub use page::ModelPage;
 pub use parse::extract_model_family;
-pub use parse::extract_param_size;
+pub use parse::extract_parameter_size;
 pub use parse::extract_quantization;
 pub use provider::ModelProvider;
-pub use provider::provider;
-pub use provider::provider_with_proxy;
 pub use query::BrowseQuery;
 pub use request::BrowseRequest;
 pub use size::ModelSize;

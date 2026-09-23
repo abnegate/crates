@@ -5,11 +5,11 @@ use crate::catalog::error::CatalogError;
 use crate::catalog::http::build_client;
 use crate::catalog::medium_filter::ModelMediumFilter;
 use crate::catalog::page::ModelPage;
-use crate::catalog::parse::collect_param_size_labels;
+use crate::catalog::parse::collect_parameter_size_labels;
 use crate::catalog::parse::extract_model_family;
-use crate::catalog::parse::extract_param_size;
-use crate::catalog::parse::format_param_sizes;
-use crate::catalog::parse::is_param_size_chip;
+use crate::catalog::parse::extract_parameter_size;
+use crate::catalog::parse::format_parameter_sizes;
+use crate::catalog::parse::is_parameter_size_chip;
 use crate::catalog::parse::parse_compact_count;
 use crate::catalog::provider::ModelProvider;
 use crate::catalog::query::BrowseQuery;
@@ -24,12 +24,13 @@ use crate::catalog::text::nonempty_vec;
 use async_trait::async_trait;
 use futures::stream;
 use futures::stream::StreamExt;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::Client;
+use reqwest::Url;
 use scraper::Html;
 use scraper::Selector;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 /// Ollama's own catalogue search page.
 pub const DEFAULT_OLLAMA_SEARCH_URL: &str = "https://ollama.com/search";
@@ -43,10 +44,11 @@ const OFFICIAL_NAMESPACE: &str = "library";
 
 const SIZE_LOOKUP_CONCURRENCY: usize = 8;
 
-static PULLS_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)([\d,.]+[KMBkmb]?)\s*Pulls").expect("pulls regex"));
+static PULLS_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)([\d,.]+[KMBkmb]?)\s*Pulls").expect("pulls pattern"));
 
 /// Browses the models Ollama lists in its library.
+#[derive(Debug, Clone)]
 pub struct OllamaProvider {
     client: Client,
     search_url: String,
@@ -54,8 +56,10 @@ pub struct OllamaProvider {
 }
 
 impl OllamaProvider {
-    pub fn new() -> Self {
-        Self::with_proxy(None).expect("Failed to build Ollama model catalog client")
+    /// A client for Ollama's own catalogue, failing only if no HTTP client
+    /// can be built on this platform.
+    pub fn new() -> Result<Self, CatalogError> {
+        Self::with_proxy(None)
     }
 
     pub fn with_proxy(proxy_url: Option<&str>) -> Result<Self, CatalogError> {
@@ -79,12 +83,6 @@ impl OllamaProvider {
     }
 }
 
-impl Default for OllamaProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[async_trait]
 impl ModelProvider for OllamaProvider {
     fn name(&self) -> &'static str {
@@ -98,8 +96,8 @@ impl ModelProvider for OllamaProvider {
             options.query,
             options.family,
             options.medium,
-        );
-        let response = self.client.get(&url).send().await?;
+        )?;
+        let response = self.client.get(url).send().await?;
 
         if !response.status().is_success() {
             return Err(CatalogError::Unavailable(format!(
@@ -110,7 +108,10 @@ impl ModelProvider for OllamaProvider {
 
         let html = response.text().await?;
         let mut models = parse_library_html(&html);
-        if matches!(options.sort, ModelSort::SizeAsc | ModelSort::SizeDesc) {
+        if matches!(
+            options.sort,
+            ModelSort::SizeAscending | ModelSort::SizeDescending
+        ) {
             models = attach_download_sizes(models, &self.client, &self.registry_url).await;
             models = refine_models(models, &options);
             return Ok(paginate_models(models, offset, options.limit));
@@ -154,7 +155,7 @@ fn search_url(
     query: Option<&str>,
     family: Option<&str>,
     medium: ModelMediumFilter,
-) -> String {
+) -> Result<Url, CatalogError> {
     let mut terms = Vec::new();
     if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
         terms.push(query);
@@ -165,18 +166,19 @@ fn search_url(
         terms.push(family);
     }
 
-    let mut url = if terms.is_empty() {
-        base_url.to_string()
-    } else {
-        format!("{base_url}?q={}", urlencoding::encode(&terms.join(" ")))
-    };
-
-    if let Some(category) = medium_category(medium) {
-        url.push_str(if terms.is_empty() { "?c=" } else { "&c=" });
-        url.push_str(category);
+    let mut url = Url::parse(base_url)
+        .map_err(|error| CatalogError::InvalidUrl(format!("{base_url}: {error}")))?;
+    let category = medium_category(medium);
+    if !terms.is_empty() || category.is_some() {
+        let mut pairs = url.query_pairs_mut();
+        if !terms.is_empty() {
+            pairs.append_pair("q", &terms.join(" "));
+        }
+        if let Some(category) = category {
+            pairs.append_pair("c", category);
+        }
     }
-
-    url
+    Ok(url)
 }
 
 fn medium_category(medium: ModelMediumFilter) -> Option<&'static str> {
@@ -310,12 +312,12 @@ fn parse_library_html(html: &str) -> Vec<ModelEntry> {
         let chips = element
             .select(&span)
             .map(|span| collapse_whitespace(&span.text().collect::<String>()))
-            .filter(|chip| is_param_size_chip(chip))
+            .filter(|chip| is_parameter_size_chip(chip))
             .collect::<Vec<_>>();
 
-        let labels = collect_param_size_labels(&text, chips);
-        let parameter_size = format_param_sizes(labels.clone())
-            .or_else(|| description.as_deref().and_then(extract_param_size));
+        let labels = collect_parameter_size_labels(&text, chips);
+        let parameter_size = format_parameter_sizes(labels.clone())
+            .or_else(|| description.as_deref().and_then(extract_parameter_size));
         let sizes = size_variants(&name, &labels);
         let family = extract_model_family(&name);
         let use_cases = nonempty_vec(infer_use_cases(&[
@@ -387,7 +389,7 @@ fn is_stat_line(text: &str) -> bool {
 }
 
 fn extract_pulls(text: &str) -> Option<u64> {
-    PULLS_RE
+    PULLS_PATTERN
         .captures(text)
         .and_then(|capture| parse_compact_count(&capture[1]))
 }
@@ -407,6 +409,9 @@ mod tests {
     #[test]
     fn search_url_includes_family_when_query_is_empty() {
         let base = DEFAULT_OLLAMA_SEARCH_URL;
+        let search_url = |base, query, family, medium| {
+            search_url(base, query, family, medium).unwrap().to_string()
+        };
         assert_eq!(
             search_url(base, None, None, ModelMediumFilter::All),
             "https://ollama.com/search"
@@ -417,7 +422,7 @@ mod tests {
         );
         assert_eq!(
             search_url(base, Some("vision"), Some("llama"), ModelMediumFilter::All),
-            "https://ollama.com/search?q=vision%20llama"
+            "https://ollama.com/search?q=vision+llama"
         );
         assert_eq!(
             search_url(base, Some("llama"), Some("llama"), ModelMediumFilter::All),
@@ -443,6 +448,23 @@ mod tests {
             search_url(base, None, None, ModelMediumFilter::Text),
             "https://ollama.com/search"
         );
+    }
+
+    #[test]
+    fn a_search_holding_query_syntax_stays_one_term() {
+        let url = search_url(
+            DEFAULT_OLLAMA_SEARCH_URL,
+            Some("qwen&c=tools"),
+            None,
+            ModelMediumFilter::All,
+        )
+        .unwrap();
+
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+        assert_eq!(pairs, vec![("q".to_string(), "qwen&c=tools".to_string())]);
     }
 
     #[test]
