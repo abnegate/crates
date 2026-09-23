@@ -1,5 +1,6 @@
 use crate::branch_name::BranchName;
 use crate::commit_sha::CommitSha;
+use crate::git::CONFIG_LISTING;
 use crate::git::DiffSummary;
 use crate::git::GitError;
 use crate::git::GitResult;
@@ -7,6 +8,8 @@ use crate::git::RemoteHead;
 use crate::git::authentication::authenticate;
 #[cfg(unix)]
 use crate::git::group::Group;
+use crate::git::harden;
+use crate::git::refused;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
 use std::path::Path;
@@ -71,6 +74,31 @@ const SYMBOLIC_REFERENCE: &str = "ref: ";
 
 /// What a set-aside branch is renamed with, ahead of the time it was set aside.
 const ABANDONED: &str = ".abandoned.";
+
+/// What a diff cut at [`MAXIMUM_DIFF_BYTES`] ends with.
+const TRUNCATED: &str = "...[truncated]";
+
+/// The status letters and the space before a path in a porcelain listing.
+const STATUS_WIDTH: usize = 3;
+
+/// The directory a clone keeps its repository in.
+const GIT_DIRECTORY: &str = ".git";
+
+/// A repository's own configuration file.
+const CONFIG_FILE: &str = "config";
+
+/// What git names the file it writes a replacement into before renaming it.
+const LOCK_EXTENSION: &str = "lock";
+
+/// Core settings git chose for the file system when it made the clone.
+const CARRIED_CORE: [&str; 4] = ["filemode", "ignorecase", "precomposeunicode", "symlinks"];
+
+/// Repository formats a clone was made in, and the values each may take:
+/// without them git cannot read its own objects or refs.
+const CARRIED_EXTENSIONS: [(&str, &[&str]); 2] = [
+    ("objectformat", &["sha1", "sha256"]),
+    ("refstorage", &["files", "reftable"]),
+];
 
 /// Git operations against a repository on disk.
 #[derive(Debug, Clone)]
@@ -156,35 +184,34 @@ impl GitService {
     /// runs no program the repository's configuration names.
     pub(crate) fn hardened() -> Command {
         let mut command = Command::new("git");
+        harden(command.as_std_mut());
         command
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_NO_REPLACE_OBJECTS", "1")
-            .env("GIT_GRAFT_FILE", "/dev/null")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_ASKPASS", "/usr/bin/false")
-            .env("GIT_ALLOW_PROTOCOL", "https")
-            .args([
-                "-c",
-                "credential.helper=",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "tag.gpgsign=false",
-                "-c",
-                "http.followRedirects=false",
-            ])
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true);
         command
+    }
+
+    /// Refuse a repository whose own configuration names something no pin on
+    /// the command line reaches. Run before every hardened operation, because
+    /// a run's git commands can write that configuration between two of them.
+    pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
+        let listed = Self::output(
+            Self::hardened()
+                .args(CONFIG_LISTING)
+                .current_dir(path)
+                .stdout(Stdio::piped()),
+        )
+        .await?;
+        if !listed.status.success() {
+            return Err(GitError::CommandFailed(
+                "Cannot read the repository's configuration".to_string(),
+            ));
+        }
+        match refused(&listed.stdout) {
+            Some(key) => Err(GitError::UnsafeConfig(key)),
+            None => Ok(()),
+        }
     }
 
     /// A hardened invocation that may reach `remote`, over the one transport
@@ -206,15 +233,17 @@ impl GitService {
         command.kill_on_drop(true);
         let child = command.spawn()?;
         #[cfg(unix)]
-        let _group = Group(nix::unistd::Pid::from_raw(
+        let mut group = Group::new(nix::unistd::Pid::from_raw(
             child
                 .id()
                 .ok_or_else(|| std::io::Error::other("Git process has no ID"))? as i32,
         ));
-        match tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output()).await {
-            Ok(output) => Ok(output?),
-            Err(_) => Err(GitError::TimedOut),
-        }
+        let output = tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output())
+            .await
+            .map_err(|_| GitError::TimedOut)??;
+        #[cfg(unix)]
+        group.disarm();
+        Ok(output)
     }
 
     async fn finish(command: &mut Command) -> GitResult<()> {
@@ -352,35 +381,14 @@ mod branch_name_tests {
 
 #[cfg(all(test, unix))]
 mod process_tests {
+    use super::hardened::fixtures::TEARDOWN_BUDGET;
+    use super::hardened::fixtures::alive;
+    use super::hardened::fixtures::marker;
     use super::*;
-    use nix::sys::signal::{Signal, kill};
+    use nix::sys::signal::Signal;
+    use nix::sys::signal::kill;
     use nix::unistd::Pid;
     use std::os::unix::fs::PermissionsExt;
-
-    /// These fixtures share the machine with every other test binary, and under
-    /// coverage instrumentation all of it is slower. The budgets only bound how
-    /// long a genuine regression takes to surface, so they are generous.
-    const SPAWN_BUDGET: Duration = Duration::from_secs(30);
-    const TEARDOWN_BUDGET: Duration = Duration::from_secs(10);
-
-    async fn marker(directory: &Path, name: &str) -> u32 {
-        tokio::time::timeout(SPAWN_BUDGET, async {
-            loop {
-                if let Ok(value) = tokio::fs::read_to_string(directory.join(name)).await
-                    && let Ok(pid) = value.trim().parse()
-                {
-                    return pid;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("fixture process did not start")
-    }
-
-    fn alive(pid: u32) -> bool {
-        kill(Pid::from_raw(pid as i32), None).is_ok()
-    }
 
     async fn cancellation(timeout: bool) {
         let fixture = tempfile::tempdir().unwrap();
@@ -468,5 +476,34 @@ mod process_tests {
     #[tokio::test]
     async fn timed_out_git_kills_helpers_and_preserves_unrelated_processes() {
         cancellation(true).await;
+    }
+
+    /// Once a command has been waited for, its group identifier is free for
+    /// the system to reuse, so nothing may be signalled through it any more.
+    #[tokio::test]
+    async fn a_completed_command_leaves_its_group_alone_once_reaped() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(
+            fixture.path().join("git"),
+            "#!/bin/sh\n/bin/sleep 60 >/dev/null 2>&1 &\necho $! > \"$FIXTURE/background\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            fixture.path().join("git"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let mut command = GitService::hardened();
+        command
+            .env("PATH", fixture.path())
+            .env("FIXTURE", fixture.path());
+
+        GitService::finish(&mut command).await.unwrap();
+        let background = marker(fixture.path(), "background").await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let survived = alive(background);
+        let _ = kill(Pid::from_raw(background as i32), Signal::SIGKILL);
+
+        assert!(survived, "a reaped command's group was signalled");
     }
 }

@@ -74,10 +74,14 @@ impl GitService {
 
     /// Widen the fetch refspec to every branch the remote has.
     async fn track_all_branches(&self, path: &Path) {
-        let output = Self::managed_command(Some(path))
-            .args(["remote", "set-branches", "--", ORIGIN, "*"])
-            .output()
-            .await;
+        let output = Self::output(Self::managed_command(Some(path)).args([
+            "remote",
+            "set-branches",
+            "--",
+            ORIGIN,
+            "*",
+        ]))
+        .await;
         match output {
             Ok(result) if result.status.success() => {}
             Ok(result) => {
@@ -95,10 +99,10 @@ impl GitService {
     pub async fn fetch_all(&self, path: &Path) -> GitResult<()> {
         tracing::debug!(repository = ?path, "Fetching all remote refs");
 
-        let output = Self::managed_command(Some(path))
-            .args(["fetch", "--prune", "--", ORIGIN])
-            .output()
-            .await?;
+        let output = Self::output(
+            Self::managed_command(Some(path)).args(["fetch", "--prune", "--", ORIGIN]),
+        )
+        .await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
@@ -115,10 +119,13 @@ impl GitService {
     pub async fn fetch_branch(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         tracing::debug!(repository = ?path, %branch, "Fetching branch");
 
-        let output = Self::managed_command(Some(path))
-            .args(["fetch", "--", ORIGIN, branch.as_str()])
-            .output()
-            .await?;
+        let output = Self::output(Self::managed_command(Some(path)).args([
+            "fetch",
+            "--",
+            ORIGIN,
+            branch.as_str(),
+        ]))
+        .await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
@@ -138,11 +145,12 @@ impl GitService {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let output = Self::managed_command(None)
-            .args(["clone", "--", url])
-            .arg(target)
-            .output()
-            .await?;
+        let output = Self::output(
+            Self::managed_command(None)
+                .args(["clone", "--", url])
+                .arg(target),
+        )
+        .await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
@@ -159,10 +167,13 @@ impl GitService {
     async fn pull(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         tracing::debug!(repository = ?path, %branch, "Pulling latest changes");
 
-        let output = Self::managed_command(Some(path))
-            .args(["fetch", "--", ORIGIN, branch.as_str()])
-            .output()
-            .await?;
+        let output = Self::output(Self::managed_command(Some(path)).args([
+            "fetch",
+            "--",
+            ORIGIN,
+            branch.as_str(),
+        ]))
+        .await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
@@ -184,10 +195,15 @@ impl GitService {
     async fn checkout_reset(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
         let remote = format!("{REMOTE_TRACKING}{branch}");
 
-        let output = Self::managed_command(Some(path))
-            .args(["checkout", "-f", "-B", branch.as_str(), &remote, "--"])
-            .output()
-            .await?;
+        let output = Self::output(Self::managed_command(Some(path)).args([
+            "checkout",
+            "-f",
+            "-B",
+            branch.as_str(),
+            &remote,
+            "--",
+        ]))
+        .await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
@@ -196,10 +212,10 @@ impl GitService {
             )));
         }
 
-        let output = Self::managed_command(Some(path))
-            .args(["reset", "--hard", &remote, "--"])
-            .output()
-            .await?;
+        let output = Self::output(
+            Self::managed_command(Some(path)).args(["reset", "--hard", &remote, "--"]),
+        )
+        .await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
@@ -221,10 +237,9 @@ impl GitService {
     /// The remote's default branch, read from `refs/remotes/origin/HEAD`, or
     /// `main` when the ref cannot be read.
     pub async fn detect_default_branch(&self, path: &Path) -> BranchName {
-        let output = Self::managed_command(Some(path))
-            .args(["symbolic-ref", REMOTE_HEAD])
-            .output()
-            .await;
+        let output =
+            Self::output(Self::managed_command(Some(path)).args(["symbolic-ref", REMOTE_HEAD]))
+                .await;
 
         match output {
             Ok(result) if result.status.success() => default_branch_of(&result.stdout),
@@ -253,10 +268,10 @@ impl GitService {
     /// default branch. Best effort: it reaches the network, and a caller that
     /// cannot reach it is no worse off than before.
     async fn update_remote_head(&self, path: &Path) {
-        let output = Self::managed_command(Some(path))
-            .args(["remote", "set-head", "--auto", "--", ORIGIN])
-            .output()
-            .await;
+        let output = Self::output(
+            Self::managed_command(Some(path)).args(["remote", "set-head", "--auto", "--", ORIGIN]),
+        )
+        .await;
 
         match output {
             Ok(result) if result.status.success() => {
@@ -404,7 +419,10 @@ mod managed_tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(refusal.contains("git rev-parse failed"), "{refusal}");
+        assert!(
+            refusal.contains("Cannot read the repository's configuration"),
+            "{refusal}"
+        );
 
         assert!(
             service
@@ -907,5 +925,56 @@ mod managed_tests {
             "main",
             "the clone stayed where it was"
         );
+    }
+
+    /// A managed command runs under the same timeout and process-group
+    /// teardown as a hardened one: abandoning it takes every helper it
+    /// started with it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_managed_command_abandoned_midway_takes_its_helpers_with_it() {
+        use crate::git::service::hardened::fixtures::TEARDOWN_BUDGET;
+        use crate::git::service::hardened::fixtures::alive;
+        use crate::git::service::hardened::fixtures::marker;
+
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let service = GitService::new();
+        service
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
+            .await
+            .unwrap();
+        git(
+            &target,
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                &format!(
+                    "/bin/sleep 60 & echo $! > '{}'; wait; true",
+                    workspace.path().join("helper").display()
+                ),
+            ],
+        );
+
+        let fetching = target.clone();
+        let operation = tokio::spawn(async move { service.fetch_all(&fetching).await });
+        let helper = marker(workspace.path(), "helper").await;
+        operation.abort();
+        assert!(operation.await.unwrap_err().is_cancelled());
+        let stopped = tokio::time::timeout(TEARDOWN_BUDGET, async {
+            while alive(helper) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok();
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(helper as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+
+        assert!(stopped, "a helper outlived the abandoned managed command");
     }
 }

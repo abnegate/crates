@@ -35,12 +35,13 @@ impl GitService {
             "Creating worktree"
         );
 
-        let output = Self::managed_command(Some(path))
-            .args(["worktree", "add", "--detach", "--"])
-            .arg(worktree_path)
-            .arg(checkout_ref.as_str())
-            .output()
-            .await?;
+        let output = Self::output(
+            Self::managed_command(Some(path))
+                .args(["worktree", "add", "--detach", "--"])
+                .arg(worktree_path)
+                .arg(checkout_ref.as_str()),
+        )
+        .await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
@@ -85,12 +86,13 @@ impl GitService {
             "Creating worktree on branch"
         );
 
-        let output = Self::managed_command(Some(path))
-            .args(["worktree", "add", "-B", branch.as_str(), "--"])
-            .arg(worktree_path)
-            .arg(start_point.as_str())
-            .output()
-            .await?;
+        let output = Self::output(
+            Self::managed_command(Some(path))
+                .args(["worktree", "add", "-B", branch.as_str(), "--"])
+                .arg(worktree_path)
+                .arg(start_point.as_str()),
+        )
+        .await?;
 
         if !output.status.success() {
             return Err(GitError::CommandFailed(format!(
@@ -114,11 +116,12 @@ impl GitService {
 
         tracing::debug!(repository = ?path, worktree = ?worktree_path, "Removing worktree");
 
-        let output = Self::managed_command(Some(path))
-            .args(["worktree", "remove", "--force", "--"])
-            .arg(worktree_path)
-            .output()
-            .await?;
+        let output = Self::output(
+            Self::managed_command(Some(path))
+                .args(["worktree", "remove", "--force", "--"])
+                .arg(worktree_path),
+        )
+        .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -138,10 +141,7 @@ impl GitService {
             tokio::fs::remove_dir_all(worktree_path).await?;
         }
 
-        let _ = Self::managed_command(Some(path))
-            .args(["worktree", "prune"])
-            .output()
-            .await;
+        let _ = Self::output(Self::managed_command(Some(path)).args(["worktree", "prune"])).await;
 
         tracing::debug!(worktree = ?worktree_path, "Worktree removed");
         Ok(())

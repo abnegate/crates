@@ -25,6 +25,9 @@ pub enum GitError {
     #[error(transparent)]
     Parse(#[from] ParseError),
 
+    #[error("Refusing to run in a repository whose configuration sets {0:?}")]
+    UnsafeConfig(String),
+
     #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
     UnsafeWorktree(PathBuf),
 

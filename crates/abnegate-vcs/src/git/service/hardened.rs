@@ -1,4 +1,5 @@
 use super::*;
+use tokio::io::AsyncWriteExt;
 
 impl GitService {
     /// Clone into an empty, caller-owned directory. Credentials live only in the
@@ -29,6 +30,7 @@ impl GitService {
         branch: &BranchName,
         required: bool,
     ) -> GitResult<()> {
+        Self::verify_config(path).await?;
         let reference = branch.reference();
         let remote = format!("{REMOTE_TRACKING}{branch}");
         let exists = Self::output(
@@ -100,6 +102,7 @@ impl GitService {
 
     /// Resolve a commit without reading a caller-controlled symbolic baseline later.
     pub async fn revision(&self, path: &Path, reference: &str) -> GitResult<CommitSha> {
+        Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
                 .args([
@@ -125,6 +128,7 @@ impl GitService {
         before: &CommitSha,
         after: &CommitSha,
     ) -> GitResult<bool> {
+        Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
                 .args([
@@ -148,10 +152,13 @@ impl GitService {
 
     /// Include changes already committed by task tools in the PR description.
     pub async fn changed_files(&self, path: &Path, before: &CommitSha) -> GitResult<Vec<String>> {
+        Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
                 .args([
                     "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
                     "--name-only",
                     "-z",
                     "--end-of-options",
@@ -187,6 +194,7 @@ impl GitService {
 
     /// The branch the checkout is on, or `HEAD` when it is detached.
     pub async fn current_branch(&self, path: &Path) -> GitResult<String> {
+        Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
                 .args(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -209,16 +217,20 @@ impl GitService {
     /// Bring a base clone up to date with the repository at `url`, credentials
     /// in the child environment only. The URL is the one the caller knows, given
     /// on the command line, so a rewritten `remote.origin.url` does not decide
-    /// where the fetch goes; every `refs/remotes/origin/*` ref is forced to what
-    /// the remote holds and the ones it no longer has are pruned. A refusal is
-    /// retried once, since git's ref locks refuse the loser of a race with a
-    /// run's own git commands.
+    /// where the fetch goes, and a clone whose configuration could still
+    /// redirect it -- an `insteadOf` rule, an `http.*` override, a remote named
+    /// for the URL -- is refused rather than fetched; every
+    /// `refs/remotes/origin/*` ref is forced to what the remote holds and the
+    /// ones it no longer has are pruned. A refusal by git is retried once,
+    /// since git's ref locks refuse the loser of a race with a run's own git
+    /// commands.
     pub async fn fetch(
         &self,
         path: &Path,
         url: &RepositoryUrl,
         token: Option<&SecretValue>,
     ) -> GitResult<()> {
+        Self::verify_config(path).await?;
         let mut attempts = 0;
         loop {
             let mut command = Self::connected(url, token);
@@ -247,6 +259,7 @@ impl GitService {
         url: &RepositoryUrl,
         token: Option<&SecretValue>,
     ) -> GitResult<RemoteHead> {
+        Self::verify_config(path).await?;
         let mut command = Self::connected(url, token);
         command
             .args(["ls-remote", "--symref", "--", url.as_str(), "HEAD"])
@@ -290,55 +303,57 @@ impl GitService {
     /// a `core.fsmonitor` or a filter driver would run as this process on the
     /// next fetch or checkout, an `insteadOf` rule would redirect it. So the
     /// file is replaced before the base is used, carrying over only the
-    /// settings git chose for the file system, and the remote's URL is
-    /// written through `git config`, which escapes it.
+    /// settings git chose for the file system and the repository's object and
+    /// ref formats. The replacement is written beside the file under git's own
+    /// lock name and renamed over it, so a git command running meanwhile reads
+    /// either the old file or the new one, and one holding the lock is not
+    /// overwritten.
     pub async fn reset_config(&self, path: &Path, url: &RepositoryUrl) -> GitResult<()> {
-        const CARRIED: [&str; 4] = ["filemode", "ignorecase", "precomposeunicode", "symlinks"];
-        let file = path.join(".git").join("config");
+        let file = path.join(GIT_DIRECTORY).join(CONFIG_FILE);
         let listed = Self::output(
             Self::hardened()
                 .args(["config", "--file"])
                 .arg(&file)
-                .arg("--list")
+                .args(["--list", "-z"])
                 .stdout(Stdio::piped()),
         )
         .await?;
-        let mut carried = String::new();
+        let mut core = String::new();
+        let mut extensions = String::new();
         if listed.status.success() {
-            for line in String::from_utf8_lossy(&listed.stdout).lines() {
-                if let Some((key, value)) = line.split_once('=')
-                    && let Some(name) = key.strip_prefix("core.")
-                    && CARRIED.contains(&name)
+            for entry in listed.stdout.split(|byte| *byte == 0) {
+                let entry = String::from_utf8_lossy(entry);
+                let Some((key, value)) = entry.split_once('\n') else {
+                    continue;
+                };
+                if let Some(name) = key.strip_prefix("core.")
+                    && CARRIED_CORE.contains(&name)
                     && matches!(value, "true" | "false")
                 {
-                    carried.push_str(&format!("\t{name} = {value}\n"));
+                    core.push_str(&format!("\t{name} = {value}\n"));
+                } else if let Some(name) = key.strip_prefix("extensions.")
+                    && CARRIED_EXTENSIONS
+                        .iter()
+                        .any(|(carried, values)| *carried == name && values.contains(&value))
+                {
+                    extensions.push_str(&format!("\t{name} = {value}\n"));
                 }
             }
         }
-        tokio::fs::write(
-            &file,
-            format!(
-                "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tlogallrefupdates = true\n{carried}"
-            ),
-        )
-        .await?;
-        for (key, value) in [
-            ("remote.origin.url", url.as_str()),
-            ("remote.origin.fetch", FETCH_REFSPEC),
-        ] {
-            Self::finish(
-                Self::hardened()
-                    .args(["config", "--file"])
-                    .arg(&file)
-                    .args([key, value]),
-            )
-            .await?;
-        }
-        Ok(())
+        let (version, extensions) = match extensions.is_empty() {
+            true => (0, extensions),
+            false => (1, format!("[extensions]\n{extensions}")),
+        };
+        let content = format!(
+            "[core]\n\trepositoryformatversion = {version}\n\tbare = false\n\tlogallrefupdates = true\n{core}{extensions}[remote \"{ORIGIN}\"]\n\turl = {}\n\tfetch = {FETCH_REFSPEC}\n",
+            quoted(url.as_str())
+        );
+        replace_atomically(&file, &content).await
     }
 
     /// Whether the repository holds `commit`.
     pub async fn has_commit(&self, path: &Path, commit: &CommitSha) -> GitResult<bool> {
+        Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
                 .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
@@ -352,6 +367,7 @@ impl GitService {
     /// whoever reads the ref; a run is started from the commit
     /// [`Self::remote_head`] reported, never from this ref.
     pub async fn set_remote_head(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
+        Self::verify_config(path).await?;
         Self::finish(
             Self::hardened()
                 .args([
@@ -366,97 +382,66 @@ impl GitService {
 
     /// Whether the working tree or the index holds anything uncommitted.
     pub async fn has_changes(&self, path: &Path) -> GitResult<bool> {
-        let output = Self::output(
-            Self::hardened()
-                .args(["status", "--porcelain"])
-                .current_dir(path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .await?;
-
-        if !output.status.success() {
-            return Err(GitError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        Ok(!output.stdout.is_empty())
+        Self::verify_config(path).await?;
+        Ok(!Self::status(path).await?.is_empty())
     }
 
     /// Summarise the uncommitted changes, with the diff itself truncated
     /// once it runs past 50 kB.
     pub async fn diff_summary(&self, path: &Path) -> GitResult<DiffSummary> {
-        let status_output = Self::output(
+        Self::verify_config(path).await?;
+        let files_changed = changed_paths(&Self::status(path).await?);
+
+        let shortstat = Self::output(
             Self::hardened()
-                .args(["status", "--porcelain"])
+                .args([
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--shortstat",
+                    "HEAD",
+                    "--",
+                ])
                 .current_dir(path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .await?;
-
-        if !status_output.status.success() {
-            return Err(GitError::CommandFailed(
-                String::from_utf8_lossy(&status_output.stderr).to_string(),
-            ));
-        }
-
-        let status_text = String::from_utf8_lossy(&status_output.stdout);
-        let files_changed: Vec<String> = status_text
-            .lines()
-            .filter(|line| line.len() > 3)
-            .map(|line| line[3..].to_string())
-            .collect();
-
-        let diff_stat_output = Self::output(
-            Self::hardened()
-                .args(["diff", "--shortstat", "HEAD"])
-                .current_dir(path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
+                .stdout(Stdio::piped()),
         )
         .await?;
 
         let mut insertions = 0;
         let mut deletions = 0;
 
-        if diff_stat_output.status.success() {
-            let stat_text = String::from_utf8_lossy(&diff_stat_output.stdout);
-            for part in stat_text.split(',') {
+        if shortstat.status.success() {
+            let statistics = String::from_utf8_lossy(&shortstat.stdout);
+            for part in statistics.split(',') {
                 let part = part.trim();
+                let count = part
+                    .split_whitespace()
+                    .next()
+                    .and_then(|count| count.parse().ok());
                 if part.contains("insertion") {
-                    if let Some(count) = part.split_whitespace().next() {
-                        insertions = count.parse().unwrap_or(0);
-                    }
-                } else if part.contains("deletion")
-                    && let Some(count) = part.split_whitespace().next()
-                {
-                    deletions = count.parse().unwrap_or(0);
+                    insertions = count.unwrap_or(0);
+                } else if part.contains("deletion") {
+                    deletions = count.unwrap_or(0);
                 }
             }
         }
 
-        let diff_output = Self::output(
+        let diff = Self::output(
             Self::hardened()
-                .args(["diff", "HEAD"])
+                .args(["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"])
                 .current_dir(path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
+                .stdout(Stdio::piped()),
         )
         .await?;
 
-        let diff_text = String::from_utf8_lossy(&diff_output.stdout);
-        // len() counts bytes, so cutting at a fixed offset panics whenever the
-        // boundary lands inside a multi-byte character -- an emoji or any
-        // accented character in a diff over the cap is enough.
+        let diff_text = String::from_utf8_lossy(&diff.stdout);
         let diff_text = match diff_text.len() > MAXIMUM_DIFF_BYTES {
             true => {
                 let mut end = MAXIMUM_DIFF_BYTES;
                 while end > 0 && !diff_text.is_char_boundary(end) {
                     end -= 1;
                 }
-                format!("{}...[truncated]", &diff_text[..end])
+                format!("{}{TRUNCATED}", &diff_text[..end])
             }
             false => diff_text.to_string(),
         };
@@ -469,8 +454,30 @@ impl GitService {
         })
     }
 
+    /// `git status --porcelain -z` over every untracked file, whatever the
+    /// repository's configuration says to show.
+    async fn status(path: &Path) -> GitResult<Vec<u8>> {
+        let output = Self::output(
+            Self::hardened()
+                .args(["status", "--porcelain", "-z", "--untracked-files=all"])
+                .current_dir(path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .await?;
+
+        if !output.status.success() {
+            return Err(GitError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        Ok(output.stdout)
+    }
+
     /// Create and check out a new branch, refusing a name already taken.
     pub async fn create_branch(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
+        Self::verify_config(path).await?;
         let check_output = Self::output(
             Self::hardened()
                 .args(["show-ref", "--verify", "--quiet", &branch.reference()])
@@ -501,6 +508,7 @@ impl GitService {
 
     /// Stage every change in the working tree.
     pub async fn stage_all(&self, path: &Path) -> GitResult<()> {
+        Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
                 .args(["add", "-A"])
@@ -521,6 +529,7 @@ impl GitService {
 
     /// Commit what is staged, and say which commit it became.
     pub async fn commit(&self, path: &Path, message: &str) -> GitResult<CommitSha> {
+        Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
                 .args([
@@ -561,6 +570,7 @@ impl GitService {
         remote: &RepositoryUrl,
         token: &SecretValue,
     ) -> GitResult<CommitSha> {
+        Self::verify_config(path).await?;
         let commit = self.revision(path, "HEAD").await?;
         let mut command = Self::connected(remote, Some(token));
         command
@@ -603,6 +613,7 @@ impl GitService {
 
     /// The URL configured for a named remote.
     pub async fn get_remote_url(&self, path: &Path, remote: &str) -> GitResult<String> {
+        Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
                 .args(["remote", "get-url", "--", remote])
@@ -622,6 +633,7 @@ impl GitService {
     /// a commit, a remote branch of the same name, a file -- is refused rather
     /// than detached onto, tracked or restored.
     pub async fn checkout(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
+        Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
                 .args(["switch", "--no-guess", "--", branch.as_str()])
@@ -638,6 +650,60 @@ impl GitService {
 
         Ok(())
     }
+}
+
+/// The paths a `git status --porcelain -z` listing names. A rename or copy is
+/// followed by the path it came from, which is not itself a change.
+fn changed_paths(listing: &[u8]) -> Vec<String> {
+    let mut fields = listing
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    let mut paths = Vec::new();
+    while let Some(entry) = fields.next() {
+        let Some((status, path)) = entry.split_at_checked(STATUS_WIDTH) else {
+            continue;
+        };
+        paths.push(String::from_utf8_lossy(path).into_owned());
+        if status.iter().any(|code| matches!(code, b'R' | b'C')) {
+            fields.next();
+        }
+    }
+    paths
+}
+
+/// A configuration value in double quotes, so nothing in it opens a comment
+/// or a section.
+fn quoted(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Replace `file` the way git does: write the whole new content to a lock
+/// file beside it, created only if no git command already holds that lock,
+/// and rename the lock file over the original.
+async fn replace_atomically(file: &Path, content: &str) -> GitResult<()> {
+    let lock = file.with_extension(LOCK_EXTENSION);
+    let mut handle = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => GitError::CommandFailed(
+                "The repository's configuration is locked by another git command".to_string(),
+            ),
+            _ => GitError::Io(error),
+        })?;
+    let written = async {
+        handle.write_all(content.as_bytes()).await?;
+        handle.sync_all().await?;
+        drop(handle);
+        tokio::fs::rename(&lock, file).await
+    }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&lock).await;
+    }
+    Ok(written?)
 }
 
 /// The NUL-separated names git prints under `-z`.
@@ -663,6 +729,33 @@ pub(super) mod fixtures {
 
     pub(in crate::git) fn token() -> SecretValue {
         SecretValue::new("sensitive-token")
+    }
+
+    /// These fixtures share the machine with every other test binary, and under
+    /// coverage instrumentation all of it is slower. The budgets only bound how
+    /// long a genuine regression takes to surface, so they are generous.
+    pub(in crate::git) const SPAWN_BUDGET: Duration = Duration::from_secs(30);
+    pub(in crate::git) const TEARDOWN_BUDGET: Duration = Duration::from_secs(10);
+
+    #[cfg(unix)]
+    pub(in crate::git) async fn marker(directory: &Path, name: &str) -> u32 {
+        tokio::time::timeout(SPAWN_BUDGET, async {
+            loop {
+                if let Ok(value) = tokio::fs::read_to_string(directory.join(name)).await
+                    && let Ok(pid) = value.trim().parse()
+                {
+                    return pid;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fixture process did not start")
+    }
+
+    #[cfg(unix)]
+    pub(in crate::git) fn alive(pid: u32) -> bool {
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
     }
 }
 
@@ -1364,5 +1457,317 @@ mod branch_tests {
                 "{name}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::fixtures::branch;
+    use super::fixtures::local;
+    use super::fixtures::token;
+    use super::*;
+    use crate::worktree::fixtures::clone;
+    use crate::worktree::fixtures::git;
+    use crate::worktree::fixtures::remote;
+
+    fn repository() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        remote(root.path());
+        root
+    }
+
+    fn marking(marker: &Path) -> String {
+        format!("touch '{}'; cat", marker.display())
+    }
+
+    #[tokio::test]
+    async fn a_filter_driver_the_repository_names_never_runs() {
+        let repository = repository();
+        let markers = tempfile::tempdir().unwrap();
+        let marker = markers.path().join("filter-ran");
+        std::fs::write(
+            repository.path().join(".gitattributes"),
+            "* filter=planted\n",
+        )
+        .unwrap();
+        git(
+            repository.path(),
+            &["config", "filter.planted.clean", &marking(&marker)],
+        );
+        std::fs::write(repository.path().join("new.txt"), "work\n").unwrap();
+
+        let refusal = GitService::new().stage_all(repository.path()).await;
+
+        assert!(
+            matches!(refusal, Err(GitError::UnsafeConfig(ref key)) if key == "filter.planted.clean"),
+            "{refusal:?}"
+        );
+        assert!(!marker.exists(), "the clean filter ran");
+    }
+
+    #[tokio::test]
+    async fn a_diff_driver_the_repository_names_never_runs() {
+        let repository = repository();
+        let markers = tempfile::tempdir().unwrap();
+        let marker = markers.path().join("textconv-ran");
+        std::fs::write(repository.path().join(".gitattributes"), "* diff=planted\n").unwrap();
+        git(
+            repository.path(),
+            &["config", "diff.planted.textconv", &marking(&marker)],
+        );
+        std::fs::write(repository.path().join("README"), "changed\n").unwrap();
+
+        let refusal = GitService::new().diff_summary(repository.path()).await;
+
+        assert!(
+            matches!(refusal, Err(GitError::UnsafeConfig(ref key)) if key == "diff.planted.textconv"),
+            "{refusal:?}"
+        );
+        assert!(!marker.exists(), "the textconv driver ran");
+    }
+
+    #[tokio::test]
+    async fn a_transport_rewrite_in_the_clone_refuses_the_fetch_it_would_redirect() {
+        let root = tempfile::tempdir().unwrap();
+        let genuine = root.path().join("genuine");
+        let rogue = root.path().join("rogue");
+        for remote_path in [&genuine, &rogue] {
+            std::fs::create_dir(remote_path).unwrap();
+            remote(remote_path);
+        }
+        std::fs::write(rogue.join("ROGUE"), "planted\n").unwrap();
+        git(&rogue, &["add", "ROGUE"]);
+        git(&rogue, &["commit", "-q", "-m", "rogue"]);
+        let base = root.path().join("base");
+        clone(&genuine, &base);
+        let before = git(&base, &["rev-parse", "refs/remotes/origin/main"]);
+        git(
+            &base,
+            &[
+                "config",
+                &format!("url.{}.insteadOf", local(&rogue)),
+                local(&genuine).as_str(),
+            ],
+        );
+
+        let refusal = GitService::new().fetch(&base, &local(&genuine), None).await;
+
+        assert!(
+            matches!(refusal, Err(GitError::UnsafeConfig(ref key)) if key.starts_with("url.")),
+            "{refusal:?}"
+        );
+        assert_eq!(
+            git(&base, &["rev-parse", "refs/remotes/origin/main"]),
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn a_remote_named_for_the_push_url_cannot_redirect_the_push() {
+        let root = tempfile::tempdir().unwrap();
+        let genuine = root.path().join("genuine.git");
+        let rogue = root.path().join("rogue.git");
+        let work = root.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        remote(&work);
+        for bare in [&genuine, &rogue] {
+            git(
+                root.path(),
+                &["init", "-q", "--bare", bare.to_str().unwrap()],
+            );
+        }
+        git(
+            &work,
+            &[
+                "config",
+                &format!("remote.{}.pushurl", local(&genuine)),
+                local(&rogue).as_str(),
+            ],
+        );
+
+        let refusal = GitService::new()
+            .push_with_token(&work, &branch("task/one"), &local(&genuine), &token())
+            .await;
+
+        assert!(
+            matches!(refusal, Err(GitError::UnsafeConfig(ref key)) if key.starts_with("remote.")),
+            "{refusal:?}"
+        );
+        assert_eq!(
+            git(&rogue, &["for-each-ref"]),
+            "",
+            "the push reached the rogue"
+        );
+        assert_eq!(git(&genuine, &["for-each-ref"]), "");
+    }
+
+    #[tokio::test]
+    async fn every_configuration_no_pin_reaches_refuses_every_hardened_operation() {
+        for (key, value) in [
+            (
+                "url.https://elsewhere.test/.insteadOf",
+                "https://github.com/",
+            ),
+            ("http.proxy", "http://proxy.test"),
+            ("http.https://github.com/.sslCAInfo", "/tmp/planted.pem"),
+            ("include.path", "/tmp/planted.config"),
+            ("includeIf.gitdir:/.path", "/tmp/planted.config"),
+            ("filter.planted.smudge", "cat"),
+            ("diff.external", "cat"),
+            ("merge.planted.driver", "cat"),
+            ("core.sshCommand", "ssh"),
+            ("core.worktree", "/tmp"),
+            ("extensions.worktreeConfig", "true"),
+            (
+                "remote.https://github.com/owner/repository.git.pushurl",
+                "x",
+            ),
+        ] {
+            let repository = repository();
+            git(repository.path(), &["config", key, value]);
+
+            let refusal = GitService::new().current_branch(repository.path()).await;
+
+            assert!(
+                matches!(refusal, Err(GitError::UnsafeConfig(ref refused)) if *refused == key.to_ascii_lowercase()),
+                "{key}: {refusal:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resetting_the_configuration_keeps_the_object_format_the_clone_was_made_in() {
+        let root = tempfile::tempdir().unwrap();
+        git(
+            root.path(),
+            &["init", "-q", "-b", "main", "--object-format=sha256"],
+        );
+        std::fs::write(root.path().join("README"), "fixture\n").unwrap();
+        git(root.path(), &["add", "README"]);
+        git(root.path(), &["commit", "-q", "-m", "fixture"]);
+        let head = git(root.path(), &["rev-parse", "HEAD"]);
+        let service = GitService::new();
+
+        service
+            .reset_config(
+                root.path(),
+                &RepositoryUrl::parse("https://github.com/owner/repository").unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(git(root.path(), &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            service
+                .revision(root.path(), "HEAD")
+                .await
+                .unwrap()
+                .as_str(),
+            head
+        );
+        assert_eq!(
+            git(root.path(), &["config", "extensions.objectformat"]),
+            "sha256"
+        );
+        assert_eq!(
+            git(root.path(), &["config", "remote.origin.url"]),
+            "https://github.com/owner/repository.git"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_configuration_another_git_command_holds_the_lock_on_is_not_overwritten() {
+        let repository = repository();
+        git(
+            repository.path(),
+            &["config", "core.fsmonitor", "/bin/false"],
+        );
+        let config = repository.path().join(".git").join("config");
+        let before = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(config.with_extension("lock"), "held\n").unwrap();
+
+        let refusal = GitService::new()
+            .reset_config(
+                repository.path(),
+                &RepositoryUrl::parse("https://github.com/owner/repository").unwrap(),
+            )
+            .await;
+
+        assert!(refusal.is_err(), "{refusal:?}");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+        assert_eq!(
+            std::fs::read_to_string(config.with_extension("lock")).unwrap(),
+            "held\n",
+            "the lock belongs to whoever took it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_summary_names_every_changed_path_exactly_and_counts_the_lines() {
+        let repository = repository();
+        git(repository.path(), &["mv", "README", "RENAMED"]);
+        std::fs::write(repository.path().join("RENAMED"), "fixture\nsecond\n").unwrap();
+        std::fs::create_dir(repository.path().join("nested")).unwrap();
+        std::fs::write(
+            repository.path().join("nested").join("中文 name.txt"),
+            "new\n",
+        )
+        .unwrap();
+        std::fs::write(repository.path().join("quote\"d"), "new\n").unwrap();
+
+        let summary = GitService::new()
+            .diff_summary(repository.path())
+            .await
+            .unwrap();
+
+        let mut files = summary.files_changed.clone();
+        files.sort();
+        assert_eq!(
+            files,
+            vec!["RENAMED", "nested/中文 name.txt", "quote\"d"],
+            "{summary:?}"
+        );
+        assert_eq!(summary.insertions, 1, "{summary:?}");
+        assert_eq!(summary.deletions, 0, "{summary:?}");
+        assert!(summary.diff_text.contains("+second"), "{summary:?}");
+        assert!(
+            GitService::new()
+                .has_changes(repository.path())
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_summary_past_its_limit_is_cut_on_a_character() {
+        let repository = repository();
+        std::fs::write(
+            repository.path().join("README"),
+            "é".repeat(MAXIMUM_DIFF_BYTES),
+        )
+        .unwrap();
+
+        let summary = GitService::new()
+            .diff_summary(repository.path())
+            .await
+            .unwrap();
+
+        assert!(summary.diff_text.ends_with(TRUNCATED));
+        assert!(summary.diff_text.len() <= MAXIMUM_DIFF_BYTES + TRUNCATED.len());
+    }
+
+    #[tokio::test]
+    async fn an_untracked_file_is_a_change_whatever_the_clone_says_to_show() {
+        let repository = repository();
+        git(
+            repository.path(),
+            &["config", "status.showUntrackedFiles", "no"],
+        );
+        let service = GitService::new();
+        assert!(!service.has_changes(repository.path()).await.unwrap());
+
+        std::fs::write(repository.path().join("untracked"), "new\n").unwrap();
+
+        assert!(service.has_changes(repository.path()).await.unwrap());
     }
 }
