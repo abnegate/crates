@@ -1839,11 +1839,13 @@ mod tests {
             12,
             &contract,
         );
-        for graph in [&flux, &qwen] {
-            assert!(graph.to_string().contains("VAEEncode"));
-            assert!(graph.to_string().contains(LOAD_TRAIN_DATASET_NODE));
-        }
+        assert_eq!(flux["2"]["class_type"], contract.load_train_dataset_node);
+        assert_eq!(flux["3"]["class_type"], "VAEEncode");
+        assert_eq!(flux["5"]["class_type"], contract.train_lora_node);
+        assert_eq!(qwen["4"]["class_type"], contract.load_train_dataset_node);
+        assert_eq!(qwen["7"]["class_type"], contract.train_lora_node);
         assert_eq!(flux["4"]["class_type"], "CLIPTextEncode");
+
         assert_eq!(qwen["1"]["class_type"], "UNETLoader");
         assert_eq!(qwen["1"]["inputs"]["unet_name"], "qwen-unet.safetensors");
         assert_eq!(qwen["2"]["class_type"], "CLIPLoader");
@@ -1961,27 +1963,22 @@ mod tests {
     }
 
     #[test]
-    fn the_default_contract_names_the_packaged_nodes_and_script() {
+    fn the_default_contract_is_the_wire_contract_of_the_out_of_tree_node_pack() {
         let contract = Contract::default();
-        assert_eq!(contract.train_lora_node, TRAIN_LORA_NODE);
-        assert_eq!(
-            contract.cleanup_training_run_node,
-            CLEANUP_TRAINING_RUN_NODE
-        );
-        assert_eq!(contract.load_train_dataset_node, LOAD_TRAIN_DATASET_NODE);
-        assert_eq!(contract.probe_loss_node, PROBE_LOSS_NODE);
+        assert_eq!(contract.train_lora_node, "ZoneTrainLoRA");
+        assert_eq!(contract.cleanup_training_run_node, "ZoneCleanupTrainingRun");
+        assert_eq!(contract.load_train_dataset_node, "ZoneLoadTrainDataset");
+        assert_eq!(contract.probe_loss_node, "ZoneProbeLoss");
         assert_eq!(
             contract.stage_training_artifact_node,
-            STAGE_TRAINING_ARTIFACT_NODE
+            "ZoneStageTrainingArtifact"
         );
-        assert_eq!(
-            contract.variable("OUTPUT"),
-            format!("{ENVIRONMENT_PREFIX}_OUTPUT")
-        );
-        assert_eq!(
-            contract.input_variable(),
-            format!("{INPUT_ENVIRONMENT_PREFIX}_INPUT")
-        );
+        assert_eq!(contract.folder_prefix, "zone-train-");
+        assert_eq!(contract.artifact_prefix, "zone-lora-");
+        assert_eq!(contract.probe_prefix, "zone-probe-");
+        assert_eq!(contract.variable("OUTPUT"), "ZONE_TRAIN_OUTPUT");
+        assert_eq!(contract.variable("DIR"), "ZONE_TRAIN_DIR");
+        assert_eq!(contract.input_variable(), "ZONE_COMFY_INPUT");
     }
 
     #[tokio::test]

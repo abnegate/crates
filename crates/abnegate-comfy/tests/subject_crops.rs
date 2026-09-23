@@ -1,7 +1,8 @@
 //! End-to-end checks that training images are framed on their subject.
 //!
-//! Skipped unless `ABNEGATE_VISION_MODEL` points at `u2net.onnx`, so the
-//! default `cargo test` run stays free of a 168 MiB download.
+//! Ignored by default, so `cargo test` stays free of a 168 MiB download. Run
+//! them with `ABNEGATE_VISION_MODEL` naming `u2net.onnx` and `--ignored`; a
+//! test fails rather than passes when the variable does not name the weights.
 
 #![cfg(feature = "saliency")]
 
@@ -10,12 +11,15 @@ use abnegate_comfy::config::VISION_MODEL_VARIABLE;
 use abnegate_comfy::subject::{CENTRE, Subject};
 use std::path::PathBuf;
 
-fn configured() -> Option<Config> {
-    let path = PathBuf::from(std::env::var_os(VISION_MODEL_VARIABLE)?);
-    path.is_file().then(|| Config {
+fn configured() -> Config {
+    let path = std::env::var_os(VISION_MODEL_VARIABLE)
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| panic!("{VISION_MODEL_VARIABLE} must name the U2-Net weights"));
+    Config {
         vision_model: Some(path),
         ..Default::default()
-    })
+    }
 }
 
 /// A pale field with one dark disc, so the expected subject is unambiguous.
@@ -54,12 +58,10 @@ fn coverage(pixels: &[u8]) -> f64 {
     dark as f64 / (pixels.len() / 3) as f64
 }
 
+#[ignore = "needs ABNEGATE_VISION_MODEL naming u2net.onnx"]
 #[tokio::test]
 async fn a_photo_is_cropped_onto_its_subject_rather_than_its_middle() {
-    let Some(config) = configured() else {
-        eprintln!("skipping: set {VISION_MODEL_VARIABLE} to run");
-        return;
-    };
+    let config = configured();
     // A subject in the left tenth of a wide frame. The centre square of a
     // 1600x900 image spans x 350 to 1250, so a centre crop misses it entirely.
     let image = scene(1600, 900, (150, 450), 120);
@@ -90,12 +92,10 @@ async fn a_photo_is_cropped_onto_its_subject_rather_than_its_middle() {
     );
 }
 
+#[ignore = "needs ABNEGATE_VISION_MODEL naming u2net.onnx"]
 #[tokio::test]
 async fn motion_decides_between_subjects_rather_than_inventing_one() {
-    let Some(config) = configured() else {
-        eprintln!("skipping: set {VISION_MODEL_VARIABLE} to run");
-        return;
-    };
+    let config = configured();
     // Two equally salient discs. Nothing in the picture says which one is being
     // trained; in a clip, the one that moved does.
     let mut pixels = vec![226u8; (1280 * 720 * 3) as usize];
@@ -135,22 +135,16 @@ async fn motion_decides_between_subjects_rather_than_inventing_one() {
     );
 }
 
+#[ignore = "needs ABNEGATE_VISION_MODEL naming u2net.onnx"]
 #[test]
 fn a_tripod_clip_is_framed_on_its_subject_rather_than_on_the_middle() {
-    let Some(config) = configured() else {
-        eprintln!("skipping: set {VISION_MODEL_VARIABLE} to run");
-        return;
-    };
-    if std::process::Command::new("ffmpeg")
+    let config = configured();
+    std::process::Command::new("ffmpeg")
         .arg("-version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .is_err()
-    {
-        eprintln!("skipping: ffmpeg is not installed");
-        return;
-    }
+        .expect("ffmpeg must be installed to build the test clip");
     // Nothing moves but the sensor noise, which is the tripod case: the only
     // thing frame differencing can see is spread evenly over the picture, so it
     // says nothing about where the subject is. The centre 360x360 of this
@@ -188,6 +182,7 @@ fn a_tripod_clip_is_framed_on_its_subject_rather_than_on_the_middle() {
         vision_model: None,
         ..config.clone()
     };
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

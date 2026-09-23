@@ -963,7 +963,7 @@ fn remove_namespace(root: &Path, name: &str, prefix: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::train::{ARTIFACT_PREFIX, FOLDER_PREFIX, LOAD_TRAIN_DATASET_NODE, PROBE_PREFIX};
+    use crate::train::{ARTIFACT_PREFIX, FOLDER_PREFIX, PROBE_PREFIX};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use wiremock::matchers::{method, path};
@@ -1009,11 +1009,13 @@ mod tests {
         let contract = Contract::default();
         let flux = graph(&flux(), "folder", "{}", 512, None, RANK_PERCENT, &contract);
         let qwen = graph(&qwen(), "folder", "{}", 512, None, RANK_PERCENT, &contract);
-        for graph in [&flux, &qwen] {
-            assert!(graph.to_string().contains("VAEEncode"));
-            assert!(graph.to_string().contains(LOAD_TRAIN_DATASET_NODE));
-        }
+        assert_eq!(flux["2"]["class_type"], contract.load_train_dataset_node);
+        assert_eq!(flux["3"]["class_type"], "VAEEncode");
+        assert_eq!(flux["5"]["class_type"], contract.probe_loss_node);
+        assert_eq!(qwen["4"]["class_type"], contract.load_train_dataset_node);
+        assert_eq!(qwen["7"]["class_type"], contract.probe_loss_node);
         assert_eq!(flux["1"]["class_type"], "CheckpointLoaderSimple");
+
         assert_eq!(flux["5"]["inputs"]["positive"], json!(["4", 0]));
         assert_eq!(qwen["1"]["class_type"], "UNETLoader");
         assert_eq!(qwen["2"]["inputs"]["type"], "qwen_image");
