@@ -216,14 +216,14 @@ mod tests {
         );
     }
 
-    /// A command reached the card with its control characters raw, so sixty
-    /// backspaces and an erase-line sequence drew `echo safe` over the
+    /// A command reached the card with its control characters raw, so a run
+    /// of backspaces and an erase-line sequence drew `echo safe` over the
     /// `rm -rf ~` that would run.
     #[test]
     fn a_shell_preview_shows_backspaces_and_escape_sequences_as_escapes() {
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(RunShellTool));
-        let command = format!("rm -rf ~{}\u{1b}[2Kecho safe", "\u{8}".repeat(60));
+        let command = format!("rm -rf ~{}\u{1b}[2Kecho safe", "\u{8}".repeat(30));
 
         let preview = registry
             .preview(
@@ -237,12 +237,12 @@ mod tests {
             "{:?}",
             preview.text
         );
-        assert!(preview.text.contains("\\u{8}"), "{}", preview.text);
+        assert!(preview.text.contains("⟨U+0008⟩"), "{}", preview.text);
         assert_eq!(
             preview.text,
             format!(
-                "Run `rm -rf ~{}\\u{{1b}}[2Kecho safe`.",
-                "\\u{8}".repeat(60)
+                "Run `rm -rf ~{}⟨U+001B⟩[2Kecho safe`.",
+                "⟨U+0008⟩".repeat(30)
             )
         );
         assert!(!preview.truncated);
@@ -262,12 +262,245 @@ mod tests {
 
         assert_eq!(
             preview.text,
-            format!(
-                "Run `cd sandbox{}{LINE_BREAK}rm -rf ./*`.",
-                '\r'.escape_unicode()
-            )
+            format!("Run `cd sandbox⟨U+000D⟩{LINE_BREAK}rm -rf ./*`.")
         );
         assert!(!preview.truncated);
+    }
+
+    /// Blank space and blank lines after a backslash were squeezed or
+    /// dropped, so commands `sh` runs differently reached the reader as one
+    /// preview: a line continued by the next, a line ending in an escaped
+    /// space or tab, a continuation a blank line ends, and a path beside the
+    /// home directory against a single path.
+    #[test]
+    fn shell_previews_keep_apart_what_a_backslash_escapes() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        let space = "⟨U+0020⟩";
+        let tab = "⟨U+0009⟩";
+
+        let cases = [
+            (
+                "echo first \\\necho second",
+                format!("Run `echo first \\{LINE_BREAK}echo second`."),
+            ),
+            (
+                "echo first \\ \necho second",
+                format!("Run `echo first \\{space}{LINE_BREAK}echo second`."),
+            ),
+            (
+                "echo first \\\t\necho second",
+                format!("Run `echo first \\{tab}{LINE_BREAK}echo second`."),
+            ),
+            (
+                "echo first \\\n\necho second",
+                format!("Run `echo first \\{LINE_BREAK}{LINE_BREAK}echo second`."),
+            ),
+            (
+                "rm -rf ~/tmp\\  ~",
+                format!("Run `rm -rf ~/tmp\\{space} ~`."),
+            ),
+            ("rm -rf ~/tmp\\ ~", format!("Run `rm -rf ~/tmp\\{space}~`.")),
+            (
+                "rm -rf ~/tmp\\\n  ~",
+                format!("Run `rm -rf ~/tmp\\{LINE_BREAK}{space} ~`."),
+            ),
+            (
+                "rm -rf ~/tmp\\\n~",
+                format!("Run `rm -rf ~/tmp\\{LINE_BREAK}~`."),
+            ),
+        ];
+
+        let previews: Vec<String> = cases
+            .iter()
+            .map(|(command, expected)| {
+                let preview = registry
+                    .preview(
+                        "run_shell",
+                        &serde_json::json!({"command": command}).to_string(),
+                    )
+                    .expect("a shell call previews the line it will run");
+                assert_eq!(&preview.text, expected, "{command:?}");
+                assert!(!preview.truncated, "{command:?}");
+                preview.text
+            })
+            .collect();
+
+        let distinct: HashSet<&String> = previews.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            previews.len(),
+            "every command has a preview of its own: {previews:#?}"
+        );
+    }
+
+    /// Arguments were joined by a space, so where one ended and the next
+    /// began was lost: a `-name` pattern holding ` -delete` read as a
+    /// pattern and a `-delete` that removes every match.
+    #[test]
+    fn a_command_preview_shows_where_each_argument_ends() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunCommandTool));
+        registry.register(Arc::new(RunShellTool));
+
+        let preview = |name: &str, arguments: serde_json::Value| {
+            let preview = registry
+                .preview(name, &arguments.to_string())
+                .expect("a command previews what it will run");
+            assert!(!preview.truncated, "{}", preview.text);
+            preview.text
+        };
+
+        let pattern = preview(
+            "run_command",
+            serde_json::json!({"command": "find", "args": [".", "-name", "*.rs -delete"]}),
+        );
+        let deleting = preview(
+            "run_command",
+            serde_json::json!({"command": "find", "args": [".", "-name", "*.rs", "-delete"]}),
+        );
+        assert_eq!(pattern, "Run `find . -name '*.rs -delete'`.");
+        assert_eq!(deleting, "Run `find . -name '*.rs' -delete`.");
+        assert_ne!(pattern, deleting);
+
+        assert_eq!(
+            preview(
+                "run_command",
+                serde_json::json!({"command": "git", "args": ["commit", "-m", "it's done", ""]}),
+            ),
+            r"Run `git commit -m 'it'\''s done' ''`."
+        );
+        assert_eq!(
+            preview(
+                "run_command",
+                serde_json::json!({"command": "cargo", "args": ["test"], "cwd": "my crates/app"}),
+            ),
+            "Run `cargo test` in 'my crates/app'."
+        );
+        assert_eq!(
+            preview(
+                "run_shell",
+                serde_json::json!({"command": "ls", "cwd": "my crates/app"}),
+            ),
+            "Run `ls` in 'my crates/app'."
+        );
+    }
+
+    /// Every preview was collapsed whole, so blank space inside a quoted
+    /// argument or directory was squeezed like the space between words, and
+    /// two calls that differ only there read alike.
+    #[test]
+    fn a_command_preview_keeps_the_blank_space_inside_a_quoted_word() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunCommandTool));
+        registry.register(Arc::new(RunShellTool));
+        let preview = |name: &str, arguments: serde_json::Value| {
+            let preview = registry
+                .preview(name, &arguments.to_string())
+                .expect("a command previews what it will run");
+            assert!(!preview.truncated, "{}", preview.text);
+            preview.text
+        };
+
+        let wide = preview(
+            "run_command",
+            serde_json::json!({"command": "git", "args": ["commit", "-m", "a   b"]}),
+        );
+        let narrow = preview(
+            "run_command",
+            serde_json::json!({"command": "git", "args": ["commit", "-m", "a b"]}),
+        );
+        assert_eq!(wide, "Run `git commit -m 'a   b'`.");
+        assert_eq!(narrow, "Run `git commit -m 'a b'`.");
+        assert_ne!(wide, narrow);
+
+        assert_eq!(
+            preview(
+                "run_command",
+                serde_json::json!({"command": "echo", "args": ["a\tb", "c\n\n  d"]}),
+            ),
+            format!("Run `echo 'a⟨U+0009⟩b' 'c{LINE_BREAK}{LINE_BREAK}⟨U+0020⟩ d'`.")
+        );
+        assert_eq!(
+            preview(
+                "run_shell",
+                serde_json::json!({"command": "cargo test", "cwd": "my   crates"}),
+            ),
+            "Run `cargo test` in 'my   crates'."
+        );
+    }
+
+    /// A shell command was collapsed like free text, so blank space `sh`
+    /// reads - inside quotes, at the start of a line, on a line of its own -
+    /// was squeezed or dropped, and `echo 'a   b'` read as `echo 'a b'`.
+    #[test]
+    fn a_shell_preview_shows_the_command_byte_for_byte() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        let preview = |command: &str| {
+            let preview = registry
+                .preview(
+                    "run_shell",
+                    &serde_json::json!({"command": command}).to_string(),
+                )
+                .expect("a shell call previews the line it will run");
+            assert!(!preview.truncated, "{}", preview.text);
+            preview.text
+        };
+
+        let wide = preview("echo 'a   b'");
+        let narrow = preview("echo 'a b'");
+        assert_eq!(wide, "Run `echo 'a   b'`.");
+        assert_eq!(narrow, "Run `echo 'a b'`.");
+        assert_ne!(wide, narrow);
+
+        assert_eq!(preview("cargo    test"), "Run `cargo    test`.");
+        assert_eq!(preview("echo\ta"), "Run `echo⟨U+0009⟩a`.");
+        assert_eq!(
+            preview("  cd /srv\n\n  rm -rf app  "),
+            format!("Run `  cd /srv{LINE_BREAK}{LINE_BREAK}⟨U+0020⟩ rm -rf app  `.")
+        );
+        assert_ne!(
+            preview("cd /srv\n\nrm -rf app"),
+            preview("cd /srv\nrm -rf app")
+        );
+    }
+
+    /// An escape was text a command could type, so the characters `\u{8}`
+    /// read as a backspace the command did not hold, and `\u{20}` as a
+    /// space a backslash escapes.
+    #[test]
+    fn a_shell_preview_tells_the_text_of_an_escape_from_the_character_it_names() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        let preview = |command: &str| {
+            registry
+                .preview(
+                    "run_shell",
+                    &serde_json::json!({"command": command}).to_string(),
+                )
+                .expect("a shell call previews the line it will run")
+                .text
+        };
+
+        for (typed, real, typed_drawn, real_drawn) in [
+            (
+                r"rm -rf ~/tmp\u{20}~",
+                r"rm -rf ~/tmp\ ~",
+                r"Run `rm -rf ~/tmp\u{20}~`.",
+                r"Run `rm -rf ~/tmp\⟨U+0020⟩~`.",
+            ),
+            (
+                "echo safe⟨U+0008⟩",
+                "echo safe\u{8}",
+                "Run `echo safe⟨U+27E8⟩U+0008⟨U+27E9⟩`.",
+                "Run `echo safe⟨U+0008⟩`.",
+            ),
+        ] {
+            assert_eq!(preview(typed), typed_drawn, "{typed:?}");
+            assert_eq!(preview(real), real_drawn, "{real:?}");
+            assert_ne!(preview(typed), preview(real), "{typed:?}");
+        }
     }
 
     /// The preview kept the first 400 characters of a command, so a call

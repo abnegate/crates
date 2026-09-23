@@ -152,6 +152,11 @@ impl Tool for RunShellTool {
         Tier::Host
     }
 
+    /// The command byte for byte as `sh` reads it, blank space and blank
+    /// lines included, and the directory it runs in. The card is already held
+    /// to [`MAX_PREVIEW_CHARACTERS`](crate::tools::MAX_PREVIEW_CHARACTERS),
+    /// so squeezing would shorten nothing it needs and hide what the shell
+    /// reads.
     fn preview(&self, parameters: &Value) -> Option<String> {
         let parameters: RunShellParameters = serde_json::from_value(parameters.clone()).ok()?;
         Some(run_preview(

@@ -1,5 +1,7 @@
 mod parameters;
 
+use std::iter::once;
+
 use async_trait::async_trait;
 pub(super) use parameters::RunCommandParameters;
 use serde_json::Value;
@@ -28,6 +30,7 @@ use crate::tools::job::JobCommand;
 use crate::tools::process;
 use crate::tools::reason_property;
 use crate::tools::trim_middle;
+use crate::tools::word;
 
 /// Programs [`RunCommandTool`] may spawn, resolved on the child's `PATH`.
 ///
@@ -69,11 +72,14 @@ impl Tool for RunCommandTool {
         Tier::Host
     }
 
+    /// The program and each argument as the shell word it is, blank space
+    /// and all, so where one argument ends and the next begins is on the card.
     fn preview(&self, parameters: &Value) -> Option<String> {
         let parameters: RunCommandParameters = serde_json::from_value(parameters.clone()).ok()?;
-        let line = std::iter::once(parameters.command)
-            .chain(parameters.arguments)
-            .collect::<Vec<String>>()
+        let line = once(&parameters.command)
+            .chain(&parameters.arguments)
+            .map(|argument| word(argument))
+            .collect::<Vec<_>>()
             .join(" ");
         Some(run_preview(&line, parameters.working_directory.as_deref()))
     }

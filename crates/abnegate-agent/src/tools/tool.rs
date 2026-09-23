@@ -64,8 +64,10 @@ pub trait Tool: Send + Sync {
     /// Rendered from the call's own arguments, so the reader weighs the action
     /// rather than the model's account of it, and rendered whole: the
     /// [`Preview`](super::Preview) built from it is what holds it to a length,
-    /// and says so when it does. A tool that leaves this alone is shown as the
-    /// call itself, its name and every argument.
+    /// and says so when it does. It draws blank space as it finds it, so
+    /// squeezing the free text a tool shows is the tool's to do. A tool that
+    /// leaves this alone is shown as the call itself, its name and every
+    /// argument.
     fn preview(&self, _parameters: &Value) -> Option<String> {
         None
     }

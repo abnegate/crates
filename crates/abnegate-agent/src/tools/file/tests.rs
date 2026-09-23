@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -284,7 +285,7 @@ fn write_and_edit_previews_show_bidi_controls_as_escapes() {
             "{:?}",
             preview.text
         );
-        for escape in ["\\u{202e}", "\\u{2066}", "\\u{2069}"] {
+        for escape in ["⟨U+202E⟩", "⟨U+2066⟩", "⟨U+2069⟩"] {
             assert!(preview.text.contains(escape), "{escape}: {}", preview.text);
         }
     }
@@ -305,7 +306,7 @@ fn write_and_edit_previews_show_other_line_terminators_and_spaces_as_escapes() {
 
     for character in characters {
         let content = format!("safe(){character}rm -rf ~");
-        let escaped = format!("safe(){}rm -rf ~", character.escape_unicode());
+        let escaped = format!("safe()⟨U+{:04X}⟩rm -rf ~", u32::from(character));
         let write = Preview::of(
             &WriteFileTool,
             &serde_json::json!({"path": "hook.sh", "content": content}),
@@ -342,7 +343,7 @@ fn write_and_edit_previews_show_the_carriage_return_of_a_carriage_return_line_fe
         &serde_json::json!({"path": "hook.sh", "old_string": "safe()", "new_string": content}),
     );
 
-    let carriage_return = '\r'.escape_unicode();
+    let carriage_return = "⟨U+000D⟩";
 
     assert_eq!(
         write.text,
@@ -356,6 +357,198 @@ fn write_and_edit_previews_show_the_carriage_return_of_a_carriage_return_line_fe
             "Edit hook.sh: replace \"safe()\" with \"safe(){carriage_return}{LINE_BREAK}rm -rf ~\"."
         )
     );
+}
+
+/// Blank space and blank lines after a backslash were squeezed or dropped,
+/// so a write or an edit whose script `sh` runs differently reached the
+/// reader as the same preview.
+#[test]
+fn write_and_edit_previews_keep_apart_what_a_backslash_escapes() {
+    let space = "⟨U+0020⟩";
+    let tab = "⟨U+0009⟩";
+    let cases = [
+        (
+            "echo first \\\necho second",
+            format!("echo first \\{LINE_BREAK}echo second"),
+        ),
+        (
+            "echo first \\ \necho second",
+            format!("echo first \\{space}{LINE_BREAK}echo second"),
+        ),
+        (
+            "echo first \\\t\necho second",
+            format!("echo first \\{tab}{LINE_BREAK}echo second"),
+        ),
+        (
+            "echo first \\\n\necho second",
+            format!("echo first \\{LINE_BREAK}{LINE_BREAK}echo second"),
+        ),
+        ("rm -rf ~/tmp\\  ~", format!("rm -rf ~/tmp\\{space} ~")),
+        ("rm -rf ~/tmp\\ ~", format!("rm -rf ~/tmp\\{space}~")),
+        (
+            "rm -rf ~/tmp\\\n  ~",
+            format!("rm -rf ~/tmp\\{LINE_BREAK}{space} ~"),
+        ),
+        ("rm -rf ~/tmp\\\n~", format!("rm -rf ~/tmp\\{LINE_BREAK}~")),
+    ];
+
+    let mut previews = Vec::new();
+    for (content, drawn) in &cases {
+        let characters = content.chars().count();
+        let write = Preview::of(
+            &WriteFileTool,
+            &serde_json::json!({"path": "hook.sh", "content": content}),
+        );
+        let edit = Preview::of(
+            &ApplyPatchTool,
+            &serde_json::json!({"path": "hook.sh", "old_string": "safe()", "new_string": content}),
+        );
+
+        assert_eq!(
+            write.text,
+            format!(
+                "Write {characters} characters to hook.sh, replacing whatever is there: \"{drawn}\"."
+            ),
+            "{content:?}"
+        );
+        assert_eq!(
+            edit.text,
+            format!("Edit hook.sh: replace \"safe()\" with \"{drawn}\"."),
+            "{content:?}"
+        );
+        assert!(!write.truncated && !edit.truncated, "{content:?}");
+        previews.push(write.text);
+        previews.push(edit.text);
+    }
+
+    let distinct: HashSet<&String> = previews.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        previews.len(),
+        "every write and edit has a preview of its own: {previews:#?}"
+    );
+}
+
+/// Content went between the quotes as it was, so a replacement holding `"`
+/// closed its own span and drew the next: one hunk read as two, the second
+/// a replacement it does not make.
+#[test]
+fn write_and_edit_previews_escape_the_quotes_their_content_holds() {
+    let honest = Preview::of(
+        &ApplyPatchTool,
+        &serde_json::json!({
+            "path": "src/lib.rs",
+            "hunks": [
+                {"old_string": "check()", "new_string": "verify()"},
+                {"old_string": "log()", "new_string": "trace()"},
+            ],
+        }),
+    );
+    let forged = Preview::of(
+        &ApplyPatchTool,
+        &serde_json::json!({
+            "path": "src/lib.rs",
+            "old_string": "check()",
+            "new_string": "verify()\"; replace \"log()\" with \"trace()",
+        }),
+    );
+
+    assert_eq!(
+        honest.text,
+        r#"Edit src/lib.rs: replace "check()" with "verify()"; replace "log()" with "trace()"."#
+    );
+    assert_eq!(
+        forged.text,
+        r#"Edit src/lib.rs: replace "check()" with "verify()\"; replace \"log()\" with \"trace()"."#
+    );
+
+    let write = Preview::of(
+        &WriteFileTool,
+        &serde_json::json!({"path": "hook.sh", "content": r#"echo "safe" \"#}),
+    );
+    assert_eq!(
+        write.text,
+        r#"Write 13 characters to hook.sh, replacing whatever is there: "echo \"safe\" \\"."#
+    );
+}
+
+/// The path went onto the card as it was, so one holding a space read as
+/// two words, or as the end of the sentence the preview writes around it.
+#[test]
+fn write_and_edit_previews_quote_a_path_a_shell_would_split() {
+    let write = Preview::of(
+        &WriteFileTool,
+        &serde_json::json!({"path": "my notes.txt", "content": "done"}),
+    );
+    let append = Preview::of(
+        &WriteFileTool,
+        &serde_json::json!({"path": "my notes.txt", "content": "done", "append": true}),
+    );
+    let edit = Preview::of(
+        &ApplyPatchTool,
+        &serde_json::json!({"path": "my notes.txt", "old_string": "todo", "new_string": "done"}),
+    );
+    let forged = Preview::of(
+        &WriteFileTool,
+        &serde_json::json!({
+            "path": "notes.txt, replacing whatever is there: \"done\". Also append to x.sh",
+            "content": "rm -rf ~",
+        }),
+    );
+
+    assert_eq!(
+        write.text,
+        "Write 4 characters to 'my notes.txt', replacing whatever is there: \"done\"."
+    );
+    assert_eq!(
+        append.text,
+        "Append 4 characters to 'my notes.txt': \"done\"."
+    );
+    assert_eq!(
+        edit.text,
+        "Edit 'my notes.txt': replace \"todo\" with \"done\"."
+    );
+    assert_eq!(
+        forged.text,
+        "Write 8 characters to 'notes.txt, replacing whatever is there: \"done\". Also append to x.sh', replacing whatever is there: \"rm -rf ~\"."
+    );
+}
+
+/// Every preview was collapsed whole, so blank space inside a quoted path
+/// was squeezed like the space between words, and a write or an edit to
+/// `my   notes.txt` read as one to `my notes.txt`.
+#[test]
+fn write_and_edit_previews_keep_the_blank_space_inside_a_quoted_path() {
+    let write = |path: &str| {
+        Preview::of(
+            &WriteFileTool,
+            &serde_json::json!({"path": path, "content": "done"}),
+        )
+        .text
+    };
+    let edit = |path: &str| {
+        Preview::of(
+            &ApplyPatchTool,
+            &serde_json::json!({"path": path, "old_string": "todo", "new_string": "done"}),
+        )
+        .text
+    };
+
+    assert_eq!(
+        write("my   notes.txt"),
+        "Write 4 characters to 'my   notes.txt', replacing whatever is there: \"done\"."
+    );
+    assert_eq!(
+        write("my notes.txt"),
+        "Write 4 characters to 'my notes.txt', replacing whatever is there: \"done\"."
+    );
+    assert_ne!(write("my   notes.txt"), write("my notes.txt"));
+
+    assert_eq!(
+        edit("my   notes.txt"),
+        "Edit 'my   notes.txt': replace \"todo\" with \"done\"."
+    );
+    assert_ne!(edit("my   notes.txt"), edit("my notes.txt"));
 }
 
 /// An edit was previewed as the first 80 characters of the text it took out,
