@@ -25,6 +25,11 @@ pub enum GitError {
     #[error("Refusing to write the branch {0} through a symbolic ref")]
     SymbolicBranch(BranchName),
 
+    /// [`GitError::SymbolicBranch`] for a checked-out branch whose name git
+    /// accepts and a [`BranchName`] may not carry, which is left unnamed.
+    #[error("Refusing to write the checked-out branch through a symbolic ref")]
+    SymbolicHead,
+
     #[error(transparent)]
     Parse(#[from] ParseError),
 
