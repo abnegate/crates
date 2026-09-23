@@ -1,0 +1,34 @@
+[package]
+name = "abnegate-vision"
+description = "Subject-aware image cropping: decode JPEG, PNG and WebP, locate the salient subject with U2-Net on ONNX Runtime, and render the crop in a single resampling pass"
+keywords = ["image", "crop", "saliency", "onnx", "u2net"]
+categories = ["multimedia::images", "computer-vision"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+saliency = ["dep:ort"]
+
+[dependencies]
+fast_image_resize = { workspace = true }
+image = { workspace = true }
+ort = { workspace = true, optional = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+# An example cannot gate itself with `#![cfg(...)]` -- that leaves it with no
+# `main` -- so the feature gate has to live here.
+[[example]]
+name = "autocrop"
+required-features = ["saliency"]
