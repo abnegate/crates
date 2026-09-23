@@ -22,7 +22,8 @@ fn refuse(worktree_path: &Path) -> GitError {
 
 impl GitService {
     /// Add a worktree of a managed clone at `worktree_path`, in detached HEAD
-    /// state at `checkout_ref`.
+    /// state at `checkout_ref`. The worktree is named from then on by
+    /// [`Checkout::linked`]`(worktree_path, path)`.
     ///
     /// A worktree of the same repository already standing there is replaced
     /// when it holds nothing that would be lost -- no uncommitted change and a
@@ -41,7 +42,7 @@ impl GitService {
         worktree_path: &Path,
         checkout_ref: &BranchName,
     ) -> GitResult<()> {
-        Self::verify_config(path).await?;
+        Self::verify_base(path).await?;
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
 
@@ -77,7 +78,8 @@ impl GitService {
         Ok(())
     }
 
-    /// Add a worktree of a managed clone checked out on a local branch.
+    /// Add a worktree of a managed clone checked out on a local branch, named
+    /// from then on by [`Checkout::linked`]`(worktree_path, path)`.
     ///
     /// Unlike [`Self::create_worktree`], which detaches, this creates or resets
     /// `branch` at `start_point`, so a later push from the worktree targets the
@@ -94,7 +96,7 @@ impl GitService {
         branch: &BranchName,
         start_point: &BranchName,
     ) -> GitResult<()> {
-        Self::verify_config(path).await?;
+        Self::verify_base(path).await?;
         if Self::is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
@@ -142,7 +144,7 @@ impl GitService {
     /// not the repository itself, and not locked. Everything else is somewhere
     /// the caller did not declare disposable, and is refused.
     pub async fn remove_worktree(&self, path: &Path, worktree_path: &Path) -> GitResult<()> {
-        Self::verify_config(path).await?;
+        Self::verify_base(path).await?;
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
         if worktree_path.components().any(|component| {
@@ -268,10 +270,11 @@ impl GitService {
     }
 
     /// Clear the way for a worktree at `worktree_path` by removing the one
-    /// standing there, but only when it is a worktree of this repository that
-    /// holds nothing: no uncommitted change, and a HEAD at `start`. The
-    /// clone's configuration is checked again last, since the worktree is
-    /// added next and the clearing ran git in the clone several times.
+    /// standing there, but only when it is a worktree bound to this
+    /// repository, as a [`Checkout::linked`] to it is, that holds nothing: no
+    /// uncommitted change, and a HEAD at `start`. The clone's configuration is
+    /// checked again last, since the worktree is added next and the clearing
+    /// ran git in the clone several times.
     async fn replace_stale(
         &self,
         path: &Path,
@@ -290,11 +293,9 @@ impl GitService {
             return Err(refuse());
         }
         let start = String::from_utf8_lossy(&resolved.stdout).trim().to_string();
-        let repository = path.canonicalize()?;
-        let stale = worktree_path.to_path_buf();
+        let stale = Checkout::linked(worktree_path, path);
         let holds_nothing = tokio::task::spawn_blocking(move || {
-            worktree::is_worktree(&stale)
-                && worktree::repository_of(&stale).is_ok_and(|owner| owner == repository)
+            worktree::is_worktree(stale.top())
                 && worktree::unfinished(&stale, &[&start]).is_ok_and(|held| !held.any())
         })
         .await
@@ -305,7 +306,7 @@ impl GitService {
 
         tracing::warn!(worktree = ?worktree_path, "Stale worktree found, removing");
         self.remove_worktree(path, worktree_path).await?;
-        Self::verify_config(path).await
+        Self::verify_base(path).await
     }
 }
 
@@ -405,7 +406,13 @@ mod tests {
             )),
             "{recorded:?}"
         );
-        assert_eq!(service.current_branch(&worktree).await.unwrap(), "task/one");
+        assert_eq!(
+            service
+                .current_branch(&Checkout::linked(&worktree, &clone))
+                .await
+                .unwrap(),
+            "task/one"
+        );
         assert!(
             !git(&clone, &["config", "--local", "--list"]).contains("branch.task/one."),
             "the worktree's branch recorded an upstream"

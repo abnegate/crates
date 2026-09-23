@@ -12,10 +12,21 @@
 //! refused before anything runs in it, as is one whose git directory holds a
 //! symbolic link anywhere, since git writes through such a link to wherever
 //! it points, in a file's place or a directory's, and a checkout whose git
-//! directory, or the one it shares, is not the one its own `.git` names: a
-//! `.git` that is a link, is missing, or is a file or worktree record
-//! rewritten to name another clone's would hand every write to that other
-//! repository. A checkout is named by its top, where its `.git` stands. The
+//! directory, or the one it shares, is not the one its own `.git` names or
+//! not the clone it was made from: a `.git` that is a link, or a file or
+//! worktree record rewritten to name another clone's, would hand every write
+//! to that other repository, and a record another clone kept for a worktree
+//! that once stood at the same path is as consistent in itself as the
+//! clone's own. A repository that borrows objects from another store through
+//! `objects/info/alternates` is refused as well, since a push would upload
+//! whatever the pushed commit reaches there. A checkout is a
+//! [`Checkout`](crate::Checkout), named by its top, where its `.git` stands,
+//! and bound to the clone it was made from; a path below the top, or with no
+//! `.git` in it at all, is refused with [`GitError::NotACheckoutTop`], since
+//! git run there reaches whichever repository encloses it. The operations
+//! that keep a base clone in step with its remote, and the ones that add and
+//! remove its worktrees, take the clone's top as a path and refuse anything
+//! but the clone. The
 //! check is made before each command, so it cannot stop a run that rewrites the
 //! repository in the instant between the check and the command; a clone
 //! every run can write is not one a credential should be sent from. A
@@ -62,7 +73,6 @@ pub(crate) use crate::git::hardening::PINS;
 pub(crate) use crate::git::hardening::harden;
 pub(crate) use crate::git::hardening::native;
 pub(crate) use crate::git::hardening::refused;
-pub(crate) use crate::git::hardening::unlinked;
 pub use crate::git::remote_head::RemoteHead;
 pub use crate::git::service::GitService;
 #[cfg(test)]

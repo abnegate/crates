@@ -93,7 +93,8 @@ async fn a_worktree_whose_own_reflogs_are_a_link_is_refused_a_commit() {
     );
     std::fs::write(worktree.join("work.txt"), "work\n").unwrap();
     let service = GitService::new();
-    service.stage_all(&worktree).await.unwrap();
+    let checkout = Checkout::linked(&worktree, &base);
+    service.stage_all(&checkout).await.unwrap();
     let own = PathBuf::from(git(
         &worktree,
         &["rev-parse", "--path-format=absolute", "--git-dir"],
@@ -102,7 +103,7 @@ async fn a_worktree_whose_own_reflogs_are_a_link_is_refused_a_commit() {
     relink(&own.join("logs"), &moved);
     let (before, listed) = (snapshot(&moved), refs(&base));
 
-    let committed = service.commit(&worktree, "work").await;
+    let committed = service.commit(&checkout, "work").await;
 
     assert_eq!(
         snapshot(&moved),
@@ -153,7 +154,7 @@ async fn a_repository_whose_ref_tables_are_a_link_is_refused_a_new_branch() {
     let (before, listed) = (snapshot(&moved), refs(&repository));
 
     let created = GitService::new()
-        .create_branch(&repository, &branch("feature/one"))
+        .create_branch(&Checkout::base(&repository), &branch("feature/one"))
         .await;
 
     assert_eq!(
@@ -180,7 +181,7 @@ async fn a_repository_whose_worktree_records_are_a_link_is_refused_a_branch() {
     let (before, listed) = (snapshot(&records), refs(&repository));
 
     let prepared = GitService::new()
-        .prepare_branch(&repository, &branch("task/one"), false)
+        .prepare_branch(&Checkout::base(&repository), &branch("task/one"), false)
         .await;
 
     assert_eq!(
@@ -203,12 +204,13 @@ async fn a_repository_whose_index_is_a_link_is_refused_a_commit() {
     let repository = repository(root.path(), "repository", FILES);
     std::fs::write(repository.join("work.txt"), "work\n").unwrap();
     let service = GitService::new();
-    service.stage_all(&repository).await.unwrap();
+    let checkout = Checkout::base(&repository);
+    service.stage_all(&checkout).await.unwrap();
     let moved = root.path().join("moved");
     relink(&repository.join(GIT_DIRECTORY).join("index"), &moved);
     let (before, listed) = (snapshot(&moved), refs(&repository));
 
-    let committed = service.commit(&repository, "work").await;
+    let committed = service.commit(&checkout, "work").await;
 
     assert_eq!(
         snapshot(&moved),
@@ -230,7 +232,8 @@ async fn a_repository_whose_commit_message_file_is_a_link_is_refused_a_commit() 
     let repository = repository(root.path(), "repository", FILES);
     std::fs::write(repository.join("work.txt"), "work\n").unwrap();
     let service = GitService::new();
-    service.stage_all(&repository).await.unwrap();
+    let checkout = Checkout::base(&repository);
+    service.stage_all(&checkout).await.unwrap();
     let moved = root.path().join("moved");
     relink(
         &repository.join(GIT_DIRECTORY).join("COMMIT_EDITMSG"),
@@ -238,7 +241,7 @@ async fn a_repository_whose_commit_message_file_is_a_link_is_refused_a_commit() 
     );
     let (before, listed) = (snapshot(&moved), refs(&repository));
 
-    let committed = service.commit(&repository, "work").await;
+    let committed = service.commit(&checkout, "work").await;
 
     assert_eq!(
         snapshot(&moved),

@@ -1,5 +1,6 @@
 use crate::branch_name::BranchName;
 use crate::branch_name::HEADS;
+use crate::checkout::Checkout;
 use crate::commit_sha::CommitSha;
 use crate::git::Anchor;
 use crate::git::CONFIG_LISTING;
@@ -17,7 +18,6 @@ use crate::git::authentication::authenticate;
 use crate::git::group::Group;
 use crate::git::harden;
 use crate::git::refused;
-use crate::git::unlinked;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
 use std::ffi::OsStr;
@@ -231,25 +231,34 @@ impl GitService {
         command
     }
 
-    /// Refuse a repository whose own configuration holds anything beyond what
-    /// git writes for a clone, a worktree and a tracking branch, with
-    /// [`GitError::UnsafeConfig`]; a checkout at `path` whose git directory,
-    /// or the one it shares, is not the one its own `.git` names, with
-    /// [`GitError::RedirectedGitDirectory`], or whose `.git` is a link; and
-    /// one whose git directory holds a symbolic link anywhere git could write
-    /// through it, with [`GitError::LinkedPath`]. Run before every hardened
-    /// operation, because a run's git commands can write the repository
-    /// between two of them.
-    pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
+    /// Refuse a path that is not the top of a checkout, with
+    /// [`GitError::NotACheckoutTop`]; a repository whose own configuration
+    /// holds anything beyond what git writes for a clone, a worktree and a
+    /// tracking branch, with [`GitError::UnsafeConfig`]; a checkout whose git
+    /// directory, or the one it shares, is not the one its own `.git` names
+    /// or not its clone's, with [`GitError::RedirectedGitDirectory`], or
+    /// whose `.git` is a link; one whose git directory holds a symbolic link
+    /// anywhere git could write through it, with [`GitError::LinkedPath`];
+    /// and one that borrows objects from another store, with
+    /// [`GitError::AlternateObjects`]. Run before every hardened operation,
+    /// because a run's git commands can write the repository between two of
+    /// them.
+    pub(crate) async fn verify_config(checkout: &Checkout) -> GitResult<()> {
         Self::verify(
             || {
                 let mut command = Self::hardened();
-                command.current_dir(path);
+                command.current_dir(checkout.top());
                 command
             },
-            Anchor::Checkout(path.to_path_buf()),
+            Anchor::Checkout(checkout.clone()),
         )
         .await
+    }
+
+    /// [`Self::verify_config`] for the base clone whose top is `path`: a
+    /// linked worktree there is refused as not being the clone.
+    pub(crate) async fn verify_base(path: &Path) -> GitResult<()> {
+        Self::verify_config(&Checkout::base(path)).await
     }
 
     /// [`Self::verify_config`] for commands `bind` points at the repository
@@ -257,6 +266,7 @@ impl GitService {
     /// blocking pool: a clone with many loose refs and reflogs holds
     /// thousands of entries.
     pub(crate) async fn verify(bind: impl Fn() -> Command, anchor: Anchor) -> GitResult<()> {
+        anchor.marked()?;
         let listed = Self::output(bind().args(CONFIG_LISTING).stdout(Stdio::piped())).await?;
         if !listed.status.success() {
             return Err(GitError::CommandFailed(
@@ -272,12 +282,9 @@ impl GitService {
                 "Cannot locate the repository's files".to_string(),
             ));
         }
-        tokio::task::spawn_blocking(move || {
-            anchor.holds(&located.stdout)?;
-            unlinked(&located.stdout)
-        })
-        .await
-        .map_err(std::io::Error::other)?
+        tokio::task::spawn_blocking(move || anchor.admits(&located.stdout))
+            .await
+            .map_err(std::io::Error::other)?
     }
 
     /// A hardened invocation that may reach `remote`, over the one transport

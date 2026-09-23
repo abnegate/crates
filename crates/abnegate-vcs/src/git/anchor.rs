@@ -1,8 +1,12 @@
+use crate::checkout::Checkout;
 use crate::git::GitError;
 use crate::git::GitResult;
 use crate::git::hardening::directories;
+use crate::git::hardening::unborrowed;
+use crate::git::hardening::unlinked;
 use crate::git::native;
 use std::ffi::OsStr;
+use std::fs::Metadata;
 use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -34,40 +38,63 @@ const LONGEST_PATH: u64 = 4096;
 /// clone's refs, index and configuration.
 #[derive(Debug)]
 pub(crate) enum Anchor {
-    /// A checkout the caller named: a clone, whose `.git` is its own git
-    /// directory and the shared one at once, or a linked worktree, whose
-    /// `.git` file names its own among the records of a clone's.
-    Checkout(PathBuf),
+    /// A checkout the caller named by its top and bound to its clone: a
+    /// base clone, whose `.git` is its own git directory and the shared one
+    /// at once, or a linked worktree, whose `.git` file names its own among
+    /// the records of the clone's.
+    Checkout(Checkout),
     /// A git directory a command is bound to by path, its own and the
     /// shared one at once.
     Bound(PathBuf),
 }
 
 impl Anchor {
+    /// Refuse, before git is run to locate anything, a checkout whose top
+    /// holds no `.git` with [`GitError::NotACheckoutTop`], and one whose
+    /// `.git` is a link with [`GitError::LinkedPath`]: git run below the top
+    /// of a checkout, or where there is none, reaches whichever repository
+    /// encloses the path.
+    pub(crate) fn marked(&self) -> GitResult<()> {
+        match self {
+            Self::Checkout(checkout) => marker(checkout.top()).map(drop),
+            Self::Bound(_) => Ok(()),
+        }
+    }
+
+    /// Refuse the git directories [`crate::git::LOCATING`] printed unless
+    /// they are this anchor's own, hold no symbolic link, as [`unlinked`]
+    /// looks for one, and borrow no objects, as [`unborrowed`] looks for a
+    /// store they borrow from.
+    pub(crate) fn admits(&self, located: &[u8]) -> GitResult<()> {
+        self.holds(located)?;
+        unlinked(located)?;
+        unborrowed(located)
+    }
+
     /// Refuse the git directories [`crate::git::LOCATING`] printed unless
     /// they are this anchor's own, looking at what stands at each without
-    /// following a link. A `.git` that is a link is refused with
+    /// following a link. A checkout's top with no `.git` is refused with
+    /// [`GitError::NotACheckoutTop`], a `.git` that is a link with
     /// [`GitError::LinkedPath`], and every other mismatch, including what
-    /// cannot be looked at, with [`GitError::RedirectedGitDirectory`]. Every
-    /// path is compared by its real path, so a checkout named through a
-    /// linked directory above it is still its own.
-    pub(crate) fn holds(&self, located: &[u8]) -> GitResult<()> {
+    /// cannot be looked at, with [`GitError::RedirectedGitDirectory`]: a
+    /// shared git directory that is not the `.git` directory of the clone
+    /// the checkout is bound to is one, however consistent the worktree
+    /// record leading to it is. Every path is compared by its real path, so
+    /// a checkout named through a linked directory above it is still its
+    /// own.
+    fn holds(&self, located: &[u8]) -> GitResult<()> {
         let (own, shared) = directories(located)?;
         let (Some(own), Some(shared)) = (real(&own), real(&shared)) else {
             return Err(GitError::RedirectedGitDirectory);
         };
         let confirmed = match self {
             Self::Checkout(checkout) => {
-                let marker = std::fs::canonicalize(checkout)?.join(GIT_MARKER);
-                let details = std::fs::symlink_metadata(&marker)
-                    .map_err(|_| GitError::RedirectedGitDirectory)?;
-                if details.file_type().is_symlink() {
-                    return Err(GitError::LinkedPath);
-                }
-                match details.is_dir() {
-                    true => own == marker && shared == marker,
-                    false => details.is_file() && linked(&marker, &own, &shared),
-                }
+                let (marker, details) = marker(checkout.top())?;
+                cloned(checkout.repository(), &shared)
+                    && match details.is_dir() {
+                        true => own == marker && shared == marker,
+                        false => details.is_file() && linked(&marker, &own, &shared),
+                    }
             }
             Self::Bound(directory) => {
                 real(directory).is_some_and(|directory| own == directory && shared == directory)
@@ -79,26 +106,64 @@ impl Anchor {
         }
     }
 
-    /// The real path of `checkout`'s own git directory, refusing a `.git`
-    /// that is a link with [`GitError::LinkedPath`] and one that is not a
-    /// directory with [`GitError::RedirectedGitDirectory`].
-    pub(crate) fn own(checkout: &Path) -> GitResult<PathBuf> {
-        let marker = std::fs::canonicalize(checkout)?.join(GIT_MARKER);
-        let details =
-            std::fs::symlink_metadata(&marker).map_err(|_| GitError::RedirectedGitDirectory)?;
-        match (details.file_type().is_symlink(), details.is_dir()) {
-            (true, _) => Err(GitError::LinkedPath),
-            (false, true) => Ok(marker),
-            (false, false) => Err(GitError::RedirectedGitDirectory),
+    /// The real path of the git directory of the base clone whose top is
+    /// `top`, refusing a top with no `.git` with
+    /// [`GitError::NotACheckoutTop`], a `.git` that is a link with
+    /// [`GitError::LinkedPath`] and one that is not a directory with
+    /// [`GitError::RedirectedGitDirectory`].
+    pub(crate) fn own(top: &Path) -> GitResult<PathBuf> {
+        let (marker, details) = marker(top)?;
+        match details.is_dir() {
+            true => Ok(marker),
+            false => Err(GitError::RedirectedGitDirectory),
         }
     }
 }
 
+/// The real path of the `.git` standing at the checkout whose top is `top`,
+/// and what stands there, looked at without following a link. A top that is
+/// not there, or not a directory, and one with nothing at its `.git`, are
+/// refused with [`GitError::NotACheckoutTop`]; a `.git` that is a link with
+/// [`GitError::LinkedPath`]; and one that cannot be looked at with
+/// [`GitError::RedirectedGitDirectory`].
+fn marker(top: &Path) -> GitResult<(PathBuf, Metadata)> {
+    let top = std::fs::canonicalize(top).map_err(|error| match absent(&error) {
+        true => GitError::NotACheckoutTop,
+        false => GitError::Io(error),
+    })?;
+    let marker = top.join(GIT_MARKER);
+    let details = std::fs::symlink_metadata(&marker).map_err(|error| match absent(&error) {
+        true => GitError::NotACheckoutTop,
+        false => GitError::RedirectedGitDirectory,
+    })?;
+    match details.file_type().is_symlink() {
+        true => Err(GitError::LinkedPath),
+        false => Ok((marker, details)),
+    }
+}
+
+/// Whether a look at a path failed because nothing stands there, or because
+/// something on the way to it is not a directory.
+fn absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// Whether `shared` is the `.git` directory, and not a link to one, of the
+/// clone whose top is `repository`.
+fn cloned(repository: &Path, shared: &Path) -> bool {
+    let directory = repository.join(GIT_MARKER);
+    std::fs::symlink_metadata(&directory).is_ok_and(|details| details.is_dir())
+        && real(&directory).as_deref() == Some(shared)
+}
+
 /// Whether `own` and `shared` are the git directories of the linked
 /// worktree whose `.git` file stands at `marker`: `own` is a record among
-/// `shared`'s worktrees, the record names `marker` as its `.git` and
+/// `shared`'s worktrees, and the record names `marker` as its `.git` and
 /// `shared` as the directory it shares, as git reads both, relative to the
-/// record, and `shared` is the `.git` directory of the clone it stands in.
+/// record.
 fn linked(marker: &Path, own: &Path, shared: &Path) -> bool {
     let recorded = own
         .parent()
@@ -107,11 +172,6 @@ fn linked(marker: &Path, own: &Path, shared: &Path) -> bool {
     recorded == Some(shared)
         && pointed(own, GITDIR).as_deref() == Some(marker)
         && pointed(own, COMMONDIR).as_deref() == Some(shared)
-        && shared.parent().is_some_and(|clone| {
-            let directory = clone.join(GIT_MARKER);
-            std::fs::symlink_metadata(&directory).is_ok_and(|details| details.is_dir())
-                && real(&directory).as_deref() == Some(shared)
-        })
 }
 
 /// The real path of what the file `name` in the record `own` names, read

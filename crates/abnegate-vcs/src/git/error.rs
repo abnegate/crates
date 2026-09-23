@@ -49,16 +49,33 @@ pub enum GitError {
     LinkedPath,
 
     /// A checkout whose git directory, or the one it shares, is not the one
-    /// its own `.git` names: git would read and write another repository's
-    /// refs, index and configuration from it. Which one is left unnamed: the
-    /// checkout chose that path.
+    /// its own `.git` names, or not the clone it is bound to: git would read
+    /// and write another repository's refs, index and configuration from it.
+    /// Which one is left unnamed: the checkout chose that path.
     #[error("Refusing a checkout whose git directory is not its own")]
     RedirectedGitDirectory,
+
+    /// A path with no `.git` standing in it: a directory below the top of a
+    /// checkout, or no checkout at all. Git would look for a repository in
+    /// every directory above it and work in whichever it found first.
+    #[error("Refusing a path that is not the top of a checkout")]
+    NotACheckoutTop,
+
+    /// A repository whose shared git directory holds
+    /// `objects/info/alternates`: git reads objects from every store the
+    /// file names, and a push uploads whatever the pushed commit reaches
+    /// from any of them. Which stores it names is left unnamed: the
+    /// repository chose them.
+    #[error("Refusing a repository that borrows objects from another store")]
+    AlternateObjects,
 
     #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
     UnsafeWorktree(PathBuf),
 
-    #[error("Refusing to stage beside the nested repository at {}", .0.display())]
+    /// A nested repository standing where the index records a gitlink. Its
+    /// path is the one the index holds, which a run can choose, so it is
+    /// shown escaped.
+    #[error("Refusing to stage beside the nested repository at {0:?}")]
     NestedRepository(PathBuf),
 
     #[error("IO error: {0}")]

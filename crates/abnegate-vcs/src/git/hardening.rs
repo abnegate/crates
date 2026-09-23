@@ -123,6 +123,10 @@ const OBJECTS: &str = "objects";
 /// freshens one.
 const OBJECTS_WALKED: [&str; 2] = ["info", "pack"];
 
+/// The file under [`OBJECTS`] naming the further stores git reads objects
+/// from.
+const ALTERNATES: [&str; 2] = ["info", "alternates"];
+
 /// Prints the worktree's own git directory and the one every worktree of
 /// its repository shares, a line each, as absolute paths. Git resolves every
 /// link on the way to an absolute path it prints, so what stands under them
@@ -202,6 +206,25 @@ pub(crate) fn unlinked(located: &[u8]) -> GitResult<()> {
         walk(&own)?;
     }
     walk(&shared)
+}
+
+/// Refuse a repository whose shared git directory, given the directories
+/// [`LOCATING`] printed, holds anything at `objects/info/alternates`, with
+/// [`GitError::AlternateObjects`]: git reads objects from every store that
+/// file names, whatever the host can read, and a push uploads whatever the
+/// pushed commit reaches from any of them. No clone this crate makes or
+/// manages has one, and a run's own commands can write it. A worktree's own
+/// git directory holds no objects, so only the shared one is looked at. What
+/// cannot be looked at is refused as [`unlinked`] refuses it.
+pub(crate) fn unborrowed(located: &[u8]) -> GitResult<()> {
+    let (_, shared) = directories(located)?;
+    let alternates = ALTERNATES
+        .iter()
+        .fold(shared.join(OBJECTS), |path, name| path.join(name));
+    match present(std::fs::symlink_metadata(&alternates))? {
+        Some(_) => Err(GitError::AlternateObjects),
+        None => Ok(()),
+    }
 }
 
 /// The worktree's own git directory and the one every worktree of its

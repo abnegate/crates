@@ -29,6 +29,7 @@ const CREATE_BRANCH: [&str; 4] = ["checkout", "--quiet", "--no-track", "-b"];
 impl GitService {
     /// Clone into an empty, caller-owned directory. Credentials live only in the
     /// child environment, never the origin URL, process arguments, or git config.
+    /// The clone is named from then on by [`Checkout::base`]`(destination)`.
     pub async fn clone_repository(
         &self,
         source: &RepositoryUrl,
@@ -52,13 +53,18 @@ impl GitService {
     /// A task branch that is a symbolic ref is refused with
     /// [`GitError::SymbolicBranch`]: every move of it would land on the ref
     /// it names.
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn prepare_branch(
         &self,
-        path: &Path,
+        checkout: &Checkout,
         branch: &BranchName,
         required: bool,
     ) -> GitResult<()> {
-        Self::verify_config(path).await?;
+        Self::verify_config(checkout).await?;
+        let path = checkout.top();
         let reference = branch.reference();
         if Self::is_symbolic(path, &reference).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
@@ -228,8 +234,12 @@ impl GitService {
     }
 
     /// Resolve a commit without reading a caller-controlled symbolic baseline later.
-    pub async fn revision(&self, path: &Path, reference: &str) -> GitResult<CommitSha> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn revision(&self, checkout: &Checkout, reference: &str) -> GitResult<CommitSha> {
+        Self::verify_config(checkout).await?;
         let output = Self::output(
             Self::hardened()
                 .args([
@@ -238,7 +248,7 @@ impl GitService {
                     "--end-of-options",
                     &format!("{reference}^{{commit}}"),
                 ])
-                .current_dir(path)
+                .current_dir(checkout.top())
                 .stdout(Stdio::piped()),
         )
         .await?;
@@ -249,13 +259,17 @@ impl GitService {
     }
 
     /// Whether `before` is an ancestor of `after`, by the stored objects alone.
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn is_ancestor(
         &self,
-        path: &Path,
+        checkout: &Checkout,
         before: &CommitSha,
         after: &CommitSha,
     ) -> GitResult<bool> {
-        Self::verify_config(path).await?;
+        Self::verify_config(checkout).await?;
         let output = Self::output(
             Self::hardened()
                 .args([
@@ -265,7 +279,7 @@ impl GitService {
                     before.as_str(),
                     after.as_str(),
                 ])
-                .current_dir(path),
+                .current_dir(checkout.top()),
         )
         .await?;
         match output.status.code() {
@@ -278,8 +292,16 @@ impl GitService {
     }
 
     /// Include changes already committed by task tools in the PR description.
-    pub async fn changed_files(&self, path: &Path, before: &CommitSha) -> GitResult<Vec<String>> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn changed_files(
+        &self,
+        checkout: &Checkout,
+        before: &CommitSha,
+    ) -> GitResult<Vec<String>> {
+        Self::verify_config(checkout).await?;
         let output = Self::output(
             Self::hardened()
                 .args(DIFF_PREFIX)
@@ -291,7 +313,7 @@ impl GitService {
                     "HEAD",
                     "--",
                 ])
-                .current_dir(path)
+                .current_dir(checkout.top())
                 .stdout(Stdio::piped()),
         )
         .await?;
@@ -303,7 +325,10 @@ impl GitService {
         Ok(split_nul(&output.stdout))
     }
 
-    /// Whether git considers `path` to be inside a working tree.
+    /// Whether git considers `path` to be inside a working tree, at its top
+    /// or anywhere below it. Only the top names a checkout: every operation
+    /// that takes a [`Checkout`] refuses a path below it with
+    /// [`GitError::NotACheckoutTop`].
     pub async fn is_git_repository(&self, path: &Path) -> GitResult<bool> {
         let output = Self::output(
             Self::hardened()
@@ -318,12 +343,16 @@ impl GitService {
     }
 
     /// The branch the checkout is on, or `HEAD` when it is detached.
-    pub async fn current_branch(&self, path: &Path) -> GitResult<String> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn current_branch(&self, checkout: &Checkout) -> GitResult<String> {
+        Self::verify_config(checkout).await?;
         let output = Self::output(
             Self::hardened()
                 .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                .current_dir(path)
+                .current_dir(checkout.top())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
         )
@@ -347,6 +376,11 @@ impl GitService {
     /// ones it no longer has are pruned. A refusal by git is retried once,
     /// since git's ref locks refuse the loser of a race with a run's own git
     /// commands.
+    ///
+    /// `path` is the top of the base clone, where its `.git` directory
+    /// stands: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a linked worktree with
+    /// [`GitError::RedirectedGitDirectory`].
     pub async fn fetch(
         &self,
         path: &Path,
@@ -355,7 +389,7 @@ impl GitService {
     ) -> GitResult<()> {
         let mut attempts = 0;
         loop {
-            Self::verify_config(path).await?;
+            Self::verify_base(path).await?;
             let mut command = Self::connected(url, token);
             command
                 .args([
@@ -383,13 +417,18 @@ impl GitService {
     /// remote itself. `refs/remotes/origin/HEAD` is not consulted: a run's git
     /// commands share it with every other run of the repository, and a fetch
     /// never restores it.
+    ///
+    /// `path` is the top of the base clone, where its `.git` directory
+    /// stands: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a linked worktree with
+    /// [`GitError::RedirectedGitDirectory`].
     pub async fn remote_head(
         &self,
         path: &Path,
         url: &RepositoryUrl,
         token: Option<&SecretValue>,
     ) -> GitResult<RemoteHead> {
-        Self::verify_config(path).await?;
+        Self::verify_base(path).await?;
         let mut command = Self::connected(url, token);
         command
             .args(["ls-remote", "--symref", "--", url.as_str(), "HEAD"])
@@ -439,8 +478,10 @@ impl GitService {
     /// either the old file or the new one, and one holding the lock is not
     /// overwritten. A clone whose `.git` is a link, which would have another
     /// clone's configuration replaced, is refused with
-    /// [`GitError::LinkedPath`], and one whose `.git` is not a directory with
-    /// [`GitError::RedirectedGitDirectory`].
+    /// [`GitError::LinkedPath`], one whose `.git` is not a directory with
+    /// [`GitError::RedirectedGitDirectory`], and a `path` with no `.git`
+    /// standing in it, below the top of a checkout or in none, with
+    /// [`GitError::NotACheckoutTop`].
     pub async fn reset_config(&self, path: &Path, url: &RepositoryUrl) -> GitResult<()> {
         let file = Anchor::own(path)?.join(CONFIG_FILE);
         let listed = Self::output(
@@ -485,12 +526,16 @@ impl GitService {
     }
 
     /// Whether the repository holds `commit`.
-    pub async fn has_commit(&self, path: &Path, commit: &CommitSha) -> GitResult<bool> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn has_commit(&self, checkout: &Checkout, commit: &CommitSha) -> GitResult<bool> {
+        Self::verify_config(checkout).await?;
         let output = Self::output(
             Self::hardened()
                 .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
-                .current_dir(path),
+                .current_dir(checkout.top()),
         )
         .await?;
         Ok(output.status.success())
@@ -499,8 +544,13 @@ impl GitService {
     /// Point `refs/remotes/origin/HEAD` at the remote's default branch, for
     /// whoever reads the ref; a run is started from the commit
     /// [`Self::remote_head`] reported, never from this ref.
+    ///
+    /// `path` is the top of the base clone, where its `.git` directory
+    /// stands: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a linked worktree with
+    /// [`GitError::RedirectedGitDirectory`].
     pub async fn set_remote_head(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
-        Self::verify_config(path).await?;
+        Self::verify_base(path).await?;
         Self::finish(
             Self::hardened()
                 .args([
@@ -514,15 +564,24 @@ impl GitService {
     }
 
     /// Whether the working tree or the index holds anything uncommitted.
-    pub async fn has_changes(&self, path: &Path) -> GitResult<bool> {
-        Self::verify_config(path).await?;
-        Ok(!Self::status(path).await?.is_empty())
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn has_changes(&self, checkout: &Checkout) -> GitResult<bool> {
+        Self::verify_config(checkout).await?;
+        Ok(!Self::status(checkout.top()).await?.is_empty())
     }
 
     /// Summarise the uncommitted changes, with the diff itself truncated
     /// once it runs past 50 kB.
-    pub async fn diff_summary(&self, path: &Path) -> GitResult<DiffSummary> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn diff_summary(&self, checkout: &Checkout) -> GitResult<DiffSummary> {
+        Self::verify_config(checkout).await?;
+        let path = checkout.top();
         let files_changed = changed_paths(&Self::status(path).await?);
 
         let shortstat = Self::output(
@@ -604,8 +663,13 @@ impl GitService {
 
     /// Create and check out a new branch, refusing a name already taken, and
     /// one that is a symbolic ref with [`GitError::SymbolicBranch`].
-    pub async fn create_branch(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn create_branch(&self, checkout: &Checkout, branch: &BranchName) -> GitResult<()> {
+        Self::verify_config(checkout).await?;
+        let path = checkout.top();
         if Self::is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
@@ -641,8 +705,13 @@ impl GitService {
     /// [`GitError::NestedRepository`] before anything is staged: `add` checks
     /// it for changes by starting a git inside it, under that repository's own
     /// configuration, and no submodule setting stops it.
-    pub async fn stage_all(&self, path: &Path) -> GitResult<()> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn stage_all(&self, checkout: &Checkout) -> GitResult<()> {
+        Self::verify_config(checkout).await?;
+        let path = checkout.top();
         if let Some(nested) = Self::populated_gitlink(path).await? {
             return Err(GitError::NestedRepository(nested));
         }
@@ -719,8 +788,13 @@ impl GitService {
     /// Commit what is staged, and say which commit it became. A checkout on a
     /// branch that is a symbolic ref is refused with
     /// [`GitError::SymbolicHead`].
-    pub async fn commit(&self, path: &Path, message: &str) -> GitResult<CommitSha> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn commit(&self, checkout: &Checkout, message: &str) -> GitResult<CommitSha> {
+        Self::verify_config(checkout).await?;
+        let path = checkout.top();
         Self::refuse_linked_head(path).await?;
         let staged = Self::output(
             Self::hardened()
@@ -766,7 +840,7 @@ impl GitService {
             return Err(Self::failed("commit", &output));
         }
 
-        self.revision(path, "HEAD").await
+        self.revision(checkout, "HEAD").await
     }
 
     /// Push the checkout's HEAD to `branch` on the remote, with access token
@@ -775,15 +849,20 @@ impl GitService {
     /// caller is told was pushed is what the remote received even if something
     /// moves HEAD meanwhile. The remote-tracking ref is then written as
     /// itself, never through a link standing in its place.
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn push_with_token(
         &self,
-        path: &Path,
+        checkout: &Checkout,
         branch: &BranchName,
         remote: &RepositoryUrl,
         token: &SecretValue,
     ) -> GitResult<CommitSha> {
-        Self::verify_config(path).await?;
-        let commit = self.revision(path, "HEAD").await?;
+        Self::verify_config(checkout).await?;
+        let path = checkout.top();
+        let commit = self.revision(checkout, "HEAD").await?;
         let mut command = Self::connected(remote, Some(token));
         command
             .args([
@@ -826,12 +905,16 @@ impl GitService {
     }
 
     /// The URL configured for a named remote.
-    pub async fn get_remote_url(&self, path: &Path, remote: &str) -> GitResult<String> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn get_remote_url(&self, checkout: &Checkout, remote: &str) -> GitResult<String> {
+        Self::verify_config(checkout).await?;
         let output = Self::output(
             Self::hardened()
                 .args(["remote", "get-url", "--", remote])
-                .current_dir(path)
+                .current_dir(checkout.top())
                 .stdout(Stdio::piped()),
         )
         .await?;
@@ -847,8 +930,13 @@ impl GitService {
     /// a commit, a remote branch of the same name, a file -- is refused rather
     /// than detached onto, tracked or restored, and a branch that is a
     /// symbolic ref is refused with [`GitError::SymbolicBranch`].
-    pub async fn checkout(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
-        Self::verify_config(path).await?;
+    ///
+    /// `checkout` is named by its top: a path below it is refused with
+    /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
+    /// are not its clone's with [`GitError::RedirectedGitDirectory`].
+    pub async fn checkout(&self, checkout: &Checkout, branch: &BranchName) -> GitResult<()> {
+        Self::verify_config(checkout).await?;
+        let path = checkout.top();
         if Self::is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
@@ -1146,8 +1234,9 @@ mod checkout_tests {
         assert!(!config.contains("sensitive-token"));
         assert!(!config.contains("Authorization"));
         let service = GitService::new().with_author("Fixture", "fixture@example.test");
-        service.stage_all(&path).await.unwrap();
-        let committed = service.commit(&path, "task change").await.unwrap();
+        let checkout = Checkout::base(&path);
+        service.stage_all(&checkout).await.unwrap();
+        let committed = service.commit(&checkout, "task change").await.unwrap();
         assert_eq!(
             committed.as_str(),
             crate::worktree::fixtures::git(&path, &["rev-parse", "HEAD"])
@@ -1173,12 +1262,13 @@ mod publication_tests {
         git(fixture.path(), &["init", "--initial-branch=main"]);
         let service = GitService::new();
         std::fs::write(fixture.path().join("file"), "baseline").unwrap();
-        service.stage_all(fixture.path()).await.unwrap();
-        let baseline = service.commit(fixture.path(), "baseline").await.unwrap();
+        let checkout = Checkout::base(fixture.path());
+        service.stage_all(&checkout).await.unwrap();
+        let baseline = service.commit(&checkout, "baseline").await.unwrap();
         git(fixture.path(), &["checkout", "--orphan", "task"]);
         std::fs::write(fixture.path().join("file"), "unrelated").unwrap();
-        service.stage_all(fixture.path()).await.unwrap();
-        let orphan = service.commit(fixture.path(), "orphan").await.unwrap();
+        service.stage_all(&checkout).await.unwrap();
+        let orphan = service.commit(&checkout, "orphan").await.unwrap();
         if legacy {
             std::fs::write(
                 fixture.path().join(".git/info/grafts"),
@@ -1191,23 +1281,17 @@ mod publication_tests {
                 &["replace", "--graft", "HEAD", baseline.as_str()],
             );
         }
-        let current = service.revision(fixture.path(), "HEAD").await.unwrap();
+        let current = service.revision(&checkout, "HEAD").await.unwrap();
         assert!(
             !service
-                .is_ancestor(fixture.path(), &baseline, &current)
+                .is_ancestor(&checkout, &baseline, &current)
                 .await
                 .unwrap(),
             "task metadata forged baseline ancestry"
         );
+        assert_eq!(service.revision(&checkout, "HEAD").await.unwrap(), orphan);
         assert_eq!(
-            service.revision(fixture.path(), "HEAD").await.unwrap(),
-            orphan
-        );
-        assert_eq!(
-            service
-                .changed_files(fixture.path(), &baseline)
-                .await
-                .unwrap(),
+            service.changed_files(&checkout, &baseline).await.unwrap(),
             vec!["file"]
         );
     }
@@ -1228,15 +1312,13 @@ mod publication_tests {
         git(fixture.path(), &["init", "--initial-branch=main"]);
         let service = GitService::new();
         std::fs::write(fixture.path().join("file"), "baseline").unwrap();
-        service.stage_all(fixture.path()).await.unwrap();
-        let baseline = service.commit(fixture.path(), "baseline").await.unwrap();
+        let checkout = Checkout::base(fixture.path());
+        service.stage_all(&checkout).await.unwrap();
+        let baseline = service.commit(&checkout, "baseline").await.unwrap();
         git(fixture.path(), &["checkout", "-b", "replacement"]);
         std::fs::write(fixture.path().join("file"), "changed").unwrap();
-        service.stage_all(fixture.path()).await.unwrap();
-        let replacement = service
-            .commit(fixture.path(), "replacement tree")
-            .await
-            .unwrap();
+        service.stage_all(&checkout).await.unwrap();
+        let replacement = service.commit(&checkout, "replacement tree").await.unwrap();
         git(fixture.path(), &["checkout", "main"]);
         git(
             fixture.path(),
@@ -1245,19 +1327,16 @@ mod publication_tests {
         std::fs::write(fixture.path().join("file"), "changed").unwrap();
         git(fixture.path(), &["--no-replace-objects", "add", "-A"]);
         assert!(
-            service.has_changes(fixture.path()).await.unwrap(),
+            service.has_changes(&checkout).await.unwrap(),
             "replacement tree hid staged task changes"
         );
         let committed = service
-            .commit(fixture.path(), "real task changes")
+            .commit(&checkout, "real task changes")
             .await
             .unwrap();
         assert_ne!(committed, baseline);
         assert_eq!(
-            service
-                .changed_files(fixture.path(), &baseline)
-                .await
-                .unwrap(),
+            service.changed_files(&checkout, &baseline).await.unwrap(),
             vec!["file"]
         );
     }
@@ -1270,33 +1349,44 @@ mod publication_tests {
         git(&source, &["init", "--initial-branch=main"]);
         std::fs::write(source.join("initial"), "base").unwrap();
         let service = GitService::new();
-        service.stage_all(&source).await.unwrap();
-        service.commit(&source, "initial").await.unwrap();
+        let initial = Checkout::base(&source);
+        service.stage_all(&initial).await.unwrap();
+        service.commit(&initial, "initial").await.unwrap();
         let remote = fixture.path().join("remote.git");
         git(&source, &["clone", "--bare", ".", remote.to_str().unwrap()]);
         let first = fixture.path().join("first");
+        let first_attempt = Checkout::base(&first);
         service
             .clone_repository(&local(&remote), &first, None)
             .await
             .unwrap();
         service
-            .prepare_branch(&first, &branch("task/one"), false)
+            .prepare_branch(&first_attempt, &branch("task/one"), false)
             .await
             .unwrap();
         std::fs::write(first.join("first"), "first attempt").unwrap();
-        service.stage_all(&first).await.unwrap();
-        let first_commit = service.commit(&first, "first attempt").await.unwrap();
+        service.stage_all(&first_attempt).await.unwrap();
+        let first_commit = service
+            .commit(&first_attempt, "first attempt")
+            .await
+            .unwrap();
         service
-            .push_with_token(&first, &branch("task/one"), &local(&remote), &token())
+            .push_with_token(
+                &first_attempt,
+                &branch("task/one"),
+                &local(&remote),
+                &token(),
+            )
             .await
             .unwrap();
         let second = fixture.path().join("second");
+        let second_attempt = Checkout::base(&second);
         service
             .clone_repository(&local(&remote), &second, None)
             .await
             .unwrap();
         let (prepared, recorded) =
-            recording(service.prepare_branch(&second, &branch("task/one"), true)).await;
+            recording(service.prepare_branch(&second_attempt, &branch("task/one"), true)).await;
         prepared.unwrap();
         assert!(
             recorded.iter().any(|command| command.ends_with(
@@ -1318,7 +1408,7 @@ mod publication_tests {
             "the resumed branch recorded an upstream"
         );
         assert_eq!(
-            service.revision(&second, "HEAD").await.unwrap(),
+            service.revision(&second_attempt, "HEAD").await.unwrap(),
             first_commit
         );
         assert_eq!(
@@ -1326,10 +1416,18 @@ mod publication_tests {
             "first attempt"
         );
         std::fs::write(second.join("second"), "second attempt").unwrap();
-        service.stage_all(&second).await.unwrap();
-        let second_commit = service.commit(&second, "second attempt").await.unwrap();
+        service.stage_all(&second_attempt).await.unwrap();
+        let second_commit = service
+            .commit(&second_attempt, "second attempt")
+            .await
+            .unwrap();
         let pushed = service
-            .push_with_token(&second, &branch("task/one"), &local(&remote), &token())
+            .push_with_token(
+                &second_attempt,
+                &branch("task/one"),
+                &local(&remote),
+                &token(),
+            )
             .await
             .unwrap();
         assert_eq!(pushed, second_commit, "the push says which commit it sent");
@@ -1338,10 +1436,18 @@ mod publication_tests {
             second_commit.as_str()
         );
         std::fs::write(first.join("concurrent"), "stale checkout").unwrap();
-        service.stage_all(&first).await.unwrap();
-        service.commit(&first, "concurrent attempt").await.unwrap();
+        service.stage_all(&first_attempt).await.unwrap();
+        service
+            .commit(&first_attempt, "concurrent attempt")
+            .await
+            .unwrap();
         let failure = service
-            .push_with_token(&first, &branch("task/one"), &local(&remote), &token())
+            .push_with_token(
+                &first_attempt,
+                &branch("task/one"),
+                &local(&remote),
+                &token(),
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -1358,10 +1464,10 @@ mod publication_tests {
                 .unwrap()
                 .contains("sensitive-token")
         );
-        let current = service.revision(&second, "HEAD").await.unwrap();
+        let current = service.revision(&second_attempt, "HEAD").await.unwrap();
         assert!(
             service
-                .is_ancestor(&second, &first_commit, &current)
+                .is_ancestor(&second_attempt, &first_commit, &current)
                 .await
                 .unwrap()
         );
@@ -1379,15 +1485,16 @@ mod publication_tests {
         crate::worktree::fixtures::clone(&remote, &base);
         let first = root.path().join("first");
         crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
+        let checkout = Checkout::linked(&first, &base);
         let service = GitService::new();
         service
-            .prepare_branch(&first, &branch("task/one"), false)
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await
             .unwrap();
-        assert_eq!(service.current_branch(&first).await.unwrap(), "task/one");
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "task/one");
         assert!(
             service
-                .prepare_branch(&first, &branch("task/one"), false)
+                .prepare_branch(&checkout, &branch("task/one"), false)
                 .await
                 .is_ok(),
             "the worktree already on the branch is prepared again without complaint"
@@ -1395,7 +1502,11 @@ mod publication_tests {
         let second = root.path().join("second");
         crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
         let refused = service
-            .prepare_branch(&second, &branch("task/one"), false)
+            .prepare_branch(
+                &Checkout::linked(&second, &base),
+                &branch("task/one"),
+                false,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -1478,10 +1589,11 @@ mod publication_tests {
             .unwrap();
         assert_eq!(head.branch.as_str(), "main");
         assert_eq!(head.commit.as_str(), git(&remote, &["rev-parse", "main"]));
-        assert!(service.has_commit(&base, &head.commit).await.unwrap());
+        let checkout = Checkout::base(&base);
+        assert!(service.has_commit(&checkout, &head.commit).await.unwrap());
         assert!(
             !service
-                .has_commit(&base, &CommitSha::parse(&"0".repeat(40)).unwrap())
+                .has_commit(&checkout, &CommitSha::parse(&"0".repeat(40)).unwrap())
                 .await
                 .unwrap()
         );
@@ -1565,7 +1677,7 @@ mod publication_tests {
         let first = root.path().join("first");
         crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
         service
-            .prepare_branch(&first, &branch("task/one"), false)
+            .prepare_branch(&Checkout::linked(&first, &base), &branch("task/one"), false)
             .await
             .unwrap();
         std::fs::write(first.join("work.txt"), "never pushed\n").unwrap();
@@ -1583,10 +1695,20 @@ mod publication_tests {
         let second = root.path().join("second");
         crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
         service
-            .prepare_branch(&second, &branch("task/one"), false)
+            .prepare_branch(
+                &Checkout::linked(&second, &base),
+                &branch("task/one"),
+                false,
+            )
             .await
             .unwrap();
-        assert_eq!(service.current_branch(&second).await.unwrap(), "task/one");
+        assert_eq!(
+            service
+                .current_branch(&Checkout::linked(&second, &base))
+                .await
+                .unwrap(),
+            "task/one"
+        );
         assert_ne!(
             git(&second, &["rev-parse", "HEAD"]),
             orphaned,
@@ -1608,17 +1730,31 @@ mod publication_tests {
         let third = root.path().join("third");
         crate::worktree::add(&base, &third, "origin/HEAD").unwrap();
         service
-            .prepare_branch(&third, &branch("task/other"), false)
+            .prepare_branch(
+                &Checkout::linked(&third, &base),
+                &branch("task/other"),
+                false,
+            )
             .await
             .unwrap();
         std::fs::remove_dir_all(&third).unwrap();
         let fourth = root.path().join("fourth");
         crate::worktree::add(&base, &fourth, "origin/HEAD").unwrap();
         service
-            .prepare_branch(&fourth, &branch("task/other"), false)
+            .prepare_branch(
+                &Checkout::linked(&fourth, &base),
+                &branch("task/other"),
+                false,
+            )
             .await
             .unwrap();
-        assert_eq!(service.current_branch(&fourth).await.unwrap(), "task/other");
+        assert_eq!(
+            service
+                .current_branch(&Checkout::linked(&fourth, &base))
+                .await
+                .unwrap(),
+            "task/other"
+        );
     }
 
     /// A clone whose `.git/config` is a link is refused before the run's
@@ -1638,7 +1774,7 @@ mod publication_tests {
         let first = root.path().join("first");
         crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
         service
-            .prepare_branch(&first, &branch("task/one"), false)
+            .prepare_branch(&Checkout::linked(&first, &base), &branch("task/one"), false)
             .await
             .unwrap();
         git(&first, &["commit", "-q", "--allow-empty", "-m", "work"]);
@@ -1652,7 +1788,11 @@ mod publication_tests {
         let linked = crate::worktree::fixtures::LinkedConfig::new(&base, &root.path().join("copy"));
 
         let prepared = service
-            .prepare_branch(&second, &branch("task/one"), false)
+            .prepare_branch(
+                &Checkout::linked(&second, &base),
+                &branch("task/one"),
+                false,
+            )
             .await;
 
         assert!(
@@ -1703,7 +1843,11 @@ mod publication_tests {
             let worktree = root.join("other");
             crate::worktree::add(&base, &worktree, "origin/HEAD").unwrap();
             GitService::new()
-                .prepare_branch(&worktree, &branch("task/other"), false)
+                .prepare_branch(
+                    &Checkout::linked(&worktree, &base),
+                    &branch("task/other"),
+                    false,
+                )
                 .await
                 .unwrap();
             git(&worktree, &["commit", "-q", "--allow-empty", "-m", "work"]);
@@ -1758,9 +1902,10 @@ mod publication_tests {
         let second = root.path().join("second");
         crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
         let service = GitService::new();
+        let checkout = Checkout::linked(&second, &held.base);
 
         let prepared = service
-            .prepare_branch(&second, &branch("task/one"), false)
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await;
 
         held.assert_untouched();
@@ -1778,7 +1923,7 @@ mod publication_tests {
             "refs/heads/task/other",
             "the link is left as it was"
         );
-        assert_eq!(service.current_branch(&second).await.unwrap(), "HEAD");
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "HEAD");
     }
 
     /// A link to a branch that does not exist is not a branch `show-ref`
@@ -1792,9 +1937,10 @@ mod publication_tests {
         let second = root.path().join("second");
         crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
         let service = GitService::new();
+        let checkout = Checkout::linked(&second, &held.base);
 
         let prepared = service
-            .prepare_branch(&second, &branch("task/one"), false)
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await;
 
         assert_eq!(
@@ -1813,7 +1959,7 @@ mod publication_tests {
             matches!(prepared, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("task/one")),
             "{prepared:?}"
         );
-        assert_eq!(service.current_branch(&second).await.unwrap(), "HEAD");
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "HEAD");
         held.assert_untouched();
     }
 
@@ -1864,8 +2010,9 @@ mod publication_tests {
             .await
             .unwrap();
         let start = git(&first, &["rev-parse", "HEAD"]);
+        let checkout = Checkout::base(&first);
         service
-            .prepare_branch(&first, &branch("task/one"), false)
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await
             .unwrap();
         git(&first, &["commit", "-q", "--allow-empty", "-m", "work"]);
@@ -1880,7 +2027,7 @@ mod publication_tests {
         );
 
         let pushed = service
-            .push_with_token(&first, &branch("task/one"), &local(&remote), &token())
+            .push_with_token(&checkout, &branch("task/one"), &local(&remote), &token())
             .await
             .unwrap();
 
@@ -1927,19 +2074,20 @@ mod branch_tests {
         let repository = tempfile::tempdir().unwrap();
         remote(repository.path());
         let service = GitService::new();
+        let checkout = Checkout::base(repository.path());
 
         service
-            .create_branch(repository.path(), &branch("feature/one"))
+            .create_branch(&checkout, &branch("feature/one"))
             .await
             .unwrap();
 
         assert_eq!(
-            service.current_branch(repository.path()).await.unwrap(),
+            service.current_branch(&checkout).await.unwrap(),
             "feature/one"
         );
         assert!(matches!(
             service
-                .create_branch(repository.path(), &branch("feature/one"))
+                .create_branch(&checkout, &branch("feature/one"))
                 .await,
             Err(GitError::BranchExists(taken)) if taken == branch("feature/one")
         ));
@@ -1954,7 +2102,7 @@ mod branch_tests {
         remote(repository.path());
 
         GitService::new()
-            .create_branch(repository.path(), &branch("feature/one"))
+            .create_branch(&Checkout::base(repository.path()), &branch("feature/one"))
             .await
             .unwrap();
 
@@ -1994,7 +2142,7 @@ mod branch_tests {
         let service = GitService::new();
 
         let created = service
-            .create_branch(repository.path(), &branch("feature/one"))
+            .create_branch(&Checkout::base(repository.path()), &branch("feature/one"))
             .await;
 
         assert_eq!(
@@ -2030,7 +2178,7 @@ mod branch_tests {
         let service = GitService::new();
 
         let switched = service
-            .checkout(repository.path(), &branch("feature/one"))
+            .checkout(&Checkout::base(repository.path()), &branch("feature/one"))
             .await;
 
         assert_eq!(
@@ -2051,8 +2199,9 @@ mod branch_tests {
         let repository = tempfile::tempdir().unwrap();
         remote(repository.path());
         let service = GitService::new();
+        let checkout = Checkout::base(repository.path());
         service
-            .create_branch(repository.path(), &branch("feature/one"))
+            .create_branch(&checkout, &branch("feature/one"))
             .await
             .unwrap();
         let start = git(repository.path(), &["rev-parse", "HEAD"]);
@@ -2062,9 +2211,9 @@ mod branch_tests {
             &["symbolic-ref", "refs/heads/feature/one", "refs/heads/other"],
         );
         std::fs::write(repository.path().join("work.txt"), "work\n").unwrap();
-        service.stage_all(repository.path()).await.unwrap();
+        service.stage_all(&checkout).await.unwrap();
 
-        let committed = service.commit(repository.path(), "work").await;
+        let committed = service.commit(&checkout, "work").await;
 
         assert_eq!(
             git(
@@ -2118,9 +2267,10 @@ mod branch_tests {
         }
         std::fs::write(repository.path().join("work.txt"), "work\n").unwrap();
         let service = GitService::new();
-        service.stage_all(repository.path()).await.unwrap();
+        let checkout = Checkout::base(repository.path());
+        service.stage_all(&checkout).await.unwrap();
 
-        let committed = service.commit(repository.path(), "work").await;
+        let committed = service.commit(&checkout, "work").await;
 
         assert_eq!(
             git(
@@ -2148,7 +2298,8 @@ mod branch_tests {
         git(repository.path(), &["branch", "other"]);
         std::fs::write(repository.path().join("work.txt"), "work\n").unwrap();
         let service = GitService::new();
-        service.stage_all(repository.path()).await.unwrap();
+        let checkout = Checkout::base(repository.path());
+        service.stage_all(&checkout).await.unwrap();
 
         for name in [
             "-planted",
@@ -2165,7 +2316,7 @@ mod branch_tests {
             );
             git(repository.path(), &["symbolic-ref", "HEAD", &reference]);
 
-            let refusal = service.commit(repository.path(), "work").await.unwrap_err();
+            let refusal = service.commit(&checkout, "work").await.unwrap_err();
 
             assert!(
                 matches!(refusal, GitError::SymbolicHead),
@@ -2192,16 +2343,11 @@ mod branch_tests {
         remote(repository.path());
         git(repository.path(), &["branch", "other"]);
         let service = GitService::new();
+        let checkout = Checkout::base(repository.path());
 
-        service
-            .checkout(repository.path(), &branch("other"))
-            .await
-            .unwrap();
+        service.checkout(&checkout, &branch("other")).await.unwrap();
 
-        assert_eq!(
-            service.current_branch(repository.path()).await.unwrap(),
-            "other"
-        );
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "other");
     }
 
     /// A name that is a file rather than a branch used to restore the file,
@@ -2213,13 +2359,11 @@ mod branch_tests {
         git(repository.path(), &["tag", "release"]);
         std::fs::write(repository.path().join("README"), "uncommitted\n").unwrap();
         let service = GitService::new();
+        let checkout = Checkout::base(repository.path());
 
         for name in ["README", "release", "missing"] {
             assert!(
-                service
-                    .checkout(repository.path(), &branch(name))
-                    .await
-                    .is_err(),
+                service.checkout(&checkout, &branch(name)).await.is_err(),
                 "{name} is not a branch"
             );
         }
@@ -2228,10 +2372,7 @@ mod branch_tests {
             std::fs::read_to_string(repository.path().join("README")).unwrap(),
             "uncommitted\n"
         );
-        assert_eq!(
-            service.current_branch(repository.path()).await.unwrap(),
-            "main"
-        );
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "main");
     }
 
     #[test]
@@ -2259,24 +2400,19 @@ mod branch_tests {
         git(repository.path(), &["commit", "-q", "-m", "record gitlink"]);
         std::fs::write(nested.join(".git").join("index"), "unreadable").unwrap();
         let service = GitService::new();
+        let checkout = Checkout::base(repository.path());
 
         service
-            .create_branch(repository.path(), &branch("task/one"))
+            .create_branch(&checkout, &branch("task/one"))
             .await
             .unwrap();
+        service.checkout(&checkout, &branch("main")).await.unwrap();
         service
-            .checkout(repository.path(), &branch("main"))
-            .await
-            .unwrap();
-        service
-            .prepare_branch(repository.path(), &branch("task/two"), false)
+            .prepare_branch(&checkout, &branch("task/two"), false)
             .await
             .unwrap();
 
-        assert_eq!(
-            service.current_branch(repository.path()).await.unwrap(),
-            "task/two"
-        );
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "task/two");
     }
 
     #[tokio::test]
@@ -2293,18 +2429,16 @@ mod branch_tests {
             ],
         );
         let service = GitService::new();
+        let checkout = Checkout::base(repository.path());
 
         assert_eq!(
-            service
-                .get_remote_url(repository.path(), "origin")
-                .await
-                .unwrap(),
+            service.get_remote_url(&checkout, "origin").await.unwrap(),
             "https://github.com/owner/repository.git"
         );
         for name in ["upstream", "--push", "--all"] {
             assert!(
                 matches!(
-                    service.get_remote_url(repository.path(), name).await,
+                    service.get_remote_url(&checkout, name).await,
                     Err(GitError::NoRemote)
                 ),
                 "{name}"
@@ -2349,7 +2483,9 @@ mod configuration_tests {
         );
         std::fs::write(repository.path().join("new.txt"), "work\n").unwrap();
 
-        let refusal = GitService::new().stage_all(repository.path()).await;
+        let refusal = GitService::new()
+            .stage_all(&Checkout::base(repository.path()))
+            .await;
 
         assert!(
             matches!(refusal, Err(GitError::UnsafeConfig(ref key)) if key == "filter.planted.clean"),
@@ -2370,7 +2506,9 @@ mod configuration_tests {
         );
         std::fs::write(repository.path().join("README"), "changed\n").unwrap();
 
-        let refusal = GitService::new().diff_summary(repository.path()).await;
+        let refusal = GitService::new()
+            .diff_summary(&Checkout::base(repository.path()))
+            .await;
 
         assert!(
             matches!(refusal, Err(GitError::UnsafeConfig(ref key)) if key == "diff.planted.textconv"),
@@ -2439,7 +2577,12 @@ mod configuration_tests {
         );
 
         let refusal = GitService::new()
-            .push_with_token(&work, &branch("task/one"), &local(&genuine), &token())
+            .push_with_token(
+                &Checkout::base(&work),
+                &branch("task/one"),
+                &local(&genuine),
+                &token(),
+            )
             .await;
 
         assert!(
@@ -2485,7 +2628,9 @@ mod configuration_tests {
             let repository = repository();
             git(repository.path(), &["config", key, value]);
 
-            let refusal = GitService::new().current_branch(repository.path()).await;
+            let refusal = GitService::new()
+                .current_branch(&Checkout::base(repository.path()))
+                .await;
 
             assert!(
                 matches!(refusal, Err(GitError::UnsafeConfig(ref refused)) if *refused == key.to_ascii_lowercase()),
@@ -2528,23 +2673,24 @@ mod configuration_tests {
         std::fs::write(base.join("work.txt"), "work\n").unwrap();
         let service = GitService::new();
         let head = CommitSha::parse(&git(&base, &["rev-parse", "HEAD"])).unwrap();
+        let checkout = Checkout::base(&base);
 
         let refusals = [
             service.fetch(&base, &local(&origin), None).await.err(),
-            service.has_changes(&base).await.err(),
-            service.diff_summary(&base).await.err(),
-            service.stage_all(&base).await.err(),
-            service.commit(&base, "work").await.err(),
+            service.has_changes(&checkout).await.err(),
+            service.diff_summary(&checkout).await.err(),
+            service.stage_all(&checkout).await.err(),
+            service.commit(&checkout, "work").await.err(),
             service
-                .create_branch(&base, &branch("task/one"))
+                .create_branch(&checkout, &branch("task/one"))
                 .await
                 .err(),
             service
-                .prepare_branch(&base, &branch("task/two"), false)
+                .prepare_branch(&checkout, &branch("task/two"), false)
                 .await
                 .err(),
             service
-                .push_with_token(&base, &branch("task/one"), &local(&origin), &token())
+                .push_with_token(&checkout, &branch("task/one"), &local(&origin), &token())
                 .await
                 .err(),
             service
@@ -2552,12 +2698,12 @@ mod configuration_tests {
                 .await
                 .err(),
             service.set_remote_head(&base, &branch("main")).await.err(),
-            service.revision(&base, "HEAD").await.err(),
-            service.has_commit(&base, &head).await.err(),
-            service.is_ancestor(&base, &head, &head).await.err(),
-            service.changed_files(&base, &head).await.err(),
-            service.get_remote_url(&base, "origin").await.err(),
-            service.checkout(&base, &branch("main")).await.err(),
+            service.revision(&checkout, "HEAD").await.err(),
+            service.has_commit(&checkout, &head).await.err(),
+            service.is_ancestor(&checkout, &head, &head).await.err(),
+            service.changed_files(&checkout, &head).await.err(),
+            service.get_remote_url(&checkout, "origin").await.err(),
+            service.checkout(&checkout, &branch("main")).await.err(),
         ];
 
         for (operation, refusal) in refusals.iter().enumerate() {
@@ -2593,7 +2739,7 @@ mod configuration_tests {
         assert_eq!(git(root.path(), &["rev-parse", "HEAD"]), head);
         assert_eq!(
             service
-                .revision(root.path(), "HEAD")
+                .revision(&Checkout::base(root.path()), "HEAD")
                 .await
                 .unwrap()
                 .as_str(),
@@ -2648,11 +2794,9 @@ mod configuration_tests {
         )
         .unwrap();
         std::fs::write(repository.path().join("quote\"d"), "new\n").unwrap();
+        let checkout = Checkout::base(repository.path());
 
-        let summary = GitService::new()
-            .diff_summary(repository.path())
-            .await
-            .unwrap();
+        let summary = GitService::new().diff_summary(&checkout).await.unwrap();
 
         let mut files = summary.files_changed.clone();
         files.sort();
@@ -2664,12 +2808,7 @@ mod configuration_tests {
         assert_eq!(summary.insertions, 1, "{summary:?}");
         assert_eq!(summary.deletions, 0, "{summary:?}");
         assert!(summary.diff_text.contains("+second"), "{summary:?}");
-        assert!(
-            GitService::new()
-                .has_changes(repository.path())
-                .await
-                .unwrap()
-        );
+        assert!(GitService::new().has_changes(&checkout).await.unwrap());
     }
 
     #[tokio::test]
@@ -2682,7 +2821,7 @@ mod configuration_tests {
         .unwrap();
 
         let summary = GitService::new()
-            .diff_summary(repository.path())
+            .diff_summary(&Checkout::base(repository.path()))
             .await
             .unwrap();
 
@@ -2694,17 +2833,18 @@ mod configuration_tests {
     async fn an_untracked_file_is_a_change_and_a_clone_told_to_hide_them_is_refused() {
         let repository = repository();
         let service = GitService::new();
-        assert!(!service.has_changes(repository.path()).await.unwrap());
+        let checkout = Checkout::base(repository.path());
+        assert!(!service.has_changes(&checkout).await.unwrap());
 
         std::fs::write(repository.path().join("untracked"), "new\n").unwrap();
-        assert!(service.has_changes(repository.path()).await.unwrap());
+        assert!(service.has_changes(&checkout).await.unwrap());
 
         git(
             repository.path(),
             &["config", "status.showUntrackedFiles", "no"],
         );
         assert!(matches!(
-            service.has_changes(repository.path()).await,
+            service.has_changes(&checkout).await,
             Err(GitError::UnsafeConfig(_))
         ));
     }
@@ -2729,29 +2869,27 @@ mod configuration_tests {
         std::fs::write(nested.join("file"), "a\n").unwrap();
         git(&nested, &["add", "file"]);
         git(&nested, &["commit", "-q", "-m", "nested"]);
+        let checkout = Checkout::base(repository.path());
 
-        service.stage_all(repository.path()).await.unwrap();
+        service.stage_all(&checkout).await.unwrap();
         assert!(
-            service.has_changes(repository.path()).await.unwrap(),
+            service.has_changes(&checkout).await.unwrap(),
             "a recorded gitlink is a change"
         );
-        let summary = service.diff_summary(repository.path()).await.unwrap();
+        let summary = service.diff_summary(&checkout).await.unwrap();
         assert!(
             summary.files_changed.iter().any(|file| file == "nested"),
             "{summary:?}"
         );
 
-        service
-            .commit(repository.path(), "record gitlink")
-            .await
-            .unwrap();
+        service.commit(&checkout, "record gitlink").await.unwrap();
         std::fs::write(
             nested.join("file"),
             "changed inside the nested repository\n",
         )
         .unwrap();
         assert!(
-            !service.has_changes(repository.path()).await.unwrap(),
+            !service.has_changes(&checkout).await.unwrap(),
             "reading the nested repository's dirty state would require entering it"
         );
     }
@@ -2782,7 +2920,10 @@ mod configuration_tests {
         std::fs::write(subdirectory.join("first"), "first\n").unwrap();
         let service = GitService::new();
 
-        service.stage_all(repository.path()).await.unwrap();
+        service
+            .stage_all(&Checkout::base(repository.path()))
+            .await
+            .unwrap();
         assert_eq!(
             git(repository.path(), &["ls-files", "--", "subdirectory/first"]),
             "subdirectory/first",
@@ -2798,22 +2939,49 @@ mod configuration_tests {
         std::fs::write(repository.path().join("second"), "second\n").unwrap();
         let expected = repository.path().canonicalize().unwrap().join("nested");
 
-        let refusal = service.stage_all(repository.path()).await;
-        let below = service.stage_all(&subdirectory).await;
+        let refusal = service.stage_all(&Checkout::base(repository.path())).await;
+        let below = service.stage_all(&Checkout::base(&subdirectory)).await;
 
         assert!(
             matches!(refusal, Err(GitError::NestedRepository(ref at)) if *at == expected),
             "{refusal:?}"
         );
-        assert!(
-            matches!(below, Err(GitError::RedirectedGitDirectory)),
-            "{below:?}"
-        );
+        assert!(matches!(below, Err(GitError::NotACheckoutTop)), "{below:?}");
         assert_eq!(
             git(repository.path(), &["ls-files", "--", "second"]),
             "",
             "add never ran"
         );
+    }
+
+    /// The path of a nested repository comes from the index, where a run can
+    /// record any name, so a refusal carries it escaped.
+    #[tokio::test]
+    async fn a_refusal_naming_a_nested_repository_carries_no_control_character() {
+        let repository = repository();
+        let head = git(repository.path(), &["rev-parse", "HEAD"]);
+        let name = "nested\nplanted\u{1b}[2J";
+        git(
+            repository.path(),
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{head},{name}"),
+            ],
+        );
+        std::fs::create_dir_all(repository.path().join(name).join(".git")).unwrap();
+
+        let refusal = GitService::new()
+            .stage_all(&Checkout::base(repository.path()))
+            .await;
+
+        assert!(
+            matches!(refusal, Err(GitError::NestedRepository(_))),
+            "{refusal:?}"
+        );
+        let shown = refusal.unwrap_err().to_string();
+        assert!(!shown.chars().any(char::is_control), "{shown:?}");
     }
 
     /// A diff far past the limit is torn down once enough has been read, rather
@@ -2829,7 +2997,7 @@ mod configuration_tests {
 
         let started = std::time::Instant::now();
         let summary = GitService::new()
-            .diff_summary(repository.path())
+            .diff_summary(&Checkout::base(repository.path()))
             .await
             .unwrap();
 
@@ -2855,7 +3023,9 @@ mod commit_tests {
         std::fs::write(repository.path().join("unstaged"), "not added\n").unwrap();
         let service = GitService::new();
 
-        let refusal = service.commit(repository.path(), "nothing").await;
+        let refusal = service
+            .commit(&Checkout::base(repository.path()), "nothing")
+            .await;
 
         assert!(matches!(refusal, Err(GitError::NoChanges)), "{refusal:?}");
     }
@@ -2865,7 +3035,9 @@ mod commit_tests {
         let repository = tempfile::tempdir().unwrap();
         git(repository.path(), &["init", "-q", "-b", "main"]);
 
-        let refusal = GitService::new().commit(repository.path(), "nothing").await;
+        let refusal = GitService::new()
+            .commit(&Checkout::base(repository.path()), "nothing")
+            .await;
 
         assert!(matches!(refusal, Err(GitError::NoChanges)), "{refusal:?}");
     }
@@ -2876,9 +3048,10 @@ mod commit_tests {
         git(repository.path(), &["init", "-q", "-b", "main"]);
         std::fs::write(repository.path().join("first"), "first\n").unwrap();
         let service = GitService::new();
-        service.stage_all(repository.path()).await.unwrap();
+        let checkout = Checkout::base(repository.path());
+        service.stage_all(&checkout).await.unwrap();
 
-        let committed = service.commit(repository.path(), "first").await.unwrap();
+        let committed = service.commit(&checkout, "first").await.unwrap();
 
         assert_eq!(
             committed.as_str(),
@@ -2902,14 +3075,15 @@ mod resumption_tests {
         let repository = tempfile::tempdir().unwrap();
         remote(repository.path());
         let service = GitService::new();
+        let checkout = Checkout::base(repository.path());
         service
-            .prepare_branch(repository.path(), &branch("task/one"), false)
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await
             .unwrap();
         git(repository.path(), &["tag", "task/one"]);
 
         service
-            .prepare_branch(repository.path(), &branch("task/one"), false)
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await
             .unwrap();
 
