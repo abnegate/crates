@@ -9,6 +9,7 @@ use std::fmt;
 /// an application's own workspace chat should be able to join a fan-out
 /// without this crate having heard of it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub struct Channel(Cow<'static, str>);
 
 impl Channel {

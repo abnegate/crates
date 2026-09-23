@@ -21,6 +21,7 @@ enum Outcome {
     Hang,
     Panic,
     Slow(Duration),
+    Yield,
 }
 
 impl Stub {
@@ -72,6 +73,11 @@ impl Notifier for Stub {
                 Ok(())
             }
             Outcome::Panic => panic!("this backend is broken"),
+            Outcome::Yield => {
+                tokio::task::yield_now().await;
+                self.delivered.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
         }
     }
 }
@@ -91,6 +97,25 @@ impl Notifier for Impatient {
 
     async fn deliver(&self, _notification: &Notification) -> Result<(), NotifyError> {
         tokio::time::sleep(Duration::from_secs(3_600)).await;
+        Ok(())
+    }
+}
+
+/// A notifier that asks for a zero budget and yields once before it succeeds.
+struct Instant;
+
+#[async_trait]
+impl Notifier for Instant {
+    fn channel(&self) -> Channel {
+        Channel::custom("instant")
+    }
+
+    fn timeout(&self) -> Option<Duration> {
+        Some(Duration::ZERO)
+    }
+
+    async fn deliver(&self, _notification: &Notification) -> Result<(), NotifyError> {
+        tokio::task::yield_now().await;
         Ok(())
     }
 }
@@ -238,6 +263,30 @@ async fn a_channel_may_impose_a_tighter_budget_than_the_fanout() {
             after: Duration::from_millis(50)
         })
     );
+}
+
+/// A channel that yields once is not ready on its first poll, which is all a
+/// zero budget allows before it declares a timeout.
+#[tokio::test(start_paused = true)]
+async fn a_zero_budget_still_gives_a_channel_a_chance() {
+    let yielding = Stub::new(Channel::SLACK, Outcome::Yield);
+    let counter = yielding.counter();
+
+    let report = Fanout::new()
+        .timeout(Duration::ZERO)
+        .with(yielding)
+        .deliver(&notification())
+        .await;
+
+    assert!(report.all_delivered(), "{report:?}");
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_channel_asking_for_no_time_still_gets_some() {
+    let report = Fanout::new().with(Instant).deliver(&notification()).await;
+
+    assert!(report.all_delivered(), "{report:?}");
 }
 
 #[tokio::test]

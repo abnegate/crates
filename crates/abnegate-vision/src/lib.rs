@@ -32,7 +32,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! Wrap the [`Analyzer`] in an `Arc` rather than building one per worker: it
+//! Wrap the `Analyzer` in an `Arc` rather than building one per worker: it
 //! holds the ONNX Runtime session and its arena, which is where nearly all of
 //! the process's resident memory goes. The `u2net.onnx` export is roughly
 //! 168 MiB and is not vendored.
@@ -40,19 +40,22 @@
 //! # Without it
 //!
 //! ```no_run
-//! use abnegate_vision::{Point, Target, crop, decode};
+//! use abnegate_vision::{Error, Point, Rendered, Target, crop, decode};
 //!
-//! let raster = decode::decode(&std::fs::read("photo.jpg")?)?;
-//! let focus = Point { x: 0.5, y: 0.33 };
-//! let region = crop::plan(raster.oriented_size(), Target::square(1024), focus)?;
-//! let image = crop::render(&raster, region, Target::square(1024))?;
+//! fn frame(data: &[u8]) -> Result<Rendered, Error> {
+//!     let raster = decode::decode(data)?;
+//!     let focus = Point { x: 0.5, y: 0.33 };
+//!     let region = crop::plan(raster.oriented_size(), Target::square(1024), focus)?;
+//!     Ok(crop::render(&raster, region, Target::square(1024))?)
+//! }
+//! # frame(&std::fs::read("photo.jpg")?)?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! # Features
 //!
-//! - `saliency`: [`Analyzer`] and [`saliency`], subject detection with U2-Net
-//!   over ONNX Runtime. Off by default.
+//! - `saliency`: `Analyzer` and the `saliency` module, subject detection with
+//!   U2-Net over ONNX Runtime. Off by default.
 //!
 //! [autogravity]: https://github.com/appwrite/autogravity
 
@@ -61,8 +64,11 @@ pub mod decode;
 pub mod gravity;
 pub mod preprocess;
 
+mod error;
+
 pub use crate::crop::{Region, Rendered, Target};
 pub use crate::decode::Raster;
+pub use crate::error::Error;
 pub use crate::gravity::Point;
 
 #[cfg(feature = "saliency")]
@@ -71,7 +77,9 @@ pub mod saliency;
 
 #[cfg(feature = "saliency")]
 mod analyzer;
+#[cfg(feature = "saliency")]
+mod exclusive;
 
 #[cfg(feature = "saliency")]
 #[cfg_attr(docsrs, doc(cfg(feature = "saliency")))]
-pub use crate::analyzer::{Analyzer, Crop, Error, Focus};
+pub use crate::analyzer::{Analyzer, AnalyzerError, Crop, Focus};

@@ -12,6 +12,7 @@ use crate::endpoint::EndpointError;
 /// and an error message is the shortest path from a credential to a log file,
 /// so failures name the host and nothing more.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NotifyError {
     #[error("delivery timed out after {}ms", .after.as_millis())]
     Timeout { after: Duration },

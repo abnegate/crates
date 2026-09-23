@@ -5,23 +5,23 @@ use std::fmt;
 use async_trait::async_trait;
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::transport::smtp::AsyncSmtpTransportBuilder;
+use lettre::{AsyncTransport, Message, Tokio1Executor};
 
-use crate::backend::smtp::{SmtpConfig, describe, mailbox};
 use crate::channel::Channel;
 use crate::error::NotifyError;
 use crate::notification::Notification;
 use crate::notifier::Notifier;
+use crate::smtp::{SmtpConfig, failure, mailbox};
 
 /// Delivers to a fixed set of recipients through one SMTP relay.
 ///
-/// Construct and drop this inside a Tokio runtime. When `lettre`'s `pool`
-/// feature is on anywhere in the build, its connection pool spawns a task
-/// from its own `Drop`, and a panic in a destructor aborts the process rather
-/// than unwinding.
+/// The transport is built for each delivery rather than held, so this can be
+/// constructed and dropped without a Tokio runtime, even in a build where
+/// another crate switches on `lettre`'s `pool` feature.
 #[cfg_attr(docsrs, doc(cfg(feature = "smtp")))]
 pub struct Email {
-    transport: AsyncSmtpTransport<Tokio1Executor>,
+    builder: AsyncSmtpTransportBuilder,
     from: Mailbox,
     recipients: Vec<Mailbox>,
     host: String,
@@ -29,7 +29,9 @@ pub struct Email {
 }
 
 impl Email {
-    /// Connect to the relay in `config` and deliver to `recipients`.
+    /// Configure delivery through the relay in `config` to `recipients`.
+    ///
+    /// Nothing connects until a notification is delivered.
     pub fn new(config: &SmtpConfig, recipients: &[&str]) -> Result<Self, NotifyError> {
         if recipients.is_empty() {
             return Err(NotifyError::Malformed {
@@ -44,7 +46,7 @@ impl Email {
             .collect::<Result<Vec<Mailbox>, NotifyError>>()?;
 
         Ok(Self {
-            transport: config.transport()?,
+            builder: config.builder()?,
             from,
             recipients,
             host: config.host.clone(),
@@ -89,18 +91,17 @@ impl Notifier for Email {
 
     async fn deliver(&self, notification: &Notification) -> Result<(), NotifyError> {
         let message = self.compose(notification)?;
-        self.transport
+        self.builder
+            .clone()
+            .build::<Tokio1Executor>()
             .send(message)
             .await
-            .map_err(|error| NotifyError::Smtp {
-                host: self.host.clone(),
-                message: describe(error),
-            })?;
+            .map_err(|error| failure(&self.host, error))?;
         Ok(())
     }
 }
 
-/// Written out rather than derived: the transport holds the relay password
+/// Written out rather than derived: the builder holds the relay password
 /// inside a `lettre::Credentials`, which has no redacting `Debug` of its own.
 impl fmt::Debug for Email {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -140,6 +141,16 @@ mod tests {
             .expect("utf-8")
     }
 
+    /// A plain test rather than a Tokio one: no runtime is running here.
+    #[test]
+    fn a_channel_is_built_and_dropped_outside_a_runtime() {
+        for port in [465, 587] {
+            let mut relay = config();
+            relay.port = port;
+            drop(Email::new(&relay, &["sam@example.test"]).expect("configured"));
+        }
+    }
+
     #[test]
     fn a_channel_with_no_recipients_is_refused() {
         let error = Email::new(&config(), &[]).expect_err("no recipients");
@@ -163,8 +174,8 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn the_subject_is_the_title_and_the_body_carries_everything() {
+    #[test]
+    fn the_subject_is_the_title_and_the_body_carries_everything() {
         let message = rendered(
             &Notification::new("Build failed", "3 tests failed")
                 .severity(Severity::Error)
@@ -181,8 +192,8 @@ mod tests {
         assert!(message.contains("https://example.test/b/1"));
     }
 
-    #[tokio::test]
-    async fn every_recipient_is_addressed() {
+    #[test]
+    fn every_recipient_is_addressed() {
         let email =
             Email::new(&config(), &["sam@example.test", "alex@example.test"]).expect("configured");
         let message = String::from_utf8(
@@ -197,14 +208,14 @@ mod tests {
         assert!(message.contains("alex@example.test"));
     }
 
-    #[tokio::test]
-    async fn the_relay_password_never_reaches_the_message() {
+    #[test]
+    fn the_relay_password_never_reaches_the_message() {
         let message = rendered(&Notification::new("Title", "Body"));
         assert!(!message.contains("hunter2"), "leaked into the message");
     }
 
-    #[tokio::test]
-    async fn a_credential_in_the_body_is_redacted_before_it_is_composed() {
+    #[test]
+    fn a_credential_in_the_body_is_redacted_before_it_is_composed() {
         let message = rendered(&Notification::new(
             "Deploy log",
             "GITHUB_TOKEN=ghp_0123456789abcdefghij",
@@ -213,15 +224,15 @@ mod tests {
         assert!(message.contains("[REDACTED]"));
     }
 
-    #[tokio::test]
-    async fn the_relay_password_never_appears_in_debug() {
+    #[test]
+    fn the_relay_password_never_appears_in_debug() {
         let rendered = format!("{:?}", email());
         assert!(!rendered.contains("hunter2"), "leaked: {rendered}");
         assert!(rendered.contains("smtp.example.test"));
     }
 
-    #[tokio::test]
-    async fn the_channel_and_name_are_reported() {
+    #[test]
+    fn the_channel_and_name_are_reported() {
         assert_eq!(email().channel(), Channel::EMAIL);
         assert_eq!(email().name(), None);
         assert_eq!(email().named("ops").name(), Some("ops"));

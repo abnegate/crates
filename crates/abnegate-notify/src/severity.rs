@@ -6,13 +6,15 @@ use serde::{Deserialize, Serialize};
 
 /// The weight of a notification, which each backend renders in its own way.
 ///
-/// Closed, unlike [`Channel`](crate::Channel): a backend has to map every
-/// severity to a colour or an icon, and a variant it has never heard of would
-/// have no rendering at all.
+/// A fixed set, unlike [`Channel`](crate::Channel), so every backend here maps
+/// each severity to a colour or an icon. It is non-exhaustive so a level can
+/// be added without a breaking release, which means a backend outside this
+/// crate needs a rendering for a severity it has not heard of.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Severity {
     #[default]
     Info,

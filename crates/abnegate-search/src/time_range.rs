@@ -1,13 +1,15 @@
 //! Recency filter for a metasearch query.
 
+use std::fmt;
+
 use serde::Deserialize;
 use serde::Serialize;
-use std::fmt;
 
 /// How far back a search may reach. The prompt tells the model to re-search
 /// narrowed to a day, week or month when its sources come back stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum TimeRange {
     Day,
     Week,
@@ -16,7 +18,7 @@ pub enum TimeRange {
 
 impl TimeRange {
     /// Wire name of the filter, in both the engine query and the tool schema.
-    pub const PARAM: &'static str = "time_range";
+    pub const PARAMETER: &'static str = "time_range";
 
     /// Every variant, narrowest first, for schemas and error messages.
     pub const ALL: [Self; 3] = [Self::Day, Self::Week, Self::Month];

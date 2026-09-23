@@ -4,9 +4,11 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::outcome::Outcome;
+
 /// Called once per search with the outcome, how long it took, and how many
 /// results came back.
-pub type SearchObserver = fn(status: &'static str, duration: Duration, results: usize);
+pub type SearchObserver = fn(outcome: Outcome, duration: Duration, results: usize);
 
 static OBSERVER: OnceLock<SearchObserver> = OnceLock::new();
 
@@ -15,8 +17,8 @@ pub fn observe_searches(observer: SearchObserver) {
     let _ = OBSERVER.set(observer);
 }
 
-pub(crate) fn record(status: &'static str, duration: Duration, results: usize) {
+pub(crate) fn record(outcome: Outcome, duration: Duration, results: usize) {
     if let Some(observer) = OBSERVER.get() {
-        observer(status, duration, results);
+        observer(outcome, duration, results);
     }
 }

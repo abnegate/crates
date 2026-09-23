@@ -5,136 +5,65 @@ use std::io::Cursor;
 use image::codecs::jpeg::JpegDecoder;
 use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
-use image::{ColorType, ImageDecoder};
+use image::{ColorType, ImageDecoder, Limits};
+
+use crate::decode::format::Format;
+
+mod error;
+mod format;
+mod layout;
+mod orientation;
+mod raster;
+
+pub use crate::decode::error::Error;
+pub use crate::decode::layout::Layout;
+pub use crate::decode::orientation::Orientation;
+pub use crate::decode::raster::Raster;
 
 /// The decoded-image ceiling, shared with the Go reference implementation.
 /// Anything larger is rejected before a pixel buffer is allocated for it.
 pub const MAX_PIXELS: u64 = 20_000_000;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("unsupported image format: unknown image format")]
-    UnknownFormat,
-    #[error("image dimensions are too large")]
-    TooLarge,
-    #[error("decode image: {0}")]
-    Decode(#[from] image::ImageError),
-}
+/// The widest pixel a supported format decodes to: four 16-bit channels.
+const MAX_BYTES_PER_PIXEL: u64 = 8;
 
-/// The pixel layout of a decoded raster.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Layout {
-    Rgb,
-    Rgba,
-}
-
-impl Layout {
-    pub const fn channels(self) -> usize {
-        match self {
-            Self::Rgb => 3,
-            Self::Rgba => 4,
-        }
-    }
-}
-
-/// EXIF orientation, applied to the decoded pixels before analysis.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Orientation {
-    #[default]
-    Normal,
-    FlipHorizontal,
-    Rotate180,
-    FlipVertical,
-    Transpose,
-    Rotate90,
-    Transverse,
-    Rotate270,
-}
-
-impl Orientation {
-    fn from_exif(value: u16) -> Self {
-        match value {
-            2 => Self::FlipHorizontal,
-            3 => Self::Rotate180,
-            4 => Self::FlipVertical,
-            5 => Self::Transpose,
-            6 => Self::Rotate90,
-            7 => Self::Transverse,
-            8 => Self::Rotate270,
-            _ => Self::Normal,
-        }
-    }
-
-    /// Reports whether the transform exchanges the width and height axes.
-    pub const fn swaps_axes(self) -> bool {
-        matches!(
-            self,
-            Self::Transpose | Self::Rotate90 | Self::Transverse | Self::Rotate270
-        )
-    }
-}
-
-/// A decoded image and the orientation that still has to be applied to it.
-pub struct Raster {
-    pub width: u32,
-    pub height: u32,
-    pub layout: Layout,
-    pub orientation: Orientation,
-    pub pixels: Vec<u8>,
-}
-
-impl Raster {
-    /// The dimensions the image has once its orientation is applied.
-    pub const fn oriented_size(&self) -> (u32, u32) {
-        if self.orientation.swaps_axes() {
-            (self.height, self.width)
-        } else {
-            (self.width, self.height)
-        }
-    }
-}
+/// What a decoder may allocate for one image, its own pixels included.
+const MAX_ALLOCATION: u64 = MAX_PIXELS * MAX_BYTES_PER_PIXEL;
 
 /// Decodes JPEG, PNG, or WebP data. EXIF orientation is recorded rather than
 /// applied, so the caller can fold it into a later, much smaller resize.
+///
+/// Each decoder is held to an allocation budget sized for the largest image
+/// [`MAX_PIXELS`] admits, so a small file cannot talk one into allocating
+/// far more than the image it describes.
 pub fn decode(data: &[u8]) -> Result<Raster, Error> {
-    match sniff(data).ok_or(Error::UnknownFormat)? {
+    decode_within(data, MAX_ALLOCATION)
+}
+
+fn decode_within(data: &[u8], budget: u64) -> Result<Raster, Error> {
+    let limits = limits(budget);
+    match Format::sniff(data).ok_or(Error::UnknownFormat)? {
         Format::Jpeg => {
-            let decoder = JpegDecoder::new(Cursor::new(data))?;
+            let mut decoder = JpegDecoder::new(Cursor::new(data))?;
+            decoder.set_limits(limits)?;
             read(decoder, jpeg_orientation(data))
         }
-        Format::Png => read(PngDecoder::new(Cursor::new(data))?, Orientation::Normal),
-        Format::WebP => read(WebPDecoder::new(Cursor::new(data))?, Orientation::Normal),
+        Format::Png => read(
+            PngDecoder::with_limits(Cursor::new(data), limits)?,
+            Orientation::Normal,
+        ),
+        Format::WebP => {
+            let mut decoder = WebPDecoder::new(Cursor::new(data))?;
+            decoder.set_limits(limits)?;
+            read(decoder, Orientation::Normal)
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
-    Jpeg,
-    Png,
-    WebP,
-}
-
-fn sniff(data: &[u8]) -> Option<Format> {
-    match data {
-        [0xff, 0xd8, 0xff, ..] => Some(Format::Jpeg),
-        [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, ..] => Some(Format::Png),
-        [
-            b'R',
-            b'I',
-            b'F',
-            b'F',
-            _,
-            _,
-            _,
-            _,
-            b'W',
-            b'E',
-            b'B',
-            b'P',
-            ..,
-        ] => Some(Format::WebP),
-        _ => None,
-    }
+fn limits(budget: u64) -> Limits {
+    let mut limits = Limits::no_limits();
+    limits.max_alloc = Some(budget);
+    limits
 }
 
 fn read<D: ImageDecoder>(decoder: D, orientation: Orientation) -> Result<Raster, Error> {
@@ -336,11 +265,61 @@ mod tests {
         assert!(matches!(decode(b"not an image"), Err(Error::UnknownFormat)));
     }
 
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = u32::MAX;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// A 2x2 PNG carrying a `tEXt` chunk of `text_bytes`, which the decoder
+    /// has to buffer whole before it reaches a pixel.
+    fn png_with_text(text_bytes: usize) -> Vec<u8> {
+        use image::ImageEncoder;
+        use image::codecs::png::PngEncoder;
+
+        let mut encoded = Vec::new();
+        PngEncoder::new(&mut encoded)
+            .write_image(&[0u8; 12], 2, 2, image::ExtendedColorType::Rgb8)
+            .expect("encode");
+
+        let data = [&b"Comment\0"[..], &vec![b'x'; text_bytes]].concat();
+        let body = [&b"tEXt"[..], &data].concat();
+        let chunk = [
+            &u32::try_from(data.len()).expect("length").to_be_bytes()[..],
+            &body,
+            &crc32(&body).to_be_bytes(),
+        ]
+        .concat();
+
+        let after_header = 8 + 4 + 4 + 13 + 4;
+        [&encoded[..after_header], &chunk, &encoded[after_header..]].concat()
+    }
+
     #[test]
-    fn sniffs_supported_formats() {
-        assert_eq!(sniff(&[0xff, 0xd8, 0xff, 0xe0]), Some(Format::Jpeg));
-        assert_eq!(sniff(b"\x89PNG\r\n\x1a\n\0"), Some(Format::Png));
-        assert_eq!(sniff(b"RIFF\0\0\0\0WEBPVP8 "), Some(Format::WebP));
-        assert_eq!(sniff(b"GIF89a..."), None);
+    fn a_chunk_beyond_the_allocation_budget_is_refused() {
+        let image = png_with_text(64 * 1024);
+        assert!(decode(&image).is_ok(), "the full budget admits it");
+
+        let error = decode_within(&image, 1024)
+            .err()
+            .expect("the decoder has to stop at the budget");
+        assert!(
+            matches!(error, Error::Decode(image::ImageError::Limits(_))),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn the_budget_covers_the_widest_image_admitted() {
+        assert_eq!(limits(MAX_ALLOCATION).max_alloc, Some(MAX_PIXELS * 8));
     }
 }
