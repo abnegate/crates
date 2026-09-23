@@ -1,10 +1,13 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 use abnegate_secret::MasterKey;
+use abnegate_secret::SecretValue;
 use serde::de::DeserializeOwned;
 use toml::Value;
 
+use crate::application::Application;
 use crate::config::Config;
 use crate::envelope;
 use crate::error::ConfigError;
@@ -22,7 +25,7 @@ pub struct Loader<'key> {
 
 impl<'key> Loader<'key> {
     /// Load from the conventional location for `application`.
-    pub fn new(application: &str) -> Result<Self, ConfigError> {
+    pub fn new(application: &Application) -> Result<Self, ConfigError> {
         Ok(Self::at(config_path(application)?))
     }
 
@@ -35,6 +38,9 @@ impl<'key> Loader<'key> {
     }
 
     /// Decrypt sealed values with `key` as they are read.
+    ///
+    /// The [`Config`] that comes back keeps its own copy of the key when
+    /// anything was sealed, so [`Config::save`] can seal it again.
     pub fn master_key(mut self, key: &'key MasterKey) -> Self {
         self.key = Some(key);
         self
@@ -80,24 +86,29 @@ impl<'key> Loader<'key> {
                 source,
             })?;
 
-        let sealed = match self.key {
-            Some(key) => envelope::unseal(&mut document, key)?,
-            None => Vec::new(),
-        };
+        let sealed = envelope::unseal(&mut document, self.key)?;
+        let key = self.key.filter(|_| !sealed.is_empty()).and_then(duplicate);
 
         let value = document.try_into().map_err(|source| ConfigError::Parse {
             path: self.path.clone(),
             source,
         })?;
 
-        Ok(Config::loaded(self.path.clone(), value, sealed))
+        Ok(Config::loaded(self.path.clone(), value, key, sealed))
     }
+}
+
+fn duplicate(key: &MasterKey) -> Option<MasterKey> {
+    let hexadecimal = SecretValue::new(key.to_hex());
+    MasterKey::from_hex(hexadecimal.expose()).ok()
 }
 
 #[cfg(test)]
 mod tests {
-    use abnegate_secret::{SecretValue, encrypt_value, is_encrypted};
-    use serde::{Deserialize, Serialize};
+    use abnegate_secret::encrypt_value;
+    use abnegate_secret::is_encrypted;
+    use serde::Deserialize;
+    use serde::Serialize;
     use tempfile::TempDir;
 
     use super::*;
@@ -119,7 +130,7 @@ mod tests {
 
     #[test]
     fn a_loader_for_an_application_points_at_its_configuration_file() {
-        let loader = Loader::new("example").unwrap();
+        let loader = Loader::new(&Application::new("example").unwrap()).unwrap();
 
         assert!(
             loader.path().ends_with("config.toml"),

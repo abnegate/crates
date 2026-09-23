@@ -18,7 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-keyring = ["dep:chrono", "dep:keyring", "dep:serde_json"]
+keyring = ["dep:chrono", "dep:keyring", "dep:serde_json", "dep:zeroize"]
 
 [dependencies]
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
@@ -27,8 +27,7 @@ dirs = { workspace = true }
 keyring = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
+zeroize = { workspace = true, optional = true }
