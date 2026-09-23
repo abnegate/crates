@@ -26,6 +26,7 @@ const KEY_FILE_NAME: &str = "master.key";
 const KEY_VARIABLE_SUFFIX: &str = "_MASTER_KEY";
 const KEY_FILE_VARIABLE_SUFFIX: &str = "_MASTER_KEY_FILE";
 const TEMPORARY_EXTENSION: &str = "tmp";
+const CURRENT_DIRECTORY: &str = ".";
 const TEMPORARY_NAME_BYTES: usize = 8;
 #[cfg(unix)]
 const KEY_FILE_MODE: u32 = 0o600;
@@ -158,7 +159,8 @@ pub fn read_key_file(path: &Path) -> Result<MasterKey, SecretError> {
 /// symbolic link at `path` is replaced rather than followed; and a file
 /// already at `path` never receives the key, so its permissions and any hard
 /// links to it do not carry over. Missing parent directories are created
-/// owner-only.
+/// owner-only, and the key and its directory entry are flushed to disk before
+/// this returns.
 pub fn write_key_file(path: &Path, key: &MasterKey) -> Result<(), SecretError> {
     let failed = |source: io::Error| SecretError::WriteKeyFile {
         path: path.to_path_buf(),
@@ -181,7 +183,7 @@ pub fn write_key_file(path: &Path, key: &MasterKey) -> Result<(), SecretError> {
         return Err(failed(source));
     }
 
-    Ok(())
+    sync_directory(directory.unwrap_or(Path::new(CURRENT_DIRECTORY))).map_err(failed)
 }
 
 fn key_path_under(home: &Path, application: &str) -> PathBuf {
@@ -227,6 +229,16 @@ fn create_private_file(path: &Path) -> io::Result<File> {
 fn persist(mut file: File, contents: &[u8]) -> io::Result<()> {
     file.write_all(contents)?;
     file.sync_all()
+}
+
+#[cfg(unix)]
+fn sync_directory(directory: &Path) -> io::Result<()> {
+    File::open(directory)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 fn environment_prefix(application: &str) -> String {
@@ -336,6 +348,16 @@ mod tests {
             read_key_file(&path).unwrap().as_bytes(),
             replacement.as_bytes()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_directory_a_key_file_is_renamed_into_is_opened_and_synced() {
+        let directory = tempfile::TempDir::new().unwrap();
+        sync_directory(directory.path()).unwrap();
+
+        let missing = sync_directory(&directory.path().join("missing")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
