@@ -254,11 +254,21 @@ fn walk(root: &Path) -> GitResult<()> {
 }
 
 /// What a look at the git directory found: nothing when what it looked at
-/// vanished meanwhile, and a refusal when it could not look.
+/// vanished meanwhile, or became a file, as a ref directory can between the
+/// look at what it is and the look inside it when a concurrent command
+/// deletes the refs in it and writes a ref of its name; and a refusal when
+/// it could not look.
 fn present<T>(looked: std::io::Result<T>) -> GitResult<Option<T>> {
     match looked {
         Ok(found) => Ok(Some(found)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
         Err(_) => Err(GitError::CommandFailed(
             "Cannot read the repository's git directory".to_string(),
         )),
@@ -604,14 +614,16 @@ mod tests {
         assert!(unlinked(&located(&missing, &missing)).is_ok());
     }
 
-    /// What vanished while the walk ran holds no link, and what could not
-    /// be looked at may hold one.
+    /// What vanished while the walk ran, or became a file, holds no link,
+    /// and what could not be looked at may hold one.
     #[test]
     fn only_what_vanished_is_passed_over() {
         let vanished = present::<()>(Err(std::io::ErrorKind::NotFound.into()));
+        let replaced = present::<()>(Err(std::io::ErrorKind::NotADirectory.into()));
         let unreadable = present::<()>(Err(std::io::ErrorKind::PermissionDenied.into()));
 
         assert!(matches!(vanished, Ok(None)), "{vanished:?}");
+        assert!(matches!(replaced, Ok(None)), "{replaced:?}");
         assert!(
             matches!(unreadable, Err(GitError::CommandFailed(_))),
             "{unreadable:?}"
