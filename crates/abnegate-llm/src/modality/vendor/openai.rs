@@ -12,8 +12,8 @@ use futures::Stream;
 use crate::modality::vendor::transport::Transport;
 use crate::modality::{
     EmbeddingProvider, ImageEditRequest, ImageProvider, ImageRequest, ImageResponse,
-    ResponseFormat, TextProvider, TextRequest, TextResponse, TranscriptionProvider,
-    TranscriptionResponse, TranscriptionSegment,
+    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
+    TranscriptionProvider, TranscriptionResponse, TranscriptionSegment,
 };
 use crate::provider::ProviderError;
 
@@ -231,9 +231,8 @@ impl TextProvider for OpenAIProvider {
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ProviderError> {
-        let response = self.complete(request).await?;
-        parse_content(&response.content)
+    ) -> Result<StructuredResponse, ProviderError> {
+        StructuredResponse::from_text(self.complete(request).await?)
     }
 
     async fn stream_complete(
@@ -245,12 +244,6 @@ impl TextProvider for OpenAIProvider {
             "streaming not yet implemented for OpenAI provider",
         ))
     }
-}
-
-fn parse_content(content: &str) -> Result<serde_json::Value, ProviderError> {
-    serde_json::from_str(content).map_err(|error| {
-        ProviderError::parse(format!("failed to parse structured output: {error}"))
-    })
 }
 
 #[async_trait]
@@ -718,9 +711,9 @@ mod tests {
             schema: Some(serde_json::json!({ "type": "object" })),
         });
 
-        let value = provider.complete_structured(&request).await.unwrap();
+        let structured = provider.complete_structured(&request).await.unwrap();
 
-        assert_eq!(value["beats"], 3);
+        assert_eq!(structured.value["beats"], 3);
     }
 
     #[tokio::test]

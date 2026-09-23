@@ -124,6 +124,7 @@ dependencies = [
 name = "abnegate-llm"
 version = "0.1.0"
 dependencies = [
+ "abnegate-http",
  "abnegate-secret",
  "async-stream",
  "async-trait",

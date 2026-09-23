@@ -15,7 +15,9 @@ pub use crate::modality::vendor::anthropic::auth::AnthropicAuth;
 
 use crate::modality::vendor::anthropic::cli::Cli;
 use crate::modality::vendor::transport::Transport;
-use crate::modality::{ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::modality::{
+    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
+};
 use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://api.anthropic.com";
@@ -173,7 +175,7 @@ impl AnthropicProvider {
         &self,
         request: &TextRequest,
         schema: &serde_json::Value,
-    ) -> Result<serde_json::Value, ProviderError> {
+    ) -> Result<StructuredResponse, ProviderError> {
         let schema = serde_json::to_string(schema)
             .map_err(|error| ProviderError::config(format!("unserialisable schema: {error}")))?;
         let arguments = vec![
@@ -186,7 +188,14 @@ impl AnthropicProvider {
         let (envelope, _) = self
             .envelope(arguments, &joined_prompt(request, "\n\n"))
             .await?;
-        Self::unwrap_cli_result(envelope)
+        let input_tokens = usage(&envelope, "input_tokens");
+        let output_tokens = usage(&envelope, "output_tokens");
+        Ok(StructuredResponse {
+            value: Self::unwrap_cli_result(envelope)?,
+            model: self.model.clone(),
+            input_tokens,
+            output_tokens,
+        })
     }
 
     /// Take the answer out of the CLI's envelope.
@@ -304,15 +313,12 @@ impl TextProvider for AnthropicProvider {
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ProviderError> {
+    ) -> Result<StructuredResponse, ProviderError> {
         let Some(ResponseFormat::Json {
             schema: Some(schema),
         }) = &request.response_format
         else {
-            let response = self.complete(request).await?;
-            return serde_json::from_str(&response.content).map_err(|error| {
-                ProviderError::parse(format!("failed to parse structured output: {error}"))
-            });
+            return StructuredResponse::from_text(self.complete(request).await?);
         };
 
         // The HTTP body below needs an API key, which a CLI-only provider has
@@ -339,7 +345,8 @@ impl TextProvider for AnthropicProvider {
 
         let json = self.send(&body).await?;
 
-        json.get("content")
+        let value = json
+            .get("content")
             .and_then(|content| content.as_array())
             .and_then(|blocks| {
                 blocks.iter().find(|block| {
@@ -350,7 +357,18 @@ impl TextProvider for AnthropicProvider {
             .cloned()
             .ok_or_else(|| {
                 ProviderError::parse("missing tool_use content block in structured response")
-            })
+            })?;
+
+        Ok(StructuredResponse {
+            value,
+            model: json
+                .get("model")
+                .and_then(|model| model.as_str())
+                .unwrap_or(&self.model)
+                .to_string(),
+            input_tokens: usage(&json, "input_tokens"),
+            output_tokens: usage(&json, "output_tokens"),
+        })
     }
 
     async fn stream_complete(
@@ -567,7 +585,8 @@ mod tests {
                 "content": [
                     { "type": "text", "text": "thinking" },
                     { "type": "tool_use", "name": TOOL, "input": { "title": "Requiem" } }
-                ]
+                ],
+                "usage": { "input_tokens": 11, "output_tokens": 5 }
             })))
             .mount(&server)
             .await;
@@ -582,9 +601,11 @@ mod tests {
             schema: Some(serde_json::json!({ "title": "Facts" })),
         });
 
-        let value = provider.complete_structured(&request).await.unwrap();
+        let structured = provider.complete_structured(&request).await.unwrap();
 
-        assert_eq!(value["title"], "Requiem");
+        assert_eq!(structured.value["title"], "Requiem");
+        assert_eq!(structured.input_tokens, 11);
+        assert_eq!(structured.output_tokens, 5);
     }
 
     #[tokio::test]
@@ -814,9 +835,9 @@ mod tests {
             schema: Some(serde_json::json!({ "type": "object" })),
         });
 
-        let value = provider.complete_structured(&request).await.unwrap();
+        let structured = provider.complete_structured(&request).await.unwrap();
 
-        assert_eq!(value["beats"], 3);
+        assert_eq!(structured.value["beats"], 3);
         let arguments = std::fs::read_to_string(directory.path().join("arguments")).unwrap();
         assert!(
             arguments.contains(r#"--json-schema={"type":"object"}"#),

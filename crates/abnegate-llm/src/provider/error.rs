@@ -75,6 +75,13 @@ pub enum ProviderError {
 }
 
 const REJECTED: [u16; 4] = [400, 404, 413, 422];
+const REQUEST_TIMEOUT: u16 = 408;
+const TOO_MANY_REQUESTS: u16 = 429;
+const FIRST_SERVER_ERROR: u16 = 500;
+
+fn transient_status(status: u16) -> bool {
+    status == REQUEST_TIMEOUT || status == TOO_MANY_REQUESTS || status >= FIRST_SERVER_ERROR
+}
 
 impl ProviderError {
     /// The failing provider's name, or `None` for a failure that belongs to no
@@ -128,6 +135,36 @@ impl ProviderError {
         Self::Http {
             provider: provider.to_string(),
             source: source.redacted(),
+        }
+    }
+
+    /// Whether asking the same provider again, after a pause, can plausibly
+    /// succeed: a throttle, a server-side failure, a dropped connection, a
+    /// deadline, or an answer that did not parse.
+    ///
+    /// Narrower than [`Self::recoverable`]. A rejected key is worth taking to
+    /// the next provider in a chain, which holds a different one, but asking
+    /// the same provider again only gets the same refusal.
+    pub fn transient(&self) -> bool {
+        match self {
+            Self::Http { source, .. } => match source {
+                LlmError::Api { status, .. } => transient_status(*status),
+                LlmError::Http(_) | LlmError::Stream(_) | LlmError::Timeout(_) => true,
+                _ => false,
+            },
+            Self::Api { status, .. } => transient_status(*status),
+            Self::Timeout { .. }
+            | Self::Malformed { .. }
+            | Self::Network { .. }
+            | Self::Parse { .. } => true,
+            Self::Unavailable { .. }
+            | Self::Exit { .. }
+            | Self::Agent { .. }
+            | Self::Io { .. }
+            | Self::Config { .. }
+            | Self::Unconfigured
+            | Self::Unsupported { .. } => false,
+            Self::Exhausted { last, .. } => last.transient(),
         }
     }
 
@@ -319,6 +356,37 @@ mod tests {
                 "status {status} should fall over"
             );
         }
+    }
+
+    #[test]
+    fn only_a_failure_that_can_clear_by_itself_is_transient() {
+        for status in [408, 429, 500, 502, 503, 529] {
+            assert!(ProviderError::api(status, "busy").transient(), "{status}");
+            assert!(
+                ProviderError::http(
+                    "gateway",
+                    LlmError::Api {
+                        status,
+                        message: "busy".into()
+                    }
+                )
+                .transient(),
+                "{status}"
+            );
+        }
+        for status in [400, 401, 403, 404, 422] {
+            assert!(!ProviderError::api(status, "no").transient(), "{status}");
+        }
+        assert!(ProviderError::network("reset").transient());
+        assert!(
+            ProviderError::http(
+                "gateway",
+                LlmError::Timeout(std::time::Duration::from_secs(1))
+            )
+            .transient()
+        );
+        assert!(!ProviderError::config("missing key").transient());
+        assert!(!ProviderError::unavailable("claude", "claude", "not found").transient());
     }
 
     #[test]

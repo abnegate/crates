@@ -1,49 +1,48 @@
+use std::fmt;
 use std::sync::Mutex;
+use std::time::Duration;
 
+use abnegate_http::Backoff;
 use serde::de::DeserializeOwned;
 
-use crate::modality::{AiError, ResponseFormat, TextProvider, TextRequest};
+use crate::modality::{AiError, Exchange, ResponseFormat, TextProvider, TextRequest};
+#[cfg(doc)]
+use crate::provider::ProviderError;
 
 const STRUCTURED_TEMPERATURE: f64 = 0.0;
 const DEFAULT_TEMPERATURE: f64 = 0.7;
 const MAX_DETAIL_CHARACTERS: usize = 300;
-
-/// One exchange with a model, as it happened.
-#[derive(Debug, Clone)]
-pub struct Exchange {
-    pub provider: String,
-    pub model: String,
-    /// The schema asked for, when one was.
-    pub schema: Option<String>,
-    pub system_prompt: String,
-    pub user_prompt: String,
-    pub answer: String,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub attempts: u32,
-}
-
-impl Exchange {
-    /// What this exchange cost, at the given rate per million tokens.
-    ///
-    /// A single rate cannot express the input/output split every model has, so
-    /// this is indicative. The token counts beside it are exact when the
-    /// provider reports them.
-    pub fn cost_usd(&self, per_million_tokens: f64) -> f64 {
-        f64::from(self.input_tokens + self.output_tokens) / 1_000_000.0 * per_million_tokens
-    }
-}
+const DEFAULT_RETRIES: u32 = 1;
+const BACKOFF_BASE: Duration = Duration::from_secs(1);
+const BACKOFF_MAXIMUM: Duration = Duration::from_secs(30);
 
 /// One way to ask a model something.
 ///
 /// Owns provider choice, the retry policy, what gets recorded, and what
 /// happens when there is no provider at all, which is a first-class answer
 /// rather than a crash or a silent fabrication.
+///
+/// A structured request is asked again when its answer does not fit the
+/// schema, and when the provider fails in a way [`ProviderError::transient`]
+/// says another attempt could survive, after an exponential backoff with
+/// jitter. A refusal such as a rejected key is returned at once: asking again
+/// would only be refused again.
 pub struct AiClient {
     provider: Option<Box<dyn TextProvider>>,
-    /// How many times to ask again when the answer will not parse.
     retries: u32,
+    backoff: Backoff,
     exchanges: Mutex<Vec<Exchange>>,
+}
+
+impl fmt::Debug for AiClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AiClient")
+            .field("provider", &self.provider_name())
+            .field("retries", &self.retries)
+            .field("backoff", &self.backoff)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AiClient {
@@ -51,7 +50,12 @@ impl AiClient {
     pub fn new(provider: Box<dyn TextProvider>) -> Self {
         Self {
             provider: Some(provider),
-            retries: 1,
+            retries: DEFAULT_RETRIES,
+            backoff: Backoff {
+                base: BACKOFF_BASE,
+                maximum: BACKOFF_MAXIMUM,
+                ..Backoff::default()
+            },
             exchanges: Mutex::new(Vec::new()),
         }
     }
@@ -65,13 +69,20 @@ impl AiClient {
         Self {
             provider: None,
             retries: 0,
+            backoff: Backoff::default(),
             exchanges: Mutex::new(Vec::new()),
         }
     }
 
-    /// How many extra attempts a malformed answer gets. Default 1.
+    /// How many extra attempts a structured request gets. Default 1.
     pub fn with_retries(mut self, retries: u32) -> Self {
         self.retries = retries;
+        self
+    }
+
+    /// How long to wait before each retry of a recoverable provider failure.
+    pub fn with_backoff(mut self, backoff: Backoff) -> Self {
+        self.backoff = backoff;
         self
     }
 
@@ -109,13 +120,13 @@ impl AiClient {
     }
 
     /// Total tokens in and out across the run.
-    pub fn token_totals(&self) -> (u32, u32) {
+    pub fn token_totals(&self) -> (u64, u64) {
         self.exchanges()
             .iter()
-            .fold((0, 0), |(input, output), exchange| {
+            .fold((0_u64, 0_u64), |(input, output), exchange| {
                 (
-                    input + exchange.input_tokens,
-                    output + exchange.output_tokens,
+                    input.saturating_add(u64::from(exchange.input_tokens)),
+                    output.saturating_add(u64::from(exchange.output_tokens)),
                 )
             })
     }
@@ -185,28 +196,33 @@ impl AiClient {
         };
 
         let mut last: Option<String> = None;
-        for attempt in 1..=(self.retries + 1) {
-            let value = match provider.complete_structured(&request).await {
-                Ok(value) => value,
-                Err(error) if attempt <= self.retries => {
+        let mut input_tokens = 0_u32;
+        let mut output_tokens = 0_u32;
+        for attempt in 1..=self.retries.saturating_add(1) {
+            let response = match provider.complete_structured(&request).await {
+                Ok(response) => response,
+                Err(error) if attempt <= self.retries && error.transient() => {
                     last = Some(error.to_string());
+                    tokio::time::sleep(self.backoff.delay(attempt - 1)).await;
                     continue;
                 }
                 Err(error) => return Err(AiError::Provider(error)),
             };
+            input_tokens = input_tokens.saturating_add(response.input_tokens);
+            output_tokens = output_tokens.saturating_add(response.output_tokens);
 
-            let rendered = value.to_string();
-            match serde_json::from_value(value) {
+            let rendered = response.value.to_string();
+            match serde_json::from_value(response.value) {
                 Ok(parsed) => {
                     self.record(Exchange {
                         provider: provider.name().to_string(),
-                        model: String::new(),
+                        model: response.model,
                         schema: Some(schema_name.to_string()),
                         system_prompt: request.system_prompt,
                         user_prompt: request.user_prompt,
                         answer: rendered,
-                        input_tokens: 0,
-                        output_tokens: 0,
+                        input_tokens,
+                        output_tokens,
                         attempts: attempt,
                     });
                     return Ok(parsed);
@@ -244,10 +260,89 @@ impl AiClient {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use async_trait::async_trait;
+    use futures::Stream;
     use serde::Deserialize;
 
     use super::*;
     use crate::modality::vendor::MockProvider;
+    use crate::modality::{StructuredResponse, TextResponse};
+    use crate::provider::ProviderError;
+
+    /// Answers each structured request with the next scripted result and
+    /// counts the calls it received.
+    struct Scripted {
+        answers: Mutex<VecDeque<Result<StructuredResponse, ProviderError>>>,
+        calls: std::sync::Arc<AtomicU32>,
+    }
+
+    impl Scripted {
+        fn new(
+            answers: impl IntoIterator<Item = Result<StructuredResponse, ProviderError>>,
+        ) -> (Self, std::sync::Arc<AtomicU32>) {
+            let calls = std::sync::Arc::new(AtomicU32::new(0));
+            (
+                Self {
+                    answers: Mutex::new(answers.into_iter().collect()),
+                    calls: calls.clone(),
+                },
+                calls,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl TextProvider for Scripted {
+        fn name(&self) -> &str {
+            "scripted"
+        }
+
+        fn supports_structured_output(&self) -> bool {
+            true
+        }
+
+        fn max_context_tokens(&self) -> u32 {
+            0
+        }
+
+        async fn complete(&self, _request: &TextRequest) -> Result<TextResponse, ProviderError> {
+            Err(ProviderError::unsupported("complete"))
+        }
+
+        async fn complete_structured(
+            &self,
+            _request: &TextRequest,
+        ) -> Result<StructuredResponse, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(ProviderError::unsupported("no answer scripted")))
+        }
+
+        async fn stream_complete(
+            &self,
+            _request: &TextRequest,
+        ) -> Result<
+            Box<dyn Stream<Item = Result<String, ProviderError>> + Send + Unpin>,
+            ProviderError,
+        > {
+            Err(ProviderError::unsupported("stream_complete"))
+        }
+    }
+
+    fn facts(input_tokens: u32, output_tokens: u32) -> StructuredResponse {
+        StructuredResponse {
+            value: serde_json::json!({ "title": "Requiem", "genre": "RPG" }),
+            model: "scripted-model".into(),
+            input_tokens,
+            output_tokens,
+        }
+    }
 
     const MISSING: &str = "/nonexistent";
 
@@ -385,20 +480,73 @@ mod tests {
         assert!(input > 0);
     }
 
-    #[test]
-    fn a_cost_is_derived_from_the_tokens_that_were_used() {
-        let exchange = Exchange {
-            provider: "anthropic".into(),
-            model: "claude-opus-5".into(),
-            schema: None,
-            system_prompt: String::new(),
-            user_prompt: String::new(),
-            answer: String::new(),
-            input_tokens: 500_000,
-            output_tokens: 500_000,
-            attempts: 1,
-        };
+    #[tokio::test(start_paused = true)]
+    async fn a_refusal_is_returned_at_once_rather_than_asked_again() {
+        let (provider, calls) = Scripted::new([
+            Err(ProviderError::api(401, "invalid x-api-key")),
+            Ok(facts(1, 1)),
+        ]);
+        let client = AiClient::new(Box::new(provider)).with_retries(3);
 
-        assert!((exchange.cost_usd(25.0) - 25.0).abs() < 1e-9);
+        let error = client
+            .complete_structured::<Facts>("the facts", &schema(), "sys", "usr", 100)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, AiError::Provider(_)), "{error:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a 401 was asked again");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recoverable_failure_is_asked_again_after_a_backoff() {
+        let (provider, calls) = Scripted::new([
+            Err(ProviderError::api(503, "overloaded")),
+            Err(ProviderError::network("connection reset")),
+            Ok(facts(4, 6)),
+        ]);
+        let client = AiClient::new(Box::new(provider)).with_retries(2);
+        let started = tokio::time::Instant::now();
+
+        let facts: Facts = client
+            .complete_structured("the facts", &schema(), "sys", "usr", 100)
+            .await
+            .unwrap();
+
+        assert_eq!(facts.title, "Requiem");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert!(
+            started.elapsed() >= Duration::from_millis(750 + 1500),
+            "the retries did not back off: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_structured_exchange_records_its_model_and_every_token_it_spent() {
+        let (provider, _) = Scripted::new([
+            Ok(StructuredResponse {
+                value: serde_json::json!({ "title": "only" }),
+                ..facts(10, 20)
+            }),
+            Ok(facts(3, 4)),
+        ]);
+        let client = AiClient::new(Box::new(provider));
+
+        let _: Facts = client
+            .complete_structured("the facts", &schema(), "sys", "usr", 100)
+            .await
+            .unwrap();
+
+        let log = client.exchanges();
+        assert_eq!(log[0].model, "scripted-model");
+        assert_eq!((log[0].input_tokens, log[0].output_tokens), (13, 24));
+        assert_eq!(log[0].attempts, 2);
+        assert_eq!(client.token_totals(), (13, 24));
+    }
+
+    #[test]
+    fn debug_names_the_provider() {
+        let rendered = format!("{:?}", AiClient::new(Box::new(MockProvider::new(MISSING))));
+        assert!(rendered.contains("mock"), "{rendered}");
     }
 }

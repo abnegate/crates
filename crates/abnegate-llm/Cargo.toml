@@ -30,6 +30,7 @@ google = []
 openai = ["dep:base64"]
 
 [dependencies]
+abnegate-http = { path = "../abnegate-http", version = "0.1.0" }
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
 async-stream = { workspace = true }
 async-trait = { workspace = true }

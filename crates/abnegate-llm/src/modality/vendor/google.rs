@@ -8,7 +8,9 @@ use futures::Stream;
 use reqwest::Url;
 
 use crate::modality::vendor::transport::Transport;
-use crate::modality::{ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::modality::{
+    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
+};
 use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -167,13 +169,12 @@ impl TextProvider for GeminiProvider {
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ProviderError> {
+    ) -> Result<StructuredResponse, ProviderError> {
         let Some(ResponseFormat::Json {
             schema: Some(schema),
         }) = &request.response_format
         else {
-            let response = self.complete(request).await?;
-            return parse_content(&response.content);
+            return StructuredResponse::from_text(self.complete(request).await?);
         };
 
         let mut body = self.build_request_body(request);
@@ -189,7 +190,7 @@ impl TextProvider for GeminiProvider {
         }
 
         let json = self.send(&body).await?;
-        parse_content(&Self::parse_response(&json)?.content)
+        StructuredResponse::from_text(Self::parse_response(&json)?)
     }
 
     async fn stream_complete(
@@ -201,12 +202,6 @@ impl TextProvider for GeminiProvider {
             "streaming not yet implemented for Gemini provider",
         ))
     }
-}
-
-fn parse_content(content: &str) -> Result<serde_json::Value, ProviderError> {
-    serde_json::from_str(content).map_err(|error| {
-        ProviderError::parse(format!("failed to parse structured output: {error}"))
-    })
 }
 
 #[cfg(test)]
@@ -430,9 +425,9 @@ mod tests {
             schema: Some(serde_json::json!({ "type": "object" })),
         });
 
-        let value = provider.complete_structured(&request).await.unwrap();
+        let structured = provider.complete_structured(&request).await.unwrap();
 
-        assert_eq!(value["beats"], 3);
+        assert_eq!(structured.value["beats"], 3);
     }
 
     #[tokio::test]

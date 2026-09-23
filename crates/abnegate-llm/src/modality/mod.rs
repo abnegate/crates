@@ -5,11 +5,12 @@
 pub mod config;
 pub mod vendor;
 
+mod ai_client;
 mod ai_error;
 mod audio_provider;
 mod audio_response;
-mod client;
 mod embedding_provider;
+mod exchange;
 mod image_edit_request;
 mod image_provider;
 mod image_request;
@@ -21,6 +22,7 @@ mod model3d_response;
 mod music_request;
 mod response_format;
 mod sfx_request;
+mod structured_response;
 mod text_provider;
 mod text_request;
 mod text_response;
@@ -34,16 +36,17 @@ mod voice_info;
 mod voice_provider;
 mod voice_request;
 
+pub use crate::modality::ai_client::AiClient;
 pub use crate::modality::ai_error::AiError;
 pub use crate::modality::audio_provider::AudioProvider;
 pub use crate::modality::audio_response::AudioResponse;
-pub use crate::modality::client::{AiClient, Exchange};
 pub use crate::modality::config::{
     AudioProviderConfig, EmbeddingProviderConfig, ImageProviderConfig, Model3DProviderConfig,
     ProviderConfig, TextProviderConfig, TranscriptionProviderConfig, VideoProviderConfig,
     VoiceProviderConfig,
 };
 pub use crate::modality::embedding_provider::EmbeddingProvider;
+pub use crate::modality::exchange::Exchange;
 pub use crate::modality::image_edit_request::ImageEditRequest;
 pub use crate::modality::image_provider::ImageProvider;
 pub use crate::modality::image_request::ImageRequest;
@@ -55,6 +58,7 @@ pub use crate::modality::model3d_response::Model3DResponse;
 pub use crate::modality::music_request::MusicRequest;
 pub use crate::modality::response_format::ResponseFormat;
 pub use crate::modality::sfx_request::SfxRequest;
+pub use crate::modality::structured_response::StructuredResponse;
 pub use crate::modality::text_provider::TextProvider;
 pub use crate::modality::text_request::TextRequest;
 pub use crate::modality::text_response::TextResponse;
@@ -101,7 +105,7 @@ mod tests {
         async fn complete_structured(
             &self,
             _request: &TextRequest,
-        ) -> Result<serde_json::Value, ProviderError> {
+        ) -> Result<StructuredResponse, ProviderError> {
             Err(ProviderError::unsupported("complete_structured"))
         }
 
