@@ -1,4 +1,8 @@
-use rusqlite::types::{FromSql, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
+use rusqlite::types::FromSql;
+use rusqlite::types::FromSqlResult;
+use rusqlite::types::ToSql;
+use rusqlite::types::ToSqlOutput;
+use rusqlite::types::ValueRef;
 
 use crate::value::SecretValue;
 
