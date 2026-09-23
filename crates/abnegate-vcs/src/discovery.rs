@@ -7,24 +7,25 @@
 //! directory one level below it, and keeps only the dependencies whose owner is
 //! one of the organisations it was given.
 
-mod composer_json;
+mod composer_manifest;
 mod discovered_dependency;
-mod error;
 mod manifest;
-mod package_json;
+mod package_manifest;
+mod requirements;
 
-use crate::discovery::composer_json::ComposerJson;
+use crate::discovery::composer_manifest::ComposerManifest;
 pub use crate::discovery::discovered_dependency::DiscoveredDependency;
-pub use crate::discovery::error::DiscoveryError;
-pub use crate::discovery::error::DiscoveryResult;
-use crate::discovery::manifest::COMPOSER_MANIFEST;
 pub use crate::discovery::manifest::Manifest;
-use crate::discovery::manifest::PACKAGE_MANIFEST;
-use crate::discovery::package_json::PackageJson;
-use std::collections::HashMap;
+use crate::discovery::package_manifest::PackageManifest;
+use serde::de::DeserializeOwned;
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
+
+/// The marker npm puts ahead of a scoped package's organisation.
+const SCOPE: char = '@';
 
 /// Scans directories for dependencies on known organisations.
 #[derive(Debug, Clone, Default)]
@@ -42,44 +43,72 @@ impl DependencyDiscovery {
 
     /// Whether a package name belongs to one of the known organisations.
     fn is_known(&self, package: &str) -> bool {
-        match package.split('/').next() {
-            Some(organization) => self.organizations.contains(organization),
-            None => false,
-        }
+        let organization = package.split_once('/').map_or(package, |(owner, _)| owner);
+        self.organizations.contains(organization)
     }
 
     /// Read both manifests in one directory.
     ///
     /// A manifest that cannot be read or parsed contributes nothing rather than
-    /// failing the scan: a directory full of repositories is scanned for what it
-    /// can say, and one broken `composer.json` in it is not the caller's to fix.
-    pub fn scan_directory(&self, path: &Path) -> DiscoveryResult<Vec<DiscoveredDependency>> {
-        let Some(name) = self.repository_name(path) else {
-            return Ok(Vec::new());
+    /// failing the scan, and is reported as skipped: a directory full of
+    /// repositories is scanned for what it can say, and one broken
+    /// `composer.json` in it is not the caller's to fix. A manifest that is a
+    /// link rather than a file is skipped the same way, so a scan reads only
+    /// what the directory itself holds.
+    pub fn scan_directory(&self, path: &Path) -> Vec<DiscoveredDependency> {
+        let composer: Option<ComposerManifest> = read(path, Manifest::Composer);
+        let package: Option<PackageManifest> = read(path, Manifest::Npm);
+
+        let name = composer
+            .as_ref()
+            .and_then(|manifest| manifest.name.clone())
+            .or_else(|| {
+                package
+                    .as_ref()
+                    .and_then(|manifest| manifest.name.as_deref().map(unscoped))
+            })
+            .or_else(|| {
+                path.file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .map(str::to_string)
+            });
+        let Some(name) = name else {
+            return Vec::new();
         };
 
-        let mut dependencies: Vec<DiscoveredDependency> = Vec::new();
-        for manifest in [Manifest::Composer, Manifest::Npm] {
-            let file = path.join(manifest.file_name());
-            if file.exists()
-                && let Ok(found) = self.scan_manifest(&file, manifest, &name)
-            {
-                dependencies.extend(found);
-            }
+        let mut dependencies = Vec::new();
+        if let Some(composer) = &composer {
+            dependencies.extend(self.declared(
+                composer.require.names().chain(composer.require_dev.names()),
+                Manifest::Composer,
+                &name,
+                path,
+            ));
         }
-
-        Ok(dependencies)
+        if let Some(package) = &package {
+            dependencies.extend(
+                self.declared(
+                    package
+                        .dependencies
+                        .names()
+                        .chain(package.dev_dependencies.names()),
+                    Manifest::Npm,
+                    &name,
+                    path,
+                ),
+            );
+        }
+        dependencies
     }
 
     /// Read every directory in `paths`, and the directories one level below any
     /// that declares nothing itself.
-    pub fn scan_directories(&self, paths: &[String]) -> DiscoveryResult<Vec<DiscoveredDependency>> {
+    pub fn scan_directories(&self, paths: &[PathBuf]) -> Vec<DiscoveredDependency> {
         let mut all: Vec<DiscoveredDependency> = Vec::new();
 
-        for path in paths.iter().map(Path::new).filter(|path| path.is_dir()) {
-            if let Ok(dependencies) = self.scan_directory(path)
-                && !dependencies.is_empty()
-            {
+        for path in paths.iter().filter(|path| path.is_dir()) {
+            let dependencies = self.scan_directory(path);
+            if !dependencies.is_empty() {
                 all.extend(dependencies);
                 continue;
             }
@@ -89,93 +118,71 @@ impl DependencyDiscovery {
             };
             for entry in entries.flatten() {
                 let entry = entry.path();
-                if entry.is_dir()
-                    && let Ok(dependencies) = self.scan_directory(&entry)
-                {
-                    all.extend(dependencies);
+                if entry.is_dir() {
+                    all.extend(self.scan_directory(&entry));
                 }
             }
         }
 
-        Ok(all)
+        all
     }
 
-    /// What the repository in `path` calls itself, preferring what a manifest
-    /// says over what the directory is called.
-    fn repository_name(&self, path: &Path) -> Option<String> {
-        let composer = path.join(COMPOSER_MANIFEST);
-        if composer.exists()
-            && let Ok(content) = fs::read_to_string(&composer)
-            && let Ok(manifest) = serde_json::from_str::<ComposerJson>(&content)
-            && let Some(name) = manifest.name
-        {
-            return Some(name);
-        }
-
-        let package = path.join(PACKAGE_MANIFEST);
-        if package.exists()
-            && let Ok(content) = fs::read_to_string(&package)
-            && let Ok(manifest) = serde_json::from_str::<PackageJson>(&content)
-            && let Some(name) = manifest.name
-        {
-            return Some(unscoped(&name));
-        }
-
-        path.file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .map(str::to_string)
-    }
-
-    fn scan_manifest(
+    /// The known organisations' packages among `packages`, each once however
+    /// many sections of the manifest name it.
+    fn declared<'a>(
         &self,
-        file: &Path,
+        packages: impl Iterator<Item = &'a str>,
         manifest: Manifest,
         repository: &str,
-    ) -> DiscoveryResult<Vec<DiscoveredDependency>> {
-        let content = fs::read_to_string(file)?;
-        let declared: Vec<Requirements> = match manifest {
-            Manifest::Composer => {
-                let parsed: ComposerJson = serde_json::from_str(&content)?;
-                vec![parsed.require, parsed.require_dev]
-            }
-            Manifest::Npm => {
-                let parsed: PackageJson = serde_json::from_str(&content)?;
-                vec![parsed.dependencies, parsed.dev_dependencies]
-            }
-        };
-
-        let repository_path = file
-            .parent()
-            .map(|parent| parent.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        Ok(declared
-            .into_iter()
-            .flatten()
-            .flat_map(HashMap::into_keys)
-            .map(|package| unscoped(&package))
+        path: &Path,
+    ) -> Vec<DiscoveredDependency> {
+        packages
+            .map(unscoped)
             .filter(|package| self.is_known(package))
+            .collect::<BTreeSet<String>>()
+            .into_iter()
             .map(|depends_on| DiscoveredDependency {
                 repository: repository.to_string(),
                 depends_on,
                 manifest,
-                repository_path: repository_path.clone(),
+                repository_path: path.to_path_buf(),
             })
-            .collect())
+            .collect()
+    }
+}
+
+/// The manifest of `kind` in `directory`, if there is one that is a regular
+/// file and parses.
+fn read<T: DeserializeOwned>(directory: &Path, kind: Manifest) -> Option<T> {
+    let file = directory.join(kind.file_name());
+    let details = fs::symlink_metadata(&file).ok()?;
+    if !details.is_file() {
+        tracing::warn!(manifest = ?file, "Skipped a manifest that is not a regular file");
+        return None;
+    }
+    let parsed = fs::read_to_string(&file)
+        .map_err(|error| error.to_string())
+        .and_then(|content| serde_json::from_str(&content).map_err(|error| error.to_string()));
+    match parsed {
+        Ok(manifest) => Some(manifest),
+        Err(error) => {
+            tracing::warn!(manifest = ?file, %error, "Skipped a manifest that could not be read");
+            None
+        }
     }
 }
 
 /// An npm package is scoped as `@organisation/package`; every other manifest
 /// names the same pair without the marker.
 fn unscoped(package: &str) -> String {
-    package.trim_start_matches('@').to_string()
+    package.trim_start_matches(SCOPE).to_string()
 }
-
-pub(super) type Requirements = Option<HashMap<String, serde_json::Value>>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discovery::manifest::COMPOSER_MANIFEST;
+    use crate::discovery::manifest::PACKAGE_MANIFEST;
     use tempfile::TempDir;
 
     fn discovery(organizations: &[&str]) -> DependencyDiscovery {
@@ -223,7 +230,6 @@ mod tests {
         assert!(
             discovery(&["utopia-php"])
                 .scan_directory(directory.path())
-                .unwrap()
                 .is_empty()
         );
     }
@@ -241,9 +247,7 @@ mod tests {
             }),
         );
 
-        let mut dependencies = discovery(&["utopia-php"])
-            .scan_directory(directory.path())
-            .unwrap();
+        let mut dependencies = discovery(&["utopia-php"]).scan_directory(directory.path());
         dependencies.sort_by(|left, right| left.depends_on.cmp(&right.depends_on));
 
         assert_eq!(dependencies.len(), 2);
@@ -252,10 +256,7 @@ mod tests {
         assert_eq!(dependencies[0].repository, "appwrite/cloud");
         assert_eq!(dependencies[0].manifest, Manifest::Composer);
         assert_eq!(dependencies[0].manifest.to_string(), "composer");
-        assert_eq!(
-            dependencies[0].repository_path,
-            directory.path().to_string_lossy()
-        );
+        assert_eq!(dependencies[0].repository_path, directory.path());
     }
 
     #[test]
@@ -271,9 +272,7 @@ mod tests {
             }),
         );
 
-        let mut dependencies = discovery(&["appwrite"])
-            .scan_directory(directory.path())
-            .unwrap();
+        let mut dependencies = discovery(&["appwrite"]).scan_directory(directory.path());
         dependencies.sort_by(|left, right| left.depends_on.cmp(&right.depends_on));
 
         assert_eq!(dependencies.len(), 2);
@@ -291,7 +290,6 @@ mod tests {
         assert!(
             discovery(&["utopia-php"])
                 .scan_directory(directory.path())
-                .unwrap()
                 .is_empty()
         );
     }
@@ -305,9 +303,7 @@ mod tests {
             serde_json::json!({ "require": { "utopia-php/database": "^1.0" } }),
         );
 
-        let dependencies = discovery(&["utopia-php"])
-            .scan_directory(directory.path())
-            .unwrap();
+        let dependencies = discovery(&["utopia-php"]).scan_directory(directory.path());
 
         assert_eq!(dependencies.len(), 1);
         assert_eq!(
@@ -328,48 +324,40 @@ mod tests {
         assert!(
             discovery(&["utopia-php"])
                 .scan_directory(directory.path())
-                .unwrap()
                 .is_empty()
         );
     }
 
     #[test]
     fn a_composer_name_is_preferred_and_an_npm_scope_is_stripped_from_one() {
+        let depending = serde_json::json!({ "utopia-php/database": "^1.0" });
+        let named = |directory: &Path| {
+            discovery(&["utopia-php"])
+                .scan_directory(directory)
+                .first()
+                .map(|dependency| dependency.repository.clone())
+        };
+
         let both = TempDir::new().unwrap();
         write(
             both.path(),
             COMPOSER_MANIFEST,
-            serde_json::json!({ "name": "composer-name" }),
+            serde_json::json!({ "name": "composer-name", "require": depending }),
         );
         write(
             both.path(),
             PACKAGE_MANIFEST,
             serde_json::json!({ "name": "package-name" }),
         );
-        assert_eq!(
-            discovery(&[]).repository_name(both.path()),
-            Some("composer-name".to_string())
-        );
+        assert_eq!(named(both.path()), Some("composer-name".to_string()));
 
         let scoped = TempDir::new().unwrap();
         write(
             scoped.path(),
             PACKAGE_MANIFEST,
-            serde_json::json!({ "name": "@org/package" }),
+            serde_json::json!({ "name": "@org/package", "dependencies": { "@utopia-php/x": "1" } }),
         );
-        assert_eq!(
-            discovery(&[]).repository_name(scoped.path()),
-            Some("org/package".to_string())
-        );
-
-        let bare = TempDir::new().unwrap();
-        assert_eq!(
-            discovery(&[]).repository_name(bare.path()),
-            bare.path()
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string()),
-            "a directory with no manifest is named after itself"
-        );
+        assert_eq!(named(scoped.path()), Some("org/package".to_string()));
     }
 
     #[test]
@@ -386,9 +374,8 @@ mod tests {
             }),
         );
 
-        let dependencies = discovery(&["utopia-php"])
-            .scan_directories(&[root.path().to_string_lossy().to_string()])
-            .unwrap();
+        let dependencies =
+            discovery(&["utopia-php"]).scan_directories(&[root.path().to_path_buf()]);
 
         assert_eq!(dependencies.len(), 1);
         assert_eq!(dependencies[0].depends_on, "utopia-php/database");
@@ -417,9 +404,8 @@ mod tests {
             }),
         );
 
-        let dependencies = discovery(&["utopia-php"])
-            .scan_directories(&[root.path().to_string_lossy().to_string()])
-            .unwrap();
+        let dependencies =
+            discovery(&["utopia-php"]).scan_directories(&[root.path().to_path_buf()]);
 
         assert_eq!(dependencies.len(), 1);
         assert_eq!(dependencies[0].repository, "outer");
@@ -429,11 +415,10 @@ mod tests {
     fn a_path_that_is_not_there_is_nothing_to_scan() {
         let discovery = discovery(&["utopia-php"]);
 
-        assert!(discovery.scan_directories(&[]).unwrap().is_empty());
+        assert!(discovery.scan_directories(&[]).is_empty());
         assert!(
             discovery
-                .scan_directories(&["/nonexistent/path".to_string()])
-                .unwrap()
+                .scan_directories(&[PathBuf::from("/nonexistent/path")])
                 .is_empty()
         );
     }
@@ -444,13 +429,76 @@ mod tests {
             repository: "my-app".to_string(),
             depends_on: "utopia-php/database".to_string(),
             manifest: Manifest::Composer,
-            repository_path: "/path/to/app".to_string(),
+            repository_path: PathBuf::from("/path/to/app"),
         };
 
         assert_eq!(dependency, dependency.clone());
         assert_eq!(dependency.repository, "my-app");
         assert_eq!(dependency.depends_on, "utopia-php/database");
         assert_eq!(dependency.manifest.as_str(), "composer");
-        assert_eq!(dependency.repository_path, "/path/to/app");
+        assert_eq!(dependency.repository_path, Path::new("/path/to/app"));
+    }
+
+    /// PHP encodes an empty object as `[]`, and one empty section used to
+    /// fail the whole manifest, losing every other section with it.
+    #[test]
+    fn an_empty_section_written_as_a_list_requires_nothing_and_loses_nothing() {
+        let directory = TempDir::new().unwrap();
+        write(
+            directory.path(),
+            COMPOSER_MANIFEST,
+            serde_json::json!({
+                "name": "appwrite/cloud",
+                "require": [],
+                "require-dev": { "utopia-php/cli": "^1.0" },
+            }),
+        );
+
+        let dependencies = discovery(&["utopia-php"]).scan_directory(directory.path());
+
+        assert_eq!(dependencies.len(), 1, "{dependencies:?}");
+        assert_eq!(dependencies[0].depends_on, "utopia-php/cli");
+    }
+
+    #[test]
+    fn a_package_both_sections_require_is_one_dependency() {
+        let directory = TempDir::new().unwrap();
+        write(
+            directory.path(),
+            PACKAGE_MANIFEST,
+            serde_json::json!({
+                "name": "console",
+                "dependencies": { "@appwrite/sdk": "^1.0", "appwrite/sdk": "^1.0" },
+                "devDependencies": { "@appwrite/sdk": "^1.0" },
+            }),
+        );
+
+        let dependencies = discovery(&["appwrite"]).scan_directory(directory.path());
+
+        assert_eq!(dependencies.len(), 1, "{dependencies:?}");
+        assert_eq!(dependencies[0].depends_on, "appwrite/sdk");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_that_is_a_link_is_not_read() {
+        let outside = TempDir::new().unwrap();
+        write(
+            outside.path(),
+            COMPOSER_MANIFEST,
+            serde_json::json!({ "name": "elsewhere", "require": { "utopia-php/database": "1" } }),
+        );
+        let directory = TempDir::new().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join(COMPOSER_MANIFEST),
+            directory.path().join(COMPOSER_MANIFEST),
+        )
+        .unwrap();
+
+        assert!(
+            discovery(&["utopia-php"])
+                .scan_directory(directory.path())
+                .is_empty()
+        );
     }
 }

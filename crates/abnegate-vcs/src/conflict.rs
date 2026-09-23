@@ -15,7 +15,7 @@ mod conflicted_path;
 mod error;
 mod index;
 mod layout;
-mod marker;
+pub(crate) mod marker;
 mod request;
 mod service;
 

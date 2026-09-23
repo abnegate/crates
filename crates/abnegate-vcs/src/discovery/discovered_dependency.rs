@@ -1,4 +1,5 @@
 use crate::discovery::Manifest;
+use std::path::PathBuf;
 
 /// One dependency one repository declares on another.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,5 +11,5 @@ pub struct DiscoveredDependency {
     /// The package manager it was declared to.
     pub manifest: Manifest,
     /// Where on disk the repository declaring it was found.
-    pub repository_path: String,
+    pub repository_path: PathBuf,
 }

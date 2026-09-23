@@ -1,11 +1,14 @@
 use std::fmt;
 
-/// A manifest file this reads dependencies out of.
+/// The manifest Composer reads a package's dependencies from.
 pub(super) const COMPOSER_MANIFEST: &str = "composer.json";
+
+/// The manifest npm reads a package's dependencies from.
 pub(super) const PACKAGE_MANIFEST: &str = "package.json";
 
 /// The package manager a dependency was declared to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Manifest {
     Composer,
     Npm,
