@@ -576,6 +576,39 @@ fn a_walk_through_links_that_loop_back_ends() {
     assert_eq!(stopped, None);
 }
 
+/// A working directory reached through a link (`/var` is `/private/var` on
+/// macOS, so every temporary directory is one) is resolved before the walk,
+/// and each file the walk opens is named by its resolved path. The opener
+/// stripped only the root as given, so every one of those paths looked like
+/// an escape and the fallback search found nothing at all.
+#[cfg(unix)]
+#[test]
+fn the_search_walk_finds_files_under_a_working_directory_reached_through_a_link() {
+    let directory = tempdir().unwrap();
+    let real = directory.path().join("real");
+    fs::create_dir(&real).unwrap();
+    fs::write(real.join("own.rs"), "open sesame please\n").unwrap();
+    std::os::unix::fs::symlink(&real, directory.path().join("link")).unwrap();
+    let mut context = create_test_context(directory.path());
+    context.working_directory = directory.path().join("link");
+    assert_ne!(
+        context.working_directory.canonicalize().unwrap(),
+        context.working_directory,
+        "the fixture has to be reached through a link to be a test"
+    );
+
+    let root = super::resolve(&context.working_directory);
+    let (found, _) = search_tree(
+        &root,
+        "open sesame please",
+        true,
+        SEARCH_MAX_RESULTS,
+        &context,
+    );
+
+    assert_eq!(found, ["own.rs:1: open sesame please"]);
+}
+
 #[tokio::test]
 async fn search_code_refuses_a_path_outside_cwd() {
     let outside = tempdir().unwrap();

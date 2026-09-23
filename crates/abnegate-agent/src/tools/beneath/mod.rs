@@ -83,9 +83,17 @@ fn reported(errno: Errno) -> io::Error {
 /// The part of `path` that names something under `root`.
 ///
 /// A path the caller already joined to the root strips back to the names below
-/// it; anything else is passed through and refused by the walk as an escape.
+/// it, whether it was joined to the root as given or to the root with its
+/// links resolved, which is what [`resolve`](super::file::resolve) hands back.
+/// Anything else is passed through and refused by the walk as an escape.
 fn under<'a>(root: &Path, path: &'a Path) -> &'a Path {
-    path.strip_prefix(root).unwrap_or(path)
+    if let Ok(relative) = path.strip_prefix(root) {
+        return relative;
+    }
+    root.canonicalize()
+        .ok()
+        .and_then(|canonical| path.strip_prefix(canonical).ok())
+        .unwrap_or(path)
 }
 
 fn resolve(root: &Path, path: &Path, target: Target, create: bool) -> Result<OwnedFd, Errno> {
