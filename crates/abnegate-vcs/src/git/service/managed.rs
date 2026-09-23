@@ -192,39 +192,17 @@ impl GitService {
     }
 
     /// Ensure a managed clone is current *and* its working tree is advanced to
-    /// the remote's default branch. A clone whose `origin` fetches fewer
-    /// branches than the remote has is widened back to every branch first,
-    /// rather than refused.
+    /// the remote's default branch, cloning it from `url` when it is not there
+    /// yet. A clone is refused as [`Self::ensure_repository`] refuses it,
+    /// before anything reaches the remote or is written to the clone: one
+    /// whose `origin` no longer fetches every branch the remote has is
+    /// refused with [`GitError::UnsafeConfig`] rather than widened back, and
+    /// its configuration, or whatever file a link there points to, is left
+    /// as it was.
     pub async fn ensure_synced(&self, path: &Path, url: &str) -> GitResult<BranchName> {
-        if self.is_repository_root(path) {
-            self.track_all_branches(path).await;
-        }
         let default_branch = self.ensure_fetched(path, url).await?;
         self.checkout_reset(path, &default_branch).await?;
         Ok(default_branch)
-    }
-
-    /// Widen the fetch refspec to every branch the remote has: every value
-    /// the clone holds for it, or none, replaced by [`FETCH_REFSPEC`] alone.
-    async fn track_all_branches(&self, path: &Path) {
-        let output = Self::output(Self::managed_command(Some(path)).args([
-            "config",
-            "--local",
-            "--replace-all",
-            ORIGIN_FETCH,
-            FETCH_REFSPEC,
-        ]))
-        .await;
-        match output {
-            Ok(result) if result.status.success() => {}
-            Ok(result) => {
-                let stderr = String::from_utf8_lossy(&result.stderr);
-                tracing::debug!(repository = ?path, error = %stderr, "Failed to widen fetch refspec");
-            }
-            Err(error) => {
-                tracing::debug!(repository = ?path, %error, "Failed to run git config");
-            }
-        }
     }
 
     /// Refuse a managed clone before anything reaches its remote: one whose
@@ -1409,8 +1387,8 @@ mod managed_tests {
     /// at a commit of its own would then outlive the next fetch and be
     /// checked out as `origin`'s. Every operation that fetches refuses a
     /// clone whose `origin` fetches anything but every branch into its
-    /// remote-tracking refs, before any git command reaches the remote; a
-    /// sync widens the refspec back first and then fetches.
+    /// remote-tracking refs, before any git command reaches the remote, and
+    /// leaves the refspec as it found it.
     #[tokio::test]
     async fn a_managed_clone_whose_refspec_is_not_the_one_git_writes_is_never_fetched() {
         let source = TempDir::new().unwrap();
@@ -1440,6 +1418,8 @@ mod managed_tests {
             let local = track_a_local_commit(&target);
             git(&target, arguments);
             git(&target, &["symbolic-ref", "--delete", REMOTE_HEAD]);
+            let config = target.join(GIT_DIRECTORY).join(CONFIG_FILE);
+            let written = std::fs::read_to_string(&config).unwrap();
 
             let refusals = [
                 recording(async { service.fetch_all(&target, &url).await.err() }).await,
@@ -1448,6 +1428,7 @@ mod managed_tests {
                 recording(async { service.ensure_repository(&target, &url, &main).await.err() })
                     .await,
                 recording(async { service.ensure_fetched(&target, &url).await.err() }).await,
+                recording(async { service.ensure_synced(&target, &url).await.err() }).await,
             ];
             let ((), set_head) = recording(service.update_remote_head(&target, &url)).await;
 
@@ -1463,21 +1444,63 @@ mod managed_tests {
             }
             assert!(!reached_remote(&set_head), "{rewrite}: {set_head:?}");
             assert_eq!(tracked(&target), local, "{rewrite}: nothing was fetched");
-
-            let synced = service.ensure_synced(&target, &url).await;
-            assert!(
-                synced
-                    .as_ref()
-                    .is_ok_and(|default| default.as_str() == "main"),
-                "{rewrite}: {synced:?}"
-            );
             assert_eq!(
-                git(&target, &["config", "--local", "--get-all", ORIGIN_FETCH]),
-                FETCH_REFSPEC,
-                "{rewrite}: the sync widened the refspec back"
+                std::fs::read_to_string(&config).unwrap(),
+                written,
+                "{rewrite}: the configuration was rewritten"
             );
-            assert_eq!(tracked(&target), head, "{rewrite}");
             assert_eq!(git(&target, &["rev-parse", "HEAD"]), head, "{rewrite}");
+        }
+    }
+
+    /// A clone's `.git/config` can be a link to a file anywhere, and git
+    /// writes a configuration change wherever the link points, creating the
+    /// file when it is not there. A sync refuses such a clone as every other
+    /// operation that fetches refuses it, and writes nothing through the link
+    /// on the way.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sync_writes_nothing_through_a_linked_configuration() {
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        let other = workspace.path().join("other");
+        service
+            .ensure_repository(&other, &url, &main)
+            .await
+            .unwrap();
+        git(&other, &["config", ORIGIN_FETCH, NARROWED]);
+        let user = workspace.path().join("user");
+        std::fs::write(&user, "[user]\n\tname = Fixture\n").unwrap();
+        let targets = [
+            ("missing", workspace.path().join("missing")),
+            ("user", user),
+            ("other clone", other.join(GIT_DIRECTORY).join(CONFIG_FILE)),
+        ];
+
+        for (index, (linked, target)) in targets.iter().enumerate() {
+            let clone = workspace.path().join(index.to_string());
+            service
+                .ensure_repository(&clone, &url, &main)
+                .await
+                .unwrap();
+            let config = clone.join(GIT_DIRECTORY).join(CONFIG_FILE);
+            std::fs::remove_file(&config).unwrap();
+            std::os::unix::fs::symlink(target, &config).unwrap();
+            let before = std::fs::read_to_string(target).ok();
+
+            let (refusal, recorded) = recording(service.ensure_synced(&clone, &url)).await;
+
+            assert!(refusal.is_err(), "{linked}: {refusal:?}");
+            assert!(!reached_remote(&recorded), "{linked}: {recorded:?}");
+            assert_eq!(
+                std::fs::read_to_string(target).ok(),
+                before,
+                "{linked}: the linked file was written"
+            );
         }
     }
 
