@@ -10,6 +10,8 @@ use crate::conflict::HEAD_REF;
 use crate::conflict::has_markers;
 use crate::conflict::resolve;
 use crate::git::authenticate;
+use crate::repository_url::RepositoryUrl;
+use abnegate_secret::SecretValue;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -74,19 +76,18 @@ impl ConflictService {
 
         self.run(&checkout, &["init", "--quiet"]).await?;
 
-        let remote = request.remote.clone();
-
         self.run_authenticated(
             &checkout,
             &[
                 "fetch",
                 "--no-tags",
                 "--quiet",
-                &remote,
+                request.remote.as_str(),
                 &format!("+refs/heads/{}:{HEAD_REF}", request.head),
                 &format!("+refs/heads/{}:{BASE_REF}", request.base),
             ],
-            request.token.as_deref(),
+            &request.remote,
+            request.token.as_ref(),
         )
         .await?;
 
@@ -195,20 +196,19 @@ impl ConflictService {
     pub async fn publish(
         &self,
         conflict: &Conflict,
-        remote: &str,
-        token: Option<&str>,
+        remote: &RepositoryUrl,
+        token: Option<&SecretValue>,
         branch: &BranchName,
     ) -> ConflictResult<()> {
-        let destination = remote.to_string();
-
         self.run_authenticated(
             conflict.path(),
             &[
                 "push",
                 "--quiet",
-                &destination,
-                &format!("HEAD:refs/heads/{branch}"),
+                remote.as_str(),
+                &format!("HEAD:{}", branch.reference()),
             ],
+            remote,
             token,
         )
         .await
@@ -222,7 +222,7 @@ impl ConflictService {
         let output = self
             .capture(checkout, &["rev-parse", &format!("{reference}^{{commit}}")])
             .await?;
-        CommitSha::parse(&output)
+        Ok(CommitSha::parse(&output)?)
     }
 
     async fn run(&self, checkout: &Path, arguments: &[&str]) -> ConflictResult<()> {
@@ -234,11 +234,13 @@ impl ConflictService {
         &self,
         checkout: &Path,
         arguments: &[&str],
-        token: Option<&str>,
+        remote: &RepositoryUrl,
+        token: Option<&SecretValue>,
     ) -> ConflictResult<()> {
         let mut command = self.command(checkout, arguments);
+        command.env("GIT_ALLOW_PROTOCOL", remote.protocol());
         if let Some(token) = token {
-            authenticate(&mut command, token);
+            authenticate(&mut command, remote, token);
         }
         let output = command.output().await?;
         if !output.status.success() {

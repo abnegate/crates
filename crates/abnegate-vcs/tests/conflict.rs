@@ -3,6 +3,7 @@
 //! Every repository here is built from scratch inside a temporary directory, so
 //! nothing in these tests can reach the checkout the suite is running from.
 
+use abnegate_vcs::RepositoryUrl;
 use abnegate_vcs::conflict::BranchName;
 use abnegate_vcs::conflict::CommitSha;
 use abnegate_vcs::conflict::ConflictError;
@@ -95,7 +96,7 @@ fn clean_origin() -> TempDir {
 
 fn request(origin: &Path) -> ConflictRequest {
     ConflictRequest {
-        remote: origin.to_string_lossy().to_string(),
+        remote: RepositoryUrl::local(origin).unwrap(),
         token: None,
         head: BranchName::parse("feature").unwrap(),
         base: BranchName::parse("main").unwrap(),

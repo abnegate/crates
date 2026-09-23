@@ -1,5 +1,4 @@
 use super::*;
-use crate::git::service::managed::validate_reference;
 
 /// The suffix a directory holding worktrees has to carry before
 /// [`GitService::remove_worktree`] will delete anything inside it by hand.
@@ -15,10 +14,8 @@ impl GitService {
         &self,
         path: &Path,
         worktree_path: &Path,
-        checkout_ref: &str,
+        checkout_ref: &BranchName,
     ) -> GitResult<()> {
-        validate_reference(checkout_ref, "checkout ref")?;
-
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
 
@@ -34,14 +31,14 @@ impl GitService {
         tracing::info!(
             repository = ?path,
             worktree = ?worktree_path,
-            checkout_ref,
+            %checkout_ref,
             "Creating worktree"
         );
 
         let output = Self::managed_command(Some(path))
-            .args(["worktree", "add", "--detach"])
+            .args(["worktree", "add", "--detach", "--"])
             .arg(worktree_path)
-            .arg(checkout_ref)
+            .arg(checkout_ref.as_str())
             .output()
             .await?;
 
@@ -65,12 +62,9 @@ impl GitService {
         &self,
         path: &Path,
         worktree_path: &Path,
-        branch: &str,
-        start_point: &str,
+        branch: &BranchName,
+        start_point: &BranchName,
     ) -> GitResult<()> {
-        validate_reference(branch, "branch")?;
-        validate_reference(start_point, "start point")?;
-
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
 
@@ -86,16 +80,15 @@ impl GitService {
         tracing::info!(
             repository = ?path,
             worktree = ?worktree_path,
-            branch,
-            start_point,
+            %branch,
+            %start_point,
             "Creating worktree on branch"
         );
 
         let output = Self::managed_command(Some(path))
-            .args(["worktree", "add", "-B"])
-            .arg(branch)
+            .args(["worktree", "add", "-B", branch.as_str(), "--"])
             .arg(worktree_path)
-            .arg(start_point)
+            .arg(start_point.as_str())
             .output()
             .await?;
 
@@ -106,7 +99,7 @@ impl GitService {
             )));
         }
 
-        tracing::info!(worktree = ?worktree_path, branch, "Worktree created on branch");
+        tracing::info!(worktree = ?worktree_path, %branch, "Worktree created on branch");
         Ok(())
     }
 
@@ -122,7 +115,7 @@ impl GitService {
         tracing::debug!(repository = ?path, worktree = ?worktree_path, "Removing worktree");
 
         let output = Self::managed_command(Some(path))
-            .args(["worktree", "remove", "--force"])
+            .args(["worktree", "remove", "--force", "--"])
             .arg(worktree_path)
             .output()
             .await?;
@@ -140,9 +133,7 @@ impl GitService {
                 .to_string_lossy()
                 .to_string();
             if !area.ends_with(WORKTREE_AREA_SUFFIX) {
-                return Err(GitError::UnsafeWorktree(
-                    worktree_path.display().to_string(),
-                ));
+                return Err(GitError::UnsafeWorktree(worktree_path.to_path_buf()));
             }
             tokio::fs::remove_dir_all(worktree_path).await?;
         }

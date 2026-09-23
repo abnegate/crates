@@ -1,13 +1,17 @@
+use crate::branch_name::BranchName;
+use crate::parse_error::ParseError;
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// What went wrong running git.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum GitError {
     #[error("Git command failed: {0}")]
     CommandFailed(String),
 
-    #[error("Repository not found at {0}")]
-    RepositoryNotFound(String),
+    #[error("Git operation timed out")]
+    TimedOut,
 
     #[error("Remote not configured")]
     NoRemote,
@@ -16,16 +20,13 @@ pub enum GitError {
     NoChanges,
 
     #[error("Branch already exists: {0}")]
-    BranchExists(String),
+    BranchExists(BranchName),
 
-    #[error("Authentication failed")]
-    AuthenticationFailed,
+    #[error(transparent)]
+    Parse(#[from] ParseError),
 
-    #[error("Invalid {label} (contains disallowed characters): {value}")]
-    InvalidReference { label: String, value: String },
-
-    #[error("Refusing to remove directory outside worktrees area: {0}")]
-    UnsafeWorktree(String),
+    #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
+    UnsafeWorktree(PathBuf),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

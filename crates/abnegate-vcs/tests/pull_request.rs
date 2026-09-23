@@ -11,40 +11,35 @@ mod branch_names {
         uuid::Uuid::parse_str("12345678-1234-1234-1234-123456789abc").unwrap()
     }
 
+    fn generate(title: &str) -> String {
+        GitService::new()
+            .generate_branch_name(task(), title)
+            .unwrap()
+            .to_string()
+    }
+
     #[test]
     fn a_branch_carries_the_task_and_a_slug_of_its_title() {
-        let branch = GitService::new().generate_branch_name(task(), "Fix the login bug");
-
-        assert!(branch.starts_with("task/12345678-"), "{branch}");
-        assert!(branch.contains("fix"), "{branch}");
-        assert!(branch.contains("login"), "{branch}");
-        assert!(branch.contains("bug"), "{branch}");
-        assert_eq!(branch, branch.to_lowercase());
+        assert_eq!(
+            generate("Fix the login bug"),
+            "task/12345678-fix-the-login-bug"
+        );
     }
 
     #[test]
     fn nothing_a_branch_name_may_not_carry_survives_the_slug() {
-        let branch = GitService::new().generate_branch_name(task(), "Add user@email validation!!!");
-
-        assert!(!branch.contains('@'), "{branch}");
-        assert!(!branch.contains('!'), "{branch}");
-        assert!(!branch.contains("--"), "{branch}");
+        assert_eq!(
+            generate("Add user@email validation!!!"),
+            "task/12345678-add-user-email-validation"
+        );
     }
 
     #[test]
     fn a_title_too_long_a_title_in_another_script_and_no_title_all_name_a_branch() {
-        let service = GitService::new();
+        assert!(generate(&"A".repeat(200)).len() <= 100);
 
-        assert!(service.generate_branch_name(task(), &"A".repeat(200)).len() <= 100);
-
-        let other_script = service.generate_branch_name(task(), "修复登录问题");
-        assert!(other_script.is_ascii(), "{other_script}");
-        assert!(other_script.starts_with("task/12345678-"), "{other_script}");
-
-        for title in ["", "   "] {
-            let branch = service.generate_branch_name(task(), title);
-            assert!(branch.starts_with("task/12345678-"), "{branch}");
-            assert!(!branch.contains(' '), "{branch}");
+        for title in ["修复登录问题", "", "   "] {
+            assert_eq!(generate(title), "task/12345678", "{title:?}");
         }
     }
 }

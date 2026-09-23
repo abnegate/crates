@@ -1,3 +1,4 @@
+use crate::parse_error::ParseError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -5,11 +6,8 @@ pub enum ConflictError {
     #[error("Git command failed: {0}")]
     CommandFailed(String),
 
-    #[error("Invalid commit identifier: {0}")]
-    InvalidCommit(String),
-
-    #[error("Invalid branch name: {0}")]
-    InvalidBranch(String),
+    #[error(transparent)]
+    Parse(#[from] ParseError),
 
     #[error("Unsafe conflicted path: {0}")]
     UnsafePath(String),

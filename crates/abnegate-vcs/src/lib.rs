@@ -21,7 +21,7 @@
 //! use uuid::Uuid;
 //!
 //! let git = GitService::new();
-//! let branch = git.generate_branch_name(Uuid::new_v4(), "add rate limiting");
+//! let branch = git.generate_branch_name(Uuid::new_v4(), "add rate limiting")?;
 //! # let _ = (git.is_git_repo(repository).await?, branch);
 //! # Ok(())
 //! # }
@@ -37,16 +37,22 @@ mod commit_sha;
 pub mod conflict;
 pub mod discovery;
 pub mod git;
+mod parse_error;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub mod pull_request;
+mod repository_url;
 pub mod resolution;
 pub mod subject;
 pub mod worktree;
 
+pub use crate::branch_name::BranchName;
+pub use crate::commit_sha::CommitSha;
+pub use crate::parse_error::ParseError;
+pub use crate::repository_url::RepositoryUrl;
+
 pub use crate::conflict::{
-    BranchName, CommitSha, Conflict, ConflictError, ConflictRequest, ConflictService,
-    ConflictedPath,
+    Conflict, ConflictError, ConflictRequest, ConflictService, ConflictedPath,
 };
 pub use crate::discovery::{DependencyDiscovery, DiscoveredDependency, Manifest};
 pub use crate::git::{DiffSummary, GitError, GitService, RemoteHead};

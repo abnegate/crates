@@ -37,7 +37,7 @@ impl GitService {
         &self,
         path: &Path,
         url: &str,
-        default_branch: &str,
+        default_branch: &BranchName,
     ) -> GitResult<()> {
         match path.exists() {
             true => self.pull(path, default_branch).await,
@@ -50,7 +50,7 @@ impl GitService {
     ///
     /// `refs/remotes/origin/HEAD` is refreshed first so the answer reflects what
     /// the remote reports rather than what the clone was last told.
-    pub async fn ensure_fetched(&self, path: &Path, url: &str) -> GitResult<String> {
+    pub async fn ensure_fetched(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         match path.exists() {
             true => self.fetch_all(path).await?,
             false => self.clone_managed(url, path).await?,
@@ -63,9 +63,7 @@ impl GitService {
 
     /// Ensure a managed clone is current *and* its working tree is advanced to
     /// the remote's default branch.
-    pub async fn ensure_synced(&self, path: &Path, url: &str) -> GitResult<String> {
-        // Repair single-branch or stale-refspec clones so the fetch sees the
-        // current default branch.
+    pub async fn ensure_synced(&self, path: &Path, url: &str) -> GitResult<BranchName> {
         if self.is_repository_root(path) {
             self.track_all_branches(path).await;
         }
@@ -77,7 +75,7 @@ impl GitService {
     /// Widen the fetch refspec to every branch the remote has.
     async fn track_all_branches(&self, path: &Path) {
         let output = Self::managed_command(Some(path))
-            .args(["remote", "set-branches", "origin", "*"])
+            .args(["remote", "set-branches", "--", ORIGIN, "*"])
             .output()
             .await;
         match output {
@@ -98,7 +96,7 @@ impl GitService {
         tracing::debug!(repository = ?path, "Fetching all remote refs");
 
         let output = Self::managed_command(Some(path))
-            .args(["fetch", "origin", "--prune"])
+            .args(["fetch", "--prune", "--", ORIGIN])
             .output()
             .await?;
 
@@ -114,13 +112,11 @@ impl GitService {
     }
 
     /// Fetch one branch from `origin` into a managed clone.
-    pub async fn fetch_branch(&self, path: &Path, branch: &str) -> GitResult<()> {
-        validate_reference(branch, "branch name")?;
-
-        tracing::debug!(repository = ?path, branch, "Fetching branch");
+    pub async fn fetch_branch(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
+        tracing::debug!(repository = ?path, %branch, "Fetching branch");
 
         let output = Self::managed_command(Some(path))
-            .args(["fetch", "origin", branch])
+            .args(["fetch", "--", ORIGIN, branch.as_str()])
             .output()
             .await?;
 
@@ -142,21 +138,6 @@ impl GitService {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        // An address starting with `-` is read by git as an option, and the
-        // shell metacharacters are refused so a URL from a configuration file
-        // cannot become one.
-        if url.starts_with('-')
-            || url.contains(';')
-            || url.contains('|')
-            || url.contains('$')
-            || url.contains('`')
-        {
-            return Err(GitError::InvalidReference {
-                label: "repository URL".to_string(),
-                value: url.to_string(),
-            });
-        }
-
         let output = Self::managed_command(None)
             .args(["clone", "--", url])
             .arg(target)
@@ -175,13 +156,11 @@ impl GitService {
     }
 
     /// Fetch `branch` and advance a managed clone's working tree to it.
-    async fn pull(&self, path: &Path, branch: &str) -> GitResult<()> {
-        tracing::debug!(repository = ?path, branch, "Pulling latest changes");
-
-        validate_reference(branch, "branch name")?;
+    async fn pull(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
+        tracing::debug!(repository = ?path, %branch, "Pulling latest changes");
 
         let output = Self::managed_command(Some(path))
-            .args(["fetch", "origin", branch])
+            .args(["fetch", "--", ORIGIN, branch.as_str()])
             .output()
             .await?;
 
@@ -202,13 +181,11 @@ impl GitService {
     ///
     /// Assumes the refs are already fetched, and discards anything the working
     /// tree holds: only a managed clone may be reset this way.
-    async fn checkout_reset(&self, path: &Path, branch: &str) -> GitResult<()> {
-        validate_reference(branch, "branch name")?;
-
-        let remote = format!("origin/{branch}");
+    async fn checkout_reset(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
+        let remote = format!("{REMOTE_TRACKING}{branch}");
 
         let output = Self::managed_command(Some(path))
-            .args(["checkout", "-f", "-B", branch, &remote])
+            .args(["checkout", "-f", "-B", branch.as_str(), &remote, "--"])
             .output()
             .await?;
 
@@ -220,7 +197,7 @@ impl GitService {
         }
 
         let output = Self::managed_command(Some(path))
-            .args(["reset", "--hard", &remote])
+            .args(["reset", "--hard", &remote, "--"])
             .output()
             .await?;
 
@@ -243,23 +220,23 @@ impl GitService {
 
     /// The remote's default branch, read from `refs/remotes/origin/HEAD`, or
     /// `main` when the ref cannot be read.
-    pub async fn detect_default_branch(&self, path: &Path) -> String {
+    pub async fn detect_default_branch(&self, path: &Path) -> BranchName {
         let output = Self::managed_command(Some(path))
-            .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+            .args(["symbolic-ref", REMOTE_HEAD])
             .output()
             .await;
 
         match output {
             Ok(result) if result.status.success() => default_branch_of(&result.stdout),
-            _ => FALLBACK_DEFAULT_BRANCH.to_string(),
+            _ => fallback_default_branch(),
         }
     }
 
     /// [`Self::detect_default_branch`] for a caller that cannot await, such as
     /// one building a file-system index.
-    pub fn detect_default_branch_blocking(&self, path: &Path) -> String {
+    pub fn detect_default_branch_blocking(&self, path: &Path) -> BranchName {
         let output = std::process::Command::new("git")
-            .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+            .args(["symbolic-ref", REMOTE_HEAD])
             .current_dir(path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -268,7 +245,7 @@ impl GitService {
 
         match output {
             Ok(result) if result.status.success() => default_branch_of(&result.stdout),
-            _ => FALLBACK_DEFAULT_BRANCH.to_string(),
+            _ => fallback_default_branch(),
         }
     }
 
@@ -277,7 +254,7 @@ impl GitService {
     /// cannot reach it is no worse off than before.
     async fn update_remote_head(&self, path: &Path) {
         let output = Self::managed_command(Some(path))
-            .args(["remote", "set-head", "origin", "--auto"])
+            .args(["remote", "set-head", "--auto", "--", ORIGIN])
             .output()
             .await;
 
@@ -299,132 +276,22 @@ impl GitService {
 /// The branch a repository is assumed to be on when nothing says otherwise.
 const FALLBACK_DEFAULT_BRANCH: &str = "main";
 
-fn default_branch_of(reference: &[u8]) -> String {
+fn fallback_default_branch() -> BranchName {
+    BranchName::literal(FALLBACK_DEFAULT_BRANCH)
+}
+
+fn default_branch_of(reference: &[u8]) -> BranchName {
     String::from_utf8_lossy(reference)
         .trim()
-        .strip_prefix("refs/remotes/origin/")
-        .unwrap_or(FALLBACK_DEFAULT_BRANCH)
-        .to_string()
-}
-
-/// Refuse a ref name that git would read as an option or a revision expression.
-pub(super) fn validate_reference(name: &str, label: &str) -> GitResult<()> {
-    let refused = name.is_empty()
-        || name == "@"
-        || name.starts_with('-')
-        || name.contains("..")
-        || !name.chars().all(|character| {
-            character.is_alphanumeric() || matches!(character, '-' | '_' | '.' | '/' | '@')
-        });
-
-    match refused {
-        true => Err(GitError::InvalidReference {
-            label: label.to_string(),
-            value: name.to_string(),
-        }),
-        false => Ok(()),
-    }
-}
-
-#[cfg(test)]
-mod reference_tests {
-    use super::*;
-
-    #[test]
-    fn a_ref_of_letters_digits_and_separators_is_accepted() {
-        for name in [
-            "main",
-            "develop",
-            "feature/my-thing",
-            "release/v1.2.3",
-            "feature_branch",
-            "user/feature.name",
-            "user@feature",
-            "a@b@c",
-            "12345",
-            "a",
-            "1",
-            "Feature/MyBranch",
-            "UPPERCASE",
-            "v1.0.0",
-            "release.1.2.3",
-            ".",
-            ".branch",
-            "br\u{00e4}nch",
-            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./a@b",
-        ] {
-            assert!(validate_reference(name, "ref").is_ok(), "{name:?}");
-        }
-        assert!(validate_reference(&"a".repeat(256), "branch").is_ok());
-    }
-
-    #[test]
-    fn a_ref_that_is_an_option_a_revision_or_a_shell_word_is_refused() {
-        for name in [
-            "",
-            "@",
-            "-evil",
-            "--evil",
-            "main..evil",
-            "..",
-            "a...b",
-            "..branch",
-            "branch..",
-            "$(whoami)",
-            "`id`",
-            "a;b",
-            "a|b",
-            "a&b",
-            "a>b",
-            "a<b",
-            "a b",
-            "a\tb",
-            "a\nb",
-            "a\rb",
-            "a'b",
-            "a\"b",
-            "a!b",
-            "a#b",
-            "a%b",
-            "a(b)",
-            "a{b}",
-            "a=b",
-            "a+b",
-            "a,b",
-            "$HOME",
-            "HEAD~1",
-            "HEAD^",
-            "refs:heads",
-            "branch?",
-            "branch*",
-            "branch[0]",
-            "stash@{0}",
-            "path\\name",
-            "main\0evil",
-            "branch\u{200b}name",
-            "\u{2026}",
-            "branch\u{1}name",
-            "branch\u{7f}",
-        ] {
-            assert!(validate_reference(name, "ref").is_err(), "{name:?}");
-        }
-    }
-
-    #[test]
-    fn a_refusal_names_both_what_was_expected_and_what_arrived() {
-        let refusal = validate_reference("--evil", "checkout ref")
-            .unwrap_err()
-            .to_string();
-
-        assert!(refusal.contains("checkout ref"), "{refusal}");
-        assert!(refusal.contains("--evil"), "{refusal}");
-        assert!(refusal.contains("disallowed characters"), "{refusal}");
-    }
+        .strip_prefix(REMOTE_TRACKING)
+        .and_then(|name| BranchName::parse(name).ok())
+        .unwrap_or_else(fallback_default_branch)
 }
 
 #[cfg(test)]
 mod managed_tests {
     use super::*;
+    use crate::git::service::hardened::fixtures::branch;
     use crate::worktree::fixtures::git;
     use tempfile::TempDir;
 
@@ -555,28 +422,24 @@ mod managed_tests {
     }
 
     #[tokio::test]
-    async fn an_address_git_would_read_as_an_option_or_a_shell_word_is_refused() {
+    async fn an_address_shaped_like_an_option_is_only_ever_an_address() {
         let service = GitService::new();
         let temporary = TempDir::new().unwrap();
         let target = temporary.path().join("repository");
+        let marker = temporary.path().join("ran");
 
-        for url in [
-            "--upload-pack=evil",
-            "https://example.com;rm -rf /",
-            "https://example.com|evil",
-            "https://example.com/$HOME",
-            "https://example.com/`evil`",
-        ] {
-            let refusal = service
-                .ensure_repository(&target, url, "main")
-                .await
-                .unwrap_err()
-                .to_string();
-            assert!(
-                refusal.contains("disallowed characters"),
-                "{url}: {refusal}"
-            );
-        }
+        let refusal = service
+            .ensure_repository(
+                &target,
+                &format!("--upload-pack=touch {}", marker.display()),
+                &branch("main"),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(refusal.contains("git clone failed"), "{refusal}");
+        assert!(!marker.exists(), "the address was read as an option");
     }
 
     #[tokio::test]
@@ -585,32 +448,12 @@ mod managed_tests {
         let target = temporary.path().join("repository");
 
         let refusal = GitService::new()
-            .ensure_repository(&target, UNREACHABLE, "main")
+            .ensure_repository(&target, UNREACHABLE, &branch("main"))
             .await
             .unwrap_err()
             .to_string();
 
         assert!(refusal.contains("git clone failed"), "{refusal}");
-    }
-
-    #[tokio::test]
-    async fn a_branch_name_is_validated_before_a_managed_clone_is_pulled() {
-        let service = GitService::new();
-        let temporary = TempDir::new().unwrap();
-        let target = temporary.path().join("repository");
-        std::fs::create_dir_all(&target).unwrap();
-
-        for branch in ["--evil-option", "main;evil", "main..evil", "", "@"] {
-            let refusal = service
-                .ensure_repository(&target, "https://example.com/repository.git", branch)
-                .await
-                .unwrap_err()
-                .to_string();
-            assert!(
-                refusal.contains("disallowed"),
-                "{branch:?} was not refused: {refusal}"
-            );
-        }
     }
 
     #[tokio::test]
@@ -622,7 +465,7 @@ mod managed_tests {
         let service = GitService::new();
 
         service
-            .ensure_repository(&target, &origin(source.path()), "main")
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
             .await
             .unwrap();
         assert!(target.join(".git").exists());
@@ -634,7 +477,7 @@ mod managed_tests {
 
         second_commit(source.path());
         service
-            .ensure_repository(&target, &origin(source.path()), "main")
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
             .await
             .unwrap();
         assert!(
@@ -653,12 +496,19 @@ mod managed_tests {
         let url = origin(source.path());
 
         service
-            .ensure_repository(&target, &url, "main")
+            .ensure_repository(&target, &url, &branch("main"))
             .await
             .unwrap();
         second_commit(source.path());
 
-        assert_eq!(service.ensure_fetched(&target, &url).await.unwrap(), "main");
+        assert_eq!(
+            service
+                .ensure_fetched(&target, &url)
+                .await
+                .unwrap()
+                .as_str(),
+            "main"
+        );
         assert!(
             git(&target, &["log", "--oneline", "origin/main"]).contains("second commit"),
             "the fetch brought the new commit into the object store"
@@ -668,7 +518,10 @@ mod managed_tests {
             "a fetch does not advance the working tree"
         );
 
-        assert_eq!(service.ensure_synced(&target, &url).await.unwrap(), "main");
+        assert_eq!(
+            service.ensure_synced(&target, &url).await.unwrap().as_str(),
+            "main"
+        );
         assert!(
             target.join("file2.txt").exists(),
             "a sync does advance the working tree"
@@ -707,7 +560,7 @@ mod managed_tests {
         let service = GitService::new();
 
         service
-            .ensure_repository(&target, &origin(source.path()), "main")
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
             .await
             .unwrap();
         git(source.path(), &["branch", "new-feature"]);
@@ -718,22 +571,12 @@ mod managed_tests {
     }
 
     #[tokio::test]
-    async fn fetching_a_branch_validates_its_name_and_needs_a_repository() {
+    async fn fetching_a_branch_needs_a_repository() {
         let service = GitService::new();
         let temporary = TempDir::new().unwrap();
 
-        for branch in ["--evil", "", "a..b"] {
-            assert!(
-                service
-                    .fetch_branch(temporary.path(), branch)
-                    .await
-                    .is_err(),
-                "{branch:?}"
-            );
-        }
-
         let refusal = service
-            .fetch_branch(temporary.path(), "main")
+            .fetch_branch(temporary.path(), &branch("main"))
             .await
             .unwrap_err()
             .to_string();
@@ -752,18 +595,21 @@ mod managed_tests {
         let target = workspace.path().join("cloned");
         let service = GitService::new();
         service
-            .ensure_repository(&target, &origin(source.path()), "main")
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
             .await
             .unwrap();
 
-        service.fetch_branch(&target, "feature-y").await.unwrap();
+        service
+            .fetch_branch(&target, &branch("feature-y"))
+            .await
+            .unwrap();
         assert!(
             git(&target, &["log", "--oneline", "origin/feature-y"]).contains("second commit"),
             "the branch's commit is in the object store"
         );
 
         let missing = service
-            .fetch_branch(&target, "nonexistent-branch")
+            .fetch_branch(&target, &branch("nonexistent-branch"))
             .await
             .unwrap_err()
             .to_string();
@@ -778,7 +624,7 @@ mod managed_tests {
         let worktree = temporary.path().join("run-worktrees").join("one");
 
         service
-            .create_worktree(temporary.path(), &worktree, "main")
+            .create_worktree(temporary.path(), &worktree, &branch("main"))
             .await
             .unwrap();
         assert!(worktree.join("README.md").exists());
@@ -790,29 +636,20 @@ mod managed_tests {
         assert_eq!(service.current_branch(&worktree).await.unwrap(), "HEAD");
 
         service
-            .create_worktree(temporary.path(), &worktree, "main")
+            .create_worktree(temporary.path(), &worktree, &branch("main"))
             .await
             .expect("a worktree left by a crashed run is replaced rather than refused");
     }
 
     #[tokio::test]
-    async fn a_worktree_refuses_a_ref_that_is_an_option_and_a_ref_nothing_holds() {
+    async fn a_worktree_refuses_a_ref_nothing_holds() {
         let service = GitService::new();
         let temporary = TempDir::new().unwrap();
         let worktree = temporary.path().join("worktree");
 
-        for reference in ["--evil-ref", ""] {
-            let refusal = service
-                .create_worktree(temporary.path(), &worktree, reference)
-                .await
-                .unwrap_err()
-                .to_string();
-            assert!(refusal.contains("disallowed characters"), "{refusal}");
-        }
-
         assert!(
             service
-                .create_worktree(temporary.path(), &worktree, "main")
+                .create_worktree(temporary.path(), &worktree, &branch("main"))
                 .await
                 .is_err(),
             "a directory that is not a repository has no worktrees to add"
@@ -822,7 +659,11 @@ mod managed_tests {
         repository(real.path());
         assert!(
             service
-                .create_worktree(real.path(), &real.path().join("wt"), "nonexistent-branch")
+                .create_worktree(
+                    real.path(),
+                    &real.path().join("wt"),
+                    &branch("nonexistent-branch")
+                )
                 .await
                 .is_err()
         );
@@ -837,20 +678,35 @@ mod managed_tests {
 
         let named = temporary.path().join("named-worktrees").join("one");
         service
-            .create_worktree_on_branch(temporary.path(), &named, "my-feature", "main")
+            .create_worktree_on_branch(
+                temporary.path(),
+                &named,
+                &branch("my-feature"),
+                &branch("main"),
+            )
             .await
             .unwrap();
         assert_eq!(service.current_branch(&named).await.unwrap(), "my-feature");
 
         service
-            .create_worktree_on_branch(temporary.path(), &named, "my-feature", "main")
+            .create_worktree_on_branch(
+                temporary.path(),
+                &named,
+                &branch("my-feature"),
+                &branch("main"),
+            )
             .await
             .expect("a worktree left by a crashed run is replaced rather than refused");
 
         let first = git(temporary.path(), &["rev-parse", "HEAD~1"]);
         let earlier = temporary.path().join("earlier-worktrees").join("one");
         service
-            .create_worktree_on_branch(temporary.path(), &earlier, "earlier", &first)
+            .create_worktree_on_branch(
+                temporary.path(),
+                &earlier,
+                &branch("earlier"),
+                &branch(&first),
+            )
             .await
             .unwrap();
         assert!(earlier.join("README.md").exists());
@@ -858,30 +714,6 @@ mod managed_tests {
             !earlier.join("file2.txt").exists(),
             "the branch was reset to the start point it was given"
         );
-    }
-
-    #[tokio::test]
-    async fn a_worktree_on_a_branch_validates_both_names_it_is_given() {
-        let service = GitService::new();
-        let temporary = TempDir::new().unwrap();
-        let worktree = temporary.path().join("worktree");
-
-        for (branch, start) in [
-            ("--evil", "main"),
-            ("my-branch", "--evil"),
-            ("a..b", "main"),
-            ("branch", "a..b"),
-        ] {
-            let refusal = service
-                .create_worktree_on_branch(temporary.path(), &worktree, branch, start)
-                .await
-                .unwrap_err()
-                .to_string();
-            assert!(
-                refusal.contains("disallowed characters"),
-                "{branch:?}/{start:?}: {refusal}"
-            );
-        }
     }
 
     #[tokio::test]
@@ -896,7 +728,7 @@ mod managed_tests {
             .join("nested")
             .join("one");
         service
-            .create_worktree(temporary.path(), &detached, "main")
+            .create_worktree(temporary.path(), &detached, &branch("main"))
             .await
             .unwrap();
         assert!(detached.join("README.md").exists());
@@ -907,7 +739,12 @@ mod managed_tests {
             .join("nested")
             .join("two");
         service
-            .create_worktree_on_branch(temporary.path(), &named, "new-branch", "main")
+            .create_worktree_on_branch(
+                temporary.path(),
+                &named,
+                &branch("new-branch"),
+                &branch("main"),
+            )
             .await
             .unwrap();
         assert_eq!(service.current_branch(&named).await.unwrap(), "new-branch");
@@ -922,11 +759,21 @@ mod managed_tests {
         let area = temporary.path().join("multi-worktrees");
 
         service
-            .create_worktree_on_branch(temporary.path(), &area.join("one"), "branch-1", "main")
+            .create_worktree_on_branch(
+                temporary.path(),
+                &area.join("one"),
+                &branch("branch-1"),
+                &branch("main"),
+            )
             .await
             .unwrap();
         service
-            .create_worktree_on_branch(temporary.path(), &area.join("two"), "branch-2", "main")
+            .create_worktree_on_branch(
+                temporary.path(),
+                &area.join("two"),
+                &branch("branch-2"),
+                &branch("main"),
+            )
             .await
             .unwrap();
 
@@ -953,7 +800,7 @@ mod managed_tests {
         let area = temporary.path().join("lifecycle-worktrees");
         let worktree = area.join("one");
         service
-            .create_worktree(temporary.path(), &worktree, "main")
+            .create_worktree(temporary.path(), &worktree, &branch("main"))
             .await
             .unwrap();
         service
@@ -988,7 +835,7 @@ mod managed_tests {
         let service = GitService::new();
 
         service
-            .ensure_repository(&target, &origin(source.path()), "main")
+            .ensure_repository(&target, &origin(source.path()), &branch("main"))
             .await
             .unwrap();
         git(
@@ -1000,16 +847,25 @@ mod managed_tests {
             ],
         );
 
-        assert_eq!(service.detect_default_branch(&target).await, "main");
-        assert_eq!(service.detect_default_branch_blocking(&target), "main");
+        assert_eq!(
+            service.detect_default_branch(&target).await.as_str(),
+            "main"
+        );
+        assert_eq!(
+            service.detect_default_branch_blocking(&target).as_str(),
+            "main"
+        );
 
         let bare = TempDir::new().unwrap();
         assert_eq!(
-            service.detect_default_branch(bare.path()).await,
+            service.detect_default_branch(bare.path()).await.as_str(),
             "main",
             "a repository that names no default branch is assumed to use main"
         );
-        assert_eq!(service.detect_default_branch_blocking(bare.path()), "main");
+        assert_eq!(
+            service.detect_default_branch_blocking(bare.path()).as_str(),
+            "main"
+        );
     }
 
     #[tokio::test]
@@ -1022,7 +878,7 @@ mod managed_tests {
         let repository_path = workspace.path().join("repository");
         let service = GitService::new();
         service
-            .ensure_repository(&repository_path, &origin(source.path()), "main")
+            .ensure_repository(&repository_path, &origin(source.path()), &branch("main"))
             .await
             .unwrap();
         assert_eq!(
@@ -1032,7 +888,12 @@ mod managed_tests {
 
         let worktree = workspace.path().join("test-worktrees").join("fix-123");
         service
-            .create_worktree_on_branch(&repository_path, &worktree, "fix/issue-123", "main")
+            .create_worktree_on_branch(
+                &repository_path,
+                &worktree,
+                &branch("fix/issue-123"),
+                &branch("main"),
+            )
             .await
             .unwrap();
 
