@@ -59,6 +59,7 @@
 //! Unix only, like the process-group handling it borrows from
 //! `abnegate-exec`.
 
+mod attachments;
 mod delivery;
 mod diagnostics;
 mod environment;
@@ -85,6 +86,7 @@ pub mod transcript;
 mod tripwire;
 mod verdict;
 
+pub use crate::attachments::Attachments;
 pub use crate::delivery::Delivery;
 pub use crate::error::Overlong;
 pub use crate::event::AgentEvent;

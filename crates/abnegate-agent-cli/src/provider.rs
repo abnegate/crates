@@ -1,5 +1,6 @@
 //! A provider backed by a coding agent CLI run as a child process.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -15,6 +16,7 @@ use abnegate_llm::ProviderError;
 use abnegate_llm::ProviderKind;
 use async_trait::async_trait;
 use serde_json::json;
+use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 use tokio::process::Command;
@@ -25,6 +27,7 @@ use tokio::time::Instant;
 use tokio::time::timeout;
 use tokio::time::timeout_at;
 
+use crate::attachments::Attachments;
 use crate::diagnostics::Diagnostics;
 use crate::environment::Environment;
 use crate::execution::Execution;
@@ -50,6 +53,8 @@ const UNFINISHED: &str = "the agent exited without completing its event stream";
 const UNCLOSED: &str = "the agent's output stayed open after it exited";
 const UNSTOPPABLE: &str = "the agent could not be stopped";
 const LINGERED: &str = "the agent finished its turn but did not exit";
+const INSTRUCTIONS_PREFIX: &str = "instructions-";
+const INSTRUCTIONS_SUFFIX: &str = ".md";
 
 /// Drives a coding agent CLI as a completion provider.
 ///
@@ -115,12 +120,19 @@ impl CliProvider {
         label: &str,
     ) -> Result<Execution, ExecutionError> {
         let mcp = self.attach();
+        let instructions = self
+            .instructions()
+            .map_err(|error| ExecutionError::new(error, None))?;
+        let mut attachments = Attachments::default();
+        if let Some(mcp) = &mcp {
+            attachments = attachments.with_mcp(mcp.file.path());
+        }
+        if let Some(instructions) = &instructions {
+            attachments = attachments.with_instructions(instructions.path());
+        }
         let options = self
             .agent
-            .options(
-                &self.settings,
-                mcp.as_ref().map(|attachment| attachment.file.path()),
-            )
+            .options(&self.settings, &attachments)
             .map_err(|error| ExecutionError::new(error, None))?;
         let arguments = self.agent.invocation(Some(request.model), options);
         let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &|name| {
@@ -456,6 +468,30 @@ impl CliProvider {
                 None
             }
         }
+    }
+
+    /// Write the instructions to a private temporary file for the agent to
+    /// read, since `argv` has a hard size limit that instructions can reach.
+    /// The file is deleted when the returned handle drops.
+    fn instructions(&self) -> Result<Option<NamedTempFile>, ProviderError> {
+        let Some(instructions) = &self.settings.instructions else {
+            return Ok(None);
+        };
+        if self.agent != AgentKind::Claude {
+            return Ok(None);
+        }
+        let write = || -> std::io::Result<NamedTempFile> {
+            let mut file = tempfile::Builder::new()
+                .prefix(INSTRUCTIONS_PREFIX)
+                .suffix(INSTRUCTIONS_SUFFIX)
+                .tempfile()?;
+            file.as_file_mut().write_all(instructions.as_bytes())?;
+            file.as_file_mut().flush()?;
+            Ok(file)
+        };
+        write().map(Some).map_err(|error| {
+            ProviderError::io(format!("could not write the instructions: {error}"))
+        })
     }
 
     fn executable(&self) -> String {
@@ -1968,6 +2004,50 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
 
         assert!(matches!(error, ProviderError::Config { .. }), "{error:?}");
         assert!(!marker.exists(), "the agent was started");
+    }
+
+    #[tokio::test]
+    async fn instructions_far_larger_than_argv_allows_reach_the_agent_in_a_private_file() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let recorded = directory.path().join("instructions");
+        let script = format!(
+            r#"printf '%s\n' "$@" > '{captured}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--append-system-prompt-file" ]; then
+    ls -l "$2" | cut -c1-10 > '{recorded}.mode'
+    wc -c < "$2" | tr -d ' ' > '{recorded}'
+  fi
+  shift
+done
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            captured = captured.display(),
+            recorded = recorded.display(),
+        );
+        let instructions = "Be terse. ".repeat(200 * 1024);
+        let settings = settings(&directory, &script).with_instructions(instructions.clone());
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let arguments = std::fs::read_to_string(&captured).expect("the captured arguments");
+        assert!(!arguments.contains("Be terse."));
+        assert!(arguments.contains("--append-system-prompt-file"));
+        assert_eq!(
+            std::fs::read_to_string(&recorded)
+                .expect("the instructions' size")
+                .trim(),
+            instructions.len().to_string()
+        );
+        let mode_path = directory.path().join("instructions.mode");
+        assert_eq!(
+            std::fs::read_to_string(&mode_path)
+                .expect("the instructions' mode")
+                .trim(),
+            "-rw-------"
+        );
     }
 
     #[tokio::test]

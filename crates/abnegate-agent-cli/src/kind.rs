@@ -1,13 +1,13 @@
 //! The coding agent CLIs this crate knows how to drive.
 
 use std::fmt;
-use std::path::Path;
 
 use abnegate_llm::Capabilities;
 use abnegate_llm::ProviderError;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::attachments::Attachments;
 use crate::delivery::Delivery;
 use crate::event::AgentEvent;
 use crate::mcp::McpServer;
@@ -21,7 +21,7 @@ const MODEL: &str = "--model";
 const MCP_CONFIG: &str = "--mcp-config";
 const STRICT_MCP_CONFIG: &str = "--strict-mcp-config";
 const JSON_SCHEMA: &str = "--json-schema";
-const APPEND_SYSTEM_PROMPT: &str = "--append-system-prompt";
+const APPEND_SYSTEM_PROMPT_FILE: &str = "--append-system-prompt-file";
 const ALLOWED_TOOLS: &str = "--allowedTools";
 const TOOLS: &str = "--tools";
 const TOOL_SEPARATOR: &str = ",";
@@ -130,8 +130,10 @@ impl AgentKind {
     }
 
     /// What `settings` asks of this agent, in its own flags, for
-    /// [`AgentKind::invocation`]. `mcp` is the rendered MCP configuration when
-    /// any server attaches, and its servers' tools join the allowed set.
+    /// [`AgentKind::invocation`]. `attachments` names the rendered MCP
+    /// configuration when any server attaches, whose servers' tools join the
+    /// allowed set, and the file holding the settings' instructions, which
+    /// must be given when there are any.
     ///
     /// A setting this agent has no flag for is refused rather than dropped,
     /// since a run that silently ignored its tool restrictions or its answer
@@ -139,14 +141,14 @@ impl AgentKind {
     pub fn options(
         self,
         settings: &CliSettings,
-        mcp: Option<&Path>,
+        attachments: &Attachments<'_>,
     ) -> Result<Vec<String>, ProviderError> {
         match self {
-            Self::Claude => claude_options(settings, mcp),
+            Self::Claude => claude_options(settings, attachments),
             Self::Codex => {
                 let unsupported = [
                     (settings.schema.is_some(), JSON_SCHEMA),
-                    (settings.instructions.is_some(), APPEND_SYSTEM_PROMPT),
+                    (settings.instructions.is_some(), APPEND_SYSTEM_PROMPT_FILE),
                     (!settings.permissions.is_empty(), ALLOWED_TOOLS),
                     (settings.read_only, TOOLS),
                     (!settings.mcp.is_empty(), MCP_CONFIG),
@@ -202,8 +204,9 @@ impl AgentKind {
 
 fn claude_options(
     settings: &CliSettings,
-    mcp: Option<&Path>,
+    attachments: &Attachments<'_>,
 ) -> Result<Vec<String>, ProviderError> {
+    let mcp = attachments.mcp;
     if settings.read_only {
         refuse_unconfined(&settings.arguments)?;
     }
@@ -229,9 +232,12 @@ fn claude_options(
         options.push(schema.clone());
     }
     options.extend(settings.arguments.iter().cloned());
-    if let Some(instructions) = &settings.instructions {
-        options.push(APPEND_SYSTEM_PROMPT.to_string());
-        options.push(instructions.clone());
+    if settings.instructions.is_some() {
+        let path = attachments.instructions.ok_or_else(|| {
+            ProviderError::config("instructions are passed in a file, and none was attached")
+        })?;
+        options.push(APPEND_SYSTEM_PROMPT_FILE.to_string());
+        options.push(path.display().to_string());
     }
     for tool in allowed {
         options.push(ALLOWED_TOOLS.to_string());
@@ -329,6 +335,7 @@ mod tests {
     use abnegate_llm::ProviderError;
 
     use super::AgentKind;
+    use crate::attachments::Attachments;
     use crate::delivery::Delivery;
     use crate::mcp::McpServer;
     use crate::settings::CliSettings;
@@ -479,7 +486,7 @@ mod tests {
     fn default_settings_add_no_options() {
         for agent in [AgentKind::Claude, AgentKind::Codex] {
             let options = agent
-                .options(&CliSettings::default(), None)
+                .options(&CliSettings::default(), &Attachments::default())
                 .expect("options");
             assert!(options.is_empty(), "{agent}: {options:?}");
         }
@@ -493,7 +500,12 @@ mod tests {
             .with_instructions("Be terse.")
             .with_permissions(["Read", "Grep"]);
 
-        let options = AgentKind::Claude.options(&settings, None).expect("options");
+        let options = AgentKind::Claude
+            .options(
+                &settings,
+                &Attachments::default().with_instructions(Path::new("/tmp/instructions-1.md")),
+            )
+            .expect("options");
 
         assert_eq!(
             options,
@@ -501,13 +513,36 @@ mod tests {
                 "--json-schema",
                 r#"{"type":"object"}"#,
                 "--dangerously-skip-permissions",
-                "--append-system-prompt",
-                "Be terse.",
+                "--append-system-prompt-file",
+                "/tmp/instructions-1.md",
                 "--allowedTools",
                 "Read",
                 "--allowedTools",
                 "Grep",
             ]
+        );
+    }
+
+    #[test]
+    fn instructions_never_reach_the_command_line() {
+        let settings = CliSettings::default().with_instructions("Be terse.");
+
+        let error = AgentKind::Claude
+            .options(&settings, &Attachments::default())
+            .expect_err("a refusal");
+        assert!(matches!(error, ProviderError::Config { .. }), "{error:?}");
+
+        let options = AgentKind::Claude
+            .options(
+                &settings,
+                &Attachments::default().with_instructions(Path::new("/tmp/instructions-1.md")),
+            )
+            .expect("options");
+        assert!(!options.iter().any(|option| option.contains("Be terse.")));
+        assert!(
+            !options
+                .iter()
+                .any(|option| option == "--append-system-prompt")
         );
     }
 
@@ -529,7 +564,10 @@ mod tests {
             );
 
         let options = AgentKind::Claude
-            .options(&settings, Some(Path::new("/tmp/mcp-1.json")))
+            .options(
+                &settings,
+                &Attachments::default().with_mcp(Path::new("/tmp/mcp-1.json")),
+            )
             .expect("options");
 
         assert_eq!(
@@ -558,7 +596,9 @@ mod tests {
             },
         );
 
-        let options = AgentKind::Claude.options(&settings, None).expect("options");
+        let options = AgentKind::Claude
+            .options(&settings, &Attachments::default())
+            .expect("options");
         assert!(options.is_empty(), "{options:?}");
     }
 
@@ -573,7 +613,7 @@ mod tests {
     #[test]
     fn a_read_only_run_is_confined_by_an_allowlist() {
         let options = AgentKind::Claude
-            .options(&CliSettings::default().read_only(), None)
+            .options(&CliSettings::default().read_only(), &Attachments::default())
             .expect("options");
 
         assert_eq!(
@@ -602,11 +642,15 @@ mod tests {
     fn a_read_only_run_makes_available_only_the_read_only_tools_it_allows() {
         let mut settings = CliSettings::default().read_only();
         settings.permissions = vec!["Grep".to_string(), "Read".to_string()];
-        let options = AgentKind::Claude.options(&settings, None).expect("options");
+        let options = AgentKind::Claude
+            .options(&settings, &Attachments::default())
+            .expect("options");
         assert_eq!(flagged(&options, "--tools"), ["Read,Grep"]);
 
         settings.permissions.clear();
-        let options = AgentKind::Claude.options(&settings, None).expect("options");
+        let options = AgentKind::Claude
+            .options(&settings, &Attachments::default())
+            .expect("options");
         assert_eq!(flagged(&options, "--tools"), [""]);
         assert!(flagged(&options, "--allowedTools").is_empty());
     }
@@ -643,7 +687,7 @@ mod tests {
                 .read_only()
                 .with_arguments(arguments.clone());
             let error = AgentKind::Claude
-                .options(&settings, None)
+                .options(&settings, &Attachments::default())
                 .expect_err("a refusal");
             let flag = arguments[0].split('=').next().unwrap_or_default();
             assert!(
@@ -671,7 +715,7 @@ mod tests {
                 .read_only()
                 .with_arguments(arguments.clone());
             let error = AgentKind::Claude
-                .options(&settings, None)
+                .options(&settings, &Attachments::default())
                 .expect_err("a refusal");
             assert!(
                 matches!(&error, ProviderError::Config { detail } if detail.contains(wording)),
@@ -696,7 +740,9 @@ mod tests {
         ];
         let settings = CliSettings::default().read_only().with_arguments(arguments);
 
-        let options = AgentKind::Claude.options(&settings, None).expect("options");
+        let options = AgentKind::Claude
+            .options(&settings, &Attachments::default())
+            .expect("options");
         let position = options
             .iter()
             .position(|option| option == "--effort")
@@ -719,7 +765,7 @@ mod tests {
                 .read_only()
                 .with_permissions([permission]);
             let error = AgentKind::Claude
-                .options(&settings, None)
+                .options(&settings, &Attachments::default())
                 .expect_err("a refusal");
             assert!(
                 matches!(&error, ProviderError::Config { detail } if detail.contains(permission)),
@@ -747,7 +793,10 @@ mod tests {
             );
 
         let options = AgentKind::Claude
-            .options(&settings, Some(Path::new("/tmp/mcp-1.json")))
+            .options(
+                &settings,
+                &Attachments::default().with_mcp(Path::new("/tmp/mcp-1.json")),
+            )
             .expect("options");
 
         assert_eq!(flagged(&options, "--mcp-config"), ["/tmp/mcp-1.json"]);
@@ -777,7 +826,9 @@ mod tests {
         let settings = CliSettings::default().with_arguments(["--sandbox", "read-only"]);
 
         assert_eq!(
-            AgentKind::Codex.options(&settings, None).expect("options"),
+            AgentKind::Codex
+                .options(&settings, &Attachments::default())
+                .expect("options"),
             ["--sandbox", "read-only"]
         );
     }
@@ -804,7 +855,7 @@ mod tests {
             ),
         ] {
             let error = AgentKind::Codex
-                .options(&settings, None)
+                .options(&settings, &Attachments::default())
                 .expect_err("a refusal");
             assert!(
                 matches!(error, ProviderError::Unsupported { ref detail } if detail.contains(flag)),

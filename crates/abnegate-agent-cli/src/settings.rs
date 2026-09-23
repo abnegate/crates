@@ -97,7 +97,9 @@ pub struct CliSettings {
     pub arguments: Vec<String>,
     /// A JSON schema the final answer must satisfy. Claude only.
     pub schema: Option<String>,
-    /// Appended to the agent's own system prompt. Claude only.
+    /// Appended to the agent's own system prompt, through a private
+    /// temporary file rather than the command line, whose size is limited.
+    /// Claude only.
     pub instructions: Option<String>,
     /// Tools the agent may use without asking. Claude only.
     pub permissions: Vec<String>,
