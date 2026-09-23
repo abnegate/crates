@@ -113,7 +113,7 @@ impl HuggingFaceProvider {
                 &self.client,
                 options.query,
                 base,
-                options.limit.max(1),
+                options.page_size(),
             )
             .await?;
             models.extend(page);
@@ -136,6 +136,7 @@ impl ModelProvider for HuggingFaceProvider {
     }
 
     async fn search(&self, options: BrowseQuery<'_>) -> Result<ModelPage, CatalogError> {
+        let page_size = options.page_size();
         if options.medium == ModelMediumFilter::ImageGeneration {
             return Ok(ModelPage::default());
         }
@@ -145,7 +146,7 @@ impl ModelProvider for HuggingFaceProvider {
                 &self.client,
                 &options,
                 options.cursor,
-                options.limit,
+                page_size,
             )
             .await?;
             return Ok(ModelPage {
@@ -157,7 +158,7 @@ impl ModelProvider for HuggingFaceProvider {
         // Size and medium filters, and name/size/parameter sorts, cannot be
         // applied to a single downloads-ranked page. Gather a window first,
         // refine it, then paginate with an offset cursor.
-        let offset = parse_cursor_offset(options.cursor, options.limit).unwrap_or(0);
+        let offset = parse_cursor_offset(options.cursor, page_size).unwrap_or(0);
         let needs_sorted_window = uses_local_sort(options.sort);
         let max_pages = window_pages(needs_sorted_window);
         let mut accumulated = Vec::new();
@@ -184,14 +185,13 @@ impl ModelProvider for HuggingFaceProvider {
             // Size-only refinement can stop once this window can fill the page.
             // Name, size and parameter sorts need the full window before ordering.
             if !needs_sorted_window
-                && count_matching_models(&accumulated, &options)
-                    >= offset.saturating_add(options.limit)
+                && count_matching_models(&accumulated, &options) >= offset.saturating_add(page_size)
             {
                 break;
             }
         }
 
-        let mut page = paginate_models(refine_models(accumulated, &options), offset, options.limit);
+        let mut page = paginate_models(refine_models(accumulated, &options), offset, page_size);
         page.next_cursor = window_next_cursor(
             page.next_cursor,
             cursor.is_some(),
@@ -222,6 +222,9 @@ fn window_next_cursor(
     offset: usize,
     page_len: usize,
 ) -> Option<String> {
+    if page_len == 0 {
+        return None;
+    }
     if page_next.is_some() {
         return page_next;
     }
@@ -1115,6 +1118,11 @@ mod tests {
             Some("offset:20".into())
         );
         assert_eq!(window_next_cursor(None, true, false, true, 0, 20), None);
+    }
+
+    #[test]
+    fn an_empty_window_page_has_no_next_cursor() {
+        assert_eq!(window_next_cursor(None, true, false, false, 40, 0), None);
     }
 
     #[test]

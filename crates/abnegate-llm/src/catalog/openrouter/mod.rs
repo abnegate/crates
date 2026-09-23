@@ -58,7 +58,7 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     async fn search(&self, options: BrowseQuery<'_>) -> Result<ModelPage, CatalogError> {
-        let offset = parse_cursor_offset(options.cursor, options.limit)?;
+        let offset = parse_cursor_offset(options.cursor, options.page_size())?;
         let response = self.client.get(&self.catalog_url).send().await?;
 
         if !response.status().is_success() {
@@ -95,7 +95,7 @@ impl ModelProvider for OpenRouterProvider {
         Ok(paginate_models(
             refine_models(models, &options),
             offset,
-            options.limit,
+            options.page_size(),
         ))
     }
 }

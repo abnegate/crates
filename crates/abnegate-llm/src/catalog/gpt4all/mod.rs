@@ -62,7 +62,7 @@ impl ModelProvider for Gpt4AllProvider {
     }
 
     async fn search(&self, options: BrowseQuery<'_>) -> Result<ModelPage, CatalogError> {
-        let offset = parse_cursor_offset(options.cursor, options.limit)?;
+        let offset = parse_cursor_offset(options.cursor, options.page_size())?;
         let catalog = fetch_catalog(&self.catalog_url, &self.client).await?;
 
         let matched: Vec<Gpt4AllModel> = match options.query {
@@ -81,7 +81,7 @@ impl ModelProvider for Gpt4AllProvider {
         Ok(paginate_models(
             refine_models(models, &options),
             offset,
-            options.limit,
+            options.page_size(),
         ))
     }
 }
@@ -276,6 +276,33 @@ mod tests {
 
         assert_eq!(page.models.len(), 1);
         assert_eq!(page.models[0].name, "Llama 3 Instruct");
+    }
+
+    #[tokio::test]
+    async fn a_page_asked_for_with_no_limit_holds_one_model_and_moves_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"name": "Alpha", "filename": "alpha.gguf", "filesize": 1},
+                {"name": "Bravo", "filename": "bravo.gguf", "filesize": 2},
+                {"name": "Charlie", "filename": "charlie.gguf", "filesize": 3},
+                {"name": "Delta", "filename": "delta.gguf", "filesize": 4}
+            ])))
+            .mount(&server)
+            .await;
+        let provider = Gpt4AllProvider::new(server.uri()).unwrap();
+
+        let page = provider
+            .search(BrowseQuery {
+                cursor: Some("page:3"),
+                limit: 0,
+                ..browse(None)
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.models.len(), 1);
+        assert_eq!(page.next_cursor.as_deref(), Some("offset:3"));
     }
 
     #[tokio::test]

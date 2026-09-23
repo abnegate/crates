@@ -90,7 +90,8 @@ impl ModelProvider for OllamaProvider {
     }
 
     async fn search(&self, options: BrowseQuery<'_>) -> Result<ModelPage, CatalogError> {
-        let offset = parse_cursor_offset(options.cursor, options.limit)?;
+        let page_size = options.page_size();
+        let offset = parse_cursor_offset(options.cursor, page_size)?;
         let url = search_url(
             &self.search_url,
             options.query,
@@ -114,11 +115,11 @@ impl ModelProvider for OllamaProvider {
         ) {
             models = attach_download_sizes(models, &self.client, &self.registry_url).await;
             models = refine_models(models, &options);
-            return Ok(paginate_models(models, offset, options.limit));
+            return Ok(paginate_models(models, offset, page_size));
         }
 
         models = refine_models(models, &options);
-        let mut page = paginate_models(models, offset, options.limit);
+        let mut page = paginate_models(models, offset, page_size);
         page.models = attach_download_sizes(page.models, &self.client, &self.registry_url).await;
         Ok(page)
     }

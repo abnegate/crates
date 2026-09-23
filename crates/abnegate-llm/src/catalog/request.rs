@@ -31,8 +31,11 @@ pub struct BrowseRequest {
 }
 
 impl BrowseRequest {
+    /// The page size asked for, held to `1..=MAX_PAGE_SIZE`.
     pub fn limit(&self) -> usize {
-        self.limit.unwrap_or(DEFAULT_PAGE_SIZE).min(MAX_PAGE_SIZE)
+        self.limit
+            .unwrap_or(DEFAULT_PAGE_SIZE)
+            .clamp(1, MAX_PAGE_SIZE)
     }
 
     pub fn to_browse_query(&self) -> BrowseQuery<'_> {
@@ -98,6 +101,14 @@ mod tests {
     #[test]
     fn limit_defaults_and_clamps() {
         assert_eq!(BrowseRequest::default().limit(), DEFAULT_PAGE_SIZE);
+        assert_eq!(
+            BrowseRequest {
+                limit: Some(0),
+                ..Default::default()
+            }
+            .limit(),
+            1
+        );
         assert_eq!(
             BrowseRequest {
                 limit: Some(5_000),
