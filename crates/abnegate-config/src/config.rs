@@ -86,10 +86,18 @@ impl<T: DeserializeOwned + Default> Config<T> {
 impl<T: Serialize> Config<T> {
     /// Write the settings out, sealing again every value that arrived sealed.
     ///
+    /// A value is sealed wherever it now appears, so one read under a new name
+    /// through a serde alias, moved to a new map key, or shifted within an
+    /// array stays sealed, as does the key path of an array value that was
+    /// edited in place.
+    ///
     /// Values are sealed with the key the [`Loader`] was given. Without one, a
     /// value that still holds its envelope is written as it was, and one that
     /// would be written in the clear fails with
-    /// [`ConfigError::SealedWithoutKey`] rather than reach the disk.
+    /// [`ConfigError::SealedWithoutKey`] rather than reach the disk. A sealed
+    /// value whose location is gone and whose content is nowhere else fails
+    /// with [`ConfigError::SealedShapeChanged`], since it cannot be told apart
+    /// from one that moved to a new key and was edited on the way.
     ///
     /// The file is replaced atomically and is readable only by its owner; a
     /// directory created for it is too.
@@ -113,6 +121,7 @@ impl<T: Serialize> Config<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
 
     use abnegate_secret::SecretValue;
@@ -164,6 +173,28 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize, Serialize)]
+    struct Renamed {
+        #[serde(alias = "api_key")]
+        token: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct Profiles {
+        profiles: BTreeMap<String, Credentials>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct Fleet {
+        servers: Vec<Server>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct Server {
+        name: String,
+        password: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
     struct Account {
         name: String,
         password: String,
@@ -185,6 +216,12 @@ mod tests {
     fn account(envelope: &str) -> String {
         format!(
             "name = \"person\"\npassword = \"{envelope}\"\nhosts = [\"one\", \"{envelope}\", \"three\"]\n"
+        )
+    }
+
+    fn fleet(envelope: &str) -> String {
+        format!(
+            "[[servers]]\nname = \"a\"\npassword = \"{envelope}\"\n\n[[servers]]\nname = \"b\"\npassword = \"{envelope}\"\n"
         )
     }
 
@@ -530,6 +567,108 @@ mod tests {
                 .password,
             "hunter2"
         );
+    }
+
+    #[test]
+    fn a_secret_read_through_an_alias_is_sealed_under_its_new_name() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) =
+            sealed_file(|envelope| format!("api_key = \"{envelope}\"\n"), &key);
+
+        Loader::at(&path)
+            .master_key(&key)
+            .load::<Renamed>()
+            .unwrap()
+            .save()
+            .unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("hunter2"), "{written}");
+        assert!(written.contains("token = \"ENC[v1:"), "{written}");
+        assert_eq!(
+            Loader::at(&path)
+                .master_key(&key)
+                .load::<Renamed>()
+                .unwrap()
+                .value()
+                .token,
+            "hunter2"
+        );
+    }
+
+    #[test]
+    fn a_secret_under_a_renamed_map_key_stays_sealed() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file(
+            |envelope| format!("[profiles.default]\npassword = \"{envelope}\"\n"),
+            &key,
+        );
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Profiles>()
+            .unwrap();
+        let profiles = &mut config.value_mut().profiles;
+        let profile = profiles.remove("default").unwrap();
+        profiles.insert("work".to_string(), profile);
+        config.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("hunter2"), "{written}");
+        assert_eq!(
+            Loader::at(&path)
+                .master_key(&key)
+                .load::<Profiles>()
+                .unwrap()
+                .value()
+                .profiles["work"]
+                .password,
+            "hunter2"
+        );
+    }
+
+    #[test]
+    fn a_secret_renamed_and_edited_at_once_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) =
+            sealed_file(|envelope| format!("api_key = \"{envelope}\"\n"), &key);
+        let before = fs::read_to_string(&path).unwrap();
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Renamed>()
+            .unwrap();
+        config.value_mut().token = "correct-horse".to_string();
+        let error = config.save().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn rotating_one_of_two_servers_that_share_a_secret_keeps_both_sealed() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file(fleet, &key);
+
+        let mut config = Loader::at(&path).master_key(&key).load::<Fleet>().unwrap();
+        config.value_mut().servers[1].password = "correct-horse".to_string();
+        config.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("hunter2"), "{written}");
+        assert!(!written.contains("correct-horse"), "{written}");
+        assert_eq!(written.matches(SEALED).count(), 2, "{written}");
+        let servers = Loader::at(&path)
+            .master_key(&key)
+            .load::<Fleet>()
+            .unwrap()
+            .into_value()
+            .servers;
+        assert_eq!(servers[0].password, "hunter2");
+        assert_eq!(servers[1].password, "correct-horse");
     }
 
     #[cfg(unix)]
