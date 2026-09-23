@@ -54,8 +54,8 @@ fn coverage(pixels: &[u8]) -> f64 {
     dark as f64 / (pixels.len() / 3) as f64
 }
 
-#[test]
-fn a_photo_is_cropped_onto_its_subject_rather_than_its_middle() {
+#[tokio::test]
+async fn a_photo_is_cropped_onto_its_subject_rather_than_its_middle() {
     let Some(config) = configured() else {
         eprintln!("skipping: set {VISION_MODEL_VARIABLE} to run");
         return;
@@ -63,7 +63,7 @@ fn a_photo_is_cropped_onto_its_subject_rather_than_its_middle() {
     // A subject in the left tenth of a wide frame. The centre square of a
     // 1600x900 image spans x 350 to 1250, so a centre crop misses it entirely.
     let image = scene(1600, 900, (150, 450), 120);
-    let subject = Subject::shared(&config);
+    let subject = Subject::shared(&config).await;
     assert!(
         subject.available(),
         "the model at {VISION_MODEL_VARIABLE} did not load"
@@ -90,8 +90,8 @@ fn a_photo_is_cropped_onto_its_subject_rather_than_its_middle() {
     );
 }
 
-#[test]
-fn motion_decides_between_subjects_rather_than_inventing_one() {
+#[tokio::test]
+async fn motion_decides_between_subjects_rather_than_inventing_one() {
     let Some(config) = configured() else {
         eprintln!("skipping: set {VISION_MODEL_VARIABLE} to run");
         return;
@@ -108,7 +108,7 @@ fn motion_decides_between_subjects_rather_than_inventing_one() {
         }
     }
     let raster = abnegate_vision::decode::decode(&encode(&pixels, 1280, 720)).expect("decode");
-    let subject = Subject::shared(&config);
+    let subject = Subject::shared(&config).await;
 
     let side = 32;
     let mut moved_right = vec![0.0f32; side * side];

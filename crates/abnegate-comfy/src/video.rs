@@ -205,7 +205,7 @@ pub async fn extract(
 
     // Decoding, measuring, cropping and encoding hundreds of frames is seconds
     // of CPU that would otherwise sit on a runtime thread other requests need.
-    let subject = Subject::shared(config);
+    let subject = Subject::shared(config).await;
     tokio::task::spawn_blocking(move || build(&stills, sampled_fps, options, &subject))
         .await
         .map_err(|error| TrainError::Failed(error.to_string()))?

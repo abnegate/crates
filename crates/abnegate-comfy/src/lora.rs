@@ -356,7 +356,7 @@ async fn train_with_pipeline(
     // Cropping comes before captioning so the vision model describes the image
     // that will be trained on. Captioning the upload instead would have it
     // describe a background the crop is about to remove.
-    let subject = Subject::shared(config);
+    let subject = Subject::shared(config).await;
     let groups = shots(&request.images);
     let mut survivors = request
         .images
@@ -2350,7 +2350,7 @@ mod tests {
         assert!(training_entries(&config).is_empty());
 
         let side = crate::train::packaged_config().unwrap().resolution();
-        let subject = Subject::shared(&config);
+        let subject = Subject::shared(&config).await;
         for (index, name) in [(0, "zero"), (1, "two")] {
             let source = image(
                 &format!("target-{name}"),
@@ -2448,7 +2448,7 @@ mod tests {
             }]
         );
         let expected = frame(
-            &Subject::shared(&config),
+            &Subject::shared(&config).await,
             &TrainImage {
                 filename: "target.png".into(),
                 caption: "a portrait".into(),

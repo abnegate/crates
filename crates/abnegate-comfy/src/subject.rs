@@ -11,6 +11,9 @@
 //! frame on whatever moved, which is what they did before autogravity was
 //! wired in at all.
 
+#[cfg(feature = "saliency")]
+mod models;
+
 use crate::config::Config;
 use abnegate_vision::crop::{self, Rendered, Target};
 use abnegate_vision::gravity::Point;
@@ -30,46 +33,25 @@ impl Subject {
     /// The analyzer for the configured model, loaded on first use.
     ///
     /// One model is 168 MiB of resident ONNX Runtime arena, so each one is
-    /// loaded once for the process and shared by every caller after that.
+    /// loaded once for the process, off the async runtime, and shared by every
+    /// caller after that. A model that fails to load is tried again next time.
     #[cfg(feature = "saliency")]
-    pub fn shared(config: &Config) -> Self {
-        use std::collections::HashMap;
-        use std::path::PathBuf;
-        use std::sync::{Arc, Mutex, OnceLock};
-
-        type Loaded = HashMap<PathBuf, Option<Arc<abnegate_vision::Analyzer>>>;
-        static LOADED: OnceLock<Mutex<Loaded>> = OnceLock::new();
+    pub async fn shared(config: &Config) -> Self {
+        static ANALYZERS: std::sync::LazyLock<models::Models<abnegate_vision::Analyzer>> =
+            std::sync::LazyLock::new(models::Models::default);
 
         let Some(path) = config.vision_model.clone() else {
-            return Self { analyzer: None };
+            return Self::none();
         };
-        let mut loaded = LOADED
-            .get_or_init(Mutex::default)
-            .lock()
-            .expect("analyzer cache mutex poisoned");
-        let analyzer = loaded.entry(path).or_insert_with_key(|path| {
-            match abnegate_vision::Analyzer::open(path) {
-                Ok(analyzer) => {
-                    tracing::info!(model = %path.display(), "training crops follow the subject");
-                    Some(Arc::new(analyzer))
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        model = %path.display(),
-                        %error,
-                        "subject detection is off; training crops fall back to the frame"
-                    );
-                    None
-                }
-            }
-        });
         Self {
-            analyzer: analyzer.clone(),
+            analyzer: ANALYZERS
+                .load(path, |path| abnegate_vision::Analyzer::open(path))
+                .await,
         }
     }
 
     #[cfg(not(feature = "saliency"))]
-    pub fn shared(_config: &Config) -> Self {
+    pub async fn shared(_config: &Config) -> Self {
         Self {}
     }
 
