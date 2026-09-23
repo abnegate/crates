@@ -52,6 +52,9 @@ impl GitService {
     }
 
     /// Resume the task branch from a fresh clone without rewriting its history.
+    /// A task branch that is a symbolic ref is refused with
+    /// [`GitError::SymbolicBranch`]: every move of it would land on the ref
+    /// it names.
     pub async fn prepare_branch(
         &self,
         path: &Path,
@@ -60,6 +63,9 @@ impl GitService {
     ) -> GitResult<()> {
         Self::verify_config(path).await?;
         let reference = branch.reference();
+        if Self::is_symbolic(path, &reference).await? {
+            return Err(GitError::SymbolicBranch(branch.clone()));
+        }
         let remote = format!("{REMOTE_TRACKING}{branch}");
         let exists = Self::output(
             Self::hardened()
@@ -123,6 +129,23 @@ impl GitService {
         }
         command.arg("--").current_dir(path);
         Self::finish(&mut command).await
+    }
+
+    /// Whether `reference` is a symbolic ref, dangling or not.
+    async fn is_symbolic(path: &Path, reference: &str) -> GitResult<bool> {
+        let read = Self::output(
+            Self::hardened()
+                .args(["symbolic-ref", "--quiet", reference])
+                .current_dir(path),
+        )
+        .await?;
+        match read.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(GitError::CommandFailed(
+                "Cannot read the task branch".to_string(),
+            )),
+        }
     }
 
     /// Move `branch` to a name of its own, `<branch>.abandoned.<time>`, in one
@@ -1668,6 +1691,76 @@ mod publication_tests {
                 "the worktree on the branch was moved"
             );
         }
+    }
+
+    /// A task branch a finished run left as a link to the branch another
+    /// worktree has checked out is refused: setting it aside and creating it
+    /// again would both go through the link and rewind that branch.
+    #[tokio::test]
+    async fn a_task_branch_linked_to_another_worktree_s_branch_is_refused_and_moves_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let held = Held::new(root.path()).await;
+        held.link("refs/heads/task/other");
+        let second = root.path().join("second");
+        crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
+        let service = GitService::new();
+
+        let prepared = service
+            .prepare_branch(&second, &branch("task/one"), false)
+            .await;
+
+        held.assert_untouched();
+        let refusal = prepared.unwrap_err();
+        assert!(
+            matches!(refusal, GitError::SymbolicBranch(ref refused) if *refused == branch("task/one")),
+            "{refusal:?}"
+        );
+        assert!(
+            !refusal.to_string().contains("task/other"),
+            "the refusal names the task branch and never what the link points at: {refusal}"
+        );
+        assert_eq!(
+            git(&held.base, &["symbolic-ref", "refs/heads/task/one"]),
+            "refs/heads/task/other",
+            "the link is left as it was"
+        );
+        assert_eq!(service.current_branch(&second).await.unwrap(), "HEAD");
+    }
+
+    /// A link to a branch that does not exist is not a branch `show-ref`
+    /// sees, so it is refused before that check: creating the task branch
+    /// would write through it and make the branch it names.
+    #[tokio::test]
+    async fn a_task_branch_linked_to_a_missing_branch_is_refused_and_makes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let held = Held::new(root.path()).await;
+        held.link("refs/heads/task/elsewhere");
+        let second = root.path().join("second");
+        crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
+        let service = GitService::new();
+
+        let prepared = service
+            .prepare_branch(&second, &branch("task/one"), false)
+            .await;
+
+        assert_eq!(
+            git(
+                &held.base,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "refs/heads/task/elsewhere"
+                ],
+            ),
+            "",
+            "the branch the link names was made"
+        );
+        assert!(
+            matches!(prepared, Err(GitError::SymbolicBranch(ref refused)) if *refused == branch("task/one")),
+            "{prepared:?}"
+        );
+        assert_eq!(service.current_branch(&second).await.unwrap(), "HEAD");
+        held.assert_untouched();
     }
 
     /// Setting aside a task branch that became a link between the check and
