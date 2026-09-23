@@ -15,7 +15,8 @@ application state, so a task runner can drive it directly.
 
 git 2.39 or newer, the first to read a symbolic ref without following it. On an
 older git, `GitService::commit` fails closed and `worktree::branch` reads a
-worktree's branch as unknown.
+worktree's branch as unknown. The test suite needs git 2.45 or newer, the first
+to take `--ref-format` for `init` and `clone`.
 
 ## Features
 

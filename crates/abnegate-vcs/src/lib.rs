@@ -17,7 +17,9 @@
 //!
 //! The crate needs git 2.39 or newer, the first to read a symbolic ref without
 //! following it: on an older git [`GitService::commit`] fails closed and
-//! [`worktree::branch`] reads a worktree's branch as unknown.
+//! [`worktree::branch`] reads a worktree's branch as unknown. Its test suite
+//! needs git 2.45 or newer, the first to take `--ref-format` for `init` and
+//! `clone`.
 //!
 //! ```no_run
 //! # async fn example(repository: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {

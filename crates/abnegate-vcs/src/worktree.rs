@@ -336,7 +336,7 @@ pub fn branch(path: &Path) -> Option<BranchName> {
 }
 
 /// Remove a worktree whether or not it is clean — the caller has decided,
-/// on [`unfinished`], that nothing in it is lost — and prune the repository's
+/// on [`unfinished()`], that nothing in it is lost — and prune the repository's
 /// record of it. A branch the worktree was on is deleted with it, unless
 /// another worktree has it checked out: its commits are on the remote, that
 /// is what clean means, and a local ref left behind would refuse the next run
