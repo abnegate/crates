@@ -3,9 +3,12 @@ use std::path::PathBuf;
 
 use abnegate_secret::SecretError;
 use thiserror::Error;
+#[cfg(feature = "keyring")]
+use zeroize::Zeroize;
 
 /// Every way this crate can fail to locate, read, or write configuration.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ConfigError {
     #[error("Configuration file '{path}' does not exist")]
     Missing { path: PathBuf },
@@ -49,12 +52,30 @@ pub enum ConfigError {
     NoCredential { name: String },
     #[cfg(feature = "keyring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
+    #[error("Stored credential is unreadable")]
+    CredentialUnreadable,
+    #[cfg(feature = "keyring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
     #[error("Credential store is unavailable")]
-    Keyring(#[from] keyring::Error),
+    Keyring(#[source] keyring::Error),
     #[cfg(feature = "keyring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
     #[error("Failed to encode token metadata")]
     Metadata(#[from] serde_json::Error),
+}
+
+#[cfg(feature = "keyring")]
+impl From<keyring::Error> for ConfigError {
+    fn from(error: keyring::Error) -> Self {
+        match error {
+            keyring::Error::BadEncoding(mut credential)
+            | keyring::Error::BadDataFormat(mut credential, _) => {
+                credential.zeroize();
+                Self::CredentialUnreadable
+            }
+            other => Self::Keyring(other),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -135,5 +156,41 @@ mod tests {
         for error in errors {
             assert!(!format!("{error:?}").is_empty());
         }
+    }
+
+    #[cfg(feature = "keyring")]
+    #[test]
+    fn an_undecodable_credential_never_reaches_debug_or_display() {
+        const CREDENTIAL: &[u8] = b"hunter2-\xff-credential";
+        let platform: Box<dyn std::error::Error + Send + Sync> = "malformed".into();
+
+        for source in [
+            keyring::Error::BadEncoding(CREDENTIAL.to_vec()),
+            keyring::Error::BadDataFormat(CREDENTIAL.to_vec(), platform),
+        ] {
+            let error = ConfigError::from(source);
+            let rendered = format!("{error:?} {error}");
+
+            assert!(
+                matches!(error, ConfigError::CredentialUnreadable),
+                "{rendered}"
+            );
+            assert!(!rendered.contains("hunter2"), "{rendered}");
+            assert!(!rendered.contains("104, 117, 110"), "{rendered}");
+        }
+    }
+
+    #[cfg(feature = "keyring")]
+    #[test]
+    fn other_store_failures_stay_wrapped() {
+        let error = ConfigError::from(keyring::Error::NoStorageAccess("locked".into()));
+
+        assert!(
+            matches!(
+                error,
+                ConfigError::Keyring(keyring::Error::NoStorageAccess(_))
+            ),
+            "{error:?}"
+        );
     }
 }

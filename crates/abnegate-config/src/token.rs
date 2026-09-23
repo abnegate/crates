@@ -1,7 +1,8 @@
 mod metadata;
 
 use abnegate_secret::SecretValue;
-use keyring::{Entry, Error as KeyringError};
+use keyring::Entry;
+use keyring::Error as KeyringError;
 
 use crate::error::ConfigError;
 
@@ -125,7 +126,7 @@ impl TokenStore {
             KeyringError::NoEntry => ConfigError::NoCredential {
                 name: name.to_string(),
             },
-            other => ConfigError::Keyring(other),
+            other => ConfigError::from(other),
         }
     }
 }
@@ -173,5 +174,19 @@ mod tests {
         );
 
         assert!(matches!(error, ConfigError::Keyring(_)), "{error:?}");
+    }
+
+    #[test]
+    fn an_undecodable_credential_is_reported_without_its_bytes() {
+        let error = TokenStore::new("example").failure(
+            ACCESS_TOKEN,
+            KeyringError::BadEncoding(b"hunter2\xff".to_vec()),
+        );
+
+        assert!(
+            matches!(error, ConfigError::CredentialUnreadable),
+            "{error:?}"
+        );
+        assert!(!format!("{error:?}").contains("104"), "{error:?}");
     }
 }
