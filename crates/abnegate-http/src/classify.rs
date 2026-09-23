@@ -1,16 +1,29 @@
+const RATE_LIMIT_EVENT: &str = "rate_limit_event";
+const ALLOWED_STATUSES: [&str; 2] = ["\"status\":\"allowed\"", "\"status\":\"allowed_warning\""];
+
 /// Whether `message` describes a rate limit, however the far side spelled it.
 ///
 /// Agent and provider streams carry informational `rate_limit_event` records
 /// whose status says the request was allowed; those are not rejections and
-/// must not be read as one.
+/// must not be read as one. A stream carries one record per line, so an
+/// allowed record excuses only its own line, never a rejection elsewhere in
+/// the same message.
 pub fn is_rate_limit_error(message: &str) -> bool {
-    if message.contains("rate_limit_event")
-        && (message.contains("\"status\":\"allowed\"")
-            || message.contains("\"status\":\"allowed_warning\""))
-    {
-        return false;
-    }
-    is_rate_limit_error_lower(&message.to_lowercase())
+    records(message).any(|record| is_rate_limit_error_lower(&record.to_lowercase()))
+}
+
+/// The lines of `message` that could describe a failure.
+fn records(message: &str) -> impl Iterator<Item = &str> {
+    message
+        .lines()
+        .filter(|record| !is_allowed_rate_limit_event(record))
+}
+
+fn is_allowed_rate_limit_event(record: &str) -> bool {
+    record.contains(RATE_LIMIT_EVENT)
+        && ALLOWED_STATUSES
+            .iter()
+            .any(|status| record.contains(status))
 }
 
 fn is_rate_limit_error_lower(lower: &str) -> bool {
@@ -90,8 +103,10 @@ pub fn is_hard_error(message: &str) -> bool {
         "broken pipe",
     ];
 
-    let lower = message.to_lowercase();
-    is_rate_limit_error_lower(&lower) || PATTERNS.iter().any(|needle| lower.contains(needle))
+    records(message).any(|record| {
+        let lower = record.to_lowercase();
+        is_rate_limit_error_lower(&lower) || PATTERNS.iter().any(|needle| lower.contains(needle))
+    })
 }
 
 #[cfg(test)]
@@ -291,5 +306,45 @@ mod tests {
     fn an_allowed_rate_limit_event_is_not_an_error() {
         let record = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","utilization":0.5}}"#;
         assert!(!is_rate_limit_error(record));
+    }
+
+    #[test]
+    fn a_bare_allowed_rate_limit_event_is_not_an_error() {
+        assert!(!is_rate_limit_error(
+            r#"rate_limit_event "status":"allowed""#
+        ));
+        assert!(!is_rate_limit_error(
+            r#"rate_limit_event "status":"allowed_warning""#
+        ));
+    }
+
+    #[test]
+    fn an_allowed_event_does_not_hide_a_rejection_on_another_line() {
+        let stream = concat!(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"seven_day"}}"#,
+            "\n",
+            r#"{"type":"result","is_error":true,"result":"API Error: 429 Too Many Requests"}"#,
+        );
+
+        assert!(is_rate_limit_error(stream));
+        assert!(is_hard_error(stream));
+    }
+
+    #[test]
+    fn a_rejected_rate_limit_event_is_an_error() {
+        let stream = concat!(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}"#,
+            "\r\n",
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}"#,
+        );
+
+        assert!(is_rate_limit_error(stream));
+    }
+
+    #[test]
+    fn an_allowed_rate_limit_event_is_not_a_hard_error() {
+        let record = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"seven_day","utilization":0.81}}"#;
+
+        assert!(!is_hard_error(record));
     }
 }
