@@ -28,6 +28,7 @@ use crate::catalog::sort::ModelSort;
 use crate::catalog::text::format_context_tokens;
 use crate::catalog::text::humanize_label;
 use crate::catalog::text::nonempty_vec;
+use crate::catalog::text::preview;
 use crate::catalog::text::use_cases_from_pipeline;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
@@ -339,7 +340,7 @@ async fn fetch_page(
         tracing::error!(
             "HuggingFace JSON parse error: {}. Body preview: {}",
             error,
-            &body[..body.len().min(500)]
+            preview(&body)
         );
         CatalogError::Parse(error.to_string())
     })?;
@@ -1477,5 +1478,25 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, CatalogError::Unavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_body_with_a_multibyte_character_at_the_preview_limit_is_a_parse_error() {
+        let _listening = tracing::subscriber::set_default(crate::catalog::listening::Listening);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("{}é", "a".repeat(499))),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri()));
+        let error = provider
+            .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, CatalogError::Parse(_)), "{error:?}");
     }
 }

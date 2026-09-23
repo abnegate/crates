@@ -28,6 +28,8 @@ mod error;
 mod gpt4all;
 mod http;
 mod huggingface;
+#[cfg(test)]
+mod listening;
 mod medium_filter;
 mod ollama;
 mod openrouter;

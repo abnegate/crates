@@ -1,5 +1,7 @@
 use scraper::Html;
 
+const PREVIEW_BYTES: usize = 500;
+
 pub(crate) fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -7,6 +9,12 @@ pub(crate) fn collapse_whitespace(text: &str) -> String {
 pub(crate) fn html_to_plain_text(html: &str) -> String {
     let fragment = Html::parse_fragment(html);
     collapse_whitespace(&fragment.root_element().text().collect::<Vec<_>>().join(" "))
+}
+
+/// The first few hundred bytes of a body, for a log line, cut on a character
+/// boundary so a multi-byte character straddling the limit cannot panic.
+pub(crate) fn preview(body: &str) -> &str {
+    &body[..body.floor_char_boundary(PREVIEW_BYTES)]
 }
 
 pub(crate) fn nonempty_vec(values: Vec<String>) -> Option<Vec<String>> {
@@ -141,6 +149,14 @@ mod tests {
         assert_eq!(format_context_tokens(1_048_576), "1M");
         assert_eq!(format_context_tokens(128_000), "128K");
         assert_eq!(format_context_tokens(512), "512");
+    }
+
+    #[test]
+    fn a_preview_never_splits_a_character() {
+        let body = format!("{}é tail", "a".repeat(499));
+        assert_eq!(preview(&body), "a".repeat(499));
+        assert_eq!(preview("short"), "short");
+        assert_eq!(preview(&"b".repeat(900)).len(), PREVIEW_BYTES);
     }
 
     #[test]

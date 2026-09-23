@@ -15,6 +15,7 @@ use crate::catalog::refine::refine_models;
 use crate::catalog::text::html_to_plain_text;
 use crate::catalog::text::infer_use_cases;
 use crate::catalog::text::nonempty_vec;
+use crate::catalog::text::preview;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -98,7 +99,7 @@ async fn fetch_catalog(url: &str, client: &Client) -> Result<Vec<Gpt4AllModel>, 
                     tracing::error!(
                         "GPT4All JSON parse error: {}. Body preview: {}",
                         error,
-                        &body[..body.len().min(500)]
+                        preview(&body)
                     );
                     CatalogError::Parse(error.to_string())
                 });
@@ -386,5 +387,22 @@ mod tests {
         let error = provider.search(browse(None)).await.unwrap_err();
 
         assert!(matches!(error, CatalogError::Unavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_body_with_a_multibyte_character_at_the_preview_limit_is_a_parse_error() {
+        let _listening = tracing::subscriber::set_default(crate::catalog::listening::Listening);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("{}é", "a".repeat(499))),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = Gpt4AllProvider::new(server.uri());
+        let error = provider.search(browse(None)).await.unwrap_err();
+
+        assert!(matches!(error, CatalogError::Parse(_)), "{error:?}");
     }
 }
