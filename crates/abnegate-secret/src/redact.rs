@@ -59,10 +59,18 @@ const NAMED_SECRET_KEY_WORDS: &[&str] = &[
 /// credential itself, as `MASTER_KEY_FILE=/etc/example/master.key` does.
 const REFERENCE_KEY_SUFFIXES: &[&str] = &["dir", "directory", "file", "path"];
 
-/// Authorization schemes that introduce a credential without an assignment,
-/// as `Authorization: Bearer <token>` does. As a flag, `--basic` switches a
-/// scheme on rather than introducing a credential.
-const SCHEME_INTRODUCERS: &[&str] = &["bearer", "basic"];
+/// The authorization scheme that introduces a credential both in a header and
+/// as a flag, as `Authorization: Bearer <token>` and `--oauth2-bearer <token>`
+/// do.
+const BEARER: &str = "bearer";
+
+/// The authorization scheme that introduces a credential in a header, as
+/// `Authorization: Basic <credential>` does, but as a flag such as `--basic`
+/// switches the scheme on instead.
+const BASIC: &str = "basic";
+
+/// Authorization schemes that introduce a credential without an assignment.
+const SCHEME_INTRODUCERS: &[&str] = &[BEARER, BASIC];
 
 /// Words that name the credential they introduce without an assignment, as
 /// `--password <value>` and `invalid token <value>` do.
@@ -289,12 +297,13 @@ fn assigned_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<us
 
 /// A value introduced by the word before it rather than assigned.
 ///
-/// After a flag that names a credential, as `--password letmein` does, the
-/// value is redacted whatever it looks like, unless it is another flag. After
-/// a word in prose, as in `invalid token <value>`, it is redacted only when it
-/// carries a digit or is long and does not read as words, so that `invalid
-/// token expired` and `invalid token abcdefgh` both stay; an Authorization
-/// header's scheme redacts whatever follows it.
+/// After a flag that names a credential or the bearer scheme, as `--password
+/// letmein` and `--oauth2-bearer <token>` do, the value is redacted whatever
+/// it looks like, unless it is another flag; `--basic` introduces nothing.
+/// After a word in prose, as in `invalid token <value>`, it is redacted only
+/// when it carries a digit or is long and does not read as words, so that
+/// `invalid token expired` and `invalid token abcdefgh` both stay; an
+/// Authorization header's scheme redacts whatever follows it.
 fn introduced_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<usize> {
     let opening = index - usize::from(quote.is_some());
     let word = word_before(bytes, opening)?;
@@ -303,8 +312,9 @@ fn introduced_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<
     let flag = word.start > 0 && bytes[word.start - 1] == FLAG;
 
     let end = if flag {
+        let bearer = introducer.eq_ignore_ascii_case(BEARER.as_bytes());
         let another_flag = quote.is_none() && bytes[index] == FLAG;
-        if !naming || another_flag {
+        if !(naming || bearer) || another_flag {
             return None;
         }
         value_end(bytes, index, quote)
@@ -720,10 +730,37 @@ mod shapes_that_carry_no_prefix {
     }
 
     #[test]
+    fn a_token_after_a_bearer_flag_does_not_survive() {
+        let token = concat!("ya29", "a0AfH6SMBx3jd8");
+        for (line, expected) in [
+            (
+                format!("curl --oauth2-bearer {token}"),
+                format!("curl --oauth2-bearer {REDACTED}"),
+            ),
+            (
+                format!("curl --oauth2-bearer {token} https://example.com"),
+                format!("curl --oauth2-bearer {REDACTED} https://example.com"),
+            ),
+            (
+                String::from("tool --bearer abc123def456"),
+                format!("tool --bearer {REDACTED}"),
+            ),
+            (
+                format!("curl -H \"Authorization: Bearer {token}\" https://example.com"),
+                format!("curl -H \"Authorization: Bearer {REDACTED}\" https://example.com"),
+            ),
+        ] {
+            assert_eq!(redact(&line), expected);
+        }
+    }
+
+    #[test]
     fn flags_that_carry_no_credential_are_left_alone() {
         for line in [
             "mysql --user root --password --database application",
+            "curl --basic https://example.com",
             "curl --basic https://example.com/status",
+            "tool --bearer --verbose",
             "docker login --password-stdin --username application",
         ] {
             assert_eq!(redact(line), line);
