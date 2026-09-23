@@ -117,12 +117,16 @@ impl GitService {
         command
     }
 
-    /// `branch` checked out at its remote-tracking ref, whatever it held.
+    /// `branch` checked out at its remote-tracking ref, whatever it held,
+    /// without recording that ref as its upstream: git would write the
+    /// upstream into the clone's configuration, and through a link wherever
+    /// `.git/config` is one.
     fn checking_out(path: &Path, branch: &BranchName) -> Command {
         let mut command = Self::managed_local(path);
         command.args([
             "checkout",
             "-f",
+            "--no-track",
             "-B",
             branch.as_str(),
             &format!("{REMOTE_TRACKING}{branch}"),
@@ -1502,6 +1506,76 @@ mod managed_tests {
                 "{linked}: the linked file was written"
             );
         }
+    }
+
+    /// A clone whose `.git/config` is a link to a file the check accepts is
+    /// still fetched, checked out and reset, and git writes any
+    /// configuration change through the link. Bringing the clone forward
+    /// records no upstream for its branch, so the linked file is left byte
+    /// for byte as it was.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_checkout_writes_nothing_through_a_linked_configuration() {
+        use std::os::unix::fs::MetadataExt;
+
+        let source = TempDir::new().unwrap();
+        repository(source.path());
+        let workspace = TempDir::new().unwrap();
+        let target = workspace.path().join("cloned");
+        let url = origin(source.path());
+        let service = GitService::new();
+        let main = branch("main");
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+        let config = target.join(GIT_DIRECTORY).join(CONFIG_FILE);
+        let copy = workspace.path().join("copy");
+        std::fs::copy(&config, &copy).unwrap();
+        git(
+            workspace.path(),
+            &[
+                "config",
+                "--file",
+                "copy",
+                "--remove-section",
+                "branch.main",
+            ],
+        );
+        std::fs::remove_file(&config).unwrap();
+        std::os::unix::fs::symlink(&copy, &config).unwrap();
+        let before = std::fs::read(&copy).unwrap();
+        let inode = std::fs::metadata(&copy).unwrap().ino();
+        second_commit(source.path());
+
+        service
+            .ensure_repository(&target, &url, &main)
+            .await
+            .unwrap();
+        service.checkout_reset(&target, &main).await.unwrap();
+        service.ensure_synced(&target, &url).await.unwrap();
+
+        assert!(
+            target.join("file2.txt").exists(),
+            "the clone was brought forward"
+        );
+        assert!(
+            std::fs::symlink_metadata(&config)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link was replaced"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&std::fs::read(&copy).unwrap()),
+            String::from_utf8_lossy(&before),
+            "the linked file was written"
+        );
+        assert_eq!(
+            std::fs::metadata(&copy).unwrap().ino(),
+            inode,
+            "the linked file was rewritten, if with the same content"
+        );
     }
 
     /// A remote-tracking ref pointed at a commit only the clone has is
