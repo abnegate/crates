@@ -127,7 +127,8 @@ impl GitService {
 
     /// Move `branch` to a name of its own, `<branch>.abandoned.<time>`, in one
     /// ref transaction that neither overwrites a ref already there nor
-    /// deletes the branch if it moved since it was read. `branch -m` would
+    /// deletes the branch if it moved since it was read, and that deletes a
+    /// branch which became a symbolic ref as the link alone. `branch -m` would
     /// also move the branch's section of the configuration, and git does that
     /// by renaming a rewritten file over it, through a link wherever
     /// `.git/config` is one, even when there is no section to move.
@@ -157,7 +158,7 @@ impl GitService {
         );
         let moved = Self::fed(
             Self::hardened()
-                .args(["update-ref", "--stdin"])
+                .args(["update-ref", "--no-deref", "--stdin"])
                 .current_dir(path),
             transaction.as_bytes(),
         )
@@ -1605,6 +1606,99 @@ mod publication_tests {
             "the branch's commit is kept under a name of its own"
         );
         linked.assert_untouched();
+    }
+
+    /// A base clone with a worktree on `task/other` holding a commit of its
+    /// own, which a task branch that is a link can name.
+    struct Held {
+        base: PathBuf,
+        worktree: PathBuf,
+        commit: String,
+    }
+
+    impl Held {
+        async fn new(root: &Path) -> Self {
+            let remote = root.join("remote");
+            std::fs::create_dir(&remote).unwrap();
+            crate::worktree::fixtures::remote(&remote);
+            let base = root.join("base");
+            crate::worktree::fixtures::clone(&remote, &base);
+            let worktree = root.join("other");
+            crate::worktree::add(&base, &worktree, "origin/HEAD").unwrap();
+            GitService::new()
+                .prepare_branch(&worktree, &branch("task/other"), false)
+                .await
+                .unwrap();
+            git(&worktree, &["commit", "-q", "--allow-empty", "-m", "work"]);
+            let commit = git(&worktree, &["rev-parse", "HEAD"]);
+            Self {
+                base,
+                worktree,
+                commit,
+            }
+        }
+
+        /// Point `task/one` at `target` as a symbolic ref.
+        fn link(&self, target: &str) {
+            git(&self.base, &["symbolic-ref", "refs/heads/task/one", target]);
+        }
+
+        /// Panic unless `task/other` and the worktree on it are where they
+        /// were left.
+        fn assert_untouched(&self) {
+            assert_eq!(
+                git(
+                    &self.base,
+                    &[
+                        "for-each-ref",
+                        "--format=%(objectname)",
+                        "refs/heads/task/other"
+                    ],
+                ),
+                self.commit,
+                "the branch another worktree has checked out was moved"
+            );
+            assert_eq!(
+                git(&self.worktree, &["symbolic-ref", "HEAD"]),
+                "refs/heads/task/other"
+            );
+            assert_eq!(
+                git(&self.worktree, &["rev-parse", "HEAD"]),
+                self.commit,
+                "the worktree on the branch was moved"
+            );
+        }
+    }
+
+    /// Setting aside a task branch that became a link between the check and
+    /// the move takes the link alone, and never the branch it names.
+    #[tokio::test]
+    async fn setting_aside_a_link_moves_the_link_and_never_the_branch_it_names() {
+        let root = tempfile::tempdir().unwrap();
+        let held = Held::new(root.path()).await;
+        held.link("refs/heads/task/other");
+
+        let aside = GitService::set_aside(&held.base, &branch("task/one"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(
+                &held.base,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/heads/task/"
+                ],
+            ),
+            format!(
+                "{} {commit}\nrefs/heads/task/other {commit}",
+                aside.reference(),
+                commit = held.commit
+            ),
+            "the link was set aside and the branch it names was kept"
+        );
+        held.assert_untouched();
     }
 }
 

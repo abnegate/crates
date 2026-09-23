@@ -348,9 +348,10 @@ pub fn remove(repository: &Path, path: &Path) -> std::io::Result<()> {
 }
 
 /// Delete `branch` by its ref alone, and only while it still names the
-/// commit read for it and no worktree has it checked out. `branch -D` would
-/// also drop the branch's section from the configuration, and git does that
-/// by renaming a rewritten file over it, through a link wherever
+/// commit read for it and no worktree has it checked out; a branch that is a
+/// symbolic ref is deleted as the link, never the ref it names. `branch -D`
+/// would also drop the branch's section from the configuration, and git does
+/// that by renaming a rewritten file over it, through a link wherever
 /// `.git/config` is one, even when there is no section to drop.
 fn delete_branch(repository: &Path, branch: &BranchName) -> std::io::Result<()> {
     let reference = branch.reference();
@@ -373,7 +374,14 @@ fn delete_branch(repository: &Path, branch: &BranchName) -> std::io::Result<()> 
     let commit =
         CommitSha::parse(&String::from_utf8_lossy(&commit)).map_err(std::io::Error::other)?;
     run(
-        local(repository).args(["update-ref", "-d", "--", &reference, commit.as_str()]),
+        local(repository).args([
+            "update-ref",
+            "--no-deref",
+            "-d",
+            "--",
+            &reference,
+            commit.as_str(),
+        ]),
         "delete the branch",
     )
     .map(drop)
@@ -727,6 +735,48 @@ mod tests {
             git(&second, &["rev-parse", "--verify", "refs/heads/task/one"]),
             git(&second, &["rev-parse", "HEAD"]),
             "the branch the other worktree is on was kept"
+        );
+    }
+
+    /// A task branch that is a link to the branch another worktree has
+    /// checked out is deleted as the link alone: `worktree list` names the
+    /// branch the link resolves to, so the check before the delete cannot see
+    /// that worktree, and a delete through the link would take its branch.
+    #[test]
+    fn deleting_a_branch_that_is_a_link_leaves_the_branch_it_names() {
+        let repositories = repositories();
+        let other = repositories.worktrees.join("other");
+        add(&repositories.base, &other, "origin/HEAD").unwrap();
+        git(&other, &["checkout", "-q", "-b", "task/other"]);
+        git(&other, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        let held = git(&other, &["rev-parse", "HEAD"]);
+        git(
+            &repositories.base,
+            &[
+                "symbolic-ref",
+                "refs/heads/task/one",
+                "refs/heads/task/other",
+            ],
+        );
+
+        delete_branch(&repositories.base, &BranchName::parse("task/one").unwrap()).unwrap();
+
+        assert_eq!(
+            git(
+                &repositories.base,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/heads/task/"
+                ],
+            ),
+            format!("refs/heads/task/other {held}"),
+            "the link was deleted and the branch it names was kept"
+        );
+        assert_eq!(git(&other, &["rev-parse", "HEAD"]), held);
+        assert_eq!(
+            branch(&other).as_ref().map(BranchName::as_str),
+            Some("task/other")
         );
     }
 
