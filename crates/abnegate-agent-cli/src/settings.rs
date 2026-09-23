@@ -77,7 +77,10 @@ pub struct CliSettings {
     /// drained, and dropped. The stream around the prose is read to its end
     /// whatever its size, since none of it is kept.
     pub output_limit: usize,
-    /// Bytes one event may occupy before the stream is treated as malformed.
+    /// Bytes one event may occupy. A longer one is dropped and counted in
+    /// [`StdoutParseResult::dropped`](crate::StdoutParseResult::dropped),
+    /// unless it is the result or prose the run cannot do without, which
+    /// makes the stream malformed.
     pub line_limit: usize,
     /// Set in the child's environment on top of what it is given from the
     /// host, so an explicit value always wins. Every value is treated as a

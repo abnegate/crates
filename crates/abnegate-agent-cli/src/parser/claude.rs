@@ -19,10 +19,13 @@ use crate::parser;
 
 const RESULT: &str = "result";
 const STRUCTURED_OUTPUT: &str = "structured_output";
+const ENDS_TURN: &str = "result";
+const ASSISTANT: &str = "assistant";
+const TEXT: &str = "text";
 
-/// The events a run cannot do without: the prose, and the result that ends
-/// the turn.
-const ESSENTIAL: [&str; 2] = ["assistant", "result"];
+/// How deep a content block's own `"type"` sits: in the block, in the
+/// message's `content` array, in the message, in the event.
+const BLOCK_DEPTH: usize = 4;
 
 /// Translate one line of the stream, appending whatever it means.
 pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
@@ -37,12 +40,26 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
 }
 
 /// Whether an event too long to read, of which only `prefix` is known, is
-/// one the run cannot do without, rather than a tool result or other event
-/// that can be dropped.
+/// one the run cannot do without: the result that ends the turn, or a reply
+/// that holds prose or whose first block is not known yet. A reply known to
+/// hold only a tool call or thinking is dropped like a tool result, since the
+/// agent makes the call whether or not it is read here.
 pub fn essential(prefix: &str) -> bool {
-    parser::types(prefix)
-        .into_iter()
-        .any(|(depth, kind)| depth == 1 && ESSENTIAL.contains(&kind))
+    let types = parser::types(prefix);
+    let top = |kind: &str| {
+        types
+            .iter()
+            .any(|&(depth, found)| depth == 1 && found == kind)
+    };
+    if top(ENDS_TURN) {
+        return true;
+    }
+    let mut blocks = types
+        .iter()
+        .filter(|(depth, _)| *depth == BLOCK_DEPTH)
+        .map(|(_, kind)| *kind)
+        .peekable();
+    top(ASSISTANT) && (blocks.peek().is_none() || blocks.any(|kind| kind == TEXT))
 }
 
 /// A line that is not a stream event can still be the CLI's final JSON
@@ -426,6 +443,24 @@ mod tests {
             r#"{"type":"system","subtype":"init","tools":["#,
             r#"{"type":"user","message":{"content":"{\"type\":\"result\"}"#,
             "xxxxxxxxxxxxxxxx",
+        ] {
+            assert!(!essential(prefix), "{prefix}");
+        }
+    }
+
+    #[test]
+    fn a_reply_too_long_to_read_is_essential_only_when_it_may_hold_prose() {
+        for prefix in [
+            r#"{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4","content":["#,
+            r#"{"type":"assistant","message":{"id":"msg_1","model":"claude-opus-"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Read","input":{}},{"type":"text","text":"#,
+        ] {
+            assert!(essential(prefix), "{prefix}");
+        }
+        for prefix in [
+            r#"{"type":"assistant","message":{"id":"msg_1","type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"Write","input":{"file_path":"/w/a.rs","content":"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Write","input":{"blocks":[{"type":"text","text":"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"#,
         ] {
             assert!(!essential(prefix), "{prefix}");
         }

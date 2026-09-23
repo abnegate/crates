@@ -1413,6 +1413,32 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
     }
 
     #[tokio::test]
+    async fn an_oversized_tool_call_is_dropped_and_the_run_goes_on() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = format!(
+            r#"{}
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Wrote the file."}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            oversized(
+                r#"{"type":"assistant","message":{"id":"msg_1","type":"message","content":[{"type":"tool_use","id":"toolu_01","name":"Write","input":{"file_path":"/w/big.rs","content":""#,
+                r#""}}]}}"#,
+            )
+        );
+        let settings = settings(&directory, &script).with_line_limit(1024);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(execution.stdout.dropped, 1);
+        assert!(execution.stdout.finished);
+        let completion = provider.assemble(execution).expect("an answer");
+        assert_eq!(
+            completion.message.content.as_deref(),
+            Some("Wrote the file.")
+        );
+    }
+
+    #[tokio::test]
     async fn an_oversized_result_or_reply_is_reported_as_malformed_output() {
         let directory = TempDir::new().expect("a temporary directory");
         for (event, filler) in [

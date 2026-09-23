@@ -26,8 +26,8 @@ const BUFFER: usize = 8 * 1024;
 /// output broke one of the stream's limits.
 ///
 /// An event too long to read is dropped and counted, unless it is one the
-/// run cannot do without, which fails it: a tool result the size of an image
-/// costs nothing, but a result or a reply that cannot be read does.
+/// run cannot do without, which fails it: a tool call or result the size of
+/// a file costs nothing, but a result or prose that cannot be read does.
 ///
 /// Only the prose counts against the output limit. The rest of the stream,
 /// tool results included, is parsed and dropped, so however long a run goes
