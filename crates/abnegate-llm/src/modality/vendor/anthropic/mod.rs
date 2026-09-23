@@ -3,6 +3,7 @@
 
 mod auth;
 mod cli;
+mod failure;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -14,10 +15,12 @@ use futures::Stream;
 pub use crate::modality::vendor::anthropic::auth::AnthropicAuth;
 
 use crate::modality::vendor::anthropic::cli::Cli;
+use crate::modality::vendor::anthropic::failure::Failure;
 use crate::modality::vendor::transport::Transport;
 use crate::modality::{
     ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
 };
+use crate::provider::ExitStatus;
 use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://api.anthropic.com";
@@ -164,6 +167,9 @@ impl AnthropicProvider {
                 truncated(&stdout, RAW_PREVIEW_CHARACTERS)
             ))
         })?;
+        if let Some(failure) = Failure::reported(&envelope) {
+            return Err(failure.into_error(NAME, ExitStatus::Code(0)));
+        }
         Ok((envelope, stdout))
     }
 
@@ -316,6 +322,7 @@ impl TextProvider for AnthropicProvider {
     ) -> Result<StructuredResponse, ProviderError> {
         let Some(ResponseFormat::Json {
             schema: Some(schema),
+            ..
         }) = &request.response_format
         else {
             return StructuredResponse::from_text(self.complete(request).await?);
@@ -599,6 +606,7 @@ mod tests {
         let mut request = TextRequest::new("sys", "usr");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "title": "Facts" })),
+            strict: false,
         });
 
         let structured = provider.complete_structured(&request).await.unwrap();
@@ -627,6 +635,7 @@ mod tests {
         let mut request = TextRequest::new("sys", "usr");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "title": "Facts" })),
+            strict: false,
         });
 
         let error = provider.complete_structured(&request).await.unwrap_err();
@@ -786,6 +795,127 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    async fn cli_failure(body: &str) -> ProviderError {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = fake_cli(directory.path(), body);
+        AnthropicProvider::with_oauth("token")
+            .with_executable(executable)
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failing_cli_reports_what_its_envelope_says_rather_than_its_diagnostics() {
+        let error = cli_failure(
+            r#"printf '%s' '{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key. Please run /login"}'; echo 'unrelated noise' >&2; exit 1"#,
+        )
+        .await;
+
+        assert!(
+            matches!(&error, ProviderError::Exit { status: crate::provider::ExitStatus::Code(1), message, .. } if message.contains("Invalid API key") && !message.contains("noise")),
+            "{error:?}"
+        );
+        assert!(!error.transient());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_throttled_cli_is_a_transient_api_failure() {
+        let error = cli_failure(
+            r#"printf '%s' '{"type":"result","is_error":true,"api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}"}'; exit 1"#,
+        )
+        .await;
+
+        assert!(
+            matches!(&error, ProviderError::Http { provider, source: crate::LlmError::Api { status: 429, message } } if provider == NAME && message.contains("rate_limit_error")),
+            "{error:?}"
+        );
+        assert!(error.transient());
+        assert!(error.recoverable());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_status_named_only_in_the_result_is_read_from_it() {
+        let error = cli_failure(
+            r#"printf '%s' '{"is_error":true,"api_error_status":null,"result":"API Error: 529 Overloaded"}'; exit 1"#,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                &error,
+                ProviderError::Http {
+                    source: crate::LlmError::Api { status: 529, .. },
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(error.transient());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_envelope_reporting_an_error_is_not_an_answer_even_on_a_clean_exit() {
+        let error = cli_failure(
+            r#"printf '%s' '{"type":"result","subtype":"success","is_error":true,"result":"API Error: 500 Internal server error"}'"#,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                &error,
+                ProviderError::Http {
+                    source: crate::LlmError::Api { status: 500, .. },
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(error.transient());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_structured_call_whose_envelope_reports_an_error_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = fake_cli(
+            directory.path(),
+            r#"printf '%s' '{"type":"result","subtype":"error_max_turns","is_error":true,"errors":["Reached maximum number of turns (1)"]}'"#,
+        );
+        let provider = AnthropicProvider::with_oauth("token").with_executable(executable);
+        let mut request = TextRequest::new("sys", "usr");
+        request.response_format = Some(ResponseFormat::Json {
+            schema: Some(serde_json::json!({ "type": "object" })),
+            strict: false,
+        });
+
+        let error = provider.complete_structured(&request).await.unwrap_err();
+
+        assert!(
+            matches!(&error, ProviderError::Agent { message, .. } if message.contains("maximum number of turns")),
+            "{error:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_credential_echoed_in_the_envelope_never_reaches_the_error() {
+        let key = concat!("sk-ant-", "api03-", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        let error = cli_failure(&format!(
+            r#"printf '%s' '{{"is_error":true,"result":"Invalid API key {key}"}}'; exit 1"#
+        ))
+        .await;
+
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains(key), "{rendered}");
+        assert!(rendered.contains("Invalid API key"), "{rendered}");
+    }
+
     #[tokio::test]
     async fn a_missing_cli_is_reported_as_unavailable() {
         let provider = AnthropicProvider::with_oauth("token")
@@ -833,6 +963,7 @@ mod tests {
         let mut request = TextRequest::new("sys", "usr");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "type": "object" })),
+            strict: false,
         });
 
         let structured = provider.complete_structured(&request).await.unwrap();

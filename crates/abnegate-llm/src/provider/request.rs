@@ -76,7 +76,10 @@ mod tests {
             "Read a file",
             serde_json::json!({"type": "object"}),
         )];
-        let format = ResponseFormat::Json { schema: None };
+        let format = ResponseFormat::Json {
+            schema: None,
+            strict: false,
+        };
 
         let request = CompletionRequest::new("qwen3", &messages, RequestOptions { reserved: 64 })
             .with_tools(&tools)

@@ -28,6 +28,10 @@ const TRANSCRIPTION_MODEL: &str = "whisper-1";
 /// Model families that reason before answering. OpenAI rejects `max_tokens`
 /// and any `temperature` but the default for these.
 const REASONING_FAMILIES: &[&str] = &["o1", "o3", "o4", "gpt-5"];
+/// Model families that predate structured outputs. OpenAI refuses a
+/// `json_schema` response format from these, so they are asked for
+/// `json_object` instead.
+const JSON_OBJECT_FAMILIES: &[&str] = &["gpt-3.5", "gpt-4", "gpt-4o-2024-05-13"];
 const STRUCTURED_SCHEMA_NAME: &str = "response";
 
 /// OpenAI over its REST API.
@@ -37,6 +41,10 @@ const STRUCTURED_SCHEMA_NAME: &str = "response";
 /// are sent `max_completion_tokens` and no `temperature`, which is all those
 /// models accept; every other model gets the legacy `max_tokens` and
 /// `temperature` fields that older OpenAI-compatible servers expect.
+///
+/// A JSON schema is sent as a `json_schema` response format, strict only when
+/// [`ResponseFormat::Json`] asks for it. `gpt-3.5` and `gpt-4` models, which
+/// predate structured outputs, are asked for `json_object` instead.
 ///
 /// Every call has a deadline, ten minutes unless [`Self::with_timeout`] says
 /// otherwise, and the client never follows a redirect with the key.
@@ -97,17 +105,21 @@ impl OpenAIProvider {
         match &request.response_format {
             Some(ResponseFormat::Json {
                 schema: Some(schema),
-            }) => {
+                strict,
+            }) if takes_json_schema(&self.model) => {
+                let mut format = serde_json::json!({
+                    "name": STRUCTURED_SCHEMA_NAME,
+                    "schema": schema
+                });
+                if *strict {
+                    format["strict"] = true.into();
+                }
                 body["response_format"] = serde_json::json!({
                     "type": "json_schema",
-                    "json_schema": {
-                        "name": STRUCTURED_SCHEMA_NAME,
-                        "strict": true,
-                        "schema": schema
-                    }
+                    "json_schema": format
                 });
             }
-            Some(ResponseFormat::Json { schema: None }) => {
+            Some(ResponseFormat::Json { .. }) => {
                 body["response_format"] = serde_json::json!({ "type": "json_object" });
             }
             Some(ResponseFormat::Text) | None => {}
@@ -187,17 +199,25 @@ impl OpenAIProvider {
     }
 }
 
-/// Whether `model` belongs to one of [`REASONING_FAMILIES`]: the family name
-/// itself, or it followed by `-` or `.`, after any `owner/` prefix.
 fn is_reasoning_model(model: &str) -> bool {
+    belongs_to(model, REASONING_FAMILIES, &['-', '.'])
+}
+
+fn takes_json_schema(model: &str) -> bool {
+    !belongs_to(model, JSON_OBJECT_FAMILIES, &['-'])
+}
+
+/// Whether `model`, after any `owner/` prefix, is one of `families` itself or
+/// one of them followed by a `separator`.
+fn belongs_to(model: &str, families: &[&str], separators: &[char]) -> bool {
     let name = model
         .rsplit('/')
         .next()
         .unwrap_or(model)
         .to_ascii_lowercase();
-    REASONING_FAMILIES.iter().any(|family| {
+    families.iter().any(|family| {
         name.strip_prefix(family)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '.']))
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(separators))
     })
 }
 
@@ -485,6 +505,7 @@ mod tests {
         let mut request = request();
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "type": "object" })),
+            strict: false,
         });
 
         let body = OpenAIProvider::with_model("key", "o3-mini").build_chat_request_body(&request);
@@ -496,6 +517,76 @@ mod tests {
         );
         assert!(body.get("temperature").is_none(), "{body}");
         assert!(body.get("max_tokens").is_none(), "{body}");
+    }
+
+    fn structured(schema_strict: bool) -> TextRequest {
+        let mut request = request();
+        request.response_format = Some(ResponseFormat::Json {
+            schema: Some(serde_json::json!({ "type": "object" })),
+            strict: schema_strict,
+        });
+        request
+    }
+
+    #[test]
+    fn a_schema_is_not_sent_strict_unless_the_caller_asks() {
+        let body =
+            OpenAIProvider::with_model("key", "gpt-4o").build_chat_request_body(&structured(false));
+
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"]["type"],
+            "object"
+        );
+        assert!(
+            body["response_format"]["json_schema"]
+                .get("strict")
+                .is_none(),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_strict_schema_is_sent_strict() {
+        let body =
+            OpenAIProvider::with_model("key", "gpt-4o").build_chat_request_body(&structured(true));
+
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+    }
+
+    #[test]
+    fn a_model_that_predates_structured_outputs_is_asked_for_a_json_object() {
+        for model in [
+            "gpt-4",
+            "gpt-4-turbo",
+            "gpt-4-0613",
+            "gpt-3.5-turbo",
+            "openai/gpt-3.5-turbo-0125",
+            "gpt-4o-2024-05-13",
+        ] {
+            for strict in [false, true] {
+                let body = OpenAIProvider::with_model("key", model)
+                    .build_chat_request_body(&structured(strict));
+                assert_eq!(
+                    body["response_format"],
+                    serde_json::json!({ "type": "json_object" }),
+                    "{model}"
+                );
+            }
+        }
+        for model in [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4.1",
+            "gpt-5.4",
+            "o3-mini",
+            "llama3",
+        ] {
+            let body = OpenAIProvider::with_model("key", model)
+                .build_chat_request_body(&structured(false));
+            assert_eq!(body["response_format"]["type"], "json_schema", "{model}");
+        }
     }
 
     #[test]
@@ -525,7 +616,10 @@ mod tests {
     fn asking_for_json_sets_the_response_format() {
         let provider = OpenAIProvider::new("key");
         let mut request = request();
-        request.response_format = Some(ResponseFormat::Json { schema: None });
+        request.response_format = Some(ResponseFormat::Json {
+            schema: None,
+            strict: false,
+        });
 
         let body = provider.build_chat_request_body(&request);
 
@@ -709,6 +803,7 @@ mod tests {
         let mut request = TextRequest::new("sys", "usr");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "type": "object" })),
+            strict: false,
         });
 
         let structured = provider.complete_structured(&request).await.unwrap();

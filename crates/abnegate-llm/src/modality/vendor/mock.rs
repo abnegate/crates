@@ -47,6 +47,7 @@ impl MockProvider {
     pub fn key_for(request: &TextRequest) -> String {
         if let Some(ResponseFormat::Json {
             schema: Some(schema),
+            ..
         }) = &request.response_format
         {
             if let Some(title) = schema.get("title").and_then(|title| title.as_str()) {
@@ -198,6 +199,7 @@ mod tests {
             max_tokens: 1024,
             response_format: Some(ResponseFormat::Json {
                 schema: Some(serde_json::json!({ "title": title })),
+                strict: false,
             }),
             context: None,
         }
@@ -305,6 +307,7 @@ mod tests {
         let mut request = TextRequest::new("", "x");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "properties": { "beats": {}, "arcs": {} } })),
+            strict: false,
         });
 
         assert_eq!(MockProvider::key_for(&request), "arcs-beats");

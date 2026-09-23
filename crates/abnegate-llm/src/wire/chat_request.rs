@@ -30,7 +30,8 @@ pub struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<&'a [String]>,
     /// Sent in the OpenAI shape: `json_schema` with the schema when there is
-    /// one, `json_object` when there is not, and `text` for prose.
+    /// one, strict only when asked, `json_object` when there is not, and
+    /// `text` for prose.
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "response_format"
@@ -45,11 +46,17 @@ fn response_format<S: Serializer>(
     let body = match format {
         Some(ResponseFormat::Json {
             schema: Some(schema),
-        }) => serde_json::json!({
-            "type": "json_schema",
-            "json_schema": { "name": SCHEMA_NAME, "schema": schema }
-        }),
-        Some(ResponseFormat::Json { schema: None }) => serde_json::json!({ "type": "json_object" }),
+            strict,
+        }) => {
+            let mut format = serde_json::json!({ "name": SCHEMA_NAME, "schema": schema });
+            if *strict {
+                format["strict"] = true.into();
+            }
+            serde_json::json!({ "type": "json_schema", "json_schema": format })
+        }
+        Some(ResponseFormat::Json { schema: None, .. }) => {
+            serde_json::json!({ "type": "json_object" })
+        }
         Some(ResponseFormat::Text) | None => serde_json::json!({ "type": "text" }),
     };
     body.serialize(serializer)
@@ -68,8 +75,12 @@ mod tests {
         let messages = [Message::user("Hello")];
         let schema = ResponseFormat::Json {
             schema: Some(serde_json::json!({ "type": "object" })),
+            strict: false,
         };
-        let object = ResponseFormat::Json { schema: None };
+        let object = ResponseFormat::Json {
+            schema: None,
+            strict: false,
+        };
         let body = |format| {
             serde_json::to_value(ChatRequest {
                 model: "gpt-4",
@@ -85,11 +96,24 @@ mod tests {
             .unwrap()
         };
 
+        let strict = ResponseFormat::Json {
+            schema: Some(serde_json::json!({ "type": "object" })),
+            strict: true,
+        };
         let structured = body(Some(&schema));
         assert_eq!(structured["response_format"]["type"], "json_schema");
         assert_eq!(
             structured["response_format"]["json_schema"]["schema"]["type"],
             "object"
+        );
+        assert!(
+            structured["response_format"]["json_schema"]
+                .get("strict")
+                .is_none()
+        );
+        assert_eq!(
+            body(Some(&strict))["response_format"]["json_schema"]["strict"],
+            true
         );
         assert_eq!(
             body(Some(&object))["response_format"]["type"],

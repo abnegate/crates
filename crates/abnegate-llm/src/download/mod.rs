@@ -3,13 +3,15 @@
 //! [`download_gguf`] writes into a sibling `.part` file and renames it onto
 //! the target only once the transfer is complete and, when the caller has
 //! one, its SHA-256 matches. A resume is only ever spliced onto the bytes of
-//! the same upstream file: the `.part` file's `ETag` or `Last-Modified` is
-//! kept beside it and sent as `If-Range`, and a range that does not start
-//! where the `.part` file ends is thrown away rather than appended.
+//! the same upstream file: the `.part` file's URL and its `ETag` or
+//! `Last-Modified` are kept beside it, the validator is sent as `If-Range`,
+//! and a range that does not start where the `.part` file ends is thrown
+//! away rather than appended.
 
 mod checksum;
 mod content_range;
 mod error;
+mod lock;
 mod progress;
 mod validator;
 
@@ -24,6 +26,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use reqwest::StatusCode;
 use reqwest::header::CONTENT_LENGTH;
+use reqwest::header::HeaderMap;
 use reqwest::header::IF_RANGE;
 use reqwest::header::RANGE;
 use sha2::Digest;
@@ -37,6 +40,7 @@ pub use crate::download::error::DownloadError;
 pub use crate::download::progress::DownloadProgress;
 
 use crate::download::content_range::ContentRange;
+use crate::download::lock::TransferLock;
 use crate::download::validator::Validator;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -53,6 +57,10 @@ const ATTEMPTS: usize = 2;
 /// the transfer completes, so an interrupted download never looks finished.
 /// When `expected` is given, a completed file whose SHA-256 differs is deleted
 /// and reported instead of installed.
+///
+/// One transfer to a target runs at a time, in this process or any other: a
+/// second is refused with [`DownloadError::InProgress`] rather than left to
+/// write into the same `.part` file.
 pub async fn download_gguf(
     url: &str,
     target: &Path,
@@ -82,6 +90,7 @@ async fn transfer(
     }
 
     let part = part_path(target);
+    let _lock = TransferLock::acquire(&part).await?;
     let client = Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
@@ -109,7 +118,7 @@ async fn fetch(
     let existing = fs::metadata(part).await.map(|file| file.len()).unwrap_or(0);
     let validator = match existing {
         0 => None,
-        _ => Validator::load(part).await,
+        _ => Validator::load(part, url).await,
     };
     let guard = validator
         .as_ref()
@@ -148,9 +157,6 @@ async fn fetch(
             _ => return Ok(false),
         }
     } else {
-        Validator::from_headers(response.headers())
-            .store(part)
-            .await?;
         (0, response.content_length())
     };
 
@@ -162,12 +168,7 @@ async fn fetch(
     let file = if offset > 0 {
         fs::OpenOptions::new().append(true).open(part).await?
     } else {
-        fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(part)
-            .await?
+        restart(url, part, response.headers()).await?
     };
     let mut writer = BufWriter::new(file);
     let mut received = offset;
@@ -188,6 +189,23 @@ async fn fetch(
         }
         _ => Ok(true),
     }
+}
+
+/// Empty the `.part` file for a whole new body, and only then record which
+/// file that body is.
+///
+/// The other order leaves the old bytes beside the new file's validator when
+/// the open fails or the call is dropped between the two, and the next call
+/// would resume the old bytes as though they were the start of the new file.
+async fn restart(url: &str, part: &Path, headers: &HeaderMap) -> Result<fs::File, DownloadError> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(part)
+        .await?;
+    Validator::from_headers(url, headers).store(part).await?;
+    Ok(file)
 }
 
 /// The length the server reports for the whole file, read from the header

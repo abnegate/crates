@@ -191,6 +191,7 @@ impl AiClient {
             max_tokens,
             response_format: Some(ResponseFormat::Json {
                 schema: Some(schema.clone()),
+                strict: false,
             }),
             context: None,
         };

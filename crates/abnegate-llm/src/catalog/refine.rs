@@ -30,7 +30,8 @@ pub(crate) fn paginate_models(models: Vec<ModelEntry>, offset: usize, limit: usi
     let total = models.len();
     let page: Vec<ModelEntry> = models.into_iter().skip(offset).take(limit).collect();
     let next_offset = offset + page.len();
-    let next_cursor = (next_offset < total).then(|| format!("offset:{next_offset}"));
+    let next_cursor =
+        (!page.is_empty() && next_offset < total).then(|| format!("offset:{next_offset}"));
 
     ModelPage {
         models: page,
@@ -589,6 +590,18 @@ mod tests {
         assert_eq!(page.models.len(), 2);
         assert_eq!(page.models[0].name, "m2");
         assert_eq!(page.next_cursor, Some("offset:4".to_string()));
+    }
+
+    #[test]
+    fn an_empty_page_has_no_next_cursor() {
+        let models: Vec<ModelEntry> = (0..5)
+            .map(|index| model(&format!("m{index}"), None, None, None, None))
+            .collect();
+
+        let page = paginate_models(models, 2, 0);
+
+        assert!(page.models.is_empty());
+        assert_eq!(page.next_cursor, None);
     }
 
     #[test]

@@ -317,6 +317,30 @@ async fn a_stream_reads_data_lines_without_a_space_and_a_final_unterminated_fram
 }
 
 #[tokio::test]
+async fn an_event_split_over_several_data_lines_is_one_chunk() {
+    let chunks = streamed(concat!(
+        "data: {\"choices\":[{\"index\":0,\n",
+        "data: \"delta\":{\"content\":\"hi\"}}]}\n\n",
+        "data: [DONE]\n\n"
+    ))
+    .await;
+
+    assert_eq!(chunks.len(), 1, "{chunks:?}");
+    assert_eq!(content(&chunks[0]), Some("hi"));
+}
+
+#[tokio::test]
+async fn a_success_that_is_not_an_event_stream_is_a_failure() {
+    let chunks = streamed(COMPLETION).await;
+
+    assert_eq!(chunks.len(), 1, "{chunks:?}");
+    assert!(
+        matches!(&chunks[0], Err(LlmError::Stream(message)) if message.contains("without a single event")),
+        "{chunks:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_error_frame_mid_stream_ends_it_with_a_failure() {
     let chunks = streamed(&format!(
         "data: {CHUNK}\n\ndata: {{\"error\":{{\"message\":\"upstream overloaded\"}}}}\n\ndata: {CHUNK}\n\n"

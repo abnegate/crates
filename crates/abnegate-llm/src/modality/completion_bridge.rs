@@ -177,6 +177,7 @@ mod tests {
         let mut request = TextRequest::new("", "facts");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "type": "object" })),
+            strict: false,
         });
 
         let structured = bridge.complete_structured(&request).await.unwrap();
@@ -187,7 +188,10 @@ mod tests {
         assert_eq!(seen.messages.len(), 1, "an empty system prompt is not sent");
         assert!(matches!(
             seen.response_format,
-            Some(ResponseFormat::Json { schema: Some(_) })
+            Some(ResponseFormat::Json {
+                schema: Some(_),
+                ..
+            })
         ));
     }
 
@@ -222,7 +226,10 @@ mod tests {
     async fn prose_where_json_was_asked_for_is_a_parse_error() {
         let bridge = CompletionBridge::new(StubProvider::answering("gateway", "sure!"), "qwen3");
         let mut request = TextRequest::new("", "facts");
-        request.response_format = Some(ResponseFormat::Json { schema: None });
+        request.response_format = Some(ResponseFormat::Json {
+            schema: None,
+            strict: false,
+        });
 
         let error = bridge.complete_structured(&request).await.unwrap_err();
 
