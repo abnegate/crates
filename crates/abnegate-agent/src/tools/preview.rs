@@ -29,20 +29,20 @@ const ESCAPE_CLOSE: char = '⟩';
 const CODE_POINT: &str = "U+";
 
 /// Format controls, the bidi overrides and isolates among them, every other
-/// code point a renderer draws nothing for, the blank Braille pattern a font
-/// draws as a space, the combining marks drawn over a neighbouring glyph,
-/// and the letters a renderer draws as one glyph with a neighbour: the
-/// Hangul vowel and final jamo, which compose with the syllable before them,
-/// and the prepended and spacing marks a grapheme cluster holds with its
-/// base.
+/// code point a renderer draws nothing for, the blank Braille pattern and the
+/// object replacement character, which a font draws as a space or with no
+/// width, the combining marks drawn over a neighbouring glyph, and the
+/// letters a renderer draws as one glyph with a neighbour: the Hangul vowel
+/// and final jamo, which compose with the syllable before them, and the
+/// prepended and spacing marks a grapheme cluster holds with its base.
 ///
-/// It overrides [`LEGIBLE`], which would pass the Braille pattern as a
-/// symbol and the jamo as letters. It leaves out the rest of
-/// `Grapheme_Cluster_Break=Extend`, so an emoji modifier such as U+1F3FD
-/// still tones the emoji before it.
+/// It overrides [`LEGIBLE`], which would pass the Braille pattern and the
+/// object replacement character as symbols and the jamo as letters. It leaves
+/// out the rest of `Grapheme_Cluster_Break=Extend`, so an emoji modifier such
+/// as U+1F3FD still tones the emoji before it.
 static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"[\p{Cf}\p{Default_Ignorable_Code_Point}\p{M}\u{2800}",
+        r"[\p{Cf}\p{Default_Ignorable_Code_Point}\p{M}\u{2800}\u{FFFC}",
         r"\p{gcb=V}\p{gcb=T}\p{gcb=Prepend}\p{gcb=SpacingMark}]",
     ))
     .expect("a valid Unicode class")
@@ -61,21 +61,22 @@ static LEGIBLE: LazyLock<Regex> =
 /// out of view reads as a call that was cut, never as the whole of what it
 /// does. A control, format or invisible character in the call is shown as its
 /// code point between `⟨` and `⟩`, `⟨U+0008⟩` for a backspace, as is any
-/// whitespace but a plain space or a `\n`, the blank Braille pattern, a
-/// combining mark, a Hangul vowel or final jamo or any other character a
-/// renderer draws as one glyph with its neighbour, a character NFC replaces
-/// or composes with the one before it, a right-to-left letter or an Arabic
-/// number, any other character past ASCII that is not a letter, a number,
-/// punctuation or a symbol, a space straight after a `\` or a line break, a
-/// backtick inside a [code span](Rendering::code), and any `⟨`, `⟩`, `⟦`,
-/// `⟧` or `⏎` it carries, so the call can neither redraw the card it is
-/// shown on, pass one character off as another, reorder the characters
-/// around it, hide a space a backslash escapes among the ones between words,
-/// close the span it is shown in and write the rest of the card, nor forge
-/// the marks the preview draws. An escape is one of those marks: text that
-/// reads `\u{8}` is shown as those characters, and one that reads
-/// `⟨U+0008⟩` has its fences escaped, so everything between a `⟨` and a `⟩`
-/// on the card is a character the preview escaped.
+/// whitespace but a plain space or a `\n`, the blank Braille pattern, the
+/// object replacement character, a combining mark, a Hangul vowel or final
+/// jamo or any other character a renderer draws as one glyph with its
+/// neighbour, a character NFC replaces or composes with the one before it, a
+/// right-to-left letter or an Arabic number, any other character past ASCII
+/// that is not a letter, a number, punctuation or a symbol, a space straight
+/// after a `\` or a line break, a backtick inside a
+/// [code span](Rendering::code), and any `⟨`, `⟩`, `⟦`, `⟧` or `⏎` it carries,
+/// so the call can neither redraw the card it is shown on, pass one character
+/// off as another, reorder the characters around it, hide a space a backslash
+/// escapes among the ones between words, close the span it is shown in and
+/// write the rest of the card, nor forge the marks the preview draws. An
+/// escape is one of those marks: text that reads `\u{8}` is shown as those
+/// characters, and one that reads `⟨U+0008⟩` has its fences escaped, so
+/// everything between a `⟨` and a `⟩` on the card is a character the preview
+/// escaped.
 ///
 /// Everything else is drawn verbatim. Nothing is squeezed, here or by the
 /// tool that rendered the call: blank space, blank lines and indentation
@@ -168,11 +169,11 @@ impl Preview {
 /// - not [`INVISIBLE`], neither invisible nor joined to a neighbour, since a
 ///   control or invisible character would let the call move the cursor,
 ///   erase or reorder what the reader is shown, a line or paragraph
-///   separator, a Unicode space or the blank Braille pattern would pass for a
-///   plain space, a combining mark would change the letter before it, and a
-///   Hangul vowel or final jamo, or a mark a grapheme cluster holds with its
-///   base, would be drawn as one glyph with its neighbour, U+1100 U+1161 as
-///   U+AC00.
+///   separator, a Unicode space, the blank Braille pattern or the object
+///   replacement character would pass for a plain space or for nothing, a
+///   combining mark would change the letter before it, and a Hangul vowel or
+///   final jamo, or a mark a grapheme cluster holds with its base, would be
+///   drawn as one glyph with its neighbour, U+1100 U+1161 as U+AC00.
 ///
 /// The glyphs the preview draws its own marks and escapes with are escaped
 /// as well, since shown as themselves they would let the call forge them.
@@ -644,14 +645,18 @@ mod tests {
         }
     }
 
-    /// The blank Braille pattern is a symbol a renderer draws as nothing, so
-    /// it passed for the space between two words, and a combining mark was
-    /// drawn over the character before it, where a reader saw one letter
-    /// with an accent, a strike or a ring in place of the two the call holds.
+    /// The blank Braille pattern and the object replacement character are
+    /// symbols a font draws as nothing, so the first passed for the space
+    /// between two words and the second, drawn by Menlo as a blank the width
+    /// of a space and by the system font with no width at all, for a space
+    /// or for nothing. A combining mark was drawn over the character before
+    /// it, where a reader saw one letter with an accent, a strike or a ring
+    /// in place of the two the call holds.
     #[test]
-    fn a_blank_braille_pattern_and_every_combining_mark_is_shown_as_its_escape() {
+    fn a_blank_symbol_and_every_combining_mark_is_shown_as_its_escape() {
         for character in [
             '\u{2800}',
+            '\u{fffc}',
             '\u{300}',
             '\u{301}',
             '\u{338}',
@@ -746,6 +751,24 @@ mod tests {
             );
             assert!(!preview.truncated, "{character:?}");
         }
+    }
+
+    /// U+10940 is unassigned in the Unicode 16 data `regex-syntax` and
+    /// `unicode-bidi` carry, and a right-to-left Sidetic letter from Unicode
+    /// 17. `unicode-bidi` gives a code point it does not know in a
+    /// right-to-left block the class R, so once `regex-syntax` reads it as a
+    /// letter that [`LEGIBLE`] passes, [`right_to_left`] still escapes it. If
+    /// this fails, a right-to-left letter can reach the card as itself: extend
+    /// the escape by bidi class to cover it, never weaken this test.
+    #[test]
+    fn a_right_to_left_letter_a_later_unicode_assigns_is_escaped_by_its_bidi_class() {
+        let sidetic = '\u{10940}';
+
+        assert!(right_to_left(sidetic), "{sidetic:?}");
+        assert_eq!(
+            Preview::within(&format!("a{sidetic}b"), MAX_PREVIEW_CHARACTERS).text,
+            format!("a{}b", escape(sidetic))
+        );
     }
 
     /// A Hangul vowel or final jamo is a letter, not a mark, so it was drawn

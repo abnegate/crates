@@ -673,6 +673,34 @@ mod tests {
         }
     }
 
+    /// U+FFFC OBJECT REPLACEMENT CHARACTER is a symbol, so it was drawn as
+    /// itself: Menlo draws it as a blank the width of a space and the system
+    /// font with no width, so `a<U+FFFC>b`, one word, read as `a b`, two, or
+    /// as `ab`.
+    #[test]
+    fn an_object_replacement_character_cannot_pass_for_a_space_or_for_nothing() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        let preview = |command: &str| {
+            let preview = registry
+                .preview(
+                    "run_shell",
+                    &serde_json::json!({"command": command}).to_string(),
+                )
+                .expect("a shell call previews the line it will run");
+            assert!(!preview.truncated, "{}", preview.text);
+            preview.text
+        };
+
+        let replaced = preview("a\u{fffc}b");
+
+        assert_eq!(replaced, "In the working directory, run `a⟨U+FFFC⟩b`.");
+        assert!(replaced.contains("⟨U+FFFC⟩"), "{replaced}");
+        assert!(!replaced.contains('\u{fffc}'), "{replaced}");
+        assert_ne!(replaced, preview("a b"));
+        assert_ne!(replaced, preview("ab"));
+    }
+
     /// The preview kept the first 400 characters of a command, so a call
     /// padded past them showed the reader the padding and hid the payload.
     #[test]
