@@ -728,7 +728,8 @@ impl GitService {
     /// authentication, and say which commit was pushed. The commit is resolved
     /// before the push and the push names it rather than `HEAD`, so what the
     /// caller is told was pushed is what the remote received even if something
-    /// moves HEAD meanwhile.
+    /// moves HEAD meanwhile. The remote-tracking ref is then written as
+    /// itself, never through a link standing in its place.
     pub async fn push_with_token(
         &self,
         path: &Path,
@@ -756,6 +757,7 @@ impl GitService {
             tracking
                 .args([
                     "update-ref",
+                    "--no-deref",
                     &format!("{REMOTE_TRACKING}{branch}"),
                     commit.as_str(),
                 ])
@@ -1792,6 +1794,72 @@ mod publication_tests {
             "the link was set aside and the branch it names was kept"
         );
         held.assert_untouched();
+    }
+
+    /// The remote-tracking ref a push records is written as itself: a link
+    /// left there would otherwise carry the pushed commit onto the branch it
+    /// names.
+    #[tokio::test]
+    async fn a_push_records_its_tracking_ref_and_leaves_what_a_link_there_names() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        crate::worktree::fixtures::remote(&remote);
+        let first = root.path().join("first");
+        let service = GitService::new();
+        service
+            .clone_repository(&local(&remote), &first, None)
+            .await
+            .unwrap();
+        let start = git(&first, &["rev-parse", "HEAD"]);
+        service
+            .prepare_branch(&first, &branch("task/one"), false)
+            .await
+            .unwrap();
+        git(&first, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        git(&first, &["branch", "task/other", &start]);
+        git(
+            &first,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/task/one",
+                "refs/heads/task/other",
+            ],
+        );
+
+        let pushed = service
+            .push_with_token(&first, &branch("task/one"), &local(&remote), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(
+                &first,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/task/other"
+                ],
+            ),
+            start,
+            "the pushed commit landed on the branch the link named"
+        );
+        assert_eq!(
+            git(
+                &first,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname) %(symref)",
+                    "refs/remotes/origin/task/one"
+                ],
+            ),
+            pushed.as_str(),
+            "the remote-tracking ref records the pushed commit as itself"
+        );
+        assert_eq!(
+            git(&remote, &["rev-parse", "refs/heads/task/one"]),
+            pushed.as_str()
+        );
     }
 }
 
