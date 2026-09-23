@@ -46,12 +46,11 @@
 //! );
 //!
 //! let completion = provider
-//!     .complete(CompletionRequest {
-//!         model: "sonnet",
-//!         messages: &[Message::user("What does main.rs do?")],
-//!         tools: None,
-//!         options: RequestOptions { reserved: 1024 },
-//!     })
+//!     .complete(CompletionRequest::new(
+//!         "sonnet",
+//!         &[Message::user("What does main.rs do?")],
+//!         RequestOptions { reserved: 1024 },
+//!     ))
 //!     .await?;
 //! println!("{:?}", completion.message.content);
 //! # Ok(())

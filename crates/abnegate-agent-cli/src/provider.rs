@@ -186,7 +186,7 @@ impl CliProvider {
                 ));
             }
         };
-        let reaper = Reaper::new(child.id().map(ProcessGroup::new));
+        let reaper = Reaper::new(child.id().and_then(|pid| ProcessGroup::try_from(pid).ok()));
         journal
             .append(Record::Spawned, json!({ "pid": child.id() }))
             .await;
@@ -431,12 +431,9 @@ impl CliProvider {
             (_, true) => {}
         }
 
-        Ok(Completion {
-            provider: self.name.clone(),
-            message: Message::assistant(stdout.text),
-            usage: stdout.usage,
-            finish_reason: stdout.finish_reason,
-        })
+        Ok(Completion::new(&self.name, Message::assistant(stdout.text))
+            .with_usage(stdout.usage)
+            .with_finish_reason(stdout.finish_reason))
     }
 
     /// Render the MCP servers to attach, or attach none when rendering fails:
@@ -701,12 +698,7 @@ mod tests {
     }
 
     fn request(messages: &[Message]) -> CompletionRequest<'_> {
-        CompletionRequest {
-            model: "sonnet",
-            messages,
-            tools: None,
-            options: RequestOptions { reserved: 512 },
-        }
+        CompletionRequest::new("sonnet", messages, RequestOptions { reserved: 512 })
     }
 
     async fn run(

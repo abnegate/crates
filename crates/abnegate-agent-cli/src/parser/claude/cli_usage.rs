@@ -35,13 +35,10 @@ impl CliUsage {
 
 impl From<&CliUsage> for Usage {
     fn from(counts: &CliUsage) -> Self {
-        let prompt_tokens = narrow(counts.prompt_tokens());
-        let completion_tokens = narrow(counts.output_tokens.unwrap_or_default());
-        Self {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens.saturating_add(completion_tokens),
-        }
+        Self::new(
+            narrow(counts.prompt_tokens()),
+            narrow(counts.output_tokens.unwrap_or_default()),
+        )
     }
 }
 

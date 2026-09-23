@@ -118,10 +118,7 @@ impl AgentKind {
     pub fn capabilities(self) -> Capabilities {
         match self {
             Self::Claude => Capabilities::ALL,
-            Self::Codex => Capabilities {
-                streaming_events: true,
-                ..Capabilities::NONE
-            },
+            Self::Codex => Capabilities::NONE.with_streaming_events(),
         }
     }
 

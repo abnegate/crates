@@ -78,14 +78,7 @@ mod tests {
     #[test]
     fn only_a_result_ends_the_run() {
         assert!(!AgentEvent::Text("hello".to_string()).terminal());
-        assert!(
-            !AgentEvent::Usage(Usage {
-                prompt_tokens: 1,
-                completion_tokens: 1,
-                total_tokens: 2,
-            })
-            .terminal()
-        );
+        assert!(!AgentEvent::Usage(Usage::new(1, 1)).terminal());
         assert!(AgentEvent::Failed("nope".to_string()).terminal());
         assert!(
             AgentEvent::Finished {

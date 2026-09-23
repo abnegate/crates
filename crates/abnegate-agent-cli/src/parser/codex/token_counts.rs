@@ -14,10 +14,6 @@ pub struct TokenCounts {
 
 impl From<TokenCounts> for Usage {
     fn from(counts: TokenCounts) -> Self {
-        Self {
-            prompt_tokens: counts.input_tokens,
-            completion_tokens: counts.output_tokens,
-            total_tokens: counts.input_tokens.saturating_add(counts.output_tokens),
-        }
+        Self::new(counts.input_tokens, counts.output_tokens)
     }
 }

@@ -146,11 +146,7 @@ mod tests {
                 cache_read_input_tokens: Some(300),
                 cache_creation_input_tokens: Some(400),
             }),
-            AgentEvent::Usage(Usage {
-                prompt_tokens: 800,
-                completion_tokens: 200,
-                total_tokens: 1000,
-            }),
+            AgentEvent::Usage(Usage::new(800, 200)),
             AgentEvent::Finished {
                 finish_reason: Some("success".to_string()),
             },

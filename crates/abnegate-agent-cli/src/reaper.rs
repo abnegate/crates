@@ -80,7 +80,9 @@ mod tests {
     #[test]
     fn dropping_an_armed_reaper_kills_the_group() {
         let mut child = sleeper();
-        drop(Reaper::new(Some(ProcessGroup::new(child.id()))));
+        drop(Reaper::new(Some(
+            ProcessGroup::try_from(child.id()).unwrap(),
+        )));
 
         assert!(exits_within(&mut child, Duration::from_secs(5)));
     }
@@ -88,7 +90,7 @@ mod tests {
     #[test]
     fn a_disarmed_reaper_leaves_the_group_running() {
         let mut child = sleeper();
-        let reaper = Reaper::new(Some(ProcessGroup::new(child.id())));
+        let reaper = Reaper::new(Some(ProcessGroup::try_from(child.id()).unwrap()));
         assert!(reaper.group().is_some());
         reaper.disarm();
 
