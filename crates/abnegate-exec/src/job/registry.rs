@@ -1,57 +1,20 @@
 //! Job registry for tracking active and completed jobs.
 
+use std::time::Duration;
+
 use dashmap::DashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use dashmap::mapref::entry::Entry;
+use dashmap::mapref::one::RefMut;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::JobError;
 use crate::executor::ProcessGroup;
+use crate::protocol::ErrorCode;
+use crate::protocol::OutboundMessage;
 
+use super::entry::JobEntry;
 use super::state::JobState;
-
-/// Entry for a tracked job
-pub struct JobEntry {
-    /// Current state of the job
-    pub state: JobState,
-
-    /// Cancellation flag
-    pub cancelled: Arc<AtomicBool>,
-
-    /// Process group for signaling (if running)
-    pub process_group: Option<ProcessGroup>,
-
-    /// Channel to send stdin data
-    pub stdin_tx: Option<mpsc::Sender<Vec<u8>>>,
-
-    /// When the job was registered
-    pub created_at: Instant,
-}
-
-impl JobEntry {
-    /// Create a new job entry
-    pub fn new() -> Self {
-        Self {
-            state: JobState::new(),
-            cancelled: Arc::new(AtomicBool::new(false)),
-            process_group: None,
-            stdin_tx: None,
-            created_at: Instant::now(),
-        }
-    }
-
-    /// Get a clone of the cancellation flag
-    pub fn cancel_token(&self) -> Arc<AtomicBool> {
-        self.cancelled.clone()
-    }
-}
-
-impl Default for JobEntry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Thread-safe registry for tracking jobs.
 pub struct JobRegistry {
@@ -66,18 +29,17 @@ impl JobRegistry {
         }
     }
 
-    /// Register a new job.
+    /// Register a new job, leaving an existing job of the same identifier
+    /// untouched.
     ///
-    /// Returns the cancellation token if successful.
-    pub fn register(&self, job_id: String) -> Result<Arc<AtomicBool>, JobError> {
-        let entry = JobEntry::new();
-        let cancel_token = entry.cancel_token();
-
-        if self.jobs.insert(job_id.clone(), entry).is_some() {
-            return Err(JobError::AlreadyExists(job_id));
+    /// Returns the job's cancellation token. Spawn the job with
+    /// [`CommandExecutor::spawn_with_cancellation`](crate::executor::CommandExecutor::spawn_with_cancellation)
+    /// and this token, so that [`JobRegistry::cancel`] stops it.
+    pub fn register(&self, job_id: String) -> Result<CancellationToken, JobError> {
+        match self.jobs.entry(job_id) {
+            Entry::Occupied(occupied) => Err(JobError::AlreadyExists(occupied.key().clone())),
+            Entry::Vacant(vacant) => Ok(vacant.insert(JobEntry::new()).cancel_token()),
         }
-
-        Ok(cancel_token)
     }
 
     /// Check if a job exists
@@ -87,79 +49,153 @@ impl JobRegistry {
 
     /// Get the current state of a job
     pub fn get_state(&self, job_id: &str) -> Option<JobState> {
-        self.jobs.get(job_id).map(|e| e.state.clone())
+        self.jobs.get(job_id).map(|entry| entry.state.clone())
     }
 
-    /// Update the state of a job
+    /// Update the state of a job.
+    ///
+    /// A terminal state forgets the job's process group and stdin. Record one
+    /// as soon as the job's `RunExit` or `RunError` arrives: an executor
+    /// reports either only after it has killed the job's group and reaped its
+    /// leader, so from then on the group's identifier can belong to an
+    /// unrelated process group, which a later [`JobRegistry::cancel_all`]
+    /// would otherwise kill. A finished job never becomes unfinished again.
     pub fn update_state(&self, job_id: &str, state: JobState) -> Result<(), JobError> {
-        match self.jobs.get_mut(job_id) {
-            Some(mut entry) => {
-                entry.state = state;
-                Ok(())
-            }
-            None => Err(JobError::NotFound(job_id.to_string())),
-        }
+        let mut entry = self.unfinished(job_id, !state.is_terminal())?;
+        entry.transition(state);
+        Ok(())
     }
 
-    /// Set the process group for a job
+    /// The entry for `job_id`, refused when `requires_unfinished` and the job
+    /// has already finished.
+    fn unfinished(
+        &self,
+        job_id: &str,
+        requires_unfinished: bool,
+    ) -> Result<RefMut<'_, String, JobEntry>, JobError> {
+        let entry = self
+            .jobs
+            .get_mut(job_id)
+            .ok_or_else(|| JobError::NotFound(job_id.to_string()))?;
+        if requires_unfinished && entry.state.is_terminal() {
+            return Err(JobError::InvalidState(format!(
+                "{job_id} has already finished"
+            )));
+        }
+        Ok(entry)
+    }
+
+    /// Record what an outbound message says about its job's state.
+    ///
+    /// Call this for every message an executor sends, before forwarding it:
+    /// `RunStarted` marks the job running, and `RunExit` or `RunError` marks
+    /// it finished, which forgets its process group (see
+    /// [`JobRegistry::update_state`]). A timed-out job's `timeout_ms` is the
+    /// time since it was registered. Messages for jobs the registry does not
+    /// track, and for jobs already finished, are ignored.
+    pub fn observe(&self, message: &OutboundMessage) {
+        let job_id = match message {
+            OutboundMessage::RunStarted { job_id, .. }
+            | OutboundMessage::RunExit { job_id, .. }
+            | OutboundMessage::RunError { job_id, .. } => job_id,
+            _ => return,
+        };
+        let Some(mut entry) = self.jobs.get_mut(job_id.as_str()) else {
+            return;
+        };
+        if entry.state.is_terminal() {
+            return;
+        }
+        let elapsed = entry.created_at.elapsed();
+        let state = match message {
+            OutboundMessage::RunStarted { pid, .. } => JobState::running(*pid),
+            OutboundMessage::RunExit {
+                exit_code,
+                signal,
+                duration_ms,
+                ..
+            } => {
+                let duration = Duration::from_millis(*duration_ms);
+                match (exit_code, signal) {
+                    (Some(code), _) => JobState::completed(*code, duration),
+                    (None, Some(signal)) => JobState::signaled(*signal, duration),
+                    (None, None) => JobState::failed(
+                        ErrorCode::InternalError,
+                        "Exited without a status".to_string(),
+                        duration,
+                    ),
+                }
+            }
+            OutboundMessage::RunError {
+                error_code: ErrorCode::Cancelled,
+                ..
+            } => JobState::cancelled(entry.forced, elapsed),
+            OutboundMessage::RunError {
+                error_code: ErrorCode::Timeout,
+                ..
+            } => JobState::timed_out(
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+                elapsed,
+            ),
+            OutboundMessage::RunError {
+                error_code,
+                message,
+                ..
+            } => JobState::failed(*error_code, message.clone(), elapsed),
+            _ => return,
+        };
+        entry.transition(state);
+    }
+
+    /// Set the process group for a job. A job that has already finished is
+    /// refused: its group has exited and the identifier may be reused.
     pub fn set_process_group(
         &self,
         job_id: &str,
         process_group: ProcessGroup,
     ) -> Result<(), JobError> {
-        match self.jobs.get_mut(job_id) {
-            Some(mut entry) => {
-                entry.process_group = Some(process_group);
-                Ok(())
-            }
-            None => Err(JobError::NotFound(job_id.to_string())),
-        }
+        self.unfinished(job_id, true)?.process_group = Some(process_group);
+        Ok(())
     }
 
-    /// Set the stdin channel for a job
-    pub fn set_stdin(&self, job_id: &str, tx: mpsc::Sender<Vec<u8>>) -> Result<(), JobError> {
-        match self.jobs.get_mut(job_id) {
-            Some(mut entry) => {
-                entry.stdin_tx = Some(tx);
-                Ok(())
-            }
-            None => Err(JobError::NotFound(job_id.to_string())),
-        }
+    /// Set the stdin channel for a job. A job that has already finished is
+    /// refused.
+    pub fn set_stdin(&self, job_id: &str, sender: mpsc::Sender<Vec<u8>>) -> Result<(), JobError> {
+        self.unfinished(job_id, true)?.stdin = Some(sender);
+        Ok(())
     }
 
     /// Get the stdin channel for a job
     pub fn get_stdin(&self, job_id: &str) -> Option<mpsc::Sender<Vec<u8>>> {
-        self.jobs.get(job_id).and_then(|e| e.stdin_tx.clone())
+        self.jobs.get(job_id).and_then(|entry| entry.stdin.clone())
     }
 
     /// Close the stdin channel for a job
     pub fn close_stdin(&self, job_id: &str) {
         if let Some(mut entry) = self.jobs.get_mut(job_id) {
-            entry.stdin_tx = None;
+            entry.stdin = None;
         }
     }
 
     /// Get the cancellation token for a job
-    pub fn get_cancel_token(&self, job_id: &str) -> Option<Arc<AtomicBool>> {
-        self.jobs.get(job_id).map(|e| e.cancel_token())
+    pub fn get_cancel_token(&self, job_id: &str) -> Option<CancellationToken> {
+        self.jobs.get(job_id).map(|entry| entry.cancel_token())
     }
 
     /// Cancel a job.
     ///
     /// If `force` is true, sends SIGKILL immediately; otherwise sends SIGTERM.
     pub fn cancel(&self, job_id: &str, force: bool) -> Result<(), JobError> {
-        let entry = self
-            .jobs
-            .get(job_id)
-            .ok_or_else(|| JobError::NotFound(job_id.to_string()))?;
+        let mut entry = self.unfinished(job_id, false)?;
 
-        entry.cancelled.store(true, Ordering::SeqCst);
+        entry.forced |= force;
+        entry.cancellation.cancel();
 
-        if let Some(ref pg) = entry.process_group {
+        if let Some(group) = &entry.process_group {
             if force {
-                let _ = pg.kill();
+                let _ = group.kill();
             } else {
-                let _ = pg.terminate();
+                let _ = group.terminate();
             }
         }
 
@@ -170,15 +206,15 @@ impl JobRegistry {
     ///
     /// Returns the entry if it existed.
     pub fn remove(&self, job_id: &str) -> Option<JobEntry> {
-        self.jobs.remove(job_id).map(|(_, v)| v)
+        self.jobs.remove(job_id).map(|(_, entry)| entry)
     }
 
     /// Cancel all jobs and clear the registry.
     pub fn cancel_all(&self) {
         for entry in self.jobs.iter() {
-            entry.cancelled.store(true, Ordering::SeqCst);
-            if let Some(ref pg) = entry.process_group {
-                let _ = pg.kill();
+            entry.cancellation.cancel();
+            if let Some(group) = &entry.process_group {
+                let _ = group.kill();
             }
         }
         self.jobs.clear();
@@ -186,7 +222,10 @@ impl JobRegistry {
 
     /// Get the number of active (non-terminal) jobs
     pub fn active_count(&self) -> usize {
-        self.jobs.iter().filter(|e| !e.state.is_terminal()).count()
+        self.jobs
+            .iter()
+            .filter(|entry| !entry.state.is_terminal())
+            .count()
     }
 
     /// Get the total number of tracked jobs
@@ -196,7 +235,7 @@ impl JobRegistry {
 
     /// Get all job IDs
     pub fn job_ids(&self) -> Vec<String> {
-        self.jobs.iter().map(|e| e.key().clone()).collect()
+        self.jobs.iter().map(|entry| entry.key().clone()).collect()
     }
 }
 
@@ -208,34 +247,13 @@ impl Default for JobRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
 
-    #[test]
-    fn test_job_entry_new() {
-        let entry = JobEntry::new();
-        assert!(!entry.state.is_terminal());
-        assert!(!entry.cancelled.load(Ordering::SeqCst));
-        assert!(entry.process_group.is_none());
-        assert!(entry.stdin_tx.is_none());
-    }
+    use nix::sys::signal::Signal;
 
-    #[test]
-    fn test_job_entry_default() {
-        let entry: JobEntry = Default::default();
-        assert!(!entry.state.is_terminal());
-        assert!(!entry.cancelled.load(Ordering::SeqCst));
-    }
+    use crate::executor::sleeper::Sleeper;
 
-    #[test]
-    fn test_job_entry_cancel_token() {
-        let entry = JobEntry::new();
-        let token1 = entry.cancel_token();
-        let token2 = entry.cancel_token();
-
-        token1.store(true, Ordering::SeqCst);
-        assert!(token2.load(Ordering::SeqCst));
-    }
+    use super::*;
 
     #[test]
     fn test_registry_new() {
@@ -255,7 +273,7 @@ mod tests {
         let registry = JobRegistry::new();
 
         let token = registry.register("job-1".to_string()).unwrap();
-        assert!(!token.load(Ordering::SeqCst));
+        assert!(!token.is_cancelled());
 
         assert!(registry.exists("job-1"));
         assert!(!registry.exists("job-2"));
@@ -274,8 +292,26 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::AlreadyExists(id) => assert_eq!(id, "job-1"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
+    }
+
+    #[test]
+    fn a_duplicate_registration_leaves_the_first_job_in_place() {
+        let registry = JobRegistry::new();
+        let first = registry.register("job-1".to_string()).unwrap();
+        registry
+            .update_state("job-1", JobState::running(12345))
+            .unwrap();
+
+        assert!(registry.register("job-1".to_string()).is_err());
+        registry.cancel("job-1", false).unwrap();
+
+        assert!(
+            first.is_cancelled(),
+            "the registry still reaches the job that registered first"
+        );
+        assert!(registry.get_state("job-1").unwrap().is_running());
     }
 
     #[test]
@@ -300,7 +336,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::NotFound(id) => assert_eq!(id, "nonexistent"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
     }
 
@@ -314,22 +350,22 @@ mod tests {
     fn test_set_process_group() {
         let registry = JobRegistry::new();
         registry.register("job-1".to_string()).unwrap();
+        let sleeper = Sleeper::start();
 
-        let pg = ProcessGroup::new(12345);
-        let result = registry.set_process_group("job-1", pg);
+        let result = registry.set_process_group("job-1", sleeper.group());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_set_process_group_not_found() {
         let registry = JobRegistry::new();
-        let pg = ProcessGroup::new(12345);
-        let result = registry.set_process_group("nonexistent", pg);
+        let sleeper = Sleeper::start();
+        let result = registry.set_process_group("nonexistent", sleeper.group());
 
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::NotFound(id) => assert_eq!(id, "nonexistent"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
     }
 
@@ -338,8 +374,8 @@ mod tests {
         let registry = JobRegistry::new();
         registry.register("job-1".to_string()).unwrap();
 
-        let (tx, _rx) = mpsc::channel::<Vec<u8>>(10);
-        let result = registry.set_stdin("job-1", tx);
+        let (sender, _receiver) = mpsc::channel::<Vec<u8>>(10);
+        let result = registry.set_stdin("job-1", sender);
         assert!(result.is_ok());
 
         let stdin = registry.get_stdin("job-1");
@@ -349,13 +385,13 @@ mod tests {
     #[tokio::test]
     async fn test_set_stdin_not_found() {
         let registry = JobRegistry::new();
-        let (tx, _rx) = mpsc::channel::<Vec<u8>>(10);
-        let result = registry.set_stdin("nonexistent", tx);
+        let (sender, _receiver) = mpsc::channel::<Vec<u8>>(10);
+        let result = registry.set_stdin("nonexistent", sender);
 
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::NotFound(id) => assert_eq!(id, "nonexistent"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
     }
 
@@ -380,8 +416,8 @@ mod tests {
         let registry = JobRegistry::new();
         registry.register("job-1".to_string()).unwrap();
 
-        let (tx, _rx) = mpsc::channel::<Vec<u8>>(10);
-        registry.set_stdin("job-1", tx).unwrap();
+        let (sender, _receiver) = mpsc::channel::<Vec<u8>>(10);
+        registry.set_stdin("job-1", sender).unwrap();
 
         assert!(registry.get_stdin("job-1").is_some());
 
@@ -403,8 +439,8 @@ mod tests {
 
         let retrieved_token = registry.get_cancel_token("job-1").unwrap();
 
-        registered_token.store(true, Ordering::SeqCst);
-        assert!(retrieved_token.load(Ordering::SeqCst));
+        registered_token.cancel();
+        assert!(retrieved_token.is_cancelled());
     }
 
     #[test]
@@ -418,11 +454,11 @@ mod tests {
         let registry = JobRegistry::new();
         let token = registry.register("job-1".to_string()).unwrap();
 
-        assert!(!token.load(Ordering::SeqCst));
+        assert!(!token.is_cancelled());
 
         registry.cancel("job-1", false).unwrap();
 
-        assert!(token.load(Ordering::SeqCst));
+        assert!(token.is_cancelled());
     }
 
     #[test]
@@ -432,7 +468,7 @@ mod tests {
 
         registry.cancel("job-1", true).unwrap();
 
-        assert!(token.load(Ordering::SeqCst));
+        assert!(token.is_cancelled());
     }
 
     #[test]
@@ -443,32 +479,236 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             JobError::NotFound(id) => assert_eq!(id, "nonexistent"),
-            e => panic!("Wrong error: {:?}", e),
+            error => panic!("Wrong error: {error:?}"),
         }
     }
 
     #[test]
-    fn test_cancel_with_process_group() {
+    fn cancel_terminates_a_running_jobs_group() {
         let registry = JobRegistry::new();
         registry.register("job-1".to_string()).unwrap();
+        let mut sleeper = Sleeper::start();
+        registry
+            .set_process_group("job-1", sleeper.group())
+            .unwrap();
 
-        let pg = ProcessGroup::new(999999);
-        registry.set_process_group("job-1", pg).unwrap();
+        registry.cancel("job-1", false).unwrap();
 
-        let result = registry.cancel("job-1", false);
-        assert!(result.is_ok());
+        assert_eq!(sleeper.wait(), Some(Signal::SIGTERM as i32));
     }
 
     #[test]
-    fn test_cancel_force_with_process_group() {
+    fn a_forced_cancel_kills_a_running_jobs_group() {
         let registry = JobRegistry::new();
         registry.register("job-1".to_string()).unwrap();
+        let mut sleeper = Sleeper::start();
+        registry
+            .set_process_group("job-1", sleeper.group())
+            .unwrap();
 
-        let pg = ProcessGroup::new(999999);
-        registry.set_process_group("job-1", pg).unwrap();
+        registry.cancel("job-1", true).unwrap();
 
-        let result = registry.cancel("job-1", true);
-        assert!(result.is_ok());
+        assert_eq!(sleeper.wait(), Some(Signal::SIGKILL as i32));
+    }
+
+    /// The group identifier of an exited job can belong to an unrelated
+    /// process group by the time the registry is cancelled. The sleeper
+    /// stands in for that group: after the job is recorded as finished, only
+    /// the test's own SIGTERM may reach it.
+    #[test]
+    fn a_finished_job_forgets_its_group() {
+        let registry = JobRegistry::new();
+        registry.register("job-1".to_string()).unwrap();
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+        registry.set_process_group("job-1", group.clone()).unwrap();
+
+        registry
+            .update_state("job-1", JobState::completed(0, Duration::from_secs(1)))
+            .unwrap();
+        registry.cancel("job-1", true).unwrap();
+        registry.cancel_all();
+        group.terminate().unwrap();
+
+        assert_eq!(
+            sleeper.wait(),
+            Some(Signal::SIGTERM as i32),
+            "the registry signalled a group after its job had finished"
+        );
+    }
+
+    #[test]
+    fn observing_the_exit_forgets_the_group() {
+        let registry = JobRegistry::new();
+        registry.register("job-1".to_string()).unwrap();
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+
+        registry.observe(&OutboundMessage::RunStarted {
+            job_id: "job-1".to_string(),
+            pid: sleeper.pid(),
+        });
+        registry.set_process_group("job-1", group.clone()).unwrap();
+        registry.observe(&OutboundMessage::RunExit {
+            job_id: "job-1".to_string(),
+            exit_code: Some(0),
+            signal: None,
+            duration_ms: 5,
+        });
+        registry.cancel_all();
+        group.terminate().unwrap();
+
+        assert_eq!(sleeper.wait(), Some(Signal::SIGTERM as i32));
+    }
+
+    #[test]
+    fn observe_records_how_each_job_ended() {
+        let registry = JobRegistry::new();
+        let finished = [
+            (
+                OutboundMessage::RunExit {
+                    job_id: "exited".to_string(),
+                    exit_code: Some(3),
+                    signal: None,
+                    duration_ms: 7,
+                },
+                JobState::completed(3, Duration::from_millis(7)),
+            ),
+            (
+                OutboundMessage::RunExit {
+                    job_id: "signalled".to_string(),
+                    exit_code: None,
+                    signal: Some(9),
+                    duration_ms: 7,
+                },
+                JobState::signaled(9, Duration::from_millis(7)),
+            ),
+            (
+                OutboundMessage::error("cancelled", ErrorCode::Cancelled, "cancelled"),
+                JobState::cancelled(false, Duration::ZERO),
+            ),
+            (
+                OutboundMessage::error("timed-out", ErrorCode::Timeout, "timed out"),
+                JobState::timed_out(0, Duration::ZERO),
+            ),
+            (
+                OutboundMessage::error("failed", ErrorCode::InternalError, "wait failed"),
+                JobState::failed(
+                    ErrorCode::InternalError,
+                    "wait failed".to_string(),
+                    Duration::ZERO,
+                ),
+            ),
+        ];
+
+        for (message, expected) in finished {
+            let (OutboundMessage::RunExit { job_id, .. }
+            | OutboundMessage::RunError { job_id, .. }) = &message
+            else {
+                unreachable!("every case is a terminal message");
+            };
+            registry.register(job_id.clone()).unwrap();
+            registry.observe(&message);
+
+            let state = registry.get_state(job_id).unwrap();
+            assert_eq!(
+                std::mem::discriminant(&state),
+                std::mem::discriminant(&expected),
+                "{job_id}: {state:?}"
+            );
+            assert_eq!(state.error_code(), expected.error_code(), "{job_id}");
+        }
+    }
+
+    #[test]
+    fn observe_leaves_a_finished_job_finished() {
+        let registry = JobRegistry::new();
+        registry.register("job-1".to_string()).unwrap();
+        registry.observe(&OutboundMessage::error(
+            "job-1",
+            ErrorCode::Cancelled,
+            "cancelled",
+        ));
+
+        registry.observe(&OutboundMessage::RunExit {
+            job_id: "job-1".to_string(),
+            exit_code: Some(0),
+            signal: None,
+            duration_ms: 5,
+        });
+        registry.observe(&OutboundMessage::RunStarted {
+            job_id: "unknown".to_string(),
+            pid: 42,
+        });
+
+        assert_eq!(
+            registry.get_state("job-1").unwrap().error_code(),
+            Some(ErrorCode::Cancelled)
+        );
+        assert!(!registry.exists("unknown"));
+    }
+
+    #[test]
+    fn a_finished_job_takes_no_group_or_stdin() {
+        let registry = JobRegistry::new();
+        registry.register("job-1".to_string()).unwrap();
+        registry
+            .update_state("job-1", JobState::completed(0, Duration::from_secs(1)))
+            .unwrap();
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+        let (sender, _receiver) = mpsc::channel::<Vec<u8>>(1);
+
+        assert!(matches!(
+            registry.set_process_group("job-1", group.clone()),
+            Err(JobError::InvalidState(_))
+        ));
+        assert!(matches!(
+            registry.set_stdin("job-1", sender),
+            Err(JobError::InvalidState(_))
+        ));
+        assert!(registry.get_stdin("job-1").is_none());
+        registry.cancel_all();
+        group.terminate().unwrap();
+
+        assert_eq!(sleeper.wait(), Some(Signal::SIGTERM as i32));
+    }
+
+    #[test]
+    fn a_finished_job_never_runs_again() {
+        let registry = JobRegistry::new();
+        registry.register("job-1".to_string()).unwrap();
+        registry
+            .update_state("job-1", JobState::completed(0, Duration::from_secs(1)))
+            .unwrap();
+
+        assert!(matches!(
+            registry.update_state("job-1", JobState::running(42)),
+            Err(JobError::InvalidState(_))
+        ));
+        assert!(registry.get_state("job-1").unwrap().is_terminal());
+    }
+
+    #[test]
+    fn observe_records_whether_a_cancel_was_forced() {
+        let registry = JobRegistry::new();
+        for (job_id, force) in [("gentle", false), ("forced", true)] {
+            registry.register(job_id.to_string()).unwrap();
+            registry.cancel(job_id, force).unwrap();
+            registry.observe(&OutboundMessage::error(
+                job_id,
+                ErrorCode::Cancelled,
+                "cancelled",
+            ));
+
+            assert!(
+                matches!(
+                    registry.get_state(job_id),
+                    Some(JobState::Cancelled { forced, .. }) if forced == force
+                ),
+                "{job_id}"
+            );
+        }
     }
 
     #[test]
@@ -492,13 +732,13 @@ mod tests {
     #[test]
     fn test_cancel_all() {
         let registry = JobRegistry::new();
-        let t1 = registry.register("job-1".to_string()).unwrap();
-        let t2 = registry.register("job-2".to_string()).unwrap();
+        let first = registry.register("job-1".to_string()).unwrap();
+        let second = registry.register("job-2".to_string()).unwrap();
 
         registry.cancel_all();
 
-        assert!(t1.load(Ordering::SeqCst));
-        assert!(t2.load(Ordering::SeqCst));
+        assert!(first.is_cancelled());
+        assert!(second.is_cancelled());
         assert_eq!(registry.total_count(), 0);
     }
 
@@ -510,18 +750,20 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_all_with_process_groups() {
+    fn cancel_all_kills_every_running_group() {
         let registry = JobRegistry::new();
         registry.register("job-1".to_string()).unwrap();
         registry.register("job-2".to_string()).unwrap();
-
-        let pg1 = ProcessGroup::new(999998);
-        let pg2 = ProcessGroup::new(999999);
-        registry.set_process_group("job-1", pg1).unwrap();
-        registry.set_process_group("job-2", pg2).unwrap();
+        let mut first = Sleeper::start();
+        let mut second = Sleeper::start();
+        registry.set_process_group("job-1", first.group()).unwrap();
+        registry.set_process_group("job-2", second.group()).unwrap();
 
         registry.cancel_all();
+
         assert_eq!(registry.total_count(), 0);
+        assert_eq!(first.wait(), Some(Signal::SIGKILL as i32));
+        assert_eq!(second.wait(), Some(Signal::SIGKILL as i32));
     }
 
     #[test]

@@ -20,7 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 base64 = { workspace = true }
 bytes = { workspace = true }
 dashmap = { workspace = true }
-nix = { workspace = true }
+nix = { workspace = true, features = ["event"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
