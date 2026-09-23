@@ -1,0 +1,100 @@
+{
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "cfg": 7,
+      "denoise": 0.7,
+      "latent_image": ["12", 0],
+      "model": ["4", 0],
+      "negative": ["7", 0],
+      "positive": ["6", 0],
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "seed": 0,
+      "steps": 20
+    },
+    "_meta": {
+      "title": "SD 1.5 Image-to-Image Sampler"
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "v1-5-pruned-emaonly.safetensors"
+    },
+    "_meta": {
+      "title": "SD 1.5 Checkpoint"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["4", 1],
+      "text": "A cinematic photograph of a lighthouse on a stormy coast"
+    },
+    "_meta": {
+      "title": "Positive Prompt"
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["4", 1],
+      "text": "blurry, low quality, watermark, deformed"
+    },
+    "_meta": {
+      "title": "Negative Prompt"
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["3", 0],
+      "vae": ["4", 2]
+    },
+    "_meta": {
+      "title": "Decode Image"
+    }
+  },
+  "9": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": ["8", 0]
+    },
+    "_meta": {
+      "title": "Temporary Image Output"
+    }
+  },
+  "10": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img2img-input.png"
+    },
+    "_meta": {
+      "title": "Source Image"
+    }
+  },
+  "11": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "crop": "center",
+      "height": 512,
+      "image": ["10", 0],
+      "upscale_method": "lanczos",
+      "width": 512
+    },
+    "_meta": {
+      "title": "Source Dimensions"
+    }
+  },
+  "12": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": ["11", 0],
+      "vae": ["4", 2]
+    },
+    "_meta": {
+      "title": "Encode Source Image"
+    }
+  }
+}

@@ -1,0 +1,48 @@
+[package]
+name = "abnegate-comfy"
+description = "ComfyUI image, video, and audio generation, model inventory, and LoRA training"
+keywords = ["comfyui", "lora", "diffusion", "flux", "image-generation"]
+categories = [
+    "api-bindings",
+    "computer-vision",
+    "multimedia::audio",
+    "multimedia::images",
+    "multimedia::video",
+]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+saliency = ["abnegate-vision/saliency"]
+
+[dependencies]
+abnegate-llm = { path = "../abnegate-llm", version = "0.1.0" }
+abnegate-vision = { path = "../abnegate-vision", version = "0.1.0" }
+base64 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+image = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }

@@ -1,0 +1,111 @@
+{
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "cfg": 1,
+      "denoise": 0.75,
+      "latent_image": ["12", 0],
+      "model": ["13", 0],
+      "negative": ["7", 0],
+      "positive": ["6", 0],
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "seed": 0,
+      "steps": 4
+    },
+    "_meta": {
+      "title": "FLUX.1 Schnell Adapter Image-to-Image Sampler"
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "flux1-schnell-fp8.safetensors"
+    },
+    "_meta": {
+      "title": "Pinned FLUX.1 Schnell FP8 Checkpoint"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["4", 1],
+      "text": "A cinematic photograph of a lighthouse on a stormy coast"
+    },
+    "_meta": {
+      "title": "Positive Prompt"
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["4", 1],
+      "text": ""
+    },
+    "_meta": {
+      "title": "Negative Prompt"
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["3", 0],
+      "vae": ["4", 2]
+    },
+    "_meta": {
+      "title": "Decode Image"
+    }
+  },
+  "9": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": ["8", 0]
+    },
+    "_meta": {
+      "title": "Temporary Image Output"
+    }
+  },
+  "10": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img2img-input.png"
+    },
+    "_meta": {
+      "title": "Source Image"
+    }
+  },
+  "11": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "crop": "center",
+      "height": 1024,
+      "image": ["10", 0],
+      "upscale_method": "lanczos",
+      "width": 1024
+    },
+    "_meta": {
+      "title": "Source Dimensions"
+    }
+  },
+  "12": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": ["11", 0],
+      "vae": ["4", 2]
+    },
+    "_meta": {
+      "title": "Encode Source Image"
+    }
+  },
+  "13": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "adapter.safetensors",
+      "model": ["4", 0],
+      "strength_model": 1
+    },
+    "_meta": {
+      "title": "Adapter"
+    }
+  }
+}
