@@ -27,6 +27,7 @@
 //! # Ok::<(), HttpError>(())
 //! ```
 
+mod address;
 mod backoff;
 mod classify;
 mod client;

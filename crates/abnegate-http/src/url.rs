@@ -1,3 +1,5 @@
+use crate::address::literal;
+use crate::address::must_not_be_fetched;
 use crate::error::HttpError;
 use crate::error::Result;
 use reqwest::Url;
@@ -5,7 +7,6 @@ use reqwest::dns::Addrs;
 use reqwest::dns::Name;
 use reqwest::dns::Resolve;
 use reqwest::dns::Resolving;
-use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -25,23 +26,13 @@ pub fn validate_public_url(raw: &str) -> Result<Url> {
     }
     let host = url.host_str().ok_or(HttpError::MissingHost)?;
 
-    // `host_str` hands back IPv6 literals still bracketed, and `[::1]` does not
-    // parse as an address -- so without this every IPv6 spelling of a private
-    // target walked straight past the check below.
-    let literal = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
-
-    if let Ok(ip) = literal.parse::<IpAddr>() {
+    if let Some(ip) = literal(host) {
         if must_not_be_fetched(ip) {
             return Err(HttpError::PrivateAddress);
         }
         return Ok(url);
     }
 
-    // A trailing dot is the same name to a resolver and a different string to
-    // `==`, so `localhost.` reached loopback while `localhost` did not.
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     if host == "localhost"
         || host.ends_with(".localhost")
@@ -143,58 +134,6 @@ pub async fn read_capped(mut response: reqwest::Response, limit: usize) -> Resul
     Ok(body)
 }
 
-/// Whether `ip` is an address a caller-supplied fetch must not reach.
-///
-/// `Ipv4Addr::is_global` would answer this, but it is still unstable, so the
-/// non-global ranges are named here. Enumerating them is the whole point: the
-/// obvious three private blocks leave shared address space (`100.64.0.0/10`,
-/// which a carrier or cloud network routes internally) and benchmarking space
-/// reachable, and those are internal destinations like any other.
-fn must_not_be_fetched(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let octets = ip.octets();
-            ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_multicast()
-                || ip.is_broadcast()
-                || octets[0] == 0
-                || octets[0] >= 240
-                // Shared address space, which carrier and cloud networks route.
-                || (octets[0] == 100 && (64..128).contains(&octets[1]))
-                // Benchmarking.
-                || (octets[0] == 198 && (18..20).contains(&octets[1]))
-                // IETF protocol assignments, 6to4 relay anycast, and the three
-                // documentation ranges.
-                || matches!(
-                    [octets[0], octets[1], octets[2]],
-                    [192, 0, 0] | [192, 0, 2] | [192, 88, 99] | [198, 51, 100] | [203, 0, 113]
-                )
-        }
-        // An IPv4 address written as IPv6 reaches the same host, so it is
-        // answered by the IPv4 rules rather than a second, weaker set.
-        IpAddr::V6(ip) => match ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
-            Some(ip) => must_not_be_fetched(IpAddr::V4(ip)),
-            None => {
-                let segments = ip.segments();
-                ip.is_loopback()
-                    || ip.is_unspecified()
-                    || ip.is_unique_local()
-                    || ip.is_unicast_link_local()
-                    || ip.is_multicast()
-                    // Discard-only.
-                    || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0])
-                    // IETF protocol assignments, Teredo among them.
-                    || (segments[0] == 0x2001 && segments[1] < 0x0200)
-                    // Documentation.
-                    || (segments[0] == 0x2001 && segments[1] == 0x0db8)
-                    || (segments[0] & 0xfff0) == 0x3ff0
-            }
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,45 +142,24 @@ mod tests {
         raw.parse().expect("a socket address")
     }
 
-    /// The three private blocks are not the whole of what is unreachable from
-    /// outside. Shared address space is routed inside carrier and cloud
-    /// networks, and the rest of these are addresses no public name should
-    /// ever answer with.
     #[test]
-    fn the_non_global_ranges_beyond_the_private_ones_are_refused() {
+    fn the_non_global_ranges_are_refused_as_urls() {
         for raw in [
             "100.64.0.1",
-            "100.127.255.1",
             "198.18.0.1",
-            "198.19.255.1",
-            "192.0.0.1",
             "192.0.2.1",
-            "198.51.100.1",
-            "203.0.113.1",
-            "192.88.99.1",
-            "224.0.0.1",
             "240.0.0.1",
-            "255.255.255.255",
+            "[64:ff9b::7f00:1]",
+            "[2002:7f00:1::]",
+            "[fec0::1]",
         ] {
-            let ip: IpAddr = raw.parse().expect("an address");
-            assert!(must_not_be_fetched(ip), "{raw} is reachable");
             assert!(
-                validate_public_url(&format!("http://{raw}/")).is_err(),
+                matches!(
+                    validate_public_url(&format!("http://{raw}/")),
+                    Err(HttpError::PrivateAddress)
+                ),
                 "{raw} passed the URL check"
             );
-        }
-    }
-
-    #[test]
-    fn a_globally_routable_address_is_still_reachable() {
-        for raw in [
-            "93.184.216.34",
-            "1.1.1.1",
-            "100.63.255.255",
-            "198.17.255.255",
-        ] {
-            let ip: IpAddr = raw.parse().expect("an address");
-            assert!(!must_not_be_fetched(ip), "{raw} was refused");
         }
     }
 
