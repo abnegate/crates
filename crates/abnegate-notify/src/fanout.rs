@@ -16,6 +16,9 @@ use crate::report::Report;
 /// The default a channel gets before it is abandoned.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The least any channel is given, so a zero budget cannot fail every delivery.
+pub(crate) const MINIMUM_TIMEOUT: Duration = Duration::from_millis(1);
+
 /// Delivers a notification to every registered channel concurrently.
 ///
 /// Each channel runs as its own task under its own timeout, so a webhook that
@@ -42,9 +45,13 @@ impl Fanout {
     }
 
     /// The budget for any channel that does not set its own.
+    ///
+    /// A budget below a millisecond is raised to one. Slack and Discord bound
+    /// their own requests at [`DEFAULT_TIMEOUT`], so a budget longer than that
+    /// needs their `timeout` too.
     #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
+        self.timeout = timeout.max(MINIMUM_TIMEOUT);
         self
     }
 
@@ -82,7 +89,10 @@ impl Fanout {
         for (index, notifier) in self.notifiers.iter().enumerate() {
             let notifier = Arc::clone(notifier);
             let notification = Arc::clone(&shared);
-            let budget = notifier.timeout().unwrap_or(self.timeout);
+            let budget = notifier
+                .timeout()
+                .unwrap_or(self.timeout)
+                .max(MINIMUM_TIMEOUT);
 
             let handle = tasks.spawn(async move {
                 let outcome = match timeout(budget, notifier.deliver(&notification)).await {

@@ -18,6 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
+mock = []
 smtp = ["dep:lettre"]
 
 [dependencies]

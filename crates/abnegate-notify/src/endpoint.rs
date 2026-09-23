@@ -16,6 +16,7 @@ const REQUIRED_SCHEME: &str = "https";
 /// A rejected URL is never quoted back: the path of a webhook URL is the
 /// credential, so only the host reaches the message.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EndpointError {
     #[error("the webhook URL could not be parsed")]
     Malformed,
@@ -28,6 +29,9 @@ pub enum EndpointError {
 
     #[error("the webhook URL embeds credentials in its authority")]
     EmbeddedCredentials,
+
+    #[error("a webhook may not name port {port}")]
+    Port { port: u16 },
 
     #[error("{host} is an IP literal, which a webhook may not target")]
     AddressLiteral { host: String },
@@ -59,7 +63,9 @@ impl Endpoint {
     ///
     /// `allowed` is matched exactly against the parsed host, which `url` has
     /// already lowercased and punycode-encoded, so a lookalike host cannot
-    /// match by casing or by Unicode confusable.
+    /// match by casing or by Unicode confusable. A provider serves its hooks
+    /// on the default port, so naming any other one is refused. What is kept
+    /// is the parsed form, so the URL requested is the one that was checked.
     pub fn new(url: &str, allowed: &[&str]) -> Result<Self, EndpointError> {
         let parsed = Url::parse(url).map_err(|_| EndpointError::Malformed)?;
 
@@ -71,6 +77,10 @@ impl Endpoint {
 
         if !parsed.username().is_empty() || parsed.password().is_some() {
             return Err(EndpointError::EmbeddedCredentials);
+        }
+
+        if let Some(port) = parsed.port() {
+            return Err(EndpointError::Port { port });
         }
 
         let host = parsed.host().ok_or(EndpointError::MissingHost)?;
@@ -97,7 +107,7 @@ impl Endpoint {
         }
 
         Ok(Self {
-            url: SecretValue::new(url),
+            url: SecretValue::new(parsed.as_str()),
             host: name,
         })
     }
@@ -289,5 +299,29 @@ mod tests {
         let endpoint =
             Endpoint::new("https://HOOKS.Slack.COM/services/T/B/x", ALLOWED).expect("same host");
         assert_eq!(endpoint.host(), "hooks.slack.com");
+    }
+
+    #[test]
+    fn a_port_other_than_the_default_is_refused() {
+        for (url, port) in [
+            ("https://hooks.slack.com:8443/services/T/B/x", 8443),
+            ("https://hooks.slack.com:80/services/T/B/x", 80),
+        ] {
+            assert_eq!(
+                Endpoint::new(url, ALLOWED).expect_err("must be refused"),
+                EndpointError::Port { port }
+            );
+        }
+        assert!(Endpoint::new("https://hooks.slack.com:443/services/T/B/x", ALLOWED).is_ok());
+    }
+
+    #[test]
+    fn the_parsed_url_is_what_is_kept() {
+        let endpoint = Endpoint::new("  https://HOOKS.Slack.COM:443/services/T/../T/B/x", ALLOWED)
+            .expect("same host");
+        assert_eq!(
+            endpoint.url.expose(),
+            "https://hooks.slack.com/services/T/B/x"
+        );
     }
 }

@@ -1,5 +1,7 @@
 //! Slack, over an incoming webhook.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -7,7 +9,7 @@ use crate::backend::webhook::Webhook;
 use crate::channel::Channel;
 use crate::endpoint::Endpoint;
 use crate::error::NotifyError;
-use crate::fanout::DEFAULT_TIMEOUT;
+use crate::field::Field;
 use crate::notification::Notification;
 use crate::notifier::Notifier;
 use crate::severity::Severity;
@@ -19,6 +21,7 @@ const MAX_HEADER_CHARS: usize = 150;
 const MAX_SECTION_CHARS: usize = 3_000;
 const MAX_FIELD_CHARS: usize = 2_000;
 const MAX_FIELDS_PER_SECTION: usize = 10;
+const MAX_BLOCKS: usize = 50;
 
 /// Delivers to one Slack incoming webhook.
 #[derive(Debug)]
@@ -32,9 +35,20 @@ impl Slack {
     pub fn new(webhook_url: &str) -> Result<Self, NotifyError> {
         let endpoint = Endpoint::new(webhook_url, HOSTS)?;
         Ok(Self {
-            webhook: Webhook::new(endpoint, DEFAULT_TIMEOUT)?,
+            webhook: Webhook::new(endpoint)?,
             name: None,
         })
+    }
+
+    /// Give up on a delivery after `timeout` rather than
+    /// [`DEFAULT_TIMEOUT`](crate::DEFAULT_TIMEOUT).
+    ///
+    /// The same budget replaces the fan-out's for this channel, so a fan-out
+    /// allowing longer than the default needs it set here too.
+    #[must_use]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.webhook.set_timeout(timeout);
+        self
     }
 
     /// Label this instance, for a caller with more than one Slack hook.
@@ -47,17 +61,20 @@ impl Slack {
     #[cfg(test)]
     pub(crate) fn at_test_server(base_url: &str) -> Self {
         Self {
-            webhook: Webhook::new(
-                Endpoint::for_test(&format!("{base_url}/services/T000/B000/secret")),
-                DEFAULT_TIMEOUT,
-            )
+            webhook: Webhook::new(Endpoint::for_test(&format!(
+                "{base_url}/services/T000/B000/secret"
+            )))
             .expect("test client"),
             name: None,
         }
     }
 
+    /// Block Kit for `notification`, within Slack's block ceiling.
+    ///
+    /// The header, body and link are always kept, so it is the field sections
+    /// that give way when a notification carries more than fits.
     fn payload(&self, notification: &Notification) -> Value {
-        let mut blocks = vec![json!({
+        let header = json!({
             "type": "header",
             "text": {
                 "type": "plain_text",
@@ -67,43 +84,40 @@ impl Slack {
                 ),
                 "emoji": true,
             }
-        })];
+        });
 
-        if !notification.body().is_empty() {
-            blocks.push(json!({
+        let body = (!notification.body().is_empty()).then(|| {
+            json!({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
                     "text": truncate(&escape(notification.body()), MAX_SECTION_CHARS),
                 }
-            }));
-        }
+            })
+        });
 
-        for chunk in notification.fields().chunks(MAX_FIELDS_PER_SECTION) {
-            let fields: Vec<Value> = chunk
-                .iter()
-                .map(|field| {
-                    json!({
-                        "type": "mrkdwn",
-                        "text": truncate(
-                            &format!("*{}*\n{}", escape(field.name()), escape(field.value())),
-                            MAX_FIELD_CHARS,
-                        ),
-                    })
-                })
-                .collect();
-            blocks.push(json!({ "type": "section", "fields": fields }));
-        }
-
-        if let Some(link) = notification.url() {
-            blocks.push(json!({
+        let link = notification.url().map(|link| {
+            json!({
                 "type": "context",
                 "elements": [{
                     "type": "mrkdwn",
                     "text": format!("<{}|{LINK_LABEL}>", escape(link)),
                 }],
-            }));
-        }
+            })
+        });
+
+        let fixed = 1 + usize::from(body.is_some()) + usize::from(link.is_some());
+        let mut blocks = Vec::with_capacity(MAX_BLOCKS);
+        blocks.push(header);
+        blocks.extend(body);
+        blocks.extend(
+            notification
+                .fields()
+                .chunks(MAX_FIELDS_PER_SECTION)
+                .take(MAX_BLOCKS - fixed)
+                .map(section),
+        );
+        blocks.extend(link);
 
         json!({
             "text": truncate(&escape(&notification.to_plain_text()), MAX_SECTION_CHARS),
@@ -122,10 +136,30 @@ impl Notifier for Slack {
         self.name.as_deref()
     }
 
+    fn timeout(&self) -> Option<Duration> {
+        self.webhook.timeout()
+    }
+
     async fn deliver(&self, notification: &Notification) -> Result<(), NotifyError> {
         self.webhook.post(&self.payload(notification)).await?;
         Ok(())
     }
+}
+
+fn section(fields: &[Field]) -> Value {
+    let fields: Vec<Value> = fields
+        .iter()
+        .map(|field| {
+            json!({
+                "type": "mrkdwn",
+                "text": truncate(
+                    &format!("*{}*\n{}", escape(field.name()), escape(field.value())),
+                    MAX_FIELD_CHARS,
+                ),
+            })
+        })
+        .collect();
+    json!({ "type": "section", "fields": fields })
 }
 
 fn icon(severity: Severity) -> &'static str {
@@ -338,5 +372,55 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("invalid_payload"));
         assert!(!rendered.contains("secret"), "leaked: {rendered}");
+    }
+
+    #[test]
+    fn field_sections_give_way_to_slacks_block_ceiling() {
+        let mut notification = Notification::new("Many", "Body").link("https://example.test/b/1");
+        for index in 0..600 {
+            notification = notification.field(format!("Key {index}"), "value");
+        }
+
+        let slack = Slack::new("https://hooks.slack.com/services/T/B/x").expect("valid");
+        let payload = slack.payload(&notification);
+        let blocks = payload["blocks"].as_array().expect("blocks");
+
+        assert_eq!(blocks.len(), MAX_BLOCKS);
+        assert_eq!(blocks[0]["type"], "header");
+        assert_eq!(blocks[1]["text"]["text"], "Body");
+        assert_eq!(
+            blocks[MAX_BLOCKS - 1]["type"],
+            "context",
+            "the link survives the cut"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_timeout_bounds_the_request_and_is_offered_to_the_fanout() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+
+        let slack = at(&server).timeout(Duration::from_millis(100));
+        assert_eq!(Notifier::timeout(&slack), Some(Duration::from_millis(100)));
+
+        let error = slack
+            .deliver(&Notification::new("Title", "Body"))
+            .await
+            .expect_err("too slow");
+        assert_eq!(
+            error,
+            NotifyError::Timeout {
+                after: Duration::from_millis(100)
+            }
+        );
+    }
+
+    #[test]
+    fn without_a_timeout_the_fanout_decides() {
+        let slack = Slack::new("https://hooks.slack.com/services/T/B/x").expect("valid");
+        assert_eq!(Notifier::timeout(&slack), None);
     }
 }

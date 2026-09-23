@@ -5,6 +5,7 @@ use crate::error::NotifyError;
 
 /// The outcome of a single channel's attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Delivery {
     channel: Channel,
     name: String,

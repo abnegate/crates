@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::endpoint::Endpoint;
 use crate::error::NotifyError;
+use crate::fanout::{DEFAULT_TIMEOUT, MINIMUM_TIMEOUT};
 use crate::text::truncate;
 
 const USER_AGENT: &str = concat!("abnegate-notify/", env!("CARGO_PKG_VERSION"));
@@ -24,17 +25,20 @@ const RETRY_AFTER: &str = "retry-after";
 /// endpoint hand back a `Location` pointing at a private address and walk
 /// straight around the host allowlist that [`Endpoint`] enforces, which is
 /// the usual way an allowlisted webhook still turns into an SSRF.
+///
+/// Each request is bounded by [`DEFAULT_TIMEOUT`] until a backend sets its
+/// own, and a backend that sets one hands the same budget to the fan-out.
 #[derive(Debug)]
 pub(crate) struct Webhook {
     endpoint: Endpoint,
     client: Client,
+    timeout: Option<Duration>,
 }
 
 impl Webhook {
-    pub(crate) fn new(endpoint: Endpoint, timeout: Duration) -> Result<Self, NotifyError> {
+    pub(crate) fn new(endpoint: Endpoint) -> Result<Self, NotifyError> {
         let client = Client::builder()
             .redirect(Policy::none())
-            .timeout(timeout)
             .connect_timeout(CONNECT_TIMEOUT)
             .user_agent(USER_AGENT)
             .build()
@@ -42,24 +46,36 @@ impl Webhook {
                 message: strip_url(error),
             })?;
 
-        Ok(Self { endpoint, client })
+        Ok(Self {
+            endpoint,
+            client,
+            timeout: None,
+        })
     }
 
     pub(crate) fn host(&self) -> &str {
         self.endpoint.host()
     }
 
+    /// The budget a backend set, which the fan-out honours in place of its own.
+    pub(crate) fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
+    pub(crate) fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = Some(timeout.max(MINIMUM_TIMEOUT));
+    }
+
     pub(crate) async fn post(&self, payload: &Value) -> Result<Response, NotifyError> {
+        let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
         let response = self
             .endpoint
             .post(&self.client)
+            .timeout(timeout)
             .json(payload)
             .send()
             .await
-            .map_err(|error| NotifyError::Unreachable {
-                host: self.host().to_string(),
-                message: strip_url(error),
-            })?;
+            .map_err(|error| self.unsent(error, timeout))?;
 
         let status = response.status();
         if status.is_success() {
@@ -78,6 +94,16 @@ impl Webhook {
             status: status.as_u16(),
             body: self.read_failure_body(response).await,
         })
+    }
+
+    fn unsent(&self, error: reqwest::Error, timeout: Duration) -> NotifyError {
+        if error.is_timeout() && !error.is_connect() {
+            return NotifyError::Timeout { after: timeout };
+        }
+        NotifyError::Unreachable {
+            host: self.host().to_string(),
+            message: strip_url(error),
+        }
     }
 
     /// The first of an error body, bounded before it is read.
@@ -119,9 +145,7 @@ fn strip_url(error: reqwest::Error) -> String {
 fn retry_after(response: &Response) -> Option<Duration> {
     let header = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
     let seconds: f64 = header.trim().parse().ok()?;
-    // try_from_secs_f64 rejects negative, NaN, infinite and overflowing values
-    // in one call. The header is the least trusted input in this crate, and
-    // from_secs_f64 panics rather than erroring on overflow.
+    // Not from_secs_f64: it panics on the overflowing value a hostile header can carry.
     Duration::try_from_secs_f64(seconds).ok()
 }
 
@@ -133,11 +157,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn webhook(server: &MockServer) -> Webhook {
-        Webhook::new(
-            Endpoint::for_test(&format!("{}/hook", server.uri())),
-            Duration::from_secs(5),
-        )
-        .expect("client")
+        Webhook::new(Endpoint::for_test(&format!("{}/hook", server.uri()))).expect("client")
     }
 
     #[tokio::test]
@@ -308,10 +328,9 @@ mod tests {
         // Port 1 is privileged, so no concurrent test can bind it and answer.
         // Freeing an ephemeral port instead races every other test's mock
         // server, which then answers 200 and the assertion never runs.
-        let webhook = Webhook::new(
-            Endpoint::for_test("http://127.0.0.1:1/services/T000/B000/xxxxSECRETxxxx"),
-            Duration::from_millis(500),
-        )
+        let webhook = Webhook::new(Endpoint::for_test(
+            "http://127.0.0.1:1/services/T000/B000/xxxxSECRETxxxx",
+        ))
         .expect("client");
 
         let error = webhook.post(&json!({})).await.expect_err("unreachable");
@@ -319,5 +338,35 @@ mod tests {
         assert!(!rendered.contains("xxxxSECRETxxxx"), "leaked: {rendered}");
         assert!(!rendered.contains("/services/"), "leaked: {rendered}");
         assert!(!format!("{error:?}").contains("xxxxSECRETxxxx"));
+    }
+
+    #[tokio::test]
+    async fn a_request_that_outlives_its_budget_is_a_timeout_not_an_outage() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+
+        let mut webhook = webhook(&server).await;
+        webhook.set_timeout(Duration::from_millis(100));
+
+        let error = webhook.post(&json!({})).await.expect_err("too slow");
+        assert_eq!(
+            error,
+            NotifyError::Timeout {
+                after: Duration::from_millis(100)
+            }
+        );
+    }
+
+    #[test]
+    fn a_zero_budget_is_raised_to_the_minimum() {
+        let mut webhook =
+            Webhook::new(Endpoint::for_test("http://127.0.0.1:1/hook")).expect("client");
+        assert_eq!(webhook.timeout(), None);
+
+        webhook.set_timeout(Duration::ZERO);
+        assert_eq!(webhook.timeout(), Some(MINIMUM_TIMEOUT));
     }
 }
