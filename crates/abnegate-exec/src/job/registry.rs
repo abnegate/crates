@@ -54,12 +54,8 @@ impl JobRegistry {
 
     /// Update the state of a job.
     ///
-    /// A terminal state forgets the job's process group and stdin. Record one
-    /// as soon as the job's `RunExit` or `RunError` arrives: an executor
-    /// reports either only after it has killed the job's group and reaped its
-    /// leader, so from then on the group's identifier can belong to an
-    /// unrelated process group, which a later [`JobRegistry::cancel_all`]
-    /// would otherwise kill. A finished job never becomes unfinished again.
+    /// A terminal state forgets the job's process group and stdin. A finished
+    /// job never becomes unfinished again.
     pub fn update_state(&self, job_id: &str, state: JobState) -> Result<(), JobError> {
         let mut entry = self.unfinished(job_id, !state.is_terminal())?;
         entry.transition(state);
@@ -149,6 +145,13 @@ impl JobRegistry {
 
     /// Set the process group for a job. A job that has already finished is
     /// refused: its group has exited and the identifier may be reused.
+    ///
+    /// Pass a clone of the [`JobHandle`](crate::executor::JobHandle)'s group.
+    /// The executor releases that group just before it reaps the job's leader,
+    /// so the registry never signals the group's identifier once it is free,
+    /// even before the job's terminal message has been observed. A group
+    /// built any other way is signalled until the job is recorded as
+    /// finished.
     pub fn set_process_group(
         &self,
         job_id: &str,
@@ -250,6 +253,8 @@ mod tests {
     use std::time::Duration;
 
     use nix::sys::signal::Signal;
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
 
     use crate::executor::sleeper::Sleeper;
 
@@ -509,6 +514,30 @@ mod tests {
         registry.cancel("job-1", true).unwrap();
 
         assert_eq!(sleeper.wait(), Some(Signal::SIGKILL as i32));
+    }
+
+    /// The executor releases a job's group just before reaping its leader,
+    /// which can be long before the consumer observes the job's terminal
+    /// message. The sleeper stands in for an unrelated group that has taken
+    /// the identifier over: only the test's own SIGTERM may reach it.
+    #[test]
+    fn a_released_group_is_never_signalled() {
+        let registry = JobRegistry::new();
+        registry.register("job-1".to_string()).unwrap();
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+        registry.set_process_group("job-1", group.clone()).unwrap();
+
+        group.release();
+        registry.cancel("job-1", true).unwrap();
+        registry.cancel_all();
+        kill(Pid::from_raw(-group.pgid()), Signal::SIGTERM).unwrap();
+
+        assert_eq!(
+            sleeper.wait(),
+            Some(Signal::SIGTERM as i32),
+            "the registry signalled a group whose leader had been reaped"
+        );
     }
 
     /// The group identifier of an exited job can belong to an unrelated

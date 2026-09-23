@@ -779,6 +779,40 @@ mod tests {
         );
     }
 
+    /// The group is released just before its leader is reaped, so by the
+    /// time any ending is reported no handle to it -- such as the one a
+    /// registry holds -- can signal an identifier that is free for reuse.
+    #[tokio::test]
+    async fn every_ending_releases_the_group_before_it_is_reported() {
+        let executor = CommandExecutor::with_config(
+            ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
+        );
+        let mut timed_out = shell("released-timeout", "sleep 30");
+        if let InboundMessage::RunStart { timeout_ms, .. } = &mut timed_out {
+            *timeout_ms = Some(200);
+        }
+        let endings = [
+            (shell("released-exit", "exit 0"), false),
+            (timed_out, false),
+            (shell("released-cancel", "sleep 30"), true),
+        ];
+
+        for (request, cancelled) in endings {
+            let (sender, receiver) = mpsc::channel(100);
+            let handle = executor.spawn(&request, sender).await.unwrap();
+            if cancelled {
+                handle.cancel();
+            }
+            let run = finish(receiver).await;
+
+            assert!(
+                handle.process_group.is_released(),
+                "{:?}",
+                run.messages.last()
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_child_that_exits_takes_its_group_with_it() {
         let run = run(
