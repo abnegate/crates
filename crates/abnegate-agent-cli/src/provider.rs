@@ -292,7 +292,11 @@ impl CliProvider {
                 Verdict::Finished => None,
             })
         });
-        if status == ExitStatus::Code(0) && stdout.failure.is_none() && stopped.is_none() {
+        if status == ExitStatus::Code(0)
+            && stdout.finished
+            && stdout.failure.is_none()
+            && stopped.is_none()
+        {
             reaper.disarm();
         }
 
@@ -1562,6 +1566,40 @@ echo '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateL
             .await
             .expect_err("a failure");
         assert!(error.to_string().contains("rate limit reached"), "{error}");
+
+        let straggler = std::fs::read_to_string(&marker)
+            .expect("the straggler's pid")
+            .trim()
+            .to_string();
+        let started = Instant::now();
+        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !alive(&straggler),
+            "the failed run left {straggler} running"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_trips_and_exits_cleanly_still_takes_what_it_forked_with_it() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("straggler");
+        let script = format!(
+            r#"sleep 60 >/dev/null 2>&1 &
+echo $! > '{}'
+echo 'API Error: 429 Too Many Requests' >&2
+sleep 1
+exit 0"#,
+            marker.display()
+        );
+        let settings = settings(&directory, &script).with_tripwire(|line| line.contains("429"));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a failure");
+        assert!(error.to_string().contains("429"), "{error}");
 
         let straggler = std::fs::read_to_string(&marker)
             .expect("the straggler's pid")
