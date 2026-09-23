@@ -79,6 +79,7 @@ impl GitService {
         command.args([
             "fetch",
             "--prune",
+            NO_FETCH_HEAD,
             IGNORE_CONFIGURED_REFSPECS,
             "--",
             ORIGIN,
@@ -92,7 +93,13 @@ impl GitService {
     fn fetching(path: &Path, branch: &BranchName) -> Command {
         let mut command = Self::managed_remote(path);
         command
-            .args(["fetch", IGNORE_CONFIGURED_REFSPECS, "--", ORIGIN])
+            .args([
+                "fetch",
+                NO_FETCH_HEAD,
+                IGNORE_CONFIGURED_REFSPECS,
+                "--",
+                ORIGIN,
+            ])
             .arg(tracking_refspec(branch));
         command
     }
@@ -1727,6 +1734,10 @@ mod managed_tests {
                 .collect();
             assert!(!fetches.is_empty(), "operation {operation}: {recorded:?}");
             for fetch in fetches {
+                assert!(
+                    fetch.iter().any(|argument| argument == NO_FETCH_HEAD),
+                    "operation {operation}: {fetch:?}"
+                );
                 let refmap = fetch.iter().position(|argument| argument == "--refmap=");
                 assert_eq!(
                     refmap.map(|refmap| &fetch[refmap + 1..]),
@@ -1735,6 +1746,10 @@ mod managed_tests {
                 );
             }
         }
+        assert!(
+            !target.join(GIT_DIRECTORY).join("FETCH_HEAD").exists(),
+            "a fetch wrote FETCH_HEAD"
+        );
     }
 
     /// A clone's refspec sits in the configuration every worktree of it

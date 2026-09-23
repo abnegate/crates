@@ -48,6 +48,7 @@ pub(crate) use crate::git::hardening::CONFIG_LISTING;
 pub(crate) use crate::git::hardening::DIFF_PREFIX;
 pub(crate) use crate::git::hardening::GITLINK_MODE;
 pub(crate) use crate::git::hardening::IGNORE_SUBMODULES;
+pub(crate) use crate::git::hardening::NO_FETCH_HEAD;
 pub(crate) use crate::git::hardening::PINS;
 pub(crate) use crate::git::hardening::harden;
 pub(crate) use crate::git::hardening::refused;

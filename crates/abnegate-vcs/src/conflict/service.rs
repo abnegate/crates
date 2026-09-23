@@ -15,6 +15,7 @@ use crate::conflict::validate;
 use crate::git::DIFF_PREFIX;
 use crate::git::GITLINK_MODE;
 use crate::git::GitService;
+use crate::git::NO_FETCH_HEAD;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
 use std::collections::BTreeSet;
@@ -436,12 +437,14 @@ impl ConflictService {
 }
 
 /// `git fetch` of exactly the two branches, into refs of the throwaway
-/// repository's own, with the remote after the end of the options.
+/// repository's own and no `FETCH_HEAD`, with the remote after the end of
+/// the options.
 fn fetch_arguments(remote: &RepositoryUrl, head: &BranchName, base: &BranchName) -> Vec<String> {
     vec![
         "fetch".to_string(),
         "--no-tags".to_string(),
         "--quiet".to_string(),
+        NO_FETCH_HEAD.to_string(),
         "--".to_string(),
         remote.to_string(),
         format!("+{}:{HEAD_REF}", head.reference()),
@@ -596,6 +599,24 @@ mod tests {
         assert_eq!(
             push_arguments(&remote(), &commit, &head).last().unwrap(),
             &format!("{commit}:refs/heads/feature")
+        );
+    }
+
+    #[test]
+    fn the_fetch_writes_no_fetch_head() {
+        let arguments = fetch_arguments(
+            &remote(),
+            &BranchName::parse("feature").unwrap(),
+            &BranchName::parse("main").unwrap(),
+        );
+
+        let flag = arguments
+            .iter()
+            .position(|argument| argument == NO_FETCH_HEAD);
+        let end = arguments.iter().position(|argument| argument == "--");
+        assert!(
+            matches!((flag, end), (Some(flag), Some(end)) if flag < end),
+            "{arguments:?}"
         );
     }
 

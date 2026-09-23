@@ -8,13 +8,14 @@ use std::process::Stdio;
 /// hook, a file-system monitor, a credential helper, a signing program or a
 /// maintenance job, follow a redirect, turn off certificate checks, route
 /// through a proxy, recurse into submodules, push tags or options nobody
-/// named, mark files so a status stops seeing them, or have a checkout or
-/// switch enter a nested repository to list its changes.
+/// named, mark files so a status stops seeing them, have a checkout or
+/// switch enter a nested repository to list its changes, or start a reflog
+/// under `logs/`, where git follows a link standing in a file's place.
 ///
 /// `http.sslCAInfo` and `http.sslCAPath` are deliberately absent: git hands an
 /// empty value to curl verbatim and every HTTPS request then fails. A
 /// repository that sets either is refused by [`refused`] instead.
-pub(crate) const PINS: [&str; 36] = [
+pub(crate) const PINS: [&str; 38] = [
     "-c",
     "core.hooksPath=/dev/null",
     "-c",
@@ -51,6 +52,8 @@ pub(crate) const PINS: [&str; 36] = [
     "maintenance.auto=false",
     "-c",
     "diff.ignoreSubmodules=dirty",
+    "-c",
+    "core.logAllRefUpdates=false",
 ];
 
 /// Environment every hardened command runs under, after the host's own has
@@ -115,6 +118,11 @@ pub(crate) const IGNORE_SUBMODULES: &str = "--ignore-submodules=dirty";
 /// The mode `git ls-files -s` prints for a gitlink: a nested repository
 /// recorded in the index rather than a file whose content the host controls.
 pub(crate) const GITLINK_MODE: &str = "160000 ";
+
+/// Passed to every fetch so it writes no `FETCH_HEAD`: git opens that file
+/// by name and follows a link standing in its place, and nothing here reads
+/// it, since every fetch names the refs it writes on its own command line.
+pub(crate) const NO_FETCH_HEAD: &str = "--no-write-fetch-head";
 
 /// The flags every diff carries before its own: no external or textconv
 /// driver a repository could name, and no descent into a nested repository.
@@ -261,6 +269,15 @@ mod tests {
         let pinned = PINS
             .windows(2)
             .any(|pair| pair == ["-c", "diff.ignoreSubmodules=dirty"]);
+
+        assert!(pinned, "{PINS:?}");
+    }
+
+    #[test]
+    fn no_command_starts_a_reflog_a_linked_logs_directory_could_carry_elsewhere() {
+        let pinned = PINS
+            .windows(2)
+            .any(|pair| pair == ["-c", "core.logAllRefUpdates=false"]);
 
         assert!(pinned, "{PINS:?}");
     }

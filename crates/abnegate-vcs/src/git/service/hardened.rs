@@ -359,7 +359,14 @@ impl GitService {
             Self::verify_config(path).await?;
             let mut command = Self::connected(url, token);
             command
-                .args(["fetch", "--prune", "--", url.as_str(), FETCH_REFSPEC])
+                .args([
+                    "fetch",
+                    "--prune",
+                    NO_FETCH_HEAD,
+                    "--",
+                    url.as_str(),
+                    FETCH_REFSPEC,
+                ])
                 .current_dir(path);
             match Self::finish(&mut command).await {
                 Ok(()) => return Ok(()),
@@ -469,7 +476,7 @@ impl GitService {
             false => (1, format!("[extensions]\n{extensions}")),
         };
         let content = format!(
-            "[core]\n\trepositoryformatversion = {version}\n\tbare = false\n\tlogallrefupdates = true\n{core}{extensions}[remote \"{ORIGIN}\"]\n\turl = {}\n\tfetch = {FETCH_REFSPEC}\n",
+            "[core]\n\trepositoryformatversion = {version}\n\tbare = false\n{core}{extensions}[remote \"{ORIGIN}\"]\n\turl = {}\n\tfetch = {FETCH_REFSPEC}\n",
             quoted(url.as_str())
         );
         replace_atomically(&file, &content).await
@@ -1455,6 +1462,10 @@ mod publication_tests {
         service.fetch(&base, &local(&genuine), None).await.unwrap();
         let refs = git(&base, &["for-each-ref", "refs/remotes/origin/"]);
         assert!(!refs.contains("origin/gone"), "{refs}");
+        assert!(
+            !base.join(GIT_DIRECTORY).join("FETCH_HEAD").exists(),
+            "the fetch wrote FETCH_HEAD"
+        );
     }
 
     /// The default branch and its tip come from the remote; a redirected
@@ -1544,6 +1555,7 @@ mod publication_tests {
             "{listed}"
         );
         assert!(listed.contains("core.filemode="), "{listed}");
+        assert!(!listed.contains("logallrefupdates"), "{listed}");
         assert_eq!(
             git(&base, &["status", "--porcelain"]),
             "",
@@ -1933,6 +1945,33 @@ mod branch_tests {
                 .await,
             Err(GitError::BranchExists(taken)) if taken == branch("feature/one")
         ));
+    }
+
+    /// A branch a hardened command makes starts no reflog: git would write
+    /// one under `logs/`, following a link standing in the place of any
+    /// directory or file on the way.
+    #[tokio::test]
+    async fn a_new_branch_starts_no_reflog() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+
+        GitService::new()
+            .create_branch(repository.path(), &branch("feature/one"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(repository.path(), &["symbolic-ref", "HEAD"]),
+            "refs/heads/feature/one"
+        );
+        assert!(
+            !repository
+                .path()
+                .join(GIT_DIRECTORY)
+                .join("logs/refs/heads/feature")
+                .exists(),
+            "the new branch started a reflog"
+        );
     }
 
     /// A new branch whose name is already a link to a branch that does not
