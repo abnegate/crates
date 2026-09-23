@@ -1,4 +1,4 @@
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 //! The parts an LLM agent is built from: a tool registry the model acts
 //! through, a ReAct loop that drives it, and the context, history and session

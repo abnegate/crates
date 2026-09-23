@@ -6,7 +6,7 @@ use tokio::process::Command;
 use super::run::{ALLOWED_COMMANDS, RunCommandParameters};
 use super::shell::{RunShellParameters, total_sleep};
 use super::*;
-use crate::test_support::{PROXY_TEST_CHILD, captured_logs};
+use crate::test_support::{CHILD_TEST, captured_logs};
 use crate::tools::{MAX_TOOL_MESSAGE_CHARACTERS, Session, Tool};
 
 fn create_test_context() -> ToolContext {
@@ -54,11 +54,37 @@ async fn environments(context: &ToolContext) -> [String; 2] {
 /// keys. A child that inherited the parent's environment would print all
 /// of it into tool output, so `env_clear` is what makes the caller's
 /// allowlist an allowlist.
-#[allow(unsafe_code)]
+///
+/// The marker is put in this process's environment by running the test again
+/// in a child process that starts with it, because setting a variable in a
+/// running test binary races every other test reading the environment.
 #[tokio::test]
 async fn shelling_tools_give_the_child_only_the_context_environment() {
+    const NAME: &str =
+        "tools::command::tests::shelling_tools_give_the_child_only_the_context_environment";
     const MARKER: &str = "ABNEGATE_COMMAND_ENVIRONMENT_MARKER";
-    unsafe { std::env::set_var(MARKER, "must-not-reach-a-child") };
+    const VALUE: &str = "must-not-reach-a-child";
+    if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD_TEST, NAME)
+            .env(MARKER, VALUE)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    assert_eq!(
+        std::env::var(MARKER).as_deref(),
+        Ok(VALUE),
+        "the marker has to be in this process for the test to prove anything"
+    );
 
     let mut context = create_test_context();
     context.environment = crate::tools::EnvironmentPolicy::from_iter([(
@@ -66,10 +92,7 @@ async fn shelling_tools_give_the_child_only_the_context_environment() {
         std::env::var("PATH").unwrap_or_default(),
     )]);
 
-    let outputs = environments(&context).await;
-    unsafe { std::env::remove_var(MARKER) };
-
-    for output in outputs {
+    for output in environments(&context).await {
         assert!(output.contains("PATH="), "the tool did not run: {output}");
         assert!(
             !output.contains(MARKER),
@@ -101,12 +124,12 @@ fn shell_test_context() -> ToolContext {
 #[tokio::test]
 async fn proxy_overrides_command_and_shell_environment() {
     const NAME: &str = "tools::command::tests::proxy_overrides_command_and_shell_environment";
-    if std::env::var(PROXY_TEST_CHILD).as_deref() != Ok(NAME) {
+    if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", NAME, "--nocapture"])
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env(PROXY_TEST_CHILD, NAME)
+            .env(CHILD_TEST, NAME)
             .env(PROXY_URL_ENV, "http://127.0.0.1:28888")
             .output()
             .await

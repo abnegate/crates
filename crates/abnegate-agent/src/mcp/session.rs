@@ -185,7 +185,7 @@ async fn log_stderr(server: String, mut stderr: ChildStderr) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::PROXY_TEST_CHILD;
+    use crate::test_support::CHILD_TEST;
     use abnegate_exec::PROXY_URL_ENV;
     use abnegate_secret::SecretValue;
     use std::collections::BTreeMap;
@@ -197,12 +197,12 @@ mod tests {
     #[tokio::test]
     async fn proxy_overrides_mcp_environment_before_handshake() {
         const NAME: &str = "mcp::session::tests::proxy_overrides_mcp_environment_before_handshake";
-        if std::env::var(PROXY_TEST_CHILD).as_deref() != Ok(NAME) {
+        if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
             let output = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", NAME, "--nocapture"])
                 .env_clear()
                 .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-                .env(PROXY_TEST_CHILD, NAME)
+                .env(CHILD_TEST, NAME)
                 .env(PROXY_URL_ENV, "http://127.0.0.1:28888")
                 .env(LEAKED, "must-not-reach-a-server")
                 .output()
