@@ -20,6 +20,12 @@ pub const DEFAULT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 /// One event is a JSON object holding at most a turn's worth of text.
 pub const DEFAULT_LINE_LIMIT: usize = 1024 * 1024;
 
+/// The host variables a child is given unless it
+/// [inherits the whole environment](CliSettings::inherit_environment): where
+/// to find programs, whose home it runs in, where temporary files go, and
+/// how to render text.
+pub const INHERITED_VARIABLES: [&str; 6] = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TERM"];
+
 /// Claude Code's tools that read the workspace and the web but never change
 /// anything, and the only built-in tools a read-only run makes available.
 pub const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
@@ -65,10 +71,20 @@ pub struct CliSettings {
     pub output_limit: usize,
     /// Bytes one event may occupy before the stream is treated as malformed.
     pub line_limit: usize,
-    /// Set in the child's environment after the agent's
-    /// [scrubbed](crate::AgentKind::scrubbed) variables are removed, so an
-    /// explicit value always wins.
+    /// Set in the child's environment on top of what it is given from the
+    /// host, so an explicit value always wins. Every value is treated as a
+    /// secret and scrubbed from whatever the run writes down.
     pub environment: BTreeMap<String, SecretValue>,
+    /// Give the child the host's whole environment, less the agent's
+    /// [scrubbed](crate::AgentKind::scrubbed) variables, instead of
+    /// [`INHERITED_VARIABLES`] alone.
+    ///
+    /// Off by default: the agent runs tools the model chooses, and anything
+    /// in its environment is theirs to read. Without it the child is also
+    /// given the agent's own [key variable](crate::AgentKind::variable)
+    /// when the credential is [inherited](Credential::Inherited), and each
+    /// host variable an attached MCP server refers to.
+    pub inherit_environment: bool,
     /// Extra flags passed through verbatim, after the streaming flags and
     /// before the model. Nothing here is checked against the agent, except
     /// in a [read-only](CliSettings::read_only) run, which refuses anything
@@ -114,6 +130,7 @@ impl Default for CliSettings {
             output_limit: DEFAULT_OUTPUT_LIMIT,
             line_limit: DEFAULT_LINE_LIMIT,
             environment: BTreeMap::new(),
+            inherit_environment: false,
             arguments: Vec::new(),
             schema: None,
             instructions: None,
@@ -163,6 +180,12 @@ impl CliSettings {
         value: impl Into<SecretValue>,
     ) -> Self {
         self.environment.insert(variable.into(), value.into());
+        self
+    }
+
+    /// Opt in to [`CliSettings::inherit_environment`].
+    pub fn inherit_environment(mut self) -> Self {
+        self.inherit_environment = true;
         self
     }
 
@@ -244,6 +267,7 @@ mod tests {
         assert!(settings.working_directory.is_none());
         assert_eq!(settings.timeout, DEFAULT_TIMEOUT);
         assert!(settings.environment.is_empty());
+        assert!(!settings.inherit_environment);
         assert!(settings.arguments.is_empty());
         assert!(settings.schema.is_none());
         assert!(settings.instructions.is_none());
@@ -314,7 +338,8 @@ mod tests {
             .with_schema("{}")
             .with_instructions("Be terse.")
             .with_working_directory("/w")
-            .with_log("/var/log/agents");
+            .with_log("/var/log/agents")
+            .inherit_environment();
 
         assert_eq!(settings.arguments, ["--json-schema", "{}", "--verbose"]);
         assert_eq!(settings.permissions, ["Read", "Edit"]);
@@ -324,6 +349,7 @@ mod tests {
         assert_eq!(settings.instructions.as_deref(), Some("Be terse."));
         assert_eq!(settings.working_directory, Some(PathBuf::from("/w")));
         assert_eq!(settings.log, Some(PathBuf::from("/var/log/agents")));
+        assert!(settings.inherit_environment);
     }
 
     #[test]

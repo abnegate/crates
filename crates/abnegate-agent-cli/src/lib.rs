@@ -61,6 +61,7 @@
 
 mod delivery;
 mod diagnostics;
+mod environment;
 mod error;
 mod event;
 mod execution;
@@ -92,15 +93,15 @@ pub use crate::log::{
     DEFAULT_LOG_DIRECTORY, EXECUTION_LOG_PREVIEW_LIMIT, ExecutionLogFiles, Journal, Record,
     preview, resolve_log_root,
 };
-pub use crate::mcp::{McpConfig, McpServer, McpTransport};
+pub use crate::mcp::{McpAttachment, McpConfig, McpServer, McpTransport};
 pub use crate::parser::claude::{
     CliContentBlock, CliMessage, CliUsage, RateLimitInfo, StreamEvent,
 };
 pub use crate::provider::CliProvider;
 pub use crate::question::BlockingQuestion;
 pub use crate::settings::{
-    CliSettings, DEFAULT_LINE_LIMIT, DEFAULT_OUTPUT_LIMIT, DEFAULT_TIMEOUT, READ_ONLY_OPTIONS,
-    READ_ONLY_SWITCHES, READ_ONLY_TOOLS,
+    CliSettings, DEFAULT_LINE_LIMIT, DEFAULT_OUTPUT_LIMIT, DEFAULT_TIMEOUT, INHERITED_VARIABLES,
+    READ_ONLY_OPTIONS, READ_ONLY_SWITCHES, READ_ONLY_TOOLS,
 };
 pub use crate::stdout_parse_result::StdoutParseResult;
 pub use crate::stream::{ApiContentBlock, ApiDelta, ApiStreamEvent};

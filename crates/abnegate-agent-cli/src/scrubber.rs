@@ -7,8 +7,6 @@ use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
 use abnegate_secret::redact;
 
-use crate::settings::CliSettings;
-
 /// Shorter values are too likely to occur by chance for replacing every
 /// occurrence to be worth what it destroys.
 const MINIMUM: usize = 8;
@@ -24,19 +22,11 @@ pub(crate) struct Scrubber {
 }
 
 impl Scrubber {
-    pub(crate) fn new(settings: &CliSettings) -> Self {
-        let servers = settings.mcp.servers.values();
-        let mut secrets: Vec<SecretValue> = settings
-            .credential
-            .expose()
-            .map(SecretValue::new)
+    /// A scrubber for every value in `secrets`, which should be everything
+    /// the run's child was handed that is not public.
+    pub(crate) fn new(secrets: impl IntoIterator<Item = SecretValue>) -> Self {
+        let mut secrets: Vec<SecretValue> = secrets
             .into_iter()
-            .chain(settings.environment.values().cloned())
-            .chain(
-                servers
-                    .flat_map(|server| server.environment.values().chain(server.headers.values()))
-                    .cloned(),
-            )
             .filter(|secret| secret.expose().len() >= MINIMUM)
             .collect();
         secrets.sort_by_key(|secret| std::cmp::Reverse(secret.expose().len()));
@@ -59,34 +49,17 @@ impl Scrubber {
 
 #[cfg(test)]
 mod tests {
-    use abnegate_llm::Credential;
     use abnegate_secret::SecretValue;
 
     use super::Scrubber;
-    use crate::mcp::McpServer;
-    use crate::settings::CliSettings;
+
+    fn scrubber(secrets: &[&str]) -> Scrubber {
+        Scrubber::new(secrets.iter().map(|secret| SecretValue::new(*secret)))
+    }
 
     #[test]
     fn a_secret_that_does_not_look_like_one_is_still_removed() {
-        let settings = CliSettings::default()
-            .with_credential(Credential::key(
-                "DATABASE_PASSWORD",
-                "correct horse battery",
-            ))
-            .with_environment("SERVICE_PASSWORD", "hunter2hunter2")
-            .with_mcp_server(
-                "grafana",
-                McpServer {
-                    command: Some("uvx".to_string()),
-                    headers: [(
-                        "Authorization".to_string(),
-                        SecretValue::new("plainpassword1"),
-                    )]
-                    .into(),
-                    ..McpServer::default()
-                },
-            );
-        let scrubber = Scrubber::new(&settings);
+        let scrubber = scrubber(&["correct horse battery", "hunter2hunter2", "plainpassword1"]);
 
         let scrubbed = scrubber.scrub(
             "login failed for correct horse battery, then hunter2hunter2, then plainpassword1",
@@ -106,16 +79,14 @@ mod tests {
 
     #[test]
     fn a_short_value_is_left_alone() {
-        let settings = CliSettings::default().with_environment("VERBOSE", "1");
         assert_eq!(
-            Scrubber::new(&settings).scrub("exited with 1 error"),
+            scrubber(&["1"]).scrub("exited with 1 error"),
             "exited with 1 error"
         );
     }
 
     #[test]
     fn debug_never_prints_a_secret() {
-        let settings = CliSettings::default().with_environment("TOKEN", "hunter2hunter2");
-        assert!(!format!("{:?}", Scrubber::new(&settings)).contains("hunter2"));
+        assert!(!format!("{:?}", scrubber(&["hunter2hunter2"])).contains("hunter2"));
     }
 }

@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 use std::io;
 use std::io::Write;
 
+use crate::mcp::attachment::McpAttachment;
+use crate::mcp::placeholders::Placeholders;
+use crate::mcp::server::McpServer;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
-use tempfile::NamedTempFile;
-
-use crate::mcp::server::McpServer;
 
 const SERVERS: &str = "mcpServers";
 const PREFIX: &str = "mcp-";
@@ -43,11 +43,9 @@ impl McpConfig {
     }
 
     /// Write the attachable servers to a private temporary file for
-    /// `--mcp-config`, or `None` when there are none.
-    ///
-    /// The file is readable by its owner alone and deleted when the returned
-    /// handle drops, so the handle must outlive the child that reads it.
-    pub fn render(&self) -> io::Result<Option<NamedTempFile>> {
+    /// `--mcp-config`, or `None` when there are none, with what the child
+    /// needs in its environment for the file to resolve.
+    pub fn render(&self) -> io::Result<Option<McpAttachment>> {
         for (name, _) in self.servers.iter().filter(|(_, server)| !server.valid()) {
             tracing::warn!(
                 server = %name,
@@ -55,9 +53,10 @@ impl McpConfig {
             );
         }
 
+        let mut placeholders = Placeholders::default();
         let servers: Map<String, Value> = self
             .attachable()
-            .map(|(name, server)| (name.to_string(), server.entry()))
+            .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders)))
             .collect();
         if servers.is_empty() {
             return Ok(None);
@@ -71,7 +70,15 @@ impl McpConfig {
             .tempfile()?;
         file.as_file_mut().write_all(&bytes)?;
         file.as_file_mut().flush()?;
-        Ok(Some(file))
+        let Placeholders {
+            environment,
+            references,
+        } = placeholders;
+        Ok(Some(McpAttachment {
+            file,
+            environment,
+            references,
+        }))
     }
 
     /// What [`McpConfig::render`] writes, safe for a log line.
@@ -108,8 +115,13 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::McpConfig;
+    use crate::mcp::attachment::McpAttachment;
     use crate::mcp::server::McpServer;
     use crate::mcp::transport::McpTransport;
+
+    fn rendered(config: &McpConfig) -> McpAttachment {
+        config.render().expect("rendered").expect("an attachment")
+    }
 
     fn read(file: &NamedTempFile) -> Value {
         let mut contents = String::new();
@@ -154,8 +166,9 @@ mod tests {
                 },
             );
 
-        let file = config.render().expect("rendered").expect("a file");
-        let document = read(&file);
+        let attachment = rendered(&config);
+        let file = &attachment.file;
+        let document = read(file);
 
         let appwrite = &document["mcpServers"]["appwrite"];
         assert_eq!(appwrite["command"], "uvx");
@@ -186,15 +199,11 @@ mod tests {
 
     #[test]
     fn the_file_is_deleted_when_its_handle_drops() {
-        let file = McpConfig::default()
-            .with_server("appwrite", appwrite())
-            .render()
-            .expect("rendered")
-            .expect("a file");
-        let path = file.path().to_path_buf();
+        let attachment = rendered(&McpConfig::default().with_server("appwrite", appwrite()));
+        let path = attachment.file.path().to_path_buf();
         assert!(path.exists());
 
-        drop(file);
+        drop(attachment);
         assert!(!path.exists());
     }
 
@@ -216,13 +225,57 @@ mod tests {
             .with_server("appwrite", appwrite())
             .with_server("broken", broken());
 
-        let document = read(&config.render().expect("rendered").expect("a file"));
+        let document = read(&rendered(&config).file);
         let servers = document["mcpServers"].as_object().expect("servers");
         assert!(servers.contains_key("appwrite"));
         assert!(!servers.contains_key("broken"));
 
         assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
         assert!(config.redacted()["mcpServers"].get("broken").is_none());
+    }
+
+    #[test]
+    fn a_rendered_file_holds_no_literal_secret_and_the_attachment_carries_it() {
+        let config = McpConfig::default().with_server(
+            "grafana",
+            McpServer {
+                environment: [
+                    (
+                        "GRAFANA_TOKEN".to_string(),
+                        SecretValue::new("glsa_realsecret"),
+                    ),
+                    (
+                        "GRAFANA_URL".to_string(),
+                        SecretValue::new("${GRAFANA_URL}"),
+                    ),
+                ]
+                .into(),
+                ..appwrite()
+            },
+        );
+
+        let attachment = rendered(&config);
+
+        let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        assert!(!contents.contains("glsa_realsecret"), "{contents}");
+        let document: Value = serde_json::from_str(&contents).expect("JSON");
+        let environment = &document["mcpServers"]["grafana"]["env"];
+        let variable = environment["GRAFANA_TOKEN"]
+            .as_str()
+            .and_then(|value| value.strip_prefix("${"))
+            .and_then(|value| value.strip_suffix('}'))
+            .expect("a reference");
+        assert_eq!(
+            attachment
+                .environment
+                .get(variable)
+                .map(SecretValue::expose),
+            Some("glsa_realsecret")
+        );
+        assert_eq!(environment["GRAFANA_URL"], "${GRAFANA_URL}");
+        assert!(attachment.references.contains("GRAFANA_URL"));
+        assert!(format!("{attachment:?}").contains("[REDACTED]"));
+        assert!(!format!("{attachment:?}").contains("glsa_realsecret"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::mcp::placeholders::Placeholders;
 use crate::mcp::transport::McpTransport;
 
 const PREFIX: &str = "mcp__";
@@ -19,7 +20,10 @@ const NAME_PUNCTUATION: [char; 2] = ['_', '-'];
 ///
 /// Exactly one of `command` and `url` must be set. Environment and header
 /// values are held as secrets, so a literal key never reaches a log line
-/// through `Debug`.
+/// through `Debug`, and never reaches the rendered configuration file
+/// either: see [`McpAttachment`](crate::mcp::McpAttachment). A `${VAR}`
+/// reference anywhere the CLI expands one is resolved from the host's
+/// environment, which the child is given only the named variables of.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct McpServer {
@@ -77,24 +81,37 @@ impl McpServer {
     }
 
     /// This server as the CLI's configuration file holds it, with every
-    /// secret exposed.
-    pub(crate) fn entry(&self) -> Value {
+    /// literal environment or header value replaced by a reference to a
+    /// variable in `placeholders`, and every variable it refers to noted
+    /// there.
+    pub(crate) fn entry(&self, placeholders: &mut Placeholders) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
+            placeholders.note(command);
+            for argument in &self.arguments {
+                placeholders.note(argument);
+            }
             entry.insert("command".to_string(), json!(command));
             entry.insert("args".to_string(), json!(self.arguments));
             if !self.environment.is_empty() {
-                entry.insert("env".to_string(), exposed(&self.environment));
+                entry.insert(
+                    "env".to_string(),
+                    substituted(&self.environment, placeholders),
+                );
             }
             if let Some(transport) = self.transport {
                 entry.insert("type".to_string(), json!(transport));
             }
         } else if let Some(url) = &self.url {
+            placeholders.note(url);
             let transport = self.transport.unwrap_or(McpTransport::Http);
             entry.insert("type".to_string(), json!(transport));
             entry.insert("url".to_string(), json!(url));
             if !self.headers.is_empty() {
-                entry.insert("headers".to_string(), exposed(&self.headers));
+                entry.insert(
+                    "headers".to_string(),
+                    substituted(&self.headers, placeholders),
+                );
             }
         }
         Value::Object(entry)
@@ -140,10 +157,10 @@ pub(crate) fn valid_name(name: &str) -> bool {
         })
 }
 
-fn exposed(values: &BTreeMap<String, SecretValue>) -> Value {
+fn substituted(values: &BTreeMap<String, SecretValue>, placeholders: &mut Placeholders) -> Value {
     values
         .iter()
-        .map(|(key, value)| (key.clone(), json!(value.expose())))
+        .map(|(key, value)| (key.clone(), json!(placeholders.substitute(value))))
         .collect::<Map<String, Value>>()
         .into()
 }
@@ -177,6 +194,7 @@ mod tests {
 
     use super::McpServer;
     use super::reference;
+    use crate::mcp::placeholders::Placeholders;
     use crate::mcp::transport::McpTransport;
 
     fn secrets(pairs: &[(&str, &str)]) -> BTreeMap<String, SecretValue> {
@@ -302,12 +320,15 @@ mod tests {
             ..stdio()
         };
 
-        let entry = server.entry();
+        let mut placeholders = Placeholders::default();
+        let entry = server.entry(&mut placeholders);
         assert_eq!(entry["command"], "uvx");
         assert_eq!(entry["args"][0], "mcp-server-appwrite");
         assert_eq!(entry["env"]["APPWRITE_API_KEY"], "${APPWRITE_API_KEY}");
         assert!(entry.get("type").is_none());
         assert!(entry.get("url").is_none());
+        assert!(placeholders.environment.is_empty());
+        assert!(placeholders.references.contains("APPWRITE_API_KEY"));
     }
 
     #[test]
@@ -326,7 +347,7 @@ mod tests {
             ..McpServer::default()
         };
 
-        let entry = server.entry();
+        let entry = server.entry(&mut Placeholders::default());
         assert_eq!(
             entry["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN"],
             "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"
@@ -342,7 +363,7 @@ mod tests {
             ..http()
         };
 
-        let entry = server.entry();
+        let entry = server.entry(&mut Placeholders::default());
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], "https://example.com/mcp");
         assert_eq!(entry["headers"]["Authorization"], "Bearer ${TOKEN}");
@@ -353,14 +374,54 @@ mod tests {
 
     #[test]
     fn a_url_without_a_type_defaults_to_http_and_sse_is_kept() {
-        assert_eq!(http().entry()["type"], "http");
+        assert_eq!(http().entry(&mut Placeholders::default())["type"], "http");
         assert_eq!(
             McpServer {
                 transport: Some(McpTransport::Sse),
                 ..http()
             }
-            .entry()["type"],
+            .entry(&mut Placeholders::default())["type"],
             "sse"
+        );
+    }
+
+    #[test]
+    fn a_literal_secret_never_reaches_the_entry() {
+        let server = McpServer {
+            environment: secrets(&[("GRAFANA_TOKEN", "glsa_realsecret")]),
+            arguments: vec!["--url".to_string(), "${GRAFANA_URL}".to_string()],
+            ..stdio()
+        };
+        let remote = McpServer {
+            headers: secrets(&[("Authorization", "Bearer sk-live-secret")]),
+            url: Some("https://${MCP_HOST}/mcp".to_string()),
+            ..McpServer::default()
+        };
+        let mut placeholders = Placeholders::default();
+
+        let entries = [
+            server.entry(&mut placeholders),
+            remote.entry(&mut placeholders),
+        ];
+
+        for entry in &entries {
+            let rendered = entry.to_string();
+            assert!(!rendered.contains("glsa_realsecret"), "{rendered}");
+            assert!(!rendered.contains("sk-live-secret"), "{rendered}");
+        }
+        assert_eq!(entries[0]["env"]["GRAFANA_TOKEN"], "${ABNEGATE_MCP_0}");
+        assert_eq!(entries[1]["headers"]["Authorization"], "${ABNEGATE_MCP_1}");
+        assert_eq!(
+            placeholders
+                .environment
+                .values()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            ["glsa_realsecret", "Bearer sk-live-secret"]
+        );
+        assert_eq!(
+            placeholders.references.iter().collect::<Vec<_>>(),
+            ["GRAFANA_URL", "MCP_HOST"]
         );
     }
 

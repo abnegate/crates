@@ -15,7 +15,6 @@ use abnegate_llm::ProviderError;
 use abnegate_llm::ProviderKind;
 use async_trait::async_trait;
 use serde_json::json;
-use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 use tokio::process::Command;
@@ -27,6 +26,7 @@ use tokio::time::timeout;
 use tokio::time::timeout_at;
 
 use crate::diagnostics::Diagnostics;
+use crate::environment::Environment;
 use crate::execution::Execution;
 use crate::kind::AgentKind;
 use crate::log::EXECUTION_LOG_PREVIEW_LIMIT;
@@ -35,6 +35,7 @@ use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
 use crate::log::preview;
+use crate::mcp::McpAttachment;
 use crate::outcome::Outcome;
 use crate::reader::Reader;
 use crate::reaper::Reaper;
@@ -65,7 +66,9 @@ const LINGERED: &str = "the agent finished its turn but did not exit";
 /// and a coding agent needs the network to reach its own API and forks a tree
 /// of helper processes to do its work. It does reuse that crate's
 /// process-group termination and output caps, so a run that times out or
-/// fails takes the agent's whole process tree with it.
+/// fails takes the agent's whole process tree with it, and it is given only
+/// [`INHERITED_VARIABLES`](crate::INHERITED_VARIABLES) from this process's
+/// environment unless [`CliSettings::inherit_environment`] opts in.
 #[derive(Debug)]
 pub struct CliProvider {
     name: String,
@@ -108,12 +111,16 @@ impl CliProvider {
         request: CompletionRequest<'_>,
         label: &str,
     ) -> Result<Execution, ProviderError> {
-        let scrubber = Scrubber::new(&self.settings);
         let mcp = self.attach();
-        let options = self
-            .agent
-            .options(&self.settings, mcp.as_ref().map(NamedTempFile::path))?;
+        let options = self.agent.options(
+            &self.settings,
+            mcp.as_ref().map(|attachment| attachment.file.path()),
+        )?;
         let arguments = self.agent.invocation(Some(request.model), options);
+        let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &|name| {
+            std::env::var_os(name)
+        });
+        let scrubber = Scrubber::new(environment.secrets());
 
         let files = self
             .settings
@@ -149,7 +156,7 @@ impl CliProvider {
             "starting agent"
         );
 
-        let mut child = match self.command(&arguments).spawn() {
+        let mut child = match self.command(&arguments, &environment).spawn() {
             Ok(child) => child,
             Err(error) => {
                 journal
@@ -400,13 +407,13 @@ impl CliProvider {
     /// Render the MCP servers to attach, or attach none when rendering fails:
     /// a run without its MCP tools can still answer, and fails loudly on its
     /// own if it truly needed them.
-    fn attach(&self) -> Option<NamedTempFile> {
+    fn attach(&self) -> Option<McpAttachment> {
         let mcp = &self.settings.mcp;
         if mcp.is_empty() || self.agent != AgentKind::Claude {
             return None;
         }
         match mcp.render() {
-            Ok(Some(file)) => {
+            Ok(Some(attachment)) => {
                 tracing::info!(
                     provider = %self.name,
                     servers = mcp.attachable().count(),
@@ -414,11 +421,11 @@ impl CliProvider {
                 );
                 tracing::debug!(
                     provider = %self.name,
-                    path = %file.path().display(),
+                    path = %attachment.file.path().display(),
                     config = %mcp.redacted(),
                     "rendered MCP config, secret values redacted"
                 );
-                Some(file)
+                Some(attachment)
             }
             Ok(None) => None,
             Err(error) => {
@@ -439,7 +446,7 @@ impl CliProvider {
         )
     }
 
-    fn command(&self, arguments: &[String]) -> Command {
+    fn command(&self, arguments: &[String], environment: &Environment) -> Command {
         let executable = self
             .settings
             .executable
@@ -457,19 +464,7 @@ impl CliProvider {
         if let Some(directory) = &self.settings.working_directory {
             command.current_dir(directory);
         }
-
-        for variable in self.agent.scrubbed() {
-            command.env_remove(variable);
-        }
-        for (variable, value) in &self.settings.environment {
-            command.env(variable, value.expose());
-        }
-        if let (Some(variable), Some(value)) = (
-            self.settings.credential.variable(),
-            self.settings.credential.expose(),
-        ) {
-            command.env(variable, value);
-        }
+        environment.apply(&mut command);
 
         // The agent leads its own group so that stopping the run reaches the
         // language servers, searches and builds it forked, not just itself.
@@ -580,6 +575,7 @@ mod tests {
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
     use crate::settings::CliSettings;
+    use crate::settings::INHERITED_VARIABLES;
     use crate::structured_result::StructuredResult;
 
     const ETXTBSY: i32 = 26;
@@ -1041,32 +1037,133 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         );
     }
 
-    #[test]
-    fn a_nested_session_marker_is_removed_before_explicit_variables_are_set() {
-        let claude = CliProvider::agent(AgentKind::Claude, CliSettings::default());
-        let command = claude.command(&[]);
-        let variables: Vec<_> = command.as_std().get_envs().collect();
-        assert!(
-            variables
-                .iter()
-                .any(|(name, value)| *name == "CLAUDECODE" && value.is_none()),
-            "{variables:?}"
-        );
+    fn variables(path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .expect("the child's environment")
+            .lines()
+            .filter_map(|line| line.split_once('=').map(|(name, _)| name.to_string()))
+            .collect()
+    }
 
-        let explicit = CliProvider::agent(
+    fn recording_environment(recorded: &Path) -> String {
+        format!(
+            r#"env > '{}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            recorded.display()
+        )
+    }
+
+    #[tokio::test]
+    async fn a_child_is_given_only_the_allowlist_and_what_it_was_handed() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let recorded = directory.path().join("environment");
+        let settings = settings(&directory, &recording_environment(&recorded))
+            .with_environment("LINEAR_ISSUE_ID", "ENG-42")
+            .with_credential(Credential::key(
+                "ANTHROPIC_API_KEY",
+                concat!("sk-ant-", "explicit"),
+            ));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let names = variables(&recorded);
+        let shell = ["PWD", "SHLVL", "_", "OLDPWD"];
+        for name in &names {
+            assert!(
+                INHERITED_VARIABLES.contains(&name.as_str())
+                    || shell.contains(&name.as_str())
+                    || ["LINEAR_ISSUE_ID", "ANTHROPIC_API_KEY"].contains(&name.as_str()),
+                "the child was handed {name} from the host: {names:?}"
+            );
+        }
+        assert!(names.contains(&"LINEAR_ISSUE_ID".to_string()));
+        assert!(names.contains(&"PATH".to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_opted_in_child_inherits_the_hosts_environment() {
+        let Ok(package) = std::env::var("CARGO_PKG_NAME") else {
+            return;
+        };
+        let directory = TempDir::new().expect("a temporary directory");
+        let recorded = directory.path().join("environment");
+        let script = recording_environment(&recorded);
+
+        let confined = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+        run(&confined, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+        assert!(!variables(&recorded).contains(&"CARGO_PKG_NAME".to_string()));
+
+        let inheriting = CliProvider::agent(
             AgentKind::Claude,
-            CliSettings::default().with_environment("CLAUDECODE", SecretValue::new("1")),
+            settings(&directory, &script).inherit_environment(),
         );
-        let command = explicit.command(&[]);
-        let value = command
-            .as_std()
-            .get_envs()
-            .find(|(name, _)| *name == "CLAUDECODE")
-            .and_then(|(_, value)| value);
-        assert_eq!(value.and_then(|value| value.to_str()), Some("1"));
+        run(&inheriting, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+        let contents = std::fs::read_to_string(&recorded).expect("the child's environment");
+        assert!(
+            contents.contains(&format!("CARGO_PKG_NAME={package}")),
+            "{contents}"
+        );
+        assert!(!variables(&recorded).contains(&"CLAUDECODE".to_string()));
+    }
 
-        let codex = CliProvider::agent(AgentKind::Codex, CliSettings::default());
-        assert_eq!(codex.command(&[]).as_std().get_envs().count(), 0);
+    #[tokio::test]
+    async fn an_mcp_literal_reaches_the_child_through_its_environment_not_the_file() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let copied = directory.path().join("mcp.json");
+        let recorded = directory.path().join("environment");
+        let script = format!(
+            r#"env > '{recorded}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then cp "$2" '{copied}'; fi
+  shift
+done
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            recorded = recorded.display(),
+            copied = copied.display(),
+        );
+        let settings = settings(&directory, &script).with_mcp_server(
+            "grafana",
+            McpServer {
+                command: Some("uvx".to_string()),
+                environment: [
+                    (
+                        "GRAFANA_TOKEN".to_string(),
+                        SecretValue::new("glsa_realsecret"),
+                    ),
+                    (
+                        "GRAFANA_PACKAGE".to_string(),
+                        SecretValue::new("${CARGO_PKG_NAME}"),
+                    ),
+                ]
+                .into(),
+                ..McpServer::default()
+            },
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let file = std::fs::read_to_string(&copied).expect("the MCP config");
+        assert!(!file.contains("glsa_realsecret"), "{file}");
+        let document: Value = serde_json::from_str(&file).expect("JSON");
+        assert_eq!(
+            document["mcpServers"]["grafana"]["env"]["GRAFANA_TOKEN"],
+            "${ABNEGATE_MCP_0}"
+        );
+        let environment = std::fs::read_to_string(&recorded).expect("the child's environment");
+        assert!(environment.contains("ABNEGATE_MCP_0=glsa_realsecret"));
+        if let Ok(package) = std::env::var("CARGO_PKG_NAME") {
+            assert!(environment.contains(&format!("CARGO_PKG_NAME={package}")));
+        }
     }
 
     #[tokio::test]
