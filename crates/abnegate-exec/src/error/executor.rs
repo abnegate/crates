@@ -80,10 +80,10 @@ mod tests {
 
     #[test]
     fn test_executor_error_spawn_failed() {
-        let io_err = io::Error::new(io::ErrorKind::NotFound, "command not found");
-        let err = ExecutorError::SpawnFailed(io_err);
-        assert_eq!(err.to_error_code(), ErrorCode::SpawnFailed);
-        assert!(err.to_string().contains("Failed to spawn process"));
+        let io_error = io::Error::new(io::ErrorKind::NotFound, "command not found");
+        let error = ExecutorError::SpawnFailed(io_error);
+        assert_eq!(error.to_error_code(), ErrorCode::SpawnFailed);
+        assert!(error.to_string().contains("Failed to spawn process"));
     }
 
     #[test]
@@ -102,63 +102,63 @@ mod tests {
 
     #[test]
     fn test_executor_error_timeout() {
-        let err = ExecutorError::Timeout(5000);
-        assert_eq!(err.to_error_code(), ErrorCode::Timeout);
-        assert!(err.to_string().contains("5000ms"));
+        let error = ExecutorError::Timeout(5000);
+        assert_eq!(error.to_error_code(), ErrorCode::Timeout);
+        assert!(error.to_string().contains("5000ms"));
     }
 
     #[test]
     fn test_executor_error_cancelled() {
-        let err = ExecutorError::Cancelled;
-        assert_eq!(err.to_error_code(), ErrorCode::Cancelled);
-        assert!(err.to_string().contains("cancelled"));
+        let error = ExecutorError::Cancelled;
+        assert_eq!(error.to_error_code(), ErrorCode::Cancelled);
+        assert!(error.to_string().contains("cancelled"));
     }
 
     #[test]
     fn test_executor_error_output_limit_exceeded() {
-        let err = ExecutorError::OutputLimitExceeded {
+        let error = ExecutorError::OutputLimitExceeded {
             written: 1000,
             max: 500,
         };
-        assert_eq!(err.to_error_code(), ErrorCode::OutputLimitExceeded);
-        assert!(err.to_string().contains("1000"));
-        assert!(err.to_string().contains("500"));
+        assert_eq!(error.to_error_code(), ErrorCode::OutputLimitExceeded);
+        assert!(error.to_string().contains("1000"));
+        assert!(error.to_string().contains("500"));
     }
 
     #[test]
     fn test_executor_error_invalid_workspace() {
-        let err = ExecutorError::InvalidWorkspace("/bad/path".to_string());
-        assert_eq!(err.to_error_code(), ErrorCode::InvalidWorkspace);
-        assert!(err.to_string().contains("/bad/path"));
+        let error = ExecutorError::InvalidWorkspace("/bad/path".to_string());
+        assert_eq!(error.to_error_code(), ErrorCode::InvalidWorkspace);
+        assert!(error.to_string().contains("/bad/path"));
     }
 
     #[test]
     fn test_executor_error_process_group_failed() {
-        let err = ExecutorError::ProcessGroupFailed("setsid failed".to_string());
-        assert_eq!(err.to_error_code(), ErrorCode::InternalError);
-        assert!(err.to_string().contains("setsid failed"));
+        let error = ExecutorError::ProcessGroupFailed("setsid failed".to_string());
+        assert_eq!(error.to_error_code(), ErrorCode::InternalError);
+        assert!(error.to_string().contains("setsid failed"));
     }
 
     #[test]
     fn test_executor_error_io() {
-        let io_err = io::Error::new(io::ErrorKind::BrokenPipe, "pipe broken");
-        let err = ExecutorError::Io(io_err);
-        assert_eq!(err.to_error_code(), ErrorCode::InternalError);
-        assert!(err.to_string().contains("I/O error"));
+        let io_error = io::Error::new(io::ErrorKind::BrokenPipe, "pipe broken");
+        let error = ExecutorError::Io(io_error);
+        assert_eq!(error.to_error_code(), ErrorCode::InternalError);
+        assert!(error.to_string().contains("I/O error"));
     }
 
     #[test]
     fn test_executor_error_channel_closed() {
-        let err = ExecutorError::ChannelClosed;
-        assert_eq!(err.to_error_code(), ErrorCode::InternalError);
-        assert!(err.to_string().contains("Channel closed"));
+        let error = ExecutorError::ChannelClosed;
+        assert_eq!(error.to_error_code(), ErrorCode::InternalError);
+        assert!(error.to_string().contains("Channel closed"));
     }
 
     #[test]
     fn test_executor_error_from_io() {
-        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
-        let err: ExecutorError = io_err.into();
-        match err {
+        let io_error = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
+        let error: ExecutorError = io_error.into();
+        match error {
             ExecutorError::Io(_) => {}
             _ => panic!("Expected Io variant"),
         }

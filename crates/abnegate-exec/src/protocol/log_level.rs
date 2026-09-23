@@ -6,8 +6,12 @@ use serde::Serialize;
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum LogLevel {
+    /// Diagnostic detail
     Debug,
+    /// Routine progress
     Info,
+    /// Something the client should know about, such as truncated output
     Warn,
+    /// A failure
     Error,
 }

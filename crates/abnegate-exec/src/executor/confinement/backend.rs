@@ -14,16 +14,21 @@ const BUBBLEWRAP: &str = "/usr/bin/bwrap";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Backend {
+    /// macOS `sandbox-exec` with a generated profile
     Seatbelt,
+    /// Linux `bwrap` with fresh namespaces
     Bubblewrap,
 }
 
+/// The backend this host confines with, if it has one.
 #[cfg(target_os = "macos")]
 pub const HOST_BACKEND: Option<Backend> = Some(Backend::Seatbelt);
 
+/// The backend this host confines with, if it has one.
 #[cfg(target_os = "linux")]
 pub const HOST_BACKEND: Option<Backend> = Some(Backend::Bubblewrap);
 
+/// The backend this host confines with, if it has one.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub const HOST_BACKEND: Option<Backend> = None;
 
@@ -91,9 +96,6 @@ fn usable_backend(path: &Path) -> Result<PathBuf, ConfinementError> {
         reason,
     };
 
-    // Reporting every one of these as "not installed" sends an operator to
-    // reinstall a backend that is already on disk. A confined job cannot run
-    // without one, so the message is the whole of the remedy.
     let metadata = fs::metadata(path).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => unusable("not installed".to_string()),
         io::ErrorKind::PermissionDenied => {
@@ -143,8 +145,6 @@ mod tests {
             })
         );
 
-        // The case the old message got wrong: the backend is installed, so
-        // "not installed" sends the operator to reinstall what is already here.
         let unreadable = directory.path().join("not-executable");
         fs::write(&unreadable, b"#!/bin/sh\n").expect("file is written");
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644))

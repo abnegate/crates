@@ -78,6 +78,8 @@ pub struct Confinement {
 }
 
 impl Confinement {
+    /// Confine `command`, run with `arguments` from `working_dir`, to no roots
+    /// at all until [`Confinement::with_roots`] grants some.
     pub fn new(
         command: impl Into<String>,
         arguments: Vec<String>,

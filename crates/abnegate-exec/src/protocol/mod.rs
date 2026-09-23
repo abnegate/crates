@@ -1,7 +1,8 @@
 //! Protocol types and codec for driving an executor over a pipe.
 //!
-//! This module provides the message types and NDJSON codec used for
-//! communication between the backend and the Rust runner.
+//! A runner is the process that executes commands; its client is whatever
+//! started it and drives it over the pipe. This module provides the message
+//! types they exchange and the NDJSON codec that frames them.
 
 mod capability;
 mod codec;

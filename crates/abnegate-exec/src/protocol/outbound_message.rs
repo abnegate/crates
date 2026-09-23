@@ -4,7 +4,7 @@ use serde::Serialize;
 use super::error_code::ErrorCode;
 use super::log_level::LogLevel;
 
-/// Messages sent from the Runner to the backend
+/// Messages a runner sends to its client
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 #[non_exhaustive]
@@ -96,8 +96,8 @@ mod tests {
 
     #[test]
     fn test_hello_ack_serialization() {
-        let msg = OutboundMessage::hello_ack();
-        let json = serde_json::to_string(&msg).unwrap();
+        let message = OutboundMessage::hello_ack();
+        let json = serde_json::to_string(&message).unwrap();
 
         assert!(json.contains(r#""type":"HelloAck""#));
         assert!(json.contains(r#""protocol_version":"1.0""#));
@@ -125,12 +125,12 @@ mod tests {
 
     #[test]
     fn test_run_started_serialization() {
-        let msg = OutboundMessage::RunStarted {
+        let message = OutboundMessage::RunStarted {
             job_id: "job-123".to_string(),
             pid: 12345,
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""type":"RunStarted""#));
         assert!(json.contains(r#""job_id":"job-123""#));
         assert!(json.contains(r#""pid":12345"#));
@@ -149,13 +149,13 @@ mod tests {
 
     #[test]
     fn test_run_stdout_serialization() {
-        let msg = OutboundMessage::RunStdout {
+        let message = OutboundMessage::RunStdout {
             job_id: "job-123".to_string(),
             data: "SGVsbG8gV29ybGQK".to_string(),
             sequence: 1,
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""type":"RunStdout""#));
         assert!(json.contains(r#""data":"SGVsbG8gV29ybGQK""#));
         assert!(json.contains(r#""sequence":1"#));
@@ -163,13 +163,13 @@ mod tests {
 
     #[test]
     fn test_run_stderr_serialization() {
-        let msg = OutboundMessage::RunStderr {
+        let message = OutboundMessage::RunStderr {
             job_id: "job-123".to_string(),
             data: "RXJyb3IhCg==".to_string(),
             sequence: 5,
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""type":"RunStderr""#));
         assert!(json.contains(r#""data":"RXJyb3IhCg==""#));
         assert!(json.contains(r#""sequence":5"#));
@@ -177,15 +177,15 @@ mod tests {
 
     #[test]
     fn test_run_stdout_large_sequence() {
-        let msg = OutboundMessage::RunStdout {
+        let message = OutboundMessage::RunStdout {
             job_id: "job-123".to_string(),
             data: "dGVzdA==".to_string(),
             sequence: u64::MAX,
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         let decoded: OutboundMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, decoded);
+        assert_eq!(message, decoded);
     }
 
     #[test]
@@ -198,8 +198,8 @@ mod tests {
         ];
 
         for (level, expected_str) in levels {
-            let msg = OutboundMessage::log("job-1", level, "test message", None);
-            let json = serde_json::to_string(&msg).unwrap();
+            let message = OutboundMessage::log("job-1", level, "test message", None);
+            let json = serde_json::to_string(&message).unwrap();
             assert!(json.contains(&format!(r#""level":"{}""#, expected_str)));
         }
     }
@@ -212,36 +212,36 @@ mod tests {
             "truncated": true
         });
 
-        let msg = OutboundMessage::log(
+        let message = OutboundMessage::log(
             "job-1",
             LogLevel::Warn,
             "Output truncated",
             Some(details.clone()),
         );
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""bytes_written":10485760"#));
         assert!(json.contains(r#""truncated":true"#));
     }
 
     #[test]
     fn test_run_log_without_details() {
-        let msg = OutboundMessage::log("job-1", LogLevel::Info, "Simple log", None);
-        let json = serde_json::to_string(&msg).unwrap();
+        let message = OutboundMessage::log("job-1", LogLevel::Info, "Simple log", None);
+        let json = serde_json::to_string(&message).unwrap();
 
         assert!(!json.contains("details"));
     }
 
     #[test]
     fn test_run_exit_serialization() {
-        let msg = OutboundMessage::RunExit {
+        let message = OutboundMessage::RunExit {
             job_id: "job-123".to_string(),
             exit_code: Some(0),
             signal: None,
             duration_ms: 1500,
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""type":"RunExit""#));
         assert!(json.contains(r#""exit_code":0"#));
         assert!(json.contains(r#""duration_ms":1500"#));
@@ -250,51 +250,51 @@ mod tests {
 
     #[test]
     fn test_run_exit_with_signal() {
-        let msg = OutboundMessage::RunExit {
+        let message = OutboundMessage::RunExit {
             job_id: "job-killed".to_string(),
             exit_code: None,
             signal: Some(9), // SIGKILL
             duration_ms: 5000,
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""signal":9"#));
         assert!(json.contains(r#""exit_code":null"#));
     }
 
     #[test]
     fn test_run_exit_non_zero() {
-        let msg = OutboundMessage::RunExit {
+        let message = OutboundMessage::RunExit {
             job_id: "job-failed".to_string(),
             exit_code: Some(1),
             signal: None,
             duration_ms: 100,
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""exit_code":1"#));
     }
 
     #[test]
     fn test_run_exit_negative_exit_code() {
-        let msg = OutboundMessage::RunExit {
+        let message = OutboundMessage::RunExit {
             job_id: "job-negative".to_string(),
             exit_code: Some(-1),
             signal: None,
             duration_ms: 50,
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         let decoded: OutboundMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, decoded);
+        assert_eq!(message, decoded);
     }
 
     #[test]
     fn test_run_error_serialization() {
-        let msg =
+        let message =
             OutboundMessage::error("job-123", ErrorCode::Timeout, "Command timed out after 60s");
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""type":"RunError""#));
         assert!(json.contains(r#""error_code":"timeout""#));
     }
@@ -314,8 +314,8 @@ mod tests {
         ];
 
         for (code, expected_str) in error_codes {
-            let msg = OutboundMessage::error("job-1", code, "test error");
-            let json = serde_json::to_string(&msg).unwrap();
+            let message = OutboundMessage::error("job-1", code, "test error");
+            let json = serde_json::to_string(&message).unwrap();
             assert!(
                 json.contains(&format!(r#""error_code":"{}""#, expected_str)),
                 "Expected {} in {}",

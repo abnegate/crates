@@ -36,12 +36,12 @@ mod tests {
 
     #[test]
     fn test_protocol_error_json_parse() {
-        let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
-        let err = ProtocolError::JsonParse {
-            source: json_err,
+        let json_error = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let error = ProtocolError::JsonParse {
+            source: json_error,
             length: 7,
         };
-        assert_eq!(err.to_string(), "Failed to parse a 7-byte JSON line");
+        assert_eq!(error.to_string(), "Failed to parse a 7-byte JSON line");
     }
 
     #[test]
@@ -83,33 +83,33 @@ mod tests {
             }
         }
 
-        let json_err = serde_json::to_string(&BadSerializer).unwrap_err();
-        let err = ProtocolError::JsonSerialize(json_err);
-        assert!(err.to_string().contains("Failed to serialize JSON"));
+        let json_error = serde_json::to_string(&BadSerializer).unwrap_err();
+        let error = ProtocolError::JsonSerialize(json_error);
+        assert!(error.to_string().contains("Failed to serialize JSON"));
     }
 
     #[test]
     fn test_protocol_error_line_too_long() {
-        let err = ProtocolError::LineTooLong {
+        let error = ProtocolError::LineTooLong {
             length: 2000,
             max: 1000,
         };
-        assert!(err.to_string().contains("2000"));
-        assert!(err.to_string().contains("1000"));
+        assert!(error.to_string().contains("2000"));
+        assert!(error.to_string().contains("1000"));
     }
 
     #[test]
     fn test_protocol_error_io() {
-        let io_err = io::Error::new(io::ErrorKind::UnexpectedEof, "unexpected EOF");
-        let err = ProtocolError::Io(io_err);
-        assert!(err.to_string().contains("I/O error"));
+        let io_error = io::Error::new(io::ErrorKind::UnexpectedEof, "unexpected EOF");
+        let error = ProtocolError::Io(io_error);
+        assert!(error.to_string().contains("I/O error"));
     }
 
     #[test]
     fn test_protocol_error_from_io() {
-        let io_err = io::Error::new(io::ErrorKind::ConnectionReset, "reset");
-        let err: ProtocolError = io_err.into();
-        match err {
+        let io_error = io::Error::new(io::ErrorKind::ConnectionReset, "reset");
+        let error: ProtocolError = io_error.into();
+        match error {
             ProtocolError::Io(_) => {}
             _ => panic!("Expected Io variant"),
         }

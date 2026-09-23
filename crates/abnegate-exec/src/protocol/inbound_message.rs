@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::confinement_request::ConfinementRequest;
 
-/// Messages sent from the backend to the Runner
+/// Messages a client sends to a runner
 ///
 /// `Debug` prints the names in a `RunStart` environment and the length of a
 /// `RunStdin` payload, never the values themselves: either can carry a
@@ -31,6 +31,8 @@ pub enum InboundMessage {
         command: String,
         #[serde(default)]
         args: Vec<String>,
+        /// Variables layered over the runner's
+        /// [`EnvironmentPolicy`](crate::executor::EnvironmentPolicy)
         #[serde(default)]
         env: HashMap<String, String>,
         #[serde(default)]
@@ -154,12 +156,12 @@ mod tests {
 
     #[test]
     fn test_hello_serialization() {
-        let msg = InboundMessage::Hello {
+        let message = InboundMessage::Hello {
             protocol_version: "1.0".to_string(),
             capabilities: vec!["cancel".to_string()],
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""type":"Hello""#));
         assert!(json.contains(r#""protocol_version":"1.0""#));
     }
@@ -167,9 +169,9 @@ mod tests {
     #[test]
     fn test_hello_deserialization_with_empty_capabilities() {
         let json = r#"{"type": "Hello", "protocol_version": "1.0", "capabilities": []}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::Hello {
                 protocol_version,
                 capabilities,
@@ -184,9 +186,9 @@ mod tests {
     #[test]
     fn test_hello_deserialization_without_capabilities() {
         let json = r#"{"type": "Hello", "protocol_version": "2.0"}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::Hello {
                 protocol_version,
                 capabilities,
@@ -201,9 +203,9 @@ mod tests {
     #[test]
     fn test_hello_deserialization_with_all_capabilities() {
         let json = r#"{"type": "Hello", "protocol_version": "1.0", "capabilities": ["cancel", "stdin", "logs", "process_group"]}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::Hello { capabilities, .. } => {
                 assert_eq!(capabilities.len(), 4);
                 assert!(capabilities.contains(&"cancel".to_string()));
@@ -224,8 +226,8 @@ mod tests {
             "env": {"FOO": "bar"}
         }"#;
 
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
-        match msg {
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
+        match message {
             InboundMessage::RunStart {
                 job_id,
                 command,
@@ -251,8 +253,8 @@ mod tests {
             "command": "ls"
         }"#;
 
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
-        match msg {
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
+        match message {
             InboundMessage::RunStart {
                 job_id,
                 args,
@@ -291,8 +293,8 @@ mod tests {
             }
         }"#;
 
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
-        match msg {
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
+        match message {
             InboundMessage::RunStart {
                 job_id,
                 workspace,
@@ -341,8 +343,8 @@ mod tests {
             "args": ["你好", "мир", "🌍"]
         }"#;
 
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
-        match msg {
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
+        match message {
             InboundMessage::RunStart { args, .. } => {
                 assert_eq!(args, vec!["你好", "мир", "🌍"]);
             }
@@ -360,8 +362,8 @@ mod tests {
             "env": {"PATH": "/usr/bin:/usr/local/bin", "MSG": "hello=world&foo=bar"}
         }"#;
 
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
-        match msg {
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
+        match message {
             InboundMessage::RunStart { env, .. } => {
                 assert_eq!(
                     env.get("PATH"),
@@ -376,9 +378,9 @@ mod tests {
     #[test]
     fn test_run_stdin_deserialization() {
         let json = r#"{"type": "RunStdin", "job_id": "job-123", "data": "SGVsbG8gV29ybGQK", "eof": false}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunStdin { job_id, data, eof } => {
                 assert_eq!(job_id, "job-123");
                 assert_eq!(data, "SGVsbG8gV29ybGQK");
@@ -391,9 +393,9 @@ mod tests {
     #[test]
     fn test_run_stdin_with_eof() {
         let json = r#"{"type": "RunStdin", "job_id": "job-123", "data": "", "eof": true}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunStdin { eof, .. } => {
                 assert!(eof);
             }
@@ -404,9 +406,9 @@ mod tests {
     #[test]
     fn test_run_stdin_default_eof() {
         let json = r#"{"type": "RunStdin", "job_id": "job-123", "data": "dGVzdA=="}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunStdin { eof, .. } => {
                 assert!(!eof);
             }
@@ -417,9 +419,9 @@ mod tests {
     #[test]
     fn test_run_cancel_deserialization() {
         let json = r#"{"type": "RunCancel", "job_id": "job-123", "force": true}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunCancel { job_id, force } => {
                 assert_eq!(job_id, "job-123");
                 assert!(force);
@@ -431,9 +433,9 @@ mod tests {
     #[test]
     fn test_run_cancel_default_force() {
         let json = r#"{"type": "RunCancel", "job_id": "job-123"}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunCancel { force, .. } => {
                 assert!(!force);
             }
@@ -444,9 +446,9 @@ mod tests {
     #[test]
     fn test_run_cancel_non_force() {
         let json = r#"{"type": "RunCancel", "job_id": "job-789", "force": false}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunCancel { job_id, force } => {
                 assert_eq!(job_id, "job-789");
                 assert!(!force);
@@ -518,9 +520,9 @@ mod tests {
     #[test]
     fn test_empty_job_id() {
         let json = r#"{"type": "RunStart", "job_id": "", "workspace": "/tmp", "command": "ls"}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunStart { job_id, .. } => {
                 assert_eq!(job_id, "");
             }
@@ -535,9 +537,9 @@ mod tests {
             r#"{{"type": "RunStart", "job_id": "{}", "workspace": "/tmp", "command": "ls"}}"#,
             long_id
         );
-        let msg: InboundMessage = serde_json::from_str(&json).unwrap();
+        let message: InboundMessage = serde_json::from_str(&json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunStart { job_id, .. } => {
                 assert_eq!(job_id.len(), 1000);
             }
@@ -554,9 +556,9 @@ mod tests {
             "command": "ls",
             "timeout_ms": 0
         }"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
+        let message: InboundMessage = serde_json::from_str(json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunStart { timeout_ms, .. } => {
                 assert_eq!(timeout_ms, Some(0));
             }
@@ -570,9 +572,9 @@ mod tests {
             r#"{{"type": "RunStart", "job_id": "job-1", "workspace": "/tmp", "command": "ls", "timeout_ms": {}}}"#,
             u64::MAX
         );
-        let msg: InboundMessage = serde_json::from_str(&json).unwrap();
+        let message: InboundMessage = serde_json::from_str(&json).unwrap();
 
-        match msg {
+        match message {
             InboundMessage::RunStart { timeout_ms, .. } => {
                 assert_eq!(timeout_ms, Some(u64::MAX));
             }

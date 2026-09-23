@@ -7,7 +7,9 @@ use std::path::PathBuf;
 /// `Debug` prints the names in `environment` and never their values.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Invocation {
+    /// The backend executable
     pub program: PathBuf,
+    /// Its arguments, ending with the command and the command's arguments
     pub arguments: Vec<String>,
     /// The complete environment of the backend process, which every backend
     /// hands on to the command unchanged. Spawn the backend with exactly this

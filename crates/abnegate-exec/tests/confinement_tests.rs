@@ -96,14 +96,14 @@ fn confined_run(job_id: &str, root: &Path, target: &Path) -> InboundMessage {
 }
 
 async fn collect_messages(
-    rx: &mut mpsc::Receiver<OutboundMessage>,
+    receiver: &mut mpsc::Receiver<OutboundMessage>,
     timeout: Duration,
 ) -> Vec<OutboundMessage> {
     let mut messages = Vec::new();
     let deadline = tokio::time::Instant::now() + timeout;
 
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
+        match tokio::time::timeout_at(deadline, receiver.recv()).await {
             Ok(Some(message)) => {
                 let finished = matches!(
                     message,
@@ -526,7 +526,7 @@ fn test_confinement_unavailable_has_an_error_code() {
 #[tokio::test]
 async fn test_spawn_fails_closed_when_confinement_cannot_be_established() {
     let workspace = workspace();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = InboundMessage::RunStart {
         job_id: "unprovable".to_string(),
@@ -544,7 +544,7 @@ async fn test_spawn_fails_closed_when_confinement_cannot_be_established() {
         })),
     };
 
-    let result = CommandExecutor::new().spawn(&request, tx).await;
+    let result = CommandExecutor::new().spawn(&request, sender).await;
 
     match result {
         Err(error @ ExecutorError::ConfinementUnavailable(_)) => {
@@ -555,7 +555,7 @@ async fn test_spawn_fails_closed_when_confinement_cannot_be_established() {
     }
 
     assert!(
-        collect_messages(&mut rx, Duration::from_millis(200))
+        collect_messages(&mut receiver, Duration::from_millis(200))
             .await
             .is_empty(),
         "A refused spawn must not report a started process"
@@ -571,9 +571,9 @@ async fn test_probe_result_is_cached() {
 }
 
 async fn run_confined(request: &InboundMessage) -> Vec<OutboundMessage> {
-    let (tx, mut rx) = mpsc::channel(1000);
-    CommandExecutor::new().spawn(request, tx).await.unwrap();
-    collect_messages(&mut rx, Duration::from_secs(20)).await
+    let (sender, mut receiver) = mpsc::channel(1000);
+    CommandExecutor::new().spawn(request, sender).await.unwrap();
+    collect_messages(&mut receiver, Duration::from_secs(20)).await
 }
 
 #[tokio::test]
@@ -1123,7 +1123,6 @@ async fn test_single_command_mode_bounds_a_second_process_or_refuses_it() {
         );
     }
 
-    // Whichever way the second process went, it read nothing from outside.
     assert_ne!(
         marker(&workspace.root, "child.marker").as_deref(),
         Some(SECRET.trim()),
@@ -1266,10 +1265,10 @@ async fn test_a_confined_tree_blocks_a_grandchild_connection_that_otherwise_succ
 #[tokio::test]
 async fn test_spawn_fails_closed_when_a_tree_cannot_be_bounded() {
     let workspace = workspace();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = confined_tree_run("unbounded", &workspace.root, PARENT_SCRIPT, vec![]);
-    let result = CommandExecutor::new().spawn(&request, tx).await;
+    let result = CommandExecutor::new().spawn(&request, sender).await;
 
     match result {
         Err(error @ ExecutorError::ConfinementUnavailable(_)) => {
@@ -1280,7 +1279,7 @@ async fn test_spawn_fails_closed_when_a_tree_cannot_be_bounded() {
     }
 
     assert!(
-        collect_messages(&mut rx, Duration::from_millis(200))
+        collect_messages(&mut receiver, Duration::from_millis(200))
             .await
             .is_empty(),
         "A refused spawn must not report a started process"

@@ -30,6 +30,7 @@ impl Capability {
         Capability::ConfinementSingleProcess,
     ];
 
+    /// The name the handshake carries.
     pub fn as_str(&self) -> &'static str {
         match self {
             Capability::Cancel => "cancel",

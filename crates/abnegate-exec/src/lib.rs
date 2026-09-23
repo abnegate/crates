@@ -79,6 +79,11 @@
 //! Unix only. Confinement additionally needs macOS or Linux; see
 //! [`HOST_BACKEND`].
 
+#[cfg(not(unix))]
+compile_error!(
+    "abnegate-exec signals Unix process groups and supports Unix hosts only; confinement additionally needs macOS or Linux"
+);
+
 pub mod error;
 pub mod executor;
 pub mod job;

@@ -36,24 +36,24 @@ mod tests {
 
     #[test]
     fn test_job_error_not_found() {
-        let err = JobError::NotFound("job-123".to_string());
-        assert_eq!(err.to_error_code(), ErrorCode::JobNotFound);
-        assert!(err.to_string().contains("job-123"));
-        assert!(err.to_string().contains("not found"));
+        let error = JobError::NotFound("job-123".to_string());
+        assert_eq!(error.to_error_code(), ErrorCode::JobNotFound);
+        assert!(error.to_string().contains("job-123"));
+        assert!(error.to_string().contains("not found"));
     }
 
     #[test]
     fn test_job_error_already_exists() {
-        let err = JobError::AlreadyExists("job-456".to_string());
-        assert_eq!(err.to_error_code(), ErrorCode::InternalError);
-        assert!(err.to_string().contains("job-456"));
-        assert!(err.to_string().contains("already exists"));
+        let error = JobError::AlreadyExists("job-456".to_string());
+        assert_eq!(error.to_error_code(), ErrorCode::InternalError);
+        assert!(error.to_string().contains("job-456"));
+        assert!(error.to_string().contains("already exists"));
     }
 
     #[test]
     fn test_job_error_invalid_state() {
-        let err = JobError::InvalidState("cannot cancel completed job".to_string());
-        assert_eq!(err.to_error_code(), ErrorCode::InternalError);
-        assert!(err.to_string().contains("Invalid job state"));
+        let error = JobError::InvalidState("cannot cancel completed job".to_string());
+        assert_eq!(error.to_error_code(), ErrorCode::InternalError);
+        assert!(error.to_string().contains("Invalid job state"));
     }
 }

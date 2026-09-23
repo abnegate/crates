@@ -45,9 +45,6 @@ pub(super) fn arguments(resolved: &Resolved) -> Result<Vec<String>, ConfinementE
         let path = text(root)?.to_string();
         arguments.extend(["--bind".to_string(), path.clone(), path]);
     }
-    // Bubblewrap has no exec filter, so a tree's executable set is bounded by
-    // what the mount namespace contains: a toolchain outside every bind is not
-    // merely forbidden, it is absent.
     for root in &resolved.execute_roots {
         let path = text(root)?.to_string();
         arguments.extend(["--ro-bind".to_string(), path.clone(), path]);

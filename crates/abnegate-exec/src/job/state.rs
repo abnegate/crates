@@ -356,37 +356,37 @@ mod tests {
 
     #[test]
     fn test_duration_completed() {
-        let dur = Duration::from_millis(12345);
-        let state = JobState::completed(0, dur);
-        assert_eq!(state.duration(), Some(dur));
+        let duration = Duration::from_millis(12345);
+        let state = JobState::completed(0, duration);
+        assert_eq!(state.duration(), Some(duration));
     }
 
     #[test]
     fn test_duration_signaled() {
-        let dur = Duration::from_secs(100);
-        let state = JobState::signaled(9, dur);
-        assert_eq!(state.duration(), Some(dur));
+        let duration = Duration::from_secs(100);
+        let state = JobState::signaled(9, duration);
+        assert_eq!(state.duration(), Some(duration));
     }
 
     #[test]
     fn test_duration_failed() {
-        let dur = Duration::from_millis(50);
-        let state = JobState::failed(ErrorCode::SpawnFailed, "err".to_string(), dur);
-        assert_eq!(state.duration(), Some(dur));
+        let duration = Duration::from_millis(50);
+        let state = JobState::failed(ErrorCode::SpawnFailed, "err".to_string(), duration);
+        assert_eq!(state.duration(), Some(duration));
     }
 
     #[test]
     fn test_duration_cancelled() {
-        let dur = Duration::from_secs(5);
-        let state = JobState::cancelled(true, dur);
-        assert_eq!(state.duration(), Some(dur));
+        let duration = Duration::from_secs(5);
+        let state = JobState::cancelled(true, duration);
+        assert_eq!(state.duration(), Some(duration));
     }
 
     #[test]
     fn test_duration_timed_out() {
-        let dur = Duration::from_secs(30);
-        let state = JobState::timed_out(30000, dur);
-        assert_eq!(state.duration(), Some(dur));
+        let duration = Duration::from_secs(30);
+        let state = JobState::timed_out(30000, duration);
+        assert_eq!(state.duration(), Some(duration));
     }
 
     #[test]

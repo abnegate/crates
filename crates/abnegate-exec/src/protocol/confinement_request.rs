@@ -11,8 +11,10 @@ use super::process_tree_request::ProcessTreeRequest;
 /// absolute paths that exist when the job starts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfinementRequest {
+    /// Directories the job may read
     #[serde(default)]
     pub read_roots: Vec<PathBuf>,
+    /// Directories the job may read and write
     #[serde(default)]
     pub write_roots: Vec<PathBuf>,
     /// Absent asks for the single-command confinement: the job runs one

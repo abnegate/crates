@@ -13,6 +13,7 @@ use serde::Serialize;
 /// refuses the job with `confinement_unavailable`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProcessTreeRequest {
+    /// Directories whose executables the tree may run
     #[serde(default)]
     pub execute_roots: Vec<PathBuf>,
 }

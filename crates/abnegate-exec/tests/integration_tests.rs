@@ -56,7 +56,7 @@ fn decode_output_data(data: &str) -> String {
 }
 
 async fn collect_messages(
-    rx: &mut mpsc::Receiver<OutboundMessage>,
+    receiver: &mut mpsc::Receiver<OutboundMessage>,
     timeout: Duration,
 ) -> Vec<OutboundMessage> {
     let mut messages = Vec::new();
@@ -69,17 +69,17 @@ async fn collect_messages(
             break;
         }
 
-        match tokio::time::timeout(remaining, rx.recv()).await {
-            Ok(Some(msg)) => {
+        match tokio::time::timeout(remaining, receiver.recv()).await {
+            Ok(Some(message)) => {
                 let is_terminal = matches!(
-                    msg,
+                    message,
                     OutboundMessage::RunExit { .. } | OutboundMessage::RunError { .. }
                 );
-                messages.push(msg);
+                messages.push(message);
                 if is_terminal {
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    while let Ok(msg) = rx.try_recv() {
-                        messages.push(msg);
+                    while let Ok(message) = receiver.try_recv() {
+                        messages.push(message);
                     }
                     break;
                 }
@@ -99,14 +99,14 @@ async fn collect_messages(
 #[tokio::test]
 async fn test_echo_command() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = create_echo_request("echo-1", "Hello World");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     assert!(
         messages
@@ -135,12 +135,12 @@ async fn test_echo_command() {
 #[tokio::test]
 async fn test_stderr_output() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = create_bash_request("stderr-1", "echo 'error message' >&2");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let stderr_data: String = messages
         .iter()
@@ -155,12 +155,12 @@ async fn test_stderr_output() {
 #[tokio::test]
 async fn test_mixed_stdout_stderr() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = create_bash_request("mixed-1", "echo stdout1; echo stderr1 >&2; echo stdout2");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let stdout_data: String = messages
         .iter()
@@ -186,12 +186,12 @@ async fn test_mixed_stdout_stderr() {
 #[tokio::test]
 async fn test_non_zero_exit_code() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = create_bash_request("exit-1", "exit 42");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     assert!(messages.iter().any(|m| matches!(
         m,
@@ -205,7 +205,7 @@ async fn test_non_zero_exit_code() {
 #[tokio::test]
 async fn test_command_with_arguments() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = InboundMessage::RunStart {
         job_id: "args-1".to_string(),
@@ -224,8 +224,8 @@ async fn test_command_with_arguments() {
         confinement: None,
     };
 
-    let _handle = executor.spawn(&request, tx).await.unwrap();
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let _handle = executor.spawn(&request, sender).await.unwrap();
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let stdout_data: String = messages
         .iter()
@@ -241,7 +241,7 @@ async fn test_command_with_arguments() {
 #[tokio::test]
 async fn test_environment_variables() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let mut env = HashMap::new();
     env.insert("MY_VAR".to_string(), "test_value_123".to_string());
@@ -258,8 +258,8 @@ async fn test_environment_variables() {
         confinement: None,
     };
 
-    let _handle = executor.spawn(&request, tx).await.unwrap();
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let _handle = executor.spawn(&request, sender).await.unwrap();
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let stdout_data: String = messages
         .iter()
@@ -275,7 +275,7 @@ async fn test_environment_variables() {
 #[tokio::test]
 async fn test_custom_working_dir() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().to_path_buf();
@@ -292,8 +292,8 @@ async fn test_custom_working_dir() {
         confinement: None,
     };
 
-    let _handle = executor.spawn(&request, tx).await.unwrap();
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let _handle = executor.spawn(&request, sender).await.unwrap();
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let stdout_data: String = messages
         .iter()
@@ -313,7 +313,7 @@ async fn test_command_timeout() {
         grace_period: Duration::from_millis(100),
         ..Default::default()
     });
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = InboundMessage::RunStart {
         job_id: "timeout-1".to_string(),
@@ -327,8 +327,8 @@ async fn test_command_timeout() {
         confinement: None,
     };
 
-    let _handle = executor.spawn(&request, tx).await.unwrap();
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let _handle = executor.spawn(&request, sender).await.unwrap();
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     assert!(messages.iter().any(|m| matches!(
         m,
@@ -347,7 +347,7 @@ async fn test_command_timeout() {
 #[tokio::test]
 async fn test_invalid_workspace() {
     let executor = CommandExecutor::new();
-    let (tx, _rx) = mpsc::channel(100);
+    let (sender, _rx) = mpsc::channel(100);
 
     let request = InboundMessage::RunStart {
         job_id: "bad-ws-1".to_string(),
@@ -361,14 +361,14 @@ async fn test_invalid_workspace() {
         confinement: None,
     };
 
-    let result = executor.spawn(&request, tx).await;
+    let result = executor.spawn(&request, sender).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_invalid_command() {
     let executor = CommandExecutor::new();
-    let (tx, _rx) = mpsc::channel(100);
+    let (sender, _rx) = mpsc::channel(100);
 
     let request = InboundMessage::RunStart {
         job_id: "bad-cmd-1".to_string(),
@@ -382,7 +382,7 @@ async fn test_invalid_command() {
         confinement: None,
     };
 
-    let result = executor.spawn(&request, tx).await;
+    let result = executor.spawn(&request, sender).await;
 
     assert!(result.is_err());
 }
@@ -390,7 +390,7 @@ async fn test_invalid_command() {
 #[tokio::test]
 async fn test_output_limit() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = InboundMessage::RunStart {
         job_id: "limit-1".to_string(),
@@ -398,7 +398,8 @@ async fn test_output_limit() {
         command: "bash".to_string(),
         args: vec![
             "-c".to_string(),
-            "for i in $(seq 1 300); do echo \"This is line $i of output\"; done".to_string(),
+            "for index in $(seq 1 300); do echo \"This is line $index of output\"; done"
+                .to_string(),
         ],
         env: HashMap::new(),
         timeout_ms: Some(5000),
@@ -407,11 +408,11 @@ async fn test_output_limit() {
         confinement: None,
     };
 
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let total_bytes: usize = messages
         .iter()
@@ -441,12 +442,12 @@ async fn test_output_limit() {
 #[tokio::test]
 async fn test_sequence_numbers_monotonic() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
-    let request = create_bash_request("seq-1", "for i in 1 2 3 4 5; do echo line$i; done");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let request = create_bash_request("seq-1", "for index in 1 2 3 4 5; do echo line$index; done");
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let sequences: Vec<u64> = messages
         .iter()
@@ -456,9 +457,9 @@ async fn test_sequence_numbers_monotonic() {
         })
         .collect();
 
-    for i in 1..sequences.len() {
+    for index in 1..sequences.len() {
         assert!(
-            sequences[i] > sequences[i - 1],
+            sequences[index] > sequences[index - 1],
             "Sequence numbers should be monotonically increasing"
         );
     }
@@ -469,13 +470,13 @@ async fn test_registry_concurrent_jobs() {
     let registry = JobRegistry::new();
 
     let handles: Vec<_> = (0..10)
-        .map(|i| {
+        .map(|index| {
             let registry_ref = &registry;
             async move {
-                let job_id = format!("concurrent-job-{}", i);
+                let job_id = format!("concurrent-job-{}", index);
                 registry_ref.register(job_id.clone()).unwrap();
                 registry_ref
-                    .update_state(&job_id, JobState::running(i as u32))
+                    .update_state(&job_id, JobState::running(index as u32))
                     .unwrap();
                 job_id
             }
@@ -489,8 +490,8 @@ async fn test_registry_concurrent_jobs() {
     assert_eq!(registry.total_count(), 10);
     assert_eq!(registry.active_count(), 10);
 
-    for i in 0..5 {
-        let job_id = format!("concurrent-job-{}", i);
+    for index in 0..5 {
+        let job_id = format!("concurrent-job-{}", index);
         registry
             .update_state(&job_id, JobState::completed(0, Duration::from_secs(1)))
             .unwrap();
@@ -547,12 +548,12 @@ async fn test_registry_cancel_stops_a_job_spawned_with_its_token() {
 #[tokio::test]
 async fn test_unicode_output() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = create_echo_request("unicode-1", "Hello 你好 Привет 🌍");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let stdout_data: String = messages
         .iter()
@@ -570,12 +571,12 @@ async fn test_unicode_output() {
 #[tokio::test]
 async fn test_special_shell_characters() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = create_echo_request("special-1", "test $VAR && echo || true; `cmd`");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let stdout_data: String = messages
         .iter()
@@ -591,12 +592,12 @@ async fn test_special_shell_characters() {
 #[tokio::test]
 async fn test_duration_tracking() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = create_bash_request("duration-1", "sleep 0.15");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let duration = messages.iter().find_map(|m| match m {
         OutboundMessage::RunExit { duration_ms, .. } => Some(*duration_ms),
@@ -621,12 +622,12 @@ async fn test_duration_tracking() {
 #[tokio::test]
 async fn test_pid_reported() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = create_echo_request("pid-1", "test");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     let pid = messages.iter().find_map(|m| match m {
         OutboundMessage::RunStarted { pid, .. } => Some(*pid),
@@ -642,13 +643,14 @@ async fn test_many_quick_commands() {
     let executor = CommandExecutor::new();
 
     let mut handles = Vec::new();
-    for i in 0..20 {
-        let exec = executor.clone();
+    for index in 0..20 {
+        let executor = executor.clone();
         let handle = tokio::spawn(async move {
-            let (tx, mut rx) = mpsc::channel(100);
-            let request = create_echo_request(&format!("rapid-{}", i), &format!("message-{}", i));
-            let _ = exec.spawn(&request, tx).await.unwrap();
-            let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+            let (sender, mut receiver) = mpsc::channel(100);
+            let request =
+                create_echo_request(&format!("rapid-{}", index), &format!("message-{}", index));
+            let _ = executor.spawn(&request, sender).await.unwrap();
+            let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
             messages.iter().any(|m| {
                 matches!(
@@ -666,21 +668,21 @@ async fn test_many_quick_commands() {
     let results: Vec<bool> = futures::future::join_all(handles)
         .await
         .into_iter()
-        .map(|r| r.unwrap())
+        .map(|result| result.unwrap())
         .collect();
 
-    assert!(results.iter().all(|&r| r));
+    assert!(results.iter().all(|&result| result));
 }
 
 #[tokio::test]
 async fn test_command_with_no_output() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (sender, mut receiver) = mpsc::channel(100);
 
     let request = create_bash_request("no-output-1", "true");
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(5)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
     assert!(
         messages
@@ -707,15 +709,15 @@ async fn test_command_with_no_output() {
 #[tokio::test]
 async fn test_large_output() {
     let executor = CommandExecutor::new();
-    let (tx, mut rx) = mpsc::channel(1000);
+    let (sender, mut receiver) = mpsc::channel(1000);
 
     let request = create_bash_request(
         "large-1",
-        "for i in $(seq 1 1000); do echo 'This is a test line with some content'; done",
+        "for index in $(seq 1 1000); do echo 'This is a test line with some content'; done",
     );
-    let _handle = executor.spawn(&request, tx).await.unwrap();
+    let _handle = executor.spawn(&request, sender).await.unwrap();
 
-    let messages = collect_messages(&mut rx, Duration::from_secs(10)).await;
+    let messages = collect_messages(&mut receiver, Duration::from_secs(10)).await;
 
     let total_bytes: usize = messages
         .iter()
