@@ -32,6 +32,8 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 mod hardened;
+#[cfg(all(test, unix))]
+mod linked_tests;
 mod managed;
 mod worktrees;
 
@@ -228,8 +230,8 @@ impl GitService {
 
     /// Refuse a repository whose own configuration holds anything beyond what
     /// git writes for a clone, a worktree and a tracking branch, with
-    /// [`GitError::UnsafeConfig`], or that has a symbolic link standing where
-    /// git writes a ref, a reflog, `HEAD` or the configuration, with
+    /// [`GitError::UnsafeConfig`], or whose git directory holds a symbolic
+    /// link anywhere git could write through it, with
     /// [`GitError::LinkedPath`]. Run before every hardened operation, because
     /// a run's git commands can write the repository between two of them.
     pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
@@ -242,6 +244,8 @@ impl GitService {
     }
 
     /// [`Self::verify_config`] for commands `bind` points at their repository.
+    /// The git directories are walked on the blocking pool: a clone with
+    /// many loose refs and reflogs holds thousands of entries.
     pub(crate) async fn verify(bind: impl Fn() -> Command) -> GitResult<()> {
         let listed = Self::output(bind().args(CONFIG_LISTING).stdout(Stdio::piped())).await?;
         if !listed.status.success() {
@@ -258,7 +262,9 @@ impl GitService {
                 "Cannot locate the repository's files".to_string(),
             ));
         }
-        unlinked(&located.stdout)
+        tokio::task::spawn_blocking(move || unlinked(&located.stdout))
+            .await
+            .map_err(std::io::Error::other)?
     }
 
     /// A hardened invocation that may reach `remote`, over the one transport
