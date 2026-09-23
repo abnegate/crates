@@ -17,6 +17,16 @@ const STATUS: [&str; 5] = [
     IGNORE_SUBMODULES,
 ];
 
+/// A switch to an existing local branch that neither guesses one from a
+/// remote branch nor lists the working tree's changes afterwards: listing
+/// them diffs the working tree, which enters a nested repository whose HEAD
+/// is the commit its gitlink records.
+const SWITCH: [&str; 3] = ["switch", "--quiet", "--no-guess"];
+
+/// A checkout onto a new branch that does not list the working tree's
+/// changes afterwards, for the reason [`SWITCH`] does not.
+const CREATE_BRANCH: [&str; 3] = ["checkout", "--quiet", "-b"];
+
 impl GitService {
     /// Clone into an empty, caller-owned directory. Credentials live only in the
     /// child environment, never the origin URL, process arguments, or git config.
@@ -114,7 +124,7 @@ impl GitService {
             );
         }
         let mut command = Self::hardened();
-        command.args(["checkout", "-b", branch.as_str()]);
+        command.args(CREATE_BRANCH).arg(branch.as_str());
         if exists.status.success() {
             command.arg(&remote);
         }
@@ -508,7 +518,8 @@ impl GitService {
 
         let output = Self::output(
             Self::hardened()
-                .args(["checkout", "-b", branch.as_str(), "--"])
+                .args(CREATE_BRANCH)
+                .args([branch.as_str(), "--"])
                 .current_dir(path)
                 .stderr(Stdio::piped()),
         )
@@ -730,7 +741,8 @@ impl GitService {
         Self::verify_config(path).await?;
         let output = Self::output(
             Self::hardened()
-                .args(["switch", "--no-guess", "--", branch.as_str()])
+                .args(SWITCH)
+                .args(["--", branch.as_str()])
                 .current_dir(path)
                 .stderr(Stdio::piped()),
         )
@@ -1535,6 +1547,51 @@ mod branch_tests {
         assert_eq!(
             service.current_branch(repository.path()).await.unwrap(),
             "main"
+        );
+    }
+
+    #[test]
+    fn moving_between_branches_never_lists_the_working_tree_s_changes() {
+        for arguments in [SWITCH, CREATE_BRANCH] {
+            assert!(arguments.contains(&"--quiet"), "{arguments:?}");
+        }
+    }
+
+    /// A nested repository whose HEAD is the commit its gitlink records is
+    /// entered by a checkout or switch that lists the working tree's changes
+    /// afterwards. One git cannot read makes any command that enters it fail,
+    /// so each of these succeeding is what shows it was never entered.
+    #[tokio::test]
+    async fn moving_between_branches_never_enters_a_nested_repository() {
+        let repository = tempfile::tempdir().unwrap();
+        remote(repository.path());
+        let nested = repository.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        git(&nested, &["init", "-q", "-b", "main"]);
+        std::fs::write(nested.join("file"), "a\n").unwrap();
+        git(&nested, &["add", "file"]);
+        git(&nested, &["commit", "-q", "-m", "nested"]);
+        git(repository.path(), &["add", "nested"]);
+        git(repository.path(), &["commit", "-q", "-m", "record gitlink"]);
+        std::fs::write(nested.join(".git").join("index"), "unreadable").unwrap();
+        let service = GitService::new();
+
+        service
+            .create_branch(repository.path(), &branch("task/one"))
+            .await
+            .unwrap();
+        service
+            .checkout(repository.path(), &branch("main"))
+            .await
+            .unwrap();
+        service
+            .prepare_branch(repository.path(), &branch("task/two"), false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service.current_branch(repository.path()).await.unwrap(),
+            "task/two"
         );
     }
 
