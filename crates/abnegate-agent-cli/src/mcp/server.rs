@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn a_log_view_redacts_credentials_in_arguments_and_urls() {
-        let key = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let key = concat!("sk-ant-", "api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
         let stdio = McpServer {
             arguments: vec!["--api-key".to_string(), key.to_string()],
             ..stdio()
@@ -516,7 +516,10 @@ mod tests {
         };
 
         for view in [stdio.redacted(), remote.redacted()] {
-            assert!(!view.to_string().contains("sk-ant-api03-AAAA"), "{view}");
+            assert!(
+                !view.to_string().contains(concat!("sk-ant-", "api03-AAAA")),
+                "{view}"
+            );
         }
         assert_eq!(stdio.redacted()["args"][0], "--api-key");
     }

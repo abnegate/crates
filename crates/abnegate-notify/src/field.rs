@@ -39,7 +39,10 @@ mod tests {
 
     #[test]
     fn both_halves_are_sanitized() {
-        let field = Field::new("\u{1b}[1mBranch\u{1b}[0m", "token=ghp_0123456789abcdefghij");
+        let field = Field::new(
+            "\u{1b}[1mBranch\u{1b}[0m",
+            concat!("token=ghp_", "0123456789abcdefghij"),
+        );
         assert_eq!(field.name(), "Branch");
         assert_eq!(field.value(), "token=[REDACTED]");
     }

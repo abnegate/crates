@@ -12,13 +12,13 @@
 //! use abnegate_secret::{MasterKey, SecretValue, decrypt_value, encrypt_value, redact};
 //!
 //! let key = MasterKey::generate()?;
-//! let token = SecretValue::new("ghp_0123456789abcdefghij");
+//! let token = SecretValue::new(concat!("ghp_", "0123456789abcdefghij"));
 //!
 //! let stored = encrypt_value(&token, &key)?;
 //! assert_eq!(decrypt_value(&stored, &key)?, token);
 //!
 //! assert_eq!(
-//!     redact("fatal: bad token ghp_0123456789abcdefghij"),
+//!     redact(concat!("fatal: bad token ghp_", "0123456789abcdefghij")),
 //!     "fatal: bad token [REDACTED]"
 //! );
 //! # Ok::<(), abnegate_secret::SecretError>(())

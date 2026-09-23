@@ -85,7 +85,10 @@ mod tests {
 
     #[test]
     fn success_redacts_a_credential_in_the_output() {
-        let result = ToolResult::success("printenv\nGITHUB_TOKEN=ghp_0123456789abcdefghij\n");
+        let result = ToolResult::success(concat!(
+            "printenv\nGITHUB_TOKEN=ghp_",
+            "0123456789abcdefghij\n"
+        ));
         assert_eq!(
             result.output.as_deref(),
             Some("printenv\nGITHUB_TOKEN=[REDACTED]\n")

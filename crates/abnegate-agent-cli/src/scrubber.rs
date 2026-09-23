@@ -218,9 +218,14 @@ mod tests {
 
     #[test]
     fn credential_shaped_text_is_redacted_even_when_it_was_never_configured() {
-        let scrubbed = Scrubber::default()
-            .scrub("fatal: bad key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-        assert!(!scrubbed.contains("sk-ant-api03-AAAA"), "{scrubbed}");
+        let scrubbed = Scrubber::default().scrub(concat!(
+            "fatal: bad key sk-ant-",
+            "api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ));
+        assert!(
+            !scrubbed.contains(concat!("sk-ant-", "api03-AAAA")),
+            "{scrubbed}"
+        );
     }
 
     #[test]

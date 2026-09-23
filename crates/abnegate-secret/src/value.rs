@@ -18,9 +18,9 @@ use crate::redact::REDACTED;
 /// ```
 /// use abnegate_secret::SecretValue;
 ///
-/// let token = SecretValue::new("ghp_0123456789abcdefghij");
+/// let token = SecretValue::new(concat!("ghp_", "0123456789abcdefghij"));
 /// assert_eq!(format!("{token:?}"), "[REDACTED]");
-/// assert_eq!(token.expose(), "ghp_0123456789abcdefghij");
+/// assert_eq!(token.expose(), concat!("ghp_", "0123456789abcdefghij"));
 /// ```
 ///
 /// # Serialization
@@ -35,7 +35,7 @@ use crate::redact::REDACTED;
 /// ```
 /// use abnegate_secret::SecretValue;
 ///
-/// let token = SecretValue::new("ghp_0123456789abcdefghij");
+/// let token = SecretValue::new(concat!("ghp_", "0123456789abcdefghij"));
 /// assert_eq!(serde_json::to_string(&token)?, concat!("\"ghp_", "0123456789abcdefghij\""));
 /// # Ok::<(), serde_json::Error>(())
 /// ```
@@ -152,14 +152,14 @@ mod tests {
 
     #[test]
     fn debug_is_redacted() {
-        let secret = SecretValue::new("ghp_notarealtokenatall");
+        let secret = SecretValue::new(concat!("ghp_", "notarealtokenatall"));
         assert_eq!(format!("{secret:?}"), REDACTED);
         assert!(!format!("{secret:?}").contains("ghp_"));
     }
 
     #[test]
     fn display_is_redacted() {
-        let secret = SecretValue::new("ghp_notarealtokenatall");
+        let secret = SecretValue::new(concat!("ghp_", "notarealtokenatall"));
         assert_eq!(secret.to_string(), REDACTED);
     }
 

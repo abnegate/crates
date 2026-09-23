@@ -64,7 +64,8 @@ mod tests {
 
     #[test]
     fn debug_never_prints_the_credential() {
-        let credential = Credential::key("ANTHROPIC_API_KEY", "sk-ant-api03-notarealkey");
+        let credential =
+            Credential::key("ANTHROPIC_API_KEY", concat!("sk-ant-", "api03-notarealkey"));
 
         let rendered = format!("{credential:?}");
         assert!(

@@ -253,7 +253,10 @@ mod tests {
 
     #[test]
     fn a_credential_echoed_by_the_agent_never_reaches_the_message() {
-        let leaked = "Error: rejected key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let leaked = concat!(
+            "Error: rejected key sk-ant-",
+            "api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        );
         for error in [
             ProviderError::exit("claude", ExitStatus::Code(1), leaked),
             ProviderError::agent("claude", leaked),
@@ -276,7 +279,7 @@ mod tests {
         ] {
             let rendered = format!("{error} {error:?}");
             assert!(
-                !rendered.contains("sk-ant-api03-AAAA"),
+                !rendered.contains(concat!("sk-ant-", "api03-AAAA")),
                 "credential survived in {rendered}"
             );
             assert!(

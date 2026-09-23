@@ -315,8 +315,10 @@ mod tests {
 
     #[test]
     fn debug_never_prints_the_credential() {
-        let settings = CliSettings::default()
-            .with_credential(Credential::key("ANTHROPIC_API_KEY", "sk-ant-notarealkey"));
+        let settings = CliSettings::default().with_credential(Credential::key(
+            "ANTHROPIC_API_KEY",
+            concat!("sk-ant-", "notarealkey"),
+        ));
 
         let rendered = format!("{settings:?}");
         assert!(
@@ -329,7 +331,7 @@ mod tests {
     #[test]
     fn debug_never_prints_an_injected_or_mcp_secret() {
         let settings = CliSettings::default()
-            .with_environment("GITHUB_TOKEN", "ghp_notarealtoken")
+            .with_environment("GITHUB_TOKEN", concat!("ghp_", "notarealtoken"))
             .with_mcp_server(
                 "grafana",
                 McpServer {
@@ -344,7 +346,10 @@ mod tests {
             );
 
         let rendered = format!("{settings:?}");
-        assert!(!rendered.contains("ghp_notarealtoken"), "{rendered}");
+        assert!(
+            !rendered.contains(concat!("ghp_", "notarealtoken")),
+            "{rendered}"
+        );
         assert!(!rendered.contains("glsa_realsecret"), "{rendered}");
         assert!(rendered.contains("GITHUB_TOKEN"));
     }

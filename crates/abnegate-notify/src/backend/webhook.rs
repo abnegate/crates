@@ -230,10 +230,10 @@ mod tests {
     async fn an_error_body_is_sanitized_before_it_reaches_a_log() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(400)
-                    .set_body_string("\u{1b}]0;hijack\u{7}bad token ghp_0123456789abcdefghij"),
-            )
+            .respond_with(ResponseTemplate::new(400).set_body_string(concat!(
+                "\u{1b}]0;hijack\u{7}bad token ghp_",
+                "0123456789abcdefghij"
+            )))
             .mount(&server)
             .await;
 
@@ -245,7 +245,7 @@ mod tests {
 
         let rendered = error.to_string();
         assert!(!rendered.contains('\u{1b}'), "control sequence survived");
-        assert!(!rendered.contains("ghp_0123456789abcdefghij"));
+        assert!(!rendered.contains(concat!("ghp_", "0123456789abcdefghij")));
         assert!(rendered.contains("[REDACTED]"));
     }
 

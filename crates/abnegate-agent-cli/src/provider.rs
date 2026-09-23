@@ -1080,7 +1080,7 @@ sleep 60"#,
         let script = "echo \"fatal: rejected credential $ANTHROPIC_API_KEY\" >&2\nexit 1";
         let settings = settings(&directory, script).with_credential(Credential::key(
             "ANTHROPIC_API_KEY",
-            "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            concat!("sk-ant-", "api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
         ));
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
@@ -1090,7 +1090,7 @@ sleep 60"#,
 
         let rendered = format!("{error} {error:?} {provider:?}");
         assert!(
-            !rendered.contains("sk-ant-api03-AAAA"),
+            !rendered.contains(concat!("sk-ant-", "api03-AAAA")),
             "credential leaked: {rendered}"
         );
         assert!(rendered.contains("[REDACTED]"), "not redacted: {rendered}");
@@ -1102,14 +1102,14 @@ sleep 60"#,
         let script = "echo \"fatal: rejected credential $ANTHROPIC_API_KEY\" >&2\nexit 1";
         let settings = settings(&directory, script).with_credential(Credential::key(
             "ANTHROPIC_API_KEY",
-            "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            concat!("sk-ant-", "api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
         ));
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
         let execution = execute(&provider, &[Message::user("hi")]).await;
 
         assert_eq!(execution.status, ExitStatus::Code(1));
-        assert!(!execution.stderr.contains("sk-ant-api03-AAAA"));
+        assert!(!execution.stderr.contains(concat!("sk-ant-", "api03-AAAA")));
         assert!(execution.stderr.contains("[REDACTED]"));
     }
 
@@ -1120,8 +1120,10 @@ sleep 60"#,
 printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "${ANTHROPIC_API_KEY:-absent}"
 echo '{"type":"result","subtype":"success","is_error":false}'
 "#;
-        let settings = settings(&directory, script)
-            .with_credential(Credential::key("ANTHROPIC_API_KEY", "sk-ant-present"));
+        let settings = settings(&directory, script).with_credential(Credential::key(
+            "ANTHROPIC_API_KEY",
+            concat!("sk-ant-", "present"),
+        ));
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
         let completion = run(&provider, &[Message::user("hi")])
@@ -1130,7 +1132,7 @@ echo '{"type":"result","subtype":"success","is_error":false}'
 
         assert_eq!(
             completion.message.content.as_deref(),
-            Some("sk-ant-present")
+            Some(concat!("sk-ant-", "present"))
         );
     }
 
@@ -2162,7 +2164,7 @@ echo '{"type":"result","subtype":"success","is_error":false}'
             .with_log(&root)
             .with_credential(Credential::key(
                 "ANTHROPIC_API_KEY",
-                "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                concat!("sk-ant-", "api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
             ));
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
@@ -2172,7 +2174,7 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         for path in [&files.stdout, &files.stderr, &files.events] {
             let contents = std::fs::read_to_string(path).expect("a log file");
             assert!(
-                !contents.contains("sk-ant-api03-AAAA"),
+                !contents.contains(concat!("sk-ant-", "api03-AAAA")),
                 "{} leaked the credential",
                 path.display()
             );

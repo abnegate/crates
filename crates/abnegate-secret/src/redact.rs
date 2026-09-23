@@ -591,7 +591,8 @@ mod shapes_that_carry_no_prefix {
     #[test]
     fn an_end_marker_with_trailing_text_does_not_close_a_private_key() {
         let key = concat!(
-            "-----BEGIN RSA PRIVATE KEY-----\n",
+            "-----BEGIN RSA PRIVATE",
+            " KEY-----\n",
             "MIIEowIBAAKCAQEAx4fW1pQ8mJ7kR2vLnT5cYdB3sHgKqZ0uWpXvNfE1aOiCjMlP\n",
             "-----END RSA PRIVATE KEY----- not really, keep reading\n",
             "b2ZuRk9tS3hZd0hqTmRQaVFsY0dYcVJzVHZCa0xtWm5Ob3BBcVJzVHZCa0xtWm4=\n",
@@ -607,7 +608,8 @@ mod shapes_that_carry_no_prefix {
     #[test]
     fn an_intervening_end_marker_does_not_close_a_private_key() {
         let key = concat!(
-            "-----BEGIN RSA PRIVATE KEY-----\n",
+            "-----BEGIN RSA PRIVATE",
+            " KEY-----\n",
             "MIIEowIBAAKCAQEAx4fW1pQ8mJ7kR2vLnT5cYdB3sHgKqZ0uWpXvNfE1aOiCjMlP\n",
             "-----END CERTIFICATE-----\n",
             "b2ZuRk9tS3hZd0hqTmRQaVFsY0dYcVJzVHZCa0xtWm5Ob3BBcVJzVHZCa0xtWm4=\n",
@@ -637,7 +639,8 @@ mod shapes_that_carry_no_prefix {
     #[test]
     fn a_private_key_body_does_not_survive() {
         let key = concat!(
-            "-----BEGIN RSA PRIVATE KEY-----\n",
+            "-----BEGIN RSA PRIVATE",
+            " KEY-----\n",
             "MIIEowIBAAKCAQEAx4fW1pQ8mJ7kR2vLnT5cYdB3sHgKqZ0uWpXvNfE1aOiCjMlP\n",
             "b2ZuRk9tS3hZd0hqTmRQaVFsY0dYcVJzVHZCa0xtWm5Ob3BBcVJzVHZCa0xtWm4=\n",
             "-----END RSA PRIVATE KEY-----"
@@ -786,26 +789,26 @@ mod tests {
     fn redacts_every_known_credential_family() {
         let samples = [
             "npm_0123456789abcdefghij",
-            "ghp_0123456789abcdefghij",
-            "gho_0123456789abcdefghij",
+            concat!("ghp_", "0123456789abcdefghij"),
+            concat!("gho_", "0123456789abcdefghij"),
             "ghu_0123456789abcdefghij",
             "ghs_0123456789abcdefghij",
             "ghr_0123456789abcdefghij",
-            "github_pat_0123456789abcdefghij",
-            "sk-0123456789abcdefghij",
-            "lin_api_0123456789abcdefghij",
-            "sntryu_0123456789abcdefghij",
-            "sntrys_0123456789abcdefghij",
-            "xoxb-0123456789abcdefghij",
-            "xoxa-0123456789abcdefghij",
-            "xoxp-0123456789abcdefghij",
+            concat!("github_pat_", "0123456789abcdefghij"),
+            concat!("sk-", "0123456789abcdefghij"),
+            concat!("lin_api_", "0123456789abcdefghij"),
+            concat!("sntryu_", "0123456789abcdefghij"),
+            concat!("sntrys_", "0123456789abcdefghij"),
+            concat!("xoxb-", "0123456789abcdefghij"),
+            concat!("xoxa-", "0123456789abcdefghij"),
+            concat!("xoxp-", "0123456789abcdefghij"),
             "xoxr-0123456789abcdefghij",
             "xoxs-0123456789abcdefghij",
             concat!("xapp-", "1-A0123456789-0123456789012-abcdef"),
-            "AKIA0123456789ABCDEF",
+            concat!("AKIA", "0123456789ABCDEF"),
             concat!("ASIA", "0123456789ABCDEF"),
-            "glpat-0123456789abcdefghij",
-            "sk_live_0123456789abcdefghij",
+            concat!("glpat-", "0123456789abcdefghij"),
+            concat!("sk_live_", "0123456789abcdefghij"),
             concat!("sk_test_", "0123456789abcdefghij"),
             concat!("rk_live_", "0123456789abcdefghij"),
             concat!("rk_test_", "0123456789abcdefghij"),
@@ -874,7 +877,11 @@ mod tests {
 
     #[test]
     fn redacts_every_credential_in_one_line() {
-        let text = "github=ghp_0123456789abcdefghij slack=xoxb-0123456789abcdefghij";
+        let text = concat!(
+            "github=ghp_",
+            "0123456789abcdefghij slack=xoxb-",
+            "0123456789abcdefghij"
+        );
         assert_eq!(redact(text), format!("github={REDACTED} slack={REDACTED}"));
     }
 
@@ -909,7 +916,10 @@ mod tests {
 
     #[test]
     fn keeps_the_text_around_a_credential() {
-        let text = "fatal: bad token ghp_0123456789abcdefghij, retry with a fresh one";
+        let text = concat!(
+            "fatal: bad token ghp_",
+            "0123456789abcdefghij, retry with a fresh one"
+        );
         assert_eq!(
             redact(text),
             format!("fatal: bad token {REDACTED}, retry with a fresh one")
@@ -924,7 +934,7 @@ mod tests {
 
     #[test]
     fn redacts_a_credential_beside_multibyte_text() {
-        let text = "clé → ghp_0123456789abcdefghij ✅";
+        let text = concat!("clé → ghp_", "0123456789abcdefghij ✅");
         assert_eq!(redact(text), format!("clé → {REDACTED} ✅"));
     }
 

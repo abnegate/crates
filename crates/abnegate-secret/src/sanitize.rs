@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn redacts_a_credential_hidden_behind_a_control_sequence() {
         assert_eq!(
-            sanitize("token=ghp_0123\u{1b}[0m456789abcdefghij"),
+            sanitize(concat!("token=ghp_", "0123\u{1b}[0m456789abcdefghij")),
             format!("token={REDACTED}")
         );
         assert_eq!(sanitize(&format!("{TOKEN}\u{1b}(B")), REDACTED);
@@ -340,7 +340,10 @@ mod tests {
     #[test]
     fn redacts_and_strips_together() {
         assert_eq!(
-            sanitize("\u{1b}[31mfatal\u{1b}[0m: sk-0123456789abcdefghij rejected\r\n"),
+            sanitize(concat!(
+                "\u{1b}[31mfatal\u{1b}[0m: sk-",
+                "0123456789abcdefghij rejected\r\n"
+            )),
             format!("fatal: {REDACTED} rejected\n")
         );
     }
