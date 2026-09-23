@@ -85,6 +85,11 @@ fn directory_from(variable: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf
 /// Create `directory` readable by its owner alone, or make an existing one
 /// so, refusing one that is a link or cannot be made private. Its parent
 /// must exist.
+///
+/// A link swapped in between the check and tightening an existing
+/// directory's mode would have that mode applied through it; that needs
+/// someone else able to write to the log root, which should be the owner's
+/// alone.
 fn private_directory(directory: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     use std::os::unix::fs::PermissionsExt;
