@@ -6,16 +6,16 @@ use abnegate_exec::Proxy;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::borrow::Cow;
-use std::process::Stdio;
 use tokio::process::Command;
-use tokio::time::{Duration, timeout};
+use tokio::time::Duration;
 
 use super::{
     BACKGROUND_PARAMETER, MAX_OUTPUT_PARAMETER, MAX_SHELL_TIMEOUT_SECONDS, background,
     background_property, clamp_output_characters, max_output_property, run_preview,
     working_directory,
 };
-use crate::tools::job::{JobCommand, WAIT_FOR};
+use crate::tools::job::{JobCommand, SHELL, SHELL_COMMAND_FLAG, WAIT_FOR};
+use crate::tools::process;
 use crate::tools::{
     REASON_PARAMETER, Tier, Tool, ToolContext, ToolError, ToolResult, reason_property, trim_middle,
 };
@@ -222,39 +222,19 @@ impl Tool for RunShellTool {
                 .clamp(1, MAX_SHELL_TIMEOUT_SECONDS),
         );
 
-        let mut process = Command::new("sh");
+        let mut process = Command::new(SHELL);
         process
-            .arg("-c")
+            .arg(SHELL_COMMAND_FLAG)
             .arg(&parameters.command)
-            .current_dir(&cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // Without this, a command that outlives its timeout keeps running
-            // after we have stopped waiting for it.
-            .kill_on_drop(true);
-
+            .current_dir(&cwd);
         process.env_clear();
         for (key, value) in &context.env {
             process.env(key, value);
         }
         Proxy::from_env().apply(&mut process);
 
-        let output = match timeout(limit, process.output()).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) => {
-                return Err(ToolError::Execution(format!("Failed to execute: {error}")));
-            }
-            Err(_) => {
-                return Err(ToolError::Execution(format!(
-                    "Command timed out after {} seconds and was killed",
-                    limit.as_secs()
-                )));
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = process::run(process, limit).await?;
+        let (stdout, stderr) = (output.stdout, output.stderr);
 
         let mut report = String::new();
         match output.status.code() {

@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
-const SHELL: &str = "sh";
-const SHELL_COMMAND_FLAG: &str = "-c";
+/// The shell `run_shell` and a backgrounded shell line run through.
+pub const SHELL: &str = "sh";
+
+/// The flag that hands [`SHELL`] a command line to run.
+pub const SHELL_COMMAND_FLAG: &str = "-c";
 
 /// What a background job runs, and where.
 ///

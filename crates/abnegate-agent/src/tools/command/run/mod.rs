@@ -5,15 +5,15 @@ pub(super) use parameters::RunCommandParameters;
 use abnegate_exec::Proxy;
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use std::process::Stdio;
 use tokio::process::Command;
-use tokio::time::{Duration, timeout};
+use tokio::time::Duration;
 
 use super::{
     BACKGROUND_PARAMETER, MAX_OUTPUT_PARAMETER, background, background_property,
     clamp_output_characters, max_output_property, run_preview, working_directory,
 };
 use crate::tools::job::JobCommand;
+use crate::tools::process;
 use crate::tools::{
     ERROR_PREFIX, REASON_PARAMETER, Tier, Tool, ToolContext, ToolError, ToolResult,
     reason_property, trim_middle,
@@ -141,36 +141,18 @@ impl Tool for RunCommandTool {
         }
 
         let mut process = Command::new(&parameters.command);
-        process
-            .args(&parameters.arguments)
-            .current_dir(&cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
+        process.args(&parameters.arguments).current_dir(&cwd);
         process.env_clear();
         for (key, value) in &context.env {
             process.env(key, value);
         }
         Proxy::from_env().apply(&mut process);
 
-        let timeout_duration = parameters
+        let limit = parameters
             .timeout_seconds
             .map_or(context.command_timeout, Duration::from_secs);
-
-        let output = match timeout(timeout_duration, process.output()).await {
-            Ok(result) => result
-                .map_err(|error| ToolError::Execution(format!("Failed to execute: {error}")))?,
-            Err(_) => {
-                return Err(ToolError::Execution(format!(
-                    "Command timed out after {} seconds",
-                    timeout_duration.as_secs()
-                )));
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = process::run(process, limit).await?;
+        let (stdout, stderr) = (output.stdout, output.stderr);
 
         let mut result = String::new();
 

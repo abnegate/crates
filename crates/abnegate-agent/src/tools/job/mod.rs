@@ -22,7 +22,7 @@ mod tail;
 #[cfg(test)]
 mod tests;
 
-pub use command::JobCommand;
+pub use command::{JobCommand, SHELL, SHELL_COMMAND_FLAG};
 pub use exited::JobExited;
 pub use jobs::Jobs;
 pub use started::JobStarted;

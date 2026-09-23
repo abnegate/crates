@@ -14,6 +14,7 @@ mod context;
 mod error;
 mod file;
 pub mod job;
+mod process;
 mod reason;
 mod registry;
 mod result;
