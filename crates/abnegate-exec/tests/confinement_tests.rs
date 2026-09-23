@@ -992,12 +992,25 @@ fn test_a_single_command_request_serialises_without_the_tree_field() {
     );
 }
 
+/// Whether this host's backend is installed and enforces `enforces`.
+fn host_enforces(enforces: fn(Backend) -> bool) -> bool {
+    Confinement::is_available() && HOST_BACKEND.is_some_and(enforces)
+}
+
 #[test]
-fn test_the_process_tree_capability_is_advertised_only_when_a_backend_exists() {
+fn test_the_process_tree_capability_is_advertised_only_where_the_bound_is_enforced() {
     let advertised = Capability::supported().contains(&"confinement_process_tree".to_string());
 
-    assert_eq!(advertised, Confinement::is_available());
+    assert_eq!(advertised, host_enforces(Backend::enforces_execute_roots));
     assert!(Capability::all().contains(&"confinement_process_tree".to_string()));
+}
+
+#[test]
+fn test_the_single_process_capability_is_advertised_only_where_it_is_enforced() {
+    let advertised = Capability::supported().contains(&"confinement_single_process".to_string());
+
+    assert_eq!(advertised, host_enforces(Backend::enforces_single_process));
+    assert!(Capability::all().contains(&"confinement_single_process".to_string()));
 }
 
 #[tokio::test]
@@ -1008,23 +1021,23 @@ async fn test_the_tree_probe_verdict_is_cached() {
     assert_eq!(first, second);
 }
 
-/// The self-test that carries the whole claim: on a host with a backend the
-/// tree probe must pass, and on a host without one it must fail rather than
-/// quietly downgrade.
+/// The self-test that carries the whole claim: on a host whose backend can
+/// bound a tree's execs the tree probe must pass, and on any other host it
+/// must fail rather than quietly downgrade.
 #[tokio::test]
 async fn test_the_tree_probe_proves_or_refuses_the_tree_claim() {
     let verdict = Confinement::probe(ConfinementMode::ProcessTree).await;
 
-    if Confinement::is_available() {
+    if host_enforces(Backend::enforces_execute_roots) {
         assert_eq!(
             verdict,
             Ok(()),
-            "this host has a backend, so the tree claim must be provable"
+            "this host's backend bounds a tree, so the tree claim must be provable"
         );
     } else {
         assert!(
             verdict.is_err(),
-            "a host without a backend must refuse the tree, not assume it"
+            "a host that cannot bound a tree must refuse it, not assume it"
         );
     }
 }
@@ -1126,14 +1139,6 @@ async fn test_a_confined_tree_cannot_execute_outside_its_execute_roots() {
     {
         return;
     }
-    // The host's backend, not seatbelt's: bubblewrap bounds a tree by its mount
-    // namespace and has no exec filter, so a planted file inside a bound root
-    // does run there. Asking seatbelt lets this run on a Linux host with
-    // bubblewrap installed, where the refusal below cannot hold.
-    if !HOST_BACKEND.is_some_and(Backend::enforces_execute_roots) {
-        return;
-    }
-
     let workspace = workspace();
     // A shebang script, not a copy of a system binary: macOS kills a copied
     // system binary for its lost code signature, which would make this test

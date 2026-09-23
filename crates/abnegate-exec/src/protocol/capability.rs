@@ -10,20 +10,24 @@ pub enum Capability {
     Logs,
     /// Uses process groups for clean kill
     ProcessGroup,
-    /// Can run jobs under OS-level confinement
+    /// Can run jobs under OS-level confinement of the filesystem and network
     Confinement,
-    /// Can confine a whole process tree, not just a single executable
+    /// Can confine a whole process tree, bounded to its execute roots
     ConfinementProcessTree,
+    /// A single-command confined job is one process that can neither fork
+    /// nor exec
+    ConfinementSingleProcess,
 }
 
 impl Capability {
-    pub(crate) const ALL: [Capability; 6] = [
+    pub(crate) const ALL: [Capability; 7] = [
         Capability::Cancel,
         Capability::Stdin,
         Capability::Logs,
         Capability::ProcessGroup,
         Capability::Confinement,
         Capability::ConfinementProcessTree,
+        Capability::ConfinementSingleProcess,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -34,6 +38,7 @@ impl Capability {
             Capability::ProcessGroup => "process_group",
             Capability::Confinement => "confinement",
             Capability::ConfinementProcessTree => "confinement_process_tree",
+            Capability::ConfinementSingleProcess => "confinement_single_process",
         }
     }
 
@@ -61,17 +66,22 @@ mod tests {
             Capability::ConfinementProcessTree.as_str(),
             "confinement_process_tree"
         );
+        assert_eq!(
+            Capability::ConfinementSingleProcess.as_str(),
+            "confinement_single_process"
+        );
     }
 
     #[test]
     fn test_capability_all() {
         let all = Capability::all();
-        assert_eq!(all.len(), 6);
+        assert_eq!(all.len(), 7);
         assert!(all.contains(&"cancel".to_string()));
         assert!(all.contains(&"stdin".to_string()));
         assert!(all.contains(&"logs".to_string()));
         assert!(all.contains(&"process_group".to_string()));
         assert!(all.contains(&"confinement".to_string()));
         assert!(all.contains(&"confinement_process_tree".to_string()));
+        assert!(all.contains(&"confinement_single_process".to_string()));
     }
 }

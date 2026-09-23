@@ -15,7 +15,10 @@
 //! commands inside the sandbox and asserts that a denied file stays unreadable
 //! and that a live local listener is never reached. A job that asked to be
 //! confined fails to spawn on a host that cannot prove those properties, rather
-//! than running unconfined.
+//! than running unconfined. What a job gets beyond filesystem and network
+//! confinement depends on the backend -- see
+//! [`Backend::enforces_single_process`] and [`Backend::enforces_execute_roots`]
+//! -- and the handshake advertises only what the host enforces.
 //!
 //! [`InboundMessage`], [`OutboundMessage`] and [`NdjsonCodec`] carry the same
 //! work over a pipe as newline-delimited JSON, so an executor can run as a

@@ -44,14 +44,17 @@ impl Backend {
         }
     }
 
-    /// Whether the backend can refuse an exec of a file the tree can otherwise
-    /// see.
+    /// Whether a [`ConfinementMode::ProcessTree`] job can execute only from
+    /// its execute roots.
     ///
     /// Seatbelt filters `process-exec` by path, so a binary dropped into a
-    /// writable root stays unrunnable. Bubblewrap has no exec filter: its bound
-    /// is the mount namespace, where an executable outside every bind does not
-    /// exist at all. Both bound the executable set; only seatbelt can be asked
-    /// to prove it against a file that is present.
+    /// writable root stays unrunnable. Bubblewrap has no exec filter: every
+    /// file the mount namespace holds is executable, which includes the read
+    /// and write roots and the system trees mounted for the loader. A backend
+    /// without this cannot prove the tree claim, so it refuses tree jobs and
+    /// does not advertise `confinement_process_tree`.
+    ///
+    /// [`ConfinementMode::ProcessTree`]: super::ConfinementMode::ProcessTree
     pub const fn enforces_execute_roots(self) -> bool {
         match self {
             Backend::Seatbelt => true,
@@ -59,15 +62,17 @@ impl Backend {
         }
     }
 
-    /// Whether the backend can refuse the command a second process at all.
+    /// Whether a [`ConfinementMode::SingleCommand`] job is one process that
+    /// can neither fork nor exec.
     ///
-    /// Seatbelt filters `process-fork`, so single-command mode really is one
-    /// process. Bubblewrap has no such primitive: it bounds a sandbox by its
-    /// namespaces, so a fork succeeds and the child lands inside the same mount,
-    /// network and PID namespaces. Containment is identical either way -- the
-    /// child sees the same filesystem, reaches no network, and dies with the
-    /// sandbox through `--die-with-parent` and PID namespace teardown -- but
-    /// only seatbelt can be asked to prevent the second process existing.
+    /// Seatbelt filters `process-fork` and `process-exec`, so it is. Bubblewrap
+    /// has neither filter: the command may fork, and exec anything the mount
+    /// namespace holds, inside the same filesystem and network confinement,
+    /// dying with the sandbox through `--die-with-parent` and PID namespace
+    /// teardown. A backend without this still runs single-command jobs, but
+    /// does not advertise `confinement_single_process`.
+    ///
+    /// [`ConfinementMode::SingleCommand`]: super::ConfinementMode::SingleCommand
     pub const fn enforces_single_process(self) -> bool {
         match self {
             Backend::Seatbelt => true,

@@ -5,20 +5,25 @@
 //! no network access at all.
 //!
 //! There are two shapes of confined job. [`ConfinementMode::SingleCommand`] runs
-//! exactly one executable, which may neither fork nor exec: right for a
-//! verification recipe, wrong for a build tool.
+//! one executable: right for a verification recipe, wrong for a build tool.
+//! Where the backend [`enforces_single_process`](Backend::enforces_single_process)
+//! -- seatbelt -- that executable may neither fork nor exec; under bubblewrap
+//! it may, within the same filesystem and network confinement.
 //! [`ConfinementMode::ProcessTree`] lets the command fork and exec, bounded by
 //! an explicit set of executable directories, so `cargo test` can reach `rustc`,
 //! a linker and the test binaries it just built without the sandbox admitting
-//! anything else.
+//! anything else. That bound needs a backend that
+//! [`enforces_execute_roots`](Backend::enforces_execute_roots); bubblewrap does
+//! not, so it refuses tree jobs.
 //!
 //! Confinement is never assumed to work. [`Confinement::probe`] executes real
 //! commands inside the sandbox and asserts that a denied file stays unreadable
 //! and that a connection to a live local listener never arrives. Tree mode is
 //! probed separately and more strictly: it forks before reaching for the
 //! network, so the denial is proven for a descendant rather than for the one
-//! process the sandbox was applied to. A host that cannot prove those
-//! properties refuses to run confined jobs rather than running them unconfined.
+//! process the sandbox was applied to, and the execute bound is proven against a
+//! planted executable. A host that cannot prove those properties refuses to run
+//! confined jobs rather than running them unconfined.
 
 mod backend;
 mod bubblewrap;

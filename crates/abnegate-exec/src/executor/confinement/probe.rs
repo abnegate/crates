@@ -21,6 +21,7 @@ use super::backend::Backend;
 use super::backend::HOST_BACKEND;
 use super::backend::backend_executable;
 use super::error::ConfinementError;
+use super::mode::ConfinementMode;
 use super::path::executable_file;
 use super::path::text;
 use super::workspace::ProbeWorkspace;
@@ -156,13 +157,36 @@ async fn probe_network(backend: Backend, root: &Path) -> Result<(), ConfinementE
     Ok(())
 }
 
+/// Refuse a mode whose claim the backend has no mechanism to hold, before
+/// any probe could be mistaken for proof of it.
+///
+/// A single-command job's claim on a backend that does not enforce a single
+/// process is the filesystem and network confinement alone, which the probe
+/// does prove. A tree's claim is its execute bound, and nothing can stand in
+/// for that.
+pub(super) fn require_enforced(
+    backend: Backend,
+    mode: ConfinementMode,
+) -> Result<(), ConfinementError> {
+    match mode {
+        ConfinementMode::ProcessTree if !backend.enforces_execute_roots() => {
+            Err(ConfinementError::Unproven(format!(
+                "{} cannot bound which executables a process tree runs",
+                backend.executable()
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Prove the tree claim: everything single-command mode proves, plus that a
 /// forked descendant really runs, really cannot reach the network, and really
 /// cannot exec outside the granted directories.
 async fn run_process_tree_probe() -> Result<(), ConfinementError> {
+    let backend = HOST_BACKEND.ok_or(ConfinementError::UnsupportedPlatform)?;
+    require_enforced(backend, ConfinementMode::ProcessTree)?;
     probe_single_command().await?;
 
-    let backend = HOST_BACKEND.ok_or(ConfinementError::UnsupportedPlatform)?;
     if executable_file(Path::new(PROBE_SHELL)).is_none() {
         return Err(ConfinementError::Unproven(format!(
             "probe shell {PROBE_SHELL} is unavailable, so no process tree can be built"
@@ -250,10 +274,6 @@ async fn run_tree_network_client(
 /// happily if the planted file could never run at all, which is the failure
 /// this whole probe exists to catch.
 async fn probe_tree_execute_bound(backend: Backend, root: &Path) -> Result<(), ConfinementError> {
-    if !backend.enforces_execute_roots() {
-        return Ok(());
-    }
-
     let planted = root.join(PROBE_PLANTED_COMMAND);
     fs::write(&planted, format!("#!{PROBE_SHELL}\nexit 0\n")).map_err(probe_failure)?;
     fs::set_permissions(&planted, fs::Permissions::from_mode(PROBE_PLANTED_MODE))
@@ -436,5 +456,32 @@ async fn run_in_sandbox(
             "the sandbox probe did not finish within {}s",
             PROBE_TIMEOUT.as_secs()
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tree_is_refused_where_the_backend_cannot_bound_its_execs() {
+        assert!(matches!(
+            require_enforced(Backend::Bubblewrap, ConfinementMode::ProcessTree),
+            Err(ConfinementError::Unproven(_))
+        ));
+        assert_eq!(
+            require_enforced(Backend::Seatbelt, ConfinementMode::ProcessTree),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_single_command_is_confined_on_every_backend() {
+        for backend in [Backend::Seatbelt, Backend::Bubblewrap] {
+            assert_eq!(
+                require_enforced(backend, ConfinementMode::SingleCommand),
+                Ok(())
+            );
+        }
     }
 }
