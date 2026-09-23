@@ -571,6 +571,24 @@ mod managed_tests {
             .success()
     }
 
+    /// A managed clone of `url` at `target`, made with no host
+    /// configuration and its refs stored as files, whatever the host's git
+    /// defaults to: the layout a test that puts a link where git keeps a ref
+    /// file or directory relies on.
+    fn clone_as_files(url: &str, target: &Path) {
+        git(
+            target.parent().unwrap(),
+            &[
+                "clone",
+                "-q",
+                "--ref-format=files",
+                "--",
+                url,
+                target.to_str().unwrap(),
+            ],
+        );
+    }
+
     #[test]
     fn a_repository_root_is_one_with_a_git_directory_or_a_git_file() {
         let service = GitService::new();
@@ -1623,16 +1641,16 @@ mod managed_tests {
             .ensure_repository(&target, &url, &branch("main"))
             .await
             .unwrap();
-        let head = target.join(".git").join(REMOTE_HEAD);
+        let head = || attempt(&target, &["symbolic-ref", "--quiet", REMOTE_HEAD]);
         git(&target, &["symbolic-ref", "--delete", REMOTE_HEAD]);
         git(&target, &["config", "alias.co", "checkout"]);
 
         service.update_remote_head(&target, &url).await;
-        assert!(!head.exists(), "the refused clone's remote head was set");
+        assert!(!head(), "the refused clone's remote head was set");
 
         git(&target, &["config", "--unset", "alias.co"]);
         service.update_remote_head(&target, &url).await;
-        assert!(head.exists(), "an accepted clone's remote head is set");
+        assert!(head(), "an accepted clone's remote head is set");
     }
 
     /// A clone's `origin` sits in the configuration every worktree of it
@@ -2098,10 +2116,7 @@ mod managed_tests {
         let target = workspace.path().join("cloned");
         let url = origin(source.path());
         let service = GitService::new();
-        service
-            .ensure_repository(&target, &url, &branch("main"))
-            .await
-            .unwrap();
+        clone_as_files(&url, &target);
         let standing = target.join(GIT_DIRECTORY).join(relative);
         let pointed = match link {
             Some(link) => {
@@ -2225,10 +2240,7 @@ mod managed_tests {
         let target = workspace.path().join("cloned");
         let url = origin(source.path());
         let service = GitService::new();
-        service
-            .ensure_repository(&target, &url, &branch("main"))
-            .await
-            .unwrap();
+        clone_as_files(&url, &target);
         git(&target, &["pack-refs", "--all"]);
         let packed = target.join(GIT_DIRECTORY).join("packed-refs");
         assert!(std::fs::symlink_metadata(&packed).unwrap().is_file());
@@ -2258,10 +2270,7 @@ mod managed_tests {
         let target = workspace.path().join("cloned");
         let service = GitService::new();
         let main = branch("main");
-        service
-            .ensure_repository(&target, &origin(source.path()), &main)
-            .await
-            .unwrap();
+        clone_as_files(&origin(source.path()), &target);
         let worktree = workspace.path().join("cloned-worktrees").join("one");
         service
             .create_worktree(&target, &worktree, &main)
