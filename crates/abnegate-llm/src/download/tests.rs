@@ -171,6 +171,33 @@ async fn download_with_writes_held_back(
     result
 }
 
+/// Append bytes the server never sends to `part`, as a writer outside the
+/// transfer would.
+fn append_stray_bytes(part: &Path) {
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(part)
+        .and_then(|mut file| file.write_all(b"XX"))
+        .unwrap();
+}
+
+/// Answer the resume of a four-byte `part` with the rest of [`BODY`], after
+/// [`append_stray_bytes`] has written to it.
+async fn resume_with_stray_bytes(server: &MockServer, part: &Path) {
+    let stray = part.to_path_buf();
+    Mock::given(method("GET"))
+        .and(header("range", "bytes=4-"))
+        .respond_with(move |_: &Request| {
+            append_stray_bytes(&stray);
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 4-8/9")
+                .set_body_bytes(b"-body".to_vec())
+        })
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
 fn part_length(part: &Path) -> u64 {
     std::fs::metadata(part).unwrap().len()
 }
@@ -674,18 +701,10 @@ async fn a_part_that_holds_more_than_was_received_is_not_installed() {
     let directory = tempdir().unwrap();
     let target = directory.path().join("model.gguf");
     let part = part_path(&target);
-    let stray = part.clone();
+    resume_with_stray_bytes(&server, &part).await;
     Mock::given(method("GET"))
-        .respond_with(move |_: &Request| {
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(&stray)
-                .and_then(|mut file| file.write_all(b"XX"))
-                .unwrap();
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 4-8/9")
-                .set_body_bytes(b"-body".to_vec())
-        })
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
         .mount(&server)
         .await;
     partial(&target, b"gguf", Some(ENTITY_TAG), &server.uri()).await;
@@ -693,15 +712,101 @@ async fn a_part_that_holds_more_than_was_received_is_not_installed() {
     let (result, _) = download(&server, &target, None).await;
 
     assert!(
-        matches!(
-            result,
-            Err(DownloadError::Incomplete {
-                expected: 9,
-                received: 11
-            })
-        ),
+        matches!(result, Err(DownloadError::Status(503))),
         "{result:?}"
     );
     assert!(!target.exists());
-    assert_eq!(fs::read(&part).await.unwrap(), b"ggufXX-body");
+    assert!(
+        !part.exists(),
+        "a part holding bytes the server never sent was kept to resume"
+    );
+    assert!(!Validator::path(&part).exists());
+}
+
+#[tokio::test]
+async fn a_part_that_holds_more_than_was_received_is_fetched_again_from_the_first_byte() {
+    let server = MockServer::start().await;
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+    let part = part_path(&target);
+    resume_with_stray_bytes(&server, &part).await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", ENTITY_TAG)
+                .set_body_bytes(BODY.to_vec()),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    partial(&target, b"gguf", Some(ENTITY_TAG), &server.uri()).await;
+
+    let (result, progress) = download(&server, &target, None).await;
+    result.unwrap();
+
+    let ranges: Vec<Option<String>> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| {
+            request
+                .headers
+                .get("range")
+                .map(|range| range.to_str().unwrap().to_owned())
+        })
+        .collect();
+    assert_eq!(
+        ranges,
+        [Some("bytes=4-".to_owned()), None],
+        "the download after the bad part did not start from the first byte"
+    );
+    assert_eq!(fs::read(&target).await.unwrap(), BODY);
+    assert!(!part.exists());
+    assert!(!Validator::path(&part).exists());
+    assert_eq!(progress.downloaded_bytes.load(Ordering::Relaxed), 9);
+    assert_eq!(progress.percent(), 100);
+}
+
+#[tokio::test]
+async fn a_part_that_holds_more_than_was_received_is_discarded_when_the_body_fails() {
+    let body = large_body();
+    let (url, offsets, release) = flaky_server(Arc::clone(&body), FIRST_CHUNK_BYTES);
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+    let part = part_path(&target);
+    partial(&target, &body[..FIRST_CHUNK_BYTES], Some(ENTITY_TAG), &url).await;
+    let interference = std::thread::spawn({
+        let part = part.clone();
+        move || {
+            let resumed = offsets.recv_timeout(WAIT).unwrap();
+            append_stray_bytes(&part);
+            release.send(()).unwrap();
+            (resumed, offsets)
+        }
+    });
+
+    let failed = download_gguf(&url, &target, None, Arc::new(DownloadProgress::new())).await;
+    let (resumed, offsets) = interference.join().unwrap();
+
+    assert!(matches!(failed, Err(DownloadError::Http(_))), "{failed:?}");
+    assert_eq!(resumed, Some(FIRST_CHUNK_BYTES));
+    assert!(
+        !part.exists(),
+        "a part holding bytes the server never sent was kept to resume"
+    );
+    assert!(!Validator::path(&part).exists());
+
+    let retried = download_gguf(&url, &target, None, Arc::new(DownloadProgress::new())).await;
+    retried.unwrap();
+
+    assert_eq!(
+        offsets.try_iter().collect::<Vec<_>>(),
+        [None],
+        "the next download resumed onto the stray bytes"
+    );
+    assert!(
+        fs::read(&target).await.unwrap() == *body,
+        "the next download is not the upstream file"
+    );
 }

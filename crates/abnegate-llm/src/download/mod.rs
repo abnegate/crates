@@ -112,7 +112,11 @@ async fn transfer(
 /// Bring the `.part` file up to the whole upstream file.
 ///
 /// `false` means what is on disk cannot be continued and must be discarded
-/// before the next attempt starts from the first byte.
+/// before the next attempt starts from the first byte: the server would not
+/// resume it, or the `.part` file is not the length this transfer wrote, so
+/// its end is no longer the offset of the next upstream byte. A body that
+/// fails partway leaves the `.part` file for the next call to resume, unless
+/// its length is wrong too, when it is discarded before the error returns.
 async fn fetch(
     client: &Client,
     url: &str,
@@ -173,24 +177,30 @@ async fn fetch(
         restart(url, part, response.headers(), lock).await?
     };
     let writer = Writer::spawn(file, lock);
-    let piped = pipe(response.bytes_stream(), &writer, progress).await;
+    let (piped, streamed) = pipe(response.bytes_stream(), &writer, progress).await;
     writer.finish().await?;
-    let received = offset + piped?;
-    let stored = fs::metadata(part).await?.len();
+    let received = offset + piped;
+    if fs::metadata(part).await?.len() != received {
+        return match streamed {
+            Ok(()) => Ok(false),
+            Err(error) => {
+                discard(part).await?;
+                Err(error)
+            }
+        };
+    }
+    streamed?;
 
     match total {
         Some(expected) if expected != received => {
             Err(DownloadError::Incomplete { expected, received })
         }
-        _ if stored != received => Err(DownloadError::Incomplete {
-            expected: received,
-            received: stored,
-        }),
         _ => Ok(true),
     }
 }
 
-/// Queue a body's chunks on `writer`, and count the bytes queued.
+/// Queue a body's chunks on `writer`, and count the bytes queued, even
+/// when the body fails partway.
 ///
 /// Stops early once the writer has stopped, whose error [`Writer::finish`]
 /// reports.
@@ -198,14 +208,17 @@ async fn pipe<Chunk>(
     chunks: impl Stream<Item = reqwest::Result<Chunk>>,
     writer: &Writer<Chunk>,
     progress: &DownloadProgress,
-) -> Result<u64, DownloadError>
+) -> (u64, Result<(), DownloadError>)
 where
     Chunk: AsRef<[u8]> + Send + 'static,
 {
     let mut chunks = std::pin::pin!(chunks);
     let mut piped = 0;
     while let Some(chunk) = chunks.next().await {
-        let chunk = chunk?;
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => return (piped, Err(error.into())),
+        };
         let length = chunk.as_ref().len() as u64;
         if !writer.write(chunk).await {
             break;
@@ -215,7 +228,7 @@ where
             .downloaded_bytes
             .fetch_add(length, Ordering::Relaxed);
     }
-    Ok(piped)
+    (piped, Ok(()))
 }
 
 /// Empty the `.part` file for a whole new body, and only then record which
