@@ -1,19 +1,26 @@
 //! End-to-end checks against the real U2-Net model.
 //!
-//! Skipped unless `ABNEGATE_VISION_MODEL` points at `u2net.onnx`, so the default
-//! `cargo test` run stays free of a 168 MiB download.
+//! Ignored by default, so a plain `cargo test` stays free of a 168 MiB model.
+//! Run them with `ABNEGATE_VISION_MODEL` pointing at `u2net.onnx`:
+//! `ABNEGATE_VISION_MODEL=models/u2net.onnx cargo test -p abnegate-vision --features saliency -- --ignored`.
 
 #![cfg(feature = "saliency")]
 
 use std::io::Cursor;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
 use abnegate_vision::{Analyzer, Target};
 use image::{ExtendedColorType, ImageEncoder};
 
-fn model() -> Option<PathBuf> {
-    let path = PathBuf::from(std::env::var_os("ABNEGATE_VISION_MODEL")?);
-    path.is_file().then_some(path)
+const MODEL_VARIABLE: &str = "ABNEGATE_VISION_MODEL";
+
+fn analyzer() -> Analyzer {
+    let path = PathBuf::from(
+        std::env::var_os(MODEL_VARIABLE)
+            .unwrap_or_else(|| panic!("set {MODEL_VARIABLE} to the u2net.onnx path")),
+    );
+    Analyzer::open(path).expect("load model")
 }
 
 /// A pale field with one dark ellipse, so the expected subject is unambiguous.
@@ -38,12 +45,9 @@ fn scene(width: u32, height: u32, centre: (u32, u32), radius: (u32, u32)) -> Vec
 }
 
 #[test]
+#[ignore = "needs ABNEGATE_VISION_MODEL pointing at u2net.onnx"]
 fn crops_a_landscape_image_onto_its_subject() {
-    let Some(model) = model() else {
-        eprintln!("skipping: set ABNEGATE_VISION_MODEL to run");
-        return;
-    };
-    let analyzer = Analyzer::open(model).expect("load model");
+    let analyzer = analyzer();
 
     // Subject in the upper right of a 16:9 frame.
     let image = scene(1280, 720, (960, 216), (150, 150));
@@ -74,12 +78,9 @@ fn crops_a_landscape_image_onto_its_subject() {
 }
 
 #[test]
+#[ignore = "needs ABNEGATE_VISION_MODEL pointing at u2net.onnx"]
 fn the_subject_survives_the_crop() {
-    let Some(model) = model() else {
-        eprintln!("skipping: set ABNEGATE_VISION_MODEL to run");
-        return;
-    };
-    let analyzer = Analyzer::open(model).expect("load model");
+    let analyzer = analyzer();
 
     // Subject hard against the left edge: centring on it would run off frame.
     let image = scene(1600, 900, (140, 450), (120, 200));
@@ -108,12 +109,9 @@ fn the_subject_survives_the_crop() {
 }
 
 #[test]
+#[ignore = "needs ABNEGATE_VISION_MODEL pointing at u2net.onnx"]
 fn a_caller_can_weigh_the_map_before_it_is_reduced_to_a_point() {
-    let Some(model) = model() else {
-        eprintln!("skipping: set ABNEGATE_VISION_MODEL to run");
-        return;
-    };
-    let analyzer = Analyzer::open(model).expect("load model");
+    let analyzer = analyzer();
 
     // Two equally salient subjects, one left and one right.
     let mut pixels = vec![226u8; (1280 * 720 * 3) as usize];
@@ -171,4 +169,23 @@ fn a_caller_can_weigh_the_map_before_it_is_reduced_to_a_point() {
         unweighted.0,
         weighted.0
     );
+}
+
+#[test]
+#[ignore = "needs ABNEGATE_VISION_MODEL pointing at u2net.onnx"]
+fn a_panic_in_the_callers_reader_leaves_the_analyzer_usable() {
+    let analyzer = analyzer();
+    let raster =
+        abnegate_vision::decode::decode(&scene(640, 480, (320, 240), (100, 100))).expect("decode");
+
+    let panicked = catch_unwind(AssertUnwindSafe(|| {
+        analyzer.saliency(&raster, |_, _| -> () {
+            panic!("the caller's reader failed while the model was locked")
+        })
+    }));
+    assert!(panicked.is_err());
+
+    analyzer
+        .focus_raster(&raster)
+        .expect("the next inference still runs");
 }

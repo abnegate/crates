@@ -6,21 +6,13 @@ use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer
 use crate::decode::{Layout, Orientation, Raster};
 use crate::gravity::Rect;
 
+mod error;
+
+pub use crate::preprocess::error::Error;
+
 /// ImageNet normalization, pre-folded into `value * scale + bias` per channel.
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STDDEV: [f32; 3] = [0.229, 0.224, 0.225];
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("invalid preprocessing dimensions")]
-    Dimensions,
-    #[error("invalid image dimensions")]
-    Source,
-    #[error("resize image: {0}")]
-    Resize(#[from] fast_image_resize::ResizeError),
-    #[error("resize image: {0}")]
-    Buffer(#[from] fast_image_resize::ImageBufferError),
-}
 
 /// Reusable scratch for one preprocessing pipeline. Sizing the buffers once at
 /// construction keeps steady-state analysis free of heap traffic.
@@ -69,8 +61,6 @@ impl Preprocessor {
         let offset_x = (self.width - fitted_width) / 2;
         let offset_y = (self.height - fitted_height) / 2;
 
-        // Resizing before rotating is equivalent for axis-aligned transforms and
-        // turns a full-resolution rotation into a sub-thumbnail one.
         let (resized_width, resized_height) = if raster.orientation.swaps_axes() {
             (fitted_height, fitted_width)
         } else {
@@ -106,10 +96,7 @@ impl Preprocessor {
         let target = &mut self.resized[..width as usize * height as usize * channels];
         let mut destination = Image::from_slice_u8(width, height, target, pixel_type)?;
 
-        // `imaging.Linear` in the Go reference is a triangle filter with the
-        // kernel widened by the downscale ratio, which is exactly this
-        // convolution. Alpha is resized unpremultiplied to match its NRGBA
-        // pipeline.
+        // Parity with the Go reference: its imaging.Linear over unpremultiplied NRGBA.
         let options = ResizeOptions::new()
             .resize_alg(ResizeAlg::Convolution(FilterType::Bilinear))
             .use_alpha(false);

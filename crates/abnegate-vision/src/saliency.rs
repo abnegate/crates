@@ -1,11 +1,18 @@
 //! Salient-object detection with U2-Net on ONNX Runtime.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use ort::session::builder::GraphOptimizationLevel;
-use ort::session::{HasSelectedOutputs, OutputSelector, RunOptions, Session};
+use ort::session::{OutputSelector, RunOptions, Session};
 use ort::value::TensorRef;
+
+use crate::exclusive::Exclusive;
+use crate::saliency::runner::Runner;
+
+mod error;
+mod runner;
+
+pub use crate::saliency::error::Error;
 
 pub const INPUT_WIDTH: i32 = 320;
 pub const INPUT_HEIGHT: i32 = 320;
@@ -18,32 +25,13 @@ const INPUT_NAME: &str = "input.1";
 /// Runtime prune the other six heads from the executed graph.
 const OUTPUT_NAME: &str = "1959";
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("model not found at {0}")]
-    Missing(String),
-    #[error("load saliency model: {0}")]
-    Load(String),
-    #[error("invalid input tensor length: got {0}")]
-    InputLength(usize),
-    #[error("run saliency model: {0}")]
-    Run(String),
-    #[error("saliency model returned no output")]
-    MissingOutput,
-}
-
 /// Owns a single reusable ONNX Runtime session.
 ///
 /// ONNX Runtime already saturates every core inside one `Run`, so inference is
 /// serialized behind a mutex; batching images across threads gains nothing and
 /// multiplies the arena.
 pub struct Model {
-    runner: Mutex<Runner>,
-}
-
-struct Runner {
-    session: Session,
-    options: RunOptions<HasSelectedOutputs>,
+    runner: Exclusive<Runner>,
 }
 
 impl Model {
@@ -59,14 +47,16 @@ impl Model {
             .with_outputs(OutputSelector::no_default().with(OUTPUT_NAME));
 
         Ok(Self {
-            runner: Mutex::new(Runner { session, options }),
+            runner: Exclusive::new(Runner { session, options }),
         })
     }
 
     /// Runs the model and hands the fused 320x320 saliency map to `read`.
     ///
     /// The map is borrowed straight from ONNX Runtime's output buffer, so no
-    /// copy of it is ever made.
+    /// copy of it is ever made. A model whose output is any other shape is an
+    /// error rather than a map `read` would index out of bounds. A panic in
+    /// `read` leaves the model usable by the next caller.
     pub fn infer<R>(&self, input: &[f32], read: impl FnOnce(&[f32]) -> R) -> Result<R, Error> {
         if input.len() != INPUT_LEN {
             return Err(Error::InputLength(input.len()));
@@ -76,17 +66,29 @@ impl Model {
         let tensor = TensorRef::from_array_view((shape, input))
             .map_err(|error| Error::Run(error.to_string()))?;
 
-        let mut runner = self.runner.lock().expect("saliency model mutex poisoned");
+        let mut runner = self.runner.lock();
         let Runner { session, options } = &mut *runner;
         let outputs = session
             .run_with_options(ort::inputs![INPUT_NAME => tensor], options)
             .map_err(|error| Error::Run(error.to_string()))?;
 
         let value = outputs.get(OUTPUT_NAME).ok_or(Error::MissingOutput)?;
-        let (_, map) = value
+        let (shape, map) = value
             .try_extract_tensor::<f32>()
             .map_err(|error| Error::Run(error.to_string()))?;
+        check_shape(shape)?;
         Ok(read(map))
+    }
+}
+
+/// Accepts one 320x320 map, with any number of leading unit dimensions.
+fn check_shape(shape: &[i64]) -> Result<(), Error> {
+    let expected = [i64::from(INPUT_HEIGHT), i64::from(INPUT_WIDTH)];
+    let (leading, map) = shape.split_at(shape.len().saturating_sub(expected.len()));
+    if map == expected && leading.iter().all(|&dimension| dimension == 1) {
+        Ok(())
+    } else {
+        Err(Error::OutputShape(shape.to_vec()))
     }
 }
 
@@ -128,5 +130,28 @@ mod tests {
             Error::InputLength(7).to_string(),
             "invalid input tensor length: got 7"
         );
+    }
+
+    #[test]
+    fn accepts_the_fused_map_shape() {
+        for shape in [&[1, 1, 320, 320][..], &[1, 320, 320], &[320, 320]] {
+            assert!(check_shape(shape).is_ok(), "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_any_other_output_shape() {
+        for shape in [
+            &[1, 1, 160, 160][..],
+            &[1, 2, 320, 320],
+            &[320],
+            &[],
+            &[1, 1, 320, 321],
+        ] {
+            assert!(
+                matches!(check_shape(shape), Err(Error::OutputShape(ref got)) if got == shape),
+                "{shape:?}"
+            );
+        }
     }
 }

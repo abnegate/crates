@@ -2,62 +2,20 @@
 
 use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
-use serde::Serialize;
 
-use crate::decode::{Layout, Orientation, Raster};
+use crate::decode::{Layout, MAX_PIXELS, Orientation, Raster};
 use crate::gravity::Point;
 use crate::preprocess::map_pixel;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("image has no pixels")]
-    EmptySource,
-    #[error("target size must be at least 1x1")]
-    EmptyTarget,
-    #[error("render crop: {0}")]
-    Resize(#[from] fast_image_resize::ResizeError),
-    #[error("render crop: {0}")]
-    Buffer(#[from] fast_image_resize::ImageBufferError),
-}
+mod error;
+mod region;
+mod rendered;
+mod target;
 
-/// The output frame a caller wants, in pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Target {
-    pub width: u32,
-    pub height: u32,
-}
-
-impl Target {
-    pub const fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
-    }
-
-    /// The square frame most training pipelines want.
-    pub const fn square(size: u32) -> Self {
-        Self::new(size, size)
-    }
-
-    fn aspect(self) -> f64 {
-        f64::from(self.width) / f64::from(self.height)
-    }
-}
-
-/// A region of the oriented source image, in pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Region {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// A rendered crop: 8-bit RGB, row-major, `width * height * 3` bytes.
-#[derive(Debug, Clone)]
-pub struct Rendered {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Vec<u8>,
-}
+pub use crate::crop::error::Error;
+pub use crate::crop::region::Region;
+pub use crate::crop::rendered::Rendered;
+pub use crate::crop::target::Target;
 
 /// Picks the largest region of the target's aspect ratio that fits inside the
 /// image, then slides it so its centre sits as close to `focus` as the bounds
@@ -68,7 +26,7 @@ pub struct Rendered {
 /// half by a crop centred on it.
 ///
 /// `focus` is normalized to the oriented image, which is the space
-/// [`crate::Analyzer`] reports focal points in.
+/// `Analyzer` reports focal points in.
 pub fn plan(size: (u32, u32), target: Target, focus: Point) -> Result<Region, Error> {
     let (width, height) = size;
     if width == 0 || height == 0 {
@@ -100,12 +58,25 @@ pub fn plan(size: (u32, u32), target: Target, focus: Point) -> Result<Region, Er
 /// source: `fast_image_resize` samples the region directly, so no intermediate
 /// full-size copy is made, and the orientation is applied to the already-small
 /// output.
+///
+/// `region` is in the oriented image and has to lie wholly inside it, and the
+/// target is held to the same [`MAX_PIXELS`] ceiling as a decoded image.
 pub fn render(raster: &Raster, region: Region, target: Target) -> Result<Rendered, Error> {
     if raster.width == 0 || raster.height == 0 {
         return Err(Error::EmptySource);
     }
     if target.width == 0 || target.height == 0 {
         return Err(Error::EmptyTarget);
+    }
+    if target.area() > MAX_PIXELS {
+        return Err(Error::TargetTooLarge {
+            width: target.width,
+            height: target.height,
+        });
+    }
+    let size = raster.oriented_size();
+    if !region.lies_within(size) {
+        return Err(Error::Region { region, size });
     }
 
     let source = to_source(raster.orientation, region, (raster.width, raster.height));
@@ -123,8 +94,6 @@ pub fn render(raster: &Raster, region: Region, target: Target) -> Result<Rendere
     let view = ImageRef::new(raster.width, raster.height, &raster.pixels, pixel_type)?;
     let mut resized = Image::new(resized_width, resized_height, pixel_type);
 
-    // Lanczos3 rather than the bilinear kernel the model input uses: this is the
-    // image a model will be trained on, so the extra sharpness is worth paying for.
     let options = ResizeOptions::new()
         .resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3))
         .use_alpha(false)
@@ -348,5 +317,77 @@ mod tests {
                 "byte {index}: got {got}, want {want}"
             );
         }
+    }
+
+    #[test]
+    fn a_region_outside_the_image_is_refused_rather_than_rendered() {
+        let source = raster(80, 60, Orientation::Normal);
+        for region in [
+            Region {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 10,
+            },
+            Region {
+                x: u32::MAX,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            Region {
+                x: 70,
+                y: 0,
+                width: 20,
+                height: 20,
+            },
+        ] {
+            let error = render(&source, region, Target::square(8)).expect_err("out of bounds");
+            assert!(
+                matches!(error, Error::Region { size: (80, 60), .. }),
+                "{region:?} gave {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_region_is_checked_against_the_oriented_image() {
+        let sideways = raster(48, 64, Orientation::Rotate90);
+        let upright_whole = Region {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 48,
+        };
+        assert!(render(&sideways, upright_whole, Target::square(8)).is_ok());
+
+        let stored_whole = Region {
+            x: 0,
+            y: 0,
+            width: 48,
+            height: 64,
+        };
+        assert!(matches!(
+            render(&sideways, stored_whole, Target::square(8)),
+            Err(Error::Region { size: (64, 48), .. })
+        ));
+    }
+
+    #[test]
+    fn a_target_beyond_the_pixel_ceiling_is_refused_before_it_is_allocated() {
+        let source = raster(8, 8, Orientation::Normal);
+        let whole = Region {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        };
+        assert!(matches!(
+            render(&source, whole, Target::new(5_000, 4_001)),
+            Err(Error::TargetTooLarge {
+                width: 5_000,
+                height: 4_001
+            })
+        ));
     }
 }
