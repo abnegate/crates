@@ -6,6 +6,9 @@ use std::sync::atomic::Ordering;
 use abnegate_llm::LlmClient;
 use abnegate_llm::LlmConfig;
 use async_trait::async_trait;
+use nix::sys::signal::Signal;
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
 use serde_json::Value;
 use serde_json::json;
 use wiremock::Mock;
@@ -18,6 +21,8 @@ use wiremock::matchers::method;
 use super::Agent;
 use super::AgentConfig;
 use super::NoOpCallback;
+use crate::tools::EnvironmentPolicy;
+use crate::tools::RunShellTool;
 use crate::tools::Tool;
 use crate::tools::ToolContext;
 use crate::tools::ToolError;
@@ -336,6 +341,68 @@ async fn a_tool_past_its_timeout_fails_its_call() {
     assert_eq!(state.final_response.as_deref(), Some("moved on"));
     let results = tool_results(&state);
     assert!(results[0].contains("timed out"), "{results:?}");
+}
+
+/// Whether `pid` has gone within a few seconds.
+async fn gone(pid: i32) -> bool {
+    for _ in 0..300 {
+        if kill(Pid::from_raw(pid), None).is_err() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// Dropping a run dropped the handle to the task its tool call ran on, and
+/// dropping a handle detaches a task rather than stopping it: the command
+/// went on running, and everything it started with it.
+#[tokio::test]
+async fn dropping_a_run_stops_the_command_it_was_waiting_on() {
+    let directory = tempfile::tempdir().expect("a working directory");
+    let recorded = directory.path().join("dropped-run-sleeper.pid");
+    let command = format!("sleep 30 & echo $! > '{}'; wait", recorded.display());
+    let provider = provider(vec![calling(&[(
+        "run_shell",
+        json!({"command": command, "reason": "Outlive the run."}),
+    )])])
+    .await;
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(RunShellTool));
+    let context = ToolContext::default()
+        .within(directory.path())
+        .with_environment(
+            EnvironmentPolicy::empty().with("PATH", std::env::var("PATH").unwrap_or_default()),
+        );
+    let agent = Agent::new(
+        provider.client.clone(),
+        tools,
+        AgentConfig::default(),
+        context,
+    );
+
+    let mut run = Box::pin(agent.run("Go.", &Approving));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let pid = loop {
+        tokio::select! {
+            _ = &mut run => panic!("the run ended while its command was still running"),
+            () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+        }
+        let written = std::fs::read_to_string(&recorded).unwrap_or_default();
+        if let Ok(pid) = written.trim().parse::<i32>() {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the command never started"
+        );
+    };
+
+    drop(run);
+
+    let stopped = gone(pid).await;
+    let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+    assert!(stopped, "sleep {pid} outlived the run that started it");
 }
 
 struct Asking;

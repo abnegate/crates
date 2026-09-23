@@ -19,6 +19,7 @@ mod phase;
 mod result;
 mod state;
 mod step;
+mod task;
 #[cfg(test)]
 mod tests;
 
