@@ -148,12 +148,9 @@ async fn fetch(
 
     let (offset, total) = if status == StatusCode::PARTIAL_CONTENT {
         match ContentRange::from_headers(response.headers()) {
-            Some(range) if guard.is_some() && range.start == existing => (
-                existing,
-                range
-                    .total
-                    .or_else(|| response.content_length().map(|length| existing + length)),
-            ),
+            Some(range) if guard.is_some() && range.start == existing => {
+                (existing, range.file_length(response.content_length())?)
+            }
             _ => return Ok(false),
         }
     } else {
