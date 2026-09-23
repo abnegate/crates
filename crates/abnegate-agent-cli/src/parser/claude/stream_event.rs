@@ -62,6 +62,10 @@ pub enum StreamEvent {
         #[serde(default)]
         usage: Option<CliUsage>,
     },
+    /// A throttling report. Anything but explicit headroom fails the run,
+    /// a report with no status at all included, as it did in claudear: the
+    /// event exists to announce a limit being hit, and waiting out a refused
+    /// run costs far more than stopping one.
     #[serde(rename = "rate_limit_event")]
     RateLimit {
         #[serde(default, rename = "rate_limit_info")]

@@ -209,6 +209,23 @@ mod tests {
     }
 
     #[test]
+    fn a_rate_limit_event_with_no_report_at_all_is_a_refusal() {
+        for line in [
+            r#"{"type":"rate_limit_event"}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{}}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour"}}"#,
+        ] {
+            let mut events = Vec::new();
+            interpret(line, &mut events);
+
+            let [AgentEvent::Failed(message)] = events.as_slice() else {
+                panic!("expected a refusal for {line}, got {events:?}");
+            };
+            assert!(message.starts_with("rate limit reached: {"), "{message}");
+        }
+    }
+
+    #[test]
     fn a_refused_request_reads_as_a_rate_limit_to_the_caller() {
         let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"seven_day"}}"#;
         let mut events = Vec::new();
