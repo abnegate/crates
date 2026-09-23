@@ -1944,22 +1944,30 @@ mod tests {
     #[tokio::test]
     async fn a_trainer_that_outlives_its_budget_is_killed() {
         let marker = tempfile::tempdir().unwrap();
+        let started = marker.path().join("started");
         let finished = marker.path().join("finished");
-        let command = format!("sleep 2; touch \"{}\"", finished.display());
+        let command = format!(
+            "touch \"{}\"; sleep 2; touch \"{}\"",
+            started.display(),
+            finished.display()
+        );
         let (_root, mut config) = harness(&command);
         config.train_timeout_seconds = 1;
-        let started = std::time::Instant::now();
 
         let error = rejected(&config, identity("slow")).await;
+        let returned = std::time::SystemTime::now();
 
         assert!(
             matches!(&error, TrainError::Failed(message) if message.contains("timed out")),
             "{error}"
         );
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "the budget was not enforced"
-        );
+        let spawned = std::fs::metadata(&started)
+            .and_then(|metadata| metadata.modified())
+            .expect("the trainer started");
+        let ran = returned
+            .duration_since(spawned)
+            .expect("the trainer started before the run returned");
+        assert!(ran < Duration::from_secs(2), "the budget was not enforced");
         tokio::time::sleep(Duration::from_millis(1_500)).await;
         assert!(
             !finished.exists(),
