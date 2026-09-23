@@ -1,0 +1,31 @@
+[package]
+name = "abnegate-http"
+description = "An HTTP client abstraction, SSRF-guarded outbound fetches, keyed rate limiting, exponential backoff and failure classification"
+keywords = ["http", "ssrf", "rate-limit", "backoff", "retry"]
+categories = ["web-programming::http-client", "network-programming"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
+wiremock = { workspace = true }
