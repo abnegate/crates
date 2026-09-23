@@ -48,16 +48,14 @@ impl McpSession {
         }
     }
 
-    /// The child inherits this process's environment, overlays the spec's,
-    /// and then takes the process-level proxy policy on top of both.
+    /// The child is given the spec's environment policy, and then the
+    /// process-level proxy policy on top of it.
     async fn handshake(spec: &McpServerSpec) -> Result<Self, McpError> {
         let mut command = Command::new(&spec.command);
         command.kill_on_drop(true);
         let transport = TokioChildProcess::new(command.configure(|process| {
             process.args(&spec.arguments);
-            for (key, value) in &spec.environment {
-                process.env(key, value);
-            }
+            spec.environment_policy().apply(process);
             Proxy::from_env().apply(process);
             if let Some(cwd) = &spec.working_directory {
                 process.current_dir(cwd);
@@ -133,7 +131,12 @@ mod tests {
     use super::*;
     use crate::test_support::PROXY_TEST_CHILD;
     use abnegate_exec::PROXY_URL_ENV;
-    use std::collections::HashMap;
+    use abnegate_secret::SecretValue;
+    use std::collections::BTreeMap;
+
+    /// Set on this test's own child process, where the server under test
+    /// would inherit it if nothing stopped it.
+    const LEAKED: &str = "ABNEGATE_MCP_ENVIRONMENT_MARKER";
 
     #[tokio::test]
     async fn proxy_overrides_mcp_environment_before_handshake() {
@@ -145,6 +148,7 @@ mod tests {
                 .env("PATH", std::env::var_os("PATH").unwrap_or_default())
                 .env(PROXY_TEST_CHILD, NAME)
                 .env(PROXY_URL_ENV, "http://127.0.0.1:28888")
+                .env(LEAKED, "must-not-reach-a-server")
                 .output()
                 .await
                 .unwrap();
@@ -167,13 +171,20 @@ mod tests {
                 "sh".to_string(),
                 path.to_string_lossy().into_owned(),
             ],
-            environment: HashMap::from([
-                ("HTTPS_PROXY".to_string(), "http://wrong:8888".to_string()),
-                ("http_proxy".to_string(), "http://wrong:8888".to_string()),
-                ("NO_PROXY".to_string(), "*".to_string()),
-                ("no_proxy".to_string(), "*".to_string()),
-                (PROXY_URL_ENV.to_string(), "".to_string()),
+            environment: BTreeMap::from([
+                (
+                    "HTTPS_PROXY".to_string(),
+                    SecretValue::new("http://wrong:8888"),
+                ),
+                (
+                    "http_proxy".to_string(),
+                    SecretValue::new("http://wrong:8888"),
+                ),
+                ("NO_PROXY".to_string(), SecretValue::new("*")),
+                ("no_proxy".to_string(), SecretValue::new("*")),
+                (PROXY_URL_ENV.to_string(), SecretValue::new("")),
             ]),
+            inherit_environment: false,
             working_directory: None,
             disabled: false,
         };
@@ -201,5 +212,9 @@ mod tests {
                 .any(|line| line == "NO_PROXY=*" || line == "no_proxy=*")
         );
         assert!(output.contains("NO_PROXY=localhost,127.0.0.1,::1"));
+        assert!(
+            !output.contains(LEAKED),
+            "a variable off the allowlist reached the server: {output}"
+        );
     }
 }

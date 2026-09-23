@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
 use std::time::Duration;
@@ -46,11 +45,8 @@ fn chat() -> Session {
     Session::Chat(Uuid::new_v4())
 }
 
-fn environment() -> HashMap<String, String> {
-    HashMap::from([(
-        "PATH".to_string(),
-        std::env::var("PATH").unwrap_or_default(),
-    )])
+fn environment() -> crate::tools::EnvironmentPolicy {
+    crate::tools::EnvironmentPolicy::empty().with("PATH", std::env::var("PATH").unwrap_or_default())
 }
 
 fn directory() -> TempDir {
@@ -60,7 +56,7 @@ fn directory() -> TempDir {
 fn context(session: Session, cwd: &Path) -> ToolContext {
     ToolContext {
         working_directory: cwd.to_path_buf(),
-        env: environment(),
+        environment: environment(),
         session,
         ..ToolContext::default()
     }

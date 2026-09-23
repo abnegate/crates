@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::Session;
+use super::{EnvironmentPolicy, Session};
 use crate::Application;
 
 const DEFAULT_MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
@@ -21,9 +20,10 @@ const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct ToolContext {
     /// The root file tools stay beneath and commands run in by default.
     pub working_directory: PathBuf,
-    /// The whole environment a spawned child is given. It is an allowlist:
-    /// nothing from the host process reaches a child unless it is named here.
-    pub env: HashMap<String, String>,
+    /// The whole environment a spawned child is given: by default the
+    /// [`DEFAULT_ENVIRONMENT`](super::DEFAULT_ENVIRONMENT) names from this
+    /// process and nothing else.
+    pub environment: EnvironmentPolicy,
     /// Largest file, in bytes, a tool will read into memory.
     pub max_file_size: usize,
     /// How long a command runs when its call names no limit of its own.
@@ -42,11 +42,29 @@ pub struct ToolContext {
     pub application: Application,
 }
 
+impl ToolContext {
+    /// The same context, rooted at `working_directory`.
+    pub fn within(mut self, working_directory: impl Into<PathBuf>) -> Self {
+        self.working_directory = working_directory.into();
+        self
+    }
+
+    /// The same context, giving children this process's whole environment
+    /// with the variables already named laid over it.
+    ///
+    /// The opt-out from the allowlist: only for a caller whose own
+    /// environment holds nothing a child should not see.
+    pub fn inherit_environment(mut self) -> Self {
+        self.environment = self.environment.inheriting();
+        self
+    }
+}
+
 impl Default for ToolContext {
     fn default() -> Self {
         Self {
             working_directory: std::env::current_dir().unwrap_or_default(),
-            env: std::env::vars().collect(),
+            environment: EnvironmentPolicy::allowlist(),
             max_file_size: DEFAULT_MAX_FILE_SIZE,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
             unrestricted: false,
@@ -69,5 +87,37 @@ mod tests {
         assert_eq!(context.max_file_size, 10 * 1024 * 1024);
         assert_eq!(context.command_timeout, Duration::from_secs(300));
         assert_eq!(context.application, Application::default());
+        assert!(!context.environment.inherits());
+    }
+
+    /// The default used to be the process's whole environment, database URL
+    /// and signing keys included, for every child a tool started.
+    #[test]
+    fn the_default_environment_is_the_allowlist() {
+        let context = ToolContext::default();
+        for name in context.environment.names() {
+            assert!(super::super::DEFAULT_ENVIRONMENT.contains(&name), "{name}");
+        }
+        let unlisted = std::env::vars()
+            .map(|(name, _)| name)
+            .find(|name| !super::super::DEFAULT_ENVIRONMENT.contains(&name.as_str()));
+        if let Some(name) = unlisted {
+            assert!(!context.environment.contains(&name), "{name}");
+        }
+        assert!(
+            ToolContext::default()
+                .inherit_environment()
+                .environment
+                .inherits()
+        );
+    }
+
+    #[test]
+    fn debug_never_prints_an_environment_value() {
+        let mut context = ToolContext::default();
+        context.environment.set("API_TOKEN", "hunter2-secret");
+        let printed = format!("{context:?}");
+        assert!(printed.contains("API_TOKEN"), "{printed}");
+        assert!(!printed.contains("hunter2-secret"), "{printed}");
     }
 }

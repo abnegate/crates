@@ -41,10 +41,7 @@ const READ_BUFFER_BYTES: usize = 8 * 1024;
 /// process-wide proxy policy applied last so no tool can route around it.
 pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
     let mut command = Command::new(program);
-    command.env_clear();
-    for (key, value) in &context.env {
-        command.env(key, value);
-    }
+    context.environment.apply(&mut command);
     Proxy::from_env().apply(&mut command);
     command
 }

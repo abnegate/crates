@@ -105,7 +105,7 @@ mod tests {
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::{ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router};
     use serde::Deserialize;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     #[derive(Clone, Default)]
@@ -336,7 +336,8 @@ mod tests {
                 name: "missing".to_string(),
                 command: "/definitely/not/a/real/mcp-server-xyz".to_string(),
                 arguments: vec![],
-                environment: HashMap::new(),
+                environment: BTreeMap::new(),
+                inherit_environment: false,
                 working_directory: Some(PathBuf::from("/tmp")),
                 disabled: false,
             }],
@@ -362,7 +363,8 @@ mod tests {
             name: name.to_string(),
             command: "/bin/sleep".to_string(),
             arguments: vec!["60".to_string()],
-            environment: HashMap::new(),
+            environment: BTreeMap::new(),
+            inherit_environment: false,
             working_directory: None,
             disabled: false,
         }

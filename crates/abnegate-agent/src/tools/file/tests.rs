@@ -33,7 +33,7 @@ fn create_test_context(directory: &Path) -> ToolContext {
         .unwrap_or_else(|_| directory.to_path_buf());
     ToolContext {
         working_directory: cwd,
-        env: std::collections::HashMap::new(),
+        environment: crate::tools::EnvironmentPolicy::empty(),
         max_file_size: 1024 * 1024,
         command_timeout: std::time::Duration::from_secs(30),
         unrestricted: false,

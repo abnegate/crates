@@ -248,7 +248,12 @@ mod tests {
             .iter()
             .find(|server| server.name == "docs")
             .unwrap();
-        assert_eq!(docs.environment.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(
+            docs.environment
+                .get("FOO")
+                .map(abnegate_secret::SecretValue::expose),
+            Some("bar")
+        );
     }
 
     #[test]

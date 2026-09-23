@@ -11,6 +11,7 @@
 mod beneath;
 mod command;
 mod context;
+mod environment;
 mod error;
 mod file;
 pub mod job;
@@ -29,6 +30,7 @@ pub use crate::application::DEFAULT_APPLICATION;
 pub use abnegate_secret::sanitize;
 pub use command::{MAX_SLEEP_SECONDS, RunCommandTool, RunShellTool};
 pub use context::ToolContext;
+pub use environment::{DEFAULT_ENVIRONMENT, EnvironmentPolicy};
 pub use error::ToolError;
 pub use file::{ApplyPatchTool, ListFilesTool, ReadFileTool, SearchCodeTool, WriteFileTool};
 pub use reason::{REASON_DESCRIPTION, REASON_PARAMETER, reason_property};

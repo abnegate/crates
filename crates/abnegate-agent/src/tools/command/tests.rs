@@ -1,6 +1,5 @@
 use abnegate_exec::PROXY_URL_ENV;
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -13,7 +12,7 @@ use crate::tools::{MAX_TOOL_MESSAGE_CHARACTERS, Session, Tool};
 fn create_test_context() -> ToolContext {
     ToolContext {
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-        env: HashMap::new(),
+        environment: crate::tools::EnvironmentPolicy::empty(),
         max_file_size: 1024 * 1024,
         command_timeout: std::time::Duration::from_secs(30),
         unrestricted: false,
@@ -62,7 +61,7 @@ async fn shelling_tools_give_the_child_only_the_context_environment() {
     unsafe { std::env::set_var(MARKER, "must-not-reach-a-child") };
 
     let mut context = create_test_context();
-    context.env = HashMap::from([(
+    context.environment = crate::tools::EnvironmentPolicy::from_iter([(
         "PATH".to_string(),
         std::env::var("PATH").unwrap_or_default(),
     )]);
@@ -80,7 +79,7 @@ async fn shelling_tools_give_the_child_only_the_context_environment() {
         const SHELL_OWN: &[&str] = &["PWD", "SHLVL", "_"];
         for (name, _) in output.lines().filter_map(|line| line.split_once('=')) {
             assert!(
-                context.env.contains_key(name)
+                context.environment.contains(name)
                     || name.to_ascii_uppercase().ends_with("_PROXY")
                     || SHELL_OWN.contains(&name),
                 "{name} is not on the context environment and must not have survived"
@@ -92,7 +91,7 @@ async fn shelling_tools_give_the_child_only_the_context_environment() {
 fn shell_test_context() -> ToolContext {
     let mut context = create_test_context();
     context.unrestricted = true;
-    context.env.insert(
+    context.environment.set(
         "PATH".to_string(),
         std::env::var("PATH").unwrap_or_default(),
     );
@@ -121,7 +120,7 @@ async fn proxy_overrides_command_and_shell_environment() {
         return;
     }
     let mut context = create_test_context();
-    context.env = HashMap::from([
+    context.environment = crate::tools::EnvironmentPolicy::from_iter([
         ("HTTPS_PROXY".to_string(), "http://wrong:8888".to_string()),
         ("http_proxy".to_string(), "http://wrong:8888".to_string()),
         ("NO_PROXY".to_string(), "*".to_string()),
@@ -226,7 +225,7 @@ async fn an_allowed_name_on_a_path_is_not_an_allowed_program() {
 
     let context = ToolContext {
         working_directory: directory.path().canonicalize().unwrap(),
-        env: HashMap::from([(
+        environment: crate::tools::EnvironmentPolicy::from_iter([(
             "PATH".to_string(),
             std::env::var("PATH").unwrap_or_default(),
         )]),
@@ -1303,7 +1302,7 @@ async fn a_directory_outside_the_tree_is_refused_the_same_way_in_both_modes() {
     let mut context = create_test_context();
     context.working_directory = checkout.clone();
     context.session = Session::Task(uuid::Uuid::new_v4());
-    context.env.insert(
+    context.environment.set(
         "PATH".to_string(),
         std::env::var("PATH").unwrap_or_default(),
     );
