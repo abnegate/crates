@@ -266,7 +266,9 @@ impl GitService {
 
     /// Clear the way for a worktree at `worktree_path` by removing the one
     /// standing there, but only when it is a worktree of this repository that
-    /// holds nothing: no uncommitted change, and a HEAD at `start`.
+    /// holds nothing: no uncommitted change, and a HEAD at `start`. The
+    /// clone's configuration is checked again last, since the worktree is
+    /// added next and the clearing ran git in the clone several times.
     async fn replace_stale(
         &self,
         path: &Path,
@@ -299,7 +301,8 @@ impl GitService {
         }
 
         tracing::warn!(worktree = ?worktree_path, "Stale worktree found, removing");
-        self.remove_worktree(path, worktree_path).await
+        self.remove_worktree(path, worktree_path).await?;
+        Self::verify_config(path).await
     }
 }
 
@@ -565,6 +568,38 @@ mod tests {
 
         assert!(refused(&fixture, &outer).await);
         assert!(inner.join("README").exists());
+    }
+
+    /// Clearing a stale worktree runs git in the clone several times, and the
+    /// clone's configuration can change meanwhile, so it is checked again just
+    /// before the worktree is added. Here it goes missing the moment the stale
+    /// worktree's records are removed: every other git command reads a missing
+    /// configuration as an empty one, and only the check notices.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_configuration_is_checked_again_after_a_stale_worktree_is_cleared() {
+        let fixture = Fixture::new();
+        let worktree = fixture.worktree("area-worktrees/one").await;
+        let git_directory = fixture.repository.join(".git");
+        std::fs::rename(
+            git_directory.join("config"),
+            git_directory.join("worktrees").join("one").join("shared"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("worktrees/one/shared", git_directory.join("config")).unwrap();
+
+        let refusal = GitService::new()
+            .create_worktree(&fixture.repository, &worktree, &branch("main"))
+            .await;
+
+        assert!(
+            matches!(refusal, Err(GitError::CommandFailed(ref message)) if message.contains("configuration")),
+            "{refusal:?}"
+        );
+        assert!(
+            !worktree.exists(),
+            "no worktree was added under an unchecked configuration"
+        );
     }
 
     #[test]
