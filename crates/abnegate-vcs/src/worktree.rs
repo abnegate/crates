@@ -46,6 +46,10 @@ const AREA_SUFFIX: &str = "-worktrees";
 /// What a path segment that may not carry a separator falls back to.
 const REPLACEMENT: &str = "_";
 
+/// What joins the segments of a repository's name in the name of its area:
+/// a character no host allows in an owner's or a repository's name.
+const SEGMENT_SEPARATOR: &str = "+";
+
 /// The file a repository's own ignore rules live in.
 const IGNORE_FILE: &str = ".gitignore";
 
@@ -193,23 +197,28 @@ fn terminate(child: &mut Child) {
 
 /// Where a repository's worktrees live, and where one of them lives.
 ///
-/// `{workspace}/{repository name}-worktrees/{identifier}`, with everything that
-/// would open a second path segment replaced, so neither name can reach out of
-/// the area the workspace set aside for it. An empty identifier names no
-/// worktree.
+/// `{workspace}/{owner}+{repository}-worktrees/{identifier}`: the area is
+/// named for the repository's whole name, every `/`-separated segment of it
+/// joined by `+`, so two repositories whose names end alike -- the same
+/// repository under two owners -- never share an area, and a checkout of one
+/// never stands where a checkout of the other stood. Everything that would
+/// open a second path segment is replaced, so neither name can reach out of
+/// the area the workspace set aside for it, and so is a `+` inside a segment,
+/// so no two names made of the characters a host allows name one area. An
+/// empty identifier names no worktree.
 pub fn path(workspace: &Path, repository_name: &str, identifier: &str) -> Option<PathBuf> {
     if identifier.is_empty() {
         return None;
     }
-    let short_name = repository_name
+    let name = repository_name
         .split('/')
-        .next_back()
-        .unwrap_or(repository_name)
-        .replace(['/', '\\', '\0'], REPLACEMENT);
+        .map(|segment| segment.replace(['\\', '\0', '+'], REPLACEMENT))
+        .collect::<Vec<String>>()
+        .join(SEGMENT_SEPARATOR);
     let identifier = identifier.replace(['/', '\\', '.', '\0'], REPLACEMENT);
     Some(
         workspace
-            .join(format!("{short_name}{AREA_SUFFIX}"))
+            .join(format!("{name}{AREA_SUFFIX}"))
             .join(identifier),
     )
 }
@@ -886,21 +895,21 @@ mod tests {
     fn a_worktree_lives_under_an_area_named_for_its_repository() {
         assert_eq!(
             path(Path::new("/work"), "owner/repository", "ABC-123"),
-            Some(PathBuf::from("/work/repository-worktrees/ABC-123"))
+            Some(PathBuf::from("/work/owner+repository-worktrees/ABC-123"))
         );
         assert_eq!(
             path(Path::new("/work"), "repository", "XYZ-1"),
             Some(PathBuf::from("/work/repository-worktrees/XYZ-1")),
-            "a name with no owner is its own short name"
+            "a name with no owner is its own area's name"
         );
         assert_eq!(
             path(Path::new("/work"), "org/team/repository", "ISSUE-1"),
-            Some(PathBuf::from("/work/repository-worktrees/ISSUE-1")),
-            "only the last segment names the area"
+            Some(PathBuf::from("/work/org+team+repository-worktrees/ISSUE-1")),
+            "every segment names the area"
         );
         assert_eq!(
             path(Path::new("/work"), "org/my-cool_repository", "ID-1"),
-            Some(PathBuf::from("/work/my-cool_repository-worktrees/ID-1")),
+            Some(PathBuf::from("/work/org+my-cool_repository-worktrees/ID-1")),
             "hyphens and underscores are part of a name"
         );
         assert_eq!(
@@ -910,9 +919,25 @@ mod tests {
                 "JIRA-4567"
             ),
             Some(PathBuf::from(
-                "/var/lib/workspaces/backend-worktrees/JIRA-4567"
+                "/var/lib/workspaces/myorg+backend-worktrees/JIRA-4567"
             ))
         );
+    }
+
+    #[test]
+    fn repositories_sharing_a_short_name_under_different_owners_get_areas_of_their_own() {
+        for (first, second) in [
+            ("alpha/service", "beta/service"),
+            ("alpha/service", "service"),
+            ("alpha/service", "alpha_service"),
+            ("alpha/service", "alpha+service"),
+            ("alpha_team/service", "alpha/team_service"),
+        ] {
+            let first = path(Path::new("/work"), first, "ID-1").unwrap();
+            let second = path(Path::new("/work"), second, "ID-1").unwrap();
+
+            assert_ne!(first.parent(), second.parent(), "{first:?} {second:?}");
+        }
     }
 
     #[test]
@@ -921,45 +946,55 @@ mod tests {
             (
                 "owner/repository",
                 "feat/issue",
-                "repository-worktrees/feat_issue",
+                "owner+repository-worktrees/feat_issue",
             ),
             (
                 "owner/repository",
                 "feat\\issue",
-                "repository-worktrees/feat_issue",
+                "owner+repository-worktrees/feat_issue",
             ),
-            ("owner/repository", "v1.2.3", "repository-worktrees/v1_2_3"),
+            (
+                "owner/repository",
+                "v1.2.3",
+                "owner+repository-worktrees/v1_2_3",
+            ),
             (
                 "owner/repository",
                 "issue\0evil",
-                "repository-worktrees/issue_evil",
+                "owner+repository-worktrees/issue_evil",
             ),
             (
                 "owner/repository",
                 "a/b\\c.d\0e",
-                "repository-worktrees/a_b_c_d_e",
+                "owner+repository-worktrees/a_b_c_d_e",
             ),
-            ("owner/repository", "...", "repository-worktrees/___"),
-            ("owner/repository", "///", "repository-worktrees/___"),
+            ("owner/repository", "...", "owner+repository-worktrees/___"),
+            ("owner/repository", "///", "owner+repository-worktrees/___"),
             ("evil\0repository", "ID-1", "evil_repository-worktrees/ID-1"),
             ("owner\\repository", "ID", "owner_repository-worktrees/ID"),
+            ("own+er/repository", "ID", "own_er+repository-worktrees/ID"),
             ("re\0po", "is\0sue", "re_po-worktrees/is_sue"),
+            ("../..", "ID", "..+..-worktrees/ID"),
             (
                 "owner/repository",
                 "ABC-123-DEF",
-                "repository-worktrees/ABC-123-DEF",
+                "owner+repository-worktrees/ABC-123-DEF",
             ),
             (
                 "owner/repository",
                 "my_issue_123",
-                "repository-worktrees/my_issue_123",
+                "owner+repository-worktrees/my_issue_123",
             ),
             (
                 "owner/repository",
                 "issue-\u{00e9}",
-                "repository-worktrees/issue-\u{00e9}",
+                "owner+repository-worktrees/issue-\u{00e9}",
             ),
-            ("owner/repository/", "ID-1", "-worktrees/ID-1"),
+            (
+                "owner/repository/",
+                "ID-1",
+                "owner+repository+-worktrees/ID-1",
+            ),
             ("", "ID-1", "-worktrees/ID-1"),
         ] {
             assert_eq!(
