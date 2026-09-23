@@ -3,11 +3,14 @@ use std::io;
 use std::io::Write;
 
 use crate::mcp::attachment::McpAttachment;
-use crate::mcp::document::Document;
 use crate::mcp::placeholders::Placeholders;
 use crate::mcp::server::McpServer;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
+use serde::de::Error;
+use serde::ser::SerializeMap;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
@@ -18,27 +21,29 @@ const SUFFIX: &str = ".json";
 
 /// The MCP servers a run attaches, keyed by the name the agent knows each by.
 ///
-/// It reads from the CLI's own `{"mcpServers": {...}}` document or from a
-/// bare map of servers, and writes the former.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(from = "Document", into = "Document")]
+/// It reads from the CLI's own `{"mcpServers": {...}}` document, chosen by
+/// that key being present, or from a bare map of servers, and writes the
+/// former.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct McpConfig {
     pub servers: BTreeMap<String, McpServer>,
 }
 
-impl From<Document> for McpConfig {
-    fn from(document: Document) -> Self {
-        match document {
-            Document::Wrapped { servers } | Document::Bare(servers) => Self { servers },
-        }
+impl Serialize for McpConfig {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut document = serializer.serialize_map(Some(1))?;
+        document.serialize_entry(SERVERS, &self.servers)?;
+        document.end()
     }
 }
 
-impl From<McpConfig> for Document {
-    fn from(config: McpConfig) -> Self {
-        Self::Wrapped {
-            servers: config.servers,
-        }
+impl<'de> Deserialize<'de> for McpConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut document = Map::<String, Value>::deserialize(deserializer)?;
+        let servers = document.remove(SERVERS).unwrap_or(Value::Object(document));
+        BTreeMap::<String, McpServer>::deserialize(servers)
+            .map(|servers| Self { servers })
+            .map_err(D::Error::custom)
     }
 }
 
@@ -418,6 +423,26 @@ mod tests {
             serde_json::from_value::<McpConfig>(written).expect("a round trip"),
             wrapped
         );
+    }
+
+    #[test]
+    fn a_malformed_mcp_servers_document_is_an_error_rather_than_a_server() {
+        let error = serde_json::from_value::<McpConfig>(serde_json::json!({
+            "mcpServers": {"appwrite": {"command": "uvx", "args": "not a list"}}
+        }))
+        .expect_err("a malformed document");
+
+        assert!(error.to_string().contains("invalid type"), "{error}");
+    }
+
+    #[test]
+    fn a_server_name_holding_the_separator_never_attaches() {
+        let config = McpConfig::default()
+            .with_server("my", appwrite())
+            .with_server("my__server", appwrite());
+
+        assert_eq!(config.allowed_tools(), ["mcp__my"]);
+        assert_eq!(config.attachable().count(), 1);
     }
 
     #[test]
