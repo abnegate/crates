@@ -263,10 +263,7 @@ impl GitService {
         let output = Self::output(&mut Self::fetching_all(path)).await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git fetch failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            return Err(Self::failed("fetch", &output));
         }
 
         tracing::debug!(repository = ?path, "Fetch completed");
@@ -284,10 +281,7 @@ impl GitService {
         let output = Self::output(&mut Self::fetching(path, branch)).await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git fetch branch failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            return Err(Self::failed("fetch branch", &output));
         }
 
         Ok(())
@@ -305,10 +299,7 @@ impl GitService {
         let output = Self::output(&mut Self::cloning(&address(url)?, target)).await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git clone failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            return Err(Self::failed("clone", &output));
         }
 
         tracing::info!(target = ?target, "Repository cloned successfully");
@@ -326,10 +317,7 @@ impl GitService {
         let output = Self::output(&mut Self::fetching(path, branch)).await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git fetch failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            return Err(Self::failed("fetch", &output));
         }
 
         self.checkout_reset(path, branch).await?;
@@ -356,10 +344,7 @@ impl GitService {
         let output = Self::output(&mut Self::checking_out(path, branch)).await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git checkout failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            return Err(Self::failed("checkout", &output));
         }
 
         Ok(())
@@ -1118,7 +1103,8 @@ mod managed_tests {
     /// [`BranchName`] both accept can hold characters that change how the
     /// text around them reads, so a refusal of it names no branch: neither
     /// one whose remote-tracking ref is a link nor one that is a link
-    /// itself.
+    /// itself, and a failure of git's to check it out, whose own message
+    /// quotes it, carries no more than which command failed.
     #[tokio::test]
     async fn a_linked_default_branch_is_refused_without_the_name_the_repository_gave_it() {
         let source = TempDir::new().unwrap();
@@ -1131,6 +1117,16 @@ mod managed_tests {
         let name = "ma\u{200B}in";
         let tracking = format!("{REMOTE_TRACKING}{name}");
         let local = format!("{HEADS}{name}");
+        let branches = || {
+            git(
+                &target,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/heads",
+                ],
+            )
+        };
         git(
             &target,
             &["symbolic-ref", &tracking, "refs/remotes/origin/main"],
@@ -1147,28 +1143,39 @@ mod managed_tests {
         );
         git(&target, &["update-ref", "--no-deref", "-d", &tracking]);
         git(&target, &["symbolic-ref", &local, "refs/heads/main"]);
-        let listed = git(
+        let listed = branches();
+        let reset = service.ensure_synced(&target, &url).await.map(drop);
+        let after_reset = branches();
+        git(&target, &["update-ref", "--no-deref", "-d", &local]);
+        let elsewhere = workspace.path().join("elsewhere");
+        git(
             &target,
             &[
-                "for-each-ref",
-                "--format=%(refname) %(objectname)",
-                "refs/heads",
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                "--",
+                elsewhere.to_str().unwrap(),
             ],
         );
-        let reset = service.ensure_synced(&target, &url).await.map(drop);
-
-        assert_eq!(
-            git(
-                &target,
-                &[
-                    "for-each-ref",
-                    "--format=%(refname) %(objectname)",
-                    "refs/heads"
-                ]
-            ),
-            listed,
-            "the refused sync moved a branch"
+        git(
+            &elsewhere,
+            &[
+                "switch",
+                "-q",
+                "--ignore-other-worktrees",
+                "--no-track",
+                "-c",
+                name,
+                &tracking,
+            ],
         );
+        let held = branches();
+        let taken = service.ensure_synced(&target, &url).await.map(drop);
+
+        assert_eq!(after_reset, listed, "the refused sync moved a branch");
+        assert_eq!(branches(), held, "the failed sync moved a branch");
         for (operation, refusal) in [fetched, synced, reset].into_iter().enumerate() {
             let refusal = refusal.unwrap_err();
             assert!(
@@ -1180,6 +1187,12 @@ mod managed_tests {
                 "operation {operation}: {refusal:?}"
             );
         }
+        let taken = taken.unwrap_err();
+        assert!(
+            !taken.to_string().contains(name),
+            "the failure carries the name: {taken}"
+        );
+        assert!(matches!(taken, GitError::CommandFailed(_)), "{taken:?}");
     }
 
     #[tokio::test]
@@ -2516,15 +2529,20 @@ mod managed_tests {
         repository(source.path());
         let workspace = TempDir::new().unwrap();
         let service = GitService::new();
+        let plain = workspace.path().join("plain");
+        let cloned = GitService::output(&mut GitService::cloning(OsStr::new(PLAIN), &plain))
+            .await
+            .unwrap();
         let refusal = service
-            .ensure_repository(&workspace.path().join("plain"), PLAIN, &branch("main"))
+            .ensure_repository(&plain, PLAIN, &branch("main"))
             .await
             .unwrap_err()
             .to_string();
         assert!(
-            refusal.contains("transport 'http' not allowed"),
-            "{refusal}"
+            String::from_utf8_lossy(&cloned.stderr).contains("transport 'http' not allowed"),
+            "{cloned:?}"
         );
+        assert_eq!(refusal, "Git command failed: git clone failed");
 
         let target = workspace.path().join("cloned");
         service
@@ -2532,15 +2550,19 @@ mod managed_tests {
             .await
             .unwrap();
         git(&target, &["config", ORIGIN_URL, PLAIN]);
+        let fetched = GitService::output(&mut GitService::fetching_all(&target))
+            .await
+            .unwrap();
         let refusal = service
             .fetch_all(&target, PLAIN)
             .await
             .unwrap_err()
             .to_string();
         assert!(
-            refusal.contains("transport 'http' not allowed"),
-            "{refusal}"
+            String::from_utf8_lossy(&fetched.stderr).contains("transport 'http' not allowed"),
+            "{fetched:?}"
         );
+        assert_eq!(refusal, "Git command failed: git fetch failed");
     }
 
     /// A checkout carries every pin. A fetch carries every pin but

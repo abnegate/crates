@@ -330,10 +330,7 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(format!(
-                "git rev-parse failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            return Err(Self::failed("rev-parse", &output));
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -599,9 +596,7 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+            return Err(Self::failed("status", &output));
         }
 
         Ok(output.stdout)
@@ -635,9 +630,7 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+            return Err(Self::failed("checkout", &output));
         }
 
         Ok(())
@@ -663,9 +656,7 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+            return Err(Self::failed("add", &output));
         }
 
         Ok(())
@@ -772,9 +763,7 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+            return Err(Self::failed("commit", &output));
         }
 
         self.revision(path, "HEAD").await
@@ -873,9 +862,7 @@ impl GitService {
         .await?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+            return Err(Self::failed("switch", &output));
         }
 
         Ok(())

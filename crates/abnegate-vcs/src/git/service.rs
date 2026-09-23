@@ -408,6 +408,19 @@ impl GitService {
         }
         Ok(())
     }
+
+    /// The failure of the git `operation` that produced `output`, named by
+    /// the operation alone: git's standard error quotes the ref names and
+    /// paths a repository chose, so what it said is logged at debug and
+    /// never carried.
+    fn failed(operation: &str, output: &Output) -> GitError {
+        tracing::debug!(
+            operation,
+            error = %String::from_utf8_lossy(&output.stderr),
+            "A git command failed"
+        );
+        GitError::CommandFailed(format!("git {operation} failed"))
+    }
 }
 
 /// A title's ASCII letters and digits, lowercased, with every run of anything
