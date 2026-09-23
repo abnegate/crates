@@ -112,9 +112,7 @@ impl Router {
 
         let candidates = self.candidates();
         if candidates.is_empty() {
-            return Err(ProviderError::Unsupported {
-                router: self.name.clone(),
-            });
+            return Err(ProviderError::unsupported_route(&self.name));
         }
 
         let start = self
@@ -683,7 +681,7 @@ mod tests {
         let error = answer(&router, 0.5).await.expect_err("a failure");
 
         assert!(
-            matches!(&error, ProviderError::Unsupported { router } if router == "strict"),
+            matches!(&error, ProviderError::Unsupported { detail } if detail.starts_with("strict")),
             "expected a capability refusal, got {error:?}"
         );
         assert!(!error.recoverable());

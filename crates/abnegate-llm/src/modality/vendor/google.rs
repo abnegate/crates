@@ -2,7 +2,8 @@ use abnegate_secret::SecretValue;
 use async_trait::async_trait;
 use futures::Stream;
 
-use crate::modality::{ModalityError, ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::modality::{ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const DEFAULT_MODEL: &str = "gemini-2.5-pro";
@@ -77,7 +78,7 @@ impl GeminiProvider {
         url.to_string()
     }
 
-    pub fn parse_response(body: &serde_json::Value) -> Result<TextResponse, ModalityError> {
+    pub fn parse_response(body: &serde_json::Value) -> Result<TextResponse, ProviderError> {
         let candidate = body
             .get("candidates")
             .and_then(|candidates| candidates.as_array())
@@ -91,9 +92,7 @@ impl GeminiProvider {
             .and_then(|part| part.get("text"))
             .and_then(|text| text.as_str())
             .ok_or_else(|| {
-                ModalityError::ParseError(
-                    "missing candidates[0].content.parts[0].text in response".into(),
-                )
+                ProviderError::parse("missing candidates[0].content.parts[0].text in response")
             })?
             .to_string();
 
@@ -114,7 +113,7 @@ impl GeminiProvider {
         })
     }
 
-    async fn send(&self, body: &serde_json::Value) -> Result<serde_json::Value, ModalityError> {
+    async fn send(&self, body: &serde_json::Value) -> Result<serde_json::Value, ProviderError> {
         let response = self
             .client
             .post(self.build_request_url())
@@ -122,7 +121,7 @@ impl GeminiProvider {
             .json(body)
             .send()
             .await
-            .map_err(|error| ModalityError::NetworkError(error.to_string()))?;
+            .map_err(|error| ProviderError::network(error.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -130,13 +129,13 @@ impl GeminiProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown error".into());
-            return Err(ModalityError::ApiError { status, message });
+            return Err(ProviderError::api(status, message));
         }
 
         response
             .json()
             .await
-            .map_err(|error| ModalityError::ParseError(error.to_string()))
+            .map_err(|error| ProviderError::parse(error.to_string()))
     }
 }
 
@@ -161,7 +160,7 @@ impl TextProvider for GeminiProvider {
         MAX_CONTEXT_TOKENS
     }
 
-    async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ModalityError> {
+    async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
         let body = self.build_request_body(request);
         Self::parse_response(&self.send(&body).await?)
     }
@@ -169,7 +168,7 @@ impl TextProvider for GeminiProvider {
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ModalityError> {
+    ) -> Result<serde_json::Value, ProviderError> {
         let Some(ResponseFormat::Json {
             schema: Some(schema),
         }) = &request.response_format
@@ -197,17 +196,17 @@ impl TextProvider for GeminiProvider {
     async fn stream_complete(
         &self,
         _request: &TextRequest,
-    ) -> Result<Box<dyn Stream<Item = Result<String, ModalityError>> + Send + Unpin>, ModalityError>
+    ) -> Result<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + Unpin>, ProviderError>
     {
-        Err(ModalityError::Unsupported(
-            "streaming not yet implemented for Gemini provider".into(),
+        Err(ProviderError::unsupported(
+            "streaming not yet implemented for Gemini provider",
         ))
     }
 }
 
-fn parse_content(content: &str) -> Result<serde_json::Value, ModalityError> {
+fn parse_content(content: &str) -> Result<serde_json::Value, ProviderError> {
     serde_json::from_str(content).map_err(|error| {
-        ModalityError::ParseError(format!("failed to parse structured output: {error}"))
+        ProviderError::parse(format!("failed to parse structured output: {error}"))
     })
 }
 
@@ -401,7 +400,7 @@ mod tests {
             .unwrap_err();
 
         match error {
-            ModalityError::ApiError { status, message } => {
+            ProviderError::Api { status, message } => {
                 assert_eq!(status, 400);
                 assert_eq!(message, "bad request");
             }
@@ -416,6 +415,9 @@ mod tests {
             .await
             .err()
             .unwrap();
-        assert!(matches!(error, ModalityError::Unsupported(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Unsupported { .. }),
+            "{error:?}"
+        );
     }
 }

@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::modality::ModalityError;
+use crate::provider::ProviderError;
 
 /// What went wrong when asking a model.
 #[derive(Debug)]
@@ -13,7 +13,7 @@ pub enum AiError {
         wanted: String,
     },
     /// The provider was reached and refused, or could not be reached.
-    Provider(ModalityError),
+    Provider(ProviderError),
     /// An answer came back but was not the shape that was asked for.
     Shape { schema: String, detail: String },
 }
@@ -49,8 +49,8 @@ impl Error for AiError {
     }
 }
 
-impl From<ModalityError> for AiError {
-    fn from(error: ModalityError) -> Self {
+impl From<ProviderError> for AiError {
+    fn from(error: ProviderError) -> Self {
         AiError::Provider(error)
     }
 }
@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn a_provider_error_is_kept_as_the_source() {
-        let error = AiError::from(ModalityError::NetworkError("refused".into()));
+        let error = AiError::from(ProviderError::network("refused"));
         assert!(error.to_string().contains("refused"));
         assert!(error.source().is_some());
     }

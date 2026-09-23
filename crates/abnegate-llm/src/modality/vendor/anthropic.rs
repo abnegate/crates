@@ -5,7 +5,8 @@ use abnegate_secret::SecretValue;
 use async_trait::async_trait;
 use futures::Stream;
 
-use crate::modality::{ModalityError, ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::modality::{ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://api.anthropic.com";
 const CLI: &str = "claude";
@@ -69,14 +70,14 @@ impl AnthropicProvider {
         })
     }
 
-    pub fn parse_response(body: &serde_json::Value) -> Result<TextResponse, ModalityError> {
+    pub fn parse_response(body: &serde_json::Value) -> Result<TextResponse, ProviderError> {
         let content = body
             .get("content")
             .and_then(|content| content.as_array())
             .and_then(|content| content.first())
             .and_then(|block| block.get("text"))
             .and_then(|text| text.as_str())
-            .ok_or_else(|| ModalityError::ParseError("missing content[0].text in response".into()))?
+            .ok_or_else(|| ProviderError::parse("missing content[0].text in response"))?
             .to_string();
 
         Ok(TextResponse {
@@ -117,7 +118,7 @@ impl AnthropicProvider {
         }
     }
 
-    async fn send(&self, body: &serde_json::Value) -> Result<serde_json::Value, ModalityError> {
+    async fn send(&self, body: &serde_json::Value) -> Result<serde_json::Value, ProviderError> {
         let request = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
@@ -129,7 +130,7 @@ impl AnthropicProvider {
             .authenticate(request)
             .send()
             .await
-            .map_err(|error| ModalityError::NetworkError(error.to_string()))?;
+            .map_err(|error| ProviderError::network(error.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -137,13 +138,13 @@ impl AnthropicProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown error".into());
-            return Err(ModalityError::ApiError { status, message });
+            return Err(ProviderError::api(status, message));
         }
 
         response
             .json()
             .await
-            .map_err(|error| ModalityError::ParseError(error.to_string()))
+            .map_err(|error| ProviderError::parse(error.to_string()))
     }
 
     /// Ask the CLI for an answer that satisfies `schema`.
@@ -154,11 +155,10 @@ impl AnthropicProvider {
         &self,
         request: &TextRequest,
         schema: &serde_json::Value,
-    ) -> Result<serde_json::Value, ModalityError> {
+    ) -> Result<serde_json::Value, ProviderError> {
         let prompt = joined_prompt(request, "\n\n");
-        let schema = serde_json::to_string(schema).map_err(|error| {
-            ModalityError::ConfigError(format!("unserialisable schema: {error}"))
-        })?;
+        let schema = serde_json::to_string(schema)
+            .map_err(|error| ProviderError::config(format!("unserialisable schema: {error}")))?;
 
         let output = tokio::process::Command::new(CLI)
             .arg("--print")
@@ -175,7 +175,7 @@ impl AnthropicProvider {
             .output()
             .await
             .map_err(|error| {
-                ModalityError::NetworkError(format!(
+                ProviderError::network(format!(
                     "could not run the {CLI} CLI: {error}. Install it, or choose another provider."
                 ))
             })?;
@@ -186,7 +186,7 @@ impl AnthropicProvider {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let envelope: serde_json::Value = serde_json::from_str(&stdout).map_err(|error| {
-            ModalityError::ParseError(format!(
+            ProviderError::parse(format!(
                 "the {CLI} CLI did not return JSON: {error}. Raw: {}",
                 truncated(&stdout, 500)
             ))
@@ -200,7 +200,7 @@ impl AnthropicProvider {
     /// With `--json-schema` the result is the value itself, under
     /// `structured_output`; without one it is a string under `result` that may
     /// hold JSON. Both shapes appear in practice.
-    fn unwrap_cli_result(envelope: serde_json::Value) -> Result<serde_json::Value, ModalityError> {
+    fn unwrap_cli_result(envelope: serde_json::Value) -> Result<serde_json::Value, ProviderError> {
         let inner = envelope
             .get(TOOL)
             .or_else(|| envelope.get("result"))
@@ -208,11 +208,11 @@ impl AnthropicProvider {
             .unwrap_or(envelope);
 
         match inner {
-            serde_json::Value::Null => Err(ModalityError::ParseError(format!(
+            serde_json::Value::Null => Err(ProviderError::parse(format!(
                 "the {CLI} CLI returned no result"
             ))),
             serde_json::Value::String(text) => serde_json::from_str(&text).map_err(|error| {
-                ModalityError::ParseError(format!(
+                ProviderError::parse(format!(
                     "the model's answer was not the JSON the schema asked for: {error}. \
                      Answer: {}",
                     truncated(&text, 300)
@@ -222,7 +222,7 @@ impl AnthropicProvider {
         }
     }
 
-    async fn complete_via_cli(&self, request: &TextRequest) -> Result<TextResponse, ModalityError> {
+    async fn complete_via_cli(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
         let prompt = if request.system_prompt.is_empty() {
             request.user_prompt.clone()
         } else {
@@ -243,7 +243,7 @@ impl AnthropicProvider {
             .output()
             .await
             .map_err(|error| {
-                ModalityError::NetworkError(format!(
+                ProviderError::network(format!(
                     "could not run the {CLI} CLI: {error}. Install it, or choose another provider."
                 ))
             })?;
@@ -254,7 +254,7 @@ impl AnthropicProvider {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let envelope: serde_json::Value = serde_json::from_str(&stdout).map_err(|error| {
-            ModalityError::ParseError(format!(
+            ProviderError::parse(format!(
                 "the {CLI} CLI did not return JSON: {error}. Raw: {}",
                 truncated(&stdout, 500)
             ))
@@ -268,7 +268,7 @@ impl AnthropicProvider {
             .to_string();
 
         if content.is_empty() {
-            return Err(ModalityError::ParseError(format!(
+            return Err(ProviderError::parse(format!(
                 "the {CLI} CLI returned an empty answer. Raw: {}",
                 truncated(&stdout, 1000)
             )));
@@ -294,9 +294,9 @@ fn joined_prompt(request: &TextRequest, separator: &str) -> String {
     )
 }
 
-fn cli_failed(output: &std::process::Output) -> ModalityError {
+fn cli_failed(output: &std::process::Output) -> ProviderError {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    ModalityError::NetworkError(format!(
+    ProviderError::network(format!(
         "the {CLI} CLI exited with {}: {}",
         output.status,
         truncated(&stderr, 500)
@@ -328,7 +328,7 @@ impl TextProvider for AnthropicProvider {
         MAX_CONTEXT_TOKENS
     }
 
-    async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ModalityError> {
+    async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
         if self.uses_cli() {
             return self.complete_via_cli(request).await;
         }
@@ -340,14 +340,14 @@ impl TextProvider for AnthropicProvider {
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ModalityError> {
+    ) -> Result<serde_json::Value, ProviderError> {
         let Some(ResponseFormat::Json {
             schema: Some(schema),
         }) = &request.response_format
         else {
             let response = self.complete(request).await?;
             return serde_json::from_str(&response.content).map_err(|error| {
-                ModalityError::ParseError(format!("failed to parse structured output: {error}"))
+                ProviderError::parse(format!("failed to parse structured output: {error}"))
             });
         };
 
@@ -385,19 +385,17 @@ impl TextProvider for AnthropicProvider {
             .and_then(|block| block.get("input"))
             .cloned()
             .ok_or_else(|| {
-                ModalityError::ParseError(
-                    "missing tool_use content block in structured response".into(),
-                )
+                ProviderError::parse("missing tool_use content block in structured response")
             })
     }
 
     async fn stream_complete(
         &self,
         _request: &TextRequest,
-    ) -> Result<Box<dyn Stream<Item = Result<String, ModalityError>> + Send + Unpin>, ModalityError>
+    ) -> Result<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + Unpin>, ProviderError>
     {
-        Err(ModalityError::Unsupported(
-            "streaming not yet implemented for Anthropic provider".into(),
+        Err(ProviderError::unsupported(
+            "streaming not yet implemented for Anthropic provider",
         ))
     }
 }
@@ -485,8 +483,8 @@ mod tests {
         let error =
             AnthropicProvider::parse_response(&serde_json::json!({ "id": "msg_123" })).unwrap_err();
         match error {
-            ModalityError::ParseError(message) => assert!(message.contains("content"), "{message}"),
-            other => panic!("expected ParseError, got {other:?}"),
+            ProviderError::Parse { detail } => assert!(detail.contains("content"), "{detail}"),
+            other => panic!("expected a parse failure, got {other:?}"),
         }
     }
 
@@ -535,14 +533,14 @@ mod tests {
     fn a_non_json_answer_from_the_cli_is_refused() {
         let envelope = serde_json::json!({ "result": "not json at all" });
         let error = AnthropicProvider::unwrap_cli_result(envelope).unwrap_err();
-        assert!(matches!(error, ModalityError::ParseError(_)), "{error:?}");
+        assert!(matches!(error, ProviderError::Parse { .. }), "{error:?}");
     }
 
     #[test]
     fn an_empty_cli_envelope_is_refused() {
         let envelope = serde_json::json!({ "result": serde_json::Value::Null });
         let error = AnthropicProvider::unwrap_cli_result(envelope).unwrap_err();
-        assert!(matches!(error, ModalityError::ParseError(_)), "{error:?}");
+        assert!(matches!(error, ProviderError::Parse { .. }), "{error:?}");
     }
 
     #[tokio::test]
@@ -627,7 +625,7 @@ mod tests {
 
         let error = provider.complete_structured(&request).await.unwrap_err();
 
-        assert!(matches!(error, ModalityError::ParseError(_)), "{error:?}");
+        assert!(matches!(error, ProviderError::Parse { .. }), "{error:?}");
     }
 
     #[tokio::test]
@@ -650,7 +648,7 @@ mod tests {
             .unwrap_err();
 
         match error {
-            ModalityError::ApiError { status, message } => {
+            ProviderError::Api { status, message } => {
                 assert_eq!(status, 529);
                 assert_eq!(message, "overloaded");
             }
@@ -665,6 +663,9 @@ mod tests {
             .await
             .err()
             .unwrap();
-        assert!(matches!(error, ModalityError::Unsupported(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Unsupported { .. }),
+            "{error:?}"
+        );
     }
 }

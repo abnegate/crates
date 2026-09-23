@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
-use crate::modality::{ImageEditRequest, ImageRequest, ImageResponse, ModalityError};
+use crate::modality::{ImageEditRequest, ImageRequest, ImageResponse};
+use crate::provider::ProviderError;
 
 #[async_trait]
 pub trait ImageProvider: Send + Sync {
@@ -8,11 +9,11 @@ pub trait ImageProvider: Send + Sync {
     fn supported_styles(&self) -> Vec<String>;
     fn max_resolution(&self) -> (u32, u32);
 
-    async fn generate(&self, request: &ImageRequest) -> Result<ImageResponse, ModalityError>;
-    async fn edit(&self, request: &ImageEditRequest) -> Result<ImageResponse, ModalityError>;
+    async fn generate(&self, request: &ImageRequest) -> Result<ImageResponse, ProviderError>;
+    async fn edit(&self, request: &ImageEditRequest) -> Result<ImageResponse, ProviderError>;
     async fn variations(
         &self,
         image: &[u8],
         count: u32,
-    ) -> Result<Vec<ImageResponse>, ModalityError>;
+    ) -> Result<Vec<ImageResponse>, ProviderError>;
 }

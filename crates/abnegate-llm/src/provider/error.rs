@@ -46,11 +46,26 @@ pub enum ProviderError {
     #[error("{provider}: {message}")]
     Agent { provider: String, message: String },
 
+    #[error("network error: {detail}")]
+    Network { detail: String },
+
+    #[error("API error (status {status}): {message}")]
+    Api { status: u16, message: String },
+
+    #[error("parse error: {detail}")]
+    Parse { detail: String },
+
+    #[error("IO error: {detail}")]
+    Io { detail: String },
+
+    #[error("configuration error: {detail}")]
+    Config { detail: String },
+
     #[error("no provider is configured")]
     Unconfigured,
 
-    #[error("{router}: no configured provider has the required capabilities")]
-    Unsupported { router: String },
+    #[error("unsupported operation: {detail}")]
+    Unsupported { detail: String },
 
     #[error("all {attempted} providers failed, last was {last}")]
     Exhausted {
@@ -59,9 +74,11 @@ pub enum ProviderError {
     },
 }
 
+const REJECTED: [u16; 4] = [400, 404, 413, 422];
+
 impl ProviderError {
-    /// The failing provider's name, or `None` for a routing failure that
-    /// belongs to no single provider.
+    /// The failing provider's name, or `None` for a failure that belongs to no
+    /// single provider.
     pub fn provider(&self) -> Option<&str> {
         match self {
             Self::Http { provider, .. }
@@ -70,7 +87,13 @@ impl ProviderError {
             | Self::Timeout { provider, .. }
             | Self::Malformed { provider, .. }
             | Self::Agent { provider, .. } => Some(provider),
-            Self::Unconfigured | Self::Unsupported { .. } => None,
+            Self::Network { .. }
+            | Self::Api { .. }
+            | Self::Parse { .. }
+            | Self::Io { .. }
+            | Self::Config { .. }
+            | Self::Unconfigured
+            | Self::Unsupported { .. } => None,
             Self::Exhausted { last, .. } => last.provider(),
         }
     }
@@ -83,19 +106,19 @@ impl ProviderError {
     /// it identically.
     pub fn recoverable(&self) -> bool {
         match self {
-            Self::Http { source, .. } => !matches!(
-                source,
-                LlmError::Api {
-                    status: 400 | 404 | 413 | 422,
-                    ..
-                }
-            ),
+            Self::Http { source, .. } => {
+                !matches!(source, LlmError::Api { status, .. } if REJECTED.contains(status))
+            }
+            Self::Api { status, .. } => !REJECTED.contains(status),
             Self::Unavailable { .. }
             | Self::Exit { .. }
             | Self::Timeout { .. }
             | Self::Malformed { .. }
-            | Self::Agent { .. } => true,
-            Self::Unconfigured | Self::Unsupported { .. } => false,
+            | Self::Agent { .. }
+            | Self::Network { .. }
+            | Self::Parse { .. }
+            | Self::Io { .. } => true,
+            Self::Config { .. } | Self::Unconfigured | Self::Unsupported { .. } => false,
             Self::Exhausted { last, .. } => last.recoverable(),
         }
     }
@@ -127,6 +150,50 @@ impl ProviderError {
             provider: provider.to_string(),
             executable: executable.to_string(),
             reason: redact(&reason.to_string()).into_owned(),
+        }
+    }
+
+    pub fn network(detail: impl fmt::Display) -> Self {
+        Self::Network {
+            detail: redact(&detail.to_string()).into_owned(),
+        }
+    }
+
+    pub fn api(status: u16, message: impl fmt::Display) -> Self {
+        Self::Api {
+            status,
+            message: redact(&message.to_string()).into_owned(),
+        }
+    }
+
+    pub fn parse(detail: impl fmt::Display) -> Self {
+        Self::Parse {
+            detail: redact(&detail.to_string()).into_owned(),
+        }
+    }
+
+    pub fn io(detail: impl fmt::Display) -> Self {
+        Self::Io {
+            detail: redact(&detail.to_string()).into_owned(),
+        }
+    }
+
+    pub fn config(detail: impl fmt::Display) -> Self {
+        Self::Config {
+            detail: redact(&detail.to_string()).into_owned(),
+        }
+    }
+
+    pub fn unsupported(detail: impl fmt::Display) -> Self {
+        Self::Unsupported {
+            detail: redact(&detail.to_string()).into_owned(),
+        }
+    }
+
+    /// No provider behind `router` has the capabilities the request asked for.
+    pub fn unsupported_route(router: &str) -> Self {
+        Self::Unsupported {
+            detail: format!("{router} has no configured provider with the required capabilities"),
         }
     }
 }
@@ -170,6 +237,12 @@ mod tests {
             ProviderError::agent("claude", leaked),
             ProviderError::malformed("claude", leaked),
             ProviderError::unavailable("claude", "claude", leaked),
+            ProviderError::network(leaked),
+            ProviderError::api(500, leaked),
+            ProviderError::parse(leaked),
+            ProviderError::io(leaked),
+            ProviderError::config(leaked),
+            ProviderError::unsupported(leaked),
         ] {
             let rendered = format!("{error} {error:?}");
             assert!(
@@ -210,6 +283,10 @@ mod tests {
                 },
             };
             assert!(!error.recoverable(), "status {status} should not fall over");
+            assert!(
+                !ProviderError::api(status, "invalid request").recoverable(),
+                "status {status} should not fall over"
+            );
         }
 
         for status in [429, 500, 502, 503] {
@@ -221,6 +298,10 @@ mod tests {
                 },
             };
             assert!(error.recoverable(), "status {status} should fall over");
+            assert!(
+                ProviderError::api(status, "upstream").recoverable(),
+                "status {status} should fall over"
+            );
         }
     }
 
@@ -228,13 +309,62 @@ mod tests {
     fn a_routing_failure_belongs_to_no_provider_and_is_not_retried() {
         for error in [
             ProviderError::Unconfigured,
-            ProviderError::Unsupported {
-                router: "router".to_string(),
-            },
+            ProviderError::unsupported_route("router"),
+            ProviderError::config("missing key"),
         ] {
             assert_eq!(error.provider(), None);
             assert!(!error.recoverable());
         }
+    }
+
+    #[test]
+    fn a_transport_failure_belongs_to_no_provider_but_is_retried() {
+        for error in [
+            ProviderError::network("connection refused"),
+            ProviderError::parse("invalid json"),
+            ProviderError::io("file not found"),
+        ] {
+            assert_eq!(error.provider(), None);
+            assert!(error.recoverable());
+        }
+    }
+
+    #[test]
+    fn every_call_failure_says_what_went_wrong() {
+        assert_eq!(
+            ProviderError::network("connection refused").to_string(),
+            "network error: connection refused"
+        );
+        assert_eq!(
+            ProviderError::api(429, "rate limited").to_string(),
+            "API error (status 429): rate limited"
+        );
+        assert_eq!(
+            ProviderError::parse("invalid json").to_string(),
+            "parse error: invalid json"
+        );
+        assert_eq!(
+            ProviderError::config("missing key").to_string(),
+            "configuration error: missing key"
+        );
+        assert_eq!(
+            ProviderError::unsupported("feature X").to_string(),
+            "unsupported operation: feature X"
+        );
+        assert_eq!(
+            ProviderError::io("file not found").to_string(),
+            "IO error: file not found"
+        );
+    }
+
+    #[test]
+    fn a_routing_failure_names_the_router_that_could_not_place_the_request() {
+        let rendered = ProviderError::unsupported_route("strict").to_string();
+        assert!(rendered.contains("strict"), "lost the router: {rendered}");
+        assert!(
+            rendered.contains("required capabilities"),
+            "lost the reason: {rendered}"
+        );
     }
 
     #[test]

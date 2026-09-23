@@ -7,10 +7,11 @@ use base64::engine::general_purpose::STANDARD;
 use futures::Stream;
 
 use crate::modality::{
-    EmbeddingProvider, ImageEditRequest, ImageProvider, ImageRequest, ImageResponse, ModalityError,
+    EmbeddingProvider, ImageEditRequest, ImageProvider, ImageRequest, ImageResponse,
     ResponseFormat, TextProvider, TextRequest, TextResponse, TranscriptionProvider,
     TranscriptionResponse, TranscriptionSegment,
 };
+use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_MODEL: &str = "gpt-5.4";
@@ -101,7 +102,7 @@ impl OpenAIProvider {
         })
     }
 
-    pub fn parse_chat_response(body: &serde_json::Value) -> Result<TextResponse, ModalityError> {
+    pub fn parse_chat_response(body: &serde_json::Value) -> Result<TextResponse, ProviderError> {
         let choice = body
             .get("choices")
             .and_then(|choices| choices.as_array())
@@ -111,9 +112,7 @@ impl OpenAIProvider {
             .and_then(|choice| choice.get("message"))
             .and_then(|message| message.get("content"))
             .and_then(|content| content.as_str())
-            .ok_or_else(|| {
-                ModalityError::ParseError("missing choices[0].message.content in response".into())
-            })?
+            .ok_or_else(|| ProviderError::parse("missing choices[0].message.content in response"))?
             .to_string();
 
         Ok(TextResponse {
@@ -141,11 +140,11 @@ impl OpenAIProvider {
             .json(body)
     }
 
-    async fn send(request: reqwest::RequestBuilder) -> Result<serde_json::Value, ModalityError> {
+    async fn send(request: reqwest::RequestBuilder) -> Result<serde_json::Value, ProviderError> {
         let response = request
             .send()
             .await
-            .map_err(|error| ModalityError::NetworkError(error.to_string()))?;
+            .map_err(|error| ProviderError::network(error.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -153,13 +152,13 @@ impl OpenAIProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown error".into());
-            return Err(ModalityError::ApiError { status, message });
+            return Err(ProviderError::api(status, message));
         }
 
         response
             .json()
             .await
-            .map_err(|error| ModalityError::ParseError(error.to_string()))
+            .map_err(|error| ProviderError::parse(error.to_string()))
     }
 }
 
@@ -184,7 +183,7 @@ impl TextProvider for OpenAIProvider {
         MAX_CONTEXT_TOKENS
     }
 
-    async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ModalityError> {
+    async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
         let body = self.build_chat_request_body(request);
         let json = Self::send(self.post("/v1/chat/completions", &body)).await?;
         Self::parse_chat_response(&json)
@@ -193,7 +192,7 @@ impl TextProvider for OpenAIProvider {
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ModalityError> {
+    ) -> Result<serde_json::Value, ProviderError> {
         let Some(ResponseFormat::Json {
             schema: Some(schema),
         }) = &request.response_format
@@ -227,17 +226,17 @@ impl TextProvider for OpenAIProvider {
     async fn stream_complete(
         &self,
         _request: &TextRequest,
-    ) -> Result<Box<dyn Stream<Item = Result<String, ModalityError>> + Send + Unpin>, ModalityError>
+    ) -> Result<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + Unpin>, ProviderError>
     {
-        Err(ModalityError::Unsupported(
-            "streaming not yet implemented for OpenAI provider".into(),
+        Err(ProviderError::unsupported(
+            "streaming not yet implemented for OpenAI provider",
         ))
     }
 }
 
-fn parse_content(content: &str) -> Result<serde_json::Value, ModalityError> {
+fn parse_content(content: &str) -> Result<serde_json::Value, ProviderError> {
     serde_json::from_str(content).map_err(|error| {
-        ModalityError::ParseError(format!("failed to parse structured output: {error}"))
+        ProviderError::parse(format!("failed to parse structured output: {error}"))
     })
 }
 
@@ -255,7 +254,7 @@ impl ImageProvider for OpenAIProvider {
         MAX_RESOLUTION
     }
 
-    async fn generate(&self, request: &ImageRequest) -> Result<ImageResponse, ModalityError> {
+    async fn generate(&self, request: &ImageRequest) -> Result<ImageResponse, ProviderError> {
         let body = self.build_image_request_body(request);
         let json = Self::send(self.post("/v1/images/generations", &body)).await?;
 
@@ -263,19 +262,17 @@ impl ImageProvider for OpenAIProvider {
             .get("data")
             .and_then(|data| data.as_array())
             .and_then(|data| data.first())
-            .ok_or_else(|| ModalityError::ParseError("missing data[0] in response".into()))?;
+            .ok_or_else(|| ProviderError::parse("missing data[0] in response"))?;
 
         let encoded = image
             .get("b64_json")
             .and_then(|encoded| encoded.as_str())
-            .ok_or_else(|| {
-                ModalityError::ParseError("missing data[0].b64_json in response".into())
-            })?;
+            .ok_or_else(|| ProviderError::parse("missing data[0].b64_json in response"))?;
 
         Ok(ImageResponse {
-            data: STANDARD.decode(encoded).map_err(|error| {
-                ModalityError::ParseError(format!("base64 decode error: {error}"))
-            })?,
+            data: STANDARD
+                .decode(encoded)
+                .map_err(|error| ProviderError::parse(format!("base64 decode error: {error}")))?,
             width: request.width,
             height: request.height,
             format: "png".into(),
@@ -286,9 +283,9 @@ impl ImageProvider for OpenAIProvider {
         })
     }
 
-    async fn edit(&self, _request: &ImageEditRequest) -> Result<ImageResponse, ModalityError> {
-        Err(ModalityError::Unsupported(
-            "image editing not yet implemented for OpenAI provider".into(),
+    async fn edit(&self, _request: &ImageEditRequest) -> Result<ImageResponse, ProviderError> {
+        Err(ProviderError::unsupported(
+            "image editing not yet implemented for OpenAI provider",
         ))
     }
 
@@ -296,9 +293,9 @@ impl ImageProvider for OpenAIProvider {
         &self,
         _image: &[u8],
         _count: u32,
-    ) -> Result<Vec<ImageResponse>, ModalityError> {
-        Err(ModalityError::Unsupported(
-            "image variations not yet implemented for OpenAI provider".into(),
+    ) -> Result<Vec<ImageResponse>, ProviderError> {
+        Err(ProviderError::unsupported(
+            "image variations not yet implemented for OpenAI provider",
         ))
     }
 }
@@ -313,21 +310,21 @@ impl EmbeddingProvider for OpenAIProvider {
         EMBEDDING_DIMENSIONS
     }
 
-    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ModalityError> {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ProviderError> {
         let body = self.build_embedding_request_body(texts);
         let json = Self::send(self.post("/v1/embeddings", &body)).await?;
 
         let data = json
             .get("data")
             .and_then(|data| data.as_array())
-            .ok_or_else(|| ModalityError::ParseError("missing data array in response".into()))?;
+            .ok_or_else(|| ProviderError::parse("missing data array in response"))?;
 
         let mut embeddings = Vec::with_capacity(data.len());
         for item in data {
             let embedding = item
                 .get("embedding")
                 .and_then(|embedding| embedding.as_array())
-                .ok_or_else(|| ModalityError::ParseError("missing embedding in data item".into()))?
+                .ok_or_else(|| ProviderError::parse("missing embedding in data item"))?
                 .iter()
                 .filter_map(|value| value.as_f64().map(|value| value as f32))
                 .collect();
@@ -337,11 +334,11 @@ impl EmbeddingProvider for OpenAIProvider {
         Ok(embeddings)
     }
 
-    async fn embed_single(&self, text: &str) -> Result<Vec<f32>, ModalityError> {
+    async fn embed_single(&self, text: &str) -> Result<Vec<f32>, ProviderError> {
         self.embed(&[text.to_string()])
             .await?
             .pop()
-            .ok_or_else(|| ModalityError::ParseError("empty embedding response".into()))
+            .ok_or_else(|| ProviderError::parse("empty embedding response"))
     }
 }
 
@@ -351,10 +348,10 @@ impl TranscriptionProvider for OpenAIProvider {
         "openai"
     }
 
-    async fn transcribe(&self, audio_path: &Path) -> Result<TranscriptionResponse, ModalityError> {
+    async fn transcribe(&self, audio_path: &Path) -> Result<TranscriptionResponse, ProviderError> {
         let bytes = tokio::fs::read(audio_path)
             .await
-            .map_err(|error| ModalityError::IoError(error.to_string()))?;
+            .map_err(|error| ProviderError::io(error.to_string()))?;
 
         let file_name = audio_path
             .file_name()
@@ -365,7 +362,7 @@ impl TranscriptionProvider for OpenAIProvider {
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(file_name)
             .mime_str("audio/mpeg")
-            .map_err(|error| ModalityError::NetworkError(error.to_string()))?;
+            .map_err(|error| ProviderError::network(error.to_string()))?;
 
         let form = reqwest::multipart::Form::new()
             .text("model", TRANSCRIPTION_MODEL)
@@ -654,7 +651,7 @@ mod tests {
             .unwrap_err();
 
         match error {
-            ModalityError::ApiError { status, message } => {
+            ProviderError::Api { status, message } => {
                 assert_eq!(status, 429);
                 assert_eq!(message, "rate limited");
             }
@@ -751,7 +748,7 @@ mod tests {
             .transcribe(Path::new("/nonexistent/audio.mp3"))
             .await
             .unwrap_err();
-        assert!(matches!(error, ModalityError::IoError(_)), "{error:?}");
+        assert!(matches!(error, ProviderError::Io { .. }), "{error:?}");
     }
 
     #[tokio::test]
@@ -763,7 +760,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        assert!(matches!(streaming, ModalityError::Unsupported(_)));
+        assert!(matches!(streaming, ProviderError::Unsupported { .. }));
 
         let edit = provider
             .edit(&ImageEditRequest {
@@ -776,9 +773,9 @@ mod tests {
             .await
             .err()
             .unwrap();
-        assert!(matches!(edit, ModalityError::Unsupported(_)));
+        assert!(matches!(edit, ProviderError::Unsupported { .. }));
 
         let variations = provider.variations(&[], 1).await.err().unwrap();
-        assert!(matches!(variations, ModalityError::Unsupported(_)));
+        assert!(matches!(variations, ProviderError::Unsupported { .. }));
     }
 }

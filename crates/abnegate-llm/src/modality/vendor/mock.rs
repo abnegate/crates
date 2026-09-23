@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use futures::Stream;
 
-use crate::modality::{ModalityError, ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::modality::{ResponseFormat, TextProvider, TextRequest, TextResponse};
+use crate::provider::ProviderError;
 
 const MAX_CONTEXT_TOKENS: u32 = 100_000;
 const MAX_KEY_CHARACTERS: usize = 60;
@@ -69,7 +70,7 @@ impl MockProvider {
         slug(request.user_prompt.lines().next().unwrap_or("prompt"))
     }
 
-    fn lookup(&self, key: &str) -> Result<String, ModalityError> {
+    fn lookup(&self, key: &str) -> Result<String, ProviderError> {
         if let Some(answer) = self.inline.get(key) {
             return Ok(answer.clone());
         }
@@ -78,15 +79,12 @@ impl MockProvider {
             let path = self.root.join(format!("{key}.{extension}"));
             if path.exists() {
                 return std::fs::read_to_string(&path).map_err(|error| {
-                    ModalityError::ConfigError(format!(
-                        "could not read {}: {error}",
-                        path.display()
-                    ))
+                    ProviderError::config(format!("could not read {}: {error}", path.display()))
                 });
             }
         }
 
-        Err(ModalityError::ConfigError(format!(
+        Err(ProviderError::config(format!(
             "the mock provider has no answer for '{key}'. Add {} with the reply this request \
              should get. Mock answers are never invented, so a missing one fails here rather \
              than further downstream.",
@@ -138,7 +136,7 @@ impl TextProvider for MockProvider {
         MAX_CONTEXT_TOKENS
     }
 
-    async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ModalityError> {
+    async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
         let key = Self::key_for(request);
         let content = self.lookup(&key)?;
         Ok(TextResponse {
@@ -154,11 +152,11 @@ impl TextProvider for MockProvider {
     async fn complete_structured(
         &self,
         request: &TextRequest,
-    ) -> Result<serde_json::Value, ModalityError> {
+    ) -> Result<serde_json::Value, ProviderError> {
         let key = Self::key_for(request);
         let raw = self.lookup(&key)?;
         serde_json::from_str(&raw).map_err(|error| {
-            ModalityError::ParseError(format!(
+            ProviderError::parse(format!(
                 "the mock answer for '{key}' is not valid JSON: {error}. A mock answer for a \
                  structured request must be the value itself."
             ))
@@ -168,7 +166,7 @@ impl TextProvider for MockProvider {
     async fn stream_complete(
         &self,
         request: &TextRequest,
-    ) -> Result<Box<dyn Stream<Item = Result<String, ModalityError>> + Send + Unpin>, ModalityError>
+    ) -> Result<Box<dyn Stream<Item = Result<String, ProviderError>> + Send + Unpin>, ProviderError>
     {
         let response = self.complete(request).await?;
         Ok(Box::new(futures::stream::iter(vec![Ok(response.content)])))

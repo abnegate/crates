@@ -10,7 +10,6 @@ mod audio_provider;
 mod audio_response;
 mod client;
 mod embedding_provider;
-mod error;
 mod image_edit_request;
 mod image_provider;
 mod image_request;
@@ -45,7 +44,6 @@ pub use crate::modality::config::{
     VoiceProviderConfig,
 };
 pub use crate::modality::embedding_provider::EmbeddingProvider;
-pub use crate::modality::error::ModalityError;
 pub use crate::modality::image_edit_request::ImageEditRequest;
 pub use crate::modality::image_provider::ImageProvider;
 pub use crate::modality::image_request::ImageRequest;
@@ -78,6 +76,7 @@ mod tests {
     use futures::Stream;
 
     use super::*;
+    use crate::provider::ProviderError;
 
     struct Everything;
 
@@ -95,25 +94,25 @@ mod tests {
             0
         }
 
-        async fn complete(&self, _request: &TextRequest) -> Result<TextResponse, ModalityError> {
-            Err(ModalityError::Unsupported("complete".into()))
+        async fn complete(&self, _request: &TextRequest) -> Result<TextResponse, ProviderError> {
+            Err(ProviderError::unsupported("complete"))
         }
 
         async fn complete_structured(
             &self,
             _request: &TextRequest,
-        ) -> Result<serde_json::Value, ModalityError> {
-            Err(ModalityError::Unsupported("complete_structured".into()))
+        ) -> Result<serde_json::Value, ProviderError> {
+            Err(ProviderError::unsupported("complete_structured"))
         }
 
         async fn stream_complete(
             &self,
             _request: &TextRequest,
         ) -> Result<
-            Box<dyn Stream<Item = Result<String, ModalityError>> + Send + Unpin>,
-            ModalityError,
+            Box<dyn Stream<Item = Result<String, ProviderError>> + Send + Unpin>,
+            ProviderError,
         > {
-            Err(ModalityError::Unsupported("stream_complete".into()))
+            Err(ProviderError::unsupported("stream_complete"))
         }
     }
 
@@ -131,20 +130,20 @@ mod tests {
             (0, 0)
         }
 
-        async fn generate(&self, _request: &ImageRequest) -> Result<ImageResponse, ModalityError> {
-            Err(ModalityError::Unsupported("generate".into()))
+        async fn generate(&self, _request: &ImageRequest) -> Result<ImageResponse, ProviderError> {
+            Err(ProviderError::unsupported("generate"))
         }
 
-        async fn edit(&self, _request: &ImageEditRequest) -> Result<ImageResponse, ModalityError> {
-            Err(ModalityError::Unsupported("edit".into()))
+        async fn edit(&self, _request: &ImageEditRequest) -> Result<ImageResponse, ProviderError> {
+            Err(ProviderError::unsupported("edit"))
         }
 
         async fn variations(
             &self,
             _image: &[u8],
             _count: u32,
-        ) -> Result<Vec<ImageResponse>, ModalityError> {
-            Err(ModalityError::Unsupported("variations".into()))
+        ) -> Result<Vec<ImageResponse>, ProviderError> {
+            Err(ProviderError::unsupported("variations"))
         }
     }
 
@@ -165,15 +164,15 @@ mod tests {
         async fn generate_music(
             &self,
             _request: &MusicRequest,
-        ) -> Result<AudioResponse, ModalityError> {
-            Err(ModalityError::Unsupported("generate_music".into()))
+        ) -> Result<AudioResponse, ProviderError> {
+            Err(ProviderError::unsupported("generate_music"))
         }
 
         async fn generate_sfx(
             &self,
             _request: &SfxRequest,
-        ) -> Result<AudioResponse, ModalityError> {
-            Err(ModalityError::Unsupported("generate_sfx".into()))
+        ) -> Result<AudioResponse, ProviderError> {
+            Err(ProviderError::unsupported("generate_sfx"))
         }
     }
 
@@ -186,20 +185,20 @@ mod tests {
         async fn synthesize(
             &self,
             _request: &VoiceRequest,
-        ) -> Result<AudioResponse, ModalityError> {
-            Err(ModalityError::Unsupported("synthesize".into()))
+        ) -> Result<AudioResponse, ProviderError> {
+            Err(ProviderError::unsupported("synthesize"))
         }
 
         async fn clone_voice(
             &self,
             _samples: &[String],
             _name: &str,
-        ) -> Result<String, ModalityError> {
-            Err(ModalityError::Unsupported("clone_voice".into()))
+        ) -> Result<String, ProviderError> {
+            Err(ProviderError::unsupported("clone_voice"))
         }
 
-        async fn list_voices(&self) -> Result<Vec<VoiceInfo>, ModalityError> {
-            Err(ModalityError::Unsupported("list_voices".into()))
+        async fn list_voices(&self) -> Result<Vec<VoiceInfo>, ProviderError> {
+            Err(ProviderError::unsupported("list_voices"))
         }
     }
 
@@ -209,8 +208,8 @@ mod tests {
             "everything"
         }
 
-        async fn generate(&self, _request: &VideoRequest) -> Result<VideoResponse, ModalityError> {
-            Err(ModalityError::Unsupported("generate".into()))
+        async fn generate(&self, _request: &VideoRequest) -> Result<VideoResponse, ProviderError> {
+            Err(ProviderError::unsupported("generate"))
         }
     }
 
@@ -223,8 +222,8 @@ mod tests {
         async fn generate(
             &self,
             _request: &Model3DRequest,
-        ) -> Result<Model3DResponse, ModalityError> {
-            Err(ModalityError::Unsupported("generate".into()))
+        ) -> Result<Model3DResponse, ProviderError> {
+            Err(ProviderError::unsupported("generate"))
         }
     }
 
@@ -238,12 +237,12 @@ mod tests {
             0
         }
 
-        async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, ModalityError> {
-            Err(ModalityError::Unsupported("embed".into()))
+        async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, ProviderError> {
+            Err(ProviderError::unsupported("embed"))
         }
 
-        async fn embed_single(&self, _text: &str) -> Result<Vec<f32>, ModalityError> {
-            Err(ModalityError::Unsupported("embed_single".into()))
+        async fn embed_single(&self, _text: &str) -> Result<Vec<f32>, ProviderError> {
+            Err(ProviderError::unsupported("embed_single"))
         }
     }
 
@@ -256,8 +255,8 @@ mod tests {
         async fn transcribe(
             &self,
             _audio_path: &Path,
-        ) -> Result<TranscriptionResponse, ModalityError> {
-            Err(ModalityError::Unsupported("transcribe".into()))
+        ) -> Result<TranscriptionResponse, ProviderError> {
+            Err(ProviderError::unsupported("transcribe"))
         }
     }
 

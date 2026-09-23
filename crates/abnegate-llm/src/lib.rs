@@ -67,12 +67,12 @@ pub use crate::hardware::{GpuType, MachineProfile, ModelRecommendation, Recommen
 pub use crate::modality::{
     AiClient, AiError, AudioProvider, AudioProviderConfig, AudioResponse, EmbeddingProvider,
     EmbeddingProviderConfig, Exchange, ImageEditRequest, ImageProvider, ImageProviderConfig,
-    ImageRequest, ImageResponse, ModalityError, Model3DFormat, Model3DProvider,
-    Model3DProviderConfig, Model3DRequest, Model3DResponse, MusicRequest, ProviderConfig,
-    ResponseFormat, SfxRequest, TextProvider, TextProviderConfig, TextRequest, TextResponse,
-    TranscriptionProvider, TranscriptionProviderConfig, TranscriptionResponse,
-    TranscriptionSegment, VideoProvider, VideoProviderConfig, VideoRequest, VideoResponse,
-    VoiceInfo, VoiceProvider, VoiceProviderConfig, VoiceRequest,
+    ImageRequest, ImageResponse, Model3DFormat, Model3DProvider, Model3DProviderConfig,
+    Model3DRequest, Model3DResponse, MusicRequest, ProviderConfig, ResponseFormat, SfxRequest,
+    TextProvider, TextProviderConfig, TextRequest, TextResponse, TranscriptionProvider,
+    TranscriptionProviderConfig, TranscriptionResponse, TranscriptionSegment, VideoProvider,
+    VideoProviderConfig, VideoRequest, VideoResponse, VoiceInfo, VoiceProvider,
+    VoiceProviderConfig, VoiceRequest,
 };
 pub use crate::provider::{
     Capabilities, Completion, CompletionProvider, CompletionRequest, Credential, ExitStatus,
