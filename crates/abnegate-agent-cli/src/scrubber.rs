@@ -12,6 +12,10 @@ use abnegate_secret::redact;
 const MINIMUM: usize = 8;
 
 const QUOTE: char = '"';
+const BACKSLASH: u8 = b'\\';
+const ESCAPED_LETTERS: &[u8] = b"ntrbf";
+const HEX_DIGITS: usize = 4;
+const UNICODE_ESCAPE: usize = 6;
 const UNRESERVED: [char; 4] = ['-', '.', '_', '~'];
 const ENCODED_SPACE: &str = "%20";
 const FORM_SPACE: &str = "+";
@@ -63,8 +67,12 @@ impl Scrubber {
         }
     }
 
+    /// `text` with every configured secret replaced, longest first, and
+    /// then anything else credential-shaped. The configured secrets go
+    /// first so that pattern redaction cannot take part of one and leave the
+    /// rest of it unrecognisable.
     pub(crate) fn scrub<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        let mut text = redact(text);
+        let mut text = Cow::Borrowed(text);
         for secret in self.anywhere.iter() {
             if text.contains(secret.expose()) {
                 text = Cow::Owned(text.replace(secret.expose(), REDACTED));
@@ -75,7 +83,11 @@ impl Scrubber {
                 text = Cow::Owned(replaced);
             }
         }
-        text
+        let redacted = match redact(&text) {
+            Cow::Owned(redacted) => Some(redacted),
+            Cow::Borrowed(_) => None,
+        };
+        redacted.map_or(text, Cow::Owned)
     }
 }
 
@@ -121,27 +133,64 @@ fn percent_encoded(value: &str) -> String {
 }
 
 /// `text` with every occurrence of `word` that no letter, digit or
-/// underscore adjoins replaced, or `None` when there is none.
+/// underscore adjoins replaced, or `None` when there is none. The letter or
+/// digits ending a JSON escape, such as the `n` of `\n`, do not count as
+/// adjoining, since the text they stand for does not.
 fn replace_words(text: &str, word: &str) -> Option<String> {
-    let adjoined = |character: Option<char>| {
-        character.is_some_and(|character| character.is_alphanumeric() || character == '_')
-    };
     let mut replaced = String::with_capacity(text.len());
     let mut copied = 0;
-    for (start, _) in text.match_indices(word) {
+    let mut from = 0;
+    while let Some(offset) = text[from..].find(word) {
+        let start = from + offset;
         let end = start + word.len();
-        if adjoined(text[..start].chars().next_back()) || adjoined(text[end..].chars().next()) {
+        if adjoined_before(&text[..start]) || text[end..].chars().next().is_some_and(wordlike) {
+            from = start + text[start..].chars().next().map_or(1, char::len_utf8);
             continue;
         }
         replaced.push_str(&text[copied..start]);
         replaced.push_str(REDACTED);
         copied = end;
+        from = end;
     }
     if copied == 0 {
         return None;
     }
     replaced.push_str(&text[copied..]);
     Some(replaced)
+}
+
+fn wordlike(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
+fn adjoined_before(before: &str) -> bool {
+    before.chars().next_back().is_some_and(wordlike) && !escaped(before)
+}
+
+/// Whether `before` ends in a JSON escape standing for a character that is
+/// not part of a word: `\n`, `\t`, `\r`, `\b`, `\f` or `\uXXXX`, opened by
+/// a backslash that is not itself escaped.
+fn escaped(before: &str) -> bool {
+    let bytes = before.as_bytes();
+    let length = bytes.len();
+    let opening = if length >= UNICODE_ESCAPE
+        && bytes[length - UNICODE_ESCAPE + 1] == b'u'
+        && bytes[length - HEX_DIGITS..]
+            .iter()
+            .all(u8::is_ascii_hexdigit)
+    {
+        length - UNICODE_ESCAPE
+    } else if length >= 2 && ESCAPED_LETTERS.contains(&bytes[length - 1]) {
+        length - 2
+    } else {
+        return false;
+    };
+    let backslashes = bytes[..=opening]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == BACKSLASH)
+        .count();
+    backslashes % 2 == 1
 }
 
 #[cfg(test)]
@@ -224,6 +273,37 @@ mod tests {
             scrubber.scrub("abcdef and 10 errors_abc"),
             "abcdef and 10 errors_abc"
         );
+    }
+
+    #[test]
+    fn a_short_secret_after_a_json_escape_is_still_a_word_of_its_own() {
+        let scrubber = scrubber(&["ab12cd"]);
+
+        for line in [
+            serde_json::json!({ "text": "Your code is:\nab12cd" }).to_string(),
+            serde_json::json!({ "text": "code\tab12cd\r\n" }).to_string(),
+            r#"{"text":"code\u00a0ab12cd"}"#.to_string(),
+        ] {
+            let scrubbed = scrubber.scrub(&line);
+            assert!(!scrubbed.contains("ab12cd"), "{line} became {scrubbed}");
+        }
+        assert_eq!(
+            scrubber.scrub(r#"{"text":"C:\\nab12cd"}"#),
+            r#"{"text":"C:\\nab12cd"}"#,
+            "an escaped backslash followed by n is a real letter"
+        );
+    }
+
+    #[test]
+    fn a_short_secret_next_to_a_rejected_occurrence_is_still_found() {
+        assert_eq!(scrubber(&["a-a"]).scrub("xa-a-a"), "xa-[REDACTED]");
+    }
+
+    #[test]
+    fn pattern_redaction_never_splits_a_configured_secret() {
+        let scrubbed =
+            scrubber(&["Sup3r-sk-Pr0duction!x"]).scrub("login Sup3r-sk-Pr0duction!x failed");
+        assert_eq!(scrubbed, "login [REDACTED] failed");
     }
 
     #[test]
