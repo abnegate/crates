@@ -15,7 +15,8 @@
 //! video, 3D model, embedding and transcription — together with their request
 //! and response types, the per-modality configuration, and the vendor-native
 //! clients behind their features. [`cost`] picks a model for a task under a
-//! [`CostStrategy`], and [`hardware`] says what a machine can run locally.
+//! [`CostStrategy`], [`hardware`] says what a machine can run locally, and
+//! [`catalog`] browses the model catalogues those choices are made from.
 //!
 //! ```no_run
 //! use abnegate_llm::{LlmClient, LlmConfig, Message};
@@ -39,7 +40,13 @@
 //! - `google`: the Gemini client behind [`modality::TextProvider`].
 //! - `openai`: the OpenAI client behind the text, image, embedding and
 //!   transcription traits.
+//! - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter
+//!   catalogues through one [`catalog::ModelProvider`] trait.
+//! - `download`: resumable chunked GGUF downloads.
 
+#[cfg(feature = "catalog")]
+#[cfg_attr(docsrs, doc(cfg(feature = "catalog")))]
+pub mod catalog;
 mod client;
 pub mod cost;
 mod error;

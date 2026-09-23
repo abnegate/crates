@@ -1,8 +1,13 @@
 [package]
 name = "abnegate-llm"
-description = "OpenAI-compatible chat completions with SSE streaming and weighted provider routing, modality-axis provider traits, cost estimation and local hardware profiling"
-keywords = ["llm", "ai", "openai", "router", "streaming"]
-categories = ["api-bindings", "asynchronous", "web-programming"]
+description = "OpenAI-compatible chat completions with SSE streaming and weighted provider routing, modality-axis provider traits, cost estimation, local hardware profiling and model catalogue browsing"
+keywords = ["llm", "ai", "openai", "router", "catalog"]
+categories = [
+    "api-bindings",
+    "asynchronous",
+    "web-programming",
+    "web-programming::http-client",
+]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,6 +24,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 anthropic = []
+catalog = ["dep:once_cell", "dep:regex", "dep:scraper", "dep:urlencoding"]
+download = ["catalog"]
 google = ["dep:url"]
 openai = ["dep:base64"]
 
@@ -28,8 +35,11 @@ async-stream = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true, optional = true }
 futures = { workspace = true }
+once_cell = { workspace = true, optional = true }
 rand = { workspace = true }
+regex = { workspace = true, optional = true }
 reqwest = { workspace = true }
+scraper = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -37,6 +47,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true, optional = true }
+urlencoding = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
