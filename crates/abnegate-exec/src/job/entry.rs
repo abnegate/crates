@@ -24,6 +24,9 @@ pub struct JobEntry {
 
     /// When the job was registered
     pub created_at: Instant,
+
+    /// Whether the job was cancelled with SIGKILL rather than SIGTERM
+    pub forced: bool,
 }
 
 impl JobEntry {
@@ -35,6 +38,7 @@ impl JobEntry {
             process_group: None,
             stdin: None,
             created_at: Instant::now(),
+            forced: false,
         }
     }
 

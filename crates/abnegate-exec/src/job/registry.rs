@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use dashmap::mapref::one::RefMut;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -54,17 +55,34 @@ impl JobRegistry {
     /// Update the state of a job.
     ///
     /// A terminal state forgets the job's process group and stdin. Record one
-    /// as soon as the job's `RunExit` or `RunError` arrives: once the group
-    /// has exited its identifier can be reused by an unrelated process group,
-    /// which a later [`JobRegistry::cancel_all`] would otherwise kill.
+    /// as soon as the job's `RunExit` or `RunError` arrives: an executor
+    /// reports either only after it has killed the job's group and reaped its
+    /// leader, so from then on the group's identifier can belong to an
+    /// unrelated process group, which a later [`JobRegistry::cancel_all`]
+    /// would otherwise kill. A finished job never becomes unfinished again.
     pub fn update_state(&self, job_id: &str, state: JobState) -> Result<(), JobError> {
-        match self.jobs.get_mut(job_id) {
-            Some(mut entry) => {
-                entry.transition(state);
-                Ok(())
-            }
-            None => Err(JobError::NotFound(job_id.to_string())),
+        let mut entry = self.unfinished(job_id, !state.is_terminal())?;
+        entry.transition(state);
+        Ok(())
+    }
+
+    /// The entry for `job_id`, refused when `requires_unfinished` and the job
+    /// has already finished.
+    fn unfinished(
+        &self,
+        job_id: &str,
+        requires_unfinished: bool,
+    ) -> Result<RefMut<'_, String, JobEntry>, JobError> {
+        let entry = self
+            .jobs
+            .get_mut(job_id)
+            .ok_or_else(|| JobError::NotFound(job_id.to_string()))?;
+        if requires_unfinished && entry.state.is_terminal() {
+            return Err(JobError::InvalidState(format!(
+                "{job_id} has already finished"
+            )));
         }
+        Ok(entry)
     }
 
     /// Record what an outbound message says about its job's state.
@@ -111,7 +129,7 @@ impl JobRegistry {
             OutboundMessage::RunError {
                 error_code: ErrorCode::Cancelled,
                 ..
-            } => JobState::cancelled(false, elapsed),
+            } => JobState::cancelled(entry.forced, elapsed),
             OutboundMessage::RunError {
                 error_code: ErrorCode::Timeout,
                 ..
@@ -129,33 +147,22 @@ impl JobRegistry {
         entry.transition(state);
     }
 
-    /// Set the process group for a job. A job already in a terminal state
-    /// keeps none: its group has exited and the identifier may be reused.
+    /// Set the process group for a job. A job that has already finished is
+    /// refused: its group has exited and the identifier may be reused.
     pub fn set_process_group(
         &self,
         job_id: &str,
         process_group: ProcessGroup,
     ) -> Result<(), JobError> {
-        match self.jobs.get_mut(job_id) {
-            Some(mut entry) => {
-                if !entry.state.is_terminal() {
-                    entry.process_group = Some(process_group);
-                }
-                Ok(())
-            }
-            None => Err(JobError::NotFound(job_id.to_string())),
-        }
+        self.unfinished(job_id, true)?.process_group = Some(process_group);
+        Ok(())
     }
 
-    /// Set the stdin channel for a job
+    /// Set the stdin channel for a job. A job that has already finished is
+    /// refused.
     pub fn set_stdin(&self, job_id: &str, sender: mpsc::Sender<Vec<u8>>) -> Result<(), JobError> {
-        match self.jobs.get_mut(job_id) {
-            Some(mut entry) => {
-                entry.stdin = Some(sender);
-                Ok(())
-            }
-            None => Err(JobError::NotFound(job_id.to_string())),
-        }
+        self.unfinished(job_id, true)?.stdin = Some(sender);
+        Ok(())
     }
 
     /// Get the stdin channel for a job
@@ -179,11 +186,9 @@ impl JobRegistry {
     ///
     /// If `force` is true, sends SIGKILL immediately; otherwise sends SIGTERM.
     pub fn cancel(&self, job_id: &str, force: bool) -> Result<(), JobError> {
-        let entry = self
-            .jobs
-            .get(job_id)
-            .ok_or_else(|| JobError::NotFound(job_id.to_string()))?;
+        let mut entry = self.unfinished(job_id, false)?;
 
+        entry.forced |= force;
         entry.cancellation.cancel();
 
         if let Some(group) = &entry.process_group {
@@ -644,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_job_does_not_take_a_group() {
+    fn a_finished_job_takes_no_group_or_stdin() {
         let registry = JobRegistry::new();
         registry.register("job-1".to_string()).unwrap();
         registry
@@ -652,12 +657,58 @@ mod tests {
             .unwrap();
         let mut sleeper = Sleeper::start();
         let group = sleeper.group();
+        let (sender, _receiver) = mpsc::channel::<Vec<u8>>(1);
 
-        registry.set_process_group("job-1", group.clone()).unwrap();
+        assert!(matches!(
+            registry.set_process_group("job-1", group.clone()),
+            Err(JobError::InvalidState(_))
+        ));
+        assert!(matches!(
+            registry.set_stdin("job-1", sender),
+            Err(JobError::InvalidState(_))
+        ));
+        assert!(registry.get_stdin("job-1").is_none());
         registry.cancel_all();
         group.terminate().unwrap();
 
         assert_eq!(sleeper.wait(), Some(Signal::SIGTERM as i32));
+    }
+
+    #[test]
+    fn a_finished_job_never_runs_again() {
+        let registry = JobRegistry::new();
+        registry.register("job-1".to_string()).unwrap();
+        registry
+            .update_state("job-1", JobState::completed(0, Duration::from_secs(1)))
+            .unwrap();
+
+        assert!(matches!(
+            registry.update_state("job-1", JobState::running(42)),
+            Err(JobError::InvalidState(_))
+        ));
+        assert!(registry.get_state("job-1").unwrap().is_terminal());
+    }
+
+    #[test]
+    fn observe_records_whether_a_cancel_was_forced() {
+        let registry = JobRegistry::new();
+        for (job_id, force) in [("gentle", false), ("forced", true)] {
+            registry.register(job_id.to_string()).unwrap();
+            registry.cancel(job_id, force).unwrap();
+            registry.observe(&OutboundMessage::error(
+                job_id,
+                ErrorCode::Cancelled,
+                "cancelled",
+            ));
+
+            assert!(
+                matches!(
+                    registry.get_state(job_id),
+                    Some(JobState::Cancelled { forced, .. }) if forced == force
+                ),
+                "{job_id}"
+            );
+        }
     }
 
     #[test]
