@@ -42,17 +42,23 @@
 //! load when the loader is given a master key, so an application reads a
 //! password as a password and never learns that it was encrypted at rest.
 //! [`Config::save`] seals those same values again wherever they now appear,
-//! under a renamed key or at a new position in an array, and refuses rather
-//! than write one in the clear: with [`ConfigError::SealedWithoutKey`] when
-//! there is no key to seal it with, and with [`ConfigError::SealedShapeChanged`]
-//! when a sealed value has gone and cannot be told apart from one that was
-//! renamed and edited.
+//! under a renamed key or at a position an array shifted them to by losing
+//! other elements, and refuses rather than write one in the clear: with
+//! [`ConfigError::SealedWithoutKey`] when there is no key to seal it with, and
+//! with [`ConfigError::SealedShapeChanged`] when a sealed value has gone and
+//! cannot be told apart from one that was renamed and edited.
 //!
 //! A value counts as moved only while at least as many strings hold it as the
 //! file did, so a copy under another key does not vouch for it: renaming a
 //! secret that two fields shared and editing one of them is refused. An empty
 //! value is followed only by where it sat, never by content, since any empty
 //! or defaulted string would match it, so one whose key is gone is refused.
+//!
+//! When an array on a sealed value's key path grows, is reordered, or has a
+//! string edited, the value may be any string on that key path, so every one
+//! of them is sealed, plain neighbours included. A neighbour sealed needlessly
+//! reads back as it was on the next load; a secret written in the clear
+//! cannot be taken back. Without a key such a save is refused instead.
 //!
 //! ```
 //! use abnegate_config::Loader;

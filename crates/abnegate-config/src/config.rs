@@ -88,14 +88,17 @@ impl<T: Serialize> Config<T> {
     ///
     /// A value is sealed wherever it now appears, so one read under a new name
     /// through a serde alias, moved to a new map key, or shifted within an
-    /// array stays sealed, as does the key path of an array value that was
-    /// edited in place.
+    /// array by removing other elements stays sealed. When an array on its key
+    /// path changed in any other way, an element added, reordered or edited,
+    /// every string on that key path is sealed, plain neighbours included: an
+    /// edited secret may be any of them, and a neighbour sealed needlessly
+    /// still reads back as it was.
     ///
     /// Values are sealed with the key the [`Loader`] was given. Without one, a
     /// value that still holds its envelope is written as it was, and one that
-    /// would be written in the clear fails with
-    /// [`ConfigError::SealedWithoutKey`] rather than reach the disk. A sealed
-    /// value whose location is gone fails with
+    /// would be written in the clear, a neighbour that has to be sealed among
+    /// them, fails with [`ConfigError::SealedWithoutKey`] rather than reach the
+    /// disk. A sealed value whose location is gone fails with
     /// [`ConfigError::SealedShapeChanged`] when fewer strings in the settings
     /// hold it than the file did, or when it was empty, since it cannot be told
     /// apart from one that moved to a new key and was edited on the way.
@@ -531,6 +534,33 @@ mod tests {
     }
 
     #[test]
+    fn saving_after_a_host_is_inserted_seals_every_host() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file(account, &key);
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Account>()
+            .unwrap();
+        config.value_mut().hosts.insert(0, "zero".to_string());
+        config.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("hunter2"), "{written}");
+        assert!(!written.contains("\"zero\""), "{written}");
+        assert_eq!(written.matches(SEALED).count(), 5, "{written}");
+        assert_eq!(
+            Loader::at(&path)
+                .master_key(&key)
+                .load::<Account>()
+                .unwrap()
+                .value()
+                .hosts,
+            ["zero", "one", "hunter2", "three"]
+        );
+    }
+
+    #[test]
     fn saving_without_a_key_keeps_an_untouched_envelope() {
         let key = MasterKey::generate().unwrap();
         let (_directory, path) = sealed_file(account, &key);
@@ -761,6 +791,36 @@ mod tests {
             .servers;
         assert_eq!(servers[0].password, "hunter2");
         assert_eq!(servers[1].password, "correct-horse");
+    }
+
+    #[test]
+    fn copying_a_server_then_rotating_the_original_keeps_both_sealed() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file(
+            |envelope| format!("[[servers]]\nname = \"a\"\npassword = \"{envelope}\"\n"),
+            &key,
+        );
+
+        let mut config = Loader::at(&path).master_key(&key).load::<Fleet>().unwrap();
+        let servers = &mut config.value_mut().servers;
+        servers.push(Server {
+            name: "b".to_string(),
+            password: servers[0].password.clone(),
+        });
+        servers[0].password = "correct-horse".to_string();
+        config.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("correct-horse"), "{written}");
+        assert!(!written.contains("hunter2"), "{written}");
+        let servers = Loader::at(&path)
+            .master_key(&key)
+            .load::<Fleet>()
+            .unwrap()
+            .into_value()
+            .servers;
+        assert_eq!(servers[0].password, "correct-horse");
+        assert_eq!(servers[1].password, "hunter2");
     }
 
     #[cfg(unix)]
