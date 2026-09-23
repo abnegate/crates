@@ -2,6 +2,7 @@ mod character_set;
 mod credential;
 
 use std::borrow::Cow;
+use std::ops::Range;
 
 use crate::redact::character_set::CharacterSet;
 use crate::redact::credential::CREDENTIALS;
@@ -58,9 +59,14 @@ const NAMED_SECRET_KEY_WORDS: &[&str] = &[
 /// credential itself, as `MASTER_KEY_FILE=/etc/example/master.key` does.
 const REFERENCE_KEY_SUFFIXES: &[&str] = &["dir", "directory", "file", "path"];
 
-/// Words that introduce a credential without an assignment, as
-/// `Authorization: Bearer <token>` does.
-const SECRET_INTRODUCERS: &[&str] = &["bearer", "basic", "token", "password", "passwd", "secret"];
+/// Authorization schemes that introduce a credential without an assignment,
+/// as `Authorization: Bearer <token>` does. As a flag, `--basic` switches a
+/// scheme on rather than introducing a credential.
+const SCHEME_INTRODUCERS: &[&str] = &["bearer", "basic"];
+
+/// Words that name the credential they introduce without an assignment, as
+/// `--password <value>` and `invalid token <value>` do.
+const NAMING_INTRODUCERS: &[&str] = &["token", "password", "passwd", "secret"];
 
 /// Key words whose value is a credential scheme followed by the credential.
 const AUTHORIZATION_KEY_WORDS: &[&str] = &["authorization"];
@@ -77,6 +83,13 @@ const MINIMUM_NAMED_LENGTH: usize = 6;
 
 const QUOTES: &[u8] = b"\"'`";
 const ESCAPE: u8 = b'\\';
+const FLAG: u8 = b'-';
+
+/// Bytes that separate an unquoted value from what follows it, or close the
+/// structure it sits in, when they are not part of the value itself.
+const VALUE_DELIMITERS: &[u8] = b",;&)]}";
+const OPENING_BRACKETS: &[u8] = b"([{";
+const CLOSING_BRACKETS: &[u8] = b")]}";
 
 const PEM_BEGIN: &str = "-----BEGIN ";
 const PEM_END: &str = "-----END ";
@@ -128,13 +141,19 @@ pub fn redact(text: &str) -> Cow<'_, str> {
     Cow::Owned(output)
 }
 
-/// Whether any scanner could match at `index`: every one but the URL password
-/// scanner starts on a token byte other than a colon, and that one starts
-/// after a colon inside userinfo.
+/// Whether any scanner could match at `index`: every one starts on a token
+/// byte other than a colon, but for the URL password scanner, which starts
+/// after a colon inside userinfo, and the named value scanner, which starts on
+/// any byte that can open a value after an assignment, a space or a quote.
 fn may_start_secret(bytes: &[u8], index: usize, userinfo: Option<usize>) -> bool {
     let byte = bytes[index];
+    let previous = index.checked_sub(1).map(|previous| bytes[previous]);
     (byte != b':' && CharacterSet::Token.contains(byte))
-        || (userinfo.is_some() && index > 0 && bytes[index - 1] == b':')
+        || (userinfo.is_some() && previous == Some(b':'))
+        || (opens_value(byte)
+            && previous.is_some_and(|previous| {
+                matches!(previous, b'=' | b':' | b' ' | b'\t') || QUOTES.contains(&previous)
+            }))
 }
 
 fn secret_at(text: &str, index: usize, userinfo: &mut Option<usize>) -> Option<usize> {
@@ -228,48 +247,87 @@ fn url_password_at(bytes: &[u8], index: usize, userinfo: &mut Option<usize>) -> 
     None
 }
 
-/// A run that a key word names outright, whatever it looks like, or that a
-/// word such as `Bearer` introduces and that is shaped like a credential.
+/// A value that a key word names outright, whatever it looks like, or that a
+/// word such as `Bearer` or a flag such as `--password` introduces.
 ///
 /// A named value opened by a quote runs to the closing quote, or to the end of
-/// the line when there is none.
+/// the line when there is none; one that is not quoted runs to the
+/// [end of the value](unquoted_end).
 ///
 /// Only a run that starts after a colon can overlap the run before it, so one
 /// is scanned only once an assignment is known to name it; a scan that finds
 /// the value is skipped past, and one that does not stops short.
 fn named_at(bytes: &[u8], index: usize) -> Option<usize> {
     let first = *bytes.get(index)?;
-    if first == b':' || !CharacterSet::Token.contains(first) {
+    let previous = bytes[..index].last().copied()?;
+    if !opens_value(first) {
         return None;
     }
-    match index.checked_sub(1).map(|previous| bytes[previous]) {
-        Some(b':') => assigned_value_at(bytes, index, None),
-        Some(quote) if QUOTES.contains(&quote) => assigned_value_at(bytes, index, Some(quote)),
-        Some(previous) if CharacterSet::Token.contains(previous) => None,
-        _ => assigned_value_at(bytes, index, None).or_else(|| introduced_value_at(bytes, index)),
+    match previous {
+        b'=' | b':' => assigned_value_at(bytes, index, None),
+        b' ' | b'\t' => assigned_value_at(bytes, index, None)
+            .or_else(|| introduced_value_at(bytes, index, None)),
+        quote if QUOTES.contains(&quote) => assigned_value_at(bytes, index, Some(quote))
+            .or_else(|| introduced_value_at(bytes, index, Some(quote))),
+        _ => None,
     }
+}
+
+/// Whether a value can start with `byte`. A colon or an equals sign cannot, so
+/// that `std::password::hashing` and `password == other` assign nothing.
+fn opens_value(byte: u8) -> bool {
+    !byte.is_ascii_whitespace() && !QUOTES.contains(&byte) && !matches!(byte, b':' | b'=')
 }
 
 fn assigned_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<usize> {
     if !assigned_to(bytes, index, NAMED_SECRET_KEY_WORDS) {
         return None;
     }
-    let end = quote.map_or_else(
-        || CharacterSet::Token.run(bytes, index),
-        |quote| quoted_end(bytes, index, quote),
-    );
+    let end = value_end(bytes, index, quote);
     (end - index >= MINIMUM_NAMED_LENGTH).then_some(end)
 }
 
-fn introduced_value_at(bytes: &[u8], index: usize) -> Option<usize> {
-    let end = CharacterSet::Token.run(bytes, index);
-    if end - index < MINIMUM_NAMED_LENGTH {
-        return None;
-    }
-    let introducer = introducer_before(bytes, index)?;
-    (assigned_to(bytes, introducer, AUTHORIZATION_KEY_WORDS)
-        || is_secret_shaped(&bytes[index..end]))
-    .then_some(end)
+/// A value introduced by the word before it rather than assigned.
+///
+/// After a flag that names a credential, as `--password letmein` does, the
+/// value is redacted whatever it looks like, unless it is another flag. After
+/// a word in prose, as in `invalid token <value>`, it is redacted only when it
+/// carries a digit or is long and does not read as words, so that `invalid
+/// token expired` and `invalid token abcdefgh` both stay; an Authorization
+/// header's scheme redacts whatever follows it.
+fn introduced_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<usize> {
+    let opening = index - usize::from(quote.is_some());
+    let word = word_before(bytes, opening)?;
+    let introducer = &bytes[word.clone()];
+    let naming = is_one_of(introducer, NAMING_INTRODUCERS);
+    let flag = word.start > 0 && bytes[word.start - 1] == FLAG;
+
+    let end = if flag {
+        let another_flag = quote.is_none() && bytes[index] == FLAG;
+        if !naming || another_flag {
+            return None;
+        }
+        value_end(bytes, index, quote)
+    } else {
+        let scheme = is_one_of(introducer, SCHEME_INTRODUCERS);
+        if quote.is_some() || (!naming && !scheme) {
+            return None;
+        }
+        let end = CharacterSet::Token.run(bytes, index);
+        let authorization = assigned_to(bytes, word.start, AUTHORIZATION_KEY_WORDS);
+        if !authorization && !is_secret_shaped(&bytes[index..end]) {
+            return None;
+        }
+        end
+    };
+    (end - index >= MINIMUM_NAMED_LENGTH).then_some(end)
+}
+
+fn value_end(bytes: &[u8], from: usize, quote: Option<u8>) -> usize {
+    quote.map_or_else(
+        || unquoted_end(bytes, from),
+        |quote| quoted_end(bytes, from, quote),
+    )
 }
 
 /// Where the quoted value starting at `from` ends: its closing `quote`, or the
@@ -287,9 +345,53 @@ fn quoted_end(bytes: &[u8], from: usize, quote: u8) -> usize {
     bytes.len()
 }
 
-/// The start of the word immediately before `index`, separated by spaces
-/// rather than an assignment, when that word introduces a credential.
-fn introducer_before(bytes: &[u8], index: usize) -> Option<usize> {
+/// Where the unquoted value starting at `from` ends: at whitespace or a quote,
+/// or at a [delimiter](VALUE_DELIMITERS) that ends it rather than belongs to
+/// it.
+///
+/// A delimiter ends the value when the end, whitespace, a quote, another
+/// delimiter or a `name=` pair follows it, and a closing bracket belongs to the
+/// value when the value opened it: `password=a,b` and `P@ss)w0rd` stay whole,
+/// while `f(password=abc)` and `api_key=abc&format=json` stop at the `)` and
+/// the `&`.
+fn unquoted_end(bytes: &[u8], from: usize) -> usize {
+    let mut depth = 0usize;
+    let mut index = from;
+    while let Some(&byte) = bytes.get(index) {
+        if byte.is_ascii_whitespace() || QUOTES.contains(&byte) {
+            break;
+        }
+        if OPENING_BRACKETS.contains(&byte) {
+            depth += 1;
+        } else if depth > 0 && CLOSING_BRACKETS.contains(&byte) {
+            depth -= 1;
+        } else if depth == 0 && VALUE_DELIMITERS.contains(&byte) && ends_value(bytes, index + 1) {
+            break;
+        }
+        index += 1;
+    }
+    index
+}
+
+fn ends_value(bytes: &[u8], after: usize) -> bool {
+    let Some(&next) = bytes.get(after) else {
+        return true;
+    };
+    next.is_ascii_whitespace()
+        || QUOTES.contains(&next)
+        || VALUE_DELIMITERS.contains(&next)
+        || begins_pair(bytes, after)
+}
+
+/// Whether a `name=` or `name:` pair starts at `from`.
+fn begins_pair(bytes: &[u8], from: usize) -> bool {
+    let name = CharacterSet::Word.run(bytes, from);
+    name > from && matches!(bytes.get(name), Some(b'=' | b':'))
+}
+
+/// The alphabetic word immediately before `index`, separated from it by
+/// spaces rather than an assignment.
+fn word_before(bytes: &[u8], index: usize) -> Option<Range<usize>> {
     let mut cursor = index;
     while cursor > 0 && matches!(bytes[cursor - 1], b' ' | b'\t') {
         cursor -= 1;
@@ -304,20 +406,19 @@ fn introducer_before(bytes: &[u8], index: usize) -> Option<usize> {
     while start > limit && bytes[start - 1].is_ascii_alphabetic() {
         start -= 1;
     }
-
-    let word = &bytes[start..end];
-    SECRET_INTRODUCERS
-        .iter()
-        .any(|introducer| word.eq_ignore_ascii_case(introducer.as_bytes()))
-        .then_some(start)
+    (start < end).then_some(start..end)
 }
 
-/// Whether a run reads as a credential rather than as prose: it mixes letters
-/// with digits, or it is long and does not read as words.
+fn is_one_of(word: &[u8], words: &[&str]) -> bool {
+    words
+        .iter()
+        .any(|candidate| word.eq_ignore_ascii_case(candidate.as_bytes()))
+}
+
+/// Whether a run reads as a credential rather than as prose: it carries a
+/// digit, or it is long and does not read as words.
 fn is_secret_shaped(candidate: &[u8]) -> bool {
-    let letters = candidate.iter().any(u8::is_ascii_alphabetic);
-    let digits = candidate.iter().any(u8::is_ascii_digit);
-    (letters && digits)
+    candidate.iter().any(u8::is_ascii_digit)
         || (candidate.len() >= MINIMUM_ALPHANUMERIC_RUN && !reads_as_words(candidate))
 }
 
@@ -579,6 +680,149 @@ mod shapes_that_carry_no_prefix {
             ),
         ] {
             assert_eq!(redact(line), expected);
+        }
+    }
+
+    #[test]
+    fn a_value_after_a_secret_flag_does_not_survive_whatever_it_looks_like() {
+        for (line, expected) in [
+            (
+                "mysql --password letmein",
+                format!("mysql --password {REDACTED}"),
+            ),
+            (
+                "docker login --password SuperSecret",
+                format!("docker login --password {REDACTED}"),
+            ),
+            (
+                "mysql --password 12345678",
+                format!("mysql --password {REDACTED}"),
+            ),
+            (
+                "mysql --password P@ssw0rd! --host db",
+                format!("mysql --password {REDACTED} --host db"),
+            ),
+            (
+                "vault login -token hvs.letmeinplease",
+                format!("vault login -token {REDACTED}"),
+            ),
+            (
+                "tool --db-secret correcthorse --verbose",
+                format!("tool --db-secret {REDACTED} --verbose"),
+            ),
+            (
+                "docker login --password \"two words\" --username app",
+                format!("docker login --password \"{REDACTED}\" --username app"),
+            ),
+        ] {
+            assert_eq!(redact(line), expected);
+        }
+    }
+
+    #[test]
+    fn flags_that_carry_no_credential_are_left_alone() {
+        for line in [
+            "mysql --user root --password --database application",
+            "curl --basic https://example.com/status",
+            "docker login --password-stdin --username application",
+        ] {
+            assert_eq!(redact(line), line);
+        }
+    }
+
+    /// A word such as `token` or `password` in prose introduces a credential
+    /// only when what follows carries a digit or is long and not a word:
+    /// `invalid token abcdefgh` stays, as `invalid token expired` must.
+    #[test]
+    fn a_value_after_a_secret_word_carries_a_digit_or_is_long() {
+        for (line, expected) in [
+            (
+                "the password 12345678 was rejected",
+                format!("the password {REDACTED} was rejected"),
+            ),
+            ("secret 0000111122223333", format!("secret {REDACTED}")),
+            (
+                "invalid token AbCdEfGhIjKlMnOpQr in request",
+                format!("invalid token {REDACTED} in request"),
+            ),
+        ] {
+            assert_eq!(redact(line), expected);
+        }
+        for line in ["invalid token abcdefgh", "invalid token expired"] {
+            assert_eq!(redact(line), line);
+        }
+    }
+
+    #[test]
+    fn a_named_value_runs_past_symbols_to_the_end_of_the_value() {
+        for (line, expected) in [
+            (
+                "POSTGRES_PASSWORD=P@ssw0rd123",
+                format!("POSTGRES_PASSWORD={REDACTED}"),
+            ),
+            (
+                "DB_PASSWORD=a!b2c3d4e5f6g7",
+                format!("DB_PASSWORD={REDACTED}"),
+            ),
+            (
+                "SECRET_KEY=django-insecure-#x9!k@2z)w",
+                format!("SECRET_KEY={REDACTED}"),
+            ),
+            (
+                "DB_PASSWORD=!Secret99 other=1",
+                format!("DB_PASSWORD={REDACTED} other=1"),
+            ),
+            (
+                "password: \"%Secret99\"",
+                format!("password: \"{REDACTED}\""),
+            ),
+            ("API_TOKEN=abc(def)ghi=", format!("API_TOKEN={REDACTED}")),
+            (
+                "Server=db;Password=P@ss;w0rd!;Database=application",
+                format!("Server=db;Password={REDACTED};Database=application"),
+            ),
+        ] {
+            assert_eq!(redact(line), expected);
+        }
+    }
+
+    #[test]
+    fn a_named_value_stops_at_the_structure_around_it() {
+        for (line, expected) in [
+            (
+                "connect(user=application, password=hunter2!x)",
+                format!("connect(user=application, password={REDACTED})"),
+            ),
+            (
+                "{password: P@ssw0rd!, user: application}",
+                format!("{{password: {REDACTED}, user: application}}"),
+            ),
+            ("[token=abc123def]", format!("[token={REDACTED}]")),
+            (
+                "https://api.example.com/v1?api_key=abc!123&format=json",
+                format!("https://api.example.com/v1?api_key={REDACTED}&format=json"),
+            ),
+            (
+                "\"DB_PASSWORD=P@ssw0rd123\"",
+                format!("\"DB_PASSWORD={REDACTED}\""),
+            ),
+            (
+                "PASSWORD=P@ssw0rd123; echo done",
+                format!("PASSWORD={REDACTED}; echo done"),
+            ),
+        ] {
+            assert_eq!(redact(line), expected);
+        }
+    }
+
+    #[test]
+    fn code_that_compares_a_secret_is_left_alone() {
+        for line in [
+            "if (password==undefined) return;",
+            "assert token != expected",
+            "fn check(password: &str) -> bool",
+        ] {
+            assert_eq!(redact(line), line);
         }
     }
 
@@ -1025,6 +1269,31 @@ mod tests {
             assert!(
                 elapsed < LINEAR_BUDGET,
                 "a megabyte of {marker:?} took {elapsed:?}"
+            );
+        }
+    }
+
+    /// A quarter of the megabyte [`LINEAR_BUDGET`] allows for, since every
+    /// other byte here starts a candidate value; scanned quadratically, even a
+    /// quarter megabyte takes seconds.
+    #[test]
+    fn named_values_that_stop_short_are_scanned_once() {
+        let length = 256 * 1024;
+        for text in [
+            "password=a,".repeat(length / 11),
+            format!("password={}", "a,b=".repeat(length / 4)),
+            format!("password={}", "=a".repeat(length / 2)),
+            "--password -".repeat(length / 12),
+            " \"!".repeat(length / 3),
+        ] {
+            let started = Instant::now();
+            let _ = redact(&text);
+            let elapsed = started.elapsed();
+
+            assert!(
+                elapsed < LINEAR_BUDGET,
+                "a quarter megabyte of {:?} took {elapsed:?}",
+                &text[..16]
             );
         }
     }
