@@ -92,8 +92,10 @@ fn local(repository: &Path) -> Command {
     command
 }
 
-/// Refuse a repository whose own configuration holds anything beyond what git
-/// writes for a clone, a worktree and a tracking branch; a checkout whose git
+/// Refuse a path that is not the top of a checkout, which it refuses with
+/// [`crate::git::GitError::NotACheckoutTop`]; a repository whose own
+/// configuration holds anything beyond what git writes for a clone, a
+/// worktree and a tracking branch; a checkout whose git
 /// directory, or the one it shares, is not the one its own `.git` names,
 /// which it refuses with [`crate::git::GitError::RedirectedGitDirectory`];
 /// one whose `.git` is a link or whose git directory holds one, which it
@@ -103,6 +105,8 @@ fn local(repository: &Path) -> Command {
 /// refs are the base clone's, which every run of the repository can write
 /// through its own git commands.
 fn verify(repository: &Path) -> std::io::Result<()> {
+    let anchor = Anchor::Checkout(repository.to_path_buf());
+    anchor.marked().map_err(std::io::Error::other)?;
     let listing = run(
         local(repository).args(CONFIG_LISTING),
         "read the repository's configuration",
@@ -116,9 +120,7 @@ fn verify(repository: &Path) -> std::io::Result<()> {
         local(repository).args(LOCATING),
         "locate the repository's files",
     )?;
-    Anchor::Checkout(repository.to_path_buf())
-        .admits(&located)
-        .map_err(std::io::Error::other)
+    anchor.admits(&located).map_err(std::io::Error::other)
 }
 
 /// Run a local git command, reading at most [`MAXIMUM_OUTPUT_BYTES`] `+ 1` of

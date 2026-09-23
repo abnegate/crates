@@ -5,6 +5,7 @@ use crate::git::hardening::unborrowed;
 use crate::git::hardening::unlinked;
 use crate::git::native;
 use std::ffi::OsStr;
+use std::fs::Metadata;
 use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -46,6 +47,18 @@ pub(crate) enum Anchor {
 }
 
 impl Anchor {
+    /// Refuse, before git is run to locate anything, a checkout whose top
+    /// holds no `.git` with [`GitError::NotACheckoutTop`], and one whose
+    /// `.git` is a link with [`GitError::LinkedPath`]: git run below the top
+    /// of a checkout, or where there is none, reaches whichever repository
+    /// encloses the path.
+    pub(crate) fn marked(&self) -> GitResult<()> {
+        match self {
+            Self::Checkout(checkout) => marker(checkout).map(drop),
+            Self::Bound(_) => Ok(()),
+        }
+    }
+
     /// Refuse the git directories [`crate::git::LOCATING`] printed unless
     /// they are this anchor's own, hold no symbolic link, as [`unlinked`]
     /// looks for one, and borrow no objects, as [`unborrowed`] looks for a
@@ -58,7 +71,8 @@ impl Anchor {
 
     /// Refuse the git directories [`crate::git::LOCATING`] printed unless
     /// they are this anchor's own, looking at what stands at each without
-    /// following a link. A `.git` that is a link is refused with
+    /// following a link. A checkout's top with no `.git` is refused with
+    /// [`GitError::NotACheckoutTop`], a `.git` that is a link with
     /// [`GitError::LinkedPath`], and every other mismatch, including what
     /// cannot be looked at, with [`GitError::RedirectedGitDirectory`]. Every
     /// path is compared by its real path, so a checkout named through a
@@ -70,12 +84,7 @@ impl Anchor {
         };
         let confirmed = match self {
             Self::Checkout(checkout) => {
-                let marker = std::fs::canonicalize(checkout)?.join(GIT_MARKER);
-                let details = std::fs::symlink_metadata(&marker)
-                    .map_err(|_| GitError::RedirectedGitDirectory)?;
-                if details.file_type().is_symlink() {
-                    return Err(GitError::LinkedPath);
-                }
+                let (marker, details) = marker(checkout)?;
                 match details.is_dir() {
                     true => own == marker && shared == marker,
                     false => details.is_file() && linked(&marker, &own, &shared),
@@ -91,19 +100,49 @@ impl Anchor {
         }
     }
 
-    /// The real path of `checkout`'s own git directory, refusing a `.git`
-    /// that is a link with [`GitError::LinkedPath`] and one that is not a
-    /// directory with [`GitError::RedirectedGitDirectory`].
-    pub(crate) fn own(checkout: &Path) -> GitResult<PathBuf> {
-        let marker = std::fs::canonicalize(checkout)?.join(GIT_MARKER);
-        let details =
-            std::fs::symlink_metadata(&marker).map_err(|_| GitError::RedirectedGitDirectory)?;
-        match (details.file_type().is_symlink(), details.is_dir()) {
-            (true, _) => Err(GitError::LinkedPath),
-            (false, true) => Ok(marker),
-            (false, false) => Err(GitError::RedirectedGitDirectory),
+    /// The real path of the git directory of the base clone whose top is
+    /// `top`, refusing a top with no `.git` with
+    /// [`GitError::NotACheckoutTop`], a `.git` that is a link with
+    /// [`GitError::LinkedPath`] and one that is not a directory with
+    /// [`GitError::RedirectedGitDirectory`].
+    pub(crate) fn own(top: &Path) -> GitResult<PathBuf> {
+        let (marker, details) = marker(top)?;
+        match details.is_dir() {
+            true => Ok(marker),
+            false => Err(GitError::RedirectedGitDirectory),
         }
     }
+}
+
+/// The real path of the `.git` standing at the checkout whose top is `top`,
+/// and what stands there, looked at without following a link. A top that is
+/// not there, or not a directory, and one with nothing at its `.git`, are
+/// refused with [`GitError::NotACheckoutTop`]; a `.git` that is a link with
+/// [`GitError::LinkedPath`]; and one that cannot be looked at with
+/// [`GitError::RedirectedGitDirectory`].
+fn marker(top: &Path) -> GitResult<(PathBuf, Metadata)> {
+    let top = std::fs::canonicalize(top).map_err(|error| match absent(&error) {
+        true => GitError::NotACheckoutTop,
+        false => GitError::Io(error),
+    })?;
+    let marker = top.join(GIT_MARKER);
+    let details = std::fs::symlink_metadata(&marker).map_err(|error| match absent(&error) {
+        true => GitError::NotACheckoutTop,
+        false => GitError::RedirectedGitDirectory,
+    })?;
+    match details.file_type().is_symlink() {
+        true => Err(GitError::LinkedPath),
+        false => Ok((marker, details)),
+    }
+}
+
+/// Whether a look at a path failed because nothing stands there, or because
+/// something on the way to it is not a directory.
+fn absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
 /// Whether `own` and `shared` are the git directories of the linked

@@ -55,6 +55,12 @@ pub enum GitError {
     #[error("Refusing a checkout whose git directory is not its own")]
     RedirectedGitDirectory,
 
+    /// A path with no `.git` standing in it: a directory below the top of a
+    /// checkout, or no checkout at all. Git would look for a repository in
+    /// every directory above it and work in whichever it found first.
+    #[error("Refusing a path that is not the top of a checkout")]
+    NotACheckoutTop,
+
     /// A repository whose shared git directory holds
     /// `objects/info/alternates`: git reads objects from every store the
     /// file names, and a push uploads whatever the pushed commit reaches

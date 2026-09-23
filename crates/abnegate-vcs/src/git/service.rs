@@ -230,16 +230,18 @@ impl GitService {
         command
     }
 
-    /// Refuse a repository whose own configuration holds anything beyond what
-    /// git writes for a clone, a worktree and a tracking branch, with
-    /// [`GitError::UnsafeConfig`]; a checkout at `path` whose git directory,
-    /// or the one it shares, is not the one its own `.git` names, with
-    /// [`GitError::RedirectedGitDirectory`], or whose `.git` is a link; one
-    /// whose git directory holds a symbolic link anywhere git could write
-    /// through it, with [`GitError::LinkedPath`]; and one that borrows
-    /// objects from another store, with [`GitError::AlternateObjects`]. Run
-    /// before every hardened operation, because a run's git commands can
-    /// write the repository between two of them.
+    /// Refuse a `path` that is not the top of a checkout, with
+    /// [`GitError::NotACheckoutTop`]; a repository whose own configuration
+    /// holds anything beyond what git writes for a clone, a worktree and a
+    /// tracking branch, with [`GitError::UnsafeConfig`]; a checkout at `path`
+    /// whose git directory, or the one it shares, is not the one its own
+    /// `.git` names, with [`GitError::RedirectedGitDirectory`], or whose
+    /// `.git` is a link; one whose git directory holds a symbolic link
+    /// anywhere git could write through it, with [`GitError::LinkedPath`];
+    /// and one that borrows objects from another store, with
+    /// [`GitError::AlternateObjects`]. Run before every hardened operation,
+    /// because a run's git commands can write the repository between two of
+    /// them.
     pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
         Self::verify(
             || {
@@ -257,6 +259,7 @@ impl GitService {
     /// blocking pool: a clone with many loose refs and reflogs holds
     /// thousands of entries.
     pub(crate) async fn verify(bind: impl Fn() -> Command, anchor: Anchor) -> GitResult<()> {
+        anchor.marked()?;
         let listed = Self::output(bind().args(CONFIG_LISTING).stdout(Stdio::piped())).await?;
         if !listed.status.success() {
             return Err(GitError::CommandFailed(

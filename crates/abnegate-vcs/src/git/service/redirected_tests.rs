@@ -242,7 +242,9 @@ async fn a_worktree_whose_git_file_names_another_git_directory_is_refused_a_comm
 
 /// A worktree whose `.git` is gone is no checkout at all, and git looks for
 /// one in every directory above it: a repository enclosing the directory
-/// the worktrees are kept in would take every write meant for it.
+/// the worktrees are kept in would take every write meant for it. Nothing
+/// stands at the `.git` of what was its top, so it is refused as a path that
+/// is not one.
 #[tokio::test]
 async fn a_worktree_whose_git_file_is_gone_is_refused_before_an_enclosing_repository_is_written() {
     let root = TempDir::new().unwrap();
@@ -271,14 +273,14 @@ async fn a_worktree_whose_git_file_is_gone_is_refused_before_an_enclosing_reposi
     );
     for (operation, refusal) in [staged, committed.map(drop)].into_iter().enumerate() {
         assert!(
-            matches!(refusal, Err(GitError::RedirectedGitDirectory)),
+            matches!(refusal, Err(GitError::NotACheckoutTop)),
             "operation {operation}: {refusal:?}"
         );
     }
     assert!(
         matches!(
             blocking.as_ref().err().and_then(carried),
-            Some(GitError::RedirectedGitDirectory)
+            Some(GitError::NotACheckoutTop)
         ),
         "{blocking:?}"
     );
@@ -367,6 +369,46 @@ async fn a_checkout_named_through_a_linked_parent_directory_is_accepted() {
             linked.display()
         );
     }
+}
+
+/// A directory below the top of a checkout is inside a working tree, but
+/// no checkout of its own: every command run there would reach the
+/// checkout above it. It is refused as a path that is not a top, and not as
+/// a redirection, and so is a directory in no checkout at all.
+#[tokio::test]
+async fn a_directory_below_the_top_of_a_checkout_is_refused_as_not_its_top() {
+    let root = TempDir::new().unwrap();
+    let base = repository(root.path(), "base");
+    let checkout = worktree(&base, &root.path().join("one"), &["--detach"]);
+    let outside = root.path().join("outside");
+    for directory in [base.join("below"), checkout.join("below"), outside.clone()] {
+        std::fs::create_dir(directory).unwrap();
+    }
+    let service = GitService::new();
+
+    for (case, below) in [base.join("below"), checkout.join("below"), outside]
+        .into_iter()
+        .enumerate()
+    {
+        let branch = service.current_branch(&below).await;
+        let blocking = crate::worktree::unfinished(&below, &[]);
+
+        assert!(
+            matches!(branch, Err(GitError::NotACheckoutTop)),
+            "case {case}: {branch:?}"
+        );
+        assert!(
+            matches!(
+                blocking.as_ref().err().and_then(carried),
+                Some(GitError::NotACheckoutTop)
+            ),
+            "case {case}: {blocking:?}"
+        );
+    }
+    assert_eq!(
+        GitError::NotACheckoutTop.to_string(),
+        "Refusing a path that is not the top of a checkout"
+    );
 }
 
 /// Git reads objects from every store `objects/info/alternates` names, and

@@ -303,7 +303,9 @@ impl GitService {
         Ok(split_nul(&output.stdout))
     }
 
-    /// Whether git considers `path` to be inside a working tree.
+    /// Whether git considers `path` to be inside a working tree, at its top
+    /// or anywhere below it. Only the top names a checkout: every other
+    /// operation refuses a path below it with [`GitError::NotACheckoutTop`].
     pub async fn is_git_repository(&self, path: &Path) -> GitResult<bool> {
         let output = Self::output(
             Self::hardened()
@@ -439,8 +441,10 @@ impl GitService {
     /// either the old file or the new one, and one holding the lock is not
     /// overwritten. A clone whose `.git` is a link, which would have another
     /// clone's configuration replaced, is refused with
-    /// [`GitError::LinkedPath`], and one whose `.git` is not a directory with
-    /// [`GitError::RedirectedGitDirectory`].
+    /// [`GitError::LinkedPath`], one whose `.git` is not a directory with
+    /// [`GitError::RedirectedGitDirectory`], and a `path` with no `.git`
+    /// standing in it, below the top of a checkout or in none, with
+    /// [`GitError::NotACheckoutTop`].
     pub async fn reset_config(&self, path: &Path, url: &RepositoryUrl) -> GitResult<()> {
         let file = Anchor::own(path)?.join(CONFIG_FILE);
         let listed = Self::output(
@@ -2805,10 +2809,7 @@ mod configuration_tests {
             matches!(refusal, Err(GitError::NestedRepository(ref at)) if *at == expected),
             "{refusal:?}"
         );
-        assert!(
-            matches!(below, Err(GitError::RedirectedGitDirectory)),
-            "{below:?}"
-        );
+        assert!(matches!(below, Err(GitError::NotACheckoutTop)), "{below:?}");
         assert_eq!(
             git(repository.path(), &["ls-files", "--", "second"]),
             "",

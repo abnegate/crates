@@ -18,7 +18,9 @@
 //! repository. A repository that borrows objects from another store through
 //! `objects/info/alternates` is refused as well, since a push would upload
 //! whatever the pushed commit reaches there. A checkout is named by its top,
-//! where its `.git` stands. The
+//! where its `.git` stands; a path below the top, or with no `.git` in it at
+//! all, is refused with [`GitError::NotACheckoutTop`], since git run there
+//! reaches whichever repository encloses it. The
 //! check is made before each command, so it cannot stop a run that rewrites the
 //! repository in the instant between the check and the command; a clone
 //! every run can write is not one a credential should be sent from. A

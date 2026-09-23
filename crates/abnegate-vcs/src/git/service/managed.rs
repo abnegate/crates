@@ -657,21 +657,18 @@ mod managed_tests {
         let service = GitService::new();
         let temporary = TempDir::new().unwrap();
 
-        let refusal = service
-            .current_branch(temporary.path())
-            .await
-            .unwrap_err()
-            .to_string();
+        let refusal = service.current_branch(temporary.path()).await;
         assert!(
-            refusal.contains("Cannot read the repository's configuration"),
-            "{refusal}"
+            matches!(refusal, Err(GitError::NotACheckoutTop)),
+            "{refusal:?}"
         );
 
+        let missing = service
+            .current_branch(Path::new("/nonexistent/path/xyz"))
+            .await;
         assert!(
-            service
-                .current_branch(Path::new("/nonexistent/path/xyz"))
-                .await
-                .is_err()
+            matches!(missing, Err(GitError::NotACheckoutTop)),
+            "{missing:?}"
         );
 
         let empty = TempDir::new().unwrap();
@@ -1289,12 +1286,10 @@ mod managed_tests {
 
         let refusal = service
             .fetch_branch(temporary.path(), UNREACHABLE, &branch("main"))
-            .await
-            .unwrap_err()
-            .to_string();
+            .await;
         assert!(
-            refusal.contains("Cannot read the repository's configuration"),
-            "{refusal}"
+            matches!(refusal, Err(GitError::NotACheckoutTop)),
+            "{refusal:?}"
         );
     }
 
