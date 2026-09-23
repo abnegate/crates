@@ -3,14 +3,11 @@
 //! On Unix systems, we create a new process group for each spawned command,
 //! allowing us to send signals to the entire process tree when cancelling.
 
-use std::time::Duration;
-
 use nix::errno::Errno;
 use nix::sys::signal::Signal;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 use nix::unistd::getpgrp;
-use tokio::time::sleep;
 
 use crate::error::ExecutorError;
 
@@ -21,10 +18,13 @@ const LOWEST_GROUP: u32 = 2;
 
 /// A handle to a process group for signal management.
 ///
-/// Built with `ProcessGroup::try_from(pid)` from the pid of a child that leads
-/// its own group (spawned with `process_group(0)` or `setsid`). The
-/// conversion refuses every identifier for which `kill(-pgid, ...)` would
-/// reach anything other than one job's group.
+/// Built from the pid of a child that leads its own group, spawned with
+/// `process_group(0)` or `setsid`. Construction refuses every identifier for
+/// which `kill(-pgid, ...)` would reach more than one job's group -- `0`, `1`,
+/// the caller's own group, and anything past `i32::MAX` -- but does not check
+/// that the pid really leads a group. Signal a group only while its leader is
+/// unreaped, or while it is known to still have members: once it is empty its
+/// id may belong to an unrelated group.
 #[derive(Debug, Clone)]
 pub struct ProcessGroup {
     /// Process group ID (same as the leader process PID)
@@ -45,6 +45,17 @@ impl TryFrom<u32> for ProcessGroup {
 }
 
 impl ProcessGroup {
+    /// The group led by `pid`.
+    ///
+    /// # Panics
+    ///
+    /// When `pid` is `0`, `1`, the caller's own process group, or greater
+    /// than `i32::MAX`, none of which is a pid a spawned child can have.
+    /// [`ProcessGroup::try_from`] reports the same cases as an error.
+    pub fn new(pid: u32) -> Self {
+        Self::try_from(pid).unwrap_or_else(|error| panic!("{error}"))
+    }
+
     /// Get the process group ID
     pub fn pgid(&self) -> i32 {
         self.pgid
@@ -62,20 +73,6 @@ impl ProcessGroup {
     /// This forcefully kills all processes in the group.
     pub fn kill(&self) -> Result<(), ExecutorError> {
         self.signal(Signal::SIGKILL)
-    }
-
-    /// Perform a graceful shutdown: SIGTERM, wait, then SIGKILL if needed.
-    ///
-    /// This first sends SIGTERM and waits for the grace period, then sends
-    /// SIGKILL if processes are still running.
-    pub async fn graceful_kill(&self, grace_period: Duration) -> Result<(), ExecutorError> {
-        self.terminate()?;
-
-        sleep(grace_period).await;
-
-        let _ = self.kill();
-
-        Ok(())
     }
 
     /// Check if the process group is still running.
@@ -114,6 +111,22 @@ mod tests {
                 "{pid} must not become a process group"
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "Not a job's process group: 1")]
+    fn new_panics_on_a_pid_that_is_not_one_jobs_group() {
+        ProcessGroup::new(1);
+    }
+
+    #[test]
+    fn new_accepts_a_child_leading_its_own_group() {
+        let sleeper = Sleeper::start();
+
+        assert_eq!(
+            ProcessGroup::new(sleeper.pid()).pgid(),
+            i32::try_from(sleeper.pid()).unwrap()
+        );
     }
 
     #[test]
