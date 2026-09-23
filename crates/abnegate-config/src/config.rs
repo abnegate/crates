@@ -88,16 +88,20 @@ impl<T: Serialize> Config<T> {
     ///
     /// A value is sealed wherever it now appears, so one read under a new name
     /// through a serde alias, moved to a new map key, or shifted within an
-    /// array stays sealed, as does the key path of an array value that was
-    /// edited in place.
+    /// array by removing other elements stays sealed. When an array on its key
+    /// path changed in any other way, an element added, reordered or edited,
+    /// every string on that key path is sealed, plain neighbours included: an
+    /// edited secret may be any of them, and a neighbour sealed needlessly
+    /// still reads back as it was.
     ///
     /// Values are sealed with the key the [`Loader`] was given. Without one, a
     /// value that still holds its envelope is written as it was, and one that
-    /// would be written in the clear fails with
-    /// [`ConfigError::SealedWithoutKey`] rather than reach the disk. A sealed
-    /// value whose location is gone and whose content is nowhere else fails
-    /// with [`ConfigError::SealedShapeChanged`], since it cannot be told apart
-    /// from one that moved to a new key and was edited on the way.
+    /// would be written in the clear, a neighbour that has to be sealed among
+    /// them, fails with [`ConfigError::SealedWithoutKey`] rather than reach the
+    /// disk. A sealed value whose location is gone fails with
+    /// [`ConfigError::SealedShapeChanged`] when fewer strings in the settings
+    /// hold it than the file did, or when it was empty, since it cannot be told
+    /// apart from one that moved to a new key and was edited on the way.
     ///
     /// The file is replaced atomically and is readable only by its owner; a
     /// directory created for it is too.
@@ -179,6 +183,21 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize, Serialize)]
+    struct Mirrored {
+        #[serde(alias = "api_key")]
+        token: String,
+        backup: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct Proxied {
+        #[serde(alias = "api_key")]
+        token: String,
+        #[serde(default)]
+        proxy: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
     struct Profiles {
         profiles: BTreeMap<String, Credentials>,
     }
@@ -206,9 +225,17 @@ mod tests {
     }
 
     fn sealed_file(content: impl FnOnce(&str) -> String, key: &MasterKey) -> (TempDir, PathBuf) {
+        sealed_file_holding("hunter2", content, key)
+    }
+
+    fn sealed_file_holding(
+        secret: &str,
+        content: impl FnOnce(&str) -> String,
+        key: &MasterKey,
+    ) -> (TempDir, PathBuf) {
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("config.toml");
-        let envelope = encrypt_value(&SecretValue::new("hunter2"), key).unwrap();
+        let envelope = encrypt_value(&SecretValue::new(secret), key).unwrap();
         fs::write(&path, content(&envelope)).unwrap();
         (directory, path)
     }
@@ -507,6 +534,33 @@ mod tests {
     }
 
     #[test]
+    fn saving_after_a_host_is_inserted_seals_every_host() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file(account, &key);
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Account>()
+            .unwrap();
+        config.value_mut().hosts.insert(0, "zero".to_string());
+        config.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("hunter2"), "{written}");
+        assert!(!written.contains("\"zero\""), "{written}");
+        assert_eq!(written.matches(SEALED).count(), 5, "{written}");
+        assert_eq!(
+            Loader::at(&path)
+                .master_key(&key)
+                .load::<Account>()
+                .unwrap()
+                .value()
+                .hosts,
+            ["zero", "one", "hunter2", "three"]
+        );
+    }
+
+    #[test]
     fn saving_without_a_key_keeps_an_untouched_envelope() {
         let key = MasterKey::generate().unwrap();
         let (_directory, path) = sealed_file(account, &key);
@@ -649,6 +703,74 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_renamed_and_edited_beside_a_sealed_copy_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file(
+            |envelope| format!("api_key = \"{envelope}\"\nbackup = \"{envelope}\"\n"),
+            &key,
+        );
+        let before = fs::read_to_string(&path).unwrap();
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Mirrored>()
+            .unwrap();
+        config.value_mut().token = "correct-horse".to_string();
+        let error = config.save().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_empty_secret_renamed_and_edited_beside_an_empty_string_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file_holding(
+            "",
+            |envelope| format!("api_key = \"{envelope}\"\nproxy = \"\"\n"),
+            &key,
+        );
+        let before = fs::read_to_string(&path).unwrap();
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Proxied>()
+            .unwrap();
+        config.value_mut().token = "correct-horse".to_string();
+        let error = config.save().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_empty_secret_renamed_and_edited_beside_a_defaulted_field_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) =
+            sealed_file_holding("", |envelope| format!("api_key = \"{envelope}\"\n"), &key);
+        let before = fs::read_to_string(&path).unwrap();
+
+        let mut config = Loader::at(&path)
+            .master_key(&key)
+            .load::<Proxied>()
+            .unwrap();
+        config.value_mut().token = "correct-horse".to_string();
+        let error = config.save().unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
     fn rotating_one_of_two_servers_that_share_a_secret_keeps_both_sealed() {
         let key = MasterKey::generate().unwrap();
         let (_directory, path) = sealed_file(fleet, &key);
@@ -669,6 +791,36 @@ mod tests {
             .servers;
         assert_eq!(servers[0].password, "hunter2");
         assert_eq!(servers[1].password, "correct-horse");
+    }
+
+    #[test]
+    fn copying_a_server_then_rotating_the_original_keeps_both_sealed() {
+        let key = MasterKey::generate().unwrap();
+        let (_directory, path) = sealed_file(
+            |envelope| format!("[[servers]]\nname = \"a\"\npassword = \"{envelope}\"\n"),
+            &key,
+        );
+
+        let mut config = Loader::at(&path).master_key(&key).load::<Fleet>().unwrap();
+        let servers = &mut config.value_mut().servers;
+        servers.push(Server {
+            name: "b".to_string(),
+            password: servers[0].password.clone(),
+        });
+        servers[0].password = "correct-horse".to_string();
+        config.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("correct-horse"), "{written}");
+        assert!(!written.contains("hunter2"), "{written}");
+        let servers = Loader::at(&path)
+            .master_key(&key)
+            .load::<Fleet>()
+            .unwrap()
+            .into_value()
+            .servers;
+        assert_eq!(servers[0].password, "correct-horse");
+        assert_eq!(servers[1].password, "hunter2");
     }
 
     #[cfg(unix)]

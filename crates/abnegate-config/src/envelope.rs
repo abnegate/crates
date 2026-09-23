@@ -42,8 +42,9 @@ pub(crate) fn unseal(
 /// Without a key, a location that still holds its envelope is left alone and
 /// one that would be written in the clear fails with
 /// [`ConfigError::SealedWithoutKey`]. A value that has gone from its location
-/// and is nowhere else fails with [`ConfigError::SealedShapeChanged`], since it
-/// cannot be told apart from one that moved to a new key and was edited.
+/// fails with [`ConfigError::SealedShapeChanged`] when fewer strings in the
+/// document hold it than did on load, or when it was empty, since it cannot be
+/// told apart from one that moved to a new key and was edited.
 pub(crate) fn seal(
     document: &mut Value,
     sealed: &[Sealed],
@@ -202,6 +203,10 @@ mod tests {
 
     fn unsealed(content: &str, key: Option<&MasterKey>) -> Vec<Sealed> {
         unseal(&mut toml::from_str(content).unwrap(), key).unwrap()
+    }
+
+    fn shape_changed_at(error: &ConfigError, expected: &str) -> bool {
+        matches!(error, ConfigError::SealedShapeChanged { field } if field == expected)
     }
 
     #[test]
@@ -382,6 +387,117 @@ mod tests {
     }
 
     #[test]
+    fn a_value_renamed_and_edited_beside_a_sealed_copy_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let sealed = unsealed(
+            &format!("api_key = \"{token}\"\nbackup = \"{token}\"\n"),
+            Some(&key),
+        );
+        let mut document: Value =
+            toml::from_str("token = \"correct-horse\"\nbackup = \"hunter2\"\n").unwrap();
+
+        let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
+
+        assert!(shape_changed_at(&error, "api_key"), "{error:?}");
+    }
+
+    #[test]
+    fn a_value_renamed_and_edited_beside_a_plain_copy_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let sealed = unsealed(
+            &format!("api_key = \"{token}\"\nhint = \"hunter2\"\n"),
+            Some(&key),
+        );
+        let mut document: Value =
+            toml::from_str("token = \"correct-horse\"\nhint = \"hunter2\"\n").unwrap();
+
+        let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
+
+        assert!(shape_changed_at(&error, "api_key"), "{error:?}");
+    }
+
+    #[test]
+    fn without_a_key_a_value_renamed_and_edited_beside_its_envelope_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let sealed = unsealed(
+            &format!("api_key = \"{token}\"\nbackup = \"{token}\"\n"),
+            None,
+        );
+        let mut document: Value = toml::from_str(&format!(
+            "token = \"correct-horse\"\nbackup = \"{token}\"\n"
+        ))
+        .unwrap();
+
+        let error = seal(&mut document, &sealed, None).unwrap_err();
+
+        assert!(shape_changed_at(&error, "api_key"), "{error:?}");
+    }
+
+    #[test]
+    fn a_value_renamed_beside_a_sealed_copy_is_sealed_in_both_places() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let sealed = unsealed(
+            &format!("api_key = \"{token}\"\nbackup = \"{token}\"\n"),
+            Some(&key),
+        );
+        let mut document: Value =
+            toml::from_str("token = \"hunter2\"\nbackup = \"hunter2\"\n").unwrap();
+
+        seal(&mut document, &sealed, Some(&key)).unwrap();
+
+        assert_eq!(opened(&document["token"], &key), "hunter2");
+        assert_eq!(opened(&document["backup"], &key), "hunter2");
+    }
+
+    #[test]
+    fn an_empty_value_renamed_and_edited_beside_an_empty_string_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new(""), &key).unwrap();
+        let sealed = unsealed(
+            &format!("api_key = \"{token}\"\nproxy = \"\"\n"),
+            Some(&key),
+        );
+        let mut document: Value =
+            toml::from_str("token = \"correct-horse\"\nproxy = \"\"\n").unwrap();
+
+        let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
+
+        assert!(shape_changed_at(&error, "api_key"), "{error:?}");
+    }
+
+    #[test]
+    fn an_empty_value_that_gained_an_empty_neighbour_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new(""), &key).unwrap();
+        let sealed = unsealed(&format!("api_key = \"{token}\"\n"), Some(&key));
+        let mut document: Value =
+            toml::from_str("token = \"correct-horse\"\nproxy = \"\"\n").unwrap();
+
+        let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
+
+        assert!(shape_changed_at(&error, "api_key"), "{error:?}");
+    }
+
+    #[test]
+    fn an_empty_value_is_sealed_where_it_sits_and_nowhere_else() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new(""), &key).unwrap();
+        let mut document: Value =
+            toml::from_str(&format!("password = \"{token}\"\nproxy = \"\"\n")).unwrap();
+        let sealed = unseal(&mut document, Some(&key)).unwrap();
+
+        document["password"] = Value::String("correct-horse".to_string());
+        seal(&mut document, &sealed, Some(&key)).unwrap();
+
+        assert_eq!(opened(&document["password"], &key), "correct-horse");
+        assert_eq!(document["proxy"].as_str(), Some(""));
+    }
+
+    #[test]
     fn without_a_key_an_envelope_under_a_new_key_is_written_as_it_was() {
         let key = MasterKey::generate().unwrap();
         let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
@@ -456,6 +572,91 @@ mod tests {
         seal(&mut document, &sealed, Some(&key)).unwrap();
 
         assert!(is_sealed(&document["servers"][0]["password"]));
+    }
+
+    #[test]
+    fn an_element_inserted_before_a_secret_is_sealed_with_it() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let mut document: Value =
+            toml::from_str(&format!("hosts = [\"one\", \"{token}\"]\n")).unwrap();
+        let sealed = unseal(&mut document, Some(&key)).unwrap();
+
+        document["hosts"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, Value::String("zero".to_string()));
+        seal(&mut document, &sealed, Some(&key)).unwrap();
+
+        let hosts: Vec<String> = document["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|host| opened(host, &key))
+            .collect();
+        assert_eq!(hosts, ["zero", "one", "hunter2"]);
+    }
+
+    #[test]
+    fn a_copied_entry_whose_original_was_rotated_keeps_both_sealed() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let mut document: Value =
+            toml::from_str(&format!("[[servers]]\npassword = \"{token}\"\n")).unwrap();
+        let sealed = unseal(&mut document, Some(&key)).unwrap();
+
+        let copy = document["servers"][0].clone();
+        document["servers"].as_array_mut().unwrap().push(copy);
+        document["servers"][0]["password"] = Value::String("correct-horse".to_string());
+        seal(&mut document, &sealed, Some(&key)).unwrap();
+
+        assert_eq!(
+            opened(&document["servers"][0]["password"], &key),
+            "correct-horse"
+        );
+        assert_eq!(opened(&document["servers"][1]["password"], &key), "hunter2");
+    }
+
+    #[test]
+    fn a_secret_rotated_while_a_neighbour_took_its_old_value_is_sealed() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let mut document: Value = toml::from_str(&format!(
+            "[[servers]]\npassword = \"first\"\n\n[[servers]]\npassword = \"{token}\"\n\n[[servers]]\npassword = \"third\"\n"
+        ))
+        .unwrap();
+        let sealed = unseal(&mut document, Some(&key)).unwrap();
+
+        document["servers"].as_array_mut().unwrap().remove(2);
+        document["servers"][0]["password"] = Value::String("hunter2".to_string());
+        document["servers"][1]["password"] = Value::String("correct-horse".to_string());
+        seal(&mut document, &sealed, Some(&key)).unwrap();
+
+        assert_eq!(opened(&document["servers"][0]["password"], &key), "hunter2");
+        assert_eq!(
+            opened(&document["servers"][1]["password"], &key),
+            "correct-horse"
+        );
+    }
+
+    #[test]
+    fn without_a_key_growing_an_array_that_holds_an_envelope_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let token = encrypt_value(&SecretValue::new("hunter2"), &key).unwrap();
+        let mut document: Value =
+            toml::from_str(&format!("hosts = [\"one\", \"{token}\"]\n")).unwrap();
+        let sealed = unseal(&mut document, None).unwrap();
+
+        document["hosts"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, Value::String("zero".to_string()));
+        let error = seal(&mut document, &sealed, None).unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::SealedWithoutKey { field } if field == "hosts[0]"),
+            "{error:?}"
+        );
     }
 
     #[test]
