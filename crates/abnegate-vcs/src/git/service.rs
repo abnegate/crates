@@ -193,9 +193,10 @@ impl GitService {
         command
     }
 
-    /// Refuse a repository whose own configuration names something no pin on
-    /// the command line reaches. Run before every hardened operation, because
-    /// a run's git commands can write that configuration between two of them.
+    /// Refuse a repository whose own configuration holds anything beyond what
+    /// git writes for a clone, a worktree and a tracking branch. Run before
+    /// every hardened operation, because a run's git commands can write that
+    /// configuration between two of them.
     pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
         Self::verify(Self::hardened().current_dir(path)).await
     }

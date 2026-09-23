@@ -50,9 +50,10 @@ fn local(repository: &Path) -> Command {
     command
 }
 
-/// Refuse a repository whose own configuration names something no pin on the
-/// command line reaches: the configuration is the base clone's, which every
-/// run of the repository can write through its own git commands.
+/// Refuse a repository whose own configuration holds anything beyond what git
+/// writes for a clone, a worktree and a tracking branch: the configuration is
+/// the base clone's, which every run of the repository can write through its
+/// own git commands.
 fn verify(repository: &Path) -> std::io::Result<()> {
     let listing = run(
         local(repository).args(CONFIG_LISTING),

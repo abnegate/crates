@@ -7,8 +7,12 @@
 //! hook, a monitor, a helper or a signing program pinned on the command line;
 //! and because a run's own git commands can write the repository's
 //! configuration where no pin reaches -- a transport rewrite, an HTTP
-//! override, an include, a filter, diff or merge driver -- a repository whose
-//! configuration holds any of those is refused before anything runs in it. A
+//! override, an include, a driver, a configured hook -- a repository whose
+//! configuration holds anything beyond what git itself writes for a clone is
+//! refused before anything runs in it. The check is made before each
+//! command, so it cannot stop a run that rewrites the configuration in the
+//! instant between the check and the command; a clone every run can write is
+//! not one a credential should be sent from. A
 //! *managed* one is a local clone the caller owns outright: it is cloned,
 //! fetched, reset and given worktrees from whatever address the caller
 //! configured, including a local path, under a timeout but with the caller's

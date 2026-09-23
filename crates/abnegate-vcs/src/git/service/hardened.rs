@@ -225,8 +225,9 @@ impl GitService {
     /// in the child environment only. The URL is the one the caller knows, given
     /// on the command line, so a rewritten `remote.origin.url` does not decide
     /// where the fetch goes, and a clone whose configuration could still
-    /// redirect it -- an `insteadOf` rule, an `http.*` override, a remote named
-    /// for the URL -- is refused rather than fetched; every
+    /// redirect it or run something during it -- an `insteadOf` rule, an
+    /// `http.*` override, a remote named for the URL, a configured hook -- is
+    /// refused rather than fetched; every
     /// `refs/remotes/origin/*` ref is forced to what the remote holds and the
     /// ones it no longer has are pruned. A refusal by git is retried once,
     /// since git's ref locks refuse the loser of a race with a run's own git
