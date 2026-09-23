@@ -16,6 +16,7 @@ use crate::tools::ToolError;
 use crate::tools::ToolResult;
 use crate::tools::beneath;
 use crate::tools::beneath::Access;
+use crate::tools::quote;
 use crate::tools::reason_property;
 
 /// Write content to a file
@@ -42,12 +43,14 @@ impl Tool for WriteFileTool {
         let characters = parameters.content.chars().count();
         Some(match parameters.append {
             true => format!(
-                "Append {characters} characters to {}: \"{}\".",
-                parameters.path, parameters.content
+                "Append {characters} characters to {}: {}.",
+                parameters.path,
+                quote(&parameters.content)
             ),
             false => format!(
-                "Write {characters} characters to {}, replacing whatever is there: \"{}\".",
-                parameters.path, parameters.content
+                "Write {characters} characters to {}, replacing whatever is there: {}.",
+                parameters.path,
+                quote(&parameters.content)
             ),
         })
     }

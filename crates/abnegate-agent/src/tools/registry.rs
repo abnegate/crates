@@ -270,6 +270,73 @@ mod tests {
         assert!(!preview.truncated);
     }
 
+    /// Blank space and blank lines after a backslash were squeezed or
+    /// dropped, so commands `sh` runs differently reached the reader as one
+    /// preview: a line continued by the next, a line ending in an escaped
+    /// space or tab, a continuation a blank line ends, and a path beside the
+    /// home directory against a single path.
+    #[test]
+    fn shell_previews_keep_apart_what_a_backslash_escapes() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RunShellTool));
+        let space = ' '.escape_unicode();
+        let tab = '\t'.escape_unicode();
+
+        let cases = [
+            (
+                "echo first \\\necho second",
+                format!("Run `echo first \\{LINE_BREAK}echo second`."),
+            ),
+            (
+                "echo first \\ \necho second",
+                format!("Run `echo first \\{space}{LINE_BREAK}echo second`."),
+            ),
+            (
+                "echo first \\\t\necho second",
+                format!("Run `echo first \\{tab}{LINE_BREAK}echo second`."),
+            ),
+            (
+                "echo first \\\n\necho second",
+                format!("Run `echo first \\{LINE_BREAK}{LINE_BREAK}echo second`."),
+            ),
+            (
+                "rm -rf ~/tmp\\  ~",
+                format!("Run `rm -rf ~/tmp\\{space} ~`."),
+            ),
+            ("rm -rf ~/tmp\\ ~", format!("Run `rm -rf ~/tmp\\{space}~`.")),
+            (
+                "rm -rf ~/tmp\\\n  ~",
+                format!("Run `rm -rf ~/tmp\\{LINE_BREAK}{space} ~`."),
+            ),
+            (
+                "rm -rf ~/tmp\\\n~",
+                format!("Run `rm -rf ~/tmp\\{LINE_BREAK}~`."),
+            ),
+        ];
+
+        let previews: Vec<String> = cases
+            .iter()
+            .map(|(command, expected)| {
+                let preview = registry
+                    .preview(
+                        "run_shell",
+                        &serde_json::json!({"command": command}).to_string(),
+                    )
+                    .expect("a shell call previews the line it will run");
+                assert_eq!(&preview.text, expected, "{command:?}");
+                assert!(!preview.truncated, "{command:?}");
+                preview.text
+            })
+            .collect();
+
+        let distinct: HashSet<&String> = previews.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            previews.len(),
+            "every command has a preview of its own: {previews:#?}"
+        );
+    }
+
     /// The preview kept the first 400 characters of a command, so a call
     /// padded past them showed the reader the padding and hid the payload.
     #[test]

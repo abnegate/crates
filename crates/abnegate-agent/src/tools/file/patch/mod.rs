@@ -18,6 +18,7 @@ use crate::tools::ToolContext;
 use crate::tools::ToolError;
 use crate::tools::ToolResult;
 use crate::tools::beneath;
+use crate::tools::quote;
 use crate::tools::reason_property;
 
 /// Replace exact text in an existing file without rewriting the rest.
@@ -50,8 +51,9 @@ impl Tool for ApplyPatchTool {
             .iter()
             .map(|hunk| {
                 format!(
-                    "replace {scope}\"{}\" with \"{}\"",
-                    hunk.old_string, hunk.new_string
+                    "replace {scope}{} with {}",
+                    quote(&hunk.old_string),
+                    quote(&hunk.new_string)
                 )
             })
             .collect::<Vec<String>>()

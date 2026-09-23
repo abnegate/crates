@@ -1,3 +1,4 @@
+use std::iter::once;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -28,11 +29,13 @@ static INVISIBLE: LazyLock<Regex> = LazyLock::new(|| {
 /// [`truncated`](Self::truncated) is set, so a call padded to push its payload
 /// out of view reads as a call that was cut, never as the whole of what it
 /// does. A control, format or invisible character in the call is shown as its
-/// `\u{…}` escape, as is any whitespace but a plain space or a `\n`, and any
-/// `⟦`, `⟧` or `⏎` it carries, so the call can neither redraw the card it is
-/// shown on, pass one character off as another, nor forge the marks the
-/// preview draws. The [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always
-/// holds every argument.
+/// `\u{…}` escape, as is any whitespace but a plain space or a `\n`, a space
+/// straight after a `\` or a line break, and any `⟦`, `⟧` or `⏎` it carries,
+/// so the call can neither redraw the card it is shown on, pass one character
+/// off as another, hide a space a backslash escapes among the ones between
+/// words, nor forge the marks the preview draws. The
+/// [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always holds
+/// every argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preview {
     /// The call on one line, a line break in it shown as
@@ -56,24 +59,24 @@ impl Preview {
     /// marker is paid for out of the budget, so a cut preview is no longer
     /// than one that fits.
     pub fn within(rendered: &str, max_characters: usize) -> Self {
-        let characters: Vec<char> = collapse(rendered).chars().collect();
-        let length: usize = characters.iter().map(|&character| width(character)).sum();
+        let glyphs = glyphs(&collapse(rendered));
+        let length: usize = glyphs.iter().map(|glyph| glyph.width()).sum();
         if length <= max_characters {
             return Self {
-                text: draw(&characters),
+                text: draw(&glyphs),
                 truncated: false,
             };
         }
-        let reserved = hidden(characters.len()).chars().count();
+        let reserved = hidden(glyphs.len()).chars().count();
         let kept = max_characters.saturating_sub(reserved);
-        let head = fitting(characters.iter(), kept.div_ceil(2));
-        let tail = fitting(characters.iter().rev(), kept / 2);
+        let head = fitting(glyphs.iter(), kept.div_ceil(2));
+        let tail = fitting(glyphs.iter().rev(), kept / 2);
         Self {
             text: format!(
                 "{}{}{}",
-                draw(&characters[..head]),
-                hidden(characters.len() - head - tail),
-                draw(&characters[characters.len() - tail..])
+                draw(&glyphs[..head]),
+                hidden(glyphs.len() - head - tail),
+                draw(&glyphs[glyphs.len() - tail..])
             ),
             truncated: true,
         }
@@ -112,32 +115,74 @@ fn escaped(character: char) -> bool {
     }
 }
 
-fn width(character: char) -> usize {
-    match character {
-        '\n' => LINE_BREAK.chars().count(),
-        _ if escaped(character) => character.escape_unicode().len(),
-        _ => 1,
+/// How one character of a call reaches the card.
+#[derive(Debug, Clone, Copy)]
+enum Glyph {
+    /// Shown as itself.
+    Plain(char),
+    /// Shown as its [`char::escape_unicode`].
+    Escaped(char),
+    /// A line break, shown as [`LINE_BREAK`].
+    Break,
+}
+
+impl Glyph {
+    /// How `character` is shown when `previous` comes before it.
+    ///
+    /// A space straight after a `\` or a line break is escaped as well. The
+    /// shell reads the first as part of a word and the second as blank space
+    /// a continued line opens with, but shown as itself the first reads as
+    /// the space between two words and the second is lost in the space
+    /// [`LINE_BREAK`] ends with.
+    fn of(character: char, previous: Option<char>) -> Self {
+        match character {
+            '\n' => Self::Break,
+            ' ' if matches!(previous, Some('\\' | '\n')) => Self::Escaped(character),
+            _ if escaped(character) => Self::Escaped(character),
+            _ => Self::Plain(character),
+        }
+    }
+
+    /// How many characters of the card it takes.
+    fn width(self) -> usize {
+        match self {
+            Self::Plain(_) => 1,
+            Self::Escaped(character) => character.escape_unicode().len(),
+            Self::Break => LINE_BREAK.chars().count(),
+        }
+    }
+
+    fn draw(self, text: &mut String) {
+        match self {
+            Self::Plain(character) => text.push(character),
+            Self::Escaped(character) => text.extend(character.escape_unicode()),
+            Self::Break => text.push_str(LINE_BREAK),
+        }
     }
 }
 
-fn draw(characters: &[char]) -> String {
-    let mut text = String::with_capacity(characters.len());
-    for &character in characters {
-        match character {
-            '\n' => text.push_str(LINE_BREAK),
-            _ if escaped(character) => text.extend(character.escape_unicode()),
-            _ => text.push(character),
-        }
+/// Every character of `text` as the card shows it.
+fn glyphs(text: &str) -> Vec<Glyph> {
+    let previous = once(None).chain(text.chars().map(Some));
+    text.chars()
+        .zip(previous)
+        .map(|(character, previous)| Glyph::of(character, previous))
+        .collect()
+}
+
+fn draw(glyphs: &[Glyph]) -> String {
+    let mut text = String::with_capacity(glyphs.len());
+    for glyph in glyphs {
+        glyph.draw(&mut text);
     }
     text
 }
 
-/// How many of `characters`, taken in order, the card has room for in
-/// `budget`.
-fn fitting<'a>(characters: impl Iterator<Item = &'a char>, budget: usize) -> usize {
-    characters
-        .scan(0, |spent, &character| {
-            *spent += width(character);
+/// How many of `glyphs`, taken in order, the card has room for in `budget`.
+fn fitting<'a>(glyphs: impl Iterator<Item = &'a Glyph>, budget: usize) -> usize {
+    glyphs
+        .scan(0, |spent, glyph| {
+            *spent += glyph.width();
             (*spent <= budget).then_some(())
         })
         .count()
@@ -269,6 +314,52 @@ mod tests {
         assert_eq!(fits.text.chars().count(), MAX_PREVIEW_CHARACTERS);
 
         let over = Preview::within(&format!("{}\u{8}", "x".repeat(396)), MAX_PREVIEW_CHARACTERS);
+        assert!(over.truncated, "{}", over.text);
+        assert!(
+            over.text.chars().count() <= MAX_PREVIEW_CHARACTERS,
+            "{}",
+            over.text
+        );
+    }
+
+    /// A space a backslash escapes was drawn like the space between two
+    /// words, so only counting spaces told `rm -rf ~/tmp\  ~`, a path and the
+    /// home directory, from `rm -rf ~/tmp\ ~`, one path, and a trailing
+    /// escaped space was lost in the space [`LINE_BREAK`] opens with.
+    #[test]
+    fn a_space_after_a_backslash_or_a_line_break_is_shown_as_its_escape() {
+        let space = ' '.escape_unicode();
+        let tab = '\t'.escape_unicode();
+
+        for (rendered, drawn) in [
+            (r"rm -rf ~/tmp\ ~", format!(r"rm -rf ~/tmp\{space}~")),
+            (r"rm -rf ~/tmp\  ~", format!(r"rm -rf ~/tmp\{space} ~")),
+            ("echo \\\t~", format!(r"echo \{tab}~")),
+            (
+                "echo first \\ \necho second",
+                format!(r"echo first \{space}{LINE_BREAK}echo second"),
+            ),
+            (
+                "rm -rf ~/tmp\\\n  ~",
+                format!(r"rm -rf ~/tmp\{LINE_BREAK}{space} ~"),
+            ),
+            (r"echo \\ done", format!(r"echo \\{space}done")),
+            ("echo  done", "echo done".to_string()),
+        ] {
+            let preview = Preview::within(rendered, MAX_PREVIEW_CHARACTERS);
+
+            assert_eq!(preview.text, drawn, "{rendered:?}");
+            assert!(!preview.truncated, "{rendered:?}");
+        }
+    }
+
+    #[test]
+    fn an_escaped_space_spends_the_budget_for_every_character_it_is_shown_as() {
+        let fits = Preview::within(&format!("{}\\ ", "x".repeat(393)), MAX_PREVIEW_CHARACTERS);
+        assert!(!fits.truncated, "{}", fits.text);
+        assert_eq!(fits.text.chars().count(), MAX_PREVIEW_CHARACTERS);
+
+        let over = Preview::within(&format!("{}\\ ", "x".repeat(394)), MAX_PREVIEW_CHARACTERS);
         assert!(over.truncated, "{}", over.text);
         assert!(
             over.text.chars().count() <= MAX_PREVIEW_CHARACTERS,
