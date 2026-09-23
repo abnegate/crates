@@ -55,6 +55,14 @@ pub enum GitError {
     #[error("Refusing a checkout whose git directory is not its own")]
     RedirectedGitDirectory,
 
+    /// A repository whose shared git directory holds
+    /// `objects/info/alternates`: git reads objects from every store the
+    /// file names, and a push uploads whatever the pushed commit reaches
+    /// from any of them. Which stores it names is left unnamed: the
+    /// repository chose them.
+    #[error("Refusing a repository that borrows objects from another store")]
+    AlternateObjects,
+
     #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
     UnsafeWorktree(PathBuf),
 

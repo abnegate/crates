@@ -26,7 +26,6 @@ use crate::git::LOCATING;
 use crate::git::WorktreeEntry;
 use crate::git::harden;
 use crate::git::refused;
-use crate::git::unlinked;
 pub use crate::worktree::unfinished::Unfinished;
 use std::io::Read;
 #[cfg(unix)]
@@ -97,10 +96,12 @@ fn local(repository: &Path) -> Command {
 /// writes for a clone, a worktree and a tracking branch; a checkout whose git
 /// directory, or the one it shares, is not the one its own `.git` names,
 /// which it refuses with [`crate::git::GitError::RedirectedGitDirectory`];
-/// and one whose `.git` is a link or whose git directory holds one, which it
-/// refuses with [`crate::git::GitError::LinkedPath`]: the configuration and
-/// the refs are the base clone's, which every run of the repository can
-/// write through its own git commands.
+/// one whose `.git` is a link or whose git directory holds one, which it
+/// refuses with [`crate::git::GitError::LinkedPath`]; and one that borrows
+/// objects from another store, which it refuses with
+/// [`crate::git::GitError::AlternateObjects`]: the configuration and the
+/// refs are the base clone's, which every run of the repository can write
+/// through its own git commands.
 fn verify(repository: &Path) -> std::io::Result<()> {
     let listing = run(
         local(repository).args(CONFIG_LISTING),
@@ -116,9 +117,8 @@ fn verify(repository: &Path) -> std::io::Result<()> {
         "locate the repository's files",
     )?;
     Anchor::Checkout(repository.to_path_buf())
-        .holds(&located)
-        .map_err(std::io::Error::other)?;
-    unlinked(&located).map_err(std::io::Error::other)
+        .admits(&located)
+        .map_err(std::io::Error::other)
 }
 
 /// Run a local git command, reading at most [`MAXIMUM_OUTPUT_BYTES`] `+ 1` of

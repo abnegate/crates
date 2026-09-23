@@ -1,6 +1,8 @@
 use crate::git::GitError;
 use crate::git::GitResult;
 use crate::git::hardening::directories;
+use crate::git::hardening::unborrowed;
+use crate::git::hardening::unlinked;
 use crate::git::native;
 use std::ffi::OsStr;
 use std::io::Read;
@@ -45,13 +47,23 @@ pub(crate) enum Anchor {
 
 impl Anchor {
     /// Refuse the git directories [`crate::git::LOCATING`] printed unless
+    /// they are this anchor's own, hold no symbolic link, as [`unlinked`]
+    /// looks for one, and borrow no objects, as [`unborrowed`] looks for a
+    /// store they borrow from.
+    pub(crate) fn admits(&self, located: &[u8]) -> GitResult<()> {
+        self.holds(located)?;
+        unlinked(located)?;
+        unborrowed(located)
+    }
+
+    /// Refuse the git directories [`crate::git::LOCATING`] printed unless
     /// they are this anchor's own, looking at what stands at each without
     /// following a link. A `.git` that is a link is refused with
     /// [`GitError::LinkedPath`], and every other mismatch, including what
     /// cannot be looked at, with [`GitError::RedirectedGitDirectory`]. Every
     /// path is compared by its real path, so a checkout named through a
     /// linked directory above it is still its own.
-    pub(crate) fn holds(&self, located: &[u8]) -> GitResult<()> {
+    fn holds(&self, located: &[u8]) -> GitResult<()> {
         let (own, shared) = directories(located)?;
         let (Some(own), Some(shared)) = (real(&own), real(&shared)) else {
             return Err(GitError::RedirectedGitDirectory);

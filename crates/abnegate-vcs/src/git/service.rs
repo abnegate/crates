@@ -17,7 +17,6 @@ use crate::git::authentication::authenticate;
 use crate::git::group::Group;
 use crate::git::harden;
 use crate::git::refused;
-use crate::git::unlinked;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
 use std::ffi::OsStr;
@@ -235,11 +234,12 @@ impl GitService {
     /// git writes for a clone, a worktree and a tracking branch, with
     /// [`GitError::UnsafeConfig`]; a checkout at `path` whose git directory,
     /// or the one it shares, is not the one its own `.git` names, with
-    /// [`GitError::RedirectedGitDirectory`], or whose `.git` is a link; and
-    /// one whose git directory holds a symbolic link anywhere git could write
-    /// through it, with [`GitError::LinkedPath`]. Run before every hardened
-    /// operation, because a run's git commands can write the repository
-    /// between two of them.
+    /// [`GitError::RedirectedGitDirectory`], or whose `.git` is a link; one
+    /// whose git directory holds a symbolic link anywhere git could write
+    /// through it, with [`GitError::LinkedPath`]; and one that borrows
+    /// objects from another store, with [`GitError::AlternateObjects`]. Run
+    /// before every hardened operation, because a run's git commands can
+    /// write the repository between two of them.
     pub(crate) async fn verify_config(path: &Path) -> GitResult<()> {
         Self::verify(
             || {
@@ -272,12 +272,9 @@ impl GitService {
                 "Cannot locate the repository's files".to_string(),
             ));
         }
-        tokio::task::spawn_blocking(move || {
-            anchor.holds(&located.stdout)?;
-            unlinked(&located.stdout)
-        })
-        .await
-        .map_err(std::io::Error::other)?
+        tokio::task::spawn_blocking(move || anchor.admits(&located.stdout))
+            .await
+            .map_err(std::io::Error::other)?
     }
 
     /// A hardened invocation that may reach `remote`, over the one transport

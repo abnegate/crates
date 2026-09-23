@@ -368,3 +368,52 @@ async fn a_checkout_named_through_a_linked_parent_directory_is_accepted() {
         );
     }
 }
+
+/// Git reads objects from every store `objects/info/alternates` names, and
+/// a push uploads whatever HEAD reaches from any of them, so a repository
+/// that names one is refused, however empty the file, whether it is worked
+/// in as a clone or through a worktree of it; a clone naming none is not.
+#[tokio::test]
+async fn a_repository_that_borrows_objects_from_another_store_is_refused() {
+    let root = TempDir::new().unwrap();
+    let source = repository(root.path(), "source");
+    let base = cloned(root.path(), &source, "base");
+    let checkout = worktree(&base, &root.path().join("one"), &["-b", "task/one"]);
+    let service = GitService::new();
+    staged(&base, "ordinary\n");
+    service.commit(&base, "ordinary").await.unwrap();
+    std::fs::write(
+        base.join(GIT_DIRECTORY)
+            .join("objects")
+            .join("info")
+            .join("alternates"),
+        "",
+    )
+    .unwrap();
+    staged(&base, "borrowing\n");
+    staged(&checkout, "borrowing\n");
+    let listed = refs(&base);
+
+    let committed = service.commit(&base, "borrowing").await;
+    let linked = service.commit(&checkout, "borrowing").await;
+    let blocking = crate::worktree::unfinished(&checkout, &[]);
+
+    assert_eq!(refs(&base), listed, "the refused commit moved a ref");
+    for (operation, refusal) in [committed, linked].into_iter().enumerate() {
+        assert!(
+            matches!(refusal, Err(GitError::AlternateObjects)),
+            "operation {operation}: {refusal:?}"
+        );
+    }
+    assert!(
+        matches!(
+            blocking.as_ref().err().and_then(carried),
+            Some(GitError::AlternateObjects)
+        ),
+        "{blocking:?}"
+    );
+    assert_eq!(
+        GitError::AlternateObjects.to_string(),
+        "Refusing a repository that borrows objects from another store"
+    );
+}

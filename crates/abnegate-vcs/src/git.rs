@@ -15,7 +15,10 @@
 //! directory, or the one it shares, is not the one its own `.git` names: a
 //! `.git` that is a link, is missing, or is a file or worktree record
 //! rewritten to name another clone's would hand every write to that other
-//! repository. A checkout is named by its top, where its `.git` stands. The
+//! repository. A repository that borrows objects from another store through
+//! `objects/info/alternates` is refused as well, since a push would upload
+//! whatever the pushed commit reaches there. A checkout is named by its top,
+//! where its `.git` stands. The
 //! check is made before each command, so it cannot stop a run that rewrites the
 //! repository in the instant between the check and the command; a clone
 //! every run can write is not one a credential should be sent from. A
@@ -62,7 +65,6 @@ pub(crate) use crate::git::hardening::PINS;
 pub(crate) use crate::git::hardening::harden;
 pub(crate) use crate::git::hardening::native;
 pub(crate) use crate::git::hardening::refused;
-pub(crate) use crate::git::hardening::unlinked;
 pub use crate::git::remote_head::RemoteHead;
 pub use crate::git::service::GitService;
 #[cfg(test)]
