@@ -1,7 +1,10 @@
+mod terminators;
+
 use std::borrow::Cow;
 use std::ops::RangeInclusive;
 
 use crate::redact::redact;
+use crate::sanitize::terminators::Terminators;
 
 const ESCAPE: u8 = 0x1B;
 const BELL: u8 = 0x07;
@@ -32,7 +35,8 @@ const INSPECTED_LEADS: &[u8] = &[0xC2, 0xD8, 0xE2, 0xEF];
 /// Strip terminal control sequences and invisible formatting characters from
 /// `text` and redact any credential.
 ///
-/// Text with nothing to remove is returned untouched and unallocated.
+/// Text with nothing to remove is returned untouched and unallocated. Time is
+/// linear in the length of `text`.
 pub fn sanitize(text: &str) -> Cow<'_, str> {
     let stripped = strip_control_sequences(text);
     let redacted = match redact(&stripped) {
@@ -61,12 +65,13 @@ fn strip_control_sequences(text: &str) -> Cow<'_, str> {
     }
 
     let bytes = text.as_bytes();
+    let terminators = Terminators::find(bytes);
     let mut output = String::with_capacity(text.len());
     let mut index = 0;
 
     while index < bytes.len() {
         match bytes[index] {
-            ESCAPE => index = escape_sequence(bytes, index),
+            ESCAPE => index = escape_sequence(bytes, index, terminators),
             CARRIAGE_RETURN => {
                 output.push('\n');
                 index += if bytes.get(index + 1) == Some(&LINE_FEED) {
@@ -121,13 +126,18 @@ fn is_invisible(character: char) -> bool {
 ///
 /// An unterminated sequence loses only its introducer, leaving the payload as
 /// ordinary text, which is what a terminal would show.
-fn escape_sequence(bytes: &[u8], index: usize) -> usize {
+fn escape_sequence(bytes: &[u8], index: usize, terminators: Terminators) -> usize {
+    let payload = index + 2;
     match bytes.get(index + 1) {
-        Some(b']') => operating_system_command(bytes, index + 2).unwrap_or(index + 2),
-        Some(b'P' | b'X' | b'^' | b'_') => device_control(bytes, index + 2).unwrap_or(index + 2),
-        Some(b'[') => control_sequence(bytes, index + 2).unwrap_or(index + 2),
+        Some(b']') => terminators
+            .operating_system_command(bytes, payload)
+            .unwrap_or(payload),
+        Some(b'P' | b'X' | b'^' | b'_') => terminators
+            .device_control(bytes, payload)
+            .unwrap_or(payload),
+        Some(b'[') => control_sequence(bytes, payload).unwrap_or(payload),
         Some(0x20..=0x2F) => intermediate_sequence(bytes, index + 1).unwrap_or(index + 1),
-        Some(0x30..=0x7E) => index + 2,
+        Some(0x30..=0x7E) => payload,
         _ => index + 1,
     }
 }
@@ -143,31 +153,6 @@ fn intermediate_sequence(bytes: &[u8], from: usize) -> Option<usize> {
         Some(0x30..=0x7E) => Some(index + 1),
         _ => None,
     }
-}
-
-fn operating_system_command(bytes: &[u8], from: usize) -> Option<usize> {
-    let mut index = from;
-    while index < bytes.len() {
-        if bytes[index] == BELL {
-            return Some(index + 1);
-        }
-        if bytes[index] == ESCAPE && bytes.get(index + 1) == Some(&BACKSLASH) {
-            return Some(index + 2);
-        }
-        index += 1;
-    }
-    None
-}
-
-fn device_control(bytes: &[u8], from: usize) -> Option<usize> {
-    let mut index = from;
-    while index < bytes.len() {
-        if bytes[index] == ESCAPE && bytes.get(index + 1) == Some(&BACKSLASH) {
-            return Some(index + 2);
-        }
-        index += 1;
-    }
-    None
 }
 
 fn control_sequence(bytes: &[u8], from: usize) -> Option<usize> {
@@ -186,10 +171,46 @@ fn control_sequence(bytes: &[u8], from: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
     use super::*;
     use crate::redact::REDACTED;
 
     const TOKEN: &str = concat!("ghp_", "0123456789abcdefghij");
+
+    /// A quadratic scan of a quarter megabyte takes seconds even optimised; a
+    /// linear one takes a few milliseconds unoptimised.
+    const LINEAR_BUDGET: Duration = if cfg!(debug_assertions) {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_millis(20)
+    };
+
+    const QUARTER_MEGABYTE: usize = 256 * 1024;
+
+    #[test]
+    fn unterminated_string_sequences_are_scanned_once() {
+        for introducer in ["\u{1b}]", "\u{1b}P", "\u{1b}X", "\u{1b}^", "\u{1b}_"] {
+            let text = introducer.repeat(QUARTER_MEGABYTE / introducer.len());
+            let started = Instant::now();
+            let sanitized = sanitize(&text);
+            let elapsed = started.elapsed();
+
+            assert_eq!(sanitized, "", "{introducer:?} left a payload behind");
+            assert!(
+                elapsed < LINEAR_BUDGET,
+                "a quarter megabyte of {introducer:?} took {elapsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_string_sequence_is_closed_by_a_terminator_after_unterminated_ones() {
+        assert_eq!(sanitize("a\u{1b}Pq\u{1b}]0;title\u{7}b"), "aqb");
+        assert_eq!(sanitize("a\u{1b}]x\u{1b}Py\u{1b}\\b"), "ab");
+        assert_eq!(sanitize("a\u{1b}Pq\u{7}b"), "aqb");
+    }
 
     #[test]
     fn leaves_plain_text_alone() {
