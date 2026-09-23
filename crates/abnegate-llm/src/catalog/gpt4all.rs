@@ -65,7 +65,7 @@ impl ModelProvider for Gpt4AllProvider {
     }
 
     async fn search(&self, options: BrowseQuery<'_>) -> Result<ModelPage, CatalogError> {
-        let offset = parse_cursor_offset(options.cursor)?;
+        let offset = parse_cursor_offset(options.cursor, options.limit)?;
         let catalog = fetch_catalog(&self.catalog_url, &self.client).await?;
 
         let matched: Vec<Gpt4AllModel> = match options.query {

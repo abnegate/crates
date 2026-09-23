@@ -1,7 +1,8 @@
 use thiserror::Error;
 
-/// Failure while reading a remote model catalogue or downloading from it.
+/// Failure while reading a remote model catalogue.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CatalogError {
     #[error("HTTP request failed: {0}")]
     Http(reqwest::Error),
@@ -11,6 +12,8 @@ pub enum CatalogError {
     Unavailable(String),
     #[error("Filesystem error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Invalid catalogue URL: {0}")]
+    InvalidUrl(String),
 }
 
 impl From<reqwest::Error> for CatalogError {

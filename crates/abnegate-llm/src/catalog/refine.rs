@@ -2,7 +2,6 @@ use crate::catalog::capability::ModelCapability;
 use crate::catalog::entry::ModelEntry;
 use crate::catalog::error::CatalogError;
 use crate::catalog::medium_filter::ModelMediumFilter;
-use crate::catalog::page::DEFAULT_PAGE_SIZE;
 use crate::catalog::page::ModelPage;
 use crate::catalog::parse::parse_param_billions;
 use crate::catalog::query::BrowseQuery;
@@ -41,9 +40,12 @@ pub(crate) fn paginate_models(models: Vec<ModelEntry>, offset: usize, limit: usi
 
 /// Read a browse cursor as an offset.
 ///
-/// `offset:N` and `page:N` come from this crate's own pagination; a bare number
-/// is what the HuggingFace Link header carries.
-pub(crate) fn parse_cursor_offset(cursor: Option<&str>) -> Result<usize, CatalogError> {
+/// `offset:N` comes from this crate's own pagination, `page:N` counts pages of
+/// `limit` models from one, and a bare number is an offset.
+pub(crate) fn parse_cursor_offset(
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<usize, CatalogError> {
     let Some(cursor) = cursor else {
         return Ok(0);
     };
@@ -58,7 +60,7 @@ pub(crate) fn parse_cursor_offset(cursor: Option<&str>) -> Result<usize, Catalog
         let page: usize = page
             .parse()
             .map_err(|_| CatalogError::Parse("Invalid cursor page format".into()))?;
-        return Ok(page.saturating_sub(1) * DEFAULT_PAGE_SIZE);
+        return Ok(page.saturating_sub(1).saturating_mul(limit));
     }
 
     cursor
@@ -258,22 +260,29 @@ mod tests {
 
     #[test]
     fn parse_cursor_offset_reads_known_formats() {
-        assert_eq!(parse_cursor_offset(None).unwrap(), 0);
-        assert_eq!(parse_cursor_offset(Some("offset:20")).unwrap(), 20);
-        assert_eq!(parse_cursor_offset(Some("offset:100")).unwrap(), 100);
-        assert_eq!(parse_cursor_offset(Some("page:1")).unwrap(), 0);
-        assert_eq!(parse_cursor_offset(Some("page:2")).unwrap(), 20);
-        assert_eq!(parse_cursor_offset(Some("page:3")).unwrap(), 40);
-        assert!(parse_cursor_offset(Some("invalid")).is_err());
-        assert!(parse_cursor_offset(Some("offset:abc")).is_err());
-        assert!(parse_cursor_offset(Some("page:xyz")).is_err());
+        assert_eq!(parse_cursor_offset(None, 20).unwrap(), 0);
+        assert_eq!(parse_cursor_offset(Some("offset:20"), 20).unwrap(), 20);
+        assert_eq!(parse_cursor_offset(Some("offset:100"), 20).unwrap(), 100);
+        assert_eq!(parse_cursor_offset(Some("page:1"), 20).unwrap(), 0);
+        assert_eq!(parse_cursor_offset(Some("page:2"), 20).unwrap(), 20);
+        assert_eq!(parse_cursor_offset(Some("page:3"), 20).unwrap(), 40);
+        assert!(parse_cursor_offset(Some("invalid"), 20).is_err());
+        assert!(parse_cursor_offset(Some("offset:abc"), 20).is_err());
+        assert!(parse_cursor_offset(Some("page:xyz"), 20).is_err());
+    }
+
+    #[test]
+    fn a_page_cursor_counts_pages_of_the_limit_asked_for() {
+        assert_eq!(parse_cursor_offset(Some("page:3"), 50).unwrap(), 100);
+        assert_eq!(parse_cursor_offset(Some("page:2"), 5).unwrap(), 5);
+        assert_eq!(parse_cursor_offset(Some("page:0"), 50).unwrap(), 0);
     }
 
     #[test]
     fn parse_cursor_offset_reads_a_bare_number() {
-        assert_eq!(parse_cursor_offset(Some("20")).unwrap(), 20);
-        assert_eq!(parse_cursor_offset(Some("100")).unwrap(), 100);
-        assert!(parse_cursor_offset(Some("abc")).is_err());
+        assert_eq!(parse_cursor_offset(Some("20"), 20).unwrap(), 20);
+        assert_eq!(parse_cursor_offset(Some("100"), 20).unwrap(), 100);
+        assert!(parse_cursor_offset(Some("abc"), 20).is_err());
     }
 
     #[test]
