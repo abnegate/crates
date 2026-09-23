@@ -169,6 +169,7 @@ dependencies = [
 name = "abnegate-search"
 version = "0.1.0"
 dependencies = [
+ "abnegate-secret",
  "reqwest",
  "serde",
  "serde_json",
