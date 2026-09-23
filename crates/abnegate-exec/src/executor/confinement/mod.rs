@@ -34,6 +34,7 @@ mod workspace;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -68,6 +69,7 @@ pub struct Confinement {
     execute_roots: Vec<PathBuf>,
     mode: ConfinementMode,
     environment: BTreeMap<String, String>,
+    inherited: BTreeMap<String, String>,
 }
 
 impl Confinement {
@@ -85,6 +87,7 @@ impl Confinement {
             execute_roots: Vec::new(),
             mode: ConfinementMode::SingleCommand,
             environment: BTreeMap::new(),
+            inherited: BTreeMap::new(),
         }
     }
 
@@ -112,6 +115,19 @@ impl Confinement {
         self
     }
 
+    /// Set the executor's own variables the confined command sees. They rank
+    /// below both [`Confinement::with_environment`] and the names the sandbox
+    /// sets itself (`HOME`, `TMPDIR`, `TMP`, `TEMP`, `PATH`, `LANG`,
+    /// `LC_ALL`), so they only fill what neither of those sets. A name or
+    /// value that is not UTF-8 is dropped.
+    pub fn with_inherited_environment(mut self, inherited: BTreeMap<OsString, OsString>) -> Self {
+        self.inherited = inherited
+            .into_iter()
+            .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+            .collect();
+        self
+    }
+
     /// Whether this host has a confinement backend installed. Availability is
     /// not proof: [`Confinement::probe`] still has to pass before a confined
     /// job may run.
@@ -133,7 +149,7 @@ impl Confinement {
             Backend::Bubblewrap => Ok(Invocation {
                 program: PathBuf::from(backend.executable()),
                 arguments: bubblewrap::arguments(&resolved)?,
-                environment: BTreeMap::new(),
+                environment: resolved.environment,
             }),
         }
     }
@@ -164,6 +180,7 @@ impl Confinement {
         let execute_roots = resolve_execute_roots(self.mode, &self.execute_roots)?;
         let environment = complete_environment(
             &self.environment,
+            &self.inherited,
             &command,
             write_roots.first().unwrap_or(&working_dir),
         );
@@ -193,6 +210,7 @@ impl fmt::Debug for Confinement {
             .field("execute_roots", &self.execute_roots)
             .field("mode", &self.mode)
             .field("environment", &self.environment.keys())
+            .field("inherited", &self.inherited.keys())
             .finish()
     }
 }

@@ -55,6 +55,14 @@
 //! # }
 //! ```
 //!
+//! # Environment
+//!
+//! A command never inherits the executor's whole environment by default: it
+//! sees only the names in [`DEFAULT_ENVIRONMENT_ALLOWLIST`], with the
+//! executor's values, and the `RunStart.env` map on top. An executor that
+//! holds nothing a command must not read can opt into
+//! [`EnvironmentPolicy::Inherit`] through [`ExecutorConfig::environment`].
+//!
 //! # Proxy routing
 //!
 //! [`Proxy::from_env`] reads [`PROXY_URL_ENV`] and, when it is set, overlays the
@@ -75,8 +83,9 @@ pub mod proxy;
 
 pub use error::{DaemonError, ExecutorError, JobError, ProtocolError};
 pub use executor::{
-    Backend, CommandExecutor, Confinement, ConfinementError, ConfinementMode, ExecutorConfig,
-    HOST_BACKEND, Invocation, JobHandle,
+    Backend, CommandExecutor, Confinement, ConfinementError, ConfinementMode,
+    DEFAULT_ENVIRONMENT_ALLOWLIST, EnvironmentPolicy, ExecutorConfig, HOST_BACKEND, Invocation,
+    JobHandle,
 };
 pub use job::{JobRegistry, JobState};
 pub use protocol::{

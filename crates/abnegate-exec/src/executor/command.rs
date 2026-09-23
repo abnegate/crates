@@ -118,12 +118,14 @@ impl CommandExecutor {
 
         // A job that asked to be confined never runs unconfined: an unproven
         // sandbox fails the spawn instead of falling back.
+        let inherited = self.config.environment.inherited();
         let mut process = match &confinement {
             Some(request) => {
                 Confinement::probe(request.mode()).await?;
                 let invocation = Confinement::new(&command, args.clone(), cwd)
                     .with_roots(request)
                     .with_environment(env.clone())
+                    .with_inherited_environment(inherited)
                     .host_invocation()?;
 
                 let mut process = Command::new(&invocation.program);
@@ -135,7 +137,11 @@ impl CommandExecutor {
             }
             None => {
                 let mut process = Command::new(&command);
-                process.args(&args).envs(env.iter());
+                process
+                    .args(&args)
+                    .env_clear()
+                    .envs(inherited)
+                    .envs(env.iter());
                 Proxy::from_env().apply(&mut process);
                 process
             }
@@ -407,27 +413,149 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    use crate::executor::EnvironmentPolicy;
+
     use super::*;
+
+    const CHILD: &str = "ABNEGATE_EXEC_TEST_CHILD";
+
+    /// Re-run the test `name` in a child test process whose environment is
+    /// `PATH` plus `environment`, so a test can shape the executor's own
+    /// environment without mutating this process's. Returns whether this call
+    /// was the parent, which has nothing left to do once the child passes.
+    async fn delegated_to_child(name: &str, environment: &[(&str, &str)]) -> bool {
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env(CHILD, name)
+            .envs(environment.iter().copied())
+            .output()
+            .await
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test, so it proved nothing\n{stdout}"
+        );
+        true
+    }
+
+    async fn stdout_of(executor: &CommandExecutor, request: &InboundMessage) -> String {
+        let (sender, mut receiver) = mpsc::channel(100);
+        executor.spawn(request, sender).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut output = Vec::new();
+            while let Some(message) = receiver.recv().await {
+                match message {
+                    OutboundMessage::RunStdout { data, .. } => {
+                        output.extend(BASE64_STANDARD.decode(data).unwrap())
+                    }
+                    OutboundMessage::RunExit { exit_code, .. } => {
+                        assert_eq!(exit_code, Some(0));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            String::from_utf8(output).unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    fn environment_listing(environment: HashMap<String, String>) -> InboundMessage {
+        InboundMessage::RunStart {
+            job_id: "environment".to_string(),
+            workspace: std::env::temp_dir(),
+            command: "env".to_string(),
+            args: vec![],
+            env: environment,
+            working_dir: None,
+            confinement: None,
+            timeout_ms: Some(5000),
+            max_output_bytes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_default_policy_withholds_the_executor_environment() {
+        const NAME: &str =
+            "executor::command::tests::the_default_policy_withholds_the_executor_environment";
+        const MARKER: &str = "ABNEGATE_EXEC_TEST_MASTER_KEY";
+        const VALUE: &str = "hunter2";
+        if delegated_to_child(NAME, &[(MARKER, VALUE), ("TERM", "xterm")]).await {
+            return;
+        }
+
+        let output = stdout_of(
+            &CommandExecutor::new(),
+            &environment_listing(HashMap::new()),
+        )
+        .await;
+
+        assert!(!output.contains(MARKER), "{output}");
+        assert!(!output.contains(VALUE), "{output}");
+        assert!(
+            output.lines().any(|line| line.starts_with("PATH=")),
+            "{output}"
+        );
+        assert!(output.lines().any(|line| line == "TERM=xterm"), "{output}");
+    }
+
+    #[tokio::test]
+    async fn inherit_passes_the_executor_environment_beneath_the_request() {
+        const NAME: &str =
+            "executor::command::tests::inherit_passes_the_executor_environment_beneath_the_request";
+        const MARKER: &str = "ABNEGATE_EXEC_TEST_MASTER_KEY";
+        const SHADOWED: &str = "ABNEGATE_EXEC_TEST_SHADOWED";
+        if delegated_to_child(NAME, &[(MARKER, "hunter2"), (SHADOWED, "executor")]).await {
+            return;
+        }
+        let executor = CommandExecutor::with_config(
+            ExecutorConfig::default().with_environment(EnvironmentPolicy::Inherit),
+        );
+
+        let output = stdout_of(
+            &executor,
+            &environment_listing(HashMap::from([(
+                SHADOWED.to_string(),
+                "request".to_string(),
+            )])),
+        )
+        .await;
+
+        assert!(
+            output
+                .lines()
+                .any(|line| line == format!("{MARKER}=hunter2")),
+            "{output}"
+        );
+        assert!(
+            output
+                .lines()
+                .any(|line| line == format!("{SHADOWED}=request")),
+            "{output}"
+        );
+    }
 
     #[tokio::test]
     async fn proxy_overrides_request_environment() {
         const NAME: &str = "executor::command::tests::proxy_overrides_request_environment";
-        if std::env::var("ABNEGATE_EXEC_TEST_CHILD").as_deref() != Ok(NAME) {
-            let output = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", NAME, "--nocapture"])
-                .env_clear()
-                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-                .env("ABNEGATE_EXEC_TEST_CHILD", NAME)
-                .env(crate::proxy::PROXY_URL_ENV, "http://127.0.0.1:28888")
-                .output()
-                .await
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
+        if delegated_to_child(
+            NAME,
+            &[(crate::proxy::PROXY_URL_ENV, "http://127.0.0.1:28888")],
+        )
+        .await
+        {
             return;
         }
 

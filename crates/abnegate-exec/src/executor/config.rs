@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use super::environment_policy::EnvironmentPolicy;
+
 /// Default timeout for command execution (5 minutes)
 pub const DEFAULT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
 
@@ -26,6 +28,11 @@ pub struct ExecutorConfig {
 
     /// Grace period before SIGKILL after SIGTERM
     pub grace_period: Duration,
+
+    /// Which of the executor's own environment variables a command sees.
+    /// Defaults to [`EnvironmentPolicy::Allowlist`] of
+    /// [`DEFAULT_ENVIRONMENT_ALLOWLIST`](super::DEFAULT_ENVIRONMENT_ALLOWLIST).
+    pub environment: EnvironmentPolicy,
 }
 
 impl Default for ExecutorConfig {
@@ -35,6 +42,7 @@ impl Default for ExecutorConfig {
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             buffer_size: DEFAULT_BUFFER_SIZE,
             grace_period: GRACE_PERIOD,
+            environment: EnvironmentPolicy::default(),
         }
     }
 }
@@ -66,6 +74,12 @@ impl ExecutorConfig {
     /// Set the grace period
     pub fn with_grace_period(mut self, period: Duration) -> Self {
         self.grace_period = period;
+        self
+    }
+
+    /// Set which of the executor's own environment variables a command sees
+    pub fn with_environment(mut self, environment: EnvironmentPolicy) -> Self {
+        self.environment = environment;
         self
     }
 }

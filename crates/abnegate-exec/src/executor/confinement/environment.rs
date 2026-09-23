@@ -45,6 +45,7 @@ pub(super) fn resolve_command(
 
 pub(super) fn complete_environment(
     requested: &BTreeMap<String, String>,
+    inherited: &BTreeMap<String, String>,
     command: &Path,
     writable: &Path,
 ) -> BTreeMap<String, String> {
@@ -62,6 +63,11 @@ pub(super) fn complete_environment(
         environment
             .entry(name.to_string())
             .or_insert_with(|| LOCALE.to_string());
+    }
+    for (name, value) in inherited {
+        environment
+            .entry(name.clone())
+            .or_insert_with(|| value.clone());
     }
     environment
 }
@@ -100,6 +106,7 @@ mod tests {
     fn test_complete_environment_fills_defaults() {
         let environment = complete_environment(
             &BTreeMap::new(),
+            &BTreeMap::new(),
             Path::new("/bin/cat"),
             Path::new("/tmp/writable"),
         );
@@ -113,10 +120,32 @@ mod tests {
         let requested = BTreeMap::from([(HOME.to_string(), "/tmp/mine".to_string())]);
         let environment = complete_environment(
             &requested,
+            &BTreeMap::new(),
             Path::new("/bin/cat"),
             Path::new("/tmp/writable"),
         );
         assert_eq!(environment.get(HOME).unwrap(), "/tmp/mine");
+    }
+
+    #[test]
+    fn an_inherited_value_fills_only_what_nothing_else_sets() {
+        let requested = BTreeMap::from([("TERM".to_string(), "dumb".to_string())]);
+        let inherited = BTreeMap::from([
+            (HOME.to_string(), "/Users/executor".to_string()),
+            ("TERM".to_string(), "xterm".to_string()),
+            ("EDITOR".to_string(), "vi".to_string()),
+        ]);
+
+        let environment = complete_environment(
+            &requested,
+            &inherited,
+            Path::new("/bin/cat"),
+            Path::new("/tmp/writable"),
+        );
+
+        assert_eq!(environment.get(HOME).unwrap(), "/tmp/writable");
+        assert_eq!(environment.get("TERM").unwrap(), "dumb");
+        assert_eq!(environment.get("EDITOR").unwrap(), "vi");
     }
 
     #[test]

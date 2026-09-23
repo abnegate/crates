@@ -6,6 +6,7 @@
 mod command;
 mod config;
 mod confinement;
+mod environment_policy;
 mod handshake;
 mod job_handle;
 mod output_kind;
@@ -25,6 +26,8 @@ pub use confinement::ConfinementError;
 pub use confinement::ConfinementMode;
 pub use confinement::HOST_BACKEND;
 pub use confinement::Invocation;
+pub use environment_policy::DEFAULT_ENVIRONMENT_ALLOWLIST;
+pub use environment_policy::EnvironmentPolicy;
 pub use job_handle::JobHandle;
 pub use output_kind::OutputKind;
 pub use output_limiter::OutputLimiter;

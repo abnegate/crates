@@ -24,6 +24,7 @@ use abnegate_exec::executor::Confinement;
 use abnegate_exec::executor::ConfinementError;
 use abnegate_exec::executor::ConfinementMode;
 use abnegate_exec::executor::HOST_BACKEND;
+use abnegate_exec::executor::Invocation;
 use abnegate_exec::protocol::Capability;
 use abnegate_exec::protocol::ConfinementRequest;
 use abnegate_exec::protocol::ErrorCode;
@@ -312,14 +313,14 @@ fn test_confinement_rejects_a_relative_root() {
     ));
 }
 
-fn bubblewrap_arguments(confinement: &Confinement) -> Vec<String> {
+fn bubblewrap_invocation(confinement: &Confinement) -> Invocation {
     let invocation = confinement.invocation(Some(Backend::Bubblewrap)).unwrap();
     assert_eq!(invocation.program, PathBuf::from("/usr/bin/bwrap"));
-    assert!(
-        invocation.environment.is_empty(),
-        "bubblewrap carries the environment through --setenv"
-    );
-    invocation.arguments
+    invocation
+}
+
+fn bubblewrap_arguments(confinement: &Confinement) -> Vec<String> {
+    bubblewrap_invocation(confinement).arguments
 }
 
 fn window(arguments: &[String], values: &[&str]) -> bool {
@@ -334,13 +335,12 @@ fn test_bubblewrap_arguments_unshare_everything() {
     let arguments = bubblewrap_arguments(&confinement(&workspace.root, vec![]));
 
     assert_eq!(
-        arguments[..11],
+        arguments[..10],
         [
             "--die-with-parent",
             "--new-session",
             "--unshare-all",
             "--unshare-net",
-            "--clearenv",
             "--proc",
             "/proc",
             "--dev",
@@ -376,17 +376,54 @@ fn test_bubblewrap_arguments_bind_the_requested_roots() {
 }
 
 #[test]
-fn test_bubblewrap_arguments_set_the_environment_and_working_directory() {
+fn test_bubblewrap_invocation_sets_the_environment_and_working_directory() {
     let workspace = workspace();
-    let arguments = bubblewrap_arguments(&confinement(&workspace.root, vec![]));
+    let invocation = bubblewrap_invocation(&confinement(&workspace.root, vec![]));
     let root = text(&workspace.root);
 
     for name in ["HOME", "TMPDIR", "TMP", "TEMP"] {
-        assert!(window(&arguments, &["--setenv", name, &root]), "{name}");
+        assert_eq!(invocation.environment.get(name), Some(&root), "{name}");
     }
-    assert!(window(&arguments, &["--setenv", "LANG", "C.UTF-8"]));
-    assert!(window(&arguments, &["--setenv", "LC_ALL", "C.UTF-8"]));
-    assert!(window(&arguments, &["--chdir", &root]));
+    assert_eq!(
+        invocation.environment.get("LANG").map(String::as_str),
+        Some("C.UTF-8")
+    );
+    assert_eq!(
+        invocation.environment.get("LC_ALL").map(String::as_str),
+        Some("C.UTF-8")
+    );
+    assert!(window(&invocation.arguments, &["--chdir", &root]));
+}
+
+#[test]
+fn test_bubblewrap_arguments_never_carry_an_environment_value() {
+    const SECRET: &str = "hunter2-master-key";
+    let workspace = workspace();
+    let confinement = confinement(&workspace.root, vec![]).with_environment(HashMap::from([(
+        "APP_MASTER_KEY".to_string(),
+        SECRET.to_string(),
+    )]));
+
+    let invocation = bubblewrap_invocation(&confinement);
+
+    assert!(
+        invocation
+            .arguments
+            .iter()
+            .all(|argument| !argument.contains(SECRET)),
+        "an argument vector is readable by every user on the host: {:?}",
+        invocation.arguments
+    );
+    assert!(!invocation.arguments.contains(&"--setenv".to_string()));
+    assert!(!invocation.arguments.contains(&"--clearenv".to_string()));
+    assert_eq!(
+        invocation
+            .environment
+            .get("APP_MASTER_KEY")
+            .map(String::as_str),
+        Some(SECRET),
+        "the value reaches the command through bubblewrap's own environment"
+    );
 }
 
 #[test]
@@ -405,13 +442,16 @@ fn test_bubblewrap_arguments_end_with_the_command_and_its_arguments() {
 }
 
 #[test]
-fn test_bubblewrap_arguments_keep_a_caller_supplied_environment() {
+fn test_bubblewrap_invocation_keeps_a_caller_supplied_environment() {
     let workspace = workspace();
     let confinement = confinement(&workspace.root, vec![])
         .with_environment(HashMap::from([("HOME".to_string(), "/tmp".to_string())]));
-    let arguments = bubblewrap_arguments(&confinement);
+    let invocation = bubblewrap_invocation(&confinement);
 
-    assert!(window(&arguments, &["--setenv", "HOME", "/tmp"]));
+    assert_eq!(
+        invocation.environment.get("HOME").map(String::as_str),
+        Some("/tmp")
+    );
 }
 
 #[test]

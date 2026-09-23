@@ -9,9 +9,10 @@ use std::path::PathBuf;
 pub struct Invocation {
     pub program: PathBuf,
     pub arguments: Vec<String>,
-    /// Environment for the backend process itself. Bubblewrap clears its own
-    /// environment and carries the command's through `--setenv`, so this is
-    /// empty there and complete under seatbelt.
+    /// The complete environment of the backend process, which every backend
+    /// hands on to the command unchanged. Spawn the backend with exactly this
+    /// environment and nothing inherited; values never appear in `arguments`,
+    /// where any user on the host could read them.
     pub environment: BTreeMap<String, String>,
 }
 

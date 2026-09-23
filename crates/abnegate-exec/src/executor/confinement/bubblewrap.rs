@@ -11,7 +11,6 @@ pub(super) fn arguments(resolved: &Resolved) -> Result<Vec<String>, ConfinementE
         "--new-session",
         "--unshare-all",
         "--unshare-net",
-        "--clearenv",
         "--proc",
         "/proc",
         "--dev",
@@ -52,9 +51,6 @@ pub(super) fn arguments(resolved: &Resolved) -> Result<Vec<String>, ConfinementE
     for root in &resolved.execute_roots {
         let path = text(root)?.to_string();
         arguments.extend(["--ro-bind".to_string(), path.clone(), path]);
-    }
-    for (name, value) in &resolved.environment {
-        arguments.extend(["--setenv".to_string(), name.clone(), value.clone()]);
     }
     arguments.extend([
         "--chdir".to_string(),
