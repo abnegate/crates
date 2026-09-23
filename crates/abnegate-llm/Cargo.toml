@@ -1,7 +1,7 @@
 [package]
 name = "abnegate-llm"
-description = "OpenAI-compatible chat completions with SSE streaming, pooled keep-alive, reasoning effort, and a provider abstraction with weighted routing and fallback chains"
-keywords = ["llm", "openai", "streaming", "completion", "router"]
+description = "OpenAI-compatible chat completions with SSE streaming and weighted provider routing, modality-axis provider traits, cost estimation and local hardware profiling"
+keywords = ["llm", "ai", "openai", "router", "streaming"]
 categories = ["api-bindings", "asynchronous", "web-programming"]
 version.workspace = true
 edition.workspace = true
@@ -16,10 +16,17 @@ workspace = true
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+default = []
+anthropic = []
+google = ["dep:url"]
+openai = ["dep:base64"]
+
 [dependencies]
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true, optional = true }
 futures = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
@@ -29,7 +36,9 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = { workspace = true }
