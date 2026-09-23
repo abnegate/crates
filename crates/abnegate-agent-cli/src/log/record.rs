@@ -10,6 +10,8 @@ pub enum Record {
     StdoutLine,
     StdoutClosed,
     StdoutFailed,
+    /// An event too long to read that the run could do without was skipped.
+    StdoutDropped,
     StderrLine,
     StderrClosed,
     /// The run was abandoned while the agent was still running: it reported
@@ -33,6 +35,7 @@ impl Record {
             Self::StdoutLine => "stdout_line",
             Self::StdoutClosed => "stdout_stream_closed",
             Self::StdoutFailed => "stdout_read_error",
+            Self::StdoutDropped => "stdout_line_dropped",
             Self::StderrLine => "stderr_line",
             Self::StderrClosed => "stderr_stream_closed",
             Self::Abandoned => "subprocess_early_failure",
@@ -64,6 +67,7 @@ mod tests {
             Record::StdoutLine,
             Record::StdoutClosed,
             Record::StdoutFailed,
+            Record::StdoutDropped,
             Record::StderrLine,
             Record::StderrClosed,
             Record::Abandoned,

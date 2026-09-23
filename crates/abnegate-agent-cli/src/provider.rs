@@ -1249,20 +1249,108 @@ echo '{"type":"error","message":"You have hit your usage limit. Try again later.
         );
     }
 
+    fn oversized(event: &str, filler: &str) -> String {
+        format!(
+            r#"printf '%s' '{event}'
+head -c 5000 /dev/zero | tr '\0' 'x'
+printf '%s\n' '{filler}'"#
+        )
+    }
+
     #[tokio::test]
-    async fn a_single_oversized_event_is_reported_as_malformed_output() {
+    async fn an_oversized_tool_result_is_dropped_and_the_run_goes_on() {
         let directory = TempDir::new().expect("a temporary directory");
-        let settings = settings(&directory, "head -c 5000 /dev/zero | tr '\\0' 'x'; echo")
-            .with_line_limit(256);
+        let root = directory.path().join("logs");
+        let script = format!(
+            r#"{}
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Read the image."}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            oversized(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"base64","data":""#,
+                r#""}}]}]}}"#,
+            )
+        );
+        let settings = settings(&directory, &script)
+            .with_line_limit(1024)
+            .with_log(&root);
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(execution.stdout.dropped, 1);
+        assert_eq!(execution.stdout.text, "Read the image.");
+        let journal = std::fs::read_to_string(&execution.log.clone().expect("logs").events)
+            .expect("the journal");
+        assert!(journal.contains("stdout_line_dropped"), "{journal}");
+        let completion = provider.assemble(execution).expect("an answer");
+        assert_eq!(
+            completion.message.content.as_deref(),
+            Some("Read the image.")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_result_or_reply_is_reported_as_malformed_output() {
+        let directory = TempDir::new().expect("a temporary directory");
+        for (event, filler) in [
+            (
+                r#"{"type":"result","subtype":"success","is_error":false,"result":""#,
+                r#""}"#,
+            ),
+            (
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":""#,
+                r#""}]}}"#,
+            ),
+        ] {
+            let settings = settings(&directory, &oversized(event, filler)).with_line_limit(256);
+            let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+            let error = run(&provider, &[Message::user("hi")])
+                .await
+                .expect_err("a failure");
+
+            assert!(
+                matches!(&error, ProviderError::Malformed { message, .. } if message.contains("256 bytes")),
+                "expected malformed output for {event}, got {error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_codex_command_output_is_dropped_but_its_prose_is_not() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = format!(
+            r#"{}
+echo '{{"type":"item.completed","item":{{"id":"item_2","type":"agent_message","text":"Logged."}}}}'
+echo '{{"type":"turn.completed"}}'"#,
+            oversized(
+                r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat big.log","aggregated_output":""#,
+                r#""}}"#,
+            )
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Codex,
+            settings(&directory, &script).with_line_limit(1024),
+        );
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+        assert_eq!(completion.message.content.as_deref(), Some("Logged."));
+
+        let prose = oversized(
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":""#,
+            r#""}}"#,
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Codex,
+            settings(&directory, &prose).with_line_limit(1024),
+        );
         let error = run(&provider, &[Message::user("hi")])
             .await
             .expect_err("a failure");
-
         assert!(
-            matches!(&error, ProviderError::Malformed { message, .. } if message.contains("256 bytes")),
-            "expected malformed output, got {error:?}"
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
         );
     }
 

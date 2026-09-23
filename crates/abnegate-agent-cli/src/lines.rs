@@ -2,87 +2,135 @@
 
 use crate::error::Overlong;
 
+const NEWLINE: u8 = b'\n';
+const CARRIAGE_RETURN: &[u8] = b"\r";
+
+/// How much of an overlong line is kept, which is far more than it takes to
+/// tell what kind of event it was.
+const PREFIX: usize = 1024;
+
 /// Splits a byte stream into lines across chunk boundaries.
 ///
 /// Framing happens on the raw bytes rather than on decoded text: a read can
 /// land in the middle of a multi-byte character, and decoding each chunk on
 /// its own would corrupt it. Byte `0x0A` cannot occur inside a UTF-8 sequence,
 /// so splitting first and decoding whole lines afterwards is always safe.
+///
+/// A line past the limit is reported once, as [`Overlong`] with the start of
+/// the line, and the rest of it is thrown away as it arrives; framing picks
+/// up again after its newline, so one oversized event costs only itself.
+/// Each byte is searched for a newline once however many reads a line spans.
 #[derive(Debug)]
 pub struct Lines {
     buffer: Vec<u8>,
+    start: usize,
+    scanned: usize,
     limit: usize,
-    overlong: bool,
+    discarding: bool,
 }
 
 impl Lines {
     pub fn new(limit: usize) -> Self {
         Self {
             buffer: Vec::new(),
+            start: 0,
+            scanned: 0,
             limit,
-            overlong: false,
+            discarding: false,
         }
     }
 
     pub fn extend(&mut self, chunk: &[u8]) {
-        if !self.overlong {
-            self.buffer.extend_from_slice(chunk);
+        let chunk = if self.discarding {
+            match chunk.iter().position(|byte| *byte == NEWLINE) {
+                Some(end) => {
+                    self.discarding = false;
+                    &chunk[end + 1..]
+                }
+                None => return,
+            }
+        } else {
+            chunk
+        };
+        if self.start > 0 {
+            self.buffer.drain(..self.start);
+            self.start = 0;
         }
+        self.buffer.extend_from_slice(chunk);
     }
 
     /// The next complete line, or `None` while one is still arriving.
     pub fn take(&mut self) -> Result<Option<String>, Overlong> {
-        if self.overlong {
-            return Err(self.overlong());
-        }
-        let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n') else {
-            if self.buffer.len() > self.limit {
-                return Err(self.overflow());
+        let searched = self.start + self.scanned;
+        let Some(offset) = self.buffer[searched..]
+            .iter()
+            .position(|byte| *byte == NEWLINE)
+        else {
+            let length = self.buffer.len() - self.start;
+            if length > self.limit {
+                let overlong = self.overlong(self.buffer.len());
+                self.reset();
+                self.discarding = true;
+                return Err(overlong);
             }
+            self.scanned = length;
             return Ok(None);
         };
-        if end > self.limit {
-            return Err(self.overflow());
+
+        let end = searched + offset;
+        let outcome = if end - self.start > self.limit {
+            Err(self.overlong(end))
+        } else {
+            Ok(Some(decode(&self.buffer[self.start..end])))
+        };
+        self.start = end + 1;
+        self.scanned = 0;
+        if self.start == self.buffer.len() {
+            self.reset();
         }
-        let line = decode(&self.buffer[..end]);
-        self.buffer.drain(..=end);
-        Ok(Some(line))
+        outcome
     }
 
     /// The trailing line of a stream that ended without a final newline.
     pub fn flush(&mut self) -> Result<Option<String>, Overlong> {
-        if self.overlong {
-            return Err(self.overlong());
-        }
-        if self.buffer.is_empty() {
+        if self.discarding {
+            self.discarding = false;
             return Ok(None);
         }
-        if self.buffer.len() > self.limit {
-            return Err(self.overflow());
+        let outcome = match self.buffer.len() - self.start {
+            0 => Ok(None),
+            length if length > self.limit => Err(self.overlong(self.buffer.len())),
+            _ => Ok(Some(decode(&self.buffer[self.start..]))),
+        };
+        self.reset();
+        outcome
+    }
+
+    fn overlong(&self, end: usize) -> Overlong {
+        let prefix = &self.buffer[self.start..end.min(self.start + PREFIX)];
+        Overlong {
+            limit: self.limit,
+            prefix: String::from_utf8_lossy(prefix).into_owned(),
         }
-        let line = decode(&self.buffer);
-        self.buffer = Vec::new();
-        Ok(Some(line))
     }
 
-    fn overflow(&mut self) -> Overlong {
-        self.overlong = true;
-        self.buffer = Vec::new();
-        self.overlong()
-    }
-
-    fn overlong(&self) -> Overlong {
-        Overlong { limit: self.limit }
+    fn reset(&mut self) {
+        self.buffer.clear();
+        self.start = 0;
+        self.scanned = 0;
     }
 }
 
 fn decode(line: &[u8]) -> String {
-    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let line = line.strip_suffix(CARRIAGE_RETURN).unwrap_or(line);
     String::from_utf8_lossy(line).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
     use super::Lines;
     use crate::error::Overlong;
 
@@ -92,6 +140,13 @@ mod tests {
             taken.push(line);
         }
         taken
+    }
+
+    fn overlong(limit: usize, prefix: &str) -> Overlong {
+        Overlong {
+            limit,
+            prefix: prefix.to_string(),
+        }
     }
 
     #[test]
@@ -143,21 +198,42 @@ mod tests {
     }
 
     #[test]
-    fn an_unterminated_line_past_the_cap_stops_the_stream() {
+    fn an_unterminated_line_past_the_cap_is_reported_once_and_thrown_away() {
         let mut lines = Lines::new(8);
-        lines.extend(b"way past the cap with no newline at all");
+        lines.extend(b"way past the cap");
 
-        assert_eq!(lines.take(), Err(Overlong { limit: 8 }));
-        assert_eq!(lines.take(), Err(Overlong { limit: 8 }));
-        assert_eq!(lines.flush(), Err(Overlong { limit: 8 }));
+        assert_eq!(lines.take(), Err(overlong(8, "way past the cap")));
+        assert_eq!(lines.take(), Ok(None));
+
+        lines.extend(b" and still going");
+        assert_eq!(lines.take(), Ok(None));
+        lines.extend(b" until here\nnext\n");
+        assert_eq!(drain(&mut lines), vec!["next"]);
     }
 
     #[test]
-    fn a_terminated_line_past_the_cap_stops_the_stream() {
+    fn a_terminated_line_past_the_cap_is_reported_and_the_next_one_still_read() {
         let mut lines = Lines::new(8);
-        lines.extend(b"way past the cap but terminated\n");
+        lines.extend(b"way past the cap but terminated\nshort\n");
 
-        assert_eq!(lines.take(), Err(Overlong { limit: 8 }));
+        assert_eq!(
+            lines.take(),
+            Err(overlong(8, "way past the cap but terminated"))
+        );
+        assert_eq!(lines.take(), Ok(Some("short".to_string())));
+    }
+
+    #[test]
+    fn only_the_start_of_an_overlong_line_is_kept() {
+        let mut lines = Lines::new(8);
+        let line = format!("{{\"type\":\"user\"{}", "x".repeat(10_000));
+        lines.extend(line.as_bytes());
+
+        let Err(overlong) = lines.take() else {
+            panic!("expected an overlong line");
+        };
+        assert_eq!(overlong.prefix.len(), 1024);
+        assert!(overlong.prefix.starts_with(r#"{"type":"user""#));
     }
 
     #[test]
@@ -175,6 +251,39 @@ mod tests {
         assert_eq!(lines.take(), Ok(Some("ok".to_string())));
 
         lines.extend(b"toolong");
-        assert_eq!(lines.flush(), Err(Overlong { limit: 4 }));
+        assert_eq!(lines.flush(), Err(overlong(4, "toolong")));
+        assert_eq!(lines.flush(), Ok(None));
+    }
+
+    #[test]
+    fn the_tail_of_a_discarded_line_is_not_flushed_as_a_line() {
+        let mut lines = Lines::new(4);
+        lines.extend(b"toolong");
+        assert!(lines.take().is_err());
+        lines.extend(b"still the same line");
+
+        assert_eq!(lines.flush(), Ok(None));
+    }
+
+    #[test]
+    fn a_long_line_arriving_a_byte_at_a_time_is_framed_in_linear_time() {
+        let mut lines = Lines::new(1024 * 1024);
+        let started = Instant::now();
+
+        for _ in 0..128 * 1024 {
+            lines.extend(b"x");
+            assert_eq!(lines.take(), Ok(None));
+        }
+        lines.extend(b"\n");
+
+        assert_eq!(
+            lines.take().map(|line| line.map(|line| line.len())),
+            Ok(Some(128 * 1024))
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "framing took {:?}",
+            started.elapsed()
+        );
     }
 }

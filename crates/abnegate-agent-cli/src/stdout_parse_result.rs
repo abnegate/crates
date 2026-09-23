@@ -35,6 +35,9 @@ pub struct StdoutParseResult {
     pub cost: Option<f64>,
     pub turns: Option<u32>,
     pub latency: Option<Duration>,
+    /// Events too long to read that the run could do without, such as a
+    /// tool result holding an image, which were skipped.
+    pub dropped: u64,
 }
 
 impl StdoutParseResult {
@@ -123,6 +126,7 @@ mod tests {
         assert!(result.cost.is_none());
         assert!(result.turns.is_none());
         assert!(result.latency.is_none());
+        assert_eq!(result.dropped, 0);
         assert!(format!("{result:?}").contains("StdoutParseResult"));
     }
 

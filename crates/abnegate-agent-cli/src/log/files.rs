@@ -16,8 +16,8 @@ pub struct ExecutionLogFiles {
     /// The agent's decoded prose, scrubbed of secrets.
     pub stdout: PathBuf,
     /// The agent's stderr, a line at a time and scrubbed of secrets. A line
-    /// past the line limit ends the file there; the run's own copy of its
-    /// diagnostics goes on.
+    /// past the line limit is left out; the run's own copy of its
+    /// diagnostics keeps it.
     pub stderr: PathBuf,
     /// The run's [`Journal`](crate::log::Journal), one JSON object per line.
     pub events: PathBuf,

@@ -24,7 +24,6 @@ const BUFFER: usize = 8 * 1024;
 /// reaches its answer.
 pub(crate) struct Diagnostics {
     lines: Lines,
-    framing: bool,
     limiter: OutputLimiter,
     journal: Journal,
     raw: Sink,
@@ -49,7 +48,6 @@ impl Diagnostics {
     ) -> Self {
         Self {
             lines: Lines::new(line_limit),
-            framing: true,
             limiter: OutputLimiter::new(output_limit),
             journal,
             raw,
@@ -96,27 +94,20 @@ impl Diagnostics {
                 self.keep(&buffer[..count]).await;
             }
         }
-        if self.framing
-            && let Ok(Some(line)) = self.lines.flush()
-        {
+        if let Ok(Some(line)) = self.lines.flush() {
             self.line(line).await;
         }
     }
 
     async fn keep(&mut self, chunk: &[u8]) {
         self.collected.extend_from_slice(chunk);
-        if !self.framing {
-            return;
-        }
         self.lines.extend(chunk);
         loop {
             match self.lines.take() {
                 Ok(Some(line)) => self.line(line).await,
                 Ok(None) => break,
                 Err(overlong) => {
-                    tracing::warn!(%overlong, "stopped logging the agent's stderr line by line");
-                    self.framing = false;
-                    break;
+                    tracing::warn!(%overlong, "left a stderr line too long to log out of the log");
                 }
             }
         }

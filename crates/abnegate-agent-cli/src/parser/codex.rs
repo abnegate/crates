@@ -8,11 +8,15 @@ mod token_counts;
 use abnegate_llm::Usage;
 
 use crate::event::AgentEvent;
+use crate::parser;
 use crate::parser::codex::event::Event;
 use crate::parser::codex::item::Item;
 
 const COMMAND: &str = "command_execution";
 const COMPLETED: &str = "completed";
+const ENDS_TURN: [&str; 2] = ["turn.completed", "turn.failed"];
+const COMPLETED_ITEM: &str = "item.completed";
+const MESSAGE: &str = "agent_message";
 const FAILED_TURN: &str = "the agent reported a failed turn";
 const ERROR: &str = "the agent reported an error";
 
@@ -56,8 +60,26 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
     }
 }
 
+/// Whether an event too long to read, of which only `prefix` is known, is
+/// one the run cannot do without: the end of the turn, or the agent's prose,
+/// rather than a command's output or other event that can be dropped.
+pub fn essential(prefix: &str) -> bool {
+    let types = parser::types(prefix);
+    let top = |kinds: &[&str]| {
+        types
+            .iter()
+            .any(|(depth, kind)| *depth == 1 && kinds.contains(kind))
+    };
+    top(&ENDS_TURN)
+        || (top(&[COMPLETED_ITEM])
+            && types
+                .iter()
+                .any(|(depth, kind)| *depth == 2 && *kind == MESSAGE))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::essential;
     use super::interpret;
     use crate::event::AgentEvent;
     use crate::stdout_parse_result::StdoutParseResult;
@@ -251,6 +273,24 @@ mod tests {
             &mut events,
         );
         assert!(events.is_empty(), "a start produced {events:?}");
+    }
+
+    #[test]
+    fn only_prose_or_the_end_of_a_turn_is_essential_when_too_long_to_read() {
+        for prefix in [
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"#,
+            r#"{"type":"turn.completed","usage":{"#,
+            r#"{"type":"turn.failed","error":{"message":"#,
+        ] {
+            assert!(essential(prefix), "{prefix}");
+        }
+        for prefix in [
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat big.log","aggregated_output":"#,
+            r#"{"type":"item.started","item":{"id":"item_2","type":"agent_message","text":"#,
+            r#"{"type":"error","message":"#,
+        ] {
+            assert!(!essential(prefix), "{prefix}");
+        }
     }
 
     #[test]

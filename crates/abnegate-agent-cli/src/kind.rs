@@ -175,6 +175,16 @@ impl AgentKind {
         }
     }
 
+    /// Whether an event too long to read, of which only `prefix` is known,
+    /// is one the run cannot do without. Any other is dropped and counted in
+    /// [`StdoutParseResult::dropped`](crate::StdoutParseResult::dropped).
+    pub fn essential(self, prefix: &str) -> bool {
+        match self {
+            Self::Claude => parser::claude::essential(prefix),
+            Self::Codex => parser::codex::essential(prefix),
+        }
+    }
+
     fn streaming(self) -> &'static [&'static str] {
         match self {
             Self::Claude => &["--verbose", "--output-format", "stream-json"],
