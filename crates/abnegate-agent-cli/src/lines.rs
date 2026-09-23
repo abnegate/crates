@@ -67,7 +67,7 @@ impl Lines {
             .position(|byte| *byte == NEWLINE)
         else {
             let length = self.buffer.len() - self.start;
-            if length > self.limit {
+            if unterminated(&self.buffer[self.start..]) > self.limit {
                 let overlong = self.overlong(self.buffer.len());
                 self.reset();
                 self.discarding = true;
@@ -78,7 +78,7 @@ impl Lines {
         };
 
         let end = searched + offset;
-        let outcome = if end - self.start > self.limit {
+        let outcome = if unterminated(&self.buffer[self.start..end]) > self.limit {
             Err(self.overlong(end))
         } else {
             Ok(Some(decode(&self.buffer[self.start..end])))
@@ -97,8 +97,8 @@ impl Lines {
             self.discarding = false;
             return Ok(None);
         }
-        let outcome = match self.buffer.len() - self.start {
-            0 => Ok(None),
+        let outcome = match unterminated(&self.buffer[self.start..]) {
+            0 if self.start == self.buffer.len() => Ok(None),
             length if length > self.limit => Err(self.overlong(self.buffer.len())),
             _ => Ok(Some(decode(&self.buffer[self.start..]))),
         };
@@ -119,6 +119,12 @@ impl Lines {
         self.start = 0;
         self.scanned = 0;
     }
+}
+
+/// How long `line` is without a carriage return ending it, which is part
+/// of its terminator rather than of the line.
+fn unterminated(line: &[u8]) -> usize {
+    line.strip_suffix(CARRIAGE_RETURN).unwrap_or(line).len()
 }
 
 fn decode(line: &[u8]) -> String {
@@ -240,6 +246,16 @@ mod tests {
     fn a_line_exactly_at_the_cap_is_accepted() {
         let mut lines = Lines::new(8);
         lines.extend(b"12345678\n");
+
+        assert_eq!(lines.take(), Ok(Some("12345678".to_string())));
+    }
+
+    #[test]
+    fn a_carriage_return_does_not_count_against_the_cap() {
+        let mut lines = Lines::new(8);
+        lines.extend(b"12345678\r");
+        assert_eq!(lines.take(), Ok(None));
+        lines.extend(b"\n");
 
         assert_eq!(lines.take(), Ok(Some("12345678".to_string())));
     }
