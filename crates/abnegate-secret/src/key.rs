@@ -39,6 +39,7 @@ pub struct MasterKey {
 }
 
 impl MasterKey {
+    /// A key from its 32 raw bytes.
     pub fn new(key: [u8; KEY_BYTES]) -> Self {
         Self { key }
     }

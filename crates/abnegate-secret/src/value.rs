@@ -45,6 +45,7 @@ pub struct SecretValue {
 }
 
 impl SecretValue {
+    /// Hold `value` as a credential.
     pub fn new(value: impl Into<String>) -> Self {
         Self {
             inner: value.into(),
@@ -56,6 +57,7 @@ impl SecretValue {
         &self.inner
     }
 
+    /// Whether the credential is empty, without exposing it.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
