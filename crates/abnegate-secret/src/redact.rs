@@ -195,37 +195,43 @@ fn secret_at(text: &str, index: usize, userinfo: &mut Option<usize>) -> Option<u
 /// marker, so repeated markers are each read once.
 fn private_key_at(text: &str, index: usize) -> Option<usize> {
     let rest = text.get(index..)?;
-    let label = rest.strip_prefix(PEM_BEGIN)?;
-    let dashes = label.find(PEM_DASHES).unwrap_or(label.len());
-    work::scanned(dashes);
-    let label = label[..dashes].lines().next()?;
+    let label = opening_label(rest.strip_prefix(PEM_BEGIN)?);
     if !label.contains(PEM_PRIVATE) {
         return None;
     }
     let closing = format!("{PEM_END}{label}");
+    let bytes = rest.as_bytes();
     let end = closes_at(rest, &closing).map_or(rest.len(), |at| {
-        rest[at..]
-            .find('\n')
-            .map_or(rest.len(), |newline| at + newline)
+        work::find(bytes, at, |index| bytes[index] == b'\n').unwrap_or(rest.len())
     });
-    work::scanned(end);
     Some(index + end)
+}
+
+/// The label at the start of `text`: up to the dashes that close it or the end
+/// of its line, whichever comes first, less the carriage return of a CRLF line.
+fn opening_label(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    let end = work::find(bytes, 0, |index| {
+        bytes[index] == b'\n' || bytes[index..].starts_with(PEM_DASHES.as_bytes())
+    });
+    match end {
+        Some(newline) if bytes[newline] == b'\n' => {
+            let line = &text[..newline];
+            line.strip_suffix('\r').unwrap_or(line)
+        }
+        Some(dashes) => &text[..dashes],
+        None => text,
+    }
 }
 
 /// Where `closing`, and the dashes that close its label, occur as a complete
 /// line rather than as a prefix of one.
 fn closes_at(text: &str, closing: &str) -> Option<usize> {
-    let mut from = 0;
-    while let Some(offset) = text[from..].find(closing) {
-        let at = from + offset;
+    work::occurrences(text, closing).find(|at| {
         let after = &text[at + closing.len()..];
         let after = after.strip_prefix(PEM_DASHES).unwrap_or(after);
-        if after.is_empty() || after.starts_with('\n') || after.starts_with('\r') {
-            return Some(at);
-        }
-        from = at + closing.len();
-    }
-    None
+        after.is_empty() || after.starts_with('\n') || after.starts_with('\r')
+    })
 }
 
 /// Where the userinfo of the URL being read starts, for as long as the text
@@ -253,11 +259,10 @@ fn url_password_at(bytes: &[u8], index: usize, userinfo: &mut Option<usize>) -> 
         return None;
     }
 
-    let end = bytes[index..]
-        .iter()
-        .position(|byte| URL_USERINFO_DELIMITERS.contains(byte))
-        .map_or(bytes.len(), |length| index + length);
-    work::scanned(end - index);
+    let end = work::find(bytes, index, |at| {
+        URL_USERINFO_DELIMITERS.contains(&bytes[at])
+    })
+    .unwrap_or(bytes.len());
     if end > index && bytes.get(end) == Some(&URL_USERINFO_END) {
         return Some(end);
     }
@@ -277,7 +282,7 @@ fn url_password_at(bytes: &[u8], index: usize, userinfo: &mut Option<usize>) -> 
 /// the value is skipped past, and one that does not stops short.
 fn named_at(bytes: &[u8], index: usize) -> Option<usize> {
     let first = *bytes.get(index)?;
-    let previous = bytes[..index].last().copied()?;
+    let previous = bytes[index.checked_sub(1)?];
     if !opens_value(first) {
         return None;
     }
@@ -344,27 +349,26 @@ fn introduced_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<
 }
 
 fn value_end(bytes: &[u8], from: usize, quote: Option<u8>) -> usize {
-    let end = quote.map_or_else(
+    quote.map_or_else(
         || unquoted_end(bytes, from),
         |quote| quoted_end(bytes, from, quote),
-    );
-    work::scanned(end - from);
-    end
+    )
 }
 
 /// Where the quoted value starting at `from` ends: its closing `quote`, or the
 /// end of the line when the quote is never closed.
 fn quoted_end(bytes: &[u8], from: usize, quote: u8) -> usize {
-    let mut index = from;
-    while let Some(&byte) = bytes.get(index) {
-        match byte {
-            b'\n' | b'\r' => return index,
-            ESCAPE => index += 2,
-            _ if byte == quote => return index,
-            _ => index += 1,
+    let mut escaped = false;
+    work::find(bytes, from, |index| {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+            return false;
         }
-    }
-    bytes.len()
+        escaped = byte == ESCAPE;
+        matches!(byte, b'\n' | b'\r') || byte == quote
+    })
+    .unwrap_or(bytes.len())
 }
 
 /// Where the unquoted value starting at `from` ends: at whitespace or a quote,
@@ -378,21 +382,21 @@ fn quoted_end(bytes: &[u8], from: usize, quote: u8) -> usize {
 /// the `&`.
 fn unquoted_end(bytes: &[u8], from: usize) -> usize {
     let mut depth = 0usize;
-    let mut index = from;
-    while let Some(&byte) = bytes.get(index) {
+    work::find(bytes, from, |index| {
+        let byte = bytes[index];
         if byte.is_ascii_whitespace() || QUOTES.contains(&byte) {
-            break;
+            return true;
         }
         if OPENING_BRACKETS.contains(&byte) {
             depth += 1;
         } else if depth > 0 && CLOSING_BRACKETS.contains(&byte) {
             depth -= 1;
         } else if depth == 0 && VALUE_DELIMITERS.contains(&byte) && ends_value(bytes, index + 1) {
-            break;
+            return true;
         }
-        index += 1;
-    }
-    index
+        false
+    })
+    .unwrap_or(bytes.len().max(from))
 }
 
 fn ends_value(bytes: &[u8], after: usize) -> bool {
@@ -414,22 +418,14 @@ fn begins_pair(bytes: &[u8], from: usize) -> bool {
 /// The alphabetic word immediately before `index`, separated from it by
 /// spaces rather than an assignment.
 fn word_before(bytes: &[u8], index: usize) -> Option<Range<usize>> {
-    let mut cursor = index;
-    while cursor > 0 && matches!(bytes[cursor - 1], b' ' | b'\t') {
-        cursor -= 1;
-    }
-    work::scanned(index - cursor);
-    if cursor == index || cursor == 0 {
+    let end = work::run_back(bytes, 0..index, |byte| matches!(byte, b' ' | b'\t'));
+    if end == index || end == 0 {
         return None;
     }
 
-    let end = cursor;
-    let limit = end.saturating_sub(KEY_LOOKBEHIND);
-    let mut start = end;
-    while start > limit && bytes[start - 1].is_ascii_alphabetic() {
-        start -= 1;
-    }
-    work::scanned(end - start);
+    let start = work::run_back(bytes, end.saturating_sub(KEY_LOOKBEHIND)..end, |byte| {
+        byte.is_ascii_alphabetic()
+    });
     (start < end).then_some(start..end)
 }
 
@@ -442,21 +438,27 @@ fn is_one_of(word: &[u8], words: &[&str]) -> bool {
 /// Whether a run reads as a credential rather than as prose: it carries a
 /// digit, or it is long and does not read as words.
 fn is_secret_shaped(candidate: &[u8]) -> bool {
-    candidate.iter().any(u8::is_ascii_digit)
+    work::any(candidate, |byte| byte.is_ascii_digit())
         || (candidate.len() >= MINIMUM_ALPHANUMERIC_RUN && !reads_as_words(candidate))
 }
 
 /// Whether every hyphen- or underscore-separated part is a lowercase,
 /// capitalised or uppercase word.
 fn reads_as_words(candidate: &[u8]) -> bool {
-    candidate
-        .split(|byte| matches!(byte, b'-' | b'_'))
-        .all(|word| {
-            let tail = word.get(1..).unwrap_or_default();
-            word.iter().all(u8::is_ascii_alphabetic)
-                && (tail.iter().all(u8::is_ascii_lowercase)
-                    || word.iter().all(u8::is_ascii_uppercase))
-        })
+    let mut first = true;
+    let mut lowercase_tail = true;
+    let mut uppercase = true;
+    work::all(candidate, |byte| {
+        if matches!(byte, b'-' | b'_') {
+            let cased = lowercase_tail || uppercase;
+            (first, lowercase_tail, uppercase) = (true, true, true);
+            return cased;
+        }
+        lowercase_tail &= first || byte.is_ascii_lowercase();
+        uppercase &= byte.is_ascii_uppercase();
+        first = false;
+        byte.is_ascii_alphabetic()
+    }) && (lowercase_tail || uppercase)
 }
 
 fn credential_at(bytes: &[u8], index: usize) -> Option<usize> {
@@ -486,9 +488,9 @@ fn aws_access_key_at(bytes: &[u8], index: usize) -> Option<usize> {
         .get(end)
         .is_none_or(|byte| !byte.is_ascii_alphanumeric());
     (terminated
-        && identifier
-            .iter()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()))
+        && work::all(identifier, |byte| {
+            byte.is_ascii_uppercase() || byte.is_ascii_digit()
+        }))
     .then_some(end)
 }
 
@@ -542,13 +544,10 @@ fn assigned_to_secret(bytes: &[u8], index: usize) -> bool {
 }
 
 fn assigned_to(bytes: &[u8], index: usize, words: &[&str]) -> bool {
-    let skip_padding = |from: usize| {
-        let mut cursor = from;
-        while cursor > 0 && matches!(bytes[cursor - 1], b' ' | b'\t' | b'"' | b'\'' | b'`') {
-            cursor -= 1;
-        }
-        work::scanned(from - cursor);
-        cursor
+    let skip_padding = |end: usize| {
+        work::run_back(bytes, 0..end, |byte| {
+            matches!(byte, b' ' | b'\t' | b'"' | b'\'' | b'`')
+        })
     };
 
     let cursor = skip_padding(index);
@@ -557,22 +556,18 @@ fn assigned_to(bytes: &[u8], index: usize, words: &[&str]) -> bool {
     }
 
     let end = skip_padding(cursor - 1);
-    let limit = end.saturating_sub(KEY_LOOKBEHIND);
-    let mut start = end;
-    while start > limit && CharacterSet::Word.contains(bytes[start - 1]) {
-        start -= 1;
-    }
-    work::scanned(end - start);
+    let start = work::run_back(bytes, end.saturating_sub(KEY_LOOKBEHIND)..end, |byte| {
+        CharacterSet::Word.contains(byte)
+    });
 
     let mut buffer = [0u8; KEY_LOOKBEHIND];
     let mut length = 0;
-    for byte in bytes[start..end]
-        .iter()
-        .filter(|byte| byte.is_ascii_alphanumeric())
-    {
-        buffer[length] = byte.to_ascii_lowercase();
-        length += 1;
-    }
+    work::each(&bytes[start..end], |byte| {
+        if byte.is_ascii_alphanumeric() {
+            buffer[length] = byte.to_ascii_lowercase();
+            length += 1;
+        }
+    });
     let key = &buffer[..length];
     if key.len() < SHORTEST_KEY_WORD {
         return false;
@@ -611,14 +606,14 @@ fn is_secret_like(candidate: &[u8]) -> bool {
     if is_digest(candidate) || longest_alphanumeric_run(candidate) < MINIMUM_ALPHANUMERIC_RUN {
         return false;
     }
-    if !candidate.iter().any(u8::is_ascii_alphabetic) || !candidate.iter().any(u8::is_ascii_digit) {
+    if !work::any(candidate, |byte| byte.is_ascii_alphabetic())
+        || !work::any(candidate, |byte| byte.is_ascii_digit())
+    {
         return false;
     }
 
     let mut counts = [0u32; 128];
-    for byte in candidate {
-        counts[usize::from(*byte)] += 1;
-    }
+    work::each(candidate, |byte| counts[usize::from(byte)] += 1);
     if counts.iter().filter(|count| **count > 0).count() < MINIMUM_DISTINCT_CHARACTERS {
         return false;
     }
@@ -637,22 +632,20 @@ fn is_secret_like(candidate: &[u8]) -> bool {
 
 /// Whether the candidate is a hash, commit or UUID rather than a credential.
 fn is_digest(candidate: &[u8]) -> bool {
-    candidate
-        .iter()
-        .all(|byte| byte.is_ascii_hexdigit() || *byte == b'-')
+    work::all(candidate, |byte| byte.is_ascii_hexdigit() || byte == b'-')
 }
 
 fn longest_alphanumeric_run(candidate: &[u8]) -> usize {
     let mut longest = 0;
     let mut current = 0;
-    for byte in candidate {
-        if byte.is_ascii_alphanumeric() {
-            current += 1;
-            longest = longest.max(current);
+    work::each(candidate, |byte| {
+        current = if byte.is_ascii_alphanumeric() {
+            current + 1
         } else {
-            current = 0;
-        }
-    }
+            0
+        };
+        longest = longest.max(current);
+    });
     longest
 }
 
@@ -1307,37 +1300,92 @@ mod tests {
 
     #[test]
     fn redaction_is_linear_in_the_length_of_minified_json() {
-        let json = "\"k\":1,".repeat(LENGTH / 6);
-        let redacted = work::assert_linear(&json, redact);
-
-        assert!(matches!(redacted, Cow::Borrowed(_)));
+        let unit = "\"k\":1,";
+        work::assert_linear(
+            LENGTH / unit.len(),
+            |repetitions| unit.repeat(repetitions),
+            |json| assert!(matches!(redact(json), Cow::Borrowed(_))),
+        );
     }
 
     #[test]
     fn a_url_that_never_closes_its_userinfo_is_scanned_once() {
-        let text = format!("http://x{}", ":1".repeat(LENGTH / 2));
-        let redacted = work::assert_linear(&text, redact);
-
-        assert!(matches!(redacted, Cow::Borrowed(_)));
+        let unit = ":1";
+        work::assert_linear(
+            LENGTH / unit.len(),
+            |repetitions| format!("http://x{}", unit.repeat(repetitions)),
+            |text| assert!(matches!(redact(text), Cow::Borrowed(_))),
+        );
     }
 
     #[test]
     fn repeated_private_key_markers_are_scanned_once() {
         for marker in ["-----BEGIN ", "-----BEGIN PRIVATE KEY "] {
-            work::assert_linear(&marker.repeat(LENGTH / marker.len()), redact);
+            work::assert_linear(
+                LENGTH / marker.len(),
+                |repetitions| marker.repeat(repetitions),
+                |text| {
+                    redact(text);
+                },
+            );
         }
     }
 
     #[test]
     fn named_values_that_stop_short_are_scanned_once() {
-        for text in [
-            "password=a,".repeat(LENGTH / 11),
-            format!("password={}", "a,b=".repeat(LENGTH / 4)),
-            format!("password={}", "=a".repeat(LENGTH / 2)),
-            "--password -".repeat(LENGTH / 12),
-            " \"!".repeat(LENGTH / 3),
+        for (prefix, unit) in [
+            ("", "password=a,"),
+            ("password=", "a,b="),
+            ("password=", "=a"),
+            ("", "--password -"),
+            ("", " \"!"),
         ] {
-            work::assert_linear(&text, redact);
+            work::assert_linear(
+                LENGTH / unit.len(),
+                |repetitions| format!("{prefix}{}", unit.repeat(repetitions)),
+                |text| {
+                    redact(text);
+                },
+            );
+        }
+    }
+
+    /// Every string of up to six bytes drawn from a letter of each case, the
+    /// separators and a digit reads as words exactly when splitting it at its
+    /// separators leaves nothing but words.
+    #[test]
+    fn reads_as_words_agrees_with_splitting_into_words() {
+        let split = |candidate: &[u8]| {
+            candidate
+                .split(|byte| matches!(byte, b'-' | b'_'))
+                .all(|word| {
+                    let tail = word.get(1..).unwrap_or_default();
+                    word.iter().all(u8::is_ascii_alphabetic)
+                        && (tail.iter().all(u8::is_ascii_lowercase)
+                            || word.iter().all(u8::is_ascii_uppercase))
+                })
+        };
+        let alphabet = b"aZ-_1";
+        let mut candidates = vec![Vec::new()];
+        for length in 1..=6 {
+            let longer: Vec<Vec<u8>> = candidates
+                .iter()
+                .filter(|candidate| candidate.len() == length - 1)
+                .flat_map(|candidate| {
+                    alphabet
+                        .iter()
+                        .map(move |byte| [candidate.as_slice(), &[*byte]].concat())
+                })
+                .collect();
+            candidates.extend(longer);
+        }
+        for candidate in candidates {
+            assert_eq!(
+                reads_as_words(&candidate),
+                split(&candidate),
+                "{:?}",
+                String::from_utf8_lossy(&candidate)
+            );
         }
     }
 

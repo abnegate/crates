@@ -15,12 +15,12 @@ pub(super) struct Terminators {
 }
 
 impl Terminators {
-    pub(super) fn find(bytes: &[u8]) -> Self {
+    pub(super) fn new(bytes: &[u8]) -> Self {
         Self {
-            bell: bytes.iter().rposition(|byte| *byte == BELL),
-            string: bytes
-                .windows(STRING_TERMINATOR.len())
-                .rposition(|pair| pair == STRING_TERMINATOR),
+            bell: work::rfind(bytes, |index| bytes[index] == BELL),
+            string: work::rfind(bytes, |index| {
+                bytes[index..].starts_with(&STRING_TERMINATOR)
+            }),
         }
     }
 
@@ -30,7 +30,7 @@ impl Terminators {
         if !follows(self.bell, from) && !follows(self.string, from) {
             return None;
         }
-        first_end(bytes, from, |index| {
+        work::find_map(bytes, from, |index| {
             if bytes[index] == BELL {
                 Some(index + 1)
             } else {
@@ -46,14 +46,8 @@ impl Terminators {
         if !follows(self.string, from) {
             return None;
         }
-        first_end(bytes, from, |index| string_terminator_end(bytes, index))
+        work::find_map(bytes, from, |index| string_terminator_end(bytes, index))
     }
-}
-
-fn first_end(bytes: &[u8], from: usize, end_at: impl Fn(usize) -> Option<usize>) -> Option<usize> {
-    let end = (from..bytes.len()).find_map(end_at);
-    work::scanned(end.unwrap_or(bytes.len()) - from);
-    end
 }
 
 fn follows(terminator: Option<usize>, from: usize) -> bool {

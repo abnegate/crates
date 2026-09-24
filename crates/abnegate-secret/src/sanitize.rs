@@ -75,12 +75,12 @@ pub fn sanitize_owned(text: String) -> String {
 }
 
 fn strip_control_sequences(text: &str) -> Cow<'_, str> {
-    if !text.bytes().any(needs_inspection) {
+    if !work::any(text.as_bytes(), needs_inspection) {
         return Cow::Borrowed(text);
     }
 
     let bytes = text.as_bytes();
-    let terminators = Terminators::find(bytes);
+    let terminators = Terminators::new(bytes);
     let mut output = String::with_capacity(text.len());
     let mut index = 0;
 
@@ -116,9 +116,7 @@ fn strip_control_sequences(text: &str) -> Cow<'_, str> {
             }
             _ => {
                 let start = index;
-                while index < bytes.len() && !needs_inspection(bytes[index]) {
-                    index += 1;
-                }
+                index = work::run(bytes, index, |byte| !needs_inspection(byte));
                 output.push_str(&text[start..index]);
             }
         }
@@ -193,11 +191,7 @@ fn escape_sequence(bytes: &[u8], index: usize, terminators: Terminators) -> usiz
 /// The end of an escape sequence built from intermediate bytes and a final
 /// byte, as `ESC ( B` selects a character set.
 fn intermediate_sequence(bytes: &[u8], from: usize) -> Option<usize> {
-    let mut index = from;
-    while matches!(bytes.get(index), Some(0x20..=0x2F)) {
-        index += 1;
-    }
-    work::scanned(index - from);
+    let index = work::run(bytes, from, |byte| matches!(byte, 0x20..=0x2F));
     match bytes.get(index) {
         Some(0x30..=0x7E) => Some(index + 1),
         _ => None,
@@ -205,14 +199,8 @@ fn intermediate_sequence(bytes: &[u8], from: usize) -> Option<usize> {
 }
 
 fn control_sequence(bytes: &[u8], from: usize) -> Option<usize> {
-    let mut index = from;
-    while matches!(bytes.get(index), Some(0x30..=0x3F)) {
-        index += 1;
-    }
-    while matches!(bytes.get(index), Some(0x20..=0x2F)) {
-        index += 1;
-    }
-    work::scanned(index - from);
+    let parameters = work::run(bytes, from, |byte| matches!(byte, 0x30..=0x3F));
+    let index = work::run(bytes, parameters, |byte| matches!(byte, 0x20..=0x2F));
     match bytes.get(index) {
         Some(0x40..=0x7E) => Some(index + 1),
         _ => None,
@@ -286,10 +274,11 @@ mod tests {
     #[test]
     fn unterminated_string_sequences_are_scanned_once() {
         for introducer in ["\u{1b}]", "\u{1b}P", "\u{1b}X", "\u{1b}^", "\u{1b}_"] {
-            let text = introducer.repeat(LENGTH / introducer.len());
-            let sanitized = work::assert_linear(&text, sanitize);
-
-            assert_eq!(sanitized, "", "{introducer:?} left a payload behind");
+            work::assert_linear(
+                LENGTH / introducer.len(),
+                |repetitions| introducer.repeat(repetitions),
+                |text| assert_eq!(sanitize(text), "", "{introducer:?} left a payload behind"),
+            );
         }
     }
 

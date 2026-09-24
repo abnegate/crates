@@ -25,11 +25,6 @@ impl CharacterSet {
 
     /// Where the run of this set's bytes that starts at `from` ends.
     pub(super) fn run(self, bytes: &[u8], from: usize) -> usize {
-        let mut index = from;
-        while bytes.get(index).is_some_and(|byte| self.contains(*byte)) {
-            index += 1;
-        }
-        work::scanned(index - from);
-        index
+        work::run(bytes, from, |byte| self.contains(byte))
     }
 }
