@@ -5,6 +5,7 @@ use std::time::Duration;
 use futures::future::join_all;
 
 use super::McpConfig;
+use super::McpServer;
 use super::session::McpSession;
 use crate::tool::Tool;
 
@@ -18,30 +19,32 @@ pub struct McpHub {
 }
 
 impl McpHub {
+    /// A hub with no server connected.
     pub fn new() -> Self {
         Self {
             sessions: Vec::new(),
         }
     }
 
-    /// Connect every server configured under [`DEFAULT_PREFIX`](super::DEFAULT_PREFIX).
-    pub async fn connect_from_env() -> Self {
-        Self::connect(&McpConfig::from_env()).await
-    }
-
-    /// Connect the given servers. Failures are logged and skipped.
+    /// Launch every enabled command server in `config` and connect to it.
+    ///
+    /// A [disabled](McpServer::disabled) server is skipped. So is one reached
+    /// by URL, which only a CLI attaches, and one with neither a command nor
+    /// a URL, each with a warning. A server that fails to start or to answer
+    /// in time is logged and skipped.
     pub async fn connect(config: &McpConfig) -> Self {
         Self::connect_with_timeout(config, CONNECT_TIMEOUT).await
     }
 
     async fn connect_with_timeout(config: &McpConfig, limit: Duration) -> Self {
-        let results =
-            join_all(
-                config.servers.iter().cloned().map(|spec| async move {
-                    McpSession::connect_with_timeout(&spec, limit).await
-                }),
-            )
-            .await;
+        let results = join_all(
+            config
+                .servers
+                .iter()
+                .filter(|(name, server)| launchable(name, server))
+                .map(|(name, server)| McpSession::connect_with_timeout(name, server, limit)),
+        )
+        .await;
 
         let mut hub = Self::new();
         for result in results {
@@ -62,6 +65,7 @@ impl McpHub {
         hub
     }
 
+    /// Whether no server is connected.
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty()
     }
@@ -70,10 +74,12 @@ impl McpHub {
         &self.sessions
     }
 
+    /// How many servers are connected.
     pub fn server_count(&self) -> usize {
         self.sessions.len()
     }
 
+    /// The name of every connected server.
     pub fn server_names(&self) -> Vec<String> {
         self.sessions
             .iter()
@@ -102,11 +108,32 @@ impl Default for McpHub {
     }
 }
 
+/// Whether `server` is one this hub starts itself: an enabled, valid
+/// command server.
+fn launchable(name: &str, server: &McpServer) -> bool {
+    if server.disabled {
+        tracing::debug!(server = %name, "skipping a disabled MCP server");
+        return false;
+    }
+    if !server.valid() {
+        tracing::warn!(
+            server = %name,
+            "skipping an MCP server: set exactly one of `command` and `url`, with a matching `type`"
+        );
+        return false;
+    }
+    if server.command.is_none() {
+        tracing::warn!(
+            server = %name,
+            "skipping a remote MCP server: only stdio servers are launched here"
+        );
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-
     use rmcp::ServerHandler;
     use rmcp::ServiceExt;
     use rmcp::handler::server::wrapper::Parameters;
@@ -117,7 +144,6 @@ mod tests {
     use serde::Deserialize;
 
     use super::*;
-    use crate::mcp::McpServerSpec;
     use crate::mcp::register;
     use crate::tool::Tier;
     use crate::tool::ToolContext;
@@ -127,14 +153,14 @@ mod tests {
     struct Echo;
 
     #[derive(Debug, Deserialize, schemars::JsonSchema)]
-    struct PingArgs {
+    struct PingArguments {
         message: String,
     }
 
     #[tool_router]
     impl Echo {
         #[tool(description = "Echo a message back with a pong prefix")]
-        fn ping(&self, Parameters(PingArgs { message }): Parameters<PingArgs>) -> String {
+        fn ping(&self, Parameters(PingArguments { message }): Parameters<PingArguments>) -> String {
             format!("pong:{message}")
         }
     }
@@ -428,18 +454,14 @@ mod tests {
 
     #[tokio::test]
     async fn connect_skips_missing_binary() {
-        let config = McpConfig {
-            servers: vec![McpServerSpec {
-                name: "missing".to_string(),
-                command: "/definitely/not/a/real/mcp-server-xyz".to_string(),
-                arguments: vec![],
-                environment: BTreeMap::new(),
-                inherit_environment: false,
-                working_directory: Some(PathBuf::from("/tmp")),
-                disabled: false,
-            }],
-            ..McpConfig::default()
-        };
+        let config = McpConfig::default().with_server(
+            "missing",
+            McpServer::command(
+                "/definitely/not/a/real/mcp-server-xyz",
+                Vec::<String>::new(),
+            )
+            .with_working_directory("/tmp"),
+        );
         let hub = McpHub::connect(&config).await;
         assert!(hub.is_empty());
     }
@@ -454,26 +476,55 @@ mod tests {
         let _ = ToolContext::default();
     }
 
+    /// A server that touches `path` as it starts, and then exits without
+    /// answering.
+    fn marker(path: &std::path::Path) -> McpServer {
+        McpServer::command(
+            "sh",
+            [
+                "-c".to_string(),
+                ": > \"$1\"".to_string(),
+                "sh".to_string(),
+                path.to_string_lossy().into_owned(),
+            ],
+        )
+    }
+
+    /// One `mcp.json` drives this hub and a CLI alike, so it holds servers
+    /// the hub must leave alone: a disabled one must not start, and one
+    /// reached by URL is the CLI's to attach.
+    #[tokio::test]
+    async fn connect_launches_only_enabled_command_servers() {
+        let directory = tempfile::tempdir().unwrap();
+        let launched = directory.path().join("launched");
+        let disabled = directory.path().join("disabled");
+        let config = McpConfig::default()
+            .with_server("launched", marker(&launched))
+            .with_server("off", marker(&disabled).disable())
+            .with_server("remote", McpServer::remote("https://example.com/mcp"));
+
+        let (hub, logs) = crate::test_support::captured_logs(McpHub::connect_with_timeout(
+            &config,
+            Duration::from_secs(10),
+        ))
+        .await;
+
+        assert!(hub.is_empty());
+        assert!(launched.exists(), "the enabled server never started");
+        assert!(!disabled.exists(), "a disabled server started");
+        assert!(logs.contains("skipping a disabled MCP server"), "{logs}");
+        assert!(logs.contains("skipping a remote MCP server"), "{logs}");
+    }
+
     #[cfg(unix)]
-    fn sleepy_spec(name: &str) -> McpServerSpec {
-        McpServerSpec {
-            name: name.to_string(),
-            command: "/bin/sleep".to_string(),
-            arguments: vec!["60".to_string()],
-            environment: BTreeMap::new(),
-            inherit_environment: false,
-            working_directory: None,
-            disabled: false,
-        }
+    fn sleepy() -> McpServer {
+        McpServer::command("/bin/sleep", ["60"])
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn connect_times_out_unresponsive_server() {
-        let config = McpConfig {
-            servers: vec![sleepy_spec("sleepy")],
-            ..McpConfig::default()
-        };
+        let config = McpConfig::default().with_server("sleepy", sleepy());
         let started = std::time::Instant::now();
         let hub = McpHub::connect_with_timeout(&config, Duration::from_millis(400)).await;
         assert!(hub.is_empty());
@@ -487,10 +538,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn connect_times_out_unresponsive_servers_in_parallel() {
-        let config = McpConfig {
-            servers: vec![sleepy_spec("a"), sleepy_spec("b")],
-            ..McpConfig::default()
-        };
+        let config = McpConfig::default()
+            .with_server("a", sleepy())
+            .with_server("b", sleepy());
         let started = std::time::Instant::now();
         let hub = McpHub::connect_with_timeout(&config, Duration::from_millis(700)).await;
         assert!(hub.is_empty());
