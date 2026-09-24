@@ -6,8 +6,10 @@ use abnegate_vision::DecodeError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SubjectError {
+    /// The image could not be decoded into a raster.
     #[error(transparent)]
     Decode(#[from] DecodeError),
+    /// The decoded raster could not be cropped to the requested square.
     #[error(transparent)]
     Crop(#[from] CropError),
 }
