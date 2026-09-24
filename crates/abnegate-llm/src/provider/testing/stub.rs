@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 
-use crate::error::LlmError;
+use crate::error::Error;
 use crate::provider::capabilities::Capabilities;
 use crate::provider::completion::Completion;
 use crate::provider::completion_provider::CompletionProvider;
@@ -127,7 +127,7 @@ impl CompletionProvider for StubProvider {
             }),
             Behaviour::Reject(message) => Err(ProviderError::Http {
                 provider: self.name.clone(),
-                source: LlmError::Api {
+                source: Error::Api {
                     status: 400,
                     message: message.clone(),
                 },

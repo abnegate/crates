@@ -18,7 +18,7 @@ pub use crate::client::options::RequestOptions;
 pub(crate) use crate::client::pool::Pool;
 
 use crate::client::events::EventDecoder;
-use crate::error::LlmError;
+use crate::error::Error;
 use crate::provider::CompletionRequest;
 use crate::reasoning::Effort;
 use crate::wire::ChatRequest;
@@ -91,7 +91,7 @@ impl LlmClient {
         &self.config
     }
 
-    fn body(&self, request: ChatRequest<'_>) -> Result<serde_json::Value, LlmError> {
+    fn body(&self, request: ChatRequest<'_>) -> Result<serde_json::Value, Error> {
         let mut body = serde_json::to_value(&request)?;
         if let Some((model, limit)) = &self.ollama
             && model == request.model
@@ -109,28 +109,28 @@ impl LlmClient {
         Ok(body)
     }
 
-    fn validate(&self, url: &str) -> Result<(), LlmError> {
+    fn validate(&self, url: &str) -> Result<(), Error> {
         let parsed = Url::parse(url).map_err(|_| {
-            LlmError::InvalidConfig("LLM base_url must be a valid absolute URL".to_string())
+            Error::InvalidConfig("LLM base_url must be a valid absolute URL".to_string())
         })?;
 
         match parsed.scheme() {
             "http" | "https" => {}
             _ => {
-                return Err(LlmError::InvalidConfig(
+                return Err(Error::InvalidConfig(
                     "LLM base_url must use http or https".to_string(),
                 ));
             }
         }
 
         if !parsed.username().is_empty() || parsed.password().is_some() {
-            return Err(LlmError::InvalidConfig(
+            return Err(Error::InvalidConfig(
                 "LLM base_url must not include userinfo".to_string(),
             ));
         }
 
         if parsed.host_str().is_none() {
-            return Err(LlmError::InvalidConfig(
+            return Err(Error::InvalidConfig(
                 "LLM base_url must include a host".to_string(),
             ));
         }
@@ -142,11 +142,7 @@ impl LlmClient {
         Ok(())
     }
 
-    async fn send(
-        &self,
-        url: &str,
-        body: &serde_json::Value,
-    ) -> Result<reqwest::Response, LlmError> {
+    async fn send(&self, url: &str, body: &serde_json::Value) -> Result<reqwest::Response, Error> {
         self.validate(url)?;
         let mut request = self.client.post(url).json(body);
         if !self.config.api_key.is_empty() {
@@ -155,7 +151,7 @@ impl LlmClient {
         Ok(request.send().await?)
     }
 
-    async fn dispatch(&self, request: ChatRequest<'_>) -> Result<reqwest::Response, LlmError> {
+    async fn dispatch(&self, request: ChatRequest<'_>) -> Result<reqwest::Response, Error> {
         let url = format!("{}/chat/completions", self.config.base_url);
         let response = self.send(&url, &self.body(request)?).await?;
 
@@ -165,7 +161,7 @@ impl LlmClient {
         }
 
         let body = response.text().await.unwrap_or_default();
-        Err(LlmError::Api {
+        Err(Error::Api {
             status: status.as_u16(),
             message: redact(&body).into_owned(),
         })
@@ -203,7 +199,7 @@ impl LlmClient {
         &self,
         messages: &[Message],
         tools: Option<&[ToolDefinition]>,
-    ) -> Result<ChatResponse, LlmError> {
+    ) -> Result<ChatResponse, Error> {
         self.chat_with_model(&self.config.default_model, messages, tools)
             .await
     }
@@ -214,7 +210,7 @@ impl LlmClient {
         model: &str,
         messages: &[Message],
         tools: Option<&[ToolDefinition]>,
-    ) -> Result<ChatResponse, LlmError> {
+    ) -> Result<ChatResponse, Error> {
         self.chat_with_options(model, messages, tools, self.reserved())
             .await
     }
@@ -225,7 +221,7 @@ impl LlmClient {
         messages: &[Message],
         tools: Option<&[ToolDefinition]>,
         options: RequestOptions,
-    ) -> Result<ChatResponse, LlmError> {
+    ) -> Result<ChatResponse, Error> {
         self.execute(self.request(model, messages, tools, options, false))
             .await
     }
@@ -236,7 +232,7 @@ impl LlmClient {
     pub async fn chat_with_request(
         &self,
         request: CompletionRequest<'_>,
-    ) -> Result<ChatResponse, LlmError> {
+    ) -> Result<ChatResponse, Error> {
         let mut chat = self.request(
             request.model,
             request.messages,
@@ -251,14 +247,14 @@ impl LlmClient {
         self.execute(chat).await
     }
 
-    async fn execute(&self, request: ChatRequest<'_>) -> Result<ChatResponse, LlmError> {
+    async fn execute(&self, request: ChatRequest<'_>) -> Result<ChatResponse, Error> {
         let timeout = self.config.timeout;
         tokio::time::timeout(timeout, async {
             let response = self.dispatch(request).await?;
             Ok(response.json().await?)
         })
         .await
-        .map_err(|_| LlmError::Timeout(timeout))?
+        .map_err(|_| Error::Timeout(timeout))?
     }
 
     /// Stream a chat completion from the configured model.
@@ -266,7 +262,7 @@ impl LlmClient {
         &self,
         messages: &[Message],
         tools: Option<&[ToolDefinition]>,
-    ) -> Result<impl Stream<Item = Result<ChatStreamChunk, LlmError>> + use<>, LlmError> {
+    ) -> Result<impl Stream<Item = Result<ChatStreamChunk, Error>> + use<>, Error> {
         self.chat_stream_with_model(&self.config.default_model, messages, tools)
             .await
     }
@@ -277,7 +273,7 @@ impl LlmClient {
         model: &str,
         messages: &[Message],
         tools: Option<&[ToolDefinition]>,
-    ) -> Result<impl Stream<Item = Result<ChatStreamChunk, LlmError>> + use<>, LlmError> {
+    ) -> Result<impl Stream<Item = Result<ChatStreamChunk, Error>> + use<>, Error> {
         self.chat_stream_with_options(model, messages, tools, self.reserved())
             .await
     }
@@ -288,14 +284,14 @@ impl LlmClient {
         messages: &[Message],
         tools: Option<&[ToolDefinition]>,
         options: RequestOptions,
-    ) -> Result<impl Stream<Item = Result<ChatStreamChunk, LlmError>> + use<>, LlmError> {
+    ) -> Result<impl Stream<Item = Result<ChatStreamChunk, Error>> + use<>, Error> {
         let read_timeout = self.config.read_timeout;
         let response = tokio::time::timeout(
             read_timeout,
             self.dispatch(self.request(model, messages, tools, options, true)),
         )
         .await
-        .map_err(|_| LlmError::Timeout(read_timeout))??;
+        .map_err(|_| Error::Timeout(read_timeout))??;
 
         Ok(events(response, read_timeout))
     }
@@ -304,14 +300,14 @@ impl LlmClient {
 fn events(
     response: reqwest::Response,
     read_timeout: Duration,
-) -> impl Stream<Item = Result<ChatStreamChunk, LlmError>> {
+) -> impl Stream<Item = Result<ChatStreamChunk, Error>> {
     async_stream::stream! {
         let mut bytes = response.bytes_stream();
         let mut decoder = EventDecoder::default();
 
         while !decoder.is_finished() {
             let Ok(next) = tokio::time::timeout(read_timeout, bytes.next()).await else {
-                yield Err(LlmError::Timeout(read_timeout));
+                yield Err(Error::Timeout(read_timeout));
                 break;
             };
             match next {
@@ -321,7 +317,7 @@ fn events(
                     }
                 }
                 Some(Err(error)) => {
-                    yield Err(LlmError::from(error));
+                    yield Err(Error::from(error));
                     break;
                 }
                 None => {

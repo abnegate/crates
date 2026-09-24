@@ -1,4 +1,3 @@
-use abnegate_llm::LlmError;
 use thiserror::Error;
 
 use crate::context::ContextError;
@@ -8,7 +7,7 @@ use crate::context::ContextError;
 #[non_exhaustive]
 pub enum AgentError {
     #[error("LLM error: {0}")]
-    Llm(#[from] LlmError),
+    Llm(#[from] abnegate_llm::Error),
     #[error("Context error: {0}")]
     Context(#[from] ContextError),
     #[error("Max iterations exceeded")]

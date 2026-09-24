@@ -40,7 +40,7 @@
 //! ```no_run
 //! use abnegate_llm::{LlmClient, LlmConfig, Message};
 //!
-//! # async fn example() -> Result<(), abnegate_llm::LlmError> {
+//! # async fn example() -> Result<(), abnegate_llm::Error> {
 //! let client = LlmClient::new(LlmConfig::new("http://127.0.0.1:4000/v1", "qwen3", ""));
 //!
 //! let response = client.chat(&[Message::user("Say hello.")], None).await?;
@@ -84,7 +84,7 @@ pub use crate::cost::{
     CostEstimate, CostEstimator, CostLineItem, CostStrategy, ModelPricing, PricingUnit,
     TaskCategory, TaskSpec, default_pricing,
 };
-pub use crate::error::LlmError;
+pub use crate::error::Error;
 pub use crate::hardware::{GpuType, MachineProfile, ModelRecommendation, RecommendedModels};
 pub use crate::modality::{
     AiClient, AiError, AudioProvider, AudioProviderConfig, AudioResponse, CompletionBridge,

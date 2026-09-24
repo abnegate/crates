@@ -1,4 +1,3 @@
-use abnegate_llm::LlmError;
 use thiserror::Error;
 
 use crate::application::ApplicationError;
@@ -18,7 +17,7 @@ use crate::tool::ToolError;
 #[non_exhaustive]
 pub enum Error {
     #[error("LLM error: {0}")]
-    Llm(#[from] LlmError),
+    Llm(#[from] abnegate_llm::Error),
     #[error("Tool error: {0}")]
     Tool(#[from] ToolError),
     #[error("Agent error: {0}")]
@@ -55,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_llm_error_display() {
-        let error: Error = LlmError::Stream("Connection refused".to_string()).into();
+        let error: Error = abnegate_llm::Error::Stream("Connection refused".to_string()).into();
         assert_eq!(
             error.to_string(),
             "LLM error: Stream error: Connection refused"

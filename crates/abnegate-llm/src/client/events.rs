@@ -1,6 +1,6 @@
 use abnegate_secret::redact;
 
-use crate::error::LlmError;
+use crate::error::Error;
 use crate::wire::ChatStreamChunk;
 
 const COMMENT: u8 = b':';
@@ -20,7 +20,7 @@ const MAXIMUM_EVENT_BYTES: usize = 16 * 1024 * 1024;
 /// left open. Comments and every other field are skipped.
 ///
 /// `[DONE]` ends the stream, and so does a payload that is a top-level
-/// `error` object, which is reported as [`LlmError::Stream`] rather than read
+/// `error` object, which is reported as [`Error::Stream`] rather than read
 /// as an empty chunk. A stream that ends without a single event is a
 /// failure too, not an empty answer.
 pub(crate) struct EventDecoder {
@@ -61,7 +61,7 @@ impl EventDecoder {
     }
 
     /// Decode every event `bytes` completes.
-    pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<Result<ChatStreamChunk, LlmError>> {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<Result<ChatStreamChunk, Error>> {
         let mut decoded = Vec::new();
         if self.finished {
             return decoded;
@@ -98,7 +98,7 @@ impl EventDecoder {
 
     /// Decode what the stream left unterminated when it ended, and fail a
     /// stream that never sent an event.
-    pub(crate) fn finish(&mut self) -> Vec<Result<ChatStreamChunk, LlmError>> {
+    pub(crate) fn finish(&mut self) -> Vec<Result<ChatStreamChunk, Error>> {
         let mut decoded = Vec::new();
         if !self.finished {
             let line = std::mem::take(&mut self.buffer);
@@ -109,7 +109,7 @@ impl EventDecoder {
                 self.dispatch(&mut decoded);
             }
             if !self.finished && !self.dispatched {
-                decoded.push(Err(LlmError::Stream(format!(
+                decoded.push(Err(Error::Stream(format!(
                     "the stream ended after {} bytes without a single event",
                     self.received
                 ))));
@@ -119,7 +119,7 @@ impl EventDecoder {
         decoded
     }
 
-    fn line(&mut self, line: &[u8], decoded: &mut Vec<Result<ChatStreamChunk, LlmError>>) {
+    fn line(&mut self, line: &[u8], decoded: &mut Vec<Result<ChatStreamChunk, Error>>) {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         if line.is_empty() {
             self.dispatch(decoded);
@@ -144,7 +144,7 @@ impl EventDecoder {
         }
     }
 
-    fn dispatch(&mut self, decoded: &mut Vec<Result<ChatStreamChunk, LlmError>>) {
+    fn dispatch(&mut self, decoded: &mut Vec<Result<ChatStreamChunk, Error>>) {
         let mut data = std::mem::take(&mut self.data);
         if data.pop().is_none() {
             return;
@@ -158,7 +158,7 @@ impl EventDecoder {
         let value = match serde_json::from_slice::<serde_json::Value>(&data) {
             Ok(value) => value,
             Err(error) => {
-                decoded.push(Err(LlmError::Json(error)));
+                decoded.push(Err(Error::Json(error)));
                 return;
             }
         };
@@ -170,14 +170,14 @@ impl EventDecoder {
             self.fail(redact(&message).into_owned(), decoded);
             return;
         }
-        decoded.push(serde_json::from_value(value).map_err(LlmError::Json));
+        decoded.push(serde_json::from_value(value).map_err(Error::Json));
     }
 
-    fn fail(&mut self, message: String, decoded: &mut Vec<Result<ChatStreamChunk, LlmError>>) {
+    fn fail(&mut self, message: String, decoded: &mut Vec<Result<ChatStreamChunk, Error>>) {
         self.finished = true;
         self.buffer.clear();
         self.data.clear();
-        decoded.push(Err(LlmError::Stream(message)));
+        decoded.push(Err(Error::Stream(message)));
     }
 }
 
@@ -187,12 +187,12 @@ mod tests {
     use std::time::Instant;
 
     use super::EventDecoder;
-    use crate::error::LlmError;
+    use crate::error::Error;
 
     const CHUNK: &str =
         r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}"#;
 
-    fn content(result: &Result<crate::wire::ChatStreamChunk, LlmError>) -> Option<&str> {
+    fn content(result: &Result<crate::wire::ChatStreamChunk, Error>) -> Option<&str> {
         result
             .as_ref()
             .ok()?
@@ -254,7 +254,7 @@ mod tests {
         );
 
         assert_eq!(decoded.len(), 1);
-        let Err(LlmError::Stream(message)) = &decoded[0] else {
+        let Err(Error::Stream(message)) = &decoded[0] else {
             panic!("expected a stream failure, got {:?}", decoded[0]);
         };
         assert!(message.contains("overloaded"), "{message}");
@@ -283,7 +283,7 @@ mod tests {
         let decoded = decoder.push(&[b'x'; 65]);
 
         assert_eq!(decoded.len(), 1);
-        assert!(matches!(&decoded[0], Err(LlmError::Stream(message)) if message.contains("64")));
+        assert!(matches!(&decoded[0], Err(Error::Stream(message)) if message.contains("64")));
         assert!(decoder.is_finished());
     }
 
@@ -303,7 +303,7 @@ mod tests {
 
         let decoded = decoder.push(format!("data: {{not json\n\ndata: {CHUNK}\n\n").as_bytes());
 
-        assert!(matches!(decoded[0], Err(LlmError::Json(_))));
+        assert!(matches!(decoded[0], Err(Error::Json(_))));
         assert_eq!(content(&decoded[1]), Some("hi"));
         assert!(!decoder.is_finished());
     }
@@ -391,7 +391,7 @@ mod tests {
 
             assert_eq!(decoded.len(), 1, "{decoded:?}");
             assert!(
-                matches!(&decoded[0], Err(LlmError::Stream(message)) if message.contains(&format!("after {} bytes", body.len()))),
+                matches!(&decoded[0], Err(Error::Stream(message)) if message.contains(&format!("after {} bytes", body.len()))),
                 "{decoded:?}"
             );
         }
@@ -413,7 +413,7 @@ mod tests {
 
         assert_eq!(decoded.len(), 1);
         assert!(
-            matches!(&decoded[0], Err(LlmError::Stream(message)) if message.contains("64")),
+            matches!(&decoded[0], Err(Error::Stream(message)) if message.contains("64")),
             "{decoded:?}"
         );
         assert!(decoder.is_finished());

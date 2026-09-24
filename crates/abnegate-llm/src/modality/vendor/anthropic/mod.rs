@@ -830,7 +830,7 @@ mod tests {
         .await;
 
         assert!(
-            matches!(&error, ProviderError::Http { provider, source: crate::LlmError::Api { status: 429, message } } if provider == NAME && message.contains("rate_limit_error")),
+            matches!(&error, ProviderError::Http { provider, source: crate::Error::Api { status: 429, message } } if provider == NAME && message.contains("rate_limit_error")),
             "{error:?}"
         );
         assert!(error.transient());
@@ -849,7 +849,7 @@ mod tests {
             matches!(
                 &error,
                 ProviderError::Http {
-                    source: crate::LlmError::Api { status: 529, .. },
+                    source: crate::Error::Api { status: 529, .. },
                     ..
                 }
             ),
@@ -870,7 +870,7 @@ mod tests {
             matches!(
                 &error,
                 ProviderError::Http {
-                    source: crate::LlmError::Api { status: 500, .. },
+                    source: crate::Error::Api { status: 500, .. },
                     ..
                 }
             ),

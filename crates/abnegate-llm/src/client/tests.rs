@@ -13,7 +13,7 @@ use wiremock::matchers::method;
 
 use super::LlmClient;
 use super::LlmConfig;
-use crate::error::LlmError;
+use crate::error::Error;
 use crate::reasoning::Effort;
 use crate::wire::ChatRequest;
 use crate::wire::Message;
@@ -39,7 +39,7 @@ fn request<'a>(model: &'a str, messages: &'a [Message]) -> ChatRequest<'a> {
     }
 }
 
-async fn streamed(body: &str) -> Vec<Result<crate::wire::ChatStreamChunk, LlmError>> {
+async fn streamed(body: &str) -> Vec<Result<crate::wire::ChatStreamChunk, Error>> {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(
@@ -58,7 +58,7 @@ async fn streamed(body: &str) -> Vec<Result<crate::wire::ChatStreamChunk, LlmErr
         .await
 }
 
-fn content(result: &Result<crate::wire::ChatStreamChunk, LlmError>) -> Option<&str> {
+fn content(result: &Result<crate::wire::ChatStreamChunk, Error>) -> Option<&str> {
     result
         .as_ref()
         .ok()?
@@ -219,7 +219,7 @@ async fn a_rejection_body_echoing_the_key_is_redacted() {
 
     let rendered = format!("{error} {error:?}");
     assert!(!rendered.contains(ECHOED), "the key leaked: {rendered}");
-    assert!(matches!(error, LlmError::Api { status: 401, .. }));
+    assert!(matches!(error, Error::Api { status: 401, .. }));
 }
 
 #[tokio::test]
@@ -231,7 +231,7 @@ async fn a_transport_failure_never_carries_the_url() {
         .expect_err("nothing listens on port 1");
 
     let rendered = format!("{error} {error:?}");
-    assert!(matches!(error, LlmError::Http(_)), "{rendered}");
+    assert!(matches!(error, Error::Http(_)), "{rendered}");
     assert!(
         !rendered.contains(QUERY_SECRET),
         "the URL reached the error: {rendered}"
@@ -259,7 +259,7 @@ async fn a_completion_that_outlives_its_deadline_fails_at_the_deadline() {
         .await
         .expect_err("the endpoint is too slow");
 
-    assert!(matches!(error, LlmError::Timeout(_)), "{error:?}");
+    assert!(matches!(error, Error::Timeout(_)), "{error:?}");
     assert!(started.elapsed() < Duration::from_secs(3));
 }
 
@@ -304,7 +304,7 @@ async fn a_stream_that_stalls_fails_after_the_read_timeout() {
 
     assert_eq!(chunks.len(), 2, "{chunks:?}");
     assert_eq!(content(&chunks[0]), Some("hi"));
-    assert!(matches!(chunks[1], Err(LlmError::Timeout(_))), "{chunks:?}");
+    assert!(matches!(chunks[1], Err(Error::Timeout(_))), "{chunks:?}");
     assert!(started.elapsed() < Duration::from_secs(3));
 }
 
@@ -335,7 +335,7 @@ async fn a_success_that_is_not_an_event_stream_is_a_failure() {
 
     assert_eq!(chunks.len(), 1, "{chunks:?}");
     assert!(
-        matches!(&chunks[0], Err(LlmError::Stream(message)) if message.contains("without a single event")),
+        matches!(&chunks[0], Err(Error::Stream(message)) if message.contains("without a single event")),
         "{chunks:?}"
     );
 }
@@ -350,7 +350,7 @@ async fn an_error_frame_mid_stream_ends_it_with_a_failure() {
     assert_eq!(chunks.len(), 2, "{chunks:?}");
     assert_eq!(content(&chunks[0]), Some("hi"));
     assert!(
-        matches!(&chunks[1], Err(LlmError::Stream(message)) if message.contains("upstream overloaded")),
+        matches!(&chunks[1], Err(Error::Stream(message)) if message.contains("upstream overloaded")),
         "{chunks:?}"
     );
 }
@@ -370,7 +370,7 @@ fn a_non_http_scheme_is_refused() {
         .validate("file:///etc/passwd")
         .unwrap_err();
     assert!(
-        matches!(&error, LlmError::InvalidConfig(message) if message.contains("http or https")),
+        matches!(&error, Error::InvalidConfig(message) if message.contains("http or https")),
         "the refusal has to name the scheme rule: {error}"
     );
 }
@@ -381,7 +381,7 @@ fn credentials_in_the_url_are_refused() {
         .validate("https://user:pass@api.openai.com/v1")
         .unwrap_err();
     assert!(
-        matches!(&error, LlmError::InvalidConfig(message) if message.contains("userinfo")),
+        matches!(&error, Error::InvalidConfig(message) if message.contains("userinfo")),
         "the refusal has to name the userinfo rule: {error}"
     );
 }
@@ -409,7 +409,7 @@ fn a_relative_url_is_refused() {
         .validate("/v1/chat/completions")
         .unwrap_err();
     assert!(
-        matches!(&error, LlmError::InvalidConfig(message) if message.contains("absolute URL")),
+        matches!(&error, Error::InvalidConfig(message) if message.contains("absolute URL")),
         "the refusal has to name the absolute-URL rule: {error}"
     );
 }
