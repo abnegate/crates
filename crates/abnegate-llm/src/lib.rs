@@ -79,6 +79,10 @@ pub mod provider;
 pub mod reasoning;
 mod wire;
 
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 pub use crate::client::{LlmClient, LlmConfig, RequestOptions};
 pub use crate::cost::{
     CostEstimate, CostEstimator, CostLineItem, CostStrategy, ModelPricing, PricingUnit,
