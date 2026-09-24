@@ -82,7 +82,8 @@ pub(crate) fn whole_reference(value: &str) -> bool {
 
 /// `template` with each `${VAR}` replaced by what `lookup` gives for it, and
 /// each `${VAR:-default}` by its default when that is unset or empty, as
-/// the CLI would expand them. A variable nothing gives expands to nothing.
+/// the CLI expands them. A reference to a variable nothing gives, with no
+/// default, is left as written, as the CLI leaves it.
 pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
     let mut expanded = String::with_capacity(template.len());
     let mut rest = template;
@@ -93,6 +94,7 @@ pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) ->
             expanded.push_str(&rest[start..]);
             return expanded;
         };
+        let reference = &rest[start..start + OPENING.len() + end + 1];
         let expression = &after[..end];
         let (name, default) = match expression.split_once(DEFAULT) {
             Some((name, default)) => (name, Some(default)),
@@ -106,12 +108,13 @@ pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) ->
                 (None, None) => {
                     tracing::warn!(
                         variable = name,
-                        "an MCP value refers to a variable nothing sets"
+                        "an MCP value refers to a variable nothing sets; leaving it as written"
                     );
+                    expanded.push_str(reference);
                 }
             }
         } else {
-            expanded.push_str(&rest[start..start + OPENING.len() + end + 1]);
+            expanded.push_str(reference);
         }
         rest = &after[end + 1..];
     }
@@ -214,9 +217,22 @@ mod tests {
             expand("${MISSING:-anonymous}/${EMPTY:-fallback}", &lookup),
             "anonymous/fallback"
         );
-        assert_eq!(expand("[${MISSING}][${EMPTY}]", &lookup), "[][]");
+        assert_eq!(expand("[${MISSING}][${EMPTY}]", &lookup), "[${MISSING}][]");
         assert_eq!(expand("${1BAD} and ${", &lookup), "${1BAD} and ${");
         assert_eq!(expand("no references", &lookup), "no references");
+    }
+
+    /// Claude Code starts a server with a reference to a variable nothing
+    /// sets left as written, so every value expanded here on its behalf
+    /// does the same, or one configuration would start a server with one
+    /// value through the CLI and another through any other launcher.
+    #[test]
+    fn a_reference_to_a_variable_nothing_sets_is_left_as_written() {
+        let unset = |_: &str| None;
+
+        assert_eq!(expand("${TOKEN}", &unset), "${TOKEN}");
+        assert_eq!(expand("Bearer ${TOKEN}", &unset), "Bearer ${TOKEN}");
+        assert_eq!(expand("${TOKEN:-anonymous}", &unset), "anonymous");
     }
 
     #[test]
