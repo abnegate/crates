@@ -90,9 +90,9 @@ impl Diagnostics {
             if read == 0 {
                 break;
             }
-            let (accepted, count, _) = self.limiter.check(read);
-            if accepted {
-                self.keep(&buffer[..count]).await;
+            let accepted = self.limiter.admit(read).accepted;
+            if accepted > 0 {
+                self.keep(&buffer[..accepted]).await;
             }
         }
         if let Ok(Some(line)) = self.lines.flush() {
