@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::hardware::{GpuType, ModelRecommendation, RecommendedModels};
+use crate::hardware::{GpuType, ModelRecommendation, NO_LOCAL_MODEL, RecommendedModels};
 
 #[cfg(any(target_os = "macos", test))]
 const BYTES_PER_GIGABYTE: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -20,25 +20,43 @@ pub struct MachineProfile {
 }
 
 impl MachineProfile {
-    /// A machine called `name` with `gpu_vram_gb` of VRAM, `system_ram_gb` of
-    /// RAM, shared between the two when `unified_memory` is set, and the
-    /// models `recommended_models` names as the best it runs.
+    /// A machine called `name` with `gpu_type`, running the models
+    /// `recommended_models` names as the best it can, with no memory reported
+    /// and none of it shared.
     pub fn new(
         name: impl Into<String>,
-        gpu_vram_gb: f64,
-        system_ram_gb: f64,
-        unified_memory: bool,
         gpu_type: GpuType,
         recommended_models: RecommendedModels,
     ) -> Self {
         Self {
             name: name.into(),
-            gpu_vram_gb,
-            system_ram_gb,
-            unified_memory,
+            gpu_vram_gb: 0.0,
+            system_ram_gb: 0.0,
+            unified_memory: false,
             gpu_type,
             recommended_models,
         }
+    }
+
+    /// Set the VRAM, in gigabytes, the GPU has. On unified memory it is the
+    /// whole shared pool.
+    pub fn with_gpu_vram_gb(mut self, gpu_vram_gb: f64) -> Self {
+        self.gpu_vram_gb = gpu_vram_gb;
+        self
+    }
+
+    /// Set the system RAM, in gigabytes.
+    pub fn with_system_ram_gb(mut self, system_ram_gb: f64) -> Self {
+        self.system_ram_gb = system_ram_gb;
+        self
+    }
+
+    /// Say that the GPU and the CPU share one pool of memory, as on Apple
+    /// Silicon, so a fifth of it is left to the operating system when models
+    /// are loaded side by side.
+    pub fn with_unified_memory(mut self) -> Self {
+        self.unified_memory = true;
+        self
     }
 
     /// This machine's profile, or a CPU-only one when it cannot be detected.
@@ -816,7 +834,7 @@ impl MachineProfile {
                 notes: "Tiny model for CPU inference. Very limited quality.".into(),
             },
             image: ModelRecommendation {
-                model_name: "none".into(),
+                model_name: NO_LOCAL_MODEL.into(),
                 quantization: None,
                 vram_needed_gb: 0.0,
                 quality_score: 0.0,
@@ -834,7 +852,7 @@ impl MachineProfile {
                 notes: "Lightweight CPU TTS. Lower quality than F5.".into(),
             },
             music: ModelRecommendation {
-                model_name: "none".into(),
+                model_name: NO_LOCAL_MODEL.into(),
                 quantization: None,
                 vram_needed_gb: 0.0,
                 quality_score: 0.0,
@@ -843,7 +861,7 @@ impl MachineProfile {
                 notes: "No viable local music gen without GPU.".into(),
             },
             model3d: ModelRecommendation {
-                model_name: "none".into(),
+                model_name: NO_LOCAL_MODEL.into(),
                 quantization: None,
                 vram_needed_gb: 0.0,
                 quality_score: 0.0,
@@ -1443,41 +1461,101 @@ mod tests {
 
     #[test]
     fn a_machine_that_is_no_preset_can_be_described() {
-        let model = |name: &str| ModelRecommendation::new(name, 4.0, 0.5);
         let profile = MachineProfile::new(
             "Workstation",
-            16.0,
-            64.0,
-            false,
-            GpuType::CpuOnly,
-            RecommendedModels::new(
-                model("llm")
-                    .with_quantization("Q4_K_M")
-                    .with_estimated_speed("~20 tok/s")
-                    .with_can_run_with_others(vec!["embedding".into()])
-                    .with_notes("fits beside the embedder"),
-                model("image"),
-                model("voice"),
-                model("music"),
-                model("model3d"),
-                model("embedding"),
-                model("transcription"),
-            ),
-        );
+            GpuType::nvidia_desktop("RTX 4080", 9728),
+            RecommendedModels::default()
+                .with_llm(
+                    ModelRecommendation::new("qwen2.5:14b")
+                        .with_vram_needed_gb(10.0)
+                        .with_quality_score(0.75)
+                        .with_quantization("Q4_K_M")
+                        .with_estimated_speed("~20 tok/s")
+                        .with_can_run_with_others(vec!["embedding".into()])
+                        .with_notes("fits beside the embedder"),
+                )
+                .with_image(ModelRecommendation::new("flux.1-schnell"))
+                .with_voice(ModelRecommendation::new("f5-tts"))
+                .with_music(ModelRecommendation::new("musicgen-large"))
+                .with_model3d(ModelRecommendation::new("triposr"))
+                .with_embedding(ModelRecommendation::new("nomic-embed-text"))
+                .with_transcription(ModelRecommendation::new("whisper-large-v3")),
+        )
+        .with_gpu_vram_gb(16.0)
+        .with_system_ram_gb(64.0);
 
         assert_eq!(profile.name, "Workstation");
         assert_eq!((profile.gpu_vram_gb, profile.system_ram_gb), (16.0, 64.0));
         assert!(!profile.unified_memory);
-        let llm = &profile.recommended_models.llm;
-        assert_eq!(llm.model_name, "llm");
+        let recommended = &profile.recommended_models;
+        assert_eq!(
+            [
+                &recommended.llm.model_name,
+                &recommended.image.model_name,
+                &recommended.voice.model_name,
+                &recommended.music.model_name,
+                &recommended.model3d.model_name,
+                &recommended.embedding.model_name,
+                &recommended.transcription.model_name,
+            ],
+            [
+                "qwen2.5:14b",
+                "flux.1-schnell",
+                "f5-tts",
+                "musicgen-large",
+                "triposr",
+                "nomic-embed-text",
+                "whisper-large-v3",
+            ]
+        );
+        let llm = &recommended.llm;
+        assert_eq!((llm.vram_needed_gb, llm.quality_score), (10.0, 0.75));
         assert_eq!(llm.quantization.as_deref(), Some("Q4_K_M"));
         assert_eq!(llm.estimated_speed, "~20 tok/s");
         assert_eq!(llm.can_run_with_others, vec!["embedding".to_string()]);
         assert_eq!(llm.notes, "fits beside the embedder");
-        assert_eq!(
-            profile.recommended_models.transcription.model_name,
-            "transcription"
-        );
+    }
+
+    #[test]
+    fn a_described_machine_reports_no_memory_until_told() {
+        let profile = MachineProfile::new("Bare", GpuType::CpuOnly, RecommendedModels::default());
+
+        assert_eq!((profile.gpu_vram_gb, profile.system_ram_gb), (0.0, 0.0));
+        assert!(!profile.unified_memory);
+    }
+
+    #[test]
+    fn unified_memory_is_shared_only_when_said() {
+        let profile = MachineProfile::new(
+            "Mac Studio",
+            GpuType::apple_silicon("M2 Ultra", 76),
+            RecommendedModels::default(),
+        )
+        .with_gpu_vram_gb(192.0)
+        .with_system_ram_gb(192.0)
+        .with_unified_memory();
+
+        assert!(profile.unified_memory);
+        assert!((profile.maximum_concurrent_vram() - 192.0 * 0.80).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_modality_left_unnamed_recommends_no_local_model() {
+        let recommended = RecommendedModels::default()
+            .with_llm(ModelRecommendation::new("qwen2.5:3b").with_quality_score(0.45));
+
+        assert_eq!(recommended.llm.model_name, "qwen2.5:3b");
+        for unnamed in [
+            &recommended.image,
+            &recommended.voice,
+            &recommended.music,
+            &recommended.model3d,
+            &recommended.embedding,
+            &recommended.transcription,
+        ] {
+            assert_eq!(unnamed.model_name, NO_LOCAL_MODEL);
+            assert_eq!(unnamed.quality_score, 0.0);
+        }
     }
 
     #[test]

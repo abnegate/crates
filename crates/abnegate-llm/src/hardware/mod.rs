@@ -9,3 +9,5 @@ pub use crate::hardware::gpu_type::GpuType;
 pub use crate::hardware::machine_profile::MachineProfile;
 pub use crate::hardware::model_recommendation::ModelRecommendation;
 pub use crate::hardware::recommended_models::RecommendedModels;
+
+pub(crate) use crate::hardware::model_recommendation::NO_LOCAL_MODEL;
