@@ -43,6 +43,7 @@ dependencies = [
  "abnegate-secret",
  "async-trait",
  "chrono",
+ "dirs",
  "serde",
  "serde_json",
  "tempfile",

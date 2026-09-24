@@ -116,6 +116,7 @@ pub use crate::log::preview;
 pub use crate::log::resolve_log_root;
 pub use crate::mcp::McpAttachment;
 pub use crate::mcp::McpConfig;
+pub use crate::mcp::McpConfigError;
 pub use crate::mcp::McpServer;
 pub use crate::mcp::McpTransport;
 pub use crate::parser::claude::CliContentBlock;

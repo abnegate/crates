@@ -23,6 +23,7 @@ abnegate-llm = { path = "../abnegate-llm", version = "0.1.0" }
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+dirs = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
