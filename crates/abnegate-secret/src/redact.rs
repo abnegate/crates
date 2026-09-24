@@ -7,6 +7,7 @@ use std::ops::Range;
 use crate::redact::character_set::CharacterSet;
 use crate::redact::credential::CREDENTIALS;
 use crate::redact::credential::Credential;
+use crate::work;
 
 /// Stands in for every credential this module removes, and for the body of a
 /// [`SecretValue`](crate::SecretValue) that is printed.
@@ -196,6 +197,7 @@ fn private_key_at(text: &str, index: usize) -> Option<usize> {
     let rest = text.get(index..)?;
     let label = rest.strip_prefix(PEM_BEGIN)?;
     let dashes = label.find(PEM_DASHES).unwrap_or(label.len());
+    work::scanned(dashes);
     let label = label[..dashes].lines().next()?;
     if !label.contains(PEM_PRIVATE) {
         return None;
@@ -206,6 +208,7 @@ fn private_key_at(text: &str, index: usize) -> Option<usize> {
             .find('\n')
             .map_or(rest.len(), |newline| at + newline)
     });
+    work::scanned(end);
     Some(index + end)
 }
 
@@ -254,6 +257,7 @@ fn url_password_at(bytes: &[u8], index: usize, userinfo: &mut Option<usize>) -> 
         .iter()
         .position(|byte| URL_USERINFO_DELIMITERS.contains(byte))
         .map_or(bytes.len(), |length| index + length);
+    work::scanned(end - index);
     if end > index && bytes.get(end) == Some(&URL_USERINFO_END) {
         return Some(end);
     }
@@ -340,10 +344,12 @@ fn introduced_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<
 }
 
 fn value_end(bytes: &[u8], from: usize, quote: Option<u8>) -> usize {
-    quote.map_or_else(
+    let end = quote.map_or_else(
         || unquoted_end(bytes, from),
         |quote| quoted_end(bytes, from, quote),
-    )
+    );
+    work::scanned(end - from);
+    end
 }
 
 /// Where the quoted value starting at `from` ends: its closing `quote`, or the
@@ -412,6 +418,7 @@ fn word_before(bytes: &[u8], index: usize) -> Option<Range<usize>> {
     while cursor > 0 && matches!(bytes[cursor - 1], b' ' | b'\t') {
         cursor -= 1;
     }
+    work::scanned(index - cursor);
     if cursor == index || cursor == 0 {
         return None;
     }
@@ -422,6 +429,7 @@ fn word_before(bytes: &[u8], index: usize) -> Option<Range<usize>> {
     while start > limit && bytes[start - 1].is_ascii_alphabetic() {
         start -= 1;
     }
+    work::scanned(end - start);
     (start < end).then_some(start..end)
 }
 
@@ -534,10 +542,12 @@ fn assigned_to_secret(bytes: &[u8], index: usize) -> bool {
 }
 
 fn assigned_to(bytes: &[u8], index: usize, words: &[&str]) -> bool {
-    let skip_padding = |mut cursor: usize| {
+    let skip_padding = |from: usize| {
+        let mut cursor = from;
         while cursor > 0 && matches!(bytes[cursor - 1], b' ' | b'\t' | b'"' | b'\'' | b'`') {
             cursor -= 1;
         }
+        work::scanned(from - cursor);
         cursor
     };
 
@@ -552,6 +562,7 @@ fn assigned_to(bytes: &[u8], index: usize, words: &[&str]) -> bool {
     while start > limit && CharacterSet::Word.contains(bytes[start - 1]) {
         start -= 1;
     }
+    work::scanned(end - start);
 
     let mut buffer = [0u8; KEY_LOOKBEHIND];
     let mut length = 0;
@@ -1124,19 +1135,9 @@ mod shapes_that_carry_no_prefix {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-    use std::time::Instant;
-
     use super::*;
 
-    /// A megabyte scanned quadratically takes tens of seconds even optimised;
-    /// scanned linearly it takes a few milliseconds optimised and a few tens
-    /// unoptimised.
-    const LINEAR_BUDGET: Duration = if cfg!(debug_assertions) {
-        Duration::from_millis(1000)
-    } else {
-        Duration::from_millis(100)
-    };
+    const LENGTH: usize = 16 * 1024;
 
     /// Each sample sits in prose rather than an assignment, which would be
     /// redacted by its key word alone and so prove nothing about the prefix.
@@ -1306,69 +1307,37 @@ mod tests {
 
     #[test]
     fn redaction_is_linear_in_the_length_of_minified_json() {
-        let json = "\"k\":1,".repeat(1024 * 1024 / 6);
-        let started = Instant::now();
-        let redacted = redact(&json);
-        let elapsed = started.elapsed();
+        let json = "\"k\":1,".repeat(LENGTH / 6);
+        let redacted = work::assert_linear(&json, redact);
 
         assert!(matches!(redacted, Cow::Borrowed(_)));
-        assert!(
-            elapsed < LINEAR_BUDGET,
-            "a megabyte of minified JSON took {elapsed:?}"
-        );
     }
 
     #[test]
     fn a_url_that_never_closes_its_userinfo_is_scanned_once() {
-        let text = format!("http://x{}", ":1".repeat(512 * 1024));
-        let started = Instant::now();
-        let redacted = redact(&text);
-        let elapsed = started.elapsed();
+        let text = format!("http://x{}", ":1".repeat(LENGTH / 2));
+        let redacted = work::assert_linear(&text, redact);
 
         assert!(matches!(redacted, Cow::Borrowed(_)));
-        assert!(
-            elapsed < LINEAR_BUDGET,
-            "a megabyte of colons after a scheme took {elapsed:?}"
-        );
     }
 
     #[test]
     fn repeated_private_key_markers_are_scanned_once() {
         for marker in ["-----BEGIN ", "-----BEGIN PRIVATE KEY "] {
-            let text = marker.repeat(1024 * 1024 / marker.len());
-            let started = Instant::now();
-            let _ = redact(&text);
-            let elapsed = started.elapsed();
-
-            assert!(
-                elapsed < LINEAR_BUDGET,
-                "a megabyte of {marker:?} took {elapsed:?}"
-            );
+            work::assert_linear(&marker.repeat(LENGTH / marker.len()), redact);
         }
     }
 
-    /// A quarter of the megabyte [`LINEAR_BUDGET`] allows for, since every
-    /// other byte here starts a candidate value; scanned quadratically, even a
-    /// quarter megabyte takes seconds.
     #[test]
     fn named_values_that_stop_short_are_scanned_once() {
-        let length = 256 * 1024;
         for text in [
-            "password=a,".repeat(length / 11),
-            format!("password={}", "a,b=".repeat(length / 4)),
-            format!("password={}", "=a".repeat(length / 2)),
-            "--password -".repeat(length / 12),
-            " \"!".repeat(length / 3),
+            "password=a,".repeat(LENGTH / 11),
+            format!("password={}", "a,b=".repeat(LENGTH / 4)),
+            format!("password={}", "=a".repeat(LENGTH / 2)),
+            "--password -".repeat(LENGTH / 12),
+            " \"!".repeat(LENGTH / 3),
         ] {
-            let started = Instant::now();
-            let _ = redact(&text);
-            let elapsed = started.elapsed();
-
-            assert!(
-                elapsed < LINEAR_BUDGET,
-                "a quarter megabyte of {:?} took {elapsed:?}",
-                &text[..16]
-            );
+            work::assert_linear(&text, redact);
         }
     }
 

@@ -1,6 +1,7 @@
 use crate::sanitize::BACKSLASH;
 use crate::sanitize::BELL;
 use crate::sanitize::ESCAPE;
+use crate::work;
 
 const STRING_TERMINATOR: [u8; 2] = [ESCAPE, BACKSLASH];
 
@@ -29,7 +30,7 @@ impl Terminators {
         if !follows(self.bell, from) && !follows(self.string, from) {
             return None;
         }
-        (from..bytes.len()).find_map(|index| {
+        first_end(bytes, from, |index| {
             if bytes[index] == BELL {
                 Some(index + 1)
             } else {
@@ -45,8 +46,14 @@ impl Terminators {
         if !follows(self.string, from) {
             return None;
         }
-        (from..bytes.len()).find_map(|index| string_terminator_end(bytes, index))
+        first_end(bytes, from, |index| string_terminator_end(bytes, index))
     }
+}
+
+fn first_end(bytes: &[u8], from: usize, end_at: impl Fn(usize) -> Option<usize>) -> Option<usize> {
+    let end = (from..bytes.len()).find_map(end_at);
+    work::scanned(end.unwrap_or(bytes.len()) - from);
+    end
 }
 
 fn follows(terminator: Option<usize>, from: usize) -> bool {

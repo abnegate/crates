@@ -44,6 +44,7 @@ mod random;
 mod redact;
 mod sanitize;
 mod value;
+mod work;
 
 pub use crate::encryption::decrypt_value;
 pub use crate::encryption::encrypt_value;

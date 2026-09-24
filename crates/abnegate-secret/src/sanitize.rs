@@ -5,6 +5,7 @@ use std::ops::RangeInclusive;
 
 use crate::redact::redact;
 use crate::sanitize::terminators::Terminators;
+use crate::work;
 
 const ESCAPE: u8 = 0x1B;
 const BELL: u8 = 0x07;
@@ -196,6 +197,7 @@ fn intermediate_sequence(bytes: &[u8], from: usize) -> Option<usize> {
     while matches!(bytes.get(index), Some(0x20..=0x2F)) {
         index += 1;
     }
+    work::scanned(index - from);
     match bytes.get(index) {
         Some(0x30..=0x7E) => Some(index + 1),
         _ => None,
@@ -210,6 +212,7 @@ fn control_sequence(bytes: &[u8], from: usize) -> Option<usize> {
     while matches!(bytes.get(index), Some(0x20..=0x2F)) {
         index += 1;
     }
+    work::scanned(index - from);
     match bytes.get(index) {
         Some(0x40..=0x7E) => Some(index + 1),
         _ => None,
@@ -218,9 +221,6 @@ fn control_sequence(bytes: &[u8], from: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-    use std::time::Instant;
-
     use super::*;
     use crate::redact::REDACTED;
 
@@ -248,15 +248,7 @@ mod tests {
         ('\u{E0000}', '\u{E0FFF}'),
     ];
 
-    /// A quadratic scan of a quarter megabyte takes seconds even optimised; a
-    /// linear one takes a few milliseconds unoptimised.
-    const LINEAR_BUDGET: Duration = if cfg!(debug_assertions) {
-        Duration::from_millis(200)
-    } else {
-        Duration::from_millis(20)
-    };
-
-    const QUARTER_MEGABYTE: usize = 256 * 1024;
+    const LENGTH: usize = 16 * 1024;
 
     #[test]
     fn strips_every_default_ignorable_code_point() {
@@ -294,16 +286,10 @@ mod tests {
     #[test]
     fn unterminated_string_sequences_are_scanned_once() {
         for introducer in ["\u{1b}]", "\u{1b}P", "\u{1b}X", "\u{1b}^", "\u{1b}_"] {
-            let text = introducer.repeat(QUARTER_MEGABYTE / introducer.len());
-            let started = Instant::now();
-            let sanitized = sanitize(&text);
-            let elapsed = started.elapsed();
+            let text = introducer.repeat(LENGTH / introducer.len());
+            let sanitized = work::assert_linear(&text, sanitize);
 
             assert_eq!(sanitized, "", "{introducer:?} left a payload behind");
-            assert!(
-                elapsed < LINEAR_BUDGET,
-                "a quarter megabyte of {introducer:?} took {elapsed:?}"
-            );
         }
     }
 
