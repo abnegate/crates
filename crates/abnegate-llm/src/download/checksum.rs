@@ -21,7 +21,7 @@ impl Checksum {
     }
 
     /// Read a digest written as 64 hexadecimal characters, in either case.
-    pub fn from_hex(hexadecimal: &str) -> Result<Self, DownloadError> {
+    pub fn from_hexadecimal(hexadecimal: &str) -> Result<Self, DownloadError> {
         let invalid = || DownloadError::InvalidChecksum(hexadecimal.to_string());
         let characters = hexadecimal.trim().as_bytes();
         if characters.len() != DIGEST_BYTES * 2 {
@@ -65,16 +65,22 @@ mod tests {
 
     #[test]
     fn a_digest_round_trips_through_hexadecimal() {
-        let checksum = Checksum::from_hex(EMPTY).unwrap();
+        let checksum = Checksum::from_hexadecimal(EMPTY).unwrap();
         assert_eq!(checksum.to_string(), EMPTY);
         assert_eq!(checksum.bytes()[0], 0xe3);
-        assert_eq!(Checksum::from_hex(&EMPTY.to_uppercase()).unwrap(), checksum);
+        assert_eq!(
+            Checksum::from_hexadecimal(&EMPTY.to_uppercase()).unwrap(),
+            checksum
+        );
     }
 
     #[test]
     fn a_malformed_digest_is_refused() {
         for malformed in ["", "e3b0", &EMPTY[1..], &format!("{}zz", &EMPTY[2..])] {
-            assert!(Checksum::from_hex(malformed).is_err(), "{malformed}");
+            assert!(
+                Checksum::from_hexadecimal(malformed).is_err(),
+                "{malformed}"
+            );
         }
     }
 }

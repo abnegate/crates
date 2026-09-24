@@ -1402,15 +1402,15 @@ mod tests {
     fn every_listed_preset_resolves() {
         let presets = MachineProfile::available_presets();
         assert_eq!(presets.len(), 15);
-        let slugs: Vec<&str> = presets.iter().map(|(s, _)| *s).collect();
+        let slugs: Vec<&str> = presets.iter().map(|(slug, _)| *slug).collect();
         assert!(slugs.contains(&"m4-max-64"));
         assert!(slugs.contains(&"m1-pro-32"));
         assert!(slugs.contains(&"5900x-3080ti"));
         assert!(slugs.contains(&"cpu-only"));
         assert!(slugs.contains(&"laptop-4060"));
-        for (slug, desc) in &presets {
+        for (slug, description) in &presets {
             assert!(!slug.is_empty());
-            assert!(!desc.is_empty());
+            assert!(!description.is_empty());
             assert!(
                 MachineProfile::from_preset(slug).is_some(),
                 "preset '{}' not found",

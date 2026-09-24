@@ -220,16 +220,16 @@ fn window_next_cursor(
     needs_sorted_window: bool,
     hit_page_cap: bool,
     offset: usize,
-    page_len: usize,
+    page_length: usize,
 ) -> Option<String> {
-    if page_len == 0 {
+    if page_length == 0 {
         return None;
     }
     if page_next.is_some() {
         return page_next;
     }
     if has_more && !needs_sorted_window && !hit_page_cap {
-        return Some(format!("offset:{}", offset + page_len));
+        return Some(format!("offset:{}", offset + page_length));
     }
     None
 }
@@ -823,28 +823,30 @@ pub fn huggingface_hub_origin(catalog_url: &str) -> String {
 }
 
 /// Strip `hf.co/` and any `:tag` so a pull name maps back to a repository.
-pub fn huggingface_repo_id(name: &str) -> Option<&str> {
+pub fn huggingface_repository_id(name: &str) -> Option<&str> {
     let name = name
         .strip_prefix("hf.co/")
         .or_else(|| name.strip_prefix("huggingface.co/"))
         .unwrap_or(name);
-    let repository = name.split_once(':').map(|(repo, _)| repo).unwrap_or(name);
+    let repository = name
+        .split_once(':')
+        .map_or(name, |(repository, _)| repository);
     repository.contains('/').then_some(repository)
 }
 
 /// Read one repository with its blob sizes, for the download list of a model
 /// that is not installed locally.
-pub async fn huggingface_repo_downloads(
+pub async fn huggingface_repository_downloads(
     catalog_url: &str,
     proxy_url: Option<&str>,
-    repo_id: &str,
+    repository_id: &str,
 ) -> Result<ModelEntry, CatalogError> {
     let client = build_client(proxy_url)?;
     let mut url = catalogue_url(catalog_url)?;
     url.path_segments_mut()
         .map_err(|()| CatalogError::InvalidUrl(catalog_url.to_string()))?
         .pop_if_empty()
-        .extend(repo_id.split('/'));
+        .extend(repository_id.split('/'));
     url.query_pairs_mut()
         .append_pair("blobs", "true")
         .append_pair(EXPAND_PARAMETER, "gguf")
@@ -1141,20 +1143,20 @@ mod tests {
     }
 
     #[test]
-    fn repo_id_strips_hosts_and_tags() {
+    fn repository_id_strips_hosts_and_tags() {
         assert_eq!(
-            huggingface_repo_id("TheBloke/Mistral-7B-Instruct-v0.2-GGUF"),
+            huggingface_repository_id("TheBloke/Mistral-7B-Instruct-v0.2-GGUF"),
             Some("TheBloke/Mistral-7B-Instruct-v0.2-GGUF")
         );
         assert_eq!(
-            huggingface_repo_id("hf.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF:Q4_0"),
+            huggingface_repository_id("hf.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF:Q4_0"),
             Some("TheBloke/Mistral-7B-Instruct-v0.2-GGUF")
         );
         assert_eq!(
-            huggingface_repo_id("huggingface.co/owner/model"),
+            huggingface_repository_id("huggingface.co/owner/model"),
             Some("owner/model")
         );
-        assert_eq!(huggingface_repo_id("llama3.2:3b"), None);
+        assert_eq!(huggingface_repository_id("llama3.2:3b"), None);
     }
 
     #[test]
@@ -1506,7 +1508,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repo_downloads_reads_file_sizes() {
+    async fn repository_downloads_reads_file_sizes() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(
@@ -1526,10 +1528,13 @@ mod tests {
             .await;
 
         let catalog = format!("{}/api/models", server.uri());
-        let model =
-            huggingface_repo_downloads(&catalog, None, "TheBloke/Mistral-7B-Instruct-v0.2-GGUF")
-                .await
-                .unwrap();
+        let model = huggingface_repository_downloads(
+            &catalog,
+            None,
+            "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
+        )
+        .await
+        .unwrap();
 
         let sizes = model.sizes.expect("gguf downloads");
         assert_eq!(model.size, Some(4_108_917_024));
@@ -1540,7 +1545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repo_downloads_reports_a_missing_repository() {
+    async fn repository_downloads_reports_a_missing_repository() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(404))
@@ -1548,7 +1553,7 @@ mod tests {
             .await;
 
         let catalog = format!("{}/api/models", server.uri());
-        let error = huggingface_repo_downloads(&catalog, None, "owner/missing")
+        let error = huggingface_repository_downloads(&catalog, None, "owner/missing")
             .await
             .unwrap_err();
         assert!(matches!(error, CatalogError::Unavailable(_)));
@@ -1563,7 +1568,7 @@ mod tests {
             .await;
 
         let catalog = format!("{}/api/models", server.uri());
-        let error = huggingface_repo_downloads(&catalog, None, "owner/repo")
+        let error = huggingface_repository_downloads(&catalog, None, "owner/repo")
             .await
             .unwrap_err();
 

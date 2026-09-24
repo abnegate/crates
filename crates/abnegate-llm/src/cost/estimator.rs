@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 
 use crate::cost::{
-    CostEstimate, CostLineItem, CostStrategy, ModelPricing, PricingUnit, TaskCategory, TaskSpec,
-    default_pricing,
+    CostEstimate, CostLineItem, CostStrategy, ModelPricing, PricingUnit, TaskCategory,
+    TaskSpecification, default_pricing,
 };
 use crate::hardware::MachineProfile;
 
@@ -61,7 +61,7 @@ impl CostEstimator {
     /// A task no model can do, or one a budget cannot cover and no local model
     /// can take, is listed in [`CostEstimate::unassigned`] rather than dropped.
     pub fn estimate_batch_cost(
-        requests: &[TaskSpec],
+        requests: &[TaskSpecification],
         pricing: &[ModelPricing],
         strategy: CostStrategy,
     ) -> CostEstimate {
@@ -139,7 +139,7 @@ impl CostEstimator {
     /// giving each the best model it can still afford, then the cheapest
     /// local model, and otherwise leaving it unassigned.
     fn apply_budget_constraint(
-        requests: &[TaskSpec],
+        requests: &[TaskSpecification],
         pricing: &[ModelPricing],
         strategy: CostStrategy,
         maximum_usd: f64,
@@ -175,7 +175,7 @@ impl CostEstimator {
 }
 
 fn assemble(
-    requests: &[TaskSpec],
+    requests: &[TaskSpecification],
     assignments: &[Option<&ModelPricing>],
     pricing: &[ModelPricing],
     strategy: CostStrategy,
@@ -271,8 +271,8 @@ mod tests {
     use super::*;
     use crate::hardware::ModelRecommendation;
 
-    fn task(label: &str, category: TaskCategory, quantity: u32) -> TaskSpec {
-        TaskSpec {
+    fn task(label: &str, category: TaskCategory, quantity: u32) -> TaskSpecification {
+        TaskSpecification {
             label: label.into(),
             category,
             quantity,

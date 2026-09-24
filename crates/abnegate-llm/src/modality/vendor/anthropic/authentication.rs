@@ -3,7 +3,7 @@ use abnegate_secret::SecretValue;
 /// How a call proves who it is.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum AnthropicAuth {
+pub enum AnthropicAuthentication {
     ApiKey(SecretValue),
     /// The Claude Code CLI's own credential, which the HTTP API does not
     /// accept: calls go through the CLI with it in `CLAUDE_CODE_OAUTH_TOKEN`.

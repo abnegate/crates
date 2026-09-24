@@ -86,7 +86,7 @@ struct ReadmeDoctests;
 pub use crate::client::{LlmClient, LlmConfig, RequestOptions};
 pub use crate::cost::{
     CostEstimate, CostEstimator, CostLineItem, CostStrategy, ModelPricing, PricingUnit,
-    TaskCategory, TaskSpec, default_pricing,
+    TaskCategory, TaskSpecification, default_pricing,
 };
 pub use crate::error::Error;
 pub use crate::hardware::{GpuType, MachineProfile, ModelRecommendation, RecommendedModels};
@@ -98,7 +98,7 @@ pub use crate::modality::{
     ResponseFormat, SoundEffectRequest, StructuredResponse, TextProvider, TextProviderConfig,
     TextRequest, TextResponse, TranscriptionProvider, TranscriptionProviderConfig,
     TranscriptionResponse, TranscriptionSegment, VideoProvider, VideoProviderConfig, VideoRequest,
-    VideoResponse, VoiceInfo, VoiceProvider, VoiceProviderConfig, VoiceRequest,
+    VideoResponse, Voice, VoiceProvider, VoiceProviderConfig, VoiceRequest,
 };
 pub use crate::parse_error::ParseError;
 pub use crate::provider::{

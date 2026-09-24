@@ -16,7 +16,7 @@ pub enum PricingUnit {
 }
 
 impl PricingUnit {
-    /// How many units of a [`TaskSpec`](crate::cost::TaskSpec) quantity one
+    /// How many units of a [`TaskSpecification`](crate::cost::TaskSpecification) quantity one
     /// quoted price covers: a million for a per-million-token price, one for
     /// every other unit.
     pub fn quantity_per_price(self) -> f64 {

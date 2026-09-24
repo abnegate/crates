@@ -42,7 +42,7 @@ mod transcription_segment;
 mod video_provider;
 mod video_request;
 mod video_response;
-mod voice_info;
+mod voice;
 mod voice_provider;
 mod voice_request;
 
@@ -79,7 +79,7 @@ pub use crate::modality::transcription_segment::TranscriptionSegment;
 pub use crate::modality::video_provider::VideoProvider;
 pub use crate::modality::video_request::VideoRequest;
 pub use crate::modality::video_response::VideoResponse;
-pub use crate::modality::voice_info::VoiceInfo;
+pub use crate::modality::voice::Voice;
 pub use crate::modality::voice_provider::VoiceProvider;
 pub use crate::modality::voice_request::VoiceRequest;
 
@@ -212,7 +212,7 @@ mod tests {
             Err(ProviderError::unsupported("clone_voice"))
         }
 
-        async fn list_voices(&self) -> Result<Vec<VoiceInfo>, ProviderError> {
+        async fn list_voices(&self) -> Result<Vec<Voice>, ProviderError> {
             Err(ProviderError::unsupported("list_voices"))
         }
     }

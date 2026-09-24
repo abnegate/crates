@@ -1,7 +1,7 @@
 //! The Anthropic messages API, or the Claude Code CLI when the credential
 //! is the CLI's own.
 
-mod auth;
+mod authentication;
 mod cli;
 mod failure;
 
@@ -12,7 +12,7 @@ use abnegate_secret::SecretValue;
 use async_trait::async_trait;
 use futures::Stream;
 
-pub use crate::modality::vendor::anthropic::auth::AnthropicAuth;
+pub use crate::modality::vendor::anthropic::authentication::AnthropicAuthentication;
 
 use crate::modality::vendor::anthropic::cli::Cli;
 use crate::modality::vendor::anthropic::failure::Failure;
@@ -40,7 +40,7 @@ const ANSWER_PREVIEW_CHARACTERS: usize = 300;
 /// `x-api-key` header cannot be carried to another host.
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
-    auth: AnthropicAuth,
+    authentication: AnthropicAuthentication,
     model: String,
     base_url: String,
     transport: Transport,
@@ -49,22 +49,32 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<SecretValue>) -> Self {
-        Self::with_model(AnthropicAuth::ApiKey(api_key.into()), DEFAULT_MODEL)
+        Self::with_model(
+            AnthropicAuthentication::ApiKey(api_key.into()),
+            DEFAULT_MODEL,
+        )
     }
 
     pub fn with_oauth(token: impl Into<SecretValue>) -> Self {
-        Self::with_model(AnthropicAuth::OAuthToken(token.into()), DEFAULT_MODEL)
+        Self::with_model(
+            AnthropicAuthentication::OAuthToken(token.into()),
+            DEFAULT_MODEL,
+        )
     }
 
-    pub fn with_model(auth: AnthropicAuth, model: &str) -> Self {
-        Self::with_base_url(auth, model, BASE_URL)
+    pub fn with_model(authentication: AnthropicAuthentication, model: &str) -> Self {
+        Self::with_base_url(authentication, model, BASE_URL)
     }
 
     /// A provider that talks to `base_url` instead of the public API, for a
     /// proxy, a gateway or a test double.
-    pub fn with_base_url(auth: AnthropicAuth, model: &str, base_url: impl Into<String>) -> Self {
+    pub fn with_base_url(
+        authentication: AnthropicAuthentication,
+        model: &str,
+        base_url: impl Into<String>,
+    ) -> Self {
         Self {
-            auth,
+            authentication,
             model: model.to_string(),
             base_url: base_url.into(),
             transport: Transport::default(),
@@ -130,15 +140,15 @@ impl AnthropicProvider {
     /// HTTP API, so both routes lead to the same place.
     pub fn uses_cli(&self) -> bool {
         matches!(
-            self.auth,
-            AnthropicAuth::OAuthToken(_) | AnthropicAuth::ClaudeCli
+            self.authentication,
+            AnthropicAuthentication::OAuthToken(_) | AnthropicAuthentication::ClaudeCli
         )
     }
 
     fn token(&self) -> Option<&SecretValue> {
-        match &self.auth {
-            AnthropicAuth::OAuthToken(token) => Some(token),
-            AnthropicAuth::ApiKey(_) | AnthropicAuth::ClaudeCli => None,
+        match &self.authentication {
+            AnthropicAuthentication::OAuthToken(token) => Some(token),
+            AnthropicAuthentication::ApiKey(_) | AnthropicAuthentication::ClaudeCli => None,
         }
     }
 
@@ -148,7 +158,7 @@ impl AnthropicProvider {
             .post(format!("{}/v1/messages", self.base_url))
             .header("anthropic-version", VERSION)
             .json(body);
-        if let AnthropicAuth::ApiKey(key) = &self.auth {
+        if let AnthropicAuthentication::ApiKey(key) = &self.authentication {
             request = request.header("x-api-key", key.expose());
         }
         self.transport.send(request).await
@@ -448,7 +458,7 @@ mod tests {
     #[test]
     fn a_custom_model_reaches_the_body() {
         let provider = AnthropicProvider::with_model(
-            AnthropicAuth::ApiKey(SecretValue::new("key")),
+            AnthropicAuthentication::ApiKey(SecretValue::new("key")),
             "claude-sonnet-5",
         );
         let body = provider.build_request_body(&TextRequest::new("sys", "usr"));
@@ -521,7 +531,10 @@ mod tests {
     #[test]
     fn an_oauth_token_and_the_bare_cli_both_go_through_the_cli() {
         assert!(AnthropicProvider::with_oauth("oauth-token-123").uses_cli());
-        assert!(AnthropicProvider::with_model(AnthropicAuth::ClaudeCli, DEFAULT_MODEL).uses_cli());
+        assert!(
+            AnthropicProvider::with_model(AnthropicAuthentication::ClaudeCli, DEFAULT_MODEL)
+                .uses_cli()
+        );
         assert!(!provider().uses_cli());
     }
 
@@ -570,7 +583,7 @@ mod tests {
             .await;
 
         let provider = AnthropicProvider::with_base_url(
-            AnthropicAuth::ApiKey(SecretValue::new("sk-test")),
+            AnthropicAuthentication::ApiKey(SecretValue::new("sk-test")),
             DEFAULT_MODEL,
             server.uri(),
         );
@@ -599,7 +612,7 @@ mod tests {
             .await;
 
         let provider = AnthropicProvider::with_base_url(
-            AnthropicAuth::ApiKey(SecretValue::new("sk-test")),
+            AnthropicAuthentication::ApiKey(SecretValue::new("sk-test")),
             DEFAULT_MODEL,
             server.uri(),
         );
@@ -628,7 +641,7 @@ mod tests {
             .await;
 
         let provider = AnthropicProvider::with_base_url(
-            AnthropicAuth::ApiKey(SecretValue::new("sk-test")),
+            AnthropicAuthentication::ApiKey(SecretValue::new("sk-test")),
             DEFAULT_MODEL,
             server.uri(),
         );
@@ -653,7 +666,7 @@ mod tests {
             .await;
 
         let provider = AnthropicProvider::with_base_url(
-            AnthropicAuth::ApiKey(SecretValue::new("sk-test")),
+            AnthropicAuthentication::ApiKey(SecretValue::new("sk-test")),
             DEFAULT_MODEL,
             server.uri(),
         );
@@ -687,7 +700,10 @@ mod tests {
             .mount(&server)
             .await;
         let provider = AnthropicProvider::with_base_url(
-            AnthropicAuth::ApiKey(SecretValue::new(concat!("sk-ant-", "api03-redirected"))),
+            AnthropicAuthentication::ApiKey(SecretValue::new(concat!(
+                "sk-ant-",
+                "api03-redirected"
+            ))),
             DEFAULT_MODEL,
             server.uri(),
         );
@@ -715,7 +731,7 @@ mod tests {
             .mount(&server)
             .await;
         let provider = AnthropicProvider::with_base_url(
-            AnthropicAuth::ApiKey(SecretValue::new("sk-test")),
+            AnthropicAuthentication::ApiKey(SecretValue::new("sk-test")),
             DEFAULT_MODEL,
             server.uri(),
         )
@@ -765,8 +781,9 @@ mod tests {
     async fn the_bare_cli_is_given_no_token() {
         let directory = tempfile::tempdir().unwrap();
         let executable = fake_cli(directory.path(), r#"printf '%s' '{"result":"ok"}'"#);
-        let provider = AnthropicProvider::with_model(AnthropicAuth::ClaudeCli, DEFAULT_MODEL)
-            .with_executable(executable);
+        let provider =
+            AnthropicProvider::with_model(AnthropicAuthentication::ClaudeCli, DEFAULT_MODEL)
+                .with_executable(executable);
 
         provider
             .complete(&TextRequest::new("sys", "usr"))
