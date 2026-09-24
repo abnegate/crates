@@ -33,6 +33,7 @@ use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
 use std::num::NonZeroU64;
 use std::time::Duration;
+use tokio::time::Instant;
 use url::Url;
 
 mod branches;
@@ -164,8 +165,14 @@ const GIT_SUFFIX: &str = ".git";
 /// answered by any other redirect is [`PullRequestError::GitHubApi`] and is
 /// not sent on: a 301, 302 or 303, which may turn it into a GET or drop its
 /// body; a redirect to another origin, which would carry the token there; one
-/// whose `Location` is missing or cannot be read; one past the tenth hop; and
-/// any redirect of a write whose body can be sent only once.
+/// whose `Location` is missing or cannot be read; one past the tenth hop; one
+/// that answers once the write's time is spent; and any redirect of a write
+/// whose body can be sent only once.
+///
+/// A request is given 30 seconds from when it is first sent to the last byte
+/// of its answer, and every hop of a redirect spends them rather than starting
+/// again. One that outlasts them is [`PullRequestError::Http`], whose error
+/// says it timed out.
 ///
 /// A status that says what it means on its own is reported as that: 401 as
 /// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
@@ -199,6 +206,7 @@ pub struct PullRequestService {
     reader: Client,
     writer: Client,
     origin: Origin,
+    timeout: Duration,
 }
 
 impl PullRequestService {
@@ -226,12 +234,13 @@ impl PullRequestService {
 
     /// Address `origin` with a client for reads, which follows a redirect
     /// only within the origin, and one for writes, which follows none; each
-    /// gives up on a request after `timeout`.
+    /// request is given up on after `timeout`, however many hops it takes.
     fn addressing(origin: Origin, https_only: bool, timeout: Duration) -> PullRequestResult<Self> {
         Ok(Self {
             reader: client(https_only, timeout, within_origin())?,
             writer: client(https_only, timeout, Policy::none())?,
             origin,
+            timeout,
         })
     }
 
@@ -409,7 +418,9 @@ impl PullRequestService {
 
     /// A request to `url` that carries `token` and asks for an answer in
     /// `accept`, sent by the client for reads when it is one and by the
-    /// client for writes otherwise.
+    /// client for writes otherwise, and given up on after this service's
+    /// timeout, which a write sent on after a redirect spends rather than
+    /// starts again.
     fn request(
         &self,
         method: Method,
@@ -425,6 +436,7 @@ impl PullRequestService {
             .request(method, url)
             .bearer_auth(token.expose())
             .header(header::ACCEPT, accept)
+            .timeout(self.timeout)
     }
 
     /// Send `request` and read its answer as `T`, or as the refusal it is.
@@ -612,14 +624,23 @@ async fn sent(request: RequestBuilder) -> PullRequestResult<Response> {
 /// and headers, wherever a 307 or 308 points on the origin it was sent to,
 /// for at most [`MAXIMUM_REDIRECTS`] hops.
 ///
+/// Every hop spends the one timeout `request` carries: each is sent with what
+/// is left of it, so a chain of redirects that each answer in time is given
+/// up on once they together outlast it, as one request that stalled that long
+/// is.
+///
 /// Every other redirect is refused unsent. A 301 or 302 re-sends every method
 /// but POST without saying it kept the body, and a 303, or a 301 or 302 to a
 /// POST, turns the write into a GET of wherever it points, whose answer says
 /// nothing of the write. A redirect to another origin would carry the token
 /// there. A `Location` that is missing or cannot be read points nowhere, and
-/// a body that cannot be cloned cannot be sent twice. An answer from anywhere
-/// but the address last sent to is refused too.
+/// a body that cannot be cloned cannot be sent twice. A redirect that answers
+/// once no time is left is refused rather than sent on with none. An answer
+/// from anywhere but the address last sent to is refused too.
 async fn written(client: &Client, mut request: Request) -> PullRequestResult<Response> {
+    let deadline = request
+        .timeout()
+        .and_then(|timeout| Instant::now().checked_add(*timeout));
     let mut hops = 0;
     loop {
         let again = request.try_clone();
@@ -635,10 +656,18 @@ async fn written(client: &Client, mut request: Request) -> PullRequestResult<Res
         let (Some(mut again), Some(next)) = (again, next) else {
             return Err(redirected());
         };
+        if let Some(deadline) = deadline {
+            *again.timeout_mut() = Some(remaining(deadline).ok_or_else(redirected)?);
+        }
         *again.url_mut() = next;
         request = again;
         hops += 1;
     }
+}
+
+/// What is left of the time before `deadline`, or `None` once none is.
+fn remaining(deadline: Instant) -> Option<Duration> {
+    Some(deadline.saturating_duration_since(Instant::now())).filter(|left| !left.is_zero())
 }
 
 /// Where a 307 or 308 sends a write on to: its `Location`, resolved against
@@ -1781,6 +1810,21 @@ mod tests {
             );
         }
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A redirect that answers a write once its time is spent is refused
+    /// rather than sent on with no time to answer in.
+    #[test]
+    fn no_time_is_left_once_the_deadline_is_reached() {
+        let minute = Duration::from_secs(60);
+        let now = Instant::now();
+
+        assert_eq!(remaining(now), None);
+        assert!(
+            remaining(now + minute).is_some_and(|left| !left.is_zero() && left <= minute),
+            "{:?}",
+            remaining(now + minute)
+        );
     }
 
     #[tokio::test]

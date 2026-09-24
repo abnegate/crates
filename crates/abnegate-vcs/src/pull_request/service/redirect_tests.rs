@@ -611,3 +611,46 @@ async fn a_write_whose_body_cannot_be_sent_twice_is_refused_rather_than_sent_on(
         "a body that cannot be sent again is not sent on"
     );
 }
+
+/// A write sent on keeps what is left of the time it was first given rather
+/// than starting again at each hop, so redirects that each answer in time but
+/// together take longer are given up on as one stalled request is, and the
+/// write never reaches where they lead.
+#[tokio::test]
+async fn a_write_sent_on_is_given_up_on_once_its_hops_together_outlast_the_timeout() {
+    let server = MockServer::start().await;
+    for (from, to) in [
+        ("/first", "/second"),
+        ("/second", "/third"),
+        ("/third", TARGETS),
+    ] {
+        Mock::given(path(from))
+            .respond_with(
+                redirecting(307, format!("{}{to}", server.uri()))
+                    .set_delay(Duration::from_millis(120)),
+            )
+            .mount(&server)
+            .await;
+    }
+    Mock::given(path(TARGETS))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    let service = PullRequestService::addressing(
+        Origin::standing_in_for("github.com", &server.uri()).unwrap(),
+        false,
+        Duration::from_millis(200),
+    )
+    .unwrap();
+
+    let answer = writing(&service, Method::PUT, address(&server, "/first")).await;
+
+    assert!(
+        matches!(answer, Err(PullRequestError::Http(ref error)) if error.is_timeout()),
+        "{answer:?}"
+    );
+    assert!(
+        arrivals(&server, TARGETS).await.is_empty(),
+        "a write whose time ran out on the way is never sent on to where it was led"
+    );
+}
