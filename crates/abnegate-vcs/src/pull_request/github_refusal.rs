@@ -132,7 +132,7 @@ mod tests {
         );
         assert_eq!(
             refusal.summary(),
-            "ValidationFailed; name already exists; seconddetail"
+            "Validation Failed; name already exists; seconddetail"
         );
 
         assert_eq!(GitHubRefusal::default().summary(), "");
@@ -146,6 +146,31 @@ mod tests {
         .summary();
         assert_eq!(summary, bounded(&long));
         assert!(summary.len() < long.len(), "{}", summary.len());
+    }
+
+    /// The redactor reads words a line break or a tab keeps apart as apart, so
+    /// a summary keeps them apart too: dropping the break would join two
+    /// halves into a credential the redactor never saw whole.
+    #[test]
+    fn words_the_redactor_read_apart_stay_apart() {
+        let refusal = GitHubRefusal::parse(
+            serde_json::json!({
+                "message": "rejected ghp_\n0123456789abcdefghij",
+                "errors": [
+                    "ghp_\r\n0123456789abcdefghij",
+                    "ghp_\u{2028}0123456789abcdefghij",
+                    "ghp_\t \u{2029}0123456789abcdefghij",
+                ],
+            })
+            .to_string()
+            .as_bytes(),
+        );
+
+        assert_eq!(
+            refusal.summary(),
+            "rejected ghp_ 0123456789abcdefghij; ghp_ 0123456789abcdefghij; \
+             ghp_ 0123456789abcdefghij; ghp_ 0123456789abcdefghij"
+        );
     }
 
     #[test]
@@ -166,7 +191,7 @@ mod tests {
 
         assert_eq!(
             refusal.summary(),
-            "onetwothree; abcd; red; rejected [REDACTED]"
+            "one two three; abcd; red; rejected [REDACTED]"
         );
     }
 }

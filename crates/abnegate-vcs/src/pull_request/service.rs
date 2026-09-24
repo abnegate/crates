@@ -90,8 +90,9 @@ const MAXIMUM_ERROR_BYTES: usize = 1024;
 /// What joins GitHub's words when several are carried on one line.
 const SEPARATOR: &str = "; ";
 
-/// Characters that end a line without being control characters.
-const LINE_BREAKS: [char; 2] = ['\u{2028}', '\u{2029}'];
+/// What a run of whitespace, control characters and line breaks in GitHub's
+/// words becomes.
+const SPACE: &str = " ";
 
 /// Most of an error body read for GitHub's words about it.
 const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
@@ -749,9 +750,10 @@ pub(super) fn bounded(text: &str) -> &str {
 }
 
 /// GitHub's words on one line fit to carry in an error: each with any
-/// credential redacted, and terminal sequences, invisible formatting, control
-/// characters and line breaks removed, then trimmed, left out when nothing is
-/// left, joined, and cut to [`MAXIMUM_ERROR_BYTES`].
+/// credential redacted, terminal sequences and invisible formatting removed,
+/// and every run of whitespace, control characters and line breaks made one
+/// space, then trimmed, left out when nothing is left, joined, and cut to
+/// [`MAXIMUM_ERROR_BYTES`].
 pub(super) fn summarised<'a>(said: impl IntoIterator<Item = &'a str>) -> String {
     let mut line = String::new();
     for words in said {
@@ -770,14 +772,24 @@ pub(super) fn summarised<'a>(said: impl IntoIterator<Item = &'a str>) -> String 
     bounded(&line).to_string()
 }
 
-/// `words` sanitised, without control characters or line breaks, and
-/// trimmed.
+/// `words` sanitised, with every run of whitespace, control characters and
+/// line breaks made one space, and trimmed.
+///
+/// Words the redactor read apart stay apart: removing what separated them
+/// would join two halves into a credential it never saw whole.
 fn cleaned(words: &str) -> String {
-    let kept: String = sanitize(words)
-        .chars()
-        .filter(|character| !character.is_control() && !LINE_BREAKS.contains(character))
+    let sanitized = sanitize(words);
+    let kept: Vec<&str> = sanitized
+        .split(separates)
+        .filter(|word| !word.is_empty())
         .collect();
-    kept.trim().to_string()
+    kept.join(SPACE)
+}
+
+/// Whether `character` separates words: whitespace, which takes in the line
+/// and paragraph separators, or a control character.
+fn separates(character: char) -> bool {
+    character.is_whitespace() || character.is_control()
 }
 
 #[cfg(test)]
