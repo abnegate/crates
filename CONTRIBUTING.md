@@ -46,6 +46,14 @@ item carries one.
   strings.
 - A timeout, time limit or interval is a `Duration`, never an integer with its
   unit in the name: `timeout: Duration`, not `timeout_ms: u64`.
+- The one exception is a measured or requested media length on a serialized
+  modality wire type, which stays `f64` seconds: `duration_seconds` on
+  `MusicRequest`, `SoundEffectRequest`, `VideoRequest`, `AudioResponse`,
+  `VideoResponse` and `TranscriptionResponse`, and `TranscriptionSegment`'s
+  `start` and `end`. These are lengths of audio or video, not time limits, and
+  vendors send and read them as fractional seconds, so a `Duration` would
+  change the wire shape and gain nothing. A limit on them is still a
+  `Duration`: `AudioProvider::maximum_duration()`.
 - The crate-wide error is `Error`: `abnegate_http::Error`, not `HttpError`.
   Every other error is `<Domain>Error`, and the domain never repeats the crate
   name: `abnegate_vision::CropError`, not `abnegate_vision::crop::Error`. No
