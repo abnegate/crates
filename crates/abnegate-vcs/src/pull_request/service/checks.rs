@@ -49,6 +49,10 @@ impl PullRequestService {
     /// fails nothing and counts as passing. Nothing reporting at all is
     /// [`ChecksOutcome::Absent`], whose meaning a caller decides: a new
     /// repository has no checks yet, and that is not a pass.
+    ///
+    /// A page longer than the 16 MiB this crate reads is
+    /// [`PullRequestError::GitHubApi`], never a partial outcome and never
+    /// [`ChecksOutcome::Absent`].
     pub async fn fetch_checks(
         &self,
         repository: &Repository,
@@ -576,6 +580,46 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(fold(&[], &unknown, true), ChecksOutcome::Pending);
+    }
+
+    /// A check-runs page with no runs, padded to exactly `length` bytes with a
+    /// sentinel no error may repeat.
+    fn padded(length: usize) -> String {
+        let opening = r#"{"total_count":0,"check_runs":[],"padding":"RAW-SENTINEL"#;
+        let closing = r#""}"#;
+        let padding = "x".repeat(length - opening.len() - closing.len());
+        format!("{opening}{padding}{closing}")
+    }
+
+    #[tokio::test]
+    async fn a_check_runs_page_past_the_answer_bound_is_an_error_and_never_absent() {
+        let server = MockServer::start().await;
+        let sha = commit('f');
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(padded(MAXIMUM_ANSWER_BYTES + 1)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        answering(
+            &server,
+            statuses(&sha),
+            json!({ "total_count": 0, "statuses": [] }),
+        )
+        .await;
+        let service = stand_in(&server).await;
+
+        let read = service
+            .fetch_checks(&project(&service), &token(), &sha)
+            .await;
+
+        assert!(
+            matches!(read, Err(PullRequestError::GitHubApi(ref text)) if text == OVERSIZED),
+            "a page too long to read is not an empty one: {read:?}"
+        );
+        assert!(!format!("{read:?}").contains("RAW-SENTINEL"), "{read:?}");
     }
 
     #[tokio::test]

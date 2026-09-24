@@ -45,7 +45,9 @@ impl PullRequestService {
     /// and stops at the page limit every paged read keeps to. Each thread
     /// carries at most its first twenty comments, and a thread met twice is
     /// kept once. A repository or pull request GitHub cannot find, or will not
-    /// show the token, is [`PullRequestError::NotFound`].
+    /// show the token, is [`PullRequestError::NotFound`]. A page longer than
+    /// the 16 MiB this crate reads is [`PullRequestError::GitHubApi`], never a
+    /// partial or empty list.
     pub async fn fetch_review_threads(
         &self,
         reference: &PullRequestReference,

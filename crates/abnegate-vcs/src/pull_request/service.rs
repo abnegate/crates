@@ -85,8 +85,13 @@ const MAXIMUM_ERROR_BYTES: usize = 1024;
 /// Most of an error body read for GitHub's words about it.
 const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
 
-/// Most of a successful answer read. A longer one is refused, never parsed in
-/// part.
+/// Most bytes of a successful answer read. A longer one is refused whole,
+/// never parsed in part.
+///
+/// The bound counts bytes, not characters. A character takes up to four bytes
+/// in UTF-8 and up to six as a JSON `\u` escape, so a page of a hundred
+/// comments at GitHub's limit of 65,536 characters each can outgrow it, and
+/// such a page is an error rather than a shorter list.
 const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 
 /// What an answer this crate cannot read is reported as, in place of the

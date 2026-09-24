@@ -12,7 +12,9 @@ impl PullRequestService {
     /// their summaries, oldest first.
     ///
     /// Reads no further than the first thousand comments, so on a longer
-    /// conversation the newest are the ones left unread.
+    /// conversation the newest are the ones left unread. A page longer than
+    /// the 16 MiB this crate reads is [`PullRequestError::GitHubApi`], never
+    /// a partial or empty list.
     pub async fn fetch_issue_comments(
         &self,
         reference: &PullRequestReference,
