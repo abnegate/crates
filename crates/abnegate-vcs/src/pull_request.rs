@@ -14,6 +14,7 @@ mod github_branch;
 mod github_comment;
 mod github_pull_request;
 mod github_pull_request_detail;
+mod github_refusal;
 mod github_review;
 mod github_user;
 mod mergeability;

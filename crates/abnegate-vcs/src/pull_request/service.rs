@@ -12,6 +12,7 @@ use crate::pull_request::SubmittedReview;
 use crate::pull_request::create_request::CreateRequest;
 use crate::pull_request::github_comment::GitHubComment;
 use crate::pull_request::github_pull_request_detail::GitHubPullRequestDetail;
+use crate::pull_request::github_refusal::GitHubRefusal;
 use crate::pull_request::github_review::GitHubReview;
 use crate::pull_request::minutes_between;
 use crate::pull_request::origin::Origin;
@@ -20,9 +21,12 @@ use crate::pull_request::repository_detail::RepositoryDetail;
 use crate::pull_request::tally;
 use abnegate_secret::SecretValue;
 use reqwest::Client;
+use reqwest::Method;
 use reqwest::RequestBuilder;
 use reqwest::Response;
 use reqwest::StatusCode;
+use reqwest::header;
+use reqwest::header::HeaderMap;
 use serde::de::DeserializeOwned;
 use std::num::NonZeroU64;
 use std::time::Duration;
@@ -67,8 +71,15 @@ const RATE_LIMIT_REMAINING: &str = "x-ratelimit-remaining";
 /// The header GitHub's secondary rate limit says how long to wait in.
 const RETRY_AFTER: &str = "retry-after";
 
-/// Most of an error body carried into [`PullRequestError::GitHubApi`].
+/// Most of GitHub's own words carried into [`PullRequestError::GitHubApi`].
 const MAXIMUM_ERROR_BYTES: usize = 1024;
+
+/// Most of an error body read for GitHub's words about it.
+const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
+
+/// What an answer this crate cannot read is reported as, in place of the
+/// parser's own message, which quotes the answer.
+const UNREADABLE: &str = "GitHub answered in a form this crate cannot read";
 
 /// What GitHub says when a pull request for the branch is already open.
 const ALREADY_EXISTS: &str = "A pull request already exists";
@@ -240,30 +251,30 @@ impl PullRequestService {
             draft,
         };
 
-        let response = authorised(self.client.post(url), token)
+        let response = self
+            .request(Method::POST, url, token, ACCEPT)
             .json(&request)
             .send()
             .await?;
 
         let status = response.status();
         if status.is_success() {
-            let created: GitHubPullRequest = response.json().await?;
+            let created: GitHubPullRequest = decode(response).await?;
             return Ok(CreatedPullRequest {
                 url: created.html_url,
                 number: created.number,
                 state: created.state,
             });
         }
-
-        let failure = refusal(response).await;
-        match failure {
-            PullRequestError::GitHubApi(ref text)
-                if status == StatusCode::UNPROCESSABLE_ENTITY && text.contains(ALREADY_EXISTS) =>
-            {
-                Err(PullRequestError::PullRequestAlreadyExists(head.clone()))
-            }
-            failure => Err(failure),
+        if let Some(failure) = classified(status, response.headers()) {
+            return Err(failure);
         }
+
+        let refusal = refusal_of(response).await;
+        if status == StatusCode::UNPROCESSABLE_ENTITY && refusal.mentions(ALREADY_EXISTS) {
+            return Err(PullRequestError::PullRequestAlreadyExists(head.clone()));
+        }
+        Err(unexpected(status, &refusal))
     }
 
     /// The repository's default branch.
@@ -300,16 +311,36 @@ impl PullRequestService {
         Ok(open.into_iter().next().map(|found| found.html_url))
     }
 
+    /// A request to `url` that carries `token` and asks for an answer in `accept`.
+    fn request(
+        &self,
+        method: Method,
+        url: Url,
+        token: &SecretValue,
+        accept: &'static str,
+    ) -> RequestBuilder {
+        self.client
+            .request(method, url)
+            .bearer_auth(token.expose())
+            .header(header::ACCEPT, accept)
+    }
+
+    /// Send `request` and read its answer as `T`, or as the refusal it is.
+    async fn exchange<T: DeserializeOwned>(&self, request: RequestBuilder) -> PullRequestResult<T> {
+        let response = request.send().await?;
+        if !response.status().is_success() {
+            return Err(refusal(response).await);
+        }
+        decode(response).await
+    }
+
     async fn get<T: DeserializeOwned>(
         &self,
         url: Url,
         token: &SecretValue,
     ) -> PullRequestResult<T> {
-        let response = authorised(self.client.get(url), token).send().await?;
-        if !response.status().is_success() {
-            return Err(refusal(response).await);
-        }
-        Ok(response.json().await?)
+        self.exchange(self.request(Method::GET, url, token, ACCEPT))
+            .await
     }
 
     async fn get_all<T: DeserializeOwned>(
@@ -439,35 +470,78 @@ fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
         .build()?)
 }
 
-fn authorised(request: RequestBuilder, token: &SecretValue) -> RequestBuilder {
-    request.bearer_auth(token.expose()).header("Accept", ACCEPT)
+/// A successful answer read as `T`. An answer that is not the JSON expected
+/// is reported in fixed words, because the parser's own message quotes it.
+async fn decode<T: DeserializeOwned>(response: Response) -> PullRequestResult<T> {
+    let body = response.bytes().await?;
+    serde_json::from_slice(&body).map_err(|_| PullRequestError::GitHubApi(UNREADABLE.to_string()))
 }
 
-/// What an unsuccessful answer means: a token GitHub did not accept, one it
-/// accepted but will not let do this, a rate limit, a repository or pull
-/// request the token cannot see, or anything else in GitHub's own words.
-async fn refusal(response: Response) -> PullRequestError {
-    let status = response.status();
-    let exhausted = response
-        .headers()
+/// What a status means on its own: a token GitHub did not accept, one it
+/// accepted but will not let do this, a rate limit, or a repository or pull
+/// request the token cannot see.
+fn classified(status: StatusCode, headers: &HeaderMap) -> Option<PullRequestError> {
+    let exhausted = headers
         .get(RATE_LIMIT_REMAINING)
         .is_some_and(|remaining| remaining.as_bytes() == b"0")
-        || response.headers().contains_key(RETRY_AFTER);
+        || headers.contains_key(RETRY_AFTER);
     match status {
-        StatusCode::UNAUTHORIZED => PullRequestError::AuthenticationFailed,
-        StatusCode::TOO_MANY_REQUESTS => PullRequestError::RateLimited,
-        StatusCode::FORBIDDEN if exhausted => PullRequestError::RateLimited,
-        StatusCode::FORBIDDEN => PullRequestError::Forbidden,
-        StatusCode::NOT_FOUND => PullRequestError::NotFound,
-        _ => {
-            let text = response.text().await.unwrap_or_default();
-            let mut end = text.len().min(MAXIMUM_ERROR_BYTES);
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            PullRequestError::GitHubApi(format!("GitHub API returned {status}: {}", &text[..end]))
-        }
+        StatusCode::UNAUTHORIZED => Some(PullRequestError::AuthenticationFailed),
+        StatusCode::TOO_MANY_REQUESTS => Some(PullRequestError::RateLimited),
+        StatusCode::FORBIDDEN if exhausted => Some(PullRequestError::RateLimited),
+        StatusCode::FORBIDDEN => Some(PullRequestError::Forbidden),
+        StatusCode::NOT_FOUND => Some(PullRequestError::NotFound),
+        _ => None,
     }
+}
+
+/// A refusal no status explains, named by its status and GitHub's own words.
+fn unexpected(status: StatusCode, refusal: &GitHubRefusal) -> PullRequestError {
+    let summary = refusal.summary();
+    PullRequestError::GitHubApi(match summary.is_empty() {
+        true => format!("GitHub API returned {status}"),
+        false => format!("GitHub API returned {status}: {summary}"),
+    })
+}
+
+/// The first `limit` bytes of an answer's body, read no further, and whether
+/// any of it remained unread.
+async fn read_prefix(mut response: Response, limit: usize) -> PullRequestResult<(Vec<u8>, bool)> {
+    let mut prefix = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let room = limit - prefix.len();
+        if chunk.len() > room {
+            prefix.extend_from_slice(&chunk[..room]);
+            return Ok((prefix, true));
+        }
+        prefix.extend_from_slice(&chunk);
+    }
+    Ok((prefix, false))
+}
+
+/// What GitHub said in refusing, read from no more than
+/// [`MAXIMUM_REFUSAL_BYTES`] of its answer. A body that cannot be read says
+/// nothing.
+async fn refusal_of(response: Response) -> GitHubRefusal {
+    read_prefix(response, MAXIMUM_REFUSAL_BYTES)
+        .await
+        .map(|(body, _)| GitHubRefusal::parse(&body))
+        .unwrap_or_default()
+}
+
+/// What an unsuccessful answer means: what its status says on its own, or
+/// else its status and GitHub's own words.
+async fn refusal(response: Response) -> PullRequestError {
+    let status = response.status();
+    match classified(status, response.headers()) {
+        Some(failure) => failure,
+        None => unexpected(status, &refusal_of(response).await),
+    }
+}
+
+/// `text` cut to [`MAXIMUM_ERROR_BYTES`], never inside a character.
+pub(super) fn bounded(text: &str) -> &str {
+    &text[..text.floor_char_boundary(MAXIMUM_ERROR_BYTES)]
 }
 
 #[cfg(test)]
@@ -923,7 +997,10 @@ mod tests {
     async fn an_error_body_is_carried_only_so_far() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("é".repeat(4096)))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_json(serde_json::json!({ "message": "é".repeat(4096) })),
+            )
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
@@ -938,6 +1015,166 @@ mod tests {
             failure.len() < MAXIMUM_ERROR_BYTES + 100,
             "{}",
             failure.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prefix_stops_reading_at_its_limit_and_says_more_remained() {
+        let limit = 100;
+        for (length, expected, remained) in [
+            (1_000_000, limit, true),
+            (limit, limit, false),
+            (0, 0, false),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("b".repeat(length)))
+                .mount(&server)
+                .await;
+            let response = client(false, REQUEST_TIMEOUT)
+                .unwrap()
+                .get(server.uri())
+                .send()
+                .await
+                .unwrap();
+
+            let (prefix, more) = read_prefix(response, limit).await.unwrap();
+
+            assert_eq!(prefix, "b".repeat(expected).into_bytes(), "{length} bytes");
+            assert_eq!(more, remained, "{length} bytes");
+        }
+    }
+
+    /// GitHub's message is what explains a refusal; the rest of its answer is
+    /// whatever the server chose to send, and has no place in an error a log
+    /// keeps.
+    #[tokio::test]
+    async fn an_error_names_github_s_message_and_never_its_raw_body() {
+        for (body, expected) in [
+            (
+                r#"{"message":"boom","documentation_url":"RAW-SENTINEL"}"#,
+                "GitHub API returned 500 Internal Server Error: boom",
+            ),
+            (
+                "<html>RAW-SENTINEL</html>",
+                "GitHub API returned 500 Internal Server Error",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(500).set_body_string(body))
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .fetch_mergeability(&seven(&service), &token())
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == expected),
+                "{failure:?}"
+            );
+            assert_eq!(failure.to_string(), format!("GitHub API error: {expected}"));
+            assert!(
+                !format!("{failure:?}").contains("RAW-SENTINEL"),
+                "{failure:?}"
+            );
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "message": "Validation Failed",
+                "errors": [{ "code": "custom", "message": "No commits between main and feature" }],
+                "documentation_url": "RAW-SENTINEL",
+            })))
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .create_pull_request(
+                &project(&service),
+                &token(),
+                &BranchName::parse("feature").unwrap(),
+                &BranchName::parse("main").unwrap(),
+                "title",
+                "body",
+                false,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            failure.to_string(),
+            "GitHub API error: GitHub API returned 422 Unprocessable Entity: \
+             Validation Failed; No commits between main and feature"
+        );
+        assert!(
+            !format!("{failure:?}").contains("RAW-SENTINEL"),
+            "{failure:?}"
+        );
+    }
+
+    /// The parser's own message quotes the value it could not read, which is
+    /// the answer's content and not this crate's to repeat.
+    #[tokio::test]
+    async fn an_answer_this_crate_cannot_read_names_no_part_of_it() {
+        for body in [r#"{"mergeable":"RAW-SENTINEL"}"#, "RAW-SENTINEL"] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .fetch_mergeability(&seven(&service), &token())
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+                "{failure:?}"
+            );
+            assert!(
+                !format!("{failure:?}").contains("RAW-SENTINEL"),
+                "{failure:?}"
+            );
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(serde_json::json!({ "number": "RAW-SENTINEL" })),
+            )
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .create_pull_request(
+                &project(&service),
+                &token(),
+                &BranchName::parse("feature").unwrap(),
+                &BranchName::parse("main").unwrap(),
+                "title",
+                "body",
+                false,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+            "{failure:?}"
+        );
+        assert!(
+            !format!("{failure:?}").contains("RAW-SENTINEL"),
+            "{failure:?}"
         );
     }
 
