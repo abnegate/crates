@@ -8,8 +8,8 @@ pub(super) enum GitHubStatusState {
     Failure,
     Pending,
     Success,
-    /// A state this crate does not know yet, which is neither pending nor a
-    /// failure.
+    /// A state this crate does not know yet, which fails nothing but is no
+    /// pass either, so it keeps the commit pending.
     #[serde(other)]
     Unknown,
 }

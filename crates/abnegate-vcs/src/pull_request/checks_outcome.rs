@@ -2,12 +2,13 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ChecksOutcome {
-    /// Every check and status finished without failing.
+    /// Every check and status finished and passed, or was neutral or
+    /// skipped.
     Success,
     /// At least one failed; the names say which, sorted and without repeats.
     Failure(Vec<String>),
-    /// None has failed, but at least one is still running or not every one
-    /// could be read.
+    /// None has failed, but at least one is still running, has not said it
+    /// passed, or could not be read.
     Pending,
     /// Nothing reports on this commit at all.
     Absent,
