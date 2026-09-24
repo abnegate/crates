@@ -16,7 +16,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, in the order a classifier is offered them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: &[Self] = &[
         Self::Feat,
         Self::Fix,
         Self::Refactor,
@@ -29,8 +29,8 @@ impl Kind {
 
     /// The kind a change falls back to when nothing classified it.
     ///
-    /// It claims the least of the eight, so a wrong guess here understates the
-    /// change rather than announcing one that was never made.
+    /// It claims less than any other kind, so a wrong guess here understates
+    /// the change rather than announcing one that was never made.
     pub const UNCLASSIFIED: Self = Self::Chore;
 
     /// The kind as a subject line spells it.
@@ -49,7 +49,7 @@ impl Kind {
 
     pub fn parse(value: &str) -> Option<Self> {
         let value = value.trim().to_ascii_lowercase();
-        Self::ALL.into_iter().find(|kind| kind.label() == value)
+        Self::ALL.iter().copied().find(|kind| kind.label() == value)
     }
 }
 
