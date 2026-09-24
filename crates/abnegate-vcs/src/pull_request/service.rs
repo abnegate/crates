@@ -1344,6 +1344,23 @@ mod tests {
         }
     }
 
+    /// A chunk that fills the prefix exactly does not end the read; the one
+    /// after it is what says more remained.
+    #[tokio::test]
+    async fn a_prefix_filled_on_a_chunk_boundary_still_says_more_remained() {
+        let limit = 100;
+        let filling = "a".repeat(limit);
+        let answer = format!(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n\
+             {limit:x}\r\n{filling}\r\n1\r\nb\r\n0\r\n\r\n"
+        );
+
+        let (prefix, more) = read_prefix(served(answer).await, limit).await.unwrap();
+
+        assert_eq!(prefix, filling.into_bytes());
+        assert!(more, "a byte followed the chunk that filled the prefix");
+    }
+
     /// However an answer is framed, it is read to its last byte while it fits,
     /// and one byte more is refused whole rather than parsed in part.
     #[tokio::test]
