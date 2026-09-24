@@ -7,13 +7,13 @@ use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-use crate::error::Overlong;
 use crate::event::AgentEvent;
 use crate::kind::AgentKind;
 use crate::lines::Lines;
 use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
+use crate::overlong_error::OverlongError;
 use crate::parser;
 use crate::scrubber::Scrubber;
 use crate::stdout_parse_result::StdoutParseResult;
@@ -141,7 +141,7 @@ impl Reader {
     }
 
     /// Drop an event too long to read, unless the run cannot do without it.
-    async fn skip(&mut self, overlong: Overlong) -> Result<(), String> {
+    async fn skip(&mut self, overlong: OverlongError) -> Result<(), String> {
         self.count += 1;
         if self.agent.essential(&overlong.prefix) {
             return Err(overlong.to_string());
