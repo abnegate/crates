@@ -86,12 +86,15 @@ pub use crate::modality::voice_request::VoiceRequest;
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::Duration;
 
     use async_trait::async_trait;
     use futures::Stream;
 
     use super::*;
     use crate::provider::ProviderError;
+
+    const LONGEST_CLIP: Duration = Duration::from_millis(47_500);
 
     struct Everything;
 
@@ -172,8 +175,8 @@ mod tests {
             Vec::new()
         }
 
-        fn maximum_duration_seconds(&self) -> f64 {
-            0.0
+        fn maximum_duration(&self) -> Duration {
+            LONGEST_CLIP
         }
 
         async fn generate_music(
@@ -285,6 +288,15 @@ mod tests {
         let _model3d: Box<dyn Model3DProvider> = Box::new(Everything);
         let _embedding: Box<dyn EmbeddingProvider> = Box::new(Everything);
         let _transcription: Box<dyn TranscriptionProvider> = Box::new(Everything);
+    }
+
+    #[test]
+    fn an_audio_provider_reports_its_longest_clip_as_a_duration() {
+        let audio: Box<dyn AudioProvider> = Box::new(Everything);
+
+        let longest: Duration = audio.maximum_duration();
+
+        assert_eq!(longest, LONGEST_CLIP);
     }
 
     #[cfg(feature = "openai")]
