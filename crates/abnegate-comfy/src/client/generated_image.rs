@@ -1,5 +1,6 @@
 use std::fmt;
 
+#[non_exhaustive]
 pub struct GeneratedImage {
     pub bytes: bytes::Bytes,
     pub mime: String,

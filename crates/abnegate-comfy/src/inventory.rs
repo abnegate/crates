@@ -9,16 +9,13 @@ pub(crate) use weight_document::WeightDocument;
 pub use weight_sidecar::WeightSidecar;
 
 use crate::recipe::{MediaKind, Recipe, RecipeCatalog, RequiredFile, sanitize_weight_filename};
+use crate::train::Contract;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Suffix of the recipe binding written beside every weight. Model volumes
-/// already hold bindings under this name, so renaming it would orphan them.
-pub const SIDECAR_SUFFIX: &str = ".zone.json";
-/// Directory under `loras/` whose markers hide a weight while it is replaced.
-/// Every process sharing a models directory has to agree on it.
-pub const PUBLICATION_DIRECTORY: &str = ".zone-publish";
+/// Extension of every weight the inventory lists.
+pub(crate) const WEIGHT_EXTENSION: &str = ".safetensors";
 const PUBLICATION_SUFFIX: &str = ".pending";
 
 const SCAN_DIRECTORIES: &[(&str, &str)] = &[
@@ -27,7 +24,16 @@ const SCAN_DIRECTORIES: &[(&str, &str)] = &[
     ("loras", "lora"),
 ];
 
-pub fn scan(models_directory: &Path, catalog: &RecipeCatalog) -> Vec<InventoryItem> {
+/// Every checkpoint, diffusion model and LoRA under `models_directory` that a
+/// recipe in `catalog` can run, sorted by filename. A LoRA is listed only when
+/// its sidecar, named with `contract`'s suffix, binds it to an adapter recipe
+/// for its base, and never while a publication in `contract`'s publication
+/// directory is replacing it.
+pub fn scan(
+    models_directory: &Path,
+    catalog: &RecipeCatalog,
+    contract: &Contract,
+) -> Vec<InventoryItem> {
     let mut items = Vec::new();
     for (directory, kind) in SCAN_DIRECTORIES {
         let folder = models_directory.join(directory);
@@ -42,13 +48,14 @@ pub fn scan(models_directory: &Path, catalog: &RecipeCatalog) -> Vec<InventoryIt
             let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            if filename.ends_with(SIDECAR_SUFFIX) || !filename.ends_with(".safetensors") {
+            if filename.ends_with(&contract.sidecar_suffix) || !filename.ends_with(WEIGHT_EXTENSION)
+            {
                 continue;
             }
             if sanitize_weight_filename(filename).is_err() {
                 continue;
             }
-            if *kind == "lora" && publication_pending(models_directory, filename) {
+            if *kind == "lora" && publication_pending(models_directory, filename, contract) {
                 continue;
             }
             let metadata = fs::metadata(&path).ok();
@@ -59,12 +66,12 @@ pub fn scan(models_directory: &Path, catalog: &RecipeCatalog) -> Vec<InventoryIt
             let modified_at = metadata
                 .and_then(|metadata| metadata.modified().ok())
                 .and_then(rfc3339);
-            let sidecar = read_sidecar(&path);
+            let sidecar = read_sidecar(&path, contract);
             let recipe = resolve_recipe(catalog, filename, kind, sidecar.as_ref());
             let Some(recipe) = recipe else {
                 continue;
             };
-            if *kind == "lora" && publication_pending(models_directory, filename) {
+            if *kind == "lora" && publication_pending(models_directory, filename, contract) {
                 continue;
             }
             let missing = missing_required(models_directory, &recipe.required_files);
@@ -102,16 +109,24 @@ pub fn scan(models_directory: &Path, catalog: &RecipeCatalog) -> Vec<InventoryIt
     items
 }
 
+/// The item [`scan`] listed under `filename`.
 pub fn find<'a>(items: &'a [InventoryItem], filename: &str) -> Option<&'a InventoryItem> {
     items.iter().find(|item| item.filename == filename)
 }
 
-pub fn write_sidecar(path: &Path, sidecar: &WeightSidecar) -> std::io::Result<()> {
+/// Binds the weight at `path` to a recipe, in the sidecar beside it named with
+/// `contract`'s suffix.
+pub fn write_sidecar(
+    path: &Path,
+    sidecar: &WeightSidecar,
+    contract: &Contract,
+) -> std::io::Result<()> {
     let encoded = serde_json::to_vec_pretty(sidecar)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    fs::write(sidecar_path(path), encoded)
+    fs::write(sidecar_path(path, contract), encoded)
 }
 
+/// Where a weight of `kind` sits under the models directory.
 pub fn relative_weight_path(kind: &str, filename: &str) -> Option<PathBuf> {
     let directory = match kind {
         "checkpoint" => "checkpoints",
@@ -159,17 +174,21 @@ fn resolve_recipe<'a>(
     catalog.image_recipe_for(filename).ok()
 }
 
-pub(crate) fn publication_marker(loras: &Path, filename: &str) -> Option<PathBuf> {
+pub(crate) fn publication_marker(
+    loras: &Path,
+    filename: &str,
+    contract: &Contract,
+) -> Option<PathBuf> {
     let filename = sanitize_weight_filename(filename).ok()?;
     Some(
         loras
-            .join(PUBLICATION_DIRECTORY)
+            .join(&contract.publication_directory)
             .join(format!("{filename}{PUBLICATION_SUFFIX}")),
     )
 }
 
-fn publication_pending(models_directory: &Path, filename: &str) -> bool {
-    publication_marker(&models_directory.join("loras"), filename)
+fn publication_pending(models_directory: &Path, filename: &str, contract: &Contract) -> bool {
+    publication_marker(&models_directory.join("loras"), filename, contract)
         .is_some_and(|path| fs::symlink_metadata(path).is_ok())
 }
 
@@ -194,18 +213,18 @@ fn inventory_label(recipe: &Recipe, filename: &str) -> String {
     }
 }
 
-pub(crate) fn sidecar_path(weight: &Path) -> PathBuf {
+pub(crate) fn sidecar_path(weight: &Path, contract: &Contract) -> PathBuf {
     let mut name = weight
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("weight")
         .to_string();
-    name.push_str(SIDECAR_SUFFIX);
+    name.push_str(&contract.sidecar_suffix);
     weight.with_file_name(name)
 }
 
-fn read_sidecar(weight: &Path) -> Option<WeightDocument> {
-    let sidecar = sidecar_path(weight);
+fn read_sidecar(weight: &Path, contract: &Contract) -> Option<WeightDocument> {
+    let sidecar = sidecar_path(weight, contract);
     let metadata = fs::symlink_metadata(&sidecar).ok()?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return None;
@@ -242,10 +261,9 @@ mod tests {
     fn write_qwen_sidecar(weight: &Path) {
         write_sidecar(
             weight,
-            &WeightSidecar {
-                recipe_id: "qwen-image-edit-adapter".into(),
-                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
-            },
+            &WeightSidecar::new("qwen-image-edit-adapter")
+                .with_huggingface_base("Qwen/Qwen-Image-Edit-2511"),
+            &Contract::default(),
         )
         .unwrap();
     }
@@ -257,7 +275,7 @@ mod tests {
         fs::write(&lora, b"lora").unwrap();
         write_qwen_sidecar(&lora);
         let catalog = RecipeCatalog::packaged().unwrap();
-        let items = scan(&root, &catalog);
+        let items = scan(&root, &catalog, &Contract::default());
         let item = items
             .iter()
             .find(|item| item.filename == "qwen-image-edit-plus-nsfw-lora.safetensors")
@@ -290,7 +308,7 @@ mod tests {
         .unwrap();
         fs::write(root.join("vae/qwen_image_vae.safetensors"), b"vae").unwrap();
         let catalog = RecipeCatalog::packaged().unwrap();
-        let items = scan(&root, &catalog);
+        let items = scan(&root, &catalog, &Contract::default());
         let item = items
             .iter()
             .find(|item| item.filename == "qwen-image-edit-plus-nsfw-lora.safetensors")
@@ -310,10 +328,11 @@ mod tests {
                 recipe_id: "qwen-image-edit-adapter".into(),
                 huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
+            &Contract::default(),
         )
         .unwrap();
         let catalog = RecipeCatalog::packaged().unwrap();
-        let items = scan(&root, &catalog);
+        let items = scan(&root, &catalog, &Contract::default());
         assert_eq!(items[0].recipe_id, "qwen-image-edit-adapter");
         let _ = fs::remove_dir_all(root);
     }
@@ -335,6 +354,7 @@ mod tests {
                 recipe_id: "flux-schnell-adapter".into(),
                 huggingface_base: None,
             },
+            &Contract::default(),
         )
         .unwrap();
         write_sidecar(
@@ -343,6 +363,7 @@ mod tests {
                 recipe_id: "flux-schnell-adapter".into(),
                 huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
+            &Contract::default(),
         )
         .unwrap();
         write_sidecar(
@@ -351,10 +372,11 @@ mod tests {
                 recipe_id: "missing-adapter".into(),
                 huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
+            &Contract::default(),
         )
         .unwrap();
         fs::write(
-            sidecar_path(&malformed),
+            sidecar_path(&malformed, &Contract::default()),
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
@@ -366,7 +388,14 @@ mod tests {
         )
         .unwrap();
 
-        assert!(scan(&root, &RecipeCatalog::packaged().unwrap()).is_empty());
+        assert!(
+            scan(
+                &root,
+                &RecipeCatalog::packaged().unwrap(),
+                &Contract::default()
+            )
+            .is_empty()
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -376,7 +405,7 @@ mod tests {
         let lora = root.join("loras/style.safetensors");
         fs::write(&lora, b"lora").unwrap();
         fs::write(
-            sidecar_path(&lora),
+            sidecar_path(&lora, &Contract::default()),
             serde_json::to_vec(&WeightDocument {
                 sidecar: WeightSidecar {
                     recipe_id: "flux-schnell-adapter".into(),
@@ -387,11 +416,84 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let marker = publication_marker(&root.join("loras"), "style.safetensors").unwrap();
+        let marker = publication_marker(
+            &root.join("loras"),
+            "style.safetensors",
+            &Contract::default(),
+        )
+        .unwrap();
         fs::create_dir_all(marker.parent().unwrap()).unwrap();
         fs::write(marker, b"pending").unwrap();
 
-        assert!(scan(&root, &RecipeCatalog::packaged().unwrap()).is_empty());
+        assert!(
+            scan(
+                &root,
+                &RecipeCatalog::packaged().unwrap(),
+                &Contract::default()
+            )
+            .is_empty()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn overridden() -> Contract {
+        Contract {
+            sidecar_suffix: ".binding.json".into(),
+            publication_directory: ".binding-publish".into(),
+            ..Contract::default()
+        }
+    }
+
+    #[test]
+    fn a_sidecar_is_read_only_under_the_suffix_the_contract_names() {
+        let root = temp_models();
+        let lora = root.join("loras/style.safetensors");
+        fs::write(&lora, b"lora").unwrap();
+        write_sidecar(
+            &lora,
+            &WeightSidecar {
+                recipe_id: "flux-schnell-adapter".into(),
+                huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+            },
+            &overridden(),
+        )
+        .unwrap();
+        let catalog = RecipeCatalog::packaged().unwrap();
+
+        assert!(root.join("loras/style.safetensors.binding.json").is_file());
+        assert_eq!(scan(&root, &catalog, &overridden()).len(), 1);
+        assert!(
+            scan(&root, &catalog, &Contract::default()).is_empty(),
+            "a binding under another suffix is no binding at all"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_publication_hides_a_weight_only_from_the_contract_that_names_its_directory() {
+        let root = temp_models();
+        let lora = root.join("loras/style.safetensors");
+        fs::write(&lora, b"lora").unwrap();
+        for contract in [overridden(), Contract::default()] {
+            write_sidecar(
+                &lora,
+                &WeightSidecar {
+                    recipe_id: "flux-schnell-adapter".into(),
+                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+                },
+                &contract,
+            )
+            .unwrap();
+        }
+        let marker =
+            publication_marker(&root.join("loras"), "style.safetensors", &overridden()).unwrap();
+        assert!(marker.starts_with(root.join("loras/.binding-publish")));
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(marker, b"pending").unwrap();
+        let catalog = RecipeCatalog::packaged().unwrap();
+
+        assert!(scan(&root, &catalog, &overridden()).is_empty());
+        assert_eq!(scan(&root, &catalog, &Contract::default()).len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }

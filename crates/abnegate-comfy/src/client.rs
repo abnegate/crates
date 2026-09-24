@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
@@ -31,7 +30,7 @@ use crate::recipe::{
 };
 
 const PACKAGED_VIDEO_WORKFLOW: &str = include_str!("../comfyui/workflows/wan2.2-ti2v-5b-api.json");
-const PACKAGED_I2V_WORKFLOW: &str =
+const PACKAGED_IMAGE_TO_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/wan2.2-ti2v-5b-i2v-api.json");
 const PACKAGED_AUDIO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/ace-step-v1-3.5b-api.json");
@@ -212,15 +211,20 @@ impl Client {
     fn image_recipe(&self) -> Result<&Recipe, Error> {
         let selected = self.config.checkpoint.as_str();
         if self.config.models_directory.is_dir() {
-            let items = crate::inventory::scan(&self.config.models_directory, &self.catalog);
+            let items = crate::inventory::scan(
+                &self.config.models_directory,
+                &self.catalog,
+                &self.config.contract,
+            );
             if let Some(item) = crate::inventory::find(&items, selected)
                 && let Some(recipe) = self.catalog.get(&item.recipe_id)
             {
                 return Ok(recipe);
             }
             let loras = self.config.models_directory.join("loras");
-            let pending = crate::inventory::publication_marker(&loras, selected)
-                .is_some_and(|marker| std::fs::symlink_metadata(marker).is_ok());
+            let pending =
+                crate::inventory::publication_marker(&loras, selected, &self.config.contract)
+                    .is_some_and(|marker| std::fs::symlink_metadata(marker).is_ok());
             if pending || std::fs::symlink_metadata(loras.join(selected)).is_ok() {
                 return Err(Error::Configuration(
                     "selected LoRA has no complete, coherent sidecar",
@@ -251,9 +255,10 @@ impl Client {
         }
         let video_workflow = load_video_workflow(self.config.video_workflow_path.as_deref())?;
         validate_video_workflow(&video_workflow)?;
-        let i2v_workflow = load_i2v_workflow(self.config.video_workflow_path.as_deref())?;
-        validate_i2v_workflow(&i2v_workflow)?;
-        Ok((video_workflow, i2v_workflow))
+        let image_to_video_workflow =
+            load_image_to_video_workflow(self.config.video_workflow_path.as_deref())?;
+        validate_image_to_video_workflow(&image_to_video_workflow)?;
+        Ok((video_workflow, image_to_video_workflow))
     }
 
     fn audio_workflow(&self) -> Result<Value, Error> {
@@ -279,8 +284,7 @@ impl Client {
         if cancel.try_recv().is_ok() {
             return Err(Error::Cancelled);
         }
-        let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.generation_timeout_seconds);
+        let deadline = tokio::time::Instant::now() + self.config.generation_timeout;
         let prompt = if prompt.trim().is_empty() {
             if source.is_some() {
                 "edit this image"
@@ -299,19 +303,20 @@ impl Client {
         let workflow = if let Some(source) = source {
             let _ = progress.send("Uploading source image...".to_string());
             let uploaded = self.upload_source(source, cancel, deadline).await?;
-            recipe.apply(Fill {
-                prompt,
-                seed: rand::random::<u64>() & i64::MAX as u64,
-                weights: fill_weights,
-                source: Some(uploaded.as_str()),
-            })?
+            recipe.apply(
+                Fill::new(
+                    prompt,
+                    rand::random::<u64>() & i64::MAX as u64,
+                    fill_weights,
+                )
+                .with_source(uploaded.as_str()),
+            )?
         } else {
-            recipe.apply(Fill {
+            recipe.apply(Fill::new(
                 prompt,
-                seed: rand::random::<u64>() & i64::MAX as u64,
-                weights: fill_weights,
-                source: None,
-            })?
+                rand::random::<u64>() & i64::MAX as u64,
+                fill_weights,
+            ))?
         };
         self.submit_and_collect(
             workflow,
@@ -343,9 +348,8 @@ impl Client {
         if cancel.try_recv().is_ok() {
             return Err(Error::Cancelled);
         }
-        let (video_workflow, i2v_workflow) = self.video_workflows()?;
-        let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.video_generation_timeout_seconds);
+        let (video_workflow, image_to_video_workflow) = self.video_workflows()?;
+        let deadline = tokio::time::Instant::now() + self.config.video_generation_timeout;
         let prompt = if prompt.trim().is_empty() {
             if source.is_some() {
                 "animate this image"
@@ -358,8 +362,8 @@ impl Client {
         let workflow = if let Some(source) = source {
             let _ = progress.send("Uploading source image...".to_string());
             let uploaded = self.upload_source(source, cancel, deadline).await?;
-            configure_wan_i2v_workflow(
-                i2v_workflow,
+            configure_wan_image_to_video_workflow(
+                image_to_video_workflow,
                 prompt,
                 &self.config.video_unet,
                 &self.config.video_clip,
@@ -368,7 +372,7 @@ impl Client {
                 &uploaded,
             )?
         } else {
-            configure_wan_t2v_workflow(
+            configure_wan_text_to_video_workflow(
                 video_workflow,
                 prompt,
                 &self.config.video_unet,
@@ -406,8 +410,7 @@ impl Client {
             return Err(Error::Cancelled);
         }
         let workflow = load_upscale_workflow(self.config.upscale_workflow_path.as_deref())?;
-        let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.upscale_generation_timeout_seconds);
+        let deadline = tokio::time::Instant::now() + self.config.upscale_generation_timeout;
         let _ = progress.send("Uploading source image...".to_string());
         let uploaded = self
             .upload_media(
@@ -449,8 +452,7 @@ impl Client {
             return Err(Error::Cancelled);
         }
         let workflow = load_upscale_video_workflow(self.config.upscale_workflow_path.as_deref())?;
-        let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.upscale_generation_timeout_seconds);
+        let deadline = tokio::time::Instant::now() + self.config.upscale_generation_timeout;
         let _ = progress.send("Uploading source video...".to_string());
         let uploaded = self
             .upload_media(
@@ -493,8 +495,7 @@ impl Client {
             return Err(Error::Cancelled);
         }
         let audio_workflow = self.audio_workflow()?;
-        let deadline = tokio::time::Instant::now()
-            + Duration::from_secs(self.config.audio_generation_timeout_seconds);
+        let deadline = tokio::time::Instant::now() + self.config.audio_generation_timeout;
         let workflow = configure_ace_step_workflow(
             audio_workflow,
             prompt,
@@ -586,7 +587,7 @@ impl Client {
                     self.cancel(&prompt_id).await;
                     return Err(Error::Timeout);
                 }
-                _ = tokio::time::sleep(Duration::from_millis(self.config.poll_interval_milliseconds)) => {
+                _ = tokio::time::sleep(self.config.poll_interval) => {
                     if !announced_generation {
                         let _ = progress.send(collection.generating.to_string());
                         announced_generation = true;
@@ -802,16 +803,15 @@ pub fn build_flux_schnell_workflow(
 ) -> Result<Value, Error> {
     RecipeCatalog::packaged()?
         .image_recipe_for("flux1-schnell-fp8.safetensors")?
-        .apply(Fill {
+        .apply(Fill::new(
             prompt,
             seed,
-            weights: HashMap::from([("checkpoint", checkpoint)]),
-            source: None,
-        })
+            HashMap::from([("checkpoint", checkpoint)]),
+        ))
 }
 
 /// Build the default image-to-image recipe and mutate only approved inputs.
-pub fn build_flux_schnell_img2img_workflow(
+pub fn build_flux_schnell_image_to_image_workflow(
     prompt: &str,
     checkpoint: &str,
     seed: u64,
@@ -819,12 +819,10 @@ pub fn build_flux_schnell_img2img_workflow(
 ) -> Result<Value, Error> {
     RecipeCatalog::packaged()?
         .image_recipe_for("flux1-schnell-fp8.safetensors")?
-        .apply(Fill {
-            prompt,
-            seed,
-            weights: HashMap::from([("checkpoint", checkpoint)]),
-            source: Some(image_name),
-        })
+        .apply(
+            Fill::new(prompt, seed, HashMap::from([("checkpoint", checkpoint)]))
+                .with_source(image_name),
+        )
 }
 
 fn load_workflow_file(path: &Path) -> Result<Value, Error> {
@@ -853,12 +851,12 @@ fn load_video_workflow(path: Option<&Path>) -> Result<Value, Error> {
         .map_err(|_| Error::Configuration("packaged video workflow is not valid JSON"))
 }
 
-fn load_i2v_workflow(text_to_video_path: Option<&Path>) -> Result<Value, Error> {
+fn load_image_to_video_workflow(text_to_video_path: Option<&Path>) -> Result<Value, Error> {
     if let Some(path) = sibling_file(text_to_video_path, "wan2.2-ti2v-5b-i2v-api.json") {
         return load_workflow_file(&path)
             .map_err(|_| Error::Configuration("image-to-video workflow path is not readable"));
     }
-    serde_json::from_str(PACKAGED_I2V_WORKFLOW)
+    serde_json::from_str(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW)
         .map_err(|_| Error::Configuration("packaged image-to-video workflow is not valid JSON"))
 }
 
@@ -872,7 +870,7 @@ fn load_audio_workflow(path: Option<&Path>) -> Result<Value, Error> {
 }
 
 /// Build the text-to-video workflow and mutate only approved inputs.
-pub fn build_wan_t2v_workflow(
+pub fn build_wan_text_to_video_workflow(
     prompt: &str,
     unet: &str,
     clip: &str,
@@ -881,11 +879,11 @@ pub fn build_wan_t2v_workflow(
 ) -> Result<Value, Error> {
     let workflow = serde_json::from_str(PACKAGED_VIDEO_WORKFLOW)
         .map_err(|_| Error::Configuration("packaged video workflow is not valid JSON"))?;
-    configure_wan_t2v_workflow(workflow, prompt, unet, clip, vae, seed)
+    configure_wan_text_to_video_workflow(workflow, prompt, unet, clip, vae, seed)
 }
 
 /// Build the image-to-video workflow and mutate only approved inputs.
-pub fn build_wan_i2v_workflow(
+pub fn build_wan_image_to_video_workflow(
     prompt: &str,
     unet: &str,
     clip: &str,
@@ -893,9 +891,9 @@ pub fn build_wan_i2v_workflow(
     seed: u64,
     image_name: &str,
 ) -> Result<Value, Error> {
-    let workflow = serde_json::from_str(PACKAGED_I2V_WORKFLOW)
+    let workflow = serde_json::from_str(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW)
         .map_err(|_| Error::Configuration("packaged image-to-video workflow is not valid JSON"))?;
-    configure_wan_i2v_workflow(workflow, prompt, unet, clip, vae, seed, image_name)
+    configure_wan_image_to_video_workflow(workflow, prompt, unet, clip, vae, seed, image_name)
 }
 
 /// Build the text-to-audio workflow and mutate only approved inputs.
@@ -1049,7 +1047,7 @@ fn validate_video_workflow(workflow: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_i2v_workflow(workflow: &Value) -> Result<(), Error> {
+fn validate_image_to_video_workflow(workflow: &Value) -> Result<(), Error> {
     validate_video_workflow(workflow)?;
     if workflow.pointer("/11/class_type").and_then(Value::as_str) != Some("LoadImage") {
         return Err(Error::Configuration(
@@ -1102,7 +1100,7 @@ fn validate_audio_workflow(workflow: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn configure_wan_t2v_workflow(
+fn configure_wan_text_to_video_workflow(
     mut workflow: Value,
     prompt: &str,
     unet: &str,
@@ -1115,7 +1113,7 @@ fn configure_wan_t2v_workflow(
     Ok(workflow)
 }
 
-fn configure_wan_i2v_workflow(
+fn configure_wan_image_to_video_workflow(
     mut workflow: Value,
     prompt: &str,
     unet: &str,
@@ -1124,7 +1122,7 @@ fn configure_wan_i2v_workflow(
     seed: u64,
     image_name: &str,
 ) -> Result<Value, Error> {
-    validate_i2v_workflow(&workflow)?;
+    validate_image_to_video_workflow(&workflow)?;
     apply_wan_workflow_inputs(&mut workflow, prompt, unet, clip, vae, seed)?;
     let image_name = sanitize_upload_name(image_name)?;
     workflow["11"]["inputs"]["image"] = json!(image_name);
@@ -1215,6 +1213,7 @@ fn uploaded_image_name(uploaded: &UploadResponse, fallback: &str) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -1258,8 +1257,8 @@ mod tests {
     }
 
     #[test]
-    fn img2img_workflow_mutates_only_approved_inputs() {
-        let workflow = build_flux_schnell_img2img_workflow(
+    fn image_to_image_workflow_mutates_only_approved_inputs() {
+        let workflow = build_flux_schnell_image_to_image_workflow(
             "make it dusk",
             "custom-image.safetensors",
             42,
@@ -1280,20 +1279,25 @@ mod tests {
     }
 
     #[test]
-    fn img2img_workflow_rejects_pathful_filenames() {
+    fn image_to_image_workflow_rejects_pathful_filenames() {
         assert!(
-            build_flux_schnell_img2img_workflow("fox", "ok.safetensors", 1, "../secret.png")
+            build_flux_schnell_image_to_image_workflow("fox", "ok.safetensors", 1, "../secret.png")
                 .is_err()
         );
         assert!(
-            build_flux_schnell_img2img_workflow("fox", "ok.safetensors", 1, "nested/file.png")
-                .is_err()
+            build_flux_schnell_image_to_image_workflow(
+                "fox",
+                "ok.safetensors",
+                1,
+                "nested/file.png"
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn video_workflow_mutates_only_approved_inputs() {
-        let workflow = build_wan_t2v_workflow(
+        let workflow = build_wan_text_to_video_workflow(
             "a moving fox",
             "custom-video.safetensors",
             "custom-clip.safetensors",
@@ -1321,8 +1325,8 @@ mod tests {
     }
 
     #[test]
-    fn i2v_workflow_mutates_only_approved_inputs() {
-        let workflow = build_wan_i2v_workflow(
+    fn image_to_video_workflow_mutates_only_approved_inputs() {
+        let workflow = build_wan_image_to_video_workflow(
             "make it move",
             "custom-video.safetensors",
             "custom-clip.safetensors",
@@ -1344,7 +1348,7 @@ mod tests {
     #[test]
     fn video_workflow_rejects_pathful_filenames() {
         assert!(
-            build_wan_t2v_workflow(
+            build_wan_text_to_video_workflow(
                 "fox",
                 "../secret.safetensors",
                 "clip.safetensors",
@@ -1354,7 +1358,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            build_wan_i2v_workflow(
+            build_wan_image_to_video_workflow(
                 "fox",
                 "ok.safetensors",
                 "clip.safetensors",
@@ -1469,10 +1473,10 @@ mod tests {
     fn a_client_that_would_poll_in_a_busy_loop_is_refused() {
         assert!(matches!(
             Client::new(Config {
-                poll_interval_milliseconds: 0,
+                poll_interval: Duration::ZERO,
                 ..Default::default()
             }),
-            Err(Error::Configuration(message)) if message.contains("COMFYUI_POLL_INTERVAL_MS")
+            Err(Error::Configuration(message)) if message.contains("COMFYUI_POLL_INTERVAL_MILLISECONDS")
         ));
     }
 
@@ -1511,6 +1515,7 @@ mod tests {
                 recipe_id: "flux-schnell-adapter".into(),
                 huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
+            &crate::train::Contract::default(),
         )
         .unwrap();
         assert!(Client::new(config.clone()).is_err());
@@ -1521,11 +1526,14 @@ mod tests {
                 recipe_id: "flux-schnell-adapter".into(),
                 huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
             },
+            &crate::train::Contract::default(),
         )
         .unwrap();
         assert!(Client::new(config.clone()).is_ok());
 
-        let marker = crate::inventory::publication_marker(&loras, "style.safetensors").unwrap();
+        let marker =
+            crate::inventory::publication_marker(&loras, "style.safetensors", &config.contract)
+                .unwrap();
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(marker, b"pending").unwrap();
         assert!(Client::new(config).is_err());
@@ -1679,7 +1687,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         })
         .unwrap();
@@ -1731,7 +1739,7 @@ mod tests {
                 base_url: server.uri(),
                 api_token: Some("secret".into()),
                 token_header: header.to_string(),
-                poll_interval_milliseconds: 50,
+                poll_interval: Duration::from_millis(50),
                 ..Default::default()
             })
             .unwrap();
@@ -1760,6 +1768,7 @@ mod tests {
                 recipe_id: "qwen-image-edit-adapter".into(),
                 huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
+            &crate::train::Contract::default(),
         )
         .unwrap();
         Mock::given(method("POST"))
@@ -1798,7 +1807,7 @@ mod tests {
             base_url: server.uri(),
             checkpoint: "qwen-image-edit-plus-nsfw-lora.safetensors".into(),
             models_directory: models,
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         })
         .unwrap();
@@ -1832,7 +1841,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_milliseconds: 5000,
+            poll_interval: Duration::from_millis(5000),
             ..Default::default()
         })
         .unwrap();
@@ -1895,7 +1904,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            request_timeout_seconds: 60,
+            request_timeout: Duration::from_secs(60),
             ..Default::default()
         })
         .unwrap();
@@ -1912,7 +1921,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn img2img_uploads_source_then_submits_encoded_workflow() {
+    async fn image_to_image_uploads_source_then_submits_encoded_workflow() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/upload/image"))
@@ -1955,7 +1964,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         })
         .unwrap();
@@ -2107,7 +2116,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         })
         .unwrap();
@@ -2172,7 +2181,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         })
         .unwrap();
@@ -2220,7 +2229,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         })
         .unwrap();
@@ -2237,7 +2246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn i2v_uploads_source_then_submits_start_image() {
+    async fn image_to_video_uploads_source_then_submits_start_image() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/upload/image"))
@@ -2280,7 +2289,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         })
         .unwrap();
@@ -2326,7 +2335,7 @@ mod tests {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         })
         .unwrap();

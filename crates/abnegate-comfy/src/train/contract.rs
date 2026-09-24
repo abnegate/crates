@@ -1,4 +1,5 @@
 use crate::config::ConfigError;
+use crate::inventory::WEIGHT_EXTENSION;
 use crate::train::ARTIFACT_PREFIX;
 use crate::train::CLEANUP_TRAINING_RUN_NODE;
 use crate::train::ENVIRONMENT_PREFIX;
@@ -7,6 +8,8 @@ use crate::train::INPUT_ENVIRONMENT_PREFIX;
 use crate::train::LOAD_TRAIN_DATASET_NODE;
 use crate::train::PROBE_LOSS_NODE;
 use crate::train::PROBE_PREFIX;
+use crate::train::PUBLICATION_DIRECTORY;
+use crate::train::SIDECAR_SUFFIX;
 use crate::train::STAGE_TRAINING_ARTIFACT_NODE;
 use crate::train::TRAIN_LORA_NODE;
 
@@ -14,10 +17,11 @@ use crate::train::TRAIN_LORA_NODE;
 /// and with an external training command. The nodes refuse a run namespace
 /// they do not recognise, so these have to match the deployment.
 ///
-/// The prefixes become directory and file names under ComfyUI's input and
-/// output directories, so [`Contract::validate`] holds them to one plain path
-/// component each. The defaults match the node pack and training script this
-/// crate was built against.
+/// The prefixes, the sidecar suffix and the publication directory become
+/// directory and file names under ComfyUI's directories, so
+/// [`Contract::validate`] holds each to one plain path component. The
+/// defaults name everything under a neutral `Abnegate` namespace; a deployment
+/// whose node pack and training script register other names sets them here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Contract {
@@ -40,12 +44,19 @@ pub struct Contract {
     pub probe_prefix: String,
     /// Prefix of the variables handed to
     /// [`Config::train_command`](crate::Config::train_command): the command
-    /// reads the dataset from `<prefix>_DIR` and writes the adapter to
+    /// reads the dataset from `<prefix>_DIRECTORY` and writes the adapter to
     /// `<prefix>_OUTPUT`.
     pub environment_prefix: String,
     /// Prefix of `<prefix>_INPUT`, the ComfyUI input directory handed to
     /// [`Config::train_command`](crate::Config::train_command).
     pub input_environment_prefix: String,
+    /// Suffix of the recipe binding written beside every weight. Model volumes
+    /// keep bindings under the name they were written with, so changing it
+    /// orphans every one already there.
+    pub sidecar_suffix: String,
+    /// Directory under `loras/` whose markers hide a weight while it is
+    /// replaced. Every process sharing a models directory has to agree on it.
+    pub publication_directory: String,
 }
 
 impl Default for Contract {
@@ -61,6 +72,8 @@ impl Default for Contract {
             probe_prefix: PROBE_PREFIX.to_string(),
             environment_prefix: ENVIRONMENT_PREFIX.to_string(),
             input_environment_prefix: INPUT_ENVIRONMENT_PREFIX.to_string(),
+            sidecar_suffix: SIDECAR_SUFFIX.to_string(),
+            publication_directory: PUBLICATION_DIRECTORY.to_string(),
         }
     }
 }
@@ -115,6 +128,20 @@ impl Contract {
                 "contract environment prefixes must be uppercase ASCII letters, digits or '_'",
             ));
         }
+        if !is_name(&self.sidecar_suffix, is_file_character)
+            || self.sidecar_suffix.ends_with(WEIGHT_EXTENSION)
+        {
+            return Err(ConfigError::new(
+                "the contract sidecar suffix must be one plain name that no weight ends in",
+            ));
+        }
+        if !is_name(&self.publication_directory, is_file_character)
+            || matches!(self.publication_directory.as_str(), "." | "..")
+        {
+            return Err(ConfigError::new(
+                "the contract publication directory must be one plain directory name",
+            ));
+        }
         Ok(())
     }
 
@@ -141,6 +168,10 @@ fn is_node_character(character: char) -> bool {
 
 fn is_variable_character(character: char) -> bool {
     character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+}
+
+fn is_file_character(character: char) -> bool {
+    is_namespace_character(character) || character == '.'
 }
 
 #[cfg(test)]
@@ -216,5 +247,50 @@ mod tests {
             };
             assert!(contract.validate().is_err(), "{prefix:?} was accepted");
         }
+    }
+
+    #[test]
+    fn a_sidecar_suffix_or_publication_directory_that_is_not_one_plain_name_is_refused() {
+        for name in [
+            "",
+            "/",
+            "../escape",
+            "nested/name",
+            "back\\slash",
+            "space d",
+        ] {
+            let suffix = Contract {
+                sidecar_suffix: name.into(),
+                ..Contract::default()
+            };
+            assert!(suffix.validate().is_err(), "suffix {name:?} was accepted");
+            let directory = Contract {
+                publication_directory: name.into(),
+                ..Contract::default()
+            };
+            assert!(
+                directory.validate().is_err(),
+                "directory {name:?} was accepted"
+            );
+        }
+        for name in [".", ".."] {
+            let directory = Contract {
+                publication_directory: name.into(),
+                ..Contract::default()
+            };
+            assert!(
+                directory.validate().is_err(),
+                "directory {name:?} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sidecar_suffix_a_weight_could_end_in_is_refused() {
+        let contract = Contract {
+            sidecar_suffix: ".binding.safetensors".into(),
+            ..Contract::default()
+        };
+        assert!(contract.validate().is_err());
     }
 }

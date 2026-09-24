@@ -1,5 +1,6 @@
 /// How a clip is turned into training images.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct Options {
     /// Frames kept per second of video.
     pub fps: u32,
@@ -11,4 +12,18 @@ pub struct Options {
     /// this each extra frame is seen fewer times without adding variety the
     /// selection has not already taken.
     pub limit: usize,
+}
+
+impl Options {
+    /// Keeps `fps` frames a second, at most `limit` in all, each rendered as a
+    /// `resolution`-pixel square and mirrored in alternation when `mirror` is
+    /// set.
+    pub const fn new(fps: u32, resolution: u32, mirror: bool, limit: usize) -> Self {
+        Self {
+            fps,
+            resolution,
+            mirror,
+            limit,
+        }
+    }
 }

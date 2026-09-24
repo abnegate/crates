@@ -15,7 +15,7 @@ mod error;
 #[cfg(feature = "saliency")]
 mod models;
 
-pub use error::Error;
+pub use error::SubjectError;
 
 use crate::config::Config;
 use abnegate_vision::crop::{self, Rendered, Target};
@@ -105,14 +105,19 @@ impl Subject {
     }
 
     /// Decodes an image and renders the square crop framed on its subject.
-    pub fn crop(&self, data: &[u8], side: u32) -> Result<Rendered, Error> {
+    pub fn crop(&self, data: &[u8], side: u32) -> Result<Rendered, SubjectError> {
         let raster = decode::decode(data)?;
         self.render(&raster, side, self.focus(&raster, CENTRE))
     }
 
     /// Renders one crop at an already-decided focus, so a pair of images that
     /// have to stay aligned can share one.
-    pub fn render(&self, raster: &Raster, side: u32, focus: Point) -> Result<Rendered, Error> {
+    pub fn render(
+        &self,
+        raster: &Raster,
+        side: u32,
+        focus: Point,
+    ) -> Result<Rendered, SubjectError> {
         let target = Target::square(side);
         let region = crop::plan(raster.oriented_size(), target, focus)?;
         Ok(crop::render(raster, region, target)?)
@@ -203,14 +208,14 @@ mod tests {
     #[test]
     fn something_that_is_not_an_image_cannot_be_cropped() {
         let error = Subject::none().crop(b"not an image", 8).unwrap_err();
-        assert!(matches!(error, Error::Decode(_)), "{error}");
+        assert!(matches!(error, SubjectError::Decode(_)), "{error}");
     }
 
     #[test]
     fn a_zero_sided_crop_is_refused_rather_than_rendered() {
         let raster = Raster::new(4, 4, Layout::Rgb, vec![128; 4 * 4 * 3]);
         let error = Subject::none().render(&raster, 0, CENTRE).unwrap_err();
-        assert!(matches!(error, Error::Crop(_)), "{error}");
+        assert!(matches!(error, SubjectError::Crop(_)), "{error}");
     }
 
     #[test]

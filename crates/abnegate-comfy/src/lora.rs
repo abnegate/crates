@@ -26,9 +26,7 @@ pub use train_request::TrainRequest;
 use crate::caption::{Captioner, Draft};
 use crate::client::{Client, SourceImage};
 use crate::config::Config;
-use crate::inventory::{
-    PUBLICATION_DIRECTORY, WeightDocument, WeightSidecar, publication_marker, sidecar_path,
-};
+use crate::inventory::{WeightDocument, WeightSidecar, publication_marker, sidecar_path};
 use crate::recipe::{RecipeCatalog, TrainingModel, sanitize_weight_filename};
 use crate::subject::{CENTRE, Subject};
 use crate::train::{Contract, Run};
@@ -162,8 +160,15 @@ impl Drop for Attempt {
     }
 }
 
-pub fn available_bases(catalog: &RecipeCatalog, models_directory: &Path) -> Vec<TrainBase> {
-    let items = crate::inventory::scan(models_directory, catalog);
+/// The bases in `catalog` a LoRA can be trained on whose weights are installed
+/// under `models_directory`, as [`inventory::scan`](crate::inventory::scan)
+/// reads it under `contract`.
+pub fn available_bases(
+    catalog: &RecipeCatalog,
+    models_directory: &Path,
+    contract: &Contract,
+) -> Vec<TrainBase> {
+    let items = crate::inventory::scan(models_directory, catalog, contract);
     catalog
         .image_recipes()
         .filter(|recipe| !recipe.adapter)
@@ -316,7 +321,7 @@ async fn train_with_pipeline(
     let mut attempt = Attempt::create(&config.models_directory)?;
     let loras = ensure_child_directory(&config.models_directory, "loras")?;
     let output = validate_output(&loras, &loras.join(&filename))?;
-    let output_sidecar = validate_output(&loras, &sidecar_path(&output))?;
+    let output_sidecar = validate_output(&loras, &sidecar_path(&output, &config.contract))?;
     let targets = ensure_child_directory(&attempt.root, "targets")?;
     let controls = edit
         .then(|| ensure_child_directory(&attempt.root, "control_1"))
@@ -362,7 +367,7 @@ async fn train_with_pipeline(
             .env(contract.variable("FINAL_NAME"), &filename)
             .env(contract.variable("ATTEMPT"), &attempt.id)
             .env(contract.variable("BASE"), &recipe.id)
-            .env(contract.variable("DIR"), &attempt.root)
+            .env(contract.variable("DIRECTORY"), &attempt.root)
             .env(contract.variable("OUTPUT"), &staged)
             .env(contract.variable("TRIGGER"), trigger)
             .env(
@@ -379,7 +384,7 @@ async fn train_with_pipeline(
             .env("COMFYUI_BASE_URL", &config.base_url)
             .env(
                 contract.variable("TIMEOUT"),
-                config.train_timeout_seconds.to_string(),
+                config.train_timeout.as_secs().to_string(),
             )
             .env(
                 contract.input_variable(),
@@ -402,7 +407,7 @@ async fn train_with_pipeline(
                     .env(contract.variable("VAE"), vae);
             }
         }
-        let trained = run_trainer(process, Duration::from_secs(config.train_timeout_seconds)).await;
+        let trained = run_trainer(process, config.train_timeout).await;
         if let Err(error) = trained {
             crate::train::cleanup_with(&http, config, &run).await;
             return Err(error);
@@ -439,7 +444,7 @@ async fn train_with_pipeline(
     let adapter = recipe
         .training_adapter()
         .map_err(|_| TrainError::Invalid("training adapter mapping is missing"))?;
-    let staged_sidecar = sidecar_path(&staged);
+    let staged_sidecar = sidecar_path(&staged, &config.contract);
     let bytes = serde_json::to_vec_pretty(&WeightDocument {
         sidecar: WeightSidecar {
             recipe_id: adapter.recipe_id.clone(),
@@ -459,6 +464,7 @@ async fn train_with_pipeline(
         &output,
         &output_sidecar,
         &attempt.id,
+        &config.contract,
     )?;
     Ok(TrainOutcome {
         path: output,
@@ -951,6 +957,7 @@ fn atomic_promote(
     output: &Path,
     output_sidecar: &Path,
     generation: &str,
+    contract: &Contract,
 ) -> Result<(), TrainError> {
     promote_with(
         attempt,
@@ -960,6 +967,7 @@ fn atomic_promote(
         output,
         output_sidecar,
         generation,
+        contract,
         |_| Ok(()),
     )
 }
@@ -972,6 +980,7 @@ fn promote_with<F>(
     output: &Path,
     output_sidecar: &Path,
     generation: &str,
+    contract: &Contract,
     mut observe: F,
 ) -> Result<(), TrainError>
 where
@@ -1000,23 +1009,23 @@ where
     let _local = local
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let publications = ensure_child_directory(parent, PUBLICATION_DIRECTORY)?;
+    let publications = ensure_child_directory(parent, &contract.publication_directory)?;
     sync_directory(parent)?;
     let filename = output
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(TrainError::Invalid("LoRA output has no filename"))?;
     let _file = lock_publication(&publications, filename)?;
-    let marker = publication_marker(parent, filename)
+    let marker = publication_marker(parent, filename, contract)
         .ok_or(TrainError::Invalid("invalid LoRA publication name"))?;
-    recover_publication(parent, output, output_sidecar, &marker)?;
+    recover_publication(parent, output, output_sidecar, &marker, contract)?;
     validate_output(parent, output)?;
     validate_output(parent, output_sidecar)?;
 
     let previous_weight = snapshot(output, &attempt.join(PREVIOUS_WEIGHT))?;
     let previous_sidecar = snapshot(
         output_sidecar,
-        &sidecar_path(&attempt.join(PREVIOUS_WEIGHT)),
+        &sidecar_path(&attempt.join(PREVIOUS_WEIGHT), contract),
     )?;
     sync_directory(attempt)?;
     let publication = Publication {
@@ -1042,7 +1051,15 @@ where
         Ok::<(), TrainError>(())
     })();
     if let Err(error) = promoted {
-        return rollback_publication(attempt, parent, output, output_sidecar, &marker, error);
+        return rollback_publication(
+            attempt,
+            parent,
+            output,
+            output_sidecar,
+            &marker,
+            contract,
+            error,
+        );
     }
     if let Err(error) = fs::remove_file(&marker) {
         return rollback_publication(
@@ -1051,6 +1068,7 @@ where
             output,
             output_sidecar,
             &marker,
+            contract,
             failed(error),
         );
     }
@@ -1122,6 +1140,7 @@ fn recover_publication(
     output: &Path,
     output_sidecar: &Path,
     marker: &Path,
+    contract: &Contract,
 ) -> Result<(), TrainError> {
     match fs::symlink_metadata(marker) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
@@ -1169,7 +1188,7 @@ fn recover_publication(
     )?;
     restore_snapshot(
         &attempt,
-        &sidecar_path(&attempt.join(PREVIOUS_WEIGHT)),
+        &sidecar_path(&attempt.join(PREVIOUS_WEIGHT), contract),
         output_sidecar,
         publication.previous_sidecar,
     )?;
@@ -1188,6 +1207,7 @@ fn rollback_publication(
     output: &Path,
     output_sidecar: &Path,
     marker: &Path,
+    contract: &Contract,
     error: TrainError,
 ) -> Result<(), TrainError> {
     let publication = fs::read(marker).map_err(failed).and_then(|contents| {
@@ -1203,7 +1223,7 @@ fn rollback_publication(
         )?;
         restore_snapshot(
             attempt,
-            &sidecar_path(&attempt.join(PREVIOUS_WEIGHT)),
+            &sidecar_path(&attempt.join(PREVIOUS_WEIGHT), contract),
             output_sidecar,
             publication.previous_sidecar,
         )?;
@@ -1438,7 +1458,7 @@ mod tests {
     use crate::screening::{Rejection, Verdict};
     use crate::train::{
         ARTIFACT_PREFIX, ENVIRONMENT_PREFIX, FOLDER_PREFIX, INPUT_ENVIRONMENT_PREFIX,
-        PROBE_LOSS_NODE, TRAIN_LORA_NODE,
+        PROBE_LOSS_NODE, PUBLICATION_DIRECTORY, SIDECAR_SUFFIX, TRAIN_LORA_NODE,
     };
     use base64::Engine;
     use serde_json::{Value, json};
@@ -1468,7 +1488,7 @@ mod tests {
             base_url: "http://127.0.0.1:9".to_string(),
             models_directory: models,
             train_command: Some(command.to_string()),
-            train_timeout_seconds: 2,
+            train_timeout: Duration::from_secs(2),
             contract: contract(),
             ..Default::default()
         };
@@ -1478,12 +1498,10 @@ mod tests {
     /// A real image whose colour follows its name, so a crop can still be
     /// traced back to the upload it was made from.
     fn image(target: &str, caption: &str, reference: Option<&str>) -> TrainImage {
-        TrainImage {
-            filename: format!("{target}.png"),
-            caption: caption.to_string(),
-            bytes_base64: encoded(colour(target)),
-            before_base64: reference.map(|value| encoded(colour(value))),
-            group: None,
+        let image = TrainImage::new(format!("{target}.png"), caption, encoded(colour(target)));
+        match reference {
+            Some(reference) => image.with_before_base64(encoded(colour(reference))),
+            None => image,
         }
     }
 
@@ -1546,21 +1564,16 @@ mod tests {
     }
 
     fn identity(name: &str) -> TrainRequest {
-        TrainRequest {
-            name: name.to_string(),
-            base: "flux-schnell".to_string(),
-            trigger: Some("ohwx".to_string()),
-            images: vec![image("target", "a portrait", None)],
-        }
+        TrainRequest::new(
+            name,
+            "flux-schnell",
+            vec![image("target", "a portrait", None)],
+        )
+        .with_trigger("ohwx")
     }
 
     fn edit(images: Vec<TrainImage>) -> TrainRequest {
-        TrainRequest {
-            name: "edit-style".to_string(),
-            base: "qwen-image-edit".to_string(),
-            trigger: None,
-            images,
-        }
+        TrainRequest::new("edit-style", "qwen-image-edit", images)
     }
 
     fn keep_all(images: &[Vec<u8>], _resolution: u32) -> Verdict {
@@ -1609,7 +1622,7 @@ mod tests {
         let attempt = config.models_directory.join("training").join(generation);
         fs::create_dir_all(&attempt).unwrap();
         let staged = attempt.join(format!("{generation}.safetensors"));
-        let sidecar = sidecar_path(&staged);
+        let sidecar = sidecar_path(&staged, &config.contract);
         fs::write(&staged, contents).unwrap();
         fs::write(
             &sidecar,
@@ -1647,12 +1660,10 @@ mod tests {
     }
 
     fn upload(caption: &str, group: Option<usize>) -> TrainImage {
-        TrainImage {
-            filename: "a.png".into(),
-            caption: caption.into(),
-            bytes_base64: encoded([12, 34, 56]),
-            before_base64: None,
-            group,
+        let image = TrainImage::new("a.png", caption, encoded([12, 34, 56]));
+        match group {
+            Some(group) => image.with_group(group),
+            None => image,
         }
     }
 
@@ -1721,9 +1732,9 @@ mod tests {
         let command = r#"
             test "$TRAIN_NAME" = "legacy-style.safetensors" || exit 11
             test "$TRAIN_FINAL_NAME" = "$TRAIN_NAME" || exit 12
-            test "$TRAIN_ATTEMPT" = "$(basename "$TRAIN_DIR")" || exit 13
+            test "$TRAIN_ATTEMPT" = "$(basename "$TRAIN_DIRECTORY")" || exit 13
             test "$(basename "$TRAIN_OUTPUT")" = "$TRAIN_ATTEMPT.safetensors" || exit 14
-            case "$TRAIN_OUTPUT" in "$TRAIN_DIR"/*) ;; *) exit 15 ;; esac
+            case "$TRAIN_OUTPUT" in "$TRAIN_DIRECTORY"/*) ;; *) exit 15 ;; esac
             printf legacy > "$TRAIN_OUTPUT"
         "#;
         let (_root, config) = harness(command);
@@ -1740,6 +1751,28 @@ mod tests {
 
         assert_eq!(fs::read(outcome.path).unwrap(), b"legacy");
         assert!(training_entries(&config).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_dataset_directory_is_handed_over_under_its_spelled_out_name() {
+        let command = r#"
+            test -d "$TRAIN_DIRECTORY/targets" || exit 41
+            test "$(env | grep "^TRAIN_DI" | cut -d= -f1)" = TRAIN_DIRECTORY || exit 42
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+
+        let outcome = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("directory-name"),
+            keep_all,
+        )
+        .await
+        .expect("the trainer finds its dataset under <prefix>_DIRECTORY alone");
+
+        assert_eq!(fs::read(outcome.path).unwrap(), b"lora");
     }
 
     /// A models root with the output directory the writer needs.
@@ -1828,7 +1861,7 @@ mod tests {
         let config = Config {
             models_directory: root.clone(),
             train_command: Some("true".into()),
-            poll_interval_milliseconds: 0,
+            poll_interval: Duration::ZERO,
             ..Default::default()
         };
         let error = rejected(&config, request("my-style", "flux-schnell", Some("ohwx"))).await;
@@ -1946,7 +1979,7 @@ mod tests {
             finished.display()
         );
         let (_root, mut config) = harness(&command);
-        config.train_timeout_seconds = 1;
+        config.train_timeout = Duration::from_secs(1);
 
         let error = rejected(&config, identity("slow")).await;
         let returned = std::time::SystemTime::now();
@@ -2017,7 +2050,7 @@ mod tests {
     async fn a_trainer_past_its_budget_takes_everything_it_started_with_it() {
         let (sleep, pattern) = marked_sleep();
         let (_root, mut config) = harness(&format!("{sleep} & wait"));
-        config.train_timeout_seconds = 1;
+        config.train_timeout = Duration::from_secs(1);
 
         let error = rejected(&config, identity("abandoned")).await;
 
@@ -2214,7 +2247,7 @@ mod tests {
         let catalog = RecipeCatalog::packaged().unwrap();
 
         assert!(
-            available_bases(&catalog, &root).is_empty(),
+            available_bases(&catalog, &root, &Contract::default()).is_empty(),
             "nothing is trainable until its weights are on disk"
         );
 
@@ -2227,7 +2260,7 @@ mod tests {
             .expect("flux-schnell declares a checkpoint");
         fs::write(root.join("checkpoints").join(checkpoint), vec![0u8; 1024]).unwrap();
 
-        let bases = available_bases(&catalog, &root);
+        let bases = available_bases(&catalog, &root, &Contract::default());
         assert!(
             bases
                 .iter()
@@ -2277,7 +2310,7 @@ mod tests {
             enabled: true,
             base_url: server.uri(),
             train_command: None,
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         };
         let outcome = train(
@@ -2299,6 +2332,180 @@ mod tests {
             "the dataset has to reach the graph before it is queued"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// A deployment's own node pack: every node, namespace, variable prefix,
+    /// sidecar and publication directory under a brand of its own.
+    fn acme() -> Contract {
+        Contract {
+            train_lora_node: "AcmeTrainLoRA".into(),
+            cleanup_training_run_node: "AcmeCleanupTrainingRun".into(),
+            load_train_dataset_node: "AcmeLoadTrainDataset".into(),
+            probe_loss_node: "AcmeProbeLoss".into(),
+            stage_training_artifact_node: "AcmeStageTrainingArtifact".into(),
+            folder_prefix: "acme-train-".into(),
+            artifact_prefix: "acme-lora-".into(),
+            probe_prefix: "acme-probe-".into(),
+            environment_prefix: "ACME_TRAIN".into(),
+            input_environment_prefix: "ACME_COMFY".into(),
+            sidecar_suffix: ".acme.json".into(),
+            publication_directory: ".acme-publish".into(),
+        }
+    }
+
+    /// Checks the adapter was published under `acme()`'s names alone, and that
+    /// the inventory lists it under that contract and no other.
+    fn published_under_acme(models: &Path, adapter: &Path) {
+        let loras = models.join("loras");
+        let name = adapter.file_name().unwrap().to_str().unwrap();
+        assert!(loras.join(format!("{name}.acme.json")).is_file());
+        assert!(!loras.join(format!("{name}{SIDECAR_SUFFIX}")).exists());
+        assert!(loras.join(".acme-publish").is_dir());
+        assert!(!loras.join(PUBLICATION_DIRECTORY).exists());
+        let catalog = RecipeCatalog::packaged().unwrap();
+        assert!(
+            crate::inventory::find(&crate::inventory::scan(models, &catalog, &acme()), name)
+                .is_some(),
+            "the adapter is listed under the contract it was published with"
+        );
+        assert!(
+            crate::inventory::find(
+                &crate::inventory::scan(models, &catalog, &Contract::default()),
+                name
+            )
+            .is_none(),
+            "the default contract does not read another deployment's sidecars"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_overriding_contract_trains_through_its_own_nodes_and_publishes_under_its_own_names()
+    {
+        let server = MockServer::start().await;
+        let prompt = uuid::Uuid::new_v4();
+        Mock::given(method("POST"))
+            .and(path("/upload/image"))
+            .respond_with(Stage)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"prompt_id": prompt, "number": 1})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/history/{prompt}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                prompt.to_string(): {"status": {"completed": true, "status_str": "success"}}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(ServeArtifact(vec![9u8; 20_000]))
+            .mount(&server)
+            .await;
+        let root = tempfile::tempdir().unwrap();
+        let models = root.path().join("models");
+        fs::create_dir_all(models.join("loras")).unwrap();
+        let config = Config {
+            models_directory: models.clone(),
+            enabled: true,
+            base_url: server.uri(),
+            poll_interval: Duration::from_millis(50),
+            contract: acme(),
+            ..Default::default()
+        };
+
+        let outcome = train(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            request("acme-style", "flux-schnell", Some("ohwx")),
+        )
+        .await
+        .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let graphs: Vec<Value> = requests
+            .iter()
+            .filter(|request| request.url.path() == "/prompt")
+            .map(|request| {
+                serde_json::from_slice::<Value>(&request.body).unwrap()["prompt"].clone()
+            })
+            .collect();
+        let classes: Vec<&str> = graphs
+            .iter()
+            .filter_map(Value::as_object)
+            .flat_map(|graph| graph.values())
+            .filter_map(|node| node["class_type"].as_str())
+            .collect();
+        assert!(classes.contains(&"AcmeTrainLoRA"), "{classes:?}");
+        assert!(classes.contains(&"AcmeLoadTrainDataset"), "{classes:?}");
+        assert!(
+            !classes.iter().any(|class| class.starts_with("Abnegate")),
+            "a default node reached the overriding pack: {classes:?}"
+        );
+        let trained = graphs
+            .iter()
+            .flat_map(|graph| {
+                graph
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|graph| graph.values())
+            })
+            .find(|node| node["class_type"] == "AcmeTrainLoRA")
+            .unwrap();
+        assert!(
+            trained["inputs"]["save_name"]
+                .as_str()
+                .unwrap()
+                .starts_with("acme-lora-")
+        );
+        let uploads: Vec<String> = requests
+            .iter()
+            .filter(|request| request.url.path() == "/upload/image")
+            .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+            .collect();
+        assert!(
+            uploads.iter().any(|body| body.contains("acme-train-")),
+            "the dataset is staged under the overriding folder namespace"
+        );
+        assert!(
+            !uploads.iter().any(|body| body.contains("abnegate-")),
+            "an upload was staged under a default namespace"
+        );
+        published_under_acme(&models, &outcome.path);
+    }
+
+    #[tokio::test]
+    async fn an_overriding_contract_hands_the_training_command_its_own_variables() {
+        let command = r#"
+            test -d "$ACME_TRAIN_DIRECTORY/targets" || exit 61
+            test -n "$ACME_COMFY_INPUT" || exit 62
+            case "$ACME_TRAIN_FOLDER" in acme-train-*) ;; *) exit 63 ;; esac
+            case "$ACME_TRAIN_ARTIFACT" in acme-lora-*) ;; *) exit 64 ;; esac
+            test -z "$(env | grep -E "^ABNEGATE_(TRAIN|COMFY)_")" || exit 65
+            printf lora > "$ACME_TRAIN_OUTPUT"
+        "#;
+        let (_root, mut config) = harness(command);
+        config.contract = acme();
+
+        let outcome = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("acme-command"),
+            keep_all,
+        )
+        .await
+        .expect("the command is told only the overriding contract's names");
+
+        assert_eq!(fs::read(&outcome.path).unwrap(), b"lora");
+        published_under_acme(&config.models_directory, &outcome.path);
     }
 
     #[test]
@@ -2393,7 +2600,7 @@ mod tests {
             test "$TRAIN_IMAGE_COUNT" = "2" || exit 11
             test "$TRAIN_NAME" = "edit-style.safetensors" || exit 31
             test "$TRAIN_FINAL_NAME" = "edit-style.safetensors" || exit 12
-            test "$TRAIN_ATTEMPT" = "$(basename "$TRAIN_DIR")" || exit 14
+            test "$TRAIN_ATTEMPT" = "$(basename "$TRAIN_DIRECTORY")" || exit 14
             test "$(basename "$TRAIN_OUTPUT")" = "$TRAIN_ATTEMPT.safetensors" || exit 13
             test "$TRAIN_ARCHITECTURE" = "qwen_edit" || exit 23
             test "$TRAIN_UNET" = "qwen_image_edit_2511_fp8mixed.safetensors" || exit 24
@@ -2405,14 +2612,14 @@ mod tests {
             test "$folder_id" != "$TRAIN_FOLDER" || exit 28
             test "$artifact_id" != "$TRAIN_ARTIFACT" || exit 29
             test "$folder_id" != "$artifact_id" || exit 30
-            test "$(cat "$TRAIN_DIR/targets/0000.txt")" = "change zero" || exit 17
-            test "$(cat "$TRAIN_DIR/targets/0001.txt")" = "change two" || exit 20
-            test ! -e "$TRAIN_DIR/targets/0002.png" || exit 21
-            test ! -e "$TRAIN_DIR/control_1/0002.png" || exit 22
-            cp "$TRAIN_DIR/targets/0000.png" "KEPT/target-0.png" || exit 15
-            cp "$TRAIN_DIR/control_1/0000.png" "KEPT/control-0.png" || exit 16
-            cp "$TRAIN_DIR/targets/0001.png" "KEPT/target-1.png" || exit 18
-            cp "$TRAIN_DIR/control_1/0001.png" "KEPT/control-1.png" || exit 19
+            test "$(cat "$TRAIN_DIRECTORY/targets/0000.txt")" = "change zero" || exit 17
+            test "$(cat "$TRAIN_DIRECTORY/targets/0001.txt")" = "change two" || exit 20
+            test ! -e "$TRAIN_DIRECTORY/targets/0002.png" || exit 21
+            test ! -e "$TRAIN_DIRECTORY/control_1/0002.png" || exit 22
+            cp "$TRAIN_DIRECTORY/targets/0000.png" "KEPT/target-0.png" || exit 15
+            cp "$TRAIN_DIRECTORY/control_1/0000.png" "KEPT/control-0.png" || exit 16
+            cp "$TRAIN_DIRECTORY/targets/0001.png" "KEPT/target-1.png" || exit 18
+            cp "$TRAIN_DIRECTORY/control_1/0001.png" "KEPT/control-1.png" || exit 19
             printf trained > "$TRAIN_OUTPUT"
         "#;
         let kept = tempfile::tempdir().expect("kept dataset");
@@ -2524,13 +2731,13 @@ mod tests {
         let staged = tempfile::tempdir().expect("staged target");
         let target = staged.path().join("target.png");
         let command = format!(
-            "cp \"$TRAIN_DIR/targets/0000.png\" \"{}\"; printf trained > \"$TRAIN_OUTPUT\"",
+            "cp \"$TRAIN_DIRECTORY/targets/0000.png\" \"{}\"; printf trained > \"$TRAIN_OUTPUT\"",
             target.display()
         );
         let (_root, mut config) = harness(&command);
         config.enabled = true;
         config.base_url = server.uri();
-        config.poll_interval_milliseconds = 1;
+        config.poll_interval = Duration::from_millis(1);
 
         let outcome = train_with_remediation(
             &config,
@@ -2718,9 +2925,9 @@ mod tests {
             enabled: true,
             base_url: server.uri(),
             models_directory: models,
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             train_command: None,
-            train_timeout_seconds: 2,
+            train_timeout: Duration::from_secs(2),
             ..Default::default()
         };
         let outcome = train_with_screening(
@@ -2847,8 +3054,8 @@ mod tests {
     #[tokio::test]
     async fn non_edit_training_rejects_controls_and_never_stages_a_control_folder() {
         let command = r#"
-            test ! -e "$TRAIN_DIR/control_1" || exit 31
-            test "$(cat "$TRAIN_DIR/targets/0000.txt")" = "ohwx, a portrait" || exit 32
+            test ! -e "$TRAIN_DIRECTORY/control_1" || exit 31
+            test "$(cat "$TRAIN_DIRECTORY/targets/0000.txt")" = "ohwx, a portrait" || exit 32
             printf trained > "$TRAIN_OUTPUT"
         "#;
         let (_root, config) = harness(command);
@@ -2931,7 +3138,7 @@ mod tests {
         let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("shared.safetensors");
-        let output_sidecar = sidecar_path(&output);
+        let output_sidecar = sidecar_path(&output, &config.contract);
         let first_generation = Uuid::new_v4().to_string();
         let second_generation = Uuid::new_v4().to_string();
         let (first_attempt, first_weight, first_sidecar) =
@@ -2943,6 +3150,7 @@ mod tests {
         let first_output = output.clone();
         let first_output_sidecar = output_sidecar.clone();
         let first_loras = loras.clone();
+        let first_contract = config.contract.clone();
         let first = std::thread::spawn(move || {
             promote_with(
                 &first_attempt,
@@ -2952,6 +3160,7 @@ mod tests {
                 &first_output,
                 &first_output_sidecar,
                 &first_generation,
+                &first_contract,
                 |phase| {
                     if phase == PublicationPhase::Weights {
                         weights_tx.send(()).unwrap();
@@ -2967,6 +3176,7 @@ mod tests {
         let second_output = output.clone();
         let second_output_sidecar = output_sidecar.clone();
         let second_loras = loras.clone();
+        let second_contract = config.contract.clone();
         let expected_generation = second_generation.clone();
         let second = std::thread::spawn(move || {
             let result = atomic_promote(
@@ -2977,6 +3187,7 @@ mod tests {
                 &second_output,
                 &second_output_sidecar,
                 &second_generation,
+                &second_contract,
             );
             done_tx.send(()).unwrap();
             result
@@ -2988,7 +3199,8 @@ mod tests {
         assert!(
             crate::inventory::scan(
                 &config.models_directory,
-                &RecipeCatalog::packaged().unwrap()
+                &RecipeCatalog::packaged().unwrap(),
+                &config.contract,
             )
             .is_empty(),
             "readers must not observe the first weight before its sidecar"
@@ -3010,7 +3222,7 @@ mod tests {
         let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("stable.safetensors");
-        let output_sidecar = sidecar_path(&output);
+        let output_sidecar = sidecar_path(&output, &config.contract);
         let previous_generation = Uuid::new_v4().to_string();
         fs::write(&output, b"previous").unwrap();
         fs::write(
@@ -3036,6 +3248,7 @@ mod tests {
                 &output,
                 &output_sidecar,
                 &generation,
+                &config.contract,
                 |phase| {
                     if phase == PublicationPhase::Weights {
                         panic!("simulated process interruption");
@@ -3046,12 +3259,13 @@ mod tests {
             .unwrap();
         });
         assert!(interrupted.is_err());
-        let marker = publication_marker(&loras, "stable.safetensors").unwrap();
+        let marker = publication_marker(&loras, "stable.safetensors", &config.contract).unwrap();
         assert!(marker.is_file());
         assert!(
             crate::inventory::scan(
                 &config.models_directory,
-                &RecipeCatalog::packaged().unwrap()
+                &RecipeCatalog::packaged().unwrap(),
+                &config.contract,
             )
             .is_empty(),
             "an interrupted generation must fail closed"
@@ -3059,7 +3273,7 @@ mod tests {
 
         restore_snapshot(&attempt, &attempt.join(PREVIOUS_WEIGHT), &output, true).unwrap();
         assert_eq!(fs::read(&output).unwrap(), b"previous");
-        recover_publication(&loras, &output, &output_sidecar, &marker).unwrap();
+        recover_publication(&loras, &output, &output_sidecar, &marker, &config.contract).unwrap();
         assert_eq!(fs::read(output).unwrap(), b"previous");
         assert_eq!(
             read_generation(&output_sidecar).as_deref(),
@@ -3074,7 +3288,7 @@ mod tests {
         let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("stable.safetensors");
-        let output_sidecar = sidecar_path(&output);
+        let output_sidecar = sidecar_path(&output, &config.contract);
         let previous_generation = Uuid::new_v4().to_string();
         fs::write(&output, b"previous").unwrap();
         fs::write(
@@ -3100,6 +3314,7 @@ mod tests {
             &output,
             &output_sidecar,
             &generation,
+            &config.contract,
             |phase| match phase {
                 PublicationPhase::Weights => {
                     Err(TrainError::Failed("injected publication error".into()))
@@ -3116,7 +3331,7 @@ mod tests {
             Some(previous_generation.as_str())
         );
         assert!(
-            !publication_marker(&loras, "stable.safetensors")
+            !publication_marker(&loras, "stable.safetensors", &config.contract)
                 .unwrap()
                 .exists()
         );
@@ -3143,7 +3358,7 @@ mod tests {
         )
         .unwrap();
         let output = loras.join("stable.safetensors");
-        let output_sidecar = sidecar_path(&output);
+        let output_sidecar = sidecar_path(&output, &config.contract);
 
         let error = atomic_promote(
             &attempt,
@@ -3153,6 +3368,7 @@ mod tests {
             &output,
             &output_sidecar,
             &generation,
+            &config.contract,
         )
         .unwrap_err();
 
@@ -3298,7 +3514,7 @@ mod tests {
         .unwrap();
         let catalog = RecipeCatalog::packaged().unwrap();
 
-        let bases = available_bases(&catalog, &config.models_directory);
+        let bases = available_bases(&catalog, &config.models_directory, &config.contract);
 
         assert!(bases.iter().any(|base| base.id == "flux-schnell"));
         assert!(

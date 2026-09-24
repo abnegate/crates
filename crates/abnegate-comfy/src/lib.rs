@@ -12,7 +12,7 @@
 //! use abnegate_comfy::{Client, Config};
 //! use tokio::sync::{broadcast, mpsc};
 //!
-//! let client = Client::new(Config::from_env())?;
+//! let client = Client::new(Config::from_environment())?;
 //! let (_stop, mut cancel) = broadcast::channel(1);
 //! let (progress, _updates) = mpsc::unbounded_channel();
 //! let images = client
@@ -31,7 +31,7 @@
 //! # async fn example(request: abnegate_comfy::lora::TrainRequest) -> Result<(), Box<dyn std::error::Error>> {
 //! use abnegate_comfy::{Config, lora};
 //!
-//! let config = Config::from_env();
+//! let config = Config::from_environment();
 //! let outcome = lora::train(&config, litellm_host(), litellm_key(), request).await?;
 //! # let _ = outcome;
 //! # Ok(())
@@ -41,7 +41,6 @@
 //! ```
 //!
 //! A clip can stand in for that image set. [`video::extract`] samples it above the
-
 //! rate the caller asked for, keeps the sharpest frame of each moment, drops
 //! the ones that repeat a shot already taken, and crops what is left around
 //! whatever moved:
@@ -51,10 +50,10 @@
 //! use abnegate_comfy::{Config, video};
 //!
 //! let clip = video::extract(
-//!     &Config::from_env(),
+//!     &Config::from_environment(),
 //!     &std::fs::read("subject.mp4")?,
 //!     "subject.mp4",
-//!     video::Options { fps: 4, resolution: 512, mirror: true, limit: 48 },
+//!     video::Options::new(4, 512, true, 48),
 //! )
 //! .await?;
 //! # let _ = clip;
@@ -64,9 +63,10 @@
 //!
 //! The training graphs call custom nodes that ComfyUI does not ship, and those
 //! nodes only accept run folders named under the namespaces they know.
-//! [`Config::contract`] names both; its defaults, [`train::Contract`], match
-//! the node pack this crate was written against, and a deployment with its own
-//! pack overrides them there.
+//! [`Config::contract`] names both, together with the sidecar and publication
+//! names the inventory reads. Its defaults, [`train::Contract`], sit under a
+//! neutral `Abnegate` namespace, and a deployment whose node pack registers
+//! other names overrides them there.
 //!
 //! A host that collects metrics installs [`observe_requests`] once at startup;
 //! without it the crate records nothing and pulls in no metrics stack.
@@ -98,12 +98,16 @@ pub mod video;
 pub use caption::{CaptionImage, CaptionRequest, Captioner, Draft, data_url};
 pub use client::{
     Client, Error, GeneratedImage, MAXIMUM_SOURCE_IMAGE_BYTES, MAXIMUM_SOURCE_VIDEO_BYTES,
-    SourceImage, SourceVideo, build_ace_step_workflow, build_flux_schnell_img2img_workflow,
+    SourceImage, SourceVideo, build_ace_step_workflow, build_flux_schnell_image_to_image_workflow,
     build_flux_schnell_workflow, build_upscale_image_workflow, build_upscale_video_workflow,
-    build_wan_i2v_workflow, build_wan_t2v_workflow,
+    build_wan_image_to_video_workflow, build_wan_text_to_video_workflow,
 };
 pub use config::{Config, ConfigError, TOKEN_HEADER, VISION_MODEL_VARIABLE};
 pub use dataset::{Concern, Finding, inspect};
 pub use media::MediaType;
 pub use observe::{RequestObserver, observe_requests};
 pub use screening::{Rejection, Verdict, screen};
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

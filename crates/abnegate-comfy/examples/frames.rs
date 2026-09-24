@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = arguments.next().unwrap_or_else(|| "frames".to_string());
     std::fs::create_dir_all(&output)?;
 
-    let config = Config::from_env();
+    let config = Config::from_environment();
     println!(
         "subject detection: {}",
         match &config.vision_model {
@@ -32,12 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &config,
         &std::fs::read(&clip)?,
         &clip,
-        video::Options {
-            fps: 4,
-            resolution: 512,
-            mirror: true,
-            limit: 48,
-        },
+        video::Options::new(4, 512, true, 48),
     )
     .await?;
 

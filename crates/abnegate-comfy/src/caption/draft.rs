@@ -3,6 +3,7 @@ use std::fmt;
 
 /// One image on its way to a caption.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Draft {
     /// Inline data URL, the only image shape a vision model takes.
     pub image: String,
@@ -23,6 +24,8 @@ impl fmt::Debug for Draft {
 }
 
 impl Draft {
+    /// A draft of the image `filename` from its base64, carrying `caption`,
+    /// blank to have one written, in the shot `group`.
     pub fn new(filename: &str, base64: &str, caption: &str, group: usize) -> Self {
         Self {
             image: data_url(filename, base64),

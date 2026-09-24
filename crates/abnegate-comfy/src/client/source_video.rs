@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub const MAXIMUM_SOURCE_VIDEO_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct SourceVideo {
     pub bytes: bytes::Bytes,
     pub mime: String,
@@ -25,6 +26,8 @@ impl fmt::Debug for SourceVideo {
 }
 
 impl SourceVideo {
+    /// A clip to upload, refused when it is empty, over
+    /// [`MAXIMUM_SOURCE_VIDEO_BYTES`], or not WebM or MP4.
     pub fn new(bytes: impl Into<bytes::Bytes>, mime: &str) -> Result<Self, Error> {
         let mime = normalize_source_video_mime(mime)?;
         let bytes = bytes.into();

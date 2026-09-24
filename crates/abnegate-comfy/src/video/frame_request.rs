@@ -3,6 +3,7 @@ use std::fmt;
 
 /// A clip submitted for training.
 #[derive(Deserialize)]
+#[non_exhaustive]
 pub struct FrameRequest {
     pub filename: String,
     pub bytes_base64: String,

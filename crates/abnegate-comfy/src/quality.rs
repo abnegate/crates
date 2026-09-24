@@ -43,6 +43,7 @@ fn default_checkpoints_per_run() -> u32 {
 
 /// How much better an adapter fits its own training images than its base does.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[non_exhaustive]
 pub struct Quality {
     pub improvement: f32,
     pub checkpoint: String,
@@ -106,7 +107,7 @@ pub(crate) async fn select_with(
             return None;
         }
     };
-    let deadline = Instant::now() + Duration::from_secs(config.train_timeout_seconds);
+    let deadline = Instant::now() + config.train_timeout;
     let sample = subsample(config, model, &run.folder, captions, RANK_IMAGES);
     let quality = selection.choose(sample.as_ref(), deadline).await;
     if selection.probe.cleanup.load(Ordering::Acquire) {
@@ -422,10 +423,7 @@ impl<'a> Probe<'a> {
                 }
             };
             let Some(entry) = entry else {
-                tokio::time::sleep(Duration::from_millis(
-                    self.config.poll_interval_milliseconds,
-                ))
-                .await;
+                tokio::time::sleep(self.config.poll_interval).await;
                 continue;
             };
             if failed(&entry) {
@@ -435,10 +433,7 @@ impl<'a> Probe<'a> {
             if completed(&entry) {
                 return Some(entry);
             }
-            tokio::time::sleep(Duration::from_millis(
-                self.config.poll_interval_milliseconds,
-            ))
-            .await;
+            tokio::time::sleep(self.config.poll_interval).await;
         }
     }
 
@@ -574,10 +569,7 @@ impl<'a> Probe<'a> {
             {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(
-                self.config.poll_interval_milliseconds,
-            ))
-            .await;
+            tokio::time::sleep(self.config.poll_interval).await;
         }
     }
 
@@ -1325,7 +1317,7 @@ mod tests {
                 .await;
             let config = Config {
                 base_url: server.uri(),
-                poll_interval_milliseconds: 1,
+                poll_interval: Duration::from_millis(1),
                 ..Default::default()
             };
             let model = flux();
@@ -1360,7 +1352,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             ..Default::default()
         };
         let model = flux();
@@ -1410,7 +1402,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             ..Default::default()
         };
         let model = flux();
@@ -1461,7 +1453,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             ..Default::default()
         };
         let model = flux();
@@ -1488,7 +1480,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             ..Default::default()
         };
         let model = flux();
@@ -1528,7 +1520,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             ..Default::default()
         };
         let model = flux();
@@ -1565,7 +1557,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             ..Default::default()
         };
         let model = flux();
@@ -1604,7 +1596,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             contract: Contract {
                 stage_training_artifact_node: "StageWeights".into(),
                 artifact_prefix: "adapter-".into(),

@@ -1,6 +1,9 @@
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+/// One weight [`scan`](crate::inventory::scan) found, joined to the recipe that
+/// runs it.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[non_exhaustive]
 pub struct InventoryItem {
     pub filename: String,
     pub recipe_id: String,
