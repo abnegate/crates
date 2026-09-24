@@ -607,7 +607,10 @@ fn returned(status: StatusCode) -> String {
 /// The first `limit` bytes of an answer's body, read no further, and whether
 /// any of it remained unread.
 async fn read_prefix(mut response: Response, limit: usize) -> PullRequestResult<(Vec<u8>, bool)> {
-    let mut prefix = Vec::new();
+    let declared = response
+        .content_length()
+        .map_or(0, |length| usize::try_from(length).unwrap_or(usize::MAX));
+    let mut prefix = Vec::with_capacity(declared.min(limit));
     while let Some(chunk) = response.chunk().await? {
         let room = limit - prefix.len();
         if chunk.len() > room {
