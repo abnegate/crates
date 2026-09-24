@@ -314,3 +314,27 @@ jobs:
 
       - name: Build documentation without optional features
         run: cargo +nightly doc --workspace --no-default-features --no-deps
+
+  brand:
+    name: Brand Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Refuse donor names in published sources
+        continue-on-error: true
+        run: |
+          hits=$({
+            grep -rniw zone crates/*/src crates/*/tests crates/*/examples crates/*/README.md 2>/dev/null | grep -v timezone
+            grep -rnE '\b(Zone|Claudear|Mg)[A-Z]' crates
+            grep -rnE '\b(ZONE|CLAUDEAR)_' crates
+            grep -rniE '^\s*//[/!].*\b(claudear|minigame)\b' crates/*/src
+            grep -rniE '\b(claudear|minigame)\b' crates/*/README.md
+          } || true)
+          if [ -n "$hits" ]; then
+            printf '%s\n' "$hits"
+            exit 1
+          fi
