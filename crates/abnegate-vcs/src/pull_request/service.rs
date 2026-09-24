@@ -85,9 +85,16 @@ const MAXIMUM_ERROR_BYTES: usize = 1024;
 /// Most of an error body read for GitHub's words about it.
 const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
 
+/// Most of a successful answer read. A longer one is refused, never parsed in
+/// part.
+const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
+
 /// What an answer this crate cannot read is reported as, in place of the
 /// parser's own message, which quotes the answer.
 const UNREADABLE: &str = "GitHub answered in a form this crate cannot read";
+
+/// What an answer longer than [`MAXIMUM_ANSWER_BYTES`] is reported as.
+const OVERSIZED: &str = "GitHub's answer was larger than this crate reads";
 
 /// What GitHub says when a pull request for the branch is already open.
 const ALREADY_EXISTS: &str = "A pull request already exists";
@@ -494,10 +501,32 @@ fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
         .build()?)
 }
 
-/// A successful answer read as `T`. An answer that is not the JSON expected
-/// is reported in fixed words, because the parser's own message quotes it.
+/// A successful answer read as `T`, from no more than
+/// [`MAXIMUM_ANSWER_BYTES`] of it. An answer that is longer, or is not the JSON
+/// expected, is reported in fixed words, because the parser's own message
+/// quotes it.
 async fn decode<T: DeserializeOwned>(response: Response) -> PullRequestResult<T> {
-    let body = response.bytes().await?;
+    decode_within(response, MAXIMUM_ANSWER_BYTES).await
+}
+
+/// A successful answer read as `T`, refused unread when it declares more than
+/// `limit` bytes and refused whole when it sends more.
+async fn decode_within<T: DeserializeOwned>(
+    response: Response,
+    limit: usize,
+) -> PullRequestResult<T> {
+    let oversized = || PullRequestError::GitHubApi(OVERSIZED.to_string());
+    if response
+        .content_length()
+        .is_some_and(|length| u64::try_from(limit).is_ok_and(|limit| length > limit))
+    {
+        return Err(oversized());
+    }
+
+    let (body, more) = read_prefix(response, limit).await?;
+    if more {
+        return Err(oversized());
+    }
     serde_json::from_slice(&body).map_err(|_| PullRequestError::GitHubApi(UNREADABLE.to_string()))
 }
 
@@ -578,6 +607,9 @@ mod tests {
     use crate::pull_request::service::fixtures::seven;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -604,6 +636,58 @@ mod tests {
 
     fn acme() -> (String, String) {
         ("acme".to_string(), "project".to_string())
+    }
+
+    /// An answer of exactly `length` bytes that reads as a mergeable pull
+    /// request, padded with a sentinel no error may repeat.
+    fn padded(length: usize) -> String {
+        let opening = r#"{"mergeable":true,"padding":"RAW-SENTINEL"#;
+        let closing = r#""}"#;
+        let padding = "x".repeat(length - opening.len() - closing.len());
+        format!("{opening}{padding}{closing}")
+    }
+
+    /// `body` behind the length it declares.
+    fn declared(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// `body` streamed in a chunk, with no length declared ahead of it.
+    fn streamed(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
+            body.len()
+        )
+    }
+
+    /// The response to a request sent to a server that answers once with
+    /// `answer`, byte for byte.
+    async fn answered(answer: String) -> Response {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.ends_with(b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            stream.write_all(answer.as_bytes()).await.unwrap();
+        });
+
+        client(false, REQUEST_TIMEOUT)
+            .unwrap()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap()
     }
 
     #[test]
@@ -1066,6 +1150,94 @@ mod tests {
 
             assert_eq!(prefix, "b".repeat(expected).into_bytes(), "{length} bytes");
             assert_eq!(more, remained, "{length} bytes");
+        }
+    }
+
+    /// However an answer is framed, it is read to its last byte while it fits,
+    /// and one byte more is refused whole rather than parsed in part.
+    #[tokio::test]
+    async fn an_answer_is_read_up_to_its_bound_and_refused_past_it() {
+        let limit = 100;
+        for frame in [declared, streamed] {
+            let within: GitHubPullRequestDetail =
+                decode_within(answered(frame(&padded(limit))).await, limit)
+                    .await
+                    .unwrap();
+            assert_eq!(within.mergeable, Some(true));
+
+            let failure = decode_within::<GitHubPullRequestDetail>(
+                answered(frame(&padded(limit + 1))).await,
+                limit,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == OVERSIZED),
+                "{failure:?}"
+            );
+            assert!(
+                !format!("{failure:?}").contains("RAW-SENTINEL"),
+                "{failure:?}"
+            );
+        }
+    }
+
+    /// A length declared past the bound is refused on the headers alone, so a
+    /// server that promises a huge answer is never read from at all.
+    #[tokio::test]
+    async fn a_length_declared_past_the_bound_is_refused_before_the_body_is_read() {
+        let response =
+            answered("HTTP/1.1 200 OK\r\ncontent-length: 1000000\r\n\r\n{}".to_string()).await;
+
+        let failure = decode_within::<serde_json::Value>(response, 100)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::GitHubApi(ref text) if text == OVERSIZED),
+            "{failure:?}"
+        );
+    }
+
+    /// An answer that stops short of the length it declared is a failed read,
+    /// not one too long or one this crate cannot parse.
+    #[tokio::test]
+    async fn an_answer_cut_short_is_a_failed_read() {
+        let response =
+            answered("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n{}".to_string()).await;
+
+        let failure = decode_within::<serde_json::Value>(response, 1024)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::Http(_)), "{failure:?}");
+    }
+
+    /// The service's own reads decode an answer exactly as long as the bound
+    /// and refuse one a byte longer.
+    #[tokio::test]
+    async fn a_read_decodes_an_answer_as_long_as_the_bound_and_refuses_one_longer() {
+        for (length, expected) in [
+            (MAXIMUM_ANSWER_BYTES, Ok(Mergeability::Clean)),
+            (
+                MAXIMUM_ANSWER_BYTES + 1,
+                Err(format!("GitHubApi({OVERSIZED:?})")),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/acme/project/pulls/7"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(padded(length)))
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let read = service
+                .fetch_mergeability(&seven(&service), &token())
+                .await
+                .map_err(|failure| format!("{failure:?}"));
+
+            assert_eq!(read, expected, "{length} bytes");
         }
     }
 
