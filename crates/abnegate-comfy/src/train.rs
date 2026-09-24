@@ -57,6 +57,11 @@ pub const FOLDER_PREFIX: &str = "zone-train-";
 pub const ARTIFACT_PREFIX: &str = "zone-lora-";
 /// Default namespace of the input folder a quality probe stages its sample in.
 pub const PROBE_PREFIX: &str = "zone-probe-";
+/// Default suffix of the recipe binding written beside every weight.
+pub const SIDECAR_SUFFIX: &str = ".zone.json";
+/// Default directory under `loras/` whose markers hide a weight while it is
+/// replaced.
+pub const PUBLICATION_DIRECTORY: &str = ".zone-publish";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1825,6 +1830,8 @@ mod tests {
             probe_prefix: "sample-".into(),
             environment_prefix: "TRAINER".into(),
             input_environment_prefix: "COMFY".into(),
+            sidecar_suffix: ".adapter.json".into(),
+            publication_directory: ".adapter-publish".into(),
         }
     }
 

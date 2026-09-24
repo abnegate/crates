@@ -26,9 +26,7 @@ pub use train_request::TrainRequest;
 use crate::caption::{Captioner, Draft};
 use crate::client::{Client, SourceImage};
 use crate::config::Config;
-use crate::inventory::{
-    PUBLICATION_DIRECTORY, WeightDocument, WeightSidecar, publication_marker, sidecar_path,
-};
+use crate::inventory::{WeightDocument, WeightSidecar, publication_marker, sidecar_path};
 use crate::recipe::{RecipeCatalog, TrainingModel, sanitize_weight_filename};
 use crate::subject::{CENTRE, Subject};
 use crate::train::{Contract, Run};
@@ -162,8 +160,15 @@ impl Drop for Attempt {
     }
 }
 
-pub fn available_bases(catalog: &RecipeCatalog, models_directory: &Path) -> Vec<TrainBase> {
-    let items = crate::inventory::scan(models_directory, catalog);
+/// The bases in `catalog` a LoRA can be trained on whose weights are installed
+/// under `models_directory`, as [`inventory::scan`](crate::inventory::scan)
+/// reads it under `contract`.
+pub fn available_bases(
+    catalog: &RecipeCatalog,
+    models_directory: &Path,
+    contract: &Contract,
+) -> Vec<TrainBase> {
+    let items = crate::inventory::scan(models_directory, catalog, contract);
     catalog
         .image_recipes()
         .filter(|recipe| !recipe.adapter)
@@ -316,7 +321,7 @@ async fn train_with_pipeline(
     let mut attempt = Attempt::create(&config.models_directory)?;
     let loras = ensure_child_directory(&config.models_directory, "loras")?;
     let output = validate_output(&loras, &loras.join(&filename))?;
-    let output_sidecar = validate_output(&loras, &sidecar_path(&output))?;
+    let output_sidecar = validate_output(&loras, &sidecar_path(&output, &config.contract))?;
     let targets = ensure_child_directory(&attempt.root, "targets")?;
     let controls = edit
         .then(|| ensure_child_directory(&attempt.root, "control_1"))
@@ -439,7 +444,7 @@ async fn train_with_pipeline(
     let adapter = recipe
         .training_adapter()
         .map_err(|_| TrainError::Invalid("training adapter mapping is missing"))?;
-    let staged_sidecar = sidecar_path(&staged);
+    let staged_sidecar = sidecar_path(&staged, &config.contract);
     let bytes = serde_json::to_vec_pretty(&WeightDocument {
         sidecar: WeightSidecar {
             recipe_id: adapter.recipe_id.clone(),
@@ -459,6 +464,7 @@ async fn train_with_pipeline(
         &output,
         &output_sidecar,
         &attempt.id,
+        &config.contract,
     )?;
     Ok(TrainOutcome {
         path: output,
@@ -951,6 +957,7 @@ fn atomic_promote(
     output: &Path,
     output_sidecar: &Path,
     generation: &str,
+    contract: &Contract,
 ) -> Result<(), TrainError> {
     promote_with(
         attempt,
@@ -960,6 +967,7 @@ fn atomic_promote(
         output,
         output_sidecar,
         generation,
+        contract,
         |_| Ok(()),
     )
 }
@@ -972,6 +980,7 @@ fn promote_with<F>(
     output: &Path,
     output_sidecar: &Path,
     generation: &str,
+    contract: &Contract,
     mut observe: F,
 ) -> Result<(), TrainError>
 where
@@ -1000,23 +1009,23 @@ where
     let _local = local
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let publications = ensure_child_directory(parent, PUBLICATION_DIRECTORY)?;
+    let publications = ensure_child_directory(parent, &contract.publication_directory)?;
     sync_directory(parent)?;
     let filename = output
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(TrainError::Invalid("LoRA output has no filename"))?;
     let _file = lock_publication(&publications, filename)?;
-    let marker = publication_marker(parent, filename)
+    let marker = publication_marker(parent, filename, contract)
         .ok_or(TrainError::Invalid("invalid LoRA publication name"))?;
-    recover_publication(parent, output, output_sidecar, &marker)?;
+    recover_publication(parent, output, output_sidecar, &marker, contract)?;
     validate_output(parent, output)?;
     validate_output(parent, output_sidecar)?;
 
     let previous_weight = snapshot(output, &attempt.join(PREVIOUS_WEIGHT))?;
     let previous_sidecar = snapshot(
         output_sidecar,
-        &sidecar_path(&attempt.join(PREVIOUS_WEIGHT)),
+        &sidecar_path(&attempt.join(PREVIOUS_WEIGHT), contract),
     )?;
     sync_directory(attempt)?;
     let publication = Publication {
@@ -1042,7 +1051,15 @@ where
         Ok::<(), TrainError>(())
     })();
     if let Err(error) = promoted {
-        return rollback_publication(attempt, parent, output, output_sidecar, &marker, error);
+        return rollback_publication(
+            attempt,
+            parent,
+            output,
+            output_sidecar,
+            &marker,
+            contract,
+            error,
+        );
     }
     if let Err(error) = fs::remove_file(&marker) {
         return rollback_publication(
@@ -1051,6 +1068,7 @@ where
             output,
             output_sidecar,
             &marker,
+            contract,
             failed(error),
         );
     }
@@ -1122,6 +1140,7 @@ fn recover_publication(
     output: &Path,
     output_sidecar: &Path,
     marker: &Path,
+    contract: &Contract,
 ) -> Result<(), TrainError> {
     match fs::symlink_metadata(marker) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
@@ -1169,7 +1188,7 @@ fn recover_publication(
     )?;
     restore_snapshot(
         &attempt,
-        &sidecar_path(&attempt.join(PREVIOUS_WEIGHT)),
+        &sidecar_path(&attempt.join(PREVIOUS_WEIGHT), contract),
         output_sidecar,
         publication.previous_sidecar,
     )?;
@@ -1188,6 +1207,7 @@ fn rollback_publication(
     output: &Path,
     output_sidecar: &Path,
     marker: &Path,
+    contract: &Contract,
     error: TrainError,
 ) -> Result<(), TrainError> {
     let publication = fs::read(marker).map_err(failed).and_then(|contents| {
@@ -1203,7 +1223,7 @@ fn rollback_publication(
         )?;
         restore_snapshot(
             attempt,
-            &sidecar_path(&attempt.join(PREVIOUS_WEIGHT)),
+            &sidecar_path(&attempt.join(PREVIOUS_WEIGHT), contract),
             output_sidecar,
             publication.previous_sidecar,
         )?;
@@ -1609,7 +1629,7 @@ mod tests {
         let attempt = config.models_directory.join("training").join(generation);
         fs::create_dir_all(&attempt).unwrap();
         let staged = attempt.join(format!("{generation}.safetensors"));
-        let sidecar = sidecar_path(&staged);
+        let sidecar = sidecar_path(&staged, &config.contract);
         fs::write(&staged, contents).unwrap();
         fs::write(
             &sidecar,
@@ -2242,7 +2262,7 @@ mod tests {
         let catalog = RecipeCatalog::packaged().unwrap();
 
         assert!(
-            available_bases(&catalog, &root).is_empty(),
+            available_bases(&catalog, &root, &Contract::default()).is_empty(),
             "nothing is trainable until its weights are on disk"
         );
 
@@ -2255,7 +2275,7 @@ mod tests {
             .expect("flux-schnell declares a checkpoint");
         fs::write(root.join("checkpoints").join(checkpoint), vec![0u8; 1024]).unwrap();
 
-        let bases = available_bases(&catalog, &root);
+        let bases = available_bases(&catalog, &root, &Contract::default());
         assert!(
             bases
                 .iter()
@@ -2959,7 +2979,7 @@ mod tests {
         let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("shared.safetensors");
-        let output_sidecar = sidecar_path(&output);
+        let output_sidecar = sidecar_path(&output, &config.contract);
         let first_generation = Uuid::new_v4().to_string();
         let second_generation = Uuid::new_v4().to_string();
         let (first_attempt, first_weight, first_sidecar) =
@@ -2971,6 +2991,7 @@ mod tests {
         let first_output = output.clone();
         let first_output_sidecar = output_sidecar.clone();
         let first_loras = loras.clone();
+        let first_contract = config.contract.clone();
         let first = std::thread::spawn(move || {
             promote_with(
                 &first_attempt,
@@ -2980,6 +3001,7 @@ mod tests {
                 &first_output,
                 &first_output_sidecar,
                 &first_generation,
+                &first_contract,
                 |phase| {
                     if phase == PublicationPhase::Weights {
                         weights_tx.send(()).unwrap();
@@ -2995,6 +3017,7 @@ mod tests {
         let second_output = output.clone();
         let second_output_sidecar = output_sidecar.clone();
         let second_loras = loras.clone();
+        let second_contract = config.contract.clone();
         let expected_generation = second_generation.clone();
         let second = std::thread::spawn(move || {
             let result = atomic_promote(
@@ -3005,6 +3028,7 @@ mod tests {
                 &second_output,
                 &second_output_sidecar,
                 &second_generation,
+                &second_contract,
             );
             done_tx.send(()).unwrap();
             result
@@ -3016,7 +3040,8 @@ mod tests {
         assert!(
             crate::inventory::scan(
                 &config.models_directory,
-                &RecipeCatalog::packaged().unwrap()
+                &RecipeCatalog::packaged().unwrap(),
+                &config.contract,
             )
             .is_empty(),
             "readers must not observe the first weight before its sidecar"
@@ -3038,7 +3063,7 @@ mod tests {
         let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("stable.safetensors");
-        let output_sidecar = sidecar_path(&output);
+        let output_sidecar = sidecar_path(&output, &config.contract);
         let previous_generation = Uuid::new_v4().to_string();
         fs::write(&output, b"previous").unwrap();
         fs::write(
@@ -3064,6 +3089,7 @@ mod tests {
                 &output,
                 &output_sidecar,
                 &generation,
+                &config.contract,
                 |phase| {
                     if phase == PublicationPhase::Weights {
                         panic!("simulated process interruption");
@@ -3074,12 +3100,13 @@ mod tests {
             .unwrap();
         });
         assert!(interrupted.is_err());
-        let marker = publication_marker(&loras, "stable.safetensors").unwrap();
+        let marker = publication_marker(&loras, "stable.safetensors", &config.contract).unwrap();
         assert!(marker.is_file());
         assert!(
             crate::inventory::scan(
                 &config.models_directory,
-                &RecipeCatalog::packaged().unwrap()
+                &RecipeCatalog::packaged().unwrap(),
+                &config.contract,
             )
             .is_empty(),
             "an interrupted generation must fail closed"
@@ -3087,7 +3114,7 @@ mod tests {
 
         restore_snapshot(&attempt, &attempt.join(PREVIOUS_WEIGHT), &output, true).unwrap();
         assert_eq!(fs::read(&output).unwrap(), b"previous");
-        recover_publication(&loras, &output, &output_sidecar, &marker).unwrap();
+        recover_publication(&loras, &output, &output_sidecar, &marker, &config.contract).unwrap();
         assert_eq!(fs::read(output).unwrap(), b"previous");
         assert_eq!(
             read_generation(&output_sidecar).as_deref(),
@@ -3102,7 +3129,7 @@ mod tests {
         let loras = config.models_directory.join("loras");
         fs::create_dir(&loras).unwrap();
         let output = loras.join("stable.safetensors");
-        let output_sidecar = sidecar_path(&output);
+        let output_sidecar = sidecar_path(&output, &config.contract);
         let previous_generation = Uuid::new_v4().to_string();
         fs::write(&output, b"previous").unwrap();
         fs::write(
@@ -3128,6 +3155,7 @@ mod tests {
             &output,
             &output_sidecar,
             &generation,
+            &config.contract,
             |phase| match phase {
                 PublicationPhase::Weights => {
                     Err(TrainError::Failed("injected publication error".into()))
@@ -3144,7 +3172,7 @@ mod tests {
             Some(previous_generation.as_str())
         );
         assert!(
-            !publication_marker(&loras, "stable.safetensors")
+            !publication_marker(&loras, "stable.safetensors", &config.contract)
                 .unwrap()
                 .exists()
         );
@@ -3171,7 +3199,7 @@ mod tests {
         )
         .unwrap();
         let output = loras.join("stable.safetensors");
-        let output_sidecar = sidecar_path(&output);
+        let output_sidecar = sidecar_path(&output, &config.contract);
 
         let error = atomic_promote(
             &attempt,
@@ -3181,6 +3209,7 @@ mod tests {
             &output,
             &output_sidecar,
             &generation,
+            &config.contract,
         )
         .unwrap_err();
 
@@ -3326,7 +3355,7 @@ mod tests {
         .unwrap();
         let catalog = RecipeCatalog::packaged().unwrap();
 
-        let bases = available_bases(&catalog, &config.models_directory);
+        let bases = available_bases(&catalog, &config.models_directory, &config.contract);
 
         assert!(bases.iter().any(|base| base.id == "flux-schnell"));
         assert!(

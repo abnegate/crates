@@ -211,15 +211,20 @@ impl Client {
     fn image_recipe(&self) -> Result<&Recipe, Error> {
         let selected = self.config.checkpoint.as_str();
         if self.config.models_directory.is_dir() {
-            let items = crate::inventory::scan(&self.config.models_directory, &self.catalog);
+            let items = crate::inventory::scan(
+                &self.config.models_directory,
+                &self.catalog,
+                &self.config.contract,
+            );
             if let Some(item) = crate::inventory::find(&items, selected)
                 && let Some(recipe) = self.catalog.get(&item.recipe_id)
             {
                 return Ok(recipe);
             }
             let loras = self.config.models_directory.join("loras");
-            let pending = crate::inventory::publication_marker(&loras, selected)
-                .is_some_and(|marker| std::fs::symlink_metadata(marker).is_ok());
+            let pending =
+                crate::inventory::publication_marker(&loras, selected, &self.config.contract)
+                    .is_some_and(|marker| std::fs::symlink_metadata(marker).is_ok());
             if pending || std::fs::symlink_metadata(loras.join(selected)).is_ok() {
                 return Err(Error::Configuration(
                     "selected LoRA has no complete, coherent sidecar",
@@ -1512,6 +1517,7 @@ mod tests {
                 recipe_id: "flux-schnell-adapter".into(),
                 huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
+            &crate::train::Contract::default(),
         )
         .unwrap();
         assert!(Client::new(config.clone()).is_err());
@@ -1522,11 +1528,14 @@ mod tests {
                 recipe_id: "flux-schnell-adapter".into(),
                 huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
             },
+            &crate::train::Contract::default(),
         )
         .unwrap();
         assert!(Client::new(config.clone()).is_ok());
 
-        let marker = crate::inventory::publication_marker(&loras, "style.safetensors").unwrap();
+        let marker =
+            crate::inventory::publication_marker(&loras, "style.safetensors", &config.contract)
+                .unwrap();
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(marker, b"pending").unwrap();
         assert!(Client::new(config).is_err());
@@ -1761,6 +1770,7 @@ mod tests {
                 recipe_id: "qwen-image-edit-adapter".into(),
                 huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
             },
+            &crate::train::Contract::default(),
         )
         .unwrap();
         Mock::given(method("POST"))
