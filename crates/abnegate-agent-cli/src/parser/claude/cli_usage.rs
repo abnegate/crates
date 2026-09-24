@@ -21,8 +21,8 @@ pub struct CliUsage {
 }
 
 impl CliUsage {
-    /// Fresh input and output counts, with nothing read from or written to
-    /// the cache.
+    /// Fresh input and output counts, with no cache counts reported: both
+    /// cache counters are absent, not zero.
     pub fn new(input_tokens: u64, output_tokens: u64) -> Self {
         Self {
             input_tokens: Some(input_tokens),
@@ -102,11 +102,25 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(20));
         assert_eq!(usage.cache_read_input_tokens, Some(30));
         assert_eq!(usage.cache_creation_input_tokens, Some(40));
+    }
+
+    #[test]
+    fn the_constructor_reports_no_cache_counts_until_given_them() {
+        let fresh = CliUsage::new(10, 20);
+        assert_eq!(fresh.input_tokens, Some(10));
+        assert_eq!(fresh.output_tokens, Some(20));
+        assert_eq!(fresh.cache_read_input_tokens, None);
+        assert_eq!(fresh.cache_creation_input_tokens, None);
+
+        let cached: CliUsage = serde_json::from_str(
+            r#"{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40}"#,
+        )
+        .unwrap();
         assert_eq!(
-            usage,
-            CliUsage::new(10, 20)
+            fresh
                 .with_cache_read_input_tokens(30)
-                .with_cache_creation_input_tokens(40)
+                .with_cache_creation_input_tokens(40),
+            cached
         );
     }
 
