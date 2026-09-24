@@ -139,22 +139,22 @@ impl EnvironmentPolicy {
     /// A name the policy passes only because it inherits is never read, nor
     /// is a value that is not UTF-8.
     pub fn get(&self, name: &str) -> Option<SecretValue> {
-        match self.variables.get(name) {
-            Some(value) => Some(value.clone()),
-            None if self.allowed.contains(name) => env::var(name).ok().map(SecretValue::new),
-            None => None,
-        }
+        self.variables
+            .get(name)
+            .cloned()
+            .or_else(|| self.read(name).map(SecretValue::new))
     }
 
-    /// Whether `name` is set here, or is allowed and set in the executor now.
+    /// Whether `name` is set here, or is allowed and set in the executor now
+    /// to UTF-8: exactly when [`get`](Self::get) returns a value.
     ///
     /// Never true of a name only because the policy inherits.
     pub fn contains(&self, name: &str) -> bool {
-        self.variables.contains_key(name) || self.passes_on(name)
+        self.variables.contains_key(name) || self.read(name).is_some()
     }
 
-    /// The names set here and the allowed names the executor has set now,
-    /// in order, each once.
+    /// The names set here and the allowed names the executor has set now to
+    /// UTF-8, in order, each once: every name [`get`](Self::get) reads.
     ///
     /// Never the rest of an inherited environment.
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -165,7 +165,7 @@ impl EnvironmentPolicy {
                 self.allowed
                     .iter()
                     .map(String::as_str)
-                    .filter(|name| self.passes_on(name)),
+                    .filter(|name| self.read(name).is_some()),
             )
             .collect::<BTreeSet<&str>>()
             .into_iter()
@@ -213,8 +213,8 @@ impl EnvironmentPolicy {
             .is_some_and(|name| self.removed.contains(name))
     }
 
-    fn passes_on(&self, name: &str) -> bool {
-        self.allowed.contains(name) && env::var_os(name).is_some()
+    fn read(&self, name: &str) -> Option<String> {
+        self.allowed.get(name).and_then(|name| env::var(name).ok())
     }
 
     fn allowed_values(&self) -> impl Iterator<Item = (OsString, OsString)> + '_ {
@@ -246,6 +246,9 @@ impl<Name: Into<String>, Value: Into<SecretValue>> FromIterator<(Name, Value)>
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
     use crate::executor::child;
 
     use super::*;
@@ -440,6 +443,24 @@ mod tests {
         assert_eq!(names(&policy), ["EXTRA"]);
         assert_eq!(environment_of(&policy).await, ["EXTRA=1"]);
         assert!(policy.remove(ALLOWED).is_none());
+    }
+
+    /// A name `contains` or `names` reports is one `get` can read.
+    #[tokio::test]
+    async fn an_allowed_value_that_is_not_utf8_is_never_reported() {
+        const NAME: &str = "executor::environment_policy::tests::an_allowed_value_that_is_not_utf8_is_never_reported";
+        if child::delegated_os(NAME, &[(ALLOWED, OsStr::from_bytes(b"not-\xFF-utf8"))]).await {
+            return;
+        }
+        assert!(
+            env::var_os(ALLOWED).is_some(),
+            "{ALLOWED} is not set here, so this test proves nothing"
+        );
+        let policy = EnvironmentPolicy::empty().allow([ALLOWED]);
+
+        assert!(policy.get(ALLOWED).is_none());
+        assert!(!policy.contains(ALLOWED), "{policy:?}");
+        assert!(names(&policy).is_empty(), "{:?}", names(&policy));
     }
 
     #[tokio::test]
