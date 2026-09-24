@@ -113,8 +113,51 @@ const PULL: &str = "pull";
 /// The suffix git's own URLs carry on a repository name.
 const GIT_SUFFIX: &str = ".git";
 
-/// Opens pull requests on GitHub or a GitHub Enterprise install, and reads
-/// back how each one was received.
+/// Opens, reads, checks, reviews and merges pull requests on GitHub or a
+/// GitHub Enterprise install, reads back how each one was received, and
+/// creates repositories there.
+///
+/// - Opening: [`Self::get_default_branch`],
+///   [`Self::pull_request_exists_for_branch`] and
+///   [`Self::create_pull_request`].
+/// - Reading: [`Self::fetch_pull`], [`Self::fetch_files`],
+///   [`Self::fetch_diff`], [`Self::fetch_file`], [`Self::fetch_mergeability`]
+///   and [`Self::fetch_reception`].
+/// - Checking: [`Self::fetch_checks`].
+/// - Reviewing: [`Self::fetch_issue_comments`], [`Self::post_issue_comment`],
+///   [`Self::submit_review`], [`Self::fetch_review_threads`],
+///   [`Self::reply_to_review_comment`] and [`Self::resolve_review_thread`].
+/// - Merging: [`Self::merge`], then [`Self::delete_branch`].
+/// - Creating a repository: [`Self::create_repository`].
+///
+/// Review threads, resolving one, and an administrator's merge go to GitHub's
+/// GraphQL API; everything else goes to its REST API, at the same origin. A
+/// request follows a redirect only while it stays on that origin.
+///
+/// A status that says what it means on its own is reported as that: 401 as
+/// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
+/// rate limit as [`PullRequestError::RateLimited`], any other 403 as
+/// [`PullRequestError::Forbidden`], and 404 as [`PullRequestError::NotFound`],
+/// except that [`Self::delete_branch`] reads a 404 as a branch already gone.
+/// Outside a merge, the errors GitHub's GraphQL API reports map onto the same
+/// variants where GitHub names their kind. Of a refusal's answer, an error
+/// keeps only GitHub's own message, bounded: never the raw answer, and never
+/// the token.
+///
+/// A paged read takes a hundred rows a page and follows at most ten pages.
+/// Every JSON answer, each page of a paged read included, is read up to
+/// 16 MiB and never parsed in part, so a longer page is
+/// [`PullRequestError::GitHubApi`] rather than a shorter list.
+/// [`Self::fetch_diff`] and [`Self::fetch_file`] read only as far as the limit
+/// their caller passes.
+///
+/// [`Self::merge`] asks through REST first, and only a refusal by branch
+/// protection is asked again through the administrator's GraphQL mutation.
+/// Errors GitHub's GraphQL API reports in answer to that mutation become
+/// [`PullRequestError::Protected`], apart from a spent rate limit, which stays
+/// [`PullRequestError::RateLimited`]. A refusal of the mutation at the HTTP
+/// level, such as [`PullRequestError::Forbidden`] or
+/// [`PullRequestError::NotFound`], passes through unchanged.
 #[derive(Debug, Clone)]
 pub struct PullRequestService {
     client: Client,

@@ -11,8 +11,9 @@
 //! [`subject::Subject`] names a change the way a conventional-commit history
 //! names one; [`discovery::DependencyDiscovery`] reads package manifests for
 //! the dependencies one organisation has on itself. With the `github` feature,
-//! `pull_request::PullRequestService` opens and reads back pull requests over
-//! the GitHub REST API.
+//! `pull_request::PullRequestService` opens, reads, checks, reviews and merges
+//! pull requests, and creates repositories, over GitHub's REST and GraphQL
+//! APIs.
 //!
 //! Nothing here holds application state, so a task runner can drive it directly.
 //!
@@ -36,8 +37,10 @@
 //!
 //! # Features
 //!
-//! - `github`: `pull_request`, which opens pull requests on GitHub or a
-//!   GitHub Enterprise install and reads back how each one was received.
+//! - `github`: `pull_request`, which opens, reads, checks, reviews and merges
+//!   pull requests on GitHub or a GitHub Enterprise install, reads back how
+//!   each one was received, and creates repositories there, over the REST and
+//!   GraphQL APIs.
 //! - `test-support`: `RepositoryUrl::local` and
 //!   `pull_request::PullRequestService::standing_in_for`, which reach a
 //!   repository on the local disk or a mock API server. Nothing a caller
