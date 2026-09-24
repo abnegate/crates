@@ -36,7 +36,7 @@ pub struct RunStart {
     #[serde(default, rename = "env")]
     pub environment: HashMap<String, String>,
     /// How long the command may run; absent uses the executor's
-    /// [default](crate::executor::ExecutorConfig::default_timeout). Whole
+    /// [default](crate::executor::ExecutorConfig::timeout). Whole
     /// milliseconds on the wire.
     #[serde(
         default,
@@ -46,7 +46,7 @@ pub struct RunStart {
     )]
     pub timeout: Option<Duration>,
     /// Ceiling on stdout and stderr together, in bytes; absent uses the
-    /// executor's [default](crate::executor::ExecutorConfig::max_output_bytes)
+    /// executor's [default](crate::executor::ExecutorConfig::output_limit)
     #[serde(default, rename = "max_output_bytes")]
     pub output_limit: Option<usize>,
     /// Directory the command starts in, when it is not the workspace

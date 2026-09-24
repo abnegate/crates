@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn test_daemon_error_executor() {
-        let executor_error = ExecutorError::Timeout(1000);
+        let executor_error = ExecutorError::Timeout(std::time::Duration::from_secs(1));
         let error = DaemonError::Executor(executor_error);
         assert_eq!(error.to_error_code(), ErrorCode::Timeout);
         assert!(error.to_string().contains("Executor error"));

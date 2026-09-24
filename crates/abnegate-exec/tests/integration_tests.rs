@@ -270,11 +270,11 @@ async fn test_custom_working_dir() {
 
 #[tokio::test]
 async fn test_command_timeout() {
-    let executor = CommandExecutor::with_config(ExecutorConfig {
-        default_timeout: Duration::from_secs(1),
-        grace_period: Duration::from_millis(100),
-        ..Default::default()
-    });
+    let executor = CommandExecutor::with_config(
+        ExecutorConfig::new()
+            .with_timeout(Duration::from_secs(1))
+            .with_grace_period(Duration::from_millis(100)),
+    );
     let (sender, mut receiver) = mpsc::channel(100);
 
     let request = InboundMessage::RunStart(
@@ -456,10 +456,9 @@ async fn test_registry_cancel_token_propagation() {
 #[tokio::test]
 async fn test_registry_cancel_stops_a_job_spawned_with_its_token() {
     let registry = JobRegistry::new();
-    let executor = CommandExecutor::with_config(ExecutorConfig {
-        grace_period: Duration::from_millis(100),
-        ..Default::default()
-    });
+    let executor = CommandExecutor::with_config(
+        ExecutorConfig::new().with_grace_period(Duration::from_millis(100)),
+    );
     let (sender, mut receiver) = mpsc::channel(100);
 
     let token = registry.register("registry-cancel".to_string()).unwrap();

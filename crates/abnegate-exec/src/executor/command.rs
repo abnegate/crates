@@ -169,7 +169,7 @@ impl CommandExecutor {
 
         let (started, gate) = watch::channel(false);
         let limiter = Arc::new(Mutex::new(OutputLimiter::new(
-            output_limit.unwrap_or(self.config.max_output_bytes),
+            output_limit.unwrap_or(self.config.output_limit),
         )));
         let stream = |kind: OutputKind| OutputStream {
             job_id: job_id.clone(),
@@ -192,7 +192,7 @@ impl CommandExecutor {
             sender: sender.clone(),
             process_group: process_group.clone(),
             started_at,
-            timeout: timeout.unwrap_or(self.config.default_timeout),
+            timeout: timeout.unwrap_or(self.config.timeout),
             grace_period: self.config.grace_period,
             started: gate,
         }
@@ -882,24 +882,24 @@ mod tests {
     #[test]
     fn test_executor_new() {
         let executor = CommandExecutor::new();
-        assert_eq!(executor.config().default_timeout, Duration::from_secs(300));
+        assert_eq!(executor.config().timeout, Duration::from_secs(300));
     }
 
     #[test]
     fn test_executor_with_config() {
         let config = ExecutorConfig::default()
             .with_timeout(Duration::from_secs(60))
-            .with_max_output(1024);
+            .with_output_limit(1024);
         let executor = CommandExecutor::with_config(config);
 
-        assert_eq!(executor.config().default_timeout, Duration::from_secs(60));
-        assert_eq!(executor.config().max_output_bytes, 1024);
+        assert_eq!(executor.config().timeout, Duration::from_secs(60));
+        assert_eq!(executor.config().output_limit, 1024);
     }
 
     #[test]
     fn test_executor_default() {
         let executor: CommandExecutor = Default::default();
-        assert_eq!(executor.config().default_timeout, Duration::from_secs(300));
+        assert_eq!(executor.config().timeout, Duration::from_secs(300));
     }
 
     #[test]

@@ -4,8 +4,8 @@ use super::admission::Admission;
 /// its streams.
 #[derive(Debug)]
 pub struct OutputLimiter {
-    /// Maximum bytes allowed
-    max_bytes: usize,
+    /// Most bytes delivered
+    limit: usize,
 
     /// Total bytes written so far
     bytes_written: usize,
@@ -15,10 +15,10 @@ pub struct OutputLimiter {
 }
 
 impl OutputLimiter {
-    /// Create a new output limiter
-    pub fn new(max_bytes: usize) -> Self {
+    /// Deliver at most `limit` bytes
+    pub fn new(limit: usize) -> Self {
         Self {
-            max_bytes,
+            limit,
             bytes_written: 0,
             truncation_warned: false,
         }
@@ -27,7 +27,7 @@ impl OutputLimiter {
     /// Count `incoming` bytes against the limit and say how many of them to
     /// deliver.
     pub fn admit(&mut self, incoming: usize) -> Admission {
-        let accepted = incoming.min(self.max_bytes.saturating_sub(self.bytes_written));
+        let accepted = incoming.min(self.limit.saturating_sub(self.bytes_written));
         self.bytes_written += accepted;
         let truncated = accepted < incoming;
         let first_truncation = truncated && !self.truncation_warned;
@@ -45,7 +45,7 @@ impl OutputLimiter {
     /// - `bytes_to_write`: how many bytes of the input to actually write
     /// - `should_warn`: whether to emit a truncation warning
     pub fn check(&mut self, incoming_bytes: usize) -> (bool, usize, bool) {
-        let can_write = self.bytes_written < self.max_bytes;
+        let can_write = self.bytes_written < self.limit;
         let admission = self.admit(incoming_bytes);
         (can_write, admission.accepted, admission.first_truncation)
     }

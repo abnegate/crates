@@ -14,8 +14,9 @@ use tokio_util::codec::Encoder;
 
 use crate::error::ProtocolError;
 
-/// Maximum line length to prevent memory exhaustion
-const MAX_LINE_LENGTH: usize = 16 * 1024 * 1024;
+/// Longest line a codec reads by default, so a peer that never sends a
+/// newline cannot exhaust memory
+const MAXIMUM_LINE_LENGTH: usize = 16 * 1024 * 1024;
 
 const NEWLINE: u8 = b'\n';
 
@@ -24,8 +25,8 @@ const NEWLINE: u8 = b'\n';
 /// Each message is encoded as a single JSON object followed by `\n`.
 /// Decoding reads lines and parses them as JSON, skipping blank lines.
 pub struct NdjsonCodec<T> {
-    /// Maximum allowed line length
-    max_length: usize,
+    /// Longest line, in bytes, that decodes
+    length_limit: usize,
     /// How much of the buffer is already known to hold no newline, so a line
     /// arriving in many reads is scanned once rather than once per read
     scanned: usize,
@@ -33,15 +34,15 @@ pub struct NdjsonCodec<T> {
 }
 
 impl<T> NdjsonCodec<T> {
-    /// Create a new NDJSON codec with default max line length
+    /// Create a codec that reads lines of up to 16 MiB
     pub fn new() -> Self {
-        Self::with_max_length(MAX_LINE_LENGTH)
+        Self::with_length_limit(MAXIMUM_LINE_LENGTH)
     }
 
-    /// Create a new NDJSON codec with custom max line length
-    pub fn with_max_length(max_length: usize) -> Self {
+    /// Create a codec that refuses a line longer than `length_limit` bytes
+    pub fn with_length_limit(length_limit: usize) -> Self {
         Self {
-            max_length,
+            length_limit,
             scanned: 0,
             message: PhantomData,
         }
@@ -57,7 +58,7 @@ impl<T> Default for NdjsonCodec<T> {
 impl<T> Clone for NdjsonCodec<T> {
     /// A clone decodes its own buffer, so it starts with nothing scanned.
     fn clone(&self) -> Self {
-        Self::with_max_length(self.max_length)
+        Self::with_length_limit(self.length_limit)
     }
 }
 
@@ -73,10 +74,10 @@ impl<T: DeserializeOwned> Decoder for NdjsonCodec<T> {
                 .position(|byte| *byte == NEWLINE)
             else {
                 self.scanned = source.len();
-                if source.len() > self.max_length {
+                if source.len() > self.length_limit {
                     return Err(ProtocolError::LineTooLong {
                         length: source.len(),
-                        max: self.max_length,
+                        limit: self.length_limit,
                     });
                 }
                 return Ok(None);
@@ -87,10 +88,10 @@ impl<T: DeserializeOwned> Decoder for NdjsonCodec<T> {
             let line = source.split_to(length);
             source.advance(1);
 
-            if length > self.max_length {
+            if length > self.length_limit {
                 return Err(ProtocolError::LineTooLong {
                     length,
-                    max: self.max_length,
+                    limit: self.length_limit,
                 });
             }
             if line.trim_ascii().is_empty() {
@@ -424,24 +425,24 @@ mod tests {
 
     #[test]
     fn test_line_too_long() {
-        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(10);
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_length_limit(10);
         let mut buffer = BytesMut::from("this line is way too long\n".as_bytes());
 
         let result = codec.decode(&mut buffer);
         assert!(result.is_err());
 
         match result.unwrap_err() {
-            ProtocolError::LineTooLong { length, max } => {
-                assert!(length > max);
-                assert_eq!(max, 10);
+            ProtocolError::LineTooLong { length, limit } => {
+                assert!(length > limit);
+                assert_eq!(limit, 10);
             }
             _ => panic!("Wrong error type"),
         }
     }
 
     #[test]
-    fn test_line_at_max_length() {
-        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(100);
+    fn test_line_under_the_length_limit() {
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_length_limit(100);
         let json = r#"{"type":"Ping","id":"test"}"#;
         assert!(json.len() < 100);
 
@@ -452,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_buffer_growing_without_newline() {
-        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(50);
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_length_limit(50);
         let mut buffer = BytesMut::new();
 
         buffer.extend_from_slice("a".repeat(60).as_bytes());
@@ -461,9 +462,9 @@ mod tests {
         assert!(result.is_err());
 
         match result.unwrap_err() {
-            ProtocolError::LineTooLong { length, max } => {
+            ProtocolError::LineTooLong { length, limit } => {
                 assert_eq!(length, 60);
-                assert_eq!(max, 50);
+                assert_eq!(limit, 50);
             }
             _ => panic!("Wrong error type"),
         }
@@ -633,10 +634,10 @@ mod tests {
 
     #[test]
     fn test_codec_clone() {
-        let first: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(1000);
+        let first: NdjsonCodec<InboundMessage> = NdjsonCodec::with_length_limit(1000);
         let second = first.clone();
 
-        assert_eq!(first.max_length, second.max_length);
+        assert_eq!(first.length_limit, second.length_limit);
     }
 
     #[test]
@@ -644,7 +645,7 @@ mod tests {
         let first: NdjsonCodec<InboundMessage> = NdjsonCodec::default();
         let second: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
 
-        assert_eq!(first.max_length, second.max_length);
+        assert_eq!(first.length_limit, second.length_limit);
     }
 
     #[test]
