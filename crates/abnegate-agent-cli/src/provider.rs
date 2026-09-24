@@ -444,7 +444,7 @@ impl CliProvider {
         if mcp.is_empty() || self.agent != AgentKind::Claude {
             return None;
         }
-        match mcp.render() {
+        match mcp.render(self.agent) {
             Ok(Some(attachment)) => {
                 tracing::info!(
                     provider = %self.name,

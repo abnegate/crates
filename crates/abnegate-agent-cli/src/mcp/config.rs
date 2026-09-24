@@ -14,6 +14,7 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::kind::AgentKind;
 use crate::mcp::attachment::McpAttachment;
 use crate::mcp::config_error::McpConfigError;
 use crate::mcp::placeholders::Placeholders;
@@ -261,13 +262,15 @@ impl McpConfig {
     }
 
     /// Write the attachable servers to a private temporary file for
-    /// `--mcp-config`, or `None` when there are none, with what the child
-    /// needs in its environment for the file to resolve.
+    /// `agent`'s `--mcp-config`, or `None` when there are none, with what
+    /// the child needs in its environment for the file to resolve.
     ///
-    /// The file never carries a server's
-    /// [working directory](McpServer::working_directory) or
+    /// The file carries a server's
+    /// [working directory](McpServer::working_directory) only for an agent
+    /// whose own MCP configuration documents one (Codex's `cwd`; Claude
+    /// Code's has none), and never
     /// [`inherit_environment`](McpServer::inherit_environment).
-    pub fn render(&self) -> io::Result<Option<McpAttachment>> {
+    pub fn render(&self, agent: AgentKind) -> io::Result<Option<McpAttachment>> {
         for (name, server) in self.enabled() {
             if !server.valid() {
                 tracing::warn!(
@@ -285,7 +288,7 @@ impl McpConfig {
         let mut placeholders = Placeholders::default();
         let servers: Map<String, Value> = self
             .attachable()
-            .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders)))
+            .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders, agent)))
             .collect();
         if servers.is_empty() {
             return Ok(None);
@@ -417,13 +420,17 @@ mod tests {
     use super::default_path;
     use super::parse_flag;
     use super::variable;
+    use crate::kind::AgentKind;
     use crate::mcp::attachment::McpAttachment;
     use crate::mcp::config_error::McpConfigError;
     use crate::mcp::server::McpServer;
     use crate::mcp::transport::McpTransport;
 
     fn rendered(config: &McpConfig) -> McpAttachment {
-        config.render().expect("rendered").expect("an attachment")
+        config
+            .render(AgentKind::Claude)
+            .expect("rendered")
+            .expect("an attachment")
     }
 
     fn read(file: &NamedTempFile) -> Value {
@@ -512,11 +519,16 @@ mod tests {
 
     #[test]
     fn nothing_is_rendered_without_an_attachable_server() {
-        assert!(McpConfig::default().render().expect("rendered").is_none());
+        assert!(
+            McpConfig::default()
+                .render(AgentKind::Claude)
+                .expect("rendered")
+                .is_none()
+        );
         assert!(
             McpConfig::default()
                 .with_server("broken", broken())
-                .render()
+                .render(AgentKind::Claude)
                 .expect("rendered")
                 .is_none()
         );
@@ -757,7 +769,12 @@ mod tests {
         let config = McpConfig::default().with_server("appwrite", appwrite().disable());
 
         assert!(config.is_empty());
-        assert!(config.render().expect("rendered").is_none());
+        assert!(
+            config
+                .render(AgentKind::Claude)
+                .expect("rendered")
+                .is_none()
+        );
         assert!(config.allowed_tools().is_empty());
     }
 
@@ -765,10 +782,38 @@ mod tests {
     fn the_rendered_file_never_carries_inherit_environment() {
         let config = McpConfig::default().with_server("appwrite", appwrite().inherit_environment());
 
-        let attachment = rendered(&config);
-        let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
-        assert!(!contents.contains("inherit_environment"), "{contents}");
-        assert!(!contents.contains("disabled"), "{contents}");
+        for agent in [AgentKind::Claude, AgentKind::Codex] {
+            let attachment = config
+                .render(agent)
+                .expect("rendered")
+                .expect("an attachment");
+            let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+            assert!(!contents.contains("inherit_environment"), "{contents}");
+            assert!(!contents.contains("disabled"), "{contents}");
+        }
+    }
+
+    #[test]
+    fn the_rendered_file_carries_a_working_directory_only_for_an_agent_that_documents_it() {
+        let config = McpConfig::default().with_server(
+            "appwrite",
+            appwrite().with_working_directory("/srv/appwrite"),
+        );
+
+        let claude = read(&rendered(&config).file);
+        let codex = read(
+            &config
+                .render(AgentKind::Codex)
+                .expect("rendered")
+                .expect("an attachment")
+                .file,
+        );
+
+        assert!(
+            claude["mcpServers"]["appwrite"].get("cwd").is_none(),
+            "{claude}"
+        );
+        assert_eq!(codex["mcpServers"]["appwrite"]["cwd"], "/srv/appwrite");
     }
 
     #[test]

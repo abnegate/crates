@@ -317,7 +317,7 @@ mod tests {
                 },
             )
             .with_environment("ABNEGATE_MCP_0", "caller-shadow");
-        let attachment = McpConfig::render(&settings.mcp)
+        let attachment = McpConfig::render(&settings.mcp, AgentKind::Claude)
             .expect("rendered")
             .expect("an attachment");
         let environment =

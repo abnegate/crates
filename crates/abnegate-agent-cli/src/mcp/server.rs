@@ -11,6 +11,7 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::kind::AgentKind;
 use crate::mcp::placeholders::Placeholders;
 use crate::mcp::placeholders::whole_reference;
 use crate::mcp::transport::McpTransport;
@@ -62,8 +63,8 @@ pub struct McpServer {
     /// The directory a stdio server starts in, or wherever its launcher
     /// chooses when unset.
     ///
-    /// Honoured only by a launcher that starts the server itself: a rendered
-    /// file does not carry it.
+    /// A rendered file carries it only for a CLI whose MCP configuration
+    /// documents it: see [`McpConfig::render`](crate::mcp::McpConfig::render).
     #[serde(
         rename = "cwd",
         alias = "working_directory",
@@ -221,11 +222,11 @@ impl McpServer {
             .is_some_and(|(server, tool)| valid_name(server) && valid_name(tool))
     }
 
-    /// This server as the CLI's configuration file holds it, with every
+    /// This server as `agent`'s configuration file holds it, with every
     /// literal environment or header value replaced by a reference to a
     /// variable in `placeholders`, and every variable it refers to noted
     /// there.
-    pub(crate) fn entry(&self, placeholders: &mut Placeholders) -> Value {
+    pub(crate) fn entry(&self, placeholders: &mut Placeholders, agent: AgentKind) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
             placeholders.note(command);
@@ -238,6 +239,16 @@ impl McpServer {
                 entry.insert(
                     "env".to_string(),
                     substituted(&self.environment, placeholders),
+                );
+            }
+            if let Some(directory) = self
+                .working_directory
+                .as_ref()
+                .filter(|_| documents_working_directory(agent))
+            {
+                entry.insert(
+                    "cwd".to_string(),
+                    json!(directory.to_string_lossy().into_owned()),
                 );
             }
             if let Some(transport) = self.transport {
@@ -289,6 +300,16 @@ impl McpServer {
     }
 }
 
+/// Whether `agent`'s own MCP configuration schema documents a stdio
+/// server's working directory: Codex's `cwd` does, and Claude Code's has no
+/// such field.
+fn documents_working_directory(agent: AgentKind) -> bool {
+    match agent {
+        AgentKind::Codex => true,
+        AgentKind::Claude => false,
+    }
+}
+
 /// Whether `name` is safe to place in an `--allowedTools` entry, which the
 /// CLI splits on commas and whitespace.
 pub(crate) fn valid_name(name: &str) -> bool {
@@ -332,6 +353,7 @@ mod tests {
     use serde_json::json;
 
     use super::McpServer;
+    use crate::kind::AgentKind;
     use crate::mcp::placeholders::Placeholders;
     use crate::mcp::transport::McpTransport;
 
@@ -459,7 +481,7 @@ mod tests {
         };
 
         let mut placeholders = Placeholders::default();
-        let entry = server.entry(&mut placeholders);
+        let entry = server.entry(&mut placeholders, AgentKind::Claude);
         assert_eq!(entry["command"], "uvx");
         assert_eq!(entry["args"][0], "mcp-server-appwrite");
         assert_eq!(entry["env"]["APPWRITE_API_KEY"], "${APPWRITE_API_KEY}");
@@ -486,7 +508,7 @@ mod tests {
         };
         let mut placeholders = Placeholders::default();
 
-        let entry = server.entry(&mut placeholders);
+        let entry = server.entry(&mut placeholders, AgentKind::Claude);
 
         assert_eq!(
             entry["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN"],
@@ -512,7 +534,7 @@ mod tests {
         };
 
         let mut placeholders = Placeholders::default();
-        let entry = server.entry(&mut placeholders);
+        let entry = server.entry(&mut placeholders, AgentKind::Claude);
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], "https://example.com/mcp");
         assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_0}");
@@ -530,13 +552,16 @@ mod tests {
 
     #[test]
     fn a_url_without_a_type_defaults_to_http_and_sse_is_kept() {
-        assert_eq!(http().entry(&mut Placeholders::default())["type"], "http");
+        assert_eq!(
+            http().entry(&mut Placeholders::default(), AgentKind::Claude)["type"],
+            "http"
+        );
         assert_eq!(
             McpServer {
                 transport: Some(McpTransport::Sse),
                 ..http()
             }
-            .entry(&mut Placeholders::default())["type"],
+            .entry(&mut Placeholders::default(), AgentKind::Claude)["type"],
             "sse"
         );
     }
@@ -556,8 +581,8 @@ mod tests {
         let mut placeholders = Placeholders::default();
 
         let entries = [
-            server.entry(&mut placeholders),
-            remote.entry(&mut placeholders),
+            server.entry(&mut placeholders, AgentKind::Claude),
+            remote.entry(&mut placeholders, AgentKind::Claude),
         ];
 
         for entry in &entries {
@@ -718,7 +743,7 @@ mod tests {
         assert_eq!(
             server
                 .with_transport(McpTransport::Sse)
-                .entry(&mut Placeholders::default())["type"],
+                .entry(&mut Placeholders::default(), AgentKind::Claude)["type"],
             "sse"
         );
     }
@@ -833,13 +858,40 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_never_carries_inherit_environment_or_disabled() {
-        let entry = stdio()
-            .inherit_environment()
-            .disable()
-            .entry(&mut Placeholders::default());
+    fn a_working_directory_is_rendered_only_for_an_agent_that_documents_it() {
+        let server = stdio().with_working_directory("/srv/notes");
 
-        assert!(entry.get("inherit_environment").is_none(), "{entry}");
-        assert!(entry.get("disabled").is_none(), "{entry}");
+        let claude = server.entry(&mut Placeholders::default(), AgentKind::Claude);
+        let codex = server.entry(&mut Placeholders::default(), AgentKind::Codex);
+
+        assert!(claude.get("cwd").is_none(), "{claude}");
+        assert_eq!(codex["cwd"], "/srv/notes");
+        assert!(
+            stdio()
+                .entry(&mut Placeholders::default(), AgentKind::Codex)
+                .get("cwd")
+                .is_none()
+        );
+        assert!(
+            McpServer {
+                working_directory: Some(PathBuf::from("/srv/notes")),
+                ..http()
+            }
+            .entry(&mut Placeholders::default(), AgentKind::Codex)
+            .get("cwd")
+            .is_none(),
+            "a remote server has no directory to start in"
+        );
+    }
+
+    #[test]
+    fn an_entry_never_carries_inherit_environment_or_disabled() {
+        let server = stdio().inherit_environment().disable();
+
+        for agent in [AgentKind::Claude, AgentKind::Codex] {
+            let entry = server.entry(&mut Placeholders::default(), agent);
+            assert!(entry.get("inherit_environment").is_none(), "{entry}");
+            assert!(entry.get("disabled").is_none(), "{entry}");
+        }
     }
 }
