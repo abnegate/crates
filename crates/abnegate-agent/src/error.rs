@@ -1,6 +1,6 @@
+use abnegate_config::ApplicationError;
 use thiserror::Error;
 
-use crate::application::ApplicationError;
 use crate::chat;
 use crate::context::ContextError;
 #[cfg(feature = "mcp")]

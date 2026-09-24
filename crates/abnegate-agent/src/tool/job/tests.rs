@@ -979,7 +979,7 @@ async fn a_job_that_ends_takes_what_it_left_running_with_it() {
 #[test]
 fn the_application_directory_is_one_hidden_name_inside_the_checkout() {
     let checkout = Path::new("/tmp/work");
-    for name in ["abnegate", "zone", "my-app_2"] {
+    for name in ["abnegate", "example", "my-app_2"] {
         let application = crate::Application::new(name).unwrap();
         let directory = application_directory(checkout, &application);
         assert_eq!(directory.parent(), Some(checkout), "{name}");

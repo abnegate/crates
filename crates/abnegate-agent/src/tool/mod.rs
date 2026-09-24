@@ -67,8 +67,6 @@ pub use tier::Tier;
 pub use vision::is_vision_url;
 pub use wait::WaitForTool;
 
-pub use crate::application::DEFAULT_APPLICATION;
-
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What a tool that enforces its own limit adds to it for the outer bound,
