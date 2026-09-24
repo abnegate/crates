@@ -6,11 +6,14 @@ use serde::Serialize;
 
 /// One tool call and what it returned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolCallResult {
+    /// The call as it ran, under the id the run gave it.
     pub call: ToolCall,
     /// The text the model was given back, as
     /// [`ToolResult::to_message`](crate::tool::ToolResult::to_message) put it.
     pub result: String,
+    /// Whether the tool reported success.
     pub success: bool,
     /// How long the call took, the wait for its approval included. Saved as
     /// whole milliseconds.
@@ -22,6 +25,24 @@ pub struct ToolCallResult {
     pub duration: Duration,
 }
 
+impl ToolCallResult {
+    /// `call`, which returned `result` after `duration`, and succeeded when
+    /// `success` is set.
+    pub fn new(
+        call: ToolCall,
+        result: impl Into<String>,
+        success: bool,
+        duration: Duration,
+    ) -> Self {
+        Self {
+            call,
+            result: result.into(),
+            success,
+            duration,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -29,30 +50,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tool_call_result_failed() {
-        let tool_call = ToolCall::function("call_fail", "execute_command", r#"{"cmd": "invalid"}"#);
+    fn a_result_carries_what_it_was_given() {
+        let call = ToolCall::function("call_fail", "execute_command", r#"{"cmd": "invalid"}"#);
 
-        let result = ToolCallResult {
-            call: tool_call,
-            result: "Error: command not found".to_string(),
-            success: false,
-            duration: Duration::from_millis(50),
-        };
+        let result = ToolCallResult::new(
+            call,
+            "Error: command not found",
+            false,
+            Duration::from_millis(50),
+        );
 
+        assert_eq!(result.call.id, "call_fail");
+        assert_eq!(result.result, "Error: command not found");
         assert!(!result.success);
-        assert!(result.result.contains("Error"));
+        assert_eq!(result.duration, Duration::from_millis(50));
     }
 
     #[test]
     fn test_tool_call_result_serialization() {
-        let tool_call = ToolCall::function("call_test", "test", "{}");
-
-        let result = ToolCallResult {
-            call: tool_call,
-            result: "success".to_string(),
-            success: true,
-            duration: Duration::from_millis(100),
-        };
+        let result = ToolCallResult::new(
+            ToolCall::function("call_test", "test", "{}"),
+            "success",
+            true,
+            Duration::from_millis(100),
+        );
 
         let json = serde_json::to_string(&result).unwrap();
         let deserialized: ToolCallResult = serde_json::from_str(&json).unwrap();
@@ -66,12 +87,12 @@ mod tests {
     /// whole milliseconds under the name it was written with.
     #[test]
     fn the_duration_is_saved_as_whole_milliseconds_under_its_old_name() {
-        let result = ToolCallResult {
-            call: ToolCall::function("call_test", "test", "{}"),
-            result: "success".to_string(),
-            success: true,
-            duration: Duration::from_micros(1_500_999),
-        };
+        let result = ToolCallResult::new(
+            ToolCall::function("call_test", "test", "{}"),
+            "success",
+            true,
+            Duration::from_micros(1_500_999),
+        );
 
         let saved = serde_json::to_value(&result).unwrap();
 

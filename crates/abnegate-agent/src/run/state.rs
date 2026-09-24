@@ -11,6 +11,7 @@ use crate::context::Summary;
 
 /// Everything a run has said and done, enough to save it and continue it later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AgentState {
     pub id: Uuid,
     pub phase: AgentPhase,
@@ -350,12 +351,12 @@ mod tests {
         let tool_call = ToolCall::function("call_1", "test", "{}");
 
         let mut step = AgentStep::new(AgentPhase::Acting);
-        step.tool_calls = Some(vec![ToolCallResult {
-            call: tool_call,
-            result: "success".to_string(),
-            success: true,
-            duration: std::time::Duration::from_millis(100),
-        }]);
+        step.tool_calls = Some(vec![ToolCallResult::new(
+            tool_call,
+            "success",
+            true,
+            std::time::Duration::from_millis(100),
+        )]);
         state.add_step(step);
 
         state.add_message(Message::assistant("Response"));

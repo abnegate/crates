@@ -71,11 +71,7 @@ impl Agent {
         Self {
             llm,
             tools,
-            policy: Policy {
-                limit: None,
-                reserved: config.maximum_tokens,
-                source: ContextSource::Unknown,
-            },
+            policy: Policy::new(None, config.maximum_tokens, ContextSource::Unknown),
             config,
             context: Arc::new(context),
             guidance: None,
@@ -160,11 +156,10 @@ impl Agent {
                 .messages
                 .iter()
                 .enumerate()
-                .map(|(index, message)| Entry {
-                    id: format!("{}:{index}", state.id),
-                    message: message.clone(),
-                    preserve: message.role == Role::System || Some(index) == latest,
-                    consumed: index < state.consumed,
+                .map(|(index, message)| {
+                    Entry::new(format!("{}:{index}", state.id), message.clone())
+                        .with_preserve(message.role == Role::System || Some(index) == latest)
+                        .with_consumed(index < state.consumed)
                 })
                 .collect();
             let prepared = context::prepare(
@@ -353,12 +348,12 @@ impl Agent {
                         first.function.name
                     ));
                     let output = result.to_message();
-                    results.push(ToolCallResult {
-                        call: skipped.clone(),
-                        result: output.clone(),
-                        success: false,
-                        duration: Duration::ZERO,
-                    });
+                    results.push(ToolCallResult::new(
+                        skipped.clone(),
+                        output.clone(),
+                        false,
+                        Duration::ZERO,
+                    ));
                     state.add_message(Message::tool_result(&skipped.id, output));
                 }
                 return (results, Some(response));
@@ -384,12 +379,12 @@ impl Agent {
     ) {
         callback.on_tool_result(&tool_call.function.name, &result);
         let output = result.to_message();
-        tool_results.push(ToolCallResult {
-            call: tool_call.clone(),
-            result: output.clone(),
-            success: result.success,
+        tool_results.push(ToolCallResult::new(
+            tool_call.clone(),
+            output.clone(),
+            result.success,
             duration,
-        });
+        ));
         state.add_message(Message::tool_result(&tool_call.id, output));
     }
 

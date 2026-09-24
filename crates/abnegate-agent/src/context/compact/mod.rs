@@ -80,10 +80,10 @@ pub fn coverage(entries: &[Entry], ids: &[String]) -> Result<Coverage, ContextEr
             .collect::<Vec<_>>(),
     )
     .map_err(|error| ContextError::Integrity(error.to_string()))?;
-    Ok(Coverage {
-        entries: ids.to_vec(),
-        fingerprint: hex::encode(Sha256::digest(encoded)),
-    })
+    Ok(Coverage::new(
+        ids.to_vec(),
+        hex::encode(Sha256::digest(encoded)),
+    ))
 }
 
 pub fn validate(entries: &[Entry], summary: Option<&Summary>) -> Result<(), ContextError> {
@@ -400,11 +400,11 @@ pub async fn prepare(
         entries,
         tools,
         policy,
-        Some(&Summary {
-            content: String::new(),
-            coverage: coverage(entries, &candidate_ids)?,
-            revision: 1,
-        }),
+        Some(&Summary::new(
+            String::new(),
+            coverage(entries, &candidate_ids)?,
+            1,
+        )),
     );
     if floor.used >= budget {
         if usage.used <= policy.input_limit().unwrap_or_default() {
@@ -431,13 +431,13 @@ pub async fn prepare(
         }
         Err(error) => return Err(error),
     };
-    let candidate = Summary {
+    let candidate = Summary::new(
         content,
-        coverage: coverage(entries, &candidate_ids)?,
-        revision: summary
+        coverage(entries, &candidate_ids)?,
+        summary
             .map_or(Some(1), |summary| summary.revision.checked_add(1))
             .ok_or_else(|| ContextError::Integrity("Checkpoint revision exhausted.".into()))?,
-    };
+    );
     let mut next = estimate(model, entries, tools, policy, Some(&candidate));
     if next.used >= usage.used || next.used >= budget {
         if usage.used <= policy.input_limit().unwrap_or_default() {
@@ -474,14 +474,11 @@ mod tests {
     use super::summary_message;
 
     fn summary() -> Summary {
-        Summary {
-            content: "objective: ship the parser".to_string(),
-            coverage: Coverage {
-                entries: vec!["entry-1".to_string()],
-                fingerprint: "f1".to_string(),
-            },
-            revision: 1,
-        }
+        Summary::new(
+            "objective: ship the parser",
+            Coverage::new(vec!["entry-1".to_string()], "f1"),
+            1,
+        )
     }
 
     #[test]

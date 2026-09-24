@@ -3,6 +3,7 @@ use serde::Serialize;
 
 /// Estimated input tokens, by what spent them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ContextBreakdown {
     pub instructions: u64,
     pub conversation: u64,
@@ -14,6 +15,7 @@ pub struct ContextBreakdown {
 }
 
 impl ContextBreakdown {
+    /// Every category added up, saturating rather than overflowing.
     pub fn total(&self) -> u64 {
         [
             self.instructions,

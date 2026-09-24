@@ -105,12 +105,9 @@ fn response(content: String) -> String {
 }
 
 fn entry(id: &str, message: Message, preserve: bool, consumed: bool) -> Entry {
-    Entry {
-        id: id.into(),
-        message,
-        preserve,
-        consumed,
-    }
+    Entry::new(id, message)
+        .with_preserve(preserve)
+        .with_consumed(consumed)
 }
 
 fn call(id: &str) -> ToolCall {
@@ -118,11 +115,7 @@ fn call(id: &str) -> ToolCall {
 }
 
 fn policy(limit: u64) -> Policy {
-    Policy {
-        limit: Some(limit),
-        reserved: 1024,
-        source: ContextSource::Configured,
-    }
+    Policy::new(Some(limit), 1024, ContextSource::Configured)
 }
 
 fn active_history() -> Vec<Entry> {
@@ -541,11 +534,7 @@ async fn failed_summary_replays_original_history_only_when_it_still_fits() {
 fn coverage_rejects_changed_fields_missing_ids_reorder_partial_pairs_and_protected_data() {
     let history = active_history();
     let ids = ["calls-a".into(), "result-a".into()];
-    let summary = Summary {
-        content: structured(),
-        coverage: context::coverage(&history, &ids).unwrap(),
-        revision: 1,
-    };
+    let summary = Summary::new(structured(), context::coverage(&history, &ids).unwrap(), 1);
     context::validate(&history, Some(&summary)).unwrap();
     for variant in 0..5 {
         let mut changed = history.clone();
@@ -568,10 +557,8 @@ fn coverage_rejects_changed_fields_missing_ids_reorder_partial_pairs_and_protect
         vec!["user".into()],
         vec!["system".into()],
     ] {
-        let invalid = Summary {
-            coverage: context::coverage(&history, &ids).unwrap(),
-            ..summary.clone()
-        };
+        let mut invalid = summary.clone();
+        invalid.coverage = context::coverage(&history, &ids).unwrap();
         assert!(context::validate(&history, Some(&invalid)).is_err());
     }
     assert!(context::coverage(&history, &["result-a".into(), "calls-a".into()]).is_err());
@@ -582,11 +569,11 @@ fn coverage_rejects_changed_fields_missing_ids_reorder_partial_pairs_and_protect
 #[test]
 fn append_only_history_preserves_fingerprint_and_image_accounting_is_unknown() {
     let mut history = active_history();
-    let summary = Summary {
-        content: structured(),
-        coverage: context::coverage(&history, &["calls-a".into(), "result-a".into()]).unwrap(),
-        revision: 1,
-    };
+    let summary = Summary::new(
+        structured(),
+        context::coverage(&history, &["calls-a".into(), "result-a".into()]).unwrap(),
+        1,
+    );
     let mut image = Message::user("View attachment");
     image.images.push("data:image/png;base64,example".into());
     history.push(entry("image", image, true, false));
@@ -602,11 +589,7 @@ fn append_only_history_preserves_fingerprint_and_image_accounting_is_unknown() {
 async fn unknown_capacity_does_not_guess_model_limits_or_discard_history() {
     let provider = provider(|_| panic!("unknown budget must not summarize"), false).await;
     let history = active_history();
-    let settings = Policy {
-        limit: None,
-        reserved: 4096,
-        source: ContextSource::Unknown,
-    };
+    let settings = Policy::new(None, 4096, ContextSource::Unknown);
     let prepared = context::prepare(
         &provider.client,
         "gpt-future-1m",
@@ -627,11 +610,11 @@ async fn unknown_capacity_does_not_guess_model_limits_or_discard_history() {
 #[test]
 fn tools_and_message_framing_match_projection_estimates_and_threshold_is_saturating() {
     let history = active_history();
-    let summary = Summary {
-        content: structured(),
-        coverage: context::coverage(&history, &["calls-a".into(), "result-a".into()]).unwrap(),
-        revision: 1,
-    };
+    let summary = Summary::new(
+        structured(),
+        context::coverage(&history, &["calls-a".into(), "result-a".into()]).unwrap(),
+        1,
+    );
     let tools = [ToolDefinition::function(
         "read",
         "Read \"quoted\" paths\n",
@@ -854,14 +837,11 @@ fn canonical_agent_state_roundtrips_image_references_and_summary_separately() {
     state.messages[0]
         .images
         .push("data:image/png;base64,reference".into());
-    state.summary = Some(Summary {
-        content: structured(),
-        coverage: Coverage {
-            entries: vec!["historical".into()],
-            fingerprint: "example".into(),
-        },
-        revision: 2,
-    });
+    state.summary = Some(Summary::new(
+        structured(),
+        Coverage::new(vec!["historical".into()], "example"),
+        2,
+    ));
     let serialized = serde_json::to_string(&state).unwrap();
     let restored: abnegate_agent::AgentState = serde_json::from_str(&serialized).unwrap();
     assert_eq!(restored.messages[0].images, state.messages[0].images);
@@ -1131,11 +1111,11 @@ async fn sustained_tool_history_keeps_full_coverage_without_an_unbounded_prompt_
     ));
     let mut state: Value = serde_json::from_str(&structured()).unwrap();
     state["evidence"] = json!([format!("Relevant tool fact; retrieve source {relevant}")]);
-    let summary = Summary {
-        content: state.to_string(),
-        coverage: context::coverage(&history, &covered).unwrap(),
-        revision: 4,
-    };
+    let summary = Summary::new(
+        state.to_string(),
+        context::coverage(&history, &covered).unwrap(),
+        4,
+    );
     let prepared = context::prepare(
         &provider.client,
         "test",
