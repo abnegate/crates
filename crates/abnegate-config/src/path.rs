@@ -2,32 +2,35 @@ use std::env;
 use std::path::PathBuf;
 
 use crate::application::Application;
-use crate::error::ConfigError;
+use crate::error::Error;
 
-const DIRECTORY_VARIABLE: &str = "CONFIG_DIR";
+const DIRECTORY_VARIABLE: &str = "CONFIG_DIRECTORY";
 const PATH_VARIABLE: &str = "CONFIG_PATH";
 const FILE_NAME: &str = "config.toml";
 
-/// Where `application` keeps its configuration: `<APPLICATION>_CONFIG_DIR` if
-/// it is set, otherwise a dot directory named for the application under the
+/// Where `application` keeps its configuration: `<APPLICATION>_CONFIG_DIRECTORY`
+/// if it is set, otherwise a dot directory named for the application under the
 /// home directory.
-pub fn config_dir(application: &Application) -> Result<PathBuf, ConfigError> {
+///
+/// `<APPLICATION>` is the application's name in upper case with every `-`
+/// replaced by `_`, so `example-cli` reads `EXAMPLE_CLI_CONFIG_DIRECTORY`.
+pub fn directory(application: &Application) -> Result<PathBuf, Error> {
     if let Some(configured) = configured(application, DIRECTORY_VARIABLE) {
         return Ok(configured);
     }
 
-    let home = dirs::home_dir().ok_or(ConfigError::NoHomeDirectory)?;
+    let home = dirs::home_dir().ok_or(Error::NoHomeDirectory)?;
     Ok(home.join(format!(".{application}")))
 }
 
 /// The configuration file `application` loads: `<APPLICATION>_CONFIG_PATH` if
-/// it is set, otherwise `config.toml` inside [`config_dir`].
-pub fn config_path(application: &Application) -> Result<PathBuf, ConfigError> {
+/// it is set, otherwise `config.toml` inside [`directory`].
+pub fn path(application: &Application) -> Result<PathBuf, Error> {
     if let Some(configured) = configured(application, PATH_VARIABLE) {
         return Ok(configured);
     }
 
-    Ok(config_dir(application)?.join(FILE_NAME))
+    Ok(directory(application)?.join(FILE_NAME))
 }
 
 fn configured(application: &Application, suffix: &str) -> Option<PathBuf> {
@@ -56,8 +59,11 @@ fn variable(application: &Application, suffix: &str) -> String {
 mod tests {
     use std::path::Component;
     use std::path::Path;
+    use std::process::Command;
 
     use super::*;
+
+    const CHILD: &str = "ABNEGATE_CONFIG_TEST_CHILD";
 
     fn application(name: &str) -> Application {
         Application::new(name).unwrap()
@@ -65,38 +71,38 @@ mod tests {
 
     #[test]
     fn the_directory_is_named_for_the_application() {
-        let directory = config_dir(&application("example")).unwrap();
-        assert!(directory.ends_with(".example"), "{directory:?}");
+        let resolved = directory(&application("example")).unwrap();
+        assert!(resolved.ends_with(".example"), "{resolved:?}");
     }
 
     #[test]
     fn the_directory_stays_inside_the_home_directory() {
         let home = dirs::home_dir().unwrap();
-        let directory = config_dir(&application("example")).unwrap();
+        let resolved = directory(&application("example")).unwrap();
 
-        let relative = directory.strip_prefix(&home).unwrap();
+        let relative = resolved.strip_prefix(&home).unwrap();
         assert!(
             relative
                 .components()
                 .all(|component| matches!(component, Component::Normal(_))),
-            "{directory:?}"
+            "{resolved:?}"
         );
-        assert_eq!(relative.components().count(), 1, "{directory:?}");
+        assert_eq!(relative.components().count(), 1, "{resolved:?}");
     }
 
     #[test]
     fn the_file_sits_in_the_application_directory() {
-        let path = config_path(&application("example")).unwrap();
+        let resolved = path(&application("example")).unwrap();
         assert!(
-            path.ends_with(Path::new(".example").join(FILE_NAME)),
-            "{path:?}"
+            resolved.ends_with(Path::new(".example").join(FILE_NAME)),
+            "{resolved:?}"
         );
     }
 
     #[test]
     fn the_file_is_toml() {
-        let path = config_path(&application("example")).unwrap();
-        assert!(path.to_string_lossy().ends_with("config.toml"));
+        let resolved = path(&application("example")).unwrap();
+        assert!(resolved.to_string_lossy().ends_with("config.toml"));
     }
 
     #[test]
@@ -107,7 +113,7 @@ mod tests {
         );
         assert_eq!(
             variable(&application("example"), DIRECTORY_VARIABLE),
-            "EXAMPLE_CONFIG_DIR"
+            "EXAMPLE_CONFIG_DIRECTORY"
         );
     }
 
@@ -131,6 +137,41 @@ mod tests {
                 PATH_VARIABLE
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn the_directory_override_moves_the_directory_and_the_file() {
+        const NAME: &str = "path::tests::the_directory_override_moves_the_directory_and_the_file";
+        const OVERRIDE: &str = "/srv/example-cli";
+
+        let application = application("example-cli");
+        if env::var(CHILD).as_deref() == Ok(NAME) {
+            assert_eq!(directory(&application).unwrap(), Path::new(OVERRIDE));
+            assert_eq!(
+                path(&application).unwrap(),
+                Path::new(OVERRIDE).join(FILE_NAME)
+            );
+            return;
+        }
+
+        let output = Command::new(env::current_exe().expect("the test binary"))
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD, NAME)
+            .env("EXAMPLE_CLI_CONFIG_DIRECTORY", OVERRIDE)
+            .env_remove("EXAMPLE_CLI_CONFIG_PATH")
+            .output()
+            .expect("the child runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test, so it proved nothing\n{stdout}"
         );
     }
 }

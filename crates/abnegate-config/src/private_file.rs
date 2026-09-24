@@ -7,7 +7,7 @@ use std::path::Path;
 
 use tempfile::NamedTempFile;
 
-use crate::error::ConfigError;
+use crate::error::Error;
 
 #[cfg(unix)]
 const DIRECTORY_MODE: u32 = 0o700;
@@ -28,8 +28,8 @@ impl<'path> PrivateFile<'path> {
         Self { path }
     }
 
-    pub(crate) fn write(&self, contents: &[u8]) -> Result<(), ConfigError> {
-        self.replace(contents).map_err(|source| ConfigError::Write {
+    pub(crate) fn write(&self, contents: &[u8]) -> Result<(), Error> {
+        self.replace(contents).map_err(|source| Error::Write {
             path: self.path.to_path_buf(),
             source,
         })
@@ -132,7 +132,7 @@ mod tests {
         let error = PrivateFile::new(&path).write(b"contents").unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::Write { path: reported, .. } if reported == &path),
+            matches!(&error, Error::Write { path: reported, .. } if reported == &path),
             "{error:?}"
         );
     }
@@ -189,7 +189,7 @@ mod tests {
 
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         assert!(
-            matches!(&result, Err(ConfigError::Write { path: reported, .. }) if reported == &path),
+            matches!(&result, Err(Error::Write { path: reported, .. }) if reported == &path),
             "{result:?}"
         );
     }

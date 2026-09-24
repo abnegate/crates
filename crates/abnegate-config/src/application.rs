@@ -1,7 +1,9 @@
+mod error;
+
 use std::fmt;
 use std::str::FromStr;
 
-use crate::error::ConfigError;
+pub use crate::application::error::ApplicationError;
 
 const SEPARATORS: [char; 2] = ['-', '_'];
 
@@ -17,7 +19,7 @@ const SEPARATORS: [char; 2] = ['-', '_'];
 ///
 /// assert_eq!(Application::new("example-cli")?.as_str(), "example-cli");
 /// assert!(Application::new("../example").is_err());
-/// # Ok::<(), abnegate_config::ConfigError>(())
+/// # Ok::<(), abnegate_config::ApplicationError>(())
 /// ```
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Application {
@@ -25,16 +27,19 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(name: impl Into<String>) -> Result<Self, ConfigError> {
+    /// An application called `name`, failing with
+    /// [`ApplicationError::Invalid`] when it is not one plain name.
+    pub fn new(name: impl Into<String>) -> Result<Self, ApplicationError> {
         let name = name.into();
 
         if !is_valid(&name) {
-            return Err(ConfigError::InvalidApplication { name });
+            return Err(ApplicationError::Invalid { name });
         }
 
         Ok(Self { name })
     }
 
+    /// The name, exactly as it was given.
     pub fn as_str(&self) -> &str {
         &self.name
     }
@@ -53,7 +58,7 @@ impl fmt::Display for Application {
 }
 
 impl FromStr for Application {
-    type Err = ConfigError;
+    type Err = ApplicationError;
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
         Self::new(name)
@@ -61,7 +66,7 @@ impl FromStr for Application {
 }
 
 impl TryFrom<&str> for Application {
-    type Error = ConfigError;
+    type Error = ApplicationError;
 
     fn try_from(name: &str) -> Result<Self, Self::Error> {
         Self::new(name)
@@ -69,7 +74,7 @@ impl TryFrom<&str> for Application {
 }
 
 impl TryFrom<String> for Application {
-    type Error = ConfigError;
+    type Error = ApplicationError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
         Self::new(name)
@@ -117,11 +122,12 @@ mod tests {
             "exämple",
             "example\0",
         ] {
-            let error = Application::new(name).unwrap_err();
-
-            assert!(
-                matches!(&error, ConfigError::InvalidApplication { name: rejected } if rejected == name),
-                "{name:?}: {error:?}"
+            assert_eq!(
+                Application::new(name),
+                Err(ApplicationError::Invalid {
+                    name: name.to_string()
+                }),
+                "{name:?}"
             );
         }
     }

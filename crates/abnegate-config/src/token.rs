@@ -5,7 +5,7 @@ use keyring::Entry;
 use keyring::Error as KeyringError;
 
 use crate::application::Application;
-use crate::error::ConfigError;
+use crate::error::Error;
 
 pub use crate::token::metadata::TokenMetadata;
 
@@ -35,7 +35,7 @@ const METADATA: &str = "metadata";
 ///
 /// assert!(store.is_authenticated());
 /// assert!(!store.metadata()?.is_expired());
-/// # Ok::<(), abnegate_config::ConfigError>(())
+/// # Ok::<(), abnegate_config::Error>(())
 /// ```
 pub struct TokenStore {
     application: Application,
@@ -52,7 +52,7 @@ impl TokenStore {
     }
 
     /// Read the credential stored under `name`.
-    pub fn read(&self, name: &str) -> Result<SecretValue, ConfigError> {
+    pub fn read(&self, name: &str) -> Result<SecretValue, Error> {
         self.entry(name)?
             .get_password()
             .map(SecretValue::new)
@@ -60,12 +60,12 @@ impl TokenStore {
     }
 
     /// Store `value` under `name`, replacing whatever was there.
-    pub fn write(&self, name: &str, value: &SecretValue) -> Result<(), ConfigError> {
+    pub fn write(&self, name: &str, value: &SecretValue) -> Result<(), Error> {
         Ok(self.entry(name)?.set_password(value.expose())?)
     }
 
     /// Remove the credential stored under `name`.
-    pub fn delete(&self, name: &str) -> Result<(), ConfigError> {
+    pub fn delete(&self, name: &str) -> Result<(), Error> {
         self.entry(name)?
             .delete_credential()
             .map_err(|source| self.failure(name, source))
@@ -75,27 +75,27 @@ impl TokenStore {
         self.read(name).is_ok()
     }
 
-    pub fn access_token(&self) -> Result<SecretValue, ConfigError> {
+    pub fn access_token(&self) -> Result<SecretValue, Error> {
         self.read(ACCESS_TOKEN)
     }
 
-    pub fn set_access_token(&self, token: &SecretValue) -> Result<(), ConfigError> {
+    pub fn set_access_token(&self, token: &SecretValue) -> Result<(), Error> {
         self.write(ACCESS_TOKEN, token)
     }
 
-    pub fn refresh_token(&self) -> Result<SecretValue, ConfigError> {
+    pub fn refresh_token(&self) -> Result<SecretValue, Error> {
         self.read(REFRESH_TOKEN)
     }
 
-    pub fn set_refresh_token(&self, token: &SecretValue) -> Result<(), ConfigError> {
+    pub fn set_refresh_token(&self, token: &SecretValue) -> Result<(), Error> {
         self.write(REFRESH_TOKEN, token)
     }
 
-    pub fn metadata(&self) -> Result<TokenMetadata, ConfigError> {
+    pub fn metadata(&self) -> Result<TokenMetadata, Error> {
         Ok(serde_json::from_str(self.read(METADATA)?.expose())?)
     }
 
-    pub fn set_metadata(&self, metadata: &TokenMetadata) -> Result<(), ConfigError> {
+    pub fn set_metadata(&self, metadata: &TokenMetadata) -> Result<(), Error> {
         self.write(
             METADATA,
             &SecretValue::new(serde_json::to_string(metadata)?),
@@ -109,10 +109,10 @@ impl TokenStore {
     }
 
     /// Forget every credential, ignoring the ones that were never stored.
-    pub fn clear(&self) -> Result<(), ConfigError> {
+    pub fn clear(&self) -> Result<(), Error> {
         for name in [ACCESS_TOKEN, REFRESH_TOKEN, METADATA] {
             match self.delete(name) {
-                Ok(()) | Err(ConfigError::NoCredential { .. }) => {}
+                Ok(()) | Err(Error::NoCredential { .. }) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -120,16 +120,16 @@ impl TokenStore {
         Ok(())
     }
 
-    fn entry(&self, name: &str) -> Result<Entry, ConfigError> {
+    fn entry(&self, name: &str) -> Result<Entry, Error> {
         Ok(Entry::new(self.service(), name)?)
     }
 
-    fn failure(&self, name: &str, source: KeyringError) -> ConfigError {
+    fn failure(&self, name: &str, source: KeyringError) -> Error {
         match source {
-            KeyringError::NoEntry => ConfigError::NoCredential {
+            KeyringError::NoEntry => Error::NoCredential {
                 name: name.to_string(),
             },
-            other => ConfigError::from(other),
+            other => Error::from(other),
         }
     }
 }
@@ -164,7 +164,7 @@ mod tests {
         let error = store("example").failure(ACCESS_TOKEN, KeyringError::NoEntry);
 
         assert!(
-            matches!(&error, ConfigError::NoCredential { name } if name == ACCESS_TOKEN),
+            matches!(&error, Error::NoCredential { name } if name == ACCESS_TOKEN),
             "{error:?}"
         );
         assert_eq!(error.to_string(), "No credential stored for 'access-token'");
@@ -177,7 +177,7 @@ mod tests {
             KeyringError::Invalid("service".into(), "empty".into()),
         );
 
-        assert!(matches!(error, ConfigError::Keyring(_)), "{error:?}");
+        assert!(matches!(error, Error::Keyring(_)), "{error:?}");
     }
 
     #[test]
@@ -187,10 +187,7 @@ mod tests {
             KeyringError::BadEncoding(b"hunter2\xff".to_vec()),
         );
 
-        assert!(
-            matches!(error, ConfigError::CredentialUnreadable),
-            "{error:?}"
-        );
+        assert!(matches!(error, Error::CredentialUnreadable), "{error:?}");
         assert!(!format!("{error:?}").contains("104"), "{error:?}");
     }
 }

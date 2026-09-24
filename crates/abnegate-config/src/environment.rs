@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use crate::environment::value::is_key;
 use crate::environment::value::quote;
 use crate::environment::value::unquote;
-use crate::error::ConfigError;
+use crate::error::Error;
 use crate::private_file::PrivateFile;
 
 const SEPARATOR: char = '=';
@@ -70,7 +70,7 @@ impl EnvironmentFile {
 
     /// Every key the file defines. A file that is not there reads as empty,
     /// and a line that is not a `KEY=value` assignment is skipped.
-    pub fn read(&self) -> Result<BTreeMap<String, String>, ConfigError> {
+    pub fn read(&self) -> Result<BTreeMap<String, String>, Error> {
         Ok(self
             .content()?
             .lines()
@@ -80,21 +80,21 @@ impl EnvironmentFile {
 
     /// Set every key in `values`, creating the file if it is not there.
     ///
-    /// Fails with [`ConfigError::InvalidKey`], writing nothing, when a key is
+    /// Fails with [`Error::InvalidKey`], writing nothing, when a key is
     /// not a shell variable name.
-    pub fn update(&self, values: &BTreeMap<String, String>) -> Result<(), ConfigError> {
+    pub fn update(&self, values: &BTreeMap<String, String>) -> Result<(), Error> {
         if let Some(key) = values.keys().find(|key| !is_key(key)) {
-            return Err(ConfigError::InvalidKey { key: key.clone() });
+            return Err(Error::InvalidKey { key: key.clone() });
         }
 
         PrivateFile::new(&self.path).write(apply(&self.content()?, values).as_bytes())
     }
 
-    fn content(&self) -> Result<String, ConfigError> {
+    fn content(&self) -> Result<String, Error> {
         match fs::read_to_string(&self.path) {
             Ok(content) => Ok(content),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-            Err(source) => Err(ConfigError::Read {
+            Err(source) => Err(Error::Read {
                 path: self.path.clone(),
                 source,
             }),
@@ -443,7 +443,7 @@ mod tests {
                 .unwrap_err();
 
             assert!(
-                matches!(&error, ConfigError::InvalidKey { key: refused } if refused == key),
+                matches!(&error, Error::InvalidKey { key: refused } if refused == key),
                 "{key:?}: {error:?}"
             );
             assert!(!file.path().exists());
