@@ -174,6 +174,10 @@ impl EnvironmentPolicy {
     /// Every variable this policy gives a command, read now: the executor's
     /// whole environment less the removed names when it inherits, then the
     /// allowed names the executor has set, then the variables set here.
+    ///
+    /// Every value comes back in the clear, those set here included: they
+    /// are exposed as plain [`OsString`]s rather than [`SecretValue`]s, so
+    /// never log the map.
     pub fn inherited(&self) -> BTreeMap<OsString, OsString> {
         let mut inherited: BTreeMap<OsString, OsString> = if self.inherit {
             env::vars_os()
@@ -191,9 +195,10 @@ impl EnvironmentPolicy {
         inherited
     }
 
-    /// Give `command` exactly this policy's environment: cleared unless the
-    /// policy inherits, and otherwise without the removed names, then the
-    /// allowed names the executor has set, then the variables set here.
+    /// Give `command` exactly this policy's environment: cleared when the
+    /// policy does not inherit and stripped of the removed names when it
+    /// does, then the allowed names the executor has set, then the variables
+    /// set here.
     pub fn apply(&self, command: &mut Command) {
         if self.inherit {
             for name in &self.removed {

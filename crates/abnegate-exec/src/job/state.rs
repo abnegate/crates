@@ -33,7 +33,10 @@ pub enum JobState {
 
     /// Job timed out
     TimedOut {
-        /// The limit the job ran past
+        /// The limit the job ran past, as far as whoever recorded the state
+        /// knew it. [`JobRegistry::observe`](crate::job::JobRegistry::observe)
+        /// records the time it measured since the job was registered, since a
+        /// `RunError` does not carry the limit.
         timeout: Duration,
         /// How long the job ran before it was stopped
         duration: Duration,
