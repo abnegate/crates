@@ -98,9 +98,9 @@ pub mod video;
 pub use caption::{CaptionImage, CaptionRequest, Captioner, Draft, data_url};
 pub use client::{
     Client, Error, GeneratedImage, MAXIMUM_SOURCE_IMAGE_BYTES, MAXIMUM_SOURCE_VIDEO_BYTES,
-    SourceImage, SourceVideo, build_ace_step_workflow, build_flux_schnell_img2img_workflow,
+    SourceImage, SourceVideo, build_ace_step_workflow, build_flux_schnell_image_to_image_workflow,
     build_flux_schnell_workflow, build_upscale_image_workflow, build_upscale_video_workflow,
-    build_wan_i2v_workflow, build_wan_t2v_workflow,
+    build_wan_image_to_video_workflow, build_wan_text_to_video_workflow,
 };
 pub use config::{Config, ConfigError, TOKEN_HEADER, VISION_MODEL_VARIABLE};
 pub use dataset::{Concern, Finding, inspect};

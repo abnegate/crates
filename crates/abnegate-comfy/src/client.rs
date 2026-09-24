@@ -31,7 +31,7 @@ use crate::recipe::{
 };
 
 const PACKAGED_VIDEO_WORKFLOW: &str = include_str!("../comfyui/workflows/wan2.2-ti2v-5b-api.json");
-const PACKAGED_I2V_WORKFLOW: &str =
+const PACKAGED_IMAGE_TO_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/wan2.2-ti2v-5b-i2v-api.json");
 const PACKAGED_AUDIO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/ace-step-v1-3.5b-api.json");
@@ -251,9 +251,10 @@ impl Client {
         }
         let video_workflow = load_video_workflow(self.config.video_workflow_path.as_deref())?;
         validate_video_workflow(&video_workflow)?;
-        let i2v_workflow = load_i2v_workflow(self.config.video_workflow_path.as_deref())?;
-        validate_i2v_workflow(&i2v_workflow)?;
-        Ok((video_workflow, i2v_workflow))
+        let image_to_video_workflow =
+            load_image_to_video_workflow(self.config.video_workflow_path.as_deref())?;
+        validate_image_to_video_workflow(&image_to_video_workflow)?;
+        Ok((video_workflow, image_to_video_workflow))
     }
 
     fn audio_workflow(&self) -> Result<Value, Error> {
@@ -343,7 +344,7 @@ impl Client {
         if cancel.try_recv().is_ok() {
             return Err(Error::Cancelled);
         }
-        let (video_workflow, i2v_workflow) = self.video_workflows()?;
+        let (video_workflow, image_to_video_workflow) = self.video_workflows()?;
         let deadline = tokio::time::Instant::now()
             + Duration::from_secs(self.config.video_generation_timeout_seconds);
         let prompt = if prompt.trim().is_empty() {
@@ -358,8 +359,8 @@ impl Client {
         let workflow = if let Some(source) = source {
             let _ = progress.send("Uploading source image...".to_string());
             let uploaded = self.upload_source(source, cancel, deadline).await?;
-            configure_wan_i2v_workflow(
-                i2v_workflow,
+            configure_wan_image_to_video_workflow(
+                image_to_video_workflow,
                 prompt,
                 &self.config.video_unet,
                 &self.config.video_clip,
@@ -368,7 +369,7 @@ impl Client {
                 &uploaded,
             )?
         } else {
-            configure_wan_t2v_workflow(
+            configure_wan_text_to_video_workflow(
                 video_workflow,
                 prompt,
                 &self.config.video_unet,
@@ -811,7 +812,7 @@ pub fn build_flux_schnell_workflow(
 }
 
 /// Build the default image-to-image recipe and mutate only approved inputs.
-pub fn build_flux_schnell_img2img_workflow(
+pub fn build_flux_schnell_image_to_image_workflow(
     prompt: &str,
     checkpoint: &str,
     seed: u64,
@@ -853,12 +854,12 @@ fn load_video_workflow(path: Option<&Path>) -> Result<Value, Error> {
         .map_err(|_| Error::Configuration("packaged video workflow is not valid JSON"))
 }
 
-fn load_i2v_workflow(text_to_video_path: Option<&Path>) -> Result<Value, Error> {
+fn load_image_to_video_workflow(text_to_video_path: Option<&Path>) -> Result<Value, Error> {
     if let Some(path) = sibling_file(text_to_video_path, "wan2.2-ti2v-5b-i2v-api.json") {
         return load_workflow_file(&path)
             .map_err(|_| Error::Configuration("image-to-video workflow path is not readable"));
     }
-    serde_json::from_str(PACKAGED_I2V_WORKFLOW)
+    serde_json::from_str(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW)
         .map_err(|_| Error::Configuration("packaged image-to-video workflow is not valid JSON"))
 }
 
@@ -872,7 +873,7 @@ fn load_audio_workflow(path: Option<&Path>) -> Result<Value, Error> {
 }
 
 /// Build the text-to-video workflow and mutate only approved inputs.
-pub fn build_wan_t2v_workflow(
+pub fn build_wan_text_to_video_workflow(
     prompt: &str,
     unet: &str,
     clip: &str,
@@ -881,11 +882,11 @@ pub fn build_wan_t2v_workflow(
 ) -> Result<Value, Error> {
     let workflow = serde_json::from_str(PACKAGED_VIDEO_WORKFLOW)
         .map_err(|_| Error::Configuration("packaged video workflow is not valid JSON"))?;
-    configure_wan_t2v_workflow(workflow, prompt, unet, clip, vae, seed)
+    configure_wan_text_to_video_workflow(workflow, prompt, unet, clip, vae, seed)
 }
 
 /// Build the image-to-video workflow and mutate only approved inputs.
-pub fn build_wan_i2v_workflow(
+pub fn build_wan_image_to_video_workflow(
     prompt: &str,
     unet: &str,
     clip: &str,
@@ -893,9 +894,9 @@ pub fn build_wan_i2v_workflow(
     seed: u64,
     image_name: &str,
 ) -> Result<Value, Error> {
-    let workflow = serde_json::from_str(PACKAGED_I2V_WORKFLOW)
+    let workflow = serde_json::from_str(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW)
         .map_err(|_| Error::Configuration("packaged image-to-video workflow is not valid JSON"))?;
-    configure_wan_i2v_workflow(workflow, prompt, unet, clip, vae, seed, image_name)
+    configure_wan_image_to_video_workflow(workflow, prompt, unet, clip, vae, seed, image_name)
 }
 
 /// Build the text-to-audio workflow and mutate only approved inputs.
@@ -1049,7 +1050,7 @@ fn validate_video_workflow(workflow: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_i2v_workflow(workflow: &Value) -> Result<(), Error> {
+fn validate_image_to_video_workflow(workflow: &Value) -> Result<(), Error> {
     validate_video_workflow(workflow)?;
     if workflow.pointer("/11/class_type").and_then(Value::as_str) != Some("LoadImage") {
         return Err(Error::Configuration(
@@ -1102,7 +1103,7 @@ fn validate_audio_workflow(workflow: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn configure_wan_t2v_workflow(
+fn configure_wan_text_to_video_workflow(
     mut workflow: Value,
     prompt: &str,
     unet: &str,
@@ -1115,7 +1116,7 @@ fn configure_wan_t2v_workflow(
     Ok(workflow)
 }
 
-fn configure_wan_i2v_workflow(
+fn configure_wan_image_to_video_workflow(
     mut workflow: Value,
     prompt: &str,
     unet: &str,
@@ -1124,7 +1125,7 @@ fn configure_wan_i2v_workflow(
     seed: u64,
     image_name: &str,
 ) -> Result<Value, Error> {
-    validate_i2v_workflow(&workflow)?;
+    validate_image_to_video_workflow(&workflow)?;
     apply_wan_workflow_inputs(&mut workflow, prompt, unet, clip, vae, seed)?;
     let image_name = sanitize_upload_name(image_name)?;
     workflow["11"]["inputs"]["image"] = json!(image_name);
@@ -1258,8 +1259,8 @@ mod tests {
     }
 
     #[test]
-    fn img2img_workflow_mutates_only_approved_inputs() {
-        let workflow = build_flux_schnell_img2img_workflow(
+    fn image_to_image_workflow_mutates_only_approved_inputs() {
+        let workflow = build_flux_schnell_image_to_image_workflow(
             "make it dusk",
             "custom-image.safetensors",
             42,
@@ -1280,20 +1281,25 @@ mod tests {
     }
 
     #[test]
-    fn img2img_workflow_rejects_pathful_filenames() {
+    fn image_to_image_workflow_rejects_pathful_filenames() {
         assert!(
-            build_flux_schnell_img2img_workflow("fox", "ok.safetensors", 1, "../secret.png")
+            build_flux_schnell_image_to_image_workflow("fox", "ok.safetensors", 1, "../secret.png")
                 .is_err()
         );
         assert!(
-            build_flux_schnell_img2img_workflow("fox", "ok.safetensors", 1, "nested/file.png")
-                .is_err()
+            build_flux_schnell_image_to_image_workflow(
+                "fox",
+                "ok.safetensors",
+                1,
+                "nested/file.png"
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn video_workflow_mutates_only_approved_inputs() {
-        let workflow = build_wan_t2v_workflow(
+        let workflow = build_wan_text_to_video_workflow(
             "a moving fox",
             "custom-video.safetensors",
             "custom-clip.safetensors",
@@ -1321,8 +1327,8 @@ mod tests {
     }
 
     #[test]
-    fn i2v_workflow_mutates_only_approved_inputs() {
-        let workflow = build_wan_i2v_workflow(
+    fn image_to_video_workflow_mutates_only_approved_inputs() {
+        let workflow = build_wan_image_to_video_workflow(
             "make it move",
             "custom-video.safetensors",
             "custom-clip.safetensors",
@@ -1344,7 +1350,7 @@ mod tests {
     #[test]
     fn video_workflow_rejects_pathful_filenames() {
         assert!(
-            build_wan_t2v_workflow(
+            build_wan_text_to_video_workflow(
                 "fox",
                 "../secret.safetensors",
                 "clip.safetensors",
@@ -1354,7 +1360,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            build_wan_i2v_workflow(
+            build_wan_image_to_video_workflow(
                 "fox",
                 "ok.safetensors",
                 "clip.safetensors",
@@ -1912,7 +1918,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn img2img_uploads_source_then_submits_encoded_workflow() {
+    async fn image_to_image_uploads_source_then_submits_encoded_workflow() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/upload/image"))
@@ -2237,7 +2243,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn i2v_uploads_source_then_submits_start_image() {
+    async fn image_to_video_uploads_source_then_submits_start_image() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/upload/image"))
