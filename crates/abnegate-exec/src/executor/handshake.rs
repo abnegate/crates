@@ -41,9 +41,9 @@ impl Capability {
 }
 
 impl OutboundMessage {
-    /// Create a HelloAck with the capabilities this host can honour
-    pub fn hello_ack() -> Self {
-        OutboundMessage::HelloAck {
+    /// Answer a `Hello` with the capabilities this host can honour
+    pub fn hello_acknowledged() -> Self {
+        OutboundMessage::HelloAcknowledged {
             protocol_version: PROTOCOL_VERSION.to_string(),
             runner_version: env!("CARGO_PKG_VERSION").to_string(),
             capabilities: Capability::supported(),

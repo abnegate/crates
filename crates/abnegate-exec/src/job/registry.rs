@@ -1,7 +1,5 @@
 //! Job registry for tracking active and completed jobs.
 
-use std::time::Duration;
-
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::one::RefMut;
@@ -108,20 +106,17 @@ impl JobRegistry {
             OutboundMessage::RunExit {
                 exit_code,
                 signal,
-                duration_ms,
+                duration,
                 ..
-            } => {
-                let duration = Duration::from_millis(*duration_ms);
-                match (exit_code, signal) {
-                    (Some(code), _) => JobState::completed(*code, duration),
-                    (None, Some(signal)) => JobState::signaled(*signal, duration),
-                    (None, None) => JobState::failed(
-                        ErrorCode::InternalError,
-                        "Exited without a status".to_string(),
-                        duration,
-                    ),
-                }
-            }
+            } => match (exit_code, signal) {
+                (Some(code), _) => JobState::completed(*code, *duration),
+                (None, Some(signal)) => JobState::signaled(*signal, *duration),
+                (None, None) => JobState::failed(
+                    ErrorCode::InternalError,
+                    "Exited without a status".to_string(),
+                    *duration,
+                ),
+            },
             OutboundMessage::RunError {
                 error_code: ErrorCode::Cancelled,
                 ..
@@ -582,7 +577,7 @@ mod tests {
             job_id: "job-1".to_string(),
             exit_code: Some(0),
             signal: None,
-            duration_ms: 5,
+            duration: Duration::from_millis(5),
         });
         registry.cancel_all();
         group.terminate().unwrap();
@@ -599,7 +594,7 @@ mod tests {
                     job_id: "exited".to_string(),
                     exit_code: Some(3),
                     signal: None,
-                    duration_ms: 7,
+                    duration: Duration::from_millis(7),
                 },
                 JobState::completed(3, Duration::from_millis(7)),
             ),
@@ -608,7 +603,7 @@ mod tests {
                     job_id: "signalled".to_string(),
                     exit_code: None,
                     signal: Some(9),
-                    duration_ms: 7,
+                    duration: Duration::from_millis(7),
                 },
                 JobState::signaled(9, Duration::from_millis(7)),
             ),
@@ -663,7 +658,7 @@ mod tests {
             job_id: "job-1".to_string(),
             exit_code: Some(0),
             signal: None,
-            duration_ms: 5,
+            duration: Duration::from_millis(5),
         });
         registry.observe(&OutboundMessage::RunStarted {
             job_id: "unknown".to_string(),

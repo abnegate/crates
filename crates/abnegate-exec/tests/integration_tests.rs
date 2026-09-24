@@ -540,23 +540,21 @@ async fn test_duration_tracking() {
 
     let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
 
-    let duration = messages.iter().find_map(|message| match message {
-        OutboundMessage::RunExit { duration_ms, .. } => Some(*duration_ms),
-        _ => None,
-    });
-
-    assert!(duration.is_some());
-    let duration_ms = duration.unwrap();
+    let duration = messages
+        .iter()
+        .find_map(|message| match message {
+            OutboundMessage::RunExit { duration, .. } => Some(*duration),
+            _ => None,
+        })
+        .expect("the run reports how it ended");
 
     assert!(
-        duration_ms >= 120,
-        "Duration should be at least 120ms, got {}ms",
-        duration_ms
+        duration >= Duration::from_millis(120),
+        "Duration should be at least 120ms, got {duration:?}"
     );
     assert!(
-        duration_ms < 5000,
-        "Duration should be less than 5000ms, got {}ms",
-        duration_ms
+        duration < Duration::from_secs(5),
+        "Duration should be less than 5s, got {duration:?}"
     );
 }
 

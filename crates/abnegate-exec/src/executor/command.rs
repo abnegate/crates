@@ -956,14 +956,13 @@ mod tests {
             .messages
             .iter()
             .find_map(|message| match message {
-                OutboundMessage::RunExit { duration_ms, .. } => Some(u128::from(*duration_ms)),
+                OutboundMessage::RunExit { duration, .. } => Some(*duration),
                 _ => None,
             })
             .expect("the run reports how it ended");
         assert!(
-            reported >= SLEPT.as_millis(),
-            "a run that slept {}ms is reported as {reported}ms",
-            SLEPT.as_millis()
+            reported >= SLEPT,
+            "a run that slept {SLEPT:?} is reported as {reported:?}"
         );
     }
 
@@ -993,8 +992,8 @@ mod tests {
         let drain = tokio::spawn(async move {
             tokio::time::sleep(STALL).await;
             while let Some(message) = receiver.recv().await {
-                if let OutboundMessage::RunExit { duration_ms, .. } = message {
-                    return Some(u128::from(duration_ms));
+                if let OutboundMessage::RunExit { duration, .. } = message {
+                    return Some(duration);
                 }
             }
             None
@@ -1014,9 +1013,8 @@ mod tests {
         let reported = drain.await.unwrap().expect("the run reports how it ended");
 
         assert!(
-            reported >= SLEPT.as_millis(),
-            "a run that slept {}ms is reported as {reported}ms",
-            SLEPT.as_millis()
+            reported >= SLEPT,
+            "a run that slept {SLEPT:?} is reported as {reported:?}"
         );
     }
 

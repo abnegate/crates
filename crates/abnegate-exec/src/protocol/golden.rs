@@ -123,7 +123,7 @@ fn every_inbound_message_keeps_its_bytes() {
 fn every_outbound_message_keeps_its_bytes() {
     let cases = [
         (
-            OutboundMessage::HelloAck {
+            OutboundMessage::HelloAcknowledged {
                 protocol_version: "1.0".to_string(),
                 runner_version: "0.1.0".to_string(),
                 capabilities: vec!["cancel".to_string(), "process_group".to_string()],
@@ -176,7 +176,7 @@ fn every_outbound_message_keeps_its_bytes() {
                 job_id: "job-1".to_string(),
                 exit_code: Some(0),
                 signal: None,
-                duration_ms: 1500,
+                duration: Duration::from_millis(1500),
             },
             r#"{"type":"RunExit","job_id":"job-1","exit_code":0,"duration_ms":1500}"#,
         ),
@@ -185,7 +185,7 @@ fn every_outbound_message_keeps_its_bytes() {
                 job_id: "job-1".to_string(),
                 exit_code: None,
                 signal: Some(9),
-                duration_ms: 20,
+                duration: Duration::from_millis(20),
             },
             r#"{"type":"RunExit","job_id":"job-1","exit_code":null,"signal":9,"duration_ms":20}"#,
         ),
@@ -242,7 +242,7 @@ fn a_sparse_inbound_line_takes_its_defaults() {
 
 #[test]
 fn the_handshake_answer_keeps_its_tag() {
-    let line = encoded(OutboundMessage::hello_ack());
+    let line = encoded(OutboundMessage::hello_acknowledged());
 
     assert!(
         line.starts_with(r#"{"type":"HelloAck","protocol_version":"1.0","runner_version":""#),

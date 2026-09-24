@@ -125,6 +125,8 @@ impl<T: Serialize> Encoder<T> for NdjsonCodec<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::protocol::ErrorCode;
     use crate::protocol::InboundMessage;
     use crate::protocol::LogLevel;
@@ -270,7 +272,7 @@ mod tests {
         let mut codec: NdjsonCodec<OutboundMessage> = NdjsonCodec::new();
 
         let messages = vec![
-            OutboundMessage::hello_ack(),
+            OutboundMessage::hello_acknowledged(),
             OutboundMessage::RunStarted {
                 job_id: "j1".to_string(),
                 pid: 123,
@@ -295,7 +297,7 @@ mod tests {
                 job_id: "j1".to_string(),
                 exit_code: Some(0),
                 signal: None,
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             },
             OutboundMessage::RunError {
                 job_id: "j1".to_string(),
@@ -477,7 +479,7 @@ mod tests {
             job_id: "test-job".to_string(),
             exit_code: Some(0),
             signal: None,
-            duration_ms: 1234,
+            duration: Duration::from_millis(1234),
         };
 
         encoder.encode(original.clone(), &mut buffer).unwrap();
@@ -489,7 +491,7 @@ mod tests {
     #[test]
     fn test_roundtrip_all_message_types() {
         let messages = vec![
-            OutboundMessage::hello_ack(),
+            OutboundMessage::hello_acknowledged(),
             OutboundMessage::RunStarted {
                 job_id: "j1".to_string(),
                 pid: 12345,
@@ -514,13 +516,13 @@ mod tests {
                 job_id: "j1".to_string(),
                 exit_code: Some(1),
                 signal: None,
-                duration_ms: 5000,
+                duration: Duration::from_millis(5000),
             },
             OutboundMessage::RunExit {
                 job_id: "j2".to_string(),
                 exit_code: None,
                 signal: Some(9),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             },
             OutboundMessage::RunError {
                 job_id: "j1".to_string(),
