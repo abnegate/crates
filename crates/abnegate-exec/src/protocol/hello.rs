@@ -3,7 +3,7 @@ use serde::Serialize;
 
 /// Opens a connection: the protocol version a client speaks and the
 /// capabilities it knows about.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct Hello {
     /// The protocol version the client speaks, such as

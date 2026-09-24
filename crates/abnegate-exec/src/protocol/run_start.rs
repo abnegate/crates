@@ -17,7 +17,7 @@ use super::milliseconds;
 ///
 /// `Debug` prints the names in [`environment`](Self::environment) and never
 /// their values, which can carry a credential.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct RunStart {
     /// Names the job in every message about it

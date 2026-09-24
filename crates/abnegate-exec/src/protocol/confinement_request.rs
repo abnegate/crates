@@ -13,7 +13,7 @@ use super::process_tree_request::ProcessTreeRequest;
 /// The [`Default`] grants no root at all and asks for the single-command
 /// confinement; [`with_read_roots`](Self::with_read_roots) and
 /// [`with_write_roots`](Self::with_write_roots) name what the job may see.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct ConfinementRequest {
     /// Directories the job may read

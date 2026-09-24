@@ -15,7 +15,7 @@ use super::run_stdin::RunStdin;
 /// `Debug` prints the names in a `RunStart` environment and the length of a
 /// `RunStdin` payload, never the values themselves: either can carry a
 /// credential.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum InboundMessage {

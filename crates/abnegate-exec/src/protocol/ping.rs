@@ -3,7 +3,7 @@ use serde::Serialize;
 
 /// Asks a runner whether it is alive; it answers with a `Pong` carrying the
 /// same [`id`](Self::id).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct Ping {
     /// Echoed back in the answer

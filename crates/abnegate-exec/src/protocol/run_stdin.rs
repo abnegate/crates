@@ -7,7 +7,7 @@ use serde::Serialize;
 ///
 /// `Debug` prints the length of [`data`](Self::data) and never the data,
 /// which can carry a credential.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct RunStdin {
     /// The job whose stdin is written
