@@ -147,9 +147,8 @@ mod tests {
     use super::message_cost;
     use super::tokens;
 
-    /// The estimate rounds up: a partial token still costs a token. The
-    /// claudear estimator this replaced rounded down, so a short message
-    /// could cost nothing.
+    /// The estimate rounds up: a partial token still costs a token, so a
+    /// short message never costs nothing.
     #[test]
     fn a_partial_token_rounds_up() {
         assert_eq!(tokens("a"), 1);
@@ -157,9 +156,8 @@ mod tests {
         assert_eq!(tokens("abcdefgh"), 2);
     }
 
-    /// Every message spends eight tokens on framing, whatever it holds; the
-    /// claudear estimator charged twenty. A name or a call id is charged on
-    /// top, at the same four bytes a token.
+    /// Every message spends eight tokens on framing, whatever it holds. A
+    /// name or a call id is charged on top, at the same four bytes a token.
     #[test]
     fn every_message_pays_the_same_framing() {
         assert_eq!(MESSAGE_FRAMING_TOKENS, 8);

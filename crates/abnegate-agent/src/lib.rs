@@ -65,16 +65,15 @@
 //! # }
 //! ```
 //!
-//! # Coming from claudear
+//! # Estimation and templating rules
 //!
-//! The prompt helpers here replace claudear's, and differ from them on
-//! purpose:
+//! The prompt helpers make a few choices on purpose:
 //!
-//! - [`context::estimate`] counts four bytes a token rounded up, not down,
-//!   and charges each message 8 tokens of framing rather than 20.
+//! - [`context::estimate`] counts four bytes a token, rounding a partial
+//!   token up, and charges each message 8 tokens of framing.
 //! - [`TemplateRenderer::render`] renders a key the context does not hold as
-//!   nothing, where claudear left `{{key}}` in the prompt;
-//!   [`TemplateRenderer::render_strict`] refuses such a template instead.
+//!   nothing; [`TemplateRenderer::render_strict`] refuses such a template
+//!   instead.
 //! - `{{#if key}}` is false for an empty string as well as a missing key, and
 //!   keys may contain `-`.
 //!
