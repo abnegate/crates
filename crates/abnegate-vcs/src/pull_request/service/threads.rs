@@ -366,7 +366,7 @@ mod tests {
                     Some(&next.to_string()),
                 )
             })
-            .expect(MAXIMUM_PAGES as u64)
+            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
             .mount(&server)
             .await;
         let service = stand_in(&server).await;

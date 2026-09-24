@@ -231,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn the_conversation_is_read_with_every_comment_s_author_and_link() {
         let server = MockServer::start().await;
-        let full: Vec<IssueComment> = (1..=PAGE_SIZE as u64)
+        let full: Vec<IssueComment> = (1..=u64::try_from(PAGE_SIZE).unwrap())
             .map(|id| written(id, "review-bot", &format!("Summary {id}")))
             .collect();
         let silent = written(101, "", "");

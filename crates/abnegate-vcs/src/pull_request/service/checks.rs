@@ -106,7 +106,9 @@ async fn walk<P: DeserializeOwned, R>(
         let short = batch.len() < PAGE_SIZE;
         collected.extend(batch);
         if short {
-            let every = total.is_none_or(|total| total <= collected.len() as u64);
+            let every = total.is_none_or(|counted| {
+                u64::try_from(collected.len()).is_ok_and(|read| counted <= read)
+            });
             return Ok((collected, every));
         }
     }
