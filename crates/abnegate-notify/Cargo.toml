@@ -19,8 +19,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-mock = []
 smtp = ["dep:lettre"]
+testing = []
 
 [dependencies]
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }

@@ -13,8 +13,8 @@ use crate::mail::sent::SentMail;
 ///
 /// It takes and answers exactly what the real one does, so a caller under
 /// test can hold either and assert on what would have gone out. It needs only
-/// the `mock` feature, so a downstream test suite need not build `lettre`.
-#[cfg_attr(docsrs, doc(cfg(feature = "mock")))]
+/// the `testing` feature, so a downstream test suite need not build `lettre`.
+#[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
 #[derive(Clone, Debug, Default)]
 pub struct MockMailer {
     sent: Arc<Mutex<Vec<SentMail>>>,

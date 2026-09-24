@@ -6,23 +6,23 @@ use crate::error::Error;
 
 #[cfg(feature = "smtp")]
 mod mailer;
-#[cfg(feature = "mock")]
+#[cfg(feature = "testing")]
 mod mock;
-#[cfg(feature = "mock")]
+#[cfg(feature = "testing")]
 mod sent;
 
 #[cfg(feature = "smtp")]
 pub use crate::mail::mailer::Mailer;
-#[cfg(feature = "mock")]
+#[cfg(feature = "testing")]
 pub use crate::mail::mock::MockMailer;
-#[cfg(feature = "mock")]
+#[cfg(feature = "testing")]
 pub use crate::mail::sent::SentMail;
 
 /// Sends a subject and a body to one recipient.
 ///
 /// This is the transactional half of the crate, with no
 /// [`Notification`](crate::Notification) involved. The `smtp` feature provides
-/// `Mailer`, which sends through a relay, and the `mock` feature provides
+/// `Mailer`, which sends through a relay, and the `testing` feature provides
 /// `MockMailer`, which records instead, so a caller can hold either behind
 /// this trait and assert on what would have gone out.
 ///

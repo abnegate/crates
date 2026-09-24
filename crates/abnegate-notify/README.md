@@ -14,7 +14,7 @@ redacts credentials.
 ## Features
 
 - `smtp`: the `Email` channel, and `Mailer`, which sends one message through a relay; both pull in `lettre`.
-- `mock`: `MockMailer`, a `Mail` that records instead of sending, for a caller's own tests.
+- `testing`: `MockMailer`, a `Mail` that records instead of sending, for a caller's own tests.
 
 ## Usage
 
