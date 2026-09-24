@@ -5,14 +5,14 @@ use abnegate_secret::SecretValue;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::tools::EnvironmentPolicy;
+use crate::tool::EnvironmentPolicy;
 
 /// A stdio MCP server to launch and keep for an agent run.
 ///
 /// Serialises in the Cursor `mcpServers` shape: `args`, `env` and `cwd` on the
 /// wire, spelled out in full here.
 ///
-/// The child is given the [`DEFAULT_ENVIRONMENT`](crate::tools::DEFAULT_ENVIRONMENT)
+/// The child is given the [`DEFAULT_ENVIRONMENT`](crate::tool::DEFAULT_ENVIRONMENT)
 /// names from this process plus [`environment`](Self::environment), unless
 /// [`inherit_environment`](Self::inherit_environment) opts in to the whole of
 /// this process's environment. Values are [`SecretValue`]s, so printing a spec
@@ -129,7 +129,7 @@ mod tests {
             Some("token")
         );
         for name in policy.names().filter(|name| *name != "NOTES_TOKEN") {
-            assert!(crate::tools::DEFAULT_ENVIRONMENT.contains(&name), "{name}");
+            assert!(crate::tool::DEFAULT_ENVIRONMENT.contains(&name), "{name}");
         }
 
         spec.inherit_environment = true;

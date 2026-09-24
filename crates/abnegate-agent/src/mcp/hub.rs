@@ -6,7 +6,7 @@ use futures::future::join_all;
 
 use super::McpConfig;
 use super::session::McpSession;
-use crate::tools::Tool;
+use crate::tool::Tool;
 
 /// Bound for `initialize` and `tools/list` so one silent child cannot stall
 /// agent startup. `kill_on_drop` then tears the process down.
@@ -119,9 +119,9 @@ mod tests {
     use super::*;
     use crate::mcp::McpServerSpec;
     use crate::mcp::register;
-    use crate::tools::Tier;
-    use crate::tools::ToolContext;
-    use crate::tools::ToolRegistry;
+    use crate::tool::Tier;
+    use crate::tool::ToolContext;
+    use crate::tool::ToolRegistry;
 
     #[derive(Clone, Default)]
     struct Echo;
@@ -366,7 +366,7 @@ mod tests {
     struct Holder(String);
 
     #[async_trait::async_trait]
-    impl crate::tools::Tool for Holder {
+    impl crate::tool::Tool for Holder {
         fn name(&self) -> &str {
             &self.0
         }
@@ -383,8 +383,8 @@ mod tests {
             &self,
             _parameters: serde_json::Value,
             _context: &ToolContext,
-        ) -> Result<crate::tools::ToolResult, crate::tools::ToolError> {
-            Ok(crate::tools::ToolResult::success("held"))
+        ) -> Result<crate::tool::ToolResult, crate::tool::ToolError> {
+            Ok(crate::tool::ToolResult::success("held"))
         }
     }
 

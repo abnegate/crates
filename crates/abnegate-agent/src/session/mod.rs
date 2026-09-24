@@ -17,7 +17,7 @@ pub use store::SessionStore;
 pub use summary::SessionSummary;
 use uuid::Uuid;
 
-use crate::agent::AgentState;
+use crate::run::AgentState;
 
 /// A saved run: its [`AgentState`] under a title, with the directory it
 /// worked in.

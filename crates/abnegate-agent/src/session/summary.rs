@@ -34,7 +34,7 @@ impl From<&Session> for SessionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentState;
+    use crate::run::AgentState;
 
     #[test]
     fn test_session_summary_from_session() {

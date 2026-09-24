@@ -159,7 +159,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::agent::AgentState;
+    use crate::run::AgentState;
 
     fn create_test_session(prompt: &str, title: &str) -> Session {
         let state = AgentState::new(prompt, None);

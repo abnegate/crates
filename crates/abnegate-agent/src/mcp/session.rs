@@ -22,8 +22,8 @@ use super::McpError;
 use super::McpServerSpec;
 use super::name::unique_qualified_tool_name;
 use super::tool::McpTool;
-use crate::tools::Tool;
-use crate::tools::process::Group;
+use crate::tool::Tool;
+use crate::tool::process::Group;
 
 /// Most of a server's stderr logged, after which the rest is read and
 /// dropped so the server never blocks writing to it.

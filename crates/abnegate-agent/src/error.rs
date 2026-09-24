@@ -1,7 +1,6 @@
 use abnegate_llm::LlmError;
 use thiserror::Error;
 
-use crate::agent::AgentError;
 use crate::application::ApplicationError;
 use crate::chat;
 use crate::context::ContextError;
@@ -9,8 +8,9 @@ use crate::context::ContextError;
 use crate::mcp::McpConfigError;
 #[cfg(feature = "mcp")]
 use crate::mcp::McpError;
+use crate::run::AgentError;
 use crate::session::SessionError;
-use crate::tools::ToolError;
+use crate::tool::ToolError;
 
 /// Any failure this crate reports, for a caller that composes several of its
 /// modules and wants one error to return.
