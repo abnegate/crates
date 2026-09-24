@@ -17,13 +17,17 @@
 //! [`Repository`] from [`PullRequestService::parse_github_url`], a
 //! [`PullRequestReference`] from [`PullRequestService::pull_request`], a
 //! [`crate::BranchName`], a [`crate::CommitSha`], a [`RepositoryPath`], and a
-//! new repository's owner held to a [`Repository`]'s rules. Each travels as
-//! percent-encoded path segments under the configured origin, so no value, not
-//! even a path someone else chose, reaches another endpoint. Everything else a
-//! call sends, such as a GraphQL node id, a title or a body, travels in its
-//! JSON, never in its URL. What GitHub answers is held to the same types: a
-//! branch or commit this crate does not accept is [`PullRequestError::Parse`],
-//! never read as something else.
+//! new repository's owner held to a [`Repository`]'s rules. Each travels
+//! percent-encoded under the configured origin, as path segments or as a query
+//! value: the owner and head branch
+//! [`PullRequestService::pull_request_exists_for_branch`] looks for travel
+//! together as `head`, and the commit [`PullRequestService::fetch_file`] reads
+//! at travels as `ref`. So no value, not even a path someone else chose,
+//! reaches another endpoint or adds a parameter. Everything else a call sends,
+//! such as a GraphQL node id, a title or a body, travels in its JSON, never in
+//! its URL. What GitHub answers is held to the same types: a branch or commit
+//! this crate does not accept is [`PullRequestError::Parse`], never read as
+//! something else.
 //!
 //! [`PullRequestService::fetch_diff`] and [`PullRequestService::fetch_file`]
 //! read no more of the answer than the byte limit their caller passes, and
