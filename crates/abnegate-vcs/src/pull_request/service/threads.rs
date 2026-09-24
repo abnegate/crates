@@ -1,12 +1,12 @@
 use super::*;
 use crate::pull_request::ReviewThreadRecord;
 use crate::pull_request::ThreadComment;
-use crate::pull_request::github_review_thread::GitHubReviewThread;
-use crate::pull_request::github_review_threads::GitHubReviewThreads;
-use crate::pull_request::github_thread_comment::GitHubThreadComment;
 use crate::pull_request::graphql_page_info::GraphQlPageInfo;
 use crate::pull_request::graphql_pull_request::GraphQlPullRequest;
+use crate::pull_request::graphql_query::GraphQlQuery;
 use crate::pull_request::graphql_repository::GraphQlRepository;
+use crate::pull_request::graphql_review_thread::GraphQlReviewThread;
+use crate::pull_request::graphql_thread_comment::GraphQlThreadComment;
 use serde::de::IgnoredAny;
 use serde_json::json;
 use std::collections::HashSet;
@@ -59,7 +59,7 @@ impl PullRequestService {
         let mut after: Option<String> = None;
 
         for _ in 0..MAXIMUM_PAGES {
-            let answer: GraphQlRepository<GraphQlPullRequest<GitHubReviewThreads>> = self
+            let answer: GraphQlQuery<GraphQlRepository<GraphQlPullRequest>> = self
                 .graphql(
                     token,
                     THREADS,
@@ -102,7 +102,7 @@ fn next_cursor(page: Option<GraphQlPageInfo>, after: Option<&str>) -> Option<Str
 }
 
 /// A review thread as GitHub's GraphQL API answered for it, with its comments.
-fn record(thread: GitHubReviewThread) -> ReviewThreadRecord {
+fn record(thread: GraphQlReviewThread) -> ReviewThreadRecord {
     ReviewThreadRecord {
         id: thread.id,
         resolved: thread.is_resolved,
@@ -114,7 +114,7 @@ fn record(thread: GitHubReviewThread) -> ReviewThreadRecord {
 }
 
 /// A comment in a review thread, with an empty author where GitHub names none.
-fn comment(written: GitHubThreadComment) -> ThreadComment {
+fn comment(written: GraphQlThreadComment) -> ThreadComment {
     ThreadComment {
         database_id: written.database_id,
         author: written
