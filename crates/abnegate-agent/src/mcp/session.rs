@@ -79,7 +79,7 @@ impl McpSession {
         let (transport, stderr) = TokioChildProcess::builder(command.configure(|process| {
             process.args(&spec.arguments);
             spec.environment_policy().apply(process);
-            Proxy::from_env().apply(process);
+            Proxy::from_environment().apply(process);
             if let Some(directory) = &spec.working_directory {
                 process.current_dir(directory);
             }
@@ -193,7 +193,7 @@ async fn log_stderr(server: String, mut stderr: ChildStderr) {
 mod tests {
     use std::collections::BTreeMap;
 
-    use abnegate_exec::PROXY_URL_ENV;
+    use abnegate_exec::PROXY_URL_VARIABLE;
     use abnegate_secret::SecretValue;
 
     use super::*;
@@ -212,7 +212,7 @@ mod tests {
                 .env_clear()
                 .env("PATH", std::env::var_os("PATH").unwrap_or_default())
                 .env(CHILD_TEST, NAME)
-                .env(PROXY_URL_ENV, "http://127.0.0.1:28888")
+                .env(PROXY_URL_VARIABLE, "http://127.0.0.1:28888")
                 .env(LEAKED, "must-not-reach-a-server")
                 .output()
                 .await
@@ -247,7 +247,7 @@ mod tests {
                 ),
                 ("NO_PROXY".to_string(), SecretValue::new("*")),
                 ("no_proxy".to_string(), SecretValue::new("*")),
-                (PROXY_URL_ENV.to_string(), SecretValue::new("")),
+                (PROXY_URL_VARIABLE.to_string(), SecretValue::new("")),
             ]),
             inherit_environment: false,
             working_directory: None,

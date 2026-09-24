@@ -1,7 +1,5 @@
 //! Job registry for tracking active and completed jobs.
 
-use std::time::Duration;
-
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::one::RefMut;
@@ -86,7 +84,7 @@ impl JobRegistry {
     /// Call this for every message an executor sends, before forwarding it:
     /// `RunStarted` marks the job running, and `RunExit` or `RunError` marks
     /// it finished, which forgets its process group (see
-    /// [`JobRegistry::update_state`]). A timed-out job's `timeout_ms` is the
+    /// [`JobRegistry::update_state`]). A timed-out job's `timeout` is the
     /// time since it was registered. Messages for jobs the registry does not
     /// track, and for jobs already finished, are ignored.
     pub fn observe(&self, message: &OutboundMessage) {
@@ -108,20 +106,17 @@ impl JobRegistry {
             OutboundMessage::RunExit {
                 exit_code,
                 signal,
-                duration_ms,
+                duration,
                 ..
-            } => {
-                let duration = Duration::from_millis(*duration_ms);
-                match (exit_code, signal) {
-                    (Some(code), _) => JobState::completed(*code, duration),
-                    (None, Some(signal)) => JobState::signaled(*signal, duration),
-                    (None, None) => JobState::failed(
-                        ErrorCode::InternalError,
-                        "Exited without a status".to_string(),
-                        duration,
-                    ),
-                }
-            }
+            } => match (exit_code, signal) {
+                (Some(code), _) => JobState::completed(*code, *duration),
+                (None, Some(signal)) => JobState::signaled(*signal, *duration),
+                (None, None) => JobState::failed(
+                    ErrorCode::InternalError,
+                    "Exited without a status".to_string(),
+                    *duration,
+                ),
+            },
             OutboundMessage::RunError {
                 error_code: ErrorCode::Cancelled,
                 ..
@@ -129,10 +124,7 @@ impl JobRegistry {
             OutboundMessage::RunError {
                 error_code: ErrorCode::Timeout,
                 ..
-            } => JobState::timed_out(
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-                elapsed,
-            ),
+            } => JobState::timed_out(elapsed, elapsed),
             OutboundMessage::RunError {
                 error_code,
                 message,
@@ -582,7 +574,7 @@ mod tests {
             job_id: "job-1".to_string(),
             exit_code: Some(0),
             signal: None,
-            duration_ms: 5,
+            duration: Duration::from_millis(5),
         });
         registry.cancel_all();
         group.terminate().unwrap();
@@ -599,7 +591,7 @@ mod tests {
                     job_id: "exited".to_string(),
                     exit_code: Some(3),
                     signal: None,
-                    duration_ms: 7,
+                    duration: Duration::from_millis(7),
                 },
                 JobState::completed(3, Duration::from_millis(7)),
             ),
@@ -608,7 +600,7 @@ mod tests {
                     job_id: "signalled".to_string(),
                     exit_code: None,
                     signal: Some(9),
-                    duration_ms: 7,
+                    duration: Duration::from_millis(7),
                 },
                 JobState::signaled(9, Duration::from_millis(7)),
             ),
@@ -618,7 +610,7 @@ mod tests {
             ),
             (
                 OutboundMessage::error("timed-out", ErrorCode::Timeout, "timed out"),
-                JobState::timed_out(0, Duration::ZERO),
+                JobState::timed_out(Duration::ZERO, Duration::ZERO),
             ),
             (
                 OutboundMessage::error("failed", ErrorCode::InternalError, "wait failed"),
@@ -663,7 +655,7 @@ mod tests {
             job_id: "job-1".to_string(),
             exit_code: Some(0),
             signal: None,
-            duration_ms: 5,
+            duration: Duration::from_millis(5),
         });
         registry.observe(&OutboundMessage::RunStarted {
             job_id: "unknown".to_string(),

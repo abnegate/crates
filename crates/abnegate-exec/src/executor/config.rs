@@ -2,11 +2,13 @@ use std::time::Duration;
 
 use super::environment_policy::EnvironmentPolicy;
 
-/// Default timeout for command execution (5 minutes)
-pub const DEFAULT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
+/// How long a command may run when its `RunStart` sets no timeout: five
+/// minutes
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
-/// Default maximum output size (10 MB)
-pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
+/// How many bytes of stdout and stderr together a command may deliver when
+/// its `RunStart` sets no limit: 10 MiB
+pub const DEFAULT_OUTPUT_LIMIT: usize = 10 * 1024 * 1024;
 
 /// Default buffer size for reading output (8 KB)
 pub const DEFAULT_BUFFER_SIZE: usize = 8 * 1024;
@@ -15,14 +17,19 @@ pub const DEFAULT_BUFFER_SIZE: usize = 8 * 1024;
 pub const GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 /// Configuration for the command executor.
+///
+/// Start from [`ExecutorConfig::new`] or `Default` and adjust it with the
+/// `with_*` methods.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ExecutorConfig {
-    /// Default timeout for commands that don't specify one
-    pub default_timeout: Duration,
+    /// How long a command may run when its `RunStart` sets no timeout
+    pub timeout: Duration,
 
-    /// Maximum bytes of stdout and stderr together to deliver. Output past it
-    /// is still read, so the command runs to completion, and then dropped.
-    pub max_output_bytes: usize,
+    /// Most bytes of stdout and stderr together to deliver when a `RunStart`
+    /// sets no limit. Output past it is still read, so the command runs to
+    /// completion, and then dropped.
+    pub output_limit: usize,
 
     /// Largest chunk read from a pipe at once, and so the largest payload of
     /// a single `RunStdout` or `RunStderr`
@@ -31,17 +38,17 @@ pub struct ExecutorConfig {
     /// Grace period before SIGKILL after SIGTERM
     pub grace_period: Duration,
 
-    /// Which of the executor's own environment variables a command sees.
-    /// Defaults to [`EnvironmentPolicy::Allowlist`] of
-    /// [`DEFAULT_ENVIRONMENT_ALLOWLIST`](super::DEFAULT_ENVIRONMENT_ALLOWLIST).
+    /// The environment a command is given beneath its request's own.
+    /// Defaults to the [`allowlist`](EnvironmentPolicy::allowlist) of
+    /// [`DEFAULT_ENVIRONMENT`](super::DEFAULT_ENVIRONMENT).
     pub environment: EnvironmentPolicy,
 }
 
 impl Default for ExecutorConfig {
     fn default() -> Self {
         Self {
-            default_timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+            timeout: DEFAULT_TIMEOUT,
+            output_limit: DEFAULT_OUTPUT_LIMIT,
             buffer_size: DEFAULT_BUFFER_SIZE,
             grace_period: GRACE_PERIOD,
             environment: EnvironmentPolicy::default(),
@@ -55,15 +62,16 @@ impl ExecutorConfig {
         Self::default()
     }
 
-    /// Set the default timeout
+    /// Set how long a command may run when its `RunStart` sets no timeout
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.default_timeout = timeout;
+        self.timeout = timeout;
         self
     }
 
-    /// Set the maximum output size
-    pub fn with_max_output(mut self, max_bytes: usize) -> Self {
-        self.max_output_bytes = max_bytes;
+    /// Set how many bytes of output a command may deliver when its
+    /// `RunStart` sets no limit
+    pub fn with_output_limit(mut self, output_limit: usize) -> Self {
+        self.output_limit = output_limit;
         self
     }
 
@@ -93,11 +101,9 @@ mod tests {
     #[test]
     fn test_executor_config_defaults() {
         let config = ExecutorConfig::default();
-        assert_eq!(
-            config.default_timeout,
-            Duration::from_millis(DEFAULT_TIMEOUT_MS)
-        );
-        assert_eq!(config.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES);
+        assert_eq!(config.timeout, DEFAULT_TIMEOUT);
+        assert_eq!(config.timeout, Duration::from_secs(300));
+        assert_eq!(config.output_limit, DEFAULT_OUTPUT_LIMIT);
         assert_eq!(config.buffer_size, DEFAULT_BUFFER_SIZE);
     }
 
@@ -105,11 +111,11 @@ mod tests {
     fn test_executor_config_builder() {
         let config = ExecutorConfig::new()
             .with_timeout(Duration::from_secs(60))
-            .with_max_output(1024)
+            .with_output_limit(1024)
             .with_buffer_size(512);
 
-        assert_eq!(config.default_timeout, Duration::from_secs(60));
-        assert_eq!(config.max_output_bytes, 1024);
+        assert_eq!(config.timeout, Duration::from_secs(60));
+        assert_eq!(config.output_limit, 1024);
         assert_eq!(config.buffer_size, 512);
     }
 }

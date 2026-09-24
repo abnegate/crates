@@ -24,9 +24,14 @@ pub enum ProtocolError {
     #[error("Failed to serialize JSON")]
     JsonSerialize(#[source] serde_json::Error),
 
-    /// Line exceeds maximum allowed length
-    #[error("Line too long: {length} bytes (max: {max})")]
-    LineTooLong { length: usize, max: usize },
+    /// A line ran past the codec's length limit
+    #[error("Line too long: {length} bytes (limit: {limit})")]
+    LineTooLong {
+        /// Bytes read without finding the end of the line
+        length: usize,
+        /// The longest line the codec accepts
+        limit: usize,
+    },
 
     /// I/O error during communication
     #[error("I/O error: {0}")]
@@ -85,7 +90,7 @@ mod tests {
     fn test_protocol_error_line_too_long() {
         let error = ProtocolError::LineTooLong {
             length: 2000,
-            max: 1000,
+            limit: 1000,
         };
         assert!(error.to_string().contains("2000"));
         assert!(error.to_string().contains("1000"));

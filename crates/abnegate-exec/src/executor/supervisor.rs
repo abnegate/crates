@@ -97,7 +97,7 @@ impl Supervisor {
                             job_id: self.job_id.clone(),
                             exit_code: status.code(),
                             signal: status.signal(),
-                            duration_ms: self.elapsed_milliseconds(),
+                            duration: self.started_at.elapsed(),
                         })
                         .await;
                     }
@@ -195,17 +195,16 @@ impl Supervisor {
         self.report(OutboundMessage::error(
             self.job_id.clone(),
             ErrorCode::Cancelled,
-            format!("Command cancelled after {}ms", self.elapsed_milliseconds()),
+            format!(
+                "Command cancelled after {}ms",
+                self.started_at.elapsed().as_millis()
+            ),
         ))
         .await;
     }
 
     async fn report(&self, message: OutboundMessage) {
         let _ = self.sender.send(message).await;
-    }
-
-    fn elapsed_milliseconds(&self) -> u64 {
-        u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 }
 

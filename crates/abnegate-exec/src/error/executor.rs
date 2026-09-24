@@ -1,4 +1,5 @@
 use std::io;
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -17,17 +18,22 @@ pub enum ExecutorError {
     #[error("Expected a RunStart message")]
     NotRunStart,
 
-    /// Command timed out
-    #[error("Command timed out after {0}ms")]
-    Timeout(u64),
+    /// Command timed out after running for the given time
+    #[error("Command timed out after {}ms", .0.as_millis())]
+    Timeout(Duration),
 
     /// Command was cancelled
     #[error("Command was cancelled")]
     Cancelled,
 
-    /// Output limit exceeded
-    #[error("Output limit exceeded: {written} bytes (max: {max})")]
-    OutputLimitExceeded { written: usize, max: usize },
+    /// Output went past the limit
+    #[error("Output limit exceeded: {written} bytes (limit: {limit})")]
+    OutputLimitExceeded {
+        /// Bytes of output the command produced
+        written: usize,
+        /// The most bytes it could deliver
+        limit: usize,
+    },
 
     /// Invalid workspace path
     #[error("Invalid workspace path: {0}")]
@@ -102,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_executor_error_timeout() {
-        let error = ExecutorError::Timeout(5000);
+        let error = ExecutorError::Timeout(Duration::from_secs(5));
         assert_eq!(error.to_error_code(), ErrorCode::Timeout);
         assert!(error.to_string().contains("5000ms"));
     }
@@ -118,7 +124,7 @@ mod tests {
     fn test_executor_error_output_limit_exceeded() {
         let error = ExecutorError::OutputLimitExceeded {
             written: 1000,
-            max: 500,
+            limit: 500,
         };
         assert_eq!(error.to_error_code(), ErrorCode::OutputLimitExceeded);
         assert!(error.to_string().contains("1000"));

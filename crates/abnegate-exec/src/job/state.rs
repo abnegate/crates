@@ -32,7 +32,12 @@ pub enum JobState {
     Cancelled { forced: bool, duration: Duration },
 
     /// Job timed out
-    TimedOut { timeout_ms: u64, duration: Duration },
+    TimedOut {
+        /// The limit the job ran past
+        timeout: Duration,
+        /// How long the job ran before it was stopped
+        duration: Duration,
+    },
 }
 
 impl JobState {
@@ -78,12 +83,9 @@ impl JobState {
         JobState::Cancelled { forced, duration }
     }
 
-    /// Transition to TimedOut state
-    pub fn timed_out(timeout_ms: u64, duration: Duration) -> Self {
-        JobState::TimedOut {
-            timeout_ms,
-            duration,
-        }
+    /// Transition to TimedOut state, after `timeout` was exceeded
+    pub fn timed_out(timeout: Duration, duration: Duration) -> Self {
+        JobState::TimedOut { timeout, duration }
     }
 
     /// Check if this is a terminal state
@@ -229,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_job_state_timed_out() {
-        let state = JobState::timed_out(30000, Duration::from_secs(30));
+        let state = JobState::timed_out(Duration::from_millis(30000), Duration::from_secs(30));
         assert!(state.is_terminal());
         assert!(!state.is_running());
         assert_eq!(state.duration(), Some(Duration::from_secs(30)));
@@ -295,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_is_terminal_timed_out() {
-        let state = JobState::timed_out(1000, Duration::from_secs(1));
+        let state = JobState::timed_out(Duration::from_millis(1000), Duration::from_secs(1));
         assert!(state.is_terminal());
     }
 
@@ -385,7 +387,7 @@ mod tests {
     #[test]
     fn test_duration_timed_out() {
         let duration = Duration::from_secs(30);
-        let state = JobState::timed_out(30000, duration);
+        let state = JobState::timed_out(Duration::from_millis(30000), duration);
         assert_eq!(state.duration(), Some(duration));
     }
 
@@ -440,7 +442,7 @@ mod tests {
 
     #[test]
     fn test_error_code_timed_out() {
-        let state = JobState::timed_out(1000, Duration::from_secs(1));
+        let state = JobState::timed_out(Duration::from_millis(1000), Duration::from_secs(1));
         assert_eq!(state.error_code(), Some(ErrorCode::Timeout));
     }
 
@@ -480,7 +482,7 @@ mod tests {
         assert!(state.is_terminal());
         assert_eq!(state.error_code(), Some(ErrorCode::Cancelled));
 
-        let state = JobState::timed_out(5000, Duration::from_secs(5));
+        let state = JobState::timed_out(Duration::from_millis(5000), Duration::from_secs(5));
         assert!(state.is_terminal());
         assert_eq!(state.error_code(), Some(ErrorCode::Timeout));
 

@@ -8,19 +8,32 @@ mod capability;
 mod codec;
 mod confinement_request;
 mod error_code;
+#[cfg(test)]
+mod golden;
+mod hello;
 mod inbound_message;
 mod log_level;
+mod milliseconds;
 mod outbound_message;
+mod ping;
 mod process_tree_request;
+mod run_cancel;
+mod run_start;
+mod run_stdin;
 
 pub use capability::Capability;
 pub use codec::NdjsonCodec;
 pub use confinement_request::ConfinementRequest;
 pub use error_code::ErrorCode;
+pub use hello::Hello;
 pub use inbound_message::InboundMessage;
 pub use log_level::LogLevel;
 pub use outbound_message::OutboundMessage;
+pub use ping::Ping;
 pub use process_tree_request::ProcessTreeRequest;
+pub use run_cancel::RunCancel;
+pub use run_start::RunStart;
+pub use run_stdin::RunStdin;
 /// Protocol version for compatibility checking.
 ///
 /// Confinement was added without a bump: `RunStart.confinement` defaults to

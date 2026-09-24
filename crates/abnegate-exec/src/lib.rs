@@ -27,28 +27,23 @@
 //! separate process driven by whatever started it.
 //!
 //! ```
-//! use std::collections::HashMap;
+//! use std::time::Duration;
 //!
 //! use abnegate_exec::CommandExecutor;
 //! use abnegate_exec::InboundMessage;
 //! use abnegate_exec::OutboundMessage;
+//! use abnegate_exec::RunStart;
 //! use tokio::sync::mpsc;
 //!
 //! # async fn run() -> Result<(), abnegate_exec::ExecutorError> {
 //! let (sender, mut receiver) = mpsc::channel(64);
 //! CommandExecutor::new()
 //!     .spawn(
-//!         &InboundMessage::RunStart {
-//!             job_id: "greet".to_string(),
-//!             workspace: std::env::temp_dir(),
-//!             command: "echo".to_string(),
-//!             args: vec!["hello".to_string()],
-//!             env: HashMap::new(),
-//!             working_dir: None,
-//!             timeout_ms: Some(5_000),
-//!             max_output_bytes: None,
-//!             confinement: None,
-//!         },
+//!         &InboundMessage::RunStart(
+//!             RunStart::new("greet", std::env::temp_dir(), "echo")
+//!                 .with_arguments(["hello"])
+//!                 .with_timeout(Duration::from_secs(5)),
+//!         ),
 //!         sender,
 //!     )
 //!     .await?;
@@ -66,18 +61,21 @@
 //! # Environment
 //!
 //! A command never inherits the executor's whole environment by default: it
-//! sees only the names in [`DEFAULT_ENVIRONMENT_ALLOWLIST`], with the
-//! executor's values, and the `RunStart.env` map on top. An executor that
-//! holds nothing a command must not read can opt into
-//! [`EnvironmentPolicy::Inherit`] through [`ExecutorConfig::environment`].
+//! sees only the names in [`DEFAULT_ENVIRONMENT`], with the executor's values,
+//! and [`RunStart::environment`] on top. No proxy variable is among them; a
+//! command reaches a proxy through [`Proxy`], or through a name the executor
+//! [allows](EnvironmentPolicy::allow). [`ExecutorConfig::environment`] takes
+//! any [`EnvironmentPolicy`]: more names, variables of its own, or, for an
+//! executor that holds nothing a command must not read,
+//! [`EnvironmentPolicy::inherit`].
 //!
 //! # Proxy routing
 //!
-//! [`Proxy::from_env`] reads [`PROXY_URL_ENV`] and, when it is set, overlays the
-//! standard proxy variables onto every unconfined command after its own
-//! environment, so a tool cannot accidentally route around it. Only loopback
-//! bypasses the proxy unless [`PROXY_BYPASS_ENV`] names other hosts. Confined
-//! commands reach no network at all and are unaffected.
+//! [`Proxy::from_environment`] reads [`PROXY_URL_VARIABLE`] and, when it is
+//! set, overlays the standard proxy variables onto every unconfined command
+//! after its own environment, so a tool cannot accidentally route around it.
+//! Only loopback bypasses the proxy unless [`PROXY_BYPASS_VARIABLE`] names
+//! other hosts. Confined commands reach no network at all and are unaffected.
 //!
 //! # Platform support
 //!
@@ -100,6 +98,7 @@ pub mod job;
 pub mod protocol;
 pub mod proxy;
 
+pub use abnegate_secret::SecretValue;
 pub use error::DaemonError;
 pub use error::ExecutorError;
 pub use error::JobError;
@@ -109,7 +108,7 @@ pub use executor::CommandExecutor;
 pub use executor::Confinement;
 pub use executor::ConfinementError;
 pub use executor::ConfinementMode;
-pub use executor::DEFAULT_ENVIRONMENT_ALLOWLIST;
+pub use executor::DEFAULT_ENVIRONMENT;
 pub use executor::EnvironmentPolicy;
 pub use executor::ExecutorConfig;
 pub use executor::HOST_BACKEND;
@@ -120,13 +119,22 @@ pub use job::JobState;
 pub use protocol::Capability;
 pub use protocol::ConfinementRequest;
 pub use protocol::ErrorCode;
+pub use protocol::Hello;
 pub use protocol::InboundMessage;
 pub use protocol::LogLevel;
 pub use protocol::NdjsonCodec;
 pub use protocol::OutboundMessage;
 pub use protocol::PROTOCOL_VERSION;
+pub use protocol::Ping;
 pub use protocol::ProcessTreeRequest;
+pub use protocol::RunCancel;
+pub use protocol::RunStart;
+pub use protocol::RunStdin;
 pub use proxy::DEFAULT_BYPASS;
-pub use proxy::PROXY_BYPASS_ENV;
-pub use proxy::PROXY_URL_ENV;
+pub use proxy::PROXY_BYPASS_VARIABLE;
+pub use proxy::PROXY_URL_VARIABLE;
 pub use proxy::Proxy;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

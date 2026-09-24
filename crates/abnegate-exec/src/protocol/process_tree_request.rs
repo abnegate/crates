@@ -12,8 +12,16 @@ use serde::Serialize;
 /// cannot hold that bound does not advertise `confinement_process_tree` and
 /// refuses the job with `confinement_unavailable`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ProcessTreeRequest {
     /// Directories whose executables the tree may run
     #[serde(default)]
     pub execute_roots: Vec<PathBuf>,
+}
+
+impl ProcessTreeRequest {
+    /// A tree that may run the executables under `execute_roots`.
+    pub fn new(execute_roots: Vec<PathBuf>) -> Self {
+        Self { execute_roots }
+    }
 }

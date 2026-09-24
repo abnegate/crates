@@ -3,7 +3,6 @@
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 use std::time::Instant;
 
 use tokio::io::AsyncWriteExt;
@@ -16,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::ExecutorError;
 use crate::protocol::InboundMessage;
 use crate::protocol::OutboundMessage;
+use crate::protocol::RunStart;
 use crate::proxy::Proxy;
 
 use super::config::ExecutorConfig;
@@ -79,17 +79,17 @@ impl CommandExecutor {
         sender: mpsc::Sender<OutboundMessage>,
         cancellation: CancellationToken,
     ) -> Result<JobHandle, ExecutorError> {
-        let InboundMessage::RunStart {
+        let InboundMessage::RunStart(RunStart {
             job_id,
             workspace,
             command,
-            args,
-            env,
-            timeout_ms,
-            max_output_bytes,
-            working_dir,
+            arguments,
+            environment,
+            timeout,
+            output_limit,
+            working_directory,
             confinement,
-        } = request
+        }) = request
         else {
             return Err(ExecutorError::NotRunStart);
         };
@@ -108,7 +108,7 @@ impl CommandExecutor {
             )));
         }
 
-        let working_directory = working_dir.as_ref().unwrap_or(workspace);
+        let working_directory = working_directory.as_ref().unwrap_or(workspace);
         let configure = |process: &mut Command| {
             process
                 .current_dir(working_directory)
@@ -120,21 +120,22 @@ impl CommandExecutor {
 
         // A job that asked to be confined never runs unconfined: an unproven
         // sandbox fails the spawn instead of falling back.
-        let inherited = self.config.environment.inherited();
         let spawned = match confinement {
             Some(request) => {
                 Confinement::probe(request.mode()).await?;
-                Confinement::new(command, args.clone(), working_directory)
+                Confinement::new(command, arguments.clone(), working_directory)
                     .with_roots(request)
-                    .with_environment(env.clone())
-                    .with_inherited_environment(inherited)
+                    .with_environment(environment.clone())
+                    .with_inherited_environment(self.config.environment.inherited())
                     .host_invocation()?
                     .spawn(configure)
             }
             None => {
                 let mut process = Command::new(command);
-                process.args(args).env_clear().envs(inherited).envs(env);
-                Proxy::from_env().apply(&mut process);
+                process.args(arguments);
+                self.config.environment.apply(&mut process);
+                process.envs(environment);
+                Proxy::from_environment().apply(&mut process);
                 configure(&mut process);
                 session::lead(&mut process, None);
                 process.spawn()
@@ -165,7 +166,7 @@ impl CommandExecutor {
 
         let (started, gate) = watch::channel(false);
         let limiter = Arc::new(Mutex::new(OutputLimiter::new(
-            max_output_bytes.unwrap_or(self.config.max_output_bytes),
+            output_limit.unwrap_or(self.config.output_limit),
         )));
         let stream = |kind: OutputKind| OutputStream {
             job_id: job_id.clone(),
@@ -188,9 +189,7 @@ impl CommandExecutor {
             sender: sender.clone(),
             process_group: process_group.clone(),
             started_at,
-            timeout: timeout_ms
-                .map(Duration::from_millis)
-                .unwrap_or(self.config.default_timeout),
+            timeout: timeout.unwrap_or(self.config.timeout),
             grace_period: self.config.grace_period,
             started: gate,
         }
@@ -225,6 +224,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use base64::Engine;
     use base64::prelude::BASE64_STANDARD;
@@ -232,15 +232,16 @@ mod tests {
     use crate::executor::ConfinementMode;
     use crate::executor::EnvironmentPolicy;
     use crate::executor::GRACE_PERIOD;
+    use crate::executor::child;
     use crate::executor::sandbox;
     use crate::executor::sandbox::REQUIRE_CONFINEMENT;
     use crate::protocol::ConfinementRequest;
     use crate::protocol::ErrorCode;
     use crate::protocol::LogLevel;
+    use crate::protocol::Ping;
 
     use super::*;
 
-    const CHILD: &str = "ABNEGATE_EXEC_TEST_CHILD";
     const RUN_LIMIT: Duration = Duration::from_secs(10);
 
     /// Everything one run reported, in the order it arrived.
@@ -342,120 +343,38 @@ mod tests {
             .unwrap()
     }
 
-    async fn run(executor: &CommandExecutor, request: &InboundMessage) -> Run {
+    async fn run(executor: &CommandExecutor, request: RunStart) -> Run {
         let (sender, receiver) = mpsc::channel(100);
-        executor.spawn(request, sender).await.unwrap();
+        executor
+            .spawn(&InboundMessage::RunStart(request), sender)
+            .await
+            .unwrap();
         finish(receiver).await
     }
 
-    fn shell(job_id: &str, script: &str) -> InboundMessage {
-        InboundMessage::RunStart {
-            job_id: job_id.to_string(),
-            workspace: PathBuf::from("/tmp"),
-            command: "sh".to_string(),
-            args: vec!["-c".to_string(), script.to_string()],
-            env: HashMap::new(),
-            timeout_ms: Some(10_000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: None,
-        }
+    fn shell(job_id: &str, script: &str) -> RunStart {
+        RunStart::new(job_id, "/tmp", "sh")
+            .with_arguments(["-c", script])
+            .with_timeout(Duration::from_secs(10))
     }
 
     /// Run `command` confined to `root`, which it may read and write.
-    fn confined(job_id: &str, root: &Path, command: &str) -> InboundMessage {
-        InboundMessage::RunStart {
-            job_id: job_id.to_string(),
-            workspace: root.to_path_buf(),
-            command: command.to_string(),
-            args: vec![],
-            env: HashMap::new(),
-            timeout_ms: Some(15_000),
-            max_output_bytes: None,
-            working_dir: None,
-            confinement: Some(Box::new(ConfinementRequest {
-                read_roots: vec![root.to_path_buf()],
-                write_roots: vec![root.to_path_buf()],
-                process_tree: None,
-            })),
-        }
+    fn confined(job_id: &str, root: &Path, command: &str) -> RunStart {
+        RunStart::new(job_id, root, command)
+            .with_timeout(Duration::from_secs(15))
+            .with_confinement(ConfinementRequest::new(
+                vec![root.to_path_buf()],
+                vec![root.to_path_buf()],
+            ))
     }
 
-    fn limited(request: InboundMessage, limit: usize) -> InboundMessage {
-        let InboundMessage::RunStart {
-            job_id,
-            workspace,
-            command,
-            args,
-            env,
-            timeout_ms,
-            working_dir,
-            confinement,
-            ..
-        } = request
-        else {
-            unreachable!("only a RunStart carries an output limit");
-        };
-        InboundMessage::RunStart {
-            job_id,
-            workspace,
-            command,
-            args,
-            env,
-            timeout_ms,
-            max_output_bytes: Some(limit),
-            working_dir,
-            confinement,
-        }
+    fn environment_listing(environment: HashMap<String, String>) -> RunStart {
+        RunStart::new("environment", std::env::temp_dir(), "env")
+            .with_environment(environment)
+            .with_timeout(Duration::from_secs(5))
     }
 
-    /// Re-run the test `name` in a child test process whose environment is
-    /// `PATH` and [`REQUIRE_CONFINEMENT`] plus `environment`, so a test can
-    /// shape the executor's own environment, or start with no sandbox verdict
-    /// cached, without touching this process. Returns whether this call was
-    /// the parent, which has nothing left to do once the child passes.
-    async fn delegated_to_child(name: &str, environment: &[(&str, &str)]) -> bool {
-        if std::env::var(CHILD).as_deref() == Ok(name) {
-            return false;
-        }
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", name, "--nocapture"])
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env(CHILD, name)
-            .envs(std::env::var_os(REQUIRE_CONFINEMENT).map(|value| (REQUIRE_CONFINEMENT, value)))
-            .envs(environment.iter().copied())
-            .output()
-            .await
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success(),
-            "{stdout}\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            stdout.contains("1 passed"),
-            "the child ran no test, so it proved nothing\n{stdout}"
-        );
-        true
-    }
-
-    fn environment_listing(environment: HashMap<String, String>) -> InboundMessage {
-        InboundMessage::RunStart {
-            job_id: "environment".to_string(),
-            workspace: std::env::temp_dir(),
-            command: "env".to_string(),
-            args: vec![],
-            env: environment,
-            working_dir: None,
-            confinement: None,
-            timeout_ms: Some(5000),
-            max_output_bytes: None,
-        }
-    }
-
-    async fn environment_of(executor: &CommandExecutor, request: &InboundMessage) -> String {
+    async fn environment_of(executor: &CommandExecutor, request: RunStart) -> String {
         let run = run(executor, request).await;
         assert_eq!(run.exit(), Some((Some(0), None)));
         String::from_utf8(run.stdout()).unwrap()
@@ -467,15 +386,12 @@ mod tests {
             "executor::command::tests::the_default_policy_withholds_the_executor_environment";
         const MARKER: &str = "ABNEGATE_EXEC_TEST_MASTER_KEY";
         const VALUE: &str = "hunter2";
-        if delegated_to_child(NAME, &[(MARKER, VALUE), ("TERM", "xterm")]).await {
+        if child::delegated(NAME, &[(MARKER, VALUE), ("TERM", "xterm")]).await {
             return;
         }
 
-        let output = environment_of(
-            &CommandExecutor::new(),
-            &environment_listing(HashMap::new()),
-        )
-        .await;
+        let output =
+            environment_of(&CommandExecutor::new(), environment_listing(HashMap::new())).await;
 
         assert!(!output.contains(MARKER), "{output}");
         assert!(!output.contains(VALUE), "{output}");
@@ -492,16 +408,16 @@ mod tests {
             "executor::command::tests::inherit_passes_the_executor_environment_beneath_the_request";
         const MARKER: &str = "ABNEGATE_EXEC_TEST_MASTER_KEY";
         const SHADOWED: &str = "ABNEGATE_EXEC_TEST_SHADOWED";
-        if delegated_to_child(NAME, &[(MARKER, "hunter2"), (SHADOWED, "executor")]).await {
+        if child::delegated(NAME, &[(MARKER, "hunter2"), (SHADOWED, "executor")]).await {
             return;
         }
         let executor = CommandExecutor::with_config(
-            ExecutorConfig::default().with_environment(EnvironmentPolicy::Inherit),
+            ExecutorConfig::default().with_environment(EnvironmentPolicy::inherit()),
         );
 
         let output = environment_of(
             &executor,
-            &environment_listing(HashMap::from([(
+            environment_listing(HashMap::from([(
                 SHADOWED.to_string(),
                 "request".to_string(),
             )])),
@@ -522,11 +438,81 @@ mod tests {
         );
     }
 
+    /// A proxy URL can carry the proxy's credentials, and a command reaches
+    /// the proxy through [`Proxy`] without them. The executor's variables are
+    /// set on the child test process, not on this one.
+    #[tokio::test]
+    async fn the_default_policy_passes_on_no_proxy_variable() {
+        const NAME: &str =
+            "executor::command::tests::the_default_policy_passes_on_no_proxy_variable";
+        const PROXIES: [&str; 8] = [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ];
+        if child::delegated(
+            NAME,
+            &PROXIES.map(|name| (name, "http://user:hunter2@proxy:3128")),
+        )
+        .await
+        {
+            return;
+        }
+        for name in PROXIES {
+            assert!(std::env::var_os(name).is_some(), "{name} is not set here");
+        }
+
+        let output =
+            environment_of(&CommandExecutor::new(), environment_listing(HashMap::new())).await;
+
+        let leaked: Vec<&str> = output
+            .lines()
+            .filter(|line| {
+                line.split_once('=')
+                    .is_some_and(|(name, _)| name.to_ascii_uppercase().ends_with("_PROXY"))
+            })
+            .collect();
+        assert!(leaked.is_empty(), "{leaked:?}");
+        assert!(!output.contains("hunter2"), "{output}");
+        assert!(
+            output.lines().any(|line| line.starts_with("PATH=")),
+            "{output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_policy_variable_reaches_the_command_beneath_the_request() {
+        let executor = CommandExecutor::with_config(
+            ExecutorConfig::default().with_environment(
+                EnvironmentPolicy::empty()
+                    .with("LAYERED", "policy")
+                    .with("SHADOWED", "policy"),
+            ),
+        );
+
+        let output = environment_of(
+            &executor,
+            RunStart::new("environment", std::env::temp_dir(), "/usr/bin/env")
+                .with_environment([("SHADOWED", "request")])
+                .with_timeout(Duration::from_secs(5)),
+        )
+        .await;
+
+        let mut lines: Vec<&str> = output.lines().collect();
+        lines.sort_unstable();
+        assert_eq!(lines, ["LAYERED=policy", "SHADOWED=request"]);
+    }
+
     #[tokio::test]
     async fn a_confined_run_layers_the_request_over_the_sandbox_over_the_policy() {
         const NAME: &str = "executor::command::tests::a_confined_run_layers_the_request_over_the_sandbox_over_the_policy";
         const MARKER: &str = "ABNEGATE_EXEC_TEST_MASTER_KEY";
-        if delegated_to_child(
+        if child::delegated(
             NAME,
             &[
                 (MARKER, "hunter2"),
@@ -543,12 +529,10 @@ mod tests {
         }
         let workspace = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(workspace.path()).unwrap();
-        let mut request = confined("confined-environment", &root, "/usr/bin/env");
-        if let InboundMessage::RunStart { env, .. } = &mut request {
-            env.insert("LAYERED".to_string(), "request".to_string());
-        }
+        let request = confined("confined-environment", &root, "/usr/bin/env")
+            .with_environment([("LAYERED", "request")]);
 
-        let output = environment_of(&CommandExecutor::new(), &request).await;
+        let output = environment_of(&CommandExecutor::new(), request).await;
         let lines: Vec<&str> = output.lines().collect();
 
         assert!(lines.contains(&"LAYERED=request"), "{output}");
@@ -566,7 +550,7 @@ mod tests {
     #[tokio::test]
     async fn the_first_confined_job_is_not_charged_for_proving_the_sandbox() {
         const NAME: &str = "executor::command::tests::the_first_confined_job_is_not_charged_for_proving_the_sandbox";
-        if delegated_to_child(NAME, &[]).await {
+        if child::delegated(NAME, &[]).await {
             return;
         }
         let workspace = tempfile::tempdir().unwrap();
@@ -575,7 +559,10 @@ mod tests {
         let before = Instant::now();
 
         let spawned = CommandExecutor::new()
-            .spawn(&confined("first-confined", &root, "/usr/bin/true"), sender)
+            .spawn(
+                &InboundMessage::RunStart(confined("first-confined", &root, "/usr/bin/true")),
+                sender,
+            )
             .await;
         let spawning = before.elapsed();
 
@@ -603,9 +590,9 @@ mod tests {
     #[tokio::test]
     async fn proxy_overrides_request_environment() {
         const NAME: &str = "executor::command::tests::proxy_overrides_request_environment";
-        if delegated_to_child(
+        if child::delegated(
             NAME,
-            &[(crate::proxy::PROXY_URL_ENV, "http://127.0.0.1:28888")],
+            &[(crate::proxy::PROXY_URL_VARIABLE, "http://127.0.0.1:28888")],
         )
         .await
         {
@@ -614,12 +601,12 @@ mod tests {
 
         let output = environment_of(
             &CommandExecutor::new(),
-            &environment_listing(HashMap::from([
+            environment_listing(HashMap::from([
                 ("HTTPS_PROXY".to_string(), "http://wrong:8888".to_string()),
                 ("http_proxy".to_string(), "http://wrong:8888".to_string()),
                 ("NO_PROXY".to_string(), "*".to_string()),
                 ("no_proxy".to_string(), "*".to_string()),
-                (crate::proxy::PROXY_URL_ENV.to_string(), String::new()),
+                (crate::proxy::PROXY_URL_VARIABLE.to_string(), String::new()),
             ])),
         )
         .await;
@@ -651,7 +638,7 @@ mod tests {
     async fn a_non_utf8_byte_does_not_cut_the_stream() {
         let run = run(
             &CommandExecutor::new(),
-            &shell("non-utf8", r"printf '\377'; seq 1 2000"),
+            shell("non-utf8", r"printf '\377'; seq 1 2000"),
         )
         .await;
 
@@ -669,7 +656,7 @@ mod tests {
     async fn truncating_inside_a_character_does_not_panic() {
         let run = run(
             &CommandExecutor::new(),
-            &limited(shell("split-character", r"printf 'a\303\251\n'"), 2),
+            shell("split-character", r"printf 'a\303\251\n'").with_output_limit(2),
         )
         .await;
 
@@ -686,7 +673,7 @@ mod tests {
     async fn output_past_the_limit_is_drained_not_severed() {
         let run = run(
             &CommandExecutor::new(),
-            &limited(shell("drained", "seq 1 200000"), 100),
+            shell("drained", "seq 1 200000").with_output_limit(100),
         )
         .await;
 
@@ -702,10 +689,7 @@ mod tests {
     async fn stdout_and_stderr_share_one_limit() {
         let run = run(
             &CommandExecutor::new(),
-            &limited(
-                shell("shared-limit", "printf %0100d 0; printf %0100d 0 >&2"),
-                100,
-            ),
+            shell("shared-limit", "printf %0100d 0; printf %0100d 0 >&2").with_output_limit(100),
         )
         .await;
 
@@ -718,7 +702,10 @@ mod tests {
         let executor = CommandExecutor::new();
         let (sender, mut receiver) = mpsc::channel(100);
         let handle = executor
-            .spawn(&shell("partial-line", "printf prompt; sleep 30"), sender)
+            .spawn(
+                &shell("partial-line", "printf prompt; sleep 30").into(),
+                sender,
+            )
             .await
             .unwrap();
 
@@ -744,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_signalled_child_reports_its_signal() {
-        let run = run(&CommandExecutor::new(), &shell("signalled", "kill -9 $$")).await;
+        let run = run(&CommandExecutor::new(), shell("signalled", "kill -9 $$")).await;
 
         assert_eq!(run.exit(), Some((None, Some(9))));
     }
@@ -758,7 +745,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let handle = executor
             .spawn_with_cancellation(
-                &shell("cancelled", "sleep 30"),
+                &shell("cancelled", "sleep 30").into(),
                 sender,
                 cancellation.clone(),
             )
@@ -785,11 +772,9 @@ mod tests {
             ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
         );
         let (sender, receiver) = mpsc::channel(100);
-        let mut request = shell("timeout", "sleep 30 & echo $!; sleep 30");
-        if let InboundMessage::RunStart { timeout_ms, .. } = &mut request {
-            *timeout_ms = Some(200);
-        }
-        let handle = executor.spawn(&request, sender).await.unwrap();
+        let request = shell("timeout", "sleep 30 & echo $!; sleep 30")
+            .with_timeout(Duration::from_millis(200));
+        let handle = executor.spawn(&request.into(), sender).await.unwrap();
 
         let run = finish(receiver).await;
 
@@ -806,12 +791,9 @@ mod tests {
             ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
         );
         let (sender, _receiver) = mpsc::channel(1);
-        let mut request = shell("unread", "sleep 30");
-        if let InboundMessage::RunStart { timeout_ms, .. } = &mut request {
-            *timeout_ms = Some(200);
-        }
+        let request = shell("unread", "sleep 30").with_timeout(Duration::from_millis(200));
 
-        let handle = executor.spawn(&request, sender).await.unwrap();
+        let handle = executor.spawn(&request.into(), sender).await.unwrap();
 
         assert!(
             gone(handle.pid).await,
@@ -827,10 +809,8 @@ mod tests {
         let executor = CommandExecutor::with_config(
             ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
         );
-        let mut timed_out = shell("released-timeout", "sleep 30");
-        if let InboundMessage::RunStart { timeout_ms, .. } = &mut timed_out {
-            *timeout_ms = Some(200);
-        }
+        let timed_out =
+            shell("released-timeout", "sleep 30").with_timeout(Duration::from_millis(200));
         let endings = [
             (shell("released-exit", "exit 0"), false),
             (timed_out, false),
@@ -839,7 +819,7 @@ mod tests {
 
         for (request, cancelled) in endings {
             let (sender, receiver) = mpsc::channel(100);
-            let handle = executor.spawn(&request, sender).await.unwrap();
+            let handle = executor.spawn(&request.into(), sender).await.unwrap();
             if cancelled {
                 handle.cancel();
             }
@@ -857,7 +837,7 @@ mod tests {
     async fn a_child_that_exits_takes_its_group_with_it() {
         let run = run(
             &CommandExecutor::new(),
-            &shell("orphan", "sleep 60 > /dev/null 2>&1 & echo $!; exit 0"),
+            shell("orphan", "sleep 60 > /dev/null 2>&1 & echo $!; exit 0"),
         )
         .await;
 
@@ -874,7 +854,7 @@ mod tests {
 
         let run = run(
             &CommandExecutor::new(),
-            &shell("holder", "sleep 60 & echo $!; exit 0"),
+            shell("holder", "sleep 60 & echo $!; exit 0"),
         )
         .await;
 
@@ -894,7 +874,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         executor
             .spawn_with_cancellation(
-                &shell("late-cancel", "sleep 60 & echo $!; exit 0"),
+                &shell("late-cancel", "sleep 60 & echo $!; exit 0").into(),
                 sender,
                 cancellation.clone(),
             )
@@ -922,7 +902,7 @@ mod tests {
     async fn a_zero_output_limit_still_warns() {
         let run = run(
             &CommandExecutor::new(),
-            &limited(shell("silenced", "echo hello"), 0),
+            shell("silenced", "echo hello").with_output_limit(0),
         )
         .await;
 
@@ -937,24 +917,24 @@ mod tests {
     #[test]
     fn test_executor_new() {
         let executor = CommandExecutor::new();
-        assert_eq!(executor.config().default_timeout, Duration::from_secs(300));
+        assert_eq!(executor.config().timeout, Duration::from_secs(300));
     }
 
     #[test]
     fn test_executor_with_config() {
         let config = ExecutorConfig::default()
             .with_timeout(Duration::from_secs(60))
-            .with_max_output(1024);
+            .with_output_limit(1024);
         let executor = CommandExecutor::with_config(config);
 
-        assert_eq!(executor.config().default_timeout, Duration::from_secs(60));
-        assert_eq!(executor.config().max_output_bytes, 1024);
+        assert_eq!(executor.config().timeout, Duration::from_secs(60));
+        assert_eq!(executor.config().output_limit, 1024);
     }
 
     #[test]
     fn test_executor_default() {
         let executor: CommandExecutor = Default::default();
-        assert_eq!(executor.config().default_timeout, Duration::from_secs(300));
+        assert_eq!(executor.config().timeout, Duration::from_secs(300));
     }
 
     #[test]
@@ -971,7 +951,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel(100);
 
         let handle = executor
-            .spawn(&shell("cancel-test", "sleep 10"), sender)
+            .spawn(&shell("cancel-test", "sleep 10").into(), sender)
             .await
             .unwrap();
         assert!(!handle.is_cancelled());
@@ -988,7 +968,7 @@ mod tests {
         let (sender, _receiver) = mpsc::channel(100);
 
         let handle = executor
-            .spawn(&shell("elapsed-test", "echo test"), sender)
+            .spawn(&shell("elapsed-test", "echo test").into(), sender)
             .await
             .unwrap();
 
@@ -1003,7 +983,7 @@ mod tests {
 
         let run = run(
             &CommandExecutor::new(),
-            &shell("duration-test", &format!("sleep {}", SLEPT.as_secs_f64())),
+            shell("duration-test", &format!("sleep {}", SLEPT.as_secs_f64())),
         )
         .await;
 
@@ -1011,14 +991,13 @@ mod tests {
             .messages
             .iter()
             .find_map(|message| match message {
-                OutboundMessage::RunExit { duration_ms, .. } => Some(u128::from(*duration_ms)),
+                OutboundMessage::RunExit { duration, .. } => Some(*duration),
                 _ => None,
             })
             .expect("the run reports how it ended");
         assert!(
-            reported >= SLEPT.as_millis(),
-            "a run that slept {}ms is reported as {reported}ms",
-            SLEPT.as_millis()
+            reported >= SLEPT,
+            "a run that slept {SLEPT:?} is reported as {reported:?}"
         );
     }
 
@@ -1048,8 +1027,8 @@ mod tests {
         let drain = tokio::spawn(async move {
             tokio::time::sleep(STALL).await;
             while let Some(message) = receiver.recv().await {
-                if let OutboundMessage::RunExit { duration_ms, .. } = message {
-                    return Some(u128::from(duration_ms));
+                if let OutboundMessage::RunExit { duration, .. } = message {
+                    return Some(duration);
                 }
             }
             None
@@ -1060,7 +1039,8 @@ mod tests {
                 &shell(
                     "stalled-consumer-test",
                     &format!("sleep {}", SLEPT.as_secs_f64()),
-                ),
+                )
+                .into(),
                 sender,
             )
             .await
@@ -1068,15 +1048,14 @@ mod tests {
         let reported = drain.await.unwrap().expect("the run reports how it ended");
 
         assert!(
-            reported >= SLEPT.as_millis(),
-            "a run that slept {}ms is reported as {reported}ms",
-            SLEPT.as_millis()
+            reported >= SLEPT,
+            "a run that slept {SLEPT:?} is reported as {reported:?}"
         );
     }
 
     #[tokio::test]
     async fn test_spawn_echo() {
-        let run = run(&CommandExecutor::new(), &shell("test-1", "echo hello")).await;
+        let run = run(&CommandExecutor::new(), shell("test-1", "echo hello")).await;
 
         assert!(matches!(
             run.messages.first(),
@@ -1087,13 +1066,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_spawn_with_working_dir() {
-        let mut request = shell("workdir-test", "pwd");
-        if let InboundMessage::RunStart { working_dir, .. } = &mut request {
-            *working_dir = Some(PathBuf::from("/tmp"));
-        }
+    async fn test_spawn_with_working_directory() {
+        let request = shell("workdir-test", "pwd").with_working_directory("/tmp");
 
-        let run = run(&CommandExecutor::new(), &request).await;
+        let run = run(&CommandExecutor::new(), request).await;
 
         let output = String::from_utf8(run.stdout()).unwrap();
         assert!(output.contains("/tmp") || output.contains("/private/tmp"));
@@ -1101,12 +1077,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_with_env() {
-        let mut request = shell("env-test", "echo $MY_VAR");
-        if let InboundMessage::RunStart { env, .. } = &mut request {
-            env.insert("MY_VAR".to_string(), "my_value".to_string());
-        }
+        let request = shell("env-test", "echo $MY_VAR").with_environment([("MY_VAR", "my_value")]);
 
-        let run = run(&CommandExecutor::new(), &request).await;
+        let run = run(&CommandExecutor::new(), request).await;
 
         assert_eq!(run.stdout(), b"my_value\n");
     }
@@ -1115,7 +1088,7 @@ mod tests {
     async fn test_spawn_stderr_output() {
         let run = run(
             &CommandExecutor::new(),
-            &shell("stderr-test", "echo error >&2"),
+            shell("stderr-test", "echo error >&2"),
         )
         .await;
 
@@ -1131,11 +1104,9 @@ mod tests {
         let executor = CommandExecutor::new();
         let (sender, _receiver) = mpsc::channel(100);
         let mut request = shell("test-2", "true");
-        if let InboundMessage::RunStart { workspace, .. } = &mut request {
-            *workspace = PathBuf::from("/nonexistent/path");
-        }
+        request.workspace = PathBuf::from("/nonexistent/path");
 
-        match executor.spawn(&request, sender).await {
+        match executor.spawn(&request.into(), sender).await {
             Err(ExecutorError::InvalidWorkspace(message)) => {
                 assert!(message.contains("does not exist"));
             }
@@ -1148,11 +1119,9 @@ mod tests {
         let executor = CommandExecutor::new();
         let (sender, _receiver) = mpsc::channel(100);
         let mut request = shell("file-workspace-test", "true");
-        if let InboundMessage::RunStart { workspace, .. } = &mut request {
-            *workspace = PathBuf::from("/etc/passwd");
-        }
+        request.workspace = PathBuf::from("/etc/passwd");
 
-        match executor.spawn(&request, sender).await {
+        match executor.spawn(&request.into(), sender).await {
             Err(ExecutorError::InvalidWorkspace(message)) => {
                 assert!(message.contains("not a directory"));
             }
@@ -1166,12 +1135,7 @@ mod tests {
         let (sender, _receiver) = mpsc::channel(100);
 
         let result = executor
-            .spawn(
-                &InboundMessage::Ping {
-                    id: "1".to_string(),
-                },
-                sender,
-            )
+            .spawn(&InboundMessage::Ping(Ping::new("1")), sender)
             .await;
 
         match result {
@@ -1184,7 +1148,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_non_zero_exit() {
-        let run = run(&CommandExecutor::new(), &shell("nonzero-test", "exit 42")).await;
+        let run = run(&CommandExecutor::new(), shell("nonzero-test", "exit 42")).await;
 
         assert_eq!(run.exit(), Some((Some(42), None)));
     }
@@ -1194,11 +1158,9 @@ mod tests {
         let executor = CommandExecutor::new();
         let (sender, _receiver) = mpsc::channel(100);
         let mut request = shell("invalid-command-test", "");
-        if let InboundMessage::RunStart { command, .. } = &mut request {
-            *command = "/nonexistent/binary/that/doesnt/exist".to_string();
-        }
+        request.command = "/nonexistent/binary/that/doesnt/exist".to_string();
 
-        match executor.spawn(&request, sender).await {
+        match executor.spawn(&request.into(), sender).await {
             Err(ExecutorError::SpawnFailed(_)) => {}
             other => panic!("Wrong result: {other:?}"),
         }
@@ -1208,10 +1170,8 @@ mod tests {
     async fn test_spawn_with_custom_output_limit() {
         let run = run(
             &CommandExecutor::new(),
-            &limited(
-                shell("limit-test", "for i in $(seq 1 100); do echo line$i; done"),
-                100,
-            ),
+            shell("limit-test", "for i in $(seq 1 100); do echo line$i; done")
+                .with_output_limit(100),
         )
         .await;
 

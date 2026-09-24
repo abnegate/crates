@@ -4,8 +4,8 @@ use super::admission::Admission;
 /// its streams.
 #[derive(Debug)]
 pub struct OutputLimiter {
-    /// Maximum bytes allowed
-    max_bytes: usize,
+    /// Most bytes delivered
+    limit: usize,
 
     /// Total bytes written so far
     bytes_written: usize,
@@ -15,10 +15,10 @@ pub struct OutputLimiter {
 }
 
 impl OutputLimiter {
-    /// Create a new output limiter
-    pub fn new(max_bytes: usize) -> Self {
+    /// Deliver at most `limit` bytes
+    pub fn new(limit: usize) -> Self {
         Self {
-            max_bytes,
+            limit,
             bytes_written: 0,
             truncation_warned: false,
         }
@@ -27,7 +27,7 @@ impl OutputLimiter {
     /// Count `incoming` bytes against the limit and say how many of them to
     /// deliver.
     pub fn admit(&mut self, incoming: usize) -> Admission {
-        let accepted = incoming.min(self.max_bytes.saturating_sub(self.bytes_written));
+        let accepted = incoming.min(self.limit.saturating_sub(self.bytes_written));
         self.bytes_written += accepted;
         let truncated = accepted < incoming;
         let first_truncation = truncated && !self.truncation_warned;
@@ -36,18 +36,6 @@ impl OutputLimiter {
             accepted,
             first_truncation,
         }
-    }
-
-    /// [`OutputLimiter::admit`] as a tuple.
-    ///
-    /// Returns `(can_write, bytes_to_write, should_warn)` where:
-    /// - `can_write`: whether any bytes could be written before this chunk
-    /// - `bytes_to_write`: how many bytes of the input to actually write
-    /// - `should_warn`: whether to emit a truncation warning
-    pub fn check(&mut self, incoming_bytes: usize) -> (bool, usize, bool) {
-        let can_write = self.bytes_written < self.max_bytes;
-        let admission = self.admit(incoming_bytes);
-        (can_write, admission.accepted, admission.first_truncation)
     }
 
     /// Get total bytes written so far
@@ -65,20 +53,19 @@ impl OutputLimiter {
 mod tests {
     use super::*;
 
+    fn admitted(accepted: usize, first_truncation: bool) -> Admission {
+        Admission {
+            accepted,
+            first_truncation,
+        }
+    }
+
     #[test]
     fn test_output_limiter_under_limit() {
         let mut limiter = OutputLimiter::new(1000);
 
-        let (can_write, bytes, warn) = limiter.check(100);
-        assert!(can_write);
-        assert_eq!(bytes, 100);
-        assert!(!warn);
-
-        let (can_write, bytes, warn) = limiter.check(500);
-        assert!(can_write);
-        assert_eq!(bytes, 500);
-        assert!(!warn);
-
+        assert_eq!(limiter.admit(100), admitted(100, false));
+        assert_eq!(limiter.admit(500), admitted(500, false));
         assert_eq!(limiter.bytes_written(), 600);
         assert!(!limiter.was_truncated());
     }
@@ -87,51 +74,26 @@ mod tests {
     fn test_output_limiter_at_limit() {
         let mut limiter = OutputLimiter::new(100);
 
-        let (can_write, bytes, warn) = limiter.check(100);
-        assert!(can_write);
-        assert_eq!(bytes, 100);
-        assert!(!warn);
-
-        let (can_write, _, _) = limiter.check(10);
-        assert!(!can_write);
+        assert_eq!(limiter.admit(100), admitted(100, false));
+        assert_eq!(limiter.admit(10), admitted(0, true));
     }
 
     #[test]
     fn test_output_limiter_truncation() {
         let mut limiter = OutputLimiter::new(100);
+        limiter.admit(50);
 
-        limiter.check(50);
-
-        let (can_write, bytes, warn) = limiter.check(100);
-        assert!(can_write);
-        assert_eq!(bytes, 50);
-        assert!(warn);
-
+        assert_eq!(limiter.admit(100), admitted(50, true));
         assert!(limiter.was_truncated());
-
-        let (can_write, _, warn) = limiter.check(10);
-        assert!(!can_write);
-        assert!(!warn);
+        assert_eq!(limiter.admit(10), admitted(0, false));
     }
 
     #[test]
     fn a_zero_limit_still_warns_once() {
         let mut limiter = OutputLimiter::new(0);
 
-        assert_eq!(
-            limiter.admit(5),
-            Admission {
-                accepted: 0,
-                first_truncation: true,
-            }
-        );
-        assert_eq!(
-            limiter.admit(5),
-            Admission {
-                accepted: 0,
-                first_truncation: false,
-            }
-        );
+        assert_eq!(limiter.admit(5), admitted(0, true));
+        assert_eq!(limiter.admit(5), admitted(0, false));
     }
 
     #[test]

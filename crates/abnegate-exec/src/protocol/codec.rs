@@ -14,8 +14,9 @@ use tokio_util::codec::Encoder;
 
 use crate::error::ProtocolError;
 
-/// Maximum line length to prevent memory exhaustion
-const MAX_LINE_LENGTH: usize = 16 * 1024 * 1024;
+/// Longest line a codec reads by default, so a peer that never sends a
+/// newline cannot exhaust memory
+const MAXIMUM_LINE_LENGTH: usize = 16 * 1024 * 1024;
 
 const NEWLINE: u8 = b'\n';
 
@@ -24,8 +25,8 @@ const NEWLINE: u8 = b'\n';
 /// Each message is encoded as a single JSON object followed by `\n`.
 /// Decoding reads lines and parses them as JSON, skipping blank lines.
 pub struct NdjsonCodec<T> {
-    /// Maximum allowed line length
-    max_length: usize,
+    /// Longest line, in bytes, that decodes
+    length_limit: usize,
     /// How much of the buffer is already known to hold no newline, so a line
     /// arriving in many reads is scanned once rather than once per read
     scanned: usize,
@@ -33,15 +34,15 @@ pub struct NdjsonCodec<T> {
 }
 
 impl<T> NdjsonCodec<T> {
-    /// Create a new NDJSON codec with default max line length
+    /// Create a codec that reads lines of up to 16 MiB
     pub fn new() -> Self {
-        Self::with_max_length(MAX_LINE_LENGTH)
+        Self::with_length_limit(MAXIMUM_LINE_LENGTH)
     }
 
-    /// Create a new NDJSON codec with custom max line length
-    pub fn with_max_length(max_length: usize) -> Self {
+    /// Create a codec that refuses a line longer than `length_limit` bytes
+    pub fn with_length_limit(length_limit: usize) -> Self {
         Self {
-            max_length,
+            length_limit,
             scanned: 0,
             message: PhantomData,
         }
@@ -57,7 +58,7 @@ impl<T> Default for NdjsonCodec<T> {
 impl<T> Clone for NdjsonCodec<T> {
     /// A clone decodes its own buffer, so it starts with nothing scanned.
     fn clone(&self) -> Self {
-        Self::with_max_length(self.max_length)
+        Self::with_length_limit(self.length_limit)
     }
 }
 
@@ -73,10 +74,10 @@ impl<T: DeserializeOwned> Decoder for NdjsonCodec<T> {
                 .position(|byte| *byte == NEWLINE)
             else {
                 self.scanned = source.len();
-                if source.len() > self.max_length {
+                if source.len() > self.length_limit {
                     return Err(ProtocolError::LineTooLong {
                         length: source.len(),
-                        max: self.max_length,
+                        limit: self.length_limit,
                     });
                 }
                 return Ok(None);
@@ -87,10 +88,10 @@ impl<T: DeserializeOwned> Decoder for NdjsonCodec<T> {
             let line = source.split_to(length);
             source.advance(1);
 
-            if length > self.max_length {
+            if length > self.length_limit {
                 return Err(ProtocolError::LineTooLong {
                     length,
-                    max: self.max_length,
+                    limit: self.length_limit,
                 });
             }
             if line.trim_ascii().is_empty() {
@@ -125,6 +126,8 @@ impl<T: Serialize> Encoder<T> for NdjsonCodec<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::protocol::ErrorCode;
     use crate::protocol::InboundMessage;
     use crate::protocol::LogLevel;
@@ -144,10 +147,8 @@ mod tests {
         assert!(result.is_some());
 
         match result.unwrap() {
-            InboundMessage::Hello {
-                protocol_version, ..
-            } => {
-                assert_eq!(protocol_version, "1.0");
+            InboundMessage::Hello(hello) => {
+                assert_eq!(hello.protocol_version, "1.0");
             }
             _ => panic!("Wrong message type"),
         }
@@ -184,12 +185,12 @@ mod tests {
         let second = codec.decode(&mut buffer).unwrap().unwrap();
 
         match first {
-            InboundMessage::Ping { id } => assert_eq!(id, "1"),
+            InboundMessage::Ping(ping) => assert_eq!(ping.id, "1"),
             _ => panic!("Wrong message type"),
         }
 
         match second {
-            InboundMessage::Ping { id } => assert_eq!(id, "2"),
+            InboundMessage::Ping(ping) => assert_eq!(ping.id, "2"),
             _ => panic!("Wrong message type"),
         }
     }
@@ -207,7 +208,7 @@ mod tests {
         for index in 0..100 {
             let message = codec.decode(&mut buffer).unwrap().unwrap();
             match message {
-                InboundMessage::Ping { id } => assert_eq!(id, index.to_string()),
+                InboundMessage::Ping(ping) => assert_eq!(ping.id, index.to_string()),
                 _ => panic!("Wrong message type"),
             }
         }
@@ -272,7 +273,7 @@ mod tests {
         let mut codec: NdjsonCodec<OutboundMessage> = NdjsonCodec::new();
 
         let messages = vec![
-            OutboundMessage::hello_ack(),
+            OutboundMessage::hello_acknowledged(),
             OutboundMessage::RunStarted {
                 job_id: "j1".to_string(),
                 pid: 123,
@@ -297,7 +298,7 @@ mod tests {
                 job_id: "j1".to_string(),
                 exit_code: Some(0),
                 signal: None,
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             },
             OutboundMessage::RunError {
                 job_id: "j1".to_string(),
@@ -345,7 +346,7 @@ mod tests {
 
         let message = codec.decode(&mut buffer).unwrap().unwrap();
         match message {
-            InboundMessage::Ping { id } => assert_eq!(id, "1"),
+            InboundMessage::Ping(ping) => assert_eq!(ping.id, "1"),
             _ => panic!("Wrong message type"),
         }
     }
@@ -424,24 +425,24 @@ mod tests {
 
     #[test]
     fn test_line_too_long() {
-        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(10);
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_length_limit(10);
         let mut buffer = BytesMut::from("this line is way too long\n".as_bytes());
 
         let result = codec.decode(&mut buffer);
         assert!(result.is_err());
 
         match result.unwrap_err() {
-            ProtocolError::LineTooLong { length, max } => {
-                assert!(length > max);
-                assert_eq!(max, 10);
+            ProtocolError::LineTooLong { length, limit } => {
+                assert!(length > limit);
+                assert_eq!(limit, 10);
             }
             _ => panic!("Wrong error type"),
         }
     }
 
     #[test]
-    fn test_line_at_max_length() {
-        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(100);
+    fn test_line_under_the_length_limit() {
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_length_limit(100);
         let json = r#"{"type":"Ping","id":"test"}"#;
         assert!(json.len() < 100);
 
@@ -452,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_buffer_growing_without_newline() {
-        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(50);
+        let mut codec: NdjsonCodec<InboundMessage> = NdjsonCodec::with_length_limit(50);
         let mut buffer = BytesMut::new();
 
         buffer.extend_from_slice("a".repeat(60).as_bytes());
@@ -461,9 +462,9 @@ mod tests {
         assert!(result.is_err());
 
         match result.unwrap_err() {
-            ProtocolError::LineTooLong { length, max } => {
+            ProtocolError::LineTooLong { length, limit } => {
                 assert_eq!(length, 60);
-                assert_eq!(max, 50);
+                assert_eq!(limit, 50);
             }
             _ => panic!("Wrong error type"),
         }
@@ -479,7 +480,7 @@ mod tests {
             job_id: "test-job".to_string(),
             exit_code: Some(0),
             signal: None,
-            duration_ms: 1234,
+            duration: Duration::from_millis(1234),
         };
 
         encoder.encode(original.clone(), &mut buffer).unwrap();
@@ -491,7 +492,7 @@ mod tests {
     #[test]
     fn test_roundtrip_all_message_types() {
         let messages = vec![
-            OutboundMessage::hello_ack(),
+            OutboundMessage::hello_acknowledged(),
             OutboundMessage::RunStarted {
                 job_id: "j1".to_string(),
                 pid: 12345,
@@ -516,13 +517,13 @@ mod tests {
                 job_id: "j1".to_string(),
                 exit_code: Some(1),
                 signal: None,
-                duration_ms: 5000,
+                duration: Duration::from_millis(5000),
             },
             OutboundMessage::RunExit {
                 job_id: "j2".to_string(),
                 exit_code: None,
                 signal: Some(9),
-                duration_ms: 100,
+                duration: Duration::from_millis(100),
             },
             OutboundMessage::RunError {
                 job_id: "j1".to_string(),
@@ -554,8 +555,8 @@ mod tests {
 
         let result = codec.decode(&mut buffer).unwrap().unwrap();
         match result {
-            InboundMessage::Ping { id } => {
-                assert_eq!(id, "测试🎉");
+            InboundMessage::Ping(ping) => {
+                assert_eq!(ping.id, "测试🎉");
             }
             _ => panic!("Wrong message type"),
         }
@@ -633,10 +634,10 @@ mod tests {
 
     #[test]
     fn test_codec_clone() {
-        let first: NdjsonCodec<InboundMessage> = NdjsonCodec::with_max_length(1000);
+        let first: NdjsonCodec<InboundMessage> = NdjsonCodec::with_length_limit(1000);
         let second = first.clone();
 
-        assert_eq!(first.max_length, second.max_length);
+        assert_eq!(first.length_limit, second.length_limit);
     }
 
     #[test]
@@ -644,7 +645,7 @@ mod tests {
         let first: NdjsonCodec<InboundMessage> = NdjsonCodec::default();
         let second: NdjsonCodec<InboundMessage> = NdjsonCodec::new();
 
-        assert_eq!(first.max_length, second.max_length);
+        assert_eq!(first.length_limit, second.length_limit);
     }
 
     #[test]
@@ -662,8 +663,8 @@ mod tests {
         assert!(result.is_ok());
 
         match result.unwrap().unwrap() {
-            InboundMessage::RunStdin { data, .. } => {
-                assert_eq!(data.len(), 100_000);
+            InboundMessage::RunStdin(stdin) => {
+                assert_eq!(stdin.data.len(), 100_000);
             }
             _ => panic!("Wrong message type"),
         }
@@ -687,7 +688,7 @@ mod tests {
 
         let result = codec.decode(&mut buffer).unwrap().unwrap();
         match result {
-            InboundMessage::Ping { id } => assert_eq!(id, "test123"),
+            InboundMessage::Ping(ping) => assert_eq!(ping.id, "test123"),
             _ => panic!("Wrong message type"),
         }
     }

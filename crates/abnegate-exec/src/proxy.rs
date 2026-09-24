@@ -8,12 +8,12 @@ use tokio::process::Command;
 
 /// Environment variable naming the proxy every spawned command is routed
 /// through. Absent or empty leaves each command's own environment alone.
-pub const PROXY_URL_ENV: &str = "ABNEGATE_EXEC_PROXY_URL";
+pub const PROXY_URL_VARIABLE: &str = "ABNEGATE_EXEC_PROXY_URL";
 
 /// Environment variable listing, comma-separated, the hosts a routed command
 /// reaches directly rather than through the proxy. Absent means
 /// [`DEFAULT_BYPASS`]; set but empty means every host goes through the proxy.
-pub const PROXY_BYPASS_ENV: &str = "ABNEGATE_EXEC_PROXY_BYPASS";
+pub const PROXY_BYPASS_VARIABLE: &str = "ABNEGATE_EXEC_PROXY_BYPASS";
 
 /// The hosts a routed command reaches directly when no bypass list is given:
 /// loopback, and nothing else.
@@ -61,10 +61,13 @@ impl Proxy {
         self
     }
 
-    /// Read [`PROXY_URL_ENV`] and [`PROXY_BYPASS_ENV`]. An absent or empty
-    /// URL preserves the command's existing environment.
-    pub fn from_env() -> Self {
-        Self::from_settings(env::var_os(PROXY_URL_ENV), env::var(PROXY_BYPASS_ENV).ok())
+    /// Read [`PROXY_URL_VARIABLE`] and [`PROXY_BYPASS_VARIABLE`]. An absent or
+    /// empty URL preserves the command's existing environment.
+    pub fn from_environment() -> Self {
+        Self::from_settings(
+            env::var_os(PROXY_URL_VARIABLE),
+            env::var(PROXY_BYPASS_VARIABLE).ok(),
+        )
     }
 
     fn from_settings(url: Option<OsString>, bypass: Option<String>) -> Self {
@@ -85,17 +88,18 @@ impl Proxy {
 
     /// Apply routing last so a tool's environment cannot accidentally bypass it.
     ///
-    /// The command also receives [`PROXY_URL_ENV`] and [`PROXY_BYPASS_ENV`],
-    /// so an executor it starts routes the same way.
+    /// The command also receives [`PROXY_URL_VARIABLE`] and
+    /// [`PROXY_BYPASS_VARIABLE`], so an executor it starts routes the same
+    /// way.
     pub fn apply(&self, command: &mut Command) {
         let Some(url) = &self.url else {
             return;
         };
-        for name in PROXY_VARIABLES.into_iter().chain([PROXY_URL_ENV]) {
+        for name in PROXY_VARIABLES.into_iter().chain([PROXY_URL_VARIABLE]) {
             command.env(name, url);
         }
         let bypass = self.bypass.join(BYPASS_SEPARATOR);
-        for name in BYPASS_VARIABLES.into_iter().chain([PROXY_BYPASS_ENV]) {
+        for name in BYPASS_VARIABLES.into_iter().chain([PROXY_BYPASS_VARIABLE]) {
             command.env(name, &bypass);
         }
     }

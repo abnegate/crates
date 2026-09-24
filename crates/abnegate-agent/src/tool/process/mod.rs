@@ -47,7 +47,7 @@ const READ_BUFFER_BYTES: usize = 8 * 1024;
 pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
     let mut command = Command::new(program);
     context.environment.apply(&mut command);
-    Proxy::from_env().apply(&mut command);
+    Proxy::from_environment().apply(&mut command);
     command
 }
 

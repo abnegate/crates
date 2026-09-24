@@ -1,25 +1,39 @@
+use std::time::Duration;
+
 use serde::Deserialize;
 use serde::Serialize;
 
 use super::error_code::ErrorCode;
 use super::log_level::LogLevel;
+use super::milliseconds;
 
 /// Messages a runner sends to its client
+///
+/// Each variant is `#[non_exhaustive]`: match it with `..`, since a field
+/// can be added to any of them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum OutboundMessage {
-    /// Response to Hello message
-    HelloAck {
+    /// Response to Hello message, tagged `HelloAck` on the wire
+    #[serde(rename = "HelloAck")]
+    #[non_exhaustive]
+    HelloAcknowledged {
+        /// The protocol version the runner speaks
         protocol_version: String,
+        /// The version of this crate the runner was built from
         runner_version: String,
+        /// The capabilities the runner honours, by their
+        /// [handshake names](super::Capability::as_str)
         capabilities: Vec<String>,
     },
 
     /// Command has started executing
+    #[non_exhaustive]
     RunStarted { job_id: String, pid: u32 },
 
     /// Chunk of stdout output
+    #[non_exhaustive]
     RunStdout {
         job_id: String,
         /// Base64 encoded data
@@ -28,6 +42,7 @@ pub enum OutboundMessage {
     },
 
     /// Chunk of stderr output
+    #[non_exhaustive]
     RunStderr {
         job_id: String,
         /// Base64 encoded data
@@ -36,6 +51,7 @@ pub enum OutboundMessage {
     },
 
     /// Structured log message from the runner
+    #[non_exhaustive]
     RunLog {
         job_id: String,
         level: LogLevel,
@@ -45,15 +61,20 @@ pub enum OutboundMessage {
     },
 
     /// Command has exited normally
+    #[non_exhaustive]
     RunExit {
         job_id: String,
         exit_code: Option<i32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         signal: Option<i32>,
-        duration_ms: u64,
+        /// How long the command ran, from its spawn until its group was
+        /// gone. Whole milliseconds on the wire.
+        #[serde(rename = "duration_ms", with = "milliseconds")]
+        duration: Duration,
     },
 
     /// Command encountered an error
+    #[non_exhaustive]
     RunError {
         job_id: String,
         error_code: ErrorCode,
@@ -61,6 +82,7 @@ pub enum OutboundMessage {
     },
 
     /// Response to Ping message
+    #[non_exhaustive]
     Pong { id: String },
 }
 
@@ -95,8 +117,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hello_ack_serialization() {
-        let message = OutboundMessage::hello_ack();
+    fn test_hello_acknowledged_serialization() {
+        let message = OutboundMessage::hello_acknowledged();
         let json = serde_json::to_string(&message).unwrap();
 
         assert!(json.contains(r#""type":"HelloAck""#));
@@ -106,8 +128,8 @@ mod tests {
     }
 
     #[test]
-    fn test_hello_ack_roundtrip() {
-        let original = OutboundMessage::hello_ack();
+    fn test_hello_acknowledged_roundtrip() {
+        let original = OutboundMessage::hello_acknowledged();
         let json = serde_json::to_string(&original).unwrap();
         let decoded: OutboundMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(original, decoded);
@@ -238,7 +260,7 @@ mod tests {
             job_id: "job-123".to_string(),
             exit_code: Some(0),
             signal: None,
-            duration_ms: 1500,
+            duration: Duration::from_millis(1500),
         };
 
         let json = serde_json::to_string(&message).unwrap();
@@ -254,7 +276,7 @@ mod tests {
             job_id: "job-killed".to_string(),
             exit_code: None,
             signal: Some(9), // SIGKILL
-            duration_ms: 5000,
+            duration: Duration::from_millis(5000),
         };
 
         let json = serde_json::to_string(&message).unwrap();
@@ -268,7 +290,7 @@ mod tests {
             job_id: "job-failed".to_string(),
             exit_code: Some(1),
             signal: None,
-            duration_ms: 100,
+            duration: Duration::from_millis(100),
         };
 
         let json = serde_json::to_string(&message).unwrap();
@@ -281,7 +303,7 @@ mod tests {
             job_id: "job-negative".to_string(),
             exit_code: Some(-1),
             signal: None,
-            duration_ms: 50,
+            duration: Duration::from_millis(50),
         };
 
         let json = serde_json::to_string(&message).unwrap();

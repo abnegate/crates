@@ -8,6 +8,10 @@ use crate::executor::ProcessGroup;
 use super::state::JobState;
 
 /// Entry for a tracked job
+///
+/// Built with [`JobEntry::new`]; a [`JobRegistry`](super::JobRegistry)
+/// makes one for each job it registers.
+#[non_exhaustive]
 pub struct JobEntry {
     /// Current state of the job
     pub state: JobState,

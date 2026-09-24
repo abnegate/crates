@@ -37,6 +37,7 @@ use abnegate_exec::protocol::ErrorCode;
 use abnegate_exec::protocol::InboundMessage;
 use abnegate_exec::protocol::OutboundMessage;
 use abnegate_exec::protocol::ProcessTreeRequest;
+use abnegate_exec::protocol::RunStart;
 use base64::prelude::*;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -117,11 +118,7 @@ fn workspace() -> Workspace {
 }
 
 fn request(root: &Path) -> ConfinementRequest {
-    ConfinementRequest {
-        read_roots: vec![root.to_path_buf()],
-        write_roots: vec![root.to_path_buf()],
-        process_tree: None,
-    }
+    ConfinementRequest::new(vec![root.to_path_buf()], vec![root.to_path_buf()])
 }
 
 fn confinement(root: &Path, arguments: Vec<String>) -> Confinement {
@@ -133,17 +130,12 @@ fn text(path: &Path) -> String {
 }
 
 fn confined_run(job_id: &str, root: &Path, target: &Path) -> InboundMessage {
-    InboundMessage::RunStart {
-        job_id: job_id.to_string(),
-        workspace: root.to_path_buf(),
-        command: "/bin/cat".to_string(),
-        args: vec![text(target)],
-        env: HashMap::new(),
-        timeout_ms: Some(15000),
-        max_output_bytes: None,
-        working_dir: None,
-        confinement: Some(Box::new(request(root))),
-    }
+    InboundMessage::RunStart(
+        RunStart::new(job_id, root, "/bin/cat")
+            .with_arguments([text(target)])
+            .with_timeout(Duration::from_secs(15))
+            .with_confinement(request(root)),
+    )
 }
 
 async fn collect_messages(
@@ -320,11 +312,8 @@ fn test_seatbelt_profile_rejects_a_newline_root_instead_of_injecting_a_clause() 
     let root = base.join("in\n(allow default)\njected");
     fs::create_dir(&root).unwrap();
 
-    let confinement = Confinement::new("/bin/cat", vec![], &base).with_roots(&ConfinementRequest {
-        read_roots: vec![root],
-        write_roots: vec![],
-        process_tree: None,
-    });
+    let confinement = Confinement::new("/bin/cat", vec![], &base)
+        .with_roots(&ConfinementRequest::new(vec![root], vec![]));
 
     assert!(matches!(
         confinement.invocation(Some(Backend::Seatbelt)),
@@ -335,12 +324,9 @@ fn test_seatbelt_profile_rejects_a_newline_root_instead_of_injecting_a_clause() 
 #[test]
 fn test_confinement_rejects_a_root_that_does_not_exist() {
     let workspace = workspace();
-    let confinement =
-        Confinement::new("/bin/cat", vec![], &workspace.root).with_roots(&ConfinementRequest {
-            read_roots: vec![workspace.root.join("missing")],
-            write_roots: vec![],
-            process_tree: None,
-        });
+    let confinement = Confinement::new("/bin/cat", vec![], &workspace.root).with_roots(
+        &ConfinementRequest::new(vec![workspace.root.join("missing")], vec![]),
+    );
 
     assert!(matches!(
         confinement.invocation(Some(Backend::Seatbelt)),
@@ -351,12 +337,9 @@ fn test_confinement_rejects_a_root_that_does_not_exist() {
 #[test]
 fn test_confinement_rejects_a_relative_root() {
     let workspace = workspace();
-    let confinement =
-        Confinement::new("/bin/cat", vec![], &workspace.root).with_roots(&ConfinementRequest {
-            read_roots: vec![PathBuf::from("relative/root")],
-            write_roots: vec![],
-            process_tree: None,
-        });
+    let confinement = Confinement::new("/bin/cat", vec![], &workspace.root).with_roots(
+        &ConfinementRequest::new(vec![PathBuf::from("relative/root")], vec![]),
+    );
 
     assert!(matches!(
         confinement.invocation(Some(Backend::Seatbelt)),
@@ -590,8 +573,8 @@ fn test_run_start_carries_a_confinement_request() {
 
     let message: InboundMessage = serde_json::from_str(json).unwrap();
     match message {
-        InboundMessage::RunStart { confinement, .. } => {
-            let confinement = confinement.unwrap();
+        InboundMessage::RunStart(run) => {
+            let confinement = run.confinement.unwrap();
             assert_eq!(confinement.read_roots, vec![PathBuf::from("/tmp/source")]);
             assert_eq!(confinement.write_roots, vec![PathBuf::from("/tmp/output")]);
         }
@@ -605,7 +588,7 @@ fn test_run_start_without_confinement_stays_unconfined() {
     let message: InboundMessage = serde_json::from_str(json).unwrap();
 
     match message {
-        InboundMessage::RunStart { confinement, .. } => assert!(confinement.is_none()),
+        InboundMessage::RunStart(run) => assert!(run.confinement.is_none()),
         _ => panic!("Wrong message type"),
     }
 }
@@ -630,21 +613,15 @@ async fn test_spawn_fails_closed_when_confinement_cannot_be_established() {
     let workspace = workspace();
     let (sender, mut receiver) = mpsc::channel(100);
 
-    let request = InboundMessage::RunStart {
-        job_id: "unprovable".to_string(),
-        workspace: workspace.root.clone(),
-        command: "/bin/cat".to_string(),
-        args: vec![text(&workspace.granted)],
-        env: HashMap::new(),
-        timeout_ms: Some(15000),
-        max_output_bytes: None,
-        working_dir: None,
-        confinement: Some(Box::new(ConfinementRequest {
-            read_roots: vec![workspace.root.join("does-not-exist")],
-            write_roots: vec![],
-            process_tree: None,
-        })),
-    };
+    let request = InboundMessage::RunStart(
+        RunStart::new("unprovable", workspace.root.clone(), "/bin/cat")
+            .with_arguments([text(&workspace.granted)])
+            .with_timeout(Duration::from_secs(15))
+            .with_confinement(ConfinementRequest::new(
+                vec![workspace.root.join("does-not-exist")],
+                vec![],
+            )),
+    );
 
     let result = CommandExecutor::new().spawn(&request, sender).await;
 
@@ -850,18 +827,11 @@ async fn attempt_connection(root: &Path, client: &str, confined: bool) -> (bool,
         ]
     };
 
-    let messages = run_confined(&InboundMessage::RunStart {
-        job_id: format!("network-{confined}"),
-        workspace: root.to_path_buf(),
-        command: client.to_string(),
-        args,
-        env: HashMap::new(),
-        timeout_ms: Some(15000),
-        max_output_bytes: None,
-        working_dir: None,
-        confinement: confined.then(|| Box::new(request(root))),
-    })
-    .await;
+    let mut run = RunStart::new(format!("network-{confined}"), root, client)
+        .with_arguments(args)
+        .with_timeout(Duration::from_secs(15));
+    run.confinement = confined.then(|| Box::new(request(root)));
+    let messages = run_confined(&InboundMessage::RunStart(run)).await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     acceptor.abort();
@@ -911,11 +881,8 @@ const PARENT_IDENTIFIER: &str = "parent.pid";
 const CHILD_IDENTIFIER: &str = "child.pid";
 
 fn tree_request(root: &Path, execute_roots: Vec<PathBuf>) -> ConfinementRequest {
-    ConfinementRequest {
-        read_roots: vec![root.to_path_buf()],
-        write_roots: vec![root.to_path_buf()],
-        process_tree: Some(ProcessTreeRequest { execute_roots }),
-    }
+    ConfinementRequest::new(vec![root.to_path_buf()], vec![root.to_path_buf()])
+        .with_process_tree(ProcessTreeRequest::new(execute_roots))
 }
 
 fn tree_confinement(root: &Path, execute_roots: Vec<PathBuf>) -> Confinement {
@@ -951,17 +918,12 @@ fn confined_tree_run(
     script: &str,
     execute_roots: Vec<PathBuf>,
 ) -> InboundMessage {
-    InboundMessage::RunStart {
-        job_id: job_id.to_string(),
-        workspace: root.to_path_buf(),
-        command: SHELL.to_string(),
-        args: vec![script.to_string()],
-        env: HashMap::new(),
-        timeout_ms: Some(20000),
-        max_output_bytes: None,
-        working_dir: None,
-        confinement: Some(Box::new(tree_request(root, execute_roots))),
-    }
+    InboundMessage::RunStart(
+        RunStart::new(job_id, root, SHELL)
+            .with_arguments([script])
+            .with_timeout(Duration::from_secs(20))
+            .with_confinement(tree_request(root, execute_roots)),
+    )
 }
 
 #[test]
@@ -1115,8 +1077,8 @@ fn test_run_start_carries_a_process_tree_request() {
 
     let message: InboundMessage = serde_json::from_str(json).unwrap();
     match message {
-        InboundMessage::RunStart { confinement, .. } => {
-            let confinement = confinement.unwrap();
+        InboundMessage::RunStart(run) => {
+            let confinement = run.confinement.unwrap();
             let tree = confinement.process_tree.as_ref().unwrap();
             assert_eq!(
                 tree.execute_roots,
@@ -1141,11 +1103,7 @@ fn test_a_confinement_request_without_a_process_tree_stays_single_command() {
 
 #[test]
 fn test_a_single_command_request_serialises_without_the_tree_field() {
-    let request = ConfinementRequest {
-        read_roots: vec![PathBuf::from("/tmp")],
-        write_roots: vec![],
-        process_tree: None,
-    };
+    let request = ConfinementRequest::new(vec![PathBuf::from("/tmp")], vec![]);
     let json = serde_json::to_string(&request).unwrap();
 
     assert!(
@@ -1252,17 +1210,12 @@ async fn test_single_command_mode_bounds_a_second_process_or_refuses_it() {
         &format!("cat {} > child.marker\n", workspace.denied.display()),
     );
 
-    let messages = run_confined(&InboundMessage::RunStart {
-        job_id: "single-second-process".to_string(),
-        workspace: workspace.root.clone(),
-        command: SHELL.to_string(),
-        args: vec![PARENT_SCRIPT.to_string()],
-        env: HashMap::new(),
-        timeout_ms: Some(20000),
-        max_output_bytes: None,
-        working_dir: None,
-        confinement: Some(Box::new(request(&workspace.root))),
-    })
+    let messages = run_confined(&InboundMessage::RunStart(
+        RunStart::new("single-second-process", workspace.root.clone(), SHELL)
+            .with_arguments([PARENT_SCRIPT])
+            .with_timeout(Duration::from_secs(20))
+            .with_confinement(request(&workspace.root)),
+    ))
     .await;
 
     if HOST_BACKEND.is_some_and(Backend::enforces_single_process) {
@@ -1375,12 +1328,10 @@ async fn test_a_confined_tree_blocks_a_grandchild_connection_that_otherwise_succ
             PARENT_SCRIPT,
             vec![PathBuf::from(SHELL_DIRECTORY), client_directory.clone()],
         );
-        if let InboundMessage::RunStart {
-            confinement: slot, ..
-        } = &mut request
+        if let InboundMessage::RunStart(run) = &mut request
             && !confined
         {
-            *slot = None;
+            run.confinement = None;
         }
 
         let messages = run_confined(&request).await;
@@ -1474,16 +1425,16 @@ async fn test_a_preloaded_library_never_runs_in_the_bubblewrap_host() {
     assert!(compiled.success(), "the planted library did not compile");
 
     let workspace = workspace();
-    let preloading = |confined: bool| InboundMessage::RunStart {
-        job_id: format!("preload-{confined}"),
-        workspace: workspace.root.clone(),
-        command: "/bin/true".to_string(),
-        args: vec![],
-        env: HashMap::from([("LD_PRELOAD".to_string(), text(&library))]),
-        timeout_ms: Some(15000),
-        max_output_bytes: None,
-        working_dir: None,
-        confinement: confined.then(|| Box::new(request(&workspace.root))),
+    let preloading = |confined: bool| {
+        let mut run = RunStart::new(
+            format!("preload-{confined}"),
+            workspace.root.clone(),
+            "/bin/true",
+        )
+        .with_environment([("LD_PRELOAD", text(&library))])
+        .with_timeout(Duration::from_secs(15));
+        run.confinement = confined.then(|| Box::new(request(&workspace.root)));
+        InboundMessage::RunStart(run)
     };
 
     run_confined(&preloading(false)).await;

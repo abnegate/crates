@@ -1,6 +1,7 @@
 /// How much of a chunk of output an [`OutputLimiter`](super::OutputLimiter)
 /// lets through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Admission {
     /// Bytes of the chunk to deliver, from its start
     pub accepted: usize,

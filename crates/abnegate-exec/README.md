@@ -7,10 +7,12 @@ group is killed before the run is reported, so nothing it started outlives it. A
 run may ask to be confined: `Confinement` runs it under seatbelt on macOS or
 bubblewrap on Linux with no network access at all, and a confined job fails to
 spawn on a host where `Confinement::probe` cannot prove the sandbox holds, rather
-than running unconfined. A command sees only the allowlisted environment by
-default, and `InboundMessage`, `OutboundMessage` and `NdjsonCodec` carry the same
-work over a pipe as newline-delimited JSON. Unix only; confinement additionally
-needs macOS or Linux.
+than running unconfined. A command sees only an allowlisted environment by
+default, with no proxy variable in it: `EnvironmentPolicy` names what else it
+may see, and `Proxy` routes it through a proxy. `InboundMessage`,
+`OutboundMessage` and `NdjsonCodec` carry the same work over a pipe as
+newline-delimited JSON. Unix only; confinement additionally needs macOS or
+Linux.
 
 ## Features
 
@@ -24,25 +26,23 @@ cargo add tokio --features sync
 ```
 
 ```rust,no_run
-use std::collections::HashMap;
+use std::time::Duration;
 
-use abnegate_exec::{CommandExecutor, ExecutorError, InboundMessage, OutboundMessage};
+use abnegate_exec::CommandExecutor;
+use abnegate_exec::ExecutorError;
+use abnegate_exec::InboundMessage;
+use abnegate_exec::OutboundMessage;
+use abnegate_exec::RunStart;
 use tokio::sync::mpsc;
 
 async fn greet() -> Result<(), ExecutorError> {
-    let request = InboundMessage::RunStart {
-        job_id: "greet".to_string(),
-        workspace: std::env::temp_dir(),
-        command: "echo".to_string(),
-        args: vec!["hello".to_string()],
-        env: HashMap::new(),
-        working_dir: None,
-        timeout_ms: Some(5_000),
-        max_output_bytes: None,
-        confinement: None,
-    };
+    let request = RunStart::new("greet", std::env::temp_dir(), "echo")
+        .with_arguments(["hello"])
+        .with_timeout(Duration::from_secs(5));
     let (sender, mut receiver) = mpsc::channel(64);
-    CommandExecutor::new().spawn(&request, sender).await?;
+    CommandExecutor::new()
+        .spawn(&InboundMessage::RunStart(request), sender)
+        .await?;
     while let Some(message) = receiver.recv().await {
         println!("{message:?}");
         if matches!(message, OutboundMessage::RunExit { .. }) {
