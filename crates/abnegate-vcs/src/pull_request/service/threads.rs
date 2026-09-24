@@ -33,7 +33,7 @@ impl PullRequestService {
         thread: &str,
         token: &SecretValue,
     ) -> PullRequestResult<()> {
-        self.graphql::<IgnoredAny, _>(token, RESOLVE, &serde_json::json!({ "id": thread }))
+        self.graphql::<IgnoredAny, _>(token, RESOLVE, &json!({ "id": thread }))
             .await?;
         Ok(())
     }
@@ -73,7 +73,7 @@ impl PullRequestService {
                 .await?;
             let page = answer
                 .repository
-                .and_then(|repository| repository.pull_request)
+                .and_then(|found| found.pull_request)
                 .ok_or(PullRequestError::NotFound)?
                 .review_threads;
 
@@ -134,7 +134,6 @@ mod tests {
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::Value;
-    use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::Request;
