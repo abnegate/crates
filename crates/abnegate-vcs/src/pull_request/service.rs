@@ -182,9 +182,9 @@ const GIT_SUFFIX: &str = ".git";
 /// protection is asked again through the administrator's GraphQL mutation.
 /// Errors GitHub's GraphQL API reports in answer to that mutation become
 /// [`PullRequestError::Protected`], apart from a spent rate limit, which stays
-/// [`PullRequestError::RateLimited`], and a head GitHub says was modified,
-/// which is [`PullRequestError::HeadMoved`]. A refusal of the mutation at the
-/// HTTP level, such as [`PullRequestError::Forbidden`] or
+/// [`PullRequestError::RateLimited`], and a head or base branch GitHub says
+/// was modified, which is [`PullRequestError::HeadMoved`]. A refusal of the
+/// mutation at the HTTP level, such as [`PullRequestError::Forbidden`] or
 /// [`PullRequestError::NotFound`], passes through unchanged.
 #[derive(Debug, Clone)]
 pub struct PullRequestService {

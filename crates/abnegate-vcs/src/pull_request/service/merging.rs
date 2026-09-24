@@ -28,13 +28,10 @@ const OID: &str = "/mergePullRequest/pullRequest/mergeCommit/oid";
 /// needs its conflict repaired rather than an administrator's override.
 const NOT_MERGEABLE: &str = "not mergeable";
 
-/// What GitHub's REST API says of a merge refused because the head or the
-/// base branch changed while it was being made, which a fresh read retries.
+/// What GitHub says, through REST or GraphQL, of a merge refused because the
+/// head or the base branch changed while it was being made, which a fresh read
+/// retries.
 const MODIFIED: &str = "was modified";
-
-/// What GitHub's GraphQL API says of a merge refused because the head moved
-/// from the one it was asked to expect.
-const HEAD_MODIFIED: &str = "Head branch was modified";
 
 /// What a refused administrator merge adds to branch protection's reason.
 const ADMINISTRATOR_REFUSED: &str = "administrator merge refused";
@@ -172,16 +169,16 @@ async fn merge_commit(response: Response) -> Option<CommitSha> {
 }
 
 /// What the errors an administrator merge was refused with mean: a spent rate
-/// limit is one, a head that moved is another, and anything else is
-/// protection's refusal.
+/// limit is one, a head or base branch GitHub says was modified is a moved
+/// head, and anything else is protection's refusal.
 fn administrator_refusal(reason: &str, errors: &[GraphQlError]) -> PullRequestError {
     if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
     }
-    let moved = HEAD_MODIFIED.to_ascii_lowercase();
+    let modified = MODIFIED.to_ascii_lowercase();
     if errors
         .iter()
-        .any(|error| error.message.to_ascii_lowercase().contains(&moved))
+        .any(|error| error.message.to_ascii_lowercase().contains(&modified))
     {
         return PullRequestError::HeadMoved;
     }
@@ -447,7 +444,7 @@ mod tests {
             refusing(405, "Required status check \"test\" is expected."),
             ResponseTemplate::new(200).set_body_json(json!({
                 "data": null,
-                "errors": [{ "message": "Base branch was modified. Review and try the merge again." }],
+                "errors": [{ "message": "Repository rule violations found" }],
             })),
             1,
         )
@@ -457,7 +454,7 @@ mod tests {
             PullRequestError::Protected(reason) => assert_eq!(
                 reason,
                 "Required status check \"test\" is expected.; administrator merge refused: \
-                 Base branch was modified. Review and try the merge again."
+                 Repository rule violations found"
             ),
             other => panic!("{other:?}"),
         }
@@ -499,22 +496,27 @@ mod tests {
             );
         }
 
-        let server = answering(
-            refusing(405, APPROVAL),
-            ResponseTemplate::new(200).set_body_json(json!({
-                "data": { "mergePullRequest": null },
-                "errors": [{ "message": "Head branch was modified. Review and try the merge again." }],
-            })),
-            1,
-        )
-        .await;
+        for message in [
+            "Base branch was modified. Review and try the merge again.",
+            "Head branch was modified. Review and try the merge again.",
+        ] {
+            let server = answering(
+                refusing(405, APPROVAL),
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": { "mergePullRequest": null },
+                    "errors": [{ "message": message }],
+                })),
+                1,
+            )
+            .await;
 
-        let failure = attempt(&server, Some(NODE), true).await.unwrap_err();
+            let failure = attempt(&server, Some(NODE), true).await.unwrap_err();
 
-        assert!(
-            matches!(failure, PullRequestError::HeadMoved),
-            "{failure:?}"
-        );
+            assert!(
+                matches!(failure, PullRequestError::HeadMoved),
+                "administrator merge, {message}: {failure:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -715,7 +717,7 @@ mod tests {
         let graphql = ResponseTemplate::new(200).set_body_json(json!({
             "data": { "mergePullRequest": "RAW-SENTINEL" },
             "errors": [{
-                "message": "Base branch was modified",
+                "message": "Repository rule violations found",
                 "path": ["RAW-SENTINEL"],
                 "extensions": { "raw": "RAW-SENTINEL" },
             }],
@@ -730,7 +732,7 @@ mod tests {
             (
                 noisy(405),
                 true,
-                r#"Protected("Changes must be made through a pull request.; administrator merge refused: Base branch was modified")"#,
+                r#"Protected("Changes must be made through a pull request.; administrator merge refused: Repository rule violations found")"#,
             ),
             (
                 silent(405),
@@ -740,7 +742,7 @@ mod tests {
             (
                 silent(405),
                 true,
-                r#"Protected("GitHub API returned 405 Method Not Allowed; administrator merge refused: Base branch was modified")"#,
+                r#"Protected("GitHub API returned 405 Method Not Allowed; administrator merge refused: Repository rule violations found")"#,
             ),
             (
                 noisy(422),
