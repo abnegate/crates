@@ -186,7 +186,9 @@ const GIT_SUFFIX: &str = ".git";
 ///
 /// [`Self::merge`] asks through REST first, and only a refusal by branch
 /// protection is asked again through the administrator's GraphQL mutation.
-/// Errors GitHub's GraphQL API reports in answer to that mutation become
+/// An answer to that mutation that says the pull request merged is a merge,
+/// whatever errors GitHub reported alongside it. Otherwise, errors GitHub's
+/// GraphQL API reports in answer to it become
 /// [`PullRequestError::Protected`], apart from a spent rate limit, which stays
 /// [`PullRequestError::RateLimited`], and a head or base branch GitHub says
 /// was modified, which is [`PullRequestError::HeadMoved`]. A refusal of the

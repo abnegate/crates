@@ -18,55 +18,51 @@ pub(super) const FORBIDDEN: &str = "FORBIDDEN";
 const REFUSED: &str = "GitHub's GraphQL API refused";
 
 /// What an answer that carried neither data nor errors is reported as.
-const NO_DATA: &str = "GitHub's GraphQL API answered with no data";
+pub(super) const NO_DATA: &str = "GitHub's GraphQL API answered with no data";
 
 impl PullRequestService {
     /// One GraphQL call, with any error GitHub reported turned into the
-    /// refusal it names.
+    /// refusal it names, whatever data came with it.
     pub(super) async fn graphql<T: DeserializeOwned, V: Serialize + ?Sized>(
         &self,
         token: &SecretValue,
         query: &'static str,
         variables: &V,
     ) -> PullRequestResult<T> {
-        self.graphql_answer(token, query, variables)
-            .await?
-            .map_err(|errors| graphql_refusal(&errors))
-    }
-
-    /// One GraphQL call, with the errors GitHub reported handed back to a
-    /// caller that reads them itself.
-    ///
-    /// A failed exchange is the outer error. A non-empty `errors` array is the
-    /// inner one, and wins over whatever data came with it.
-    pub(super) async fn graphql_answer<T: DeserializeOwned, V: Serialize + ?Sized>(
-        &self,
-        token: &SecretValue,
-        query: &'static str,
-        variables: &V,
-    ) -> PullRequestResult<Result<T, Vec<GraphQlError>>> {
-        let answer: GraphQlResponse = self
-            .exchange(
-                self.request(Method::POST, self.origin.graphql(), token, ACCEPT)
-                    .json(&GraphQlRequest { query, variables }),
-            )
-            .await?;
+        let answer = self.answer(token, query, variables).await?;
         if !answer.errors.is_empty() {
-            return Ok(Err(answer.errors));
+            return Err(refusal(&answer.errors));
         }
         let data = answer
             .data
             .ok_or_else(|| PullRequestError::GitHubApi(NO_DATA.to_string()))?;
         serde_json::from_value(data)
-            .map(Ok)
             .map_err(|_| PullRequestError::GitHubApi(UNREADABLE.to_string()))
+    }
+
+    /// One GraphQL call, answered with the data GitHub sent and every error it
+    /// reported alongside, for a caller that weighs the two itself.
+    ///
+    /// Only an exchange that failed, or an answer this crate cannot read, is
+    /// an error here.
+    pub(super) async fn answer<V: Serialize + ?Sized>(
+        &self,
+        token: &SecretValue,
+        query: &'static str,
+        variables: &V,
+    ) -> PullRequestResult<GraphQlResponse> {
+        self.exchange(
+            self.request(Method::POST, self.origin.graphql(), token, ACCEPT)
+                .json(&GraphQlRequest { query, variables }),
+        )
+        .await
     }
 }
 
 /// The refusal a set of GraphQL errors names: a spent rate limit ahead of
 /// anything missing, anything missing ahead of anything forbidden, and
 /// GitHub's own words for the rest.
-pub(super) fn graphql_refusal(errors: &[GraphQlError]) -> PullRequestError {
+fn refusal(errors: &[GraphQlError]) -> PullRequestError {
     if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
     }
@@ -77,11 +73,11 @@ pub(super) fn graphql_refusal(errors: &[GraphQlError]) -> PullRequestError {
         return PullRequestError::Forbidden;
     }
 
-    let messages = graphql_messages(errors);
-    if messages.is_empty() {
+    let said = messages(errors);
+    if said.is_empty() {
         return PullRequestError::GitHubApi(REFUSED.to_string());
     }
-    PullRequestError::GitHubApi(format!("{REFUSED}: {messages}"))
+    PullRequestError::GitHubApi(format!("{REFUSED}: {said}"))
 }
 
 /// Whether any of a set of GraphQL errors is of `kind`.
@@ -93,7 +89,7 @@ pub(super) fn reported(errors: &[GraphQlError], kind: &str) -> bool {
 
 /// Every message in a set of GraphQL errors, sanitised and joined on one
 /// line, and cut at 1 kB on a character boundary.
-pub(super) fn graphql_messages(errors: &[GraphQlError]) -> String {
+pub(super) fn messages(errors: &[GraphQlError]) -> String {
     summarised(errors.iter().map(|error| error.message.as_str()))
 }
 
@@ -321,10 +317,10 @@ mod tests {
             },
         ];
 
-        let messages = graphql_messages(&errors);
+        let said = messages(&errors);
 
-        assert_eq!(messages.len(), MAXIMUM_ERROR_BYTES - 1);
-        assert!(messages.chars().all(|character| character == '€'));
+        assert_eq!(said.len(), MAXIMUM_ERROR_BYTES - 1);
+        assert!(said.chars().all(|character| character == '€'));
 
         let failure = failure_for::<Value>(refused(
             json!([{ "message": long }, { "message": "after" }]),
@@ -356,7 +352,7 @@ mod tests {
         ];
 
         assert_eq!(
-            graphql_messages(&errors),
+            messages(&errors),
             "denied INFO forged; one two three; abcd; rejected [REDACTED]"
         );
     }
@@ -370,6 +366,6 @@ mod tests {
             failed(""),
         ];
 
-        assert_eq!(graphql_messages(&errors), "padded");
+        assert_eq!(messages(&errors), "padded");
     }
 }
