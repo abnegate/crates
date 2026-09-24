@@ -111,11 +111,11 @@ fn frames(value: Option<String>, default: u32, minimum: u32, maximum: u32) -> u3
 
 /// The graph at `value`, or the packaged graph `name` in the default workflow
 /// directory.
-fn workflow(value: Option<String>, name: &str) -> Option<PathBuf> {
-    Some(value.map_or_else(
+fn workflow(value: Option<String>, name: &str) -> PathBuf {
+    text(value).map_or_else(
         || PathBuf::from(DEFAULT_WORKFLOW_DIRECTORY).join(name),
         PathBuf::from,
-    ))
+    )
 }
 
 /// Direct image generation settings loaded from `COMFYUI_*` environment variables.
@@ -340,41 +340,43 @@ impl Config {
     /// names are testable without touching the process environment.
     fn from_variables(environment: impl Fn(&str) -> Option<String>, vision_model: &str) -> Self {
         let defaults = Self::default();
-        let models_directory = environment("COMFYUI_MODELS_DIRECTORY")
+        let models_directory = text(environment("COMFYUI_MODELS_DIRECTORY"))
             .map_or(defaults.models_directory, PathBuf::from);
         Self {
             enabled: truthy(environment("COMFYUI_ENABLED"), defaults.enabled),
-            base_url: environment("COMFYUI_BASE_URL")
-                .unwrap_or(defaults.base_url)
-                .trim_end_matches('/')
-                .to_string(),
+            base_url: text(
+                environment("COMFYUI_BASE_URL")
+                    .map(|url| url.trim().trim_end_matches('/').to_string()),
+            )
+            .unwrap_or(defaults.base_url),
             api_token: token(environment("COMFYUI_API_TOKEN")),
             token_header: text(environment("COMFYUI_TOKEN_HEADER"))
                 .unwrap_or(defaults.token_header),
-            workflow_path: workflow(
+            workflow_path: Some(workflow(
                 environment("COMFYUI_WORKFLOW_PATH"),
                 "flux1-schnell-fp8-api.json",
-            ),
-            checkpoint: environment("COMFYUI_CHECKPOINT").unwrap_or(defaults.checkpoint),
-            video_workflow_path: workflow(
+            )),
+            checkpoint: text(environment("COMFYUI_CHECKPOINT")).unwrap_or(defaults.checkpoint),
+            video_workflow_path: Some(workflow(
                 environment("COMFYUI_VIDEO_WORKFLOW_PATH"),
                 "wan2.2-ti2v-5b-api.json",
-            ),
-            video_unet: environment("COMFYUI_VIDEO_UNET").unwrap_or(defaults.video_unet),
-            video_clip: environment("COMFYUI_VIDEO_CLIP").unwrap_or(defaults.video_clip),
-            video_vae: environment("COMFYUI_VIDEO_VAE").unwrap_or(defaults.video_vae),
-            audio_workflow_path: workflow(
+            )),
+            video_unet: text(environment("COMFYUI_VIDEO_UNET")).unwrap_or(defaults.video_unet),
+            video_clip: text(environment("COMFYUI_VIDEO_CLIP")).unwrap_or(defaults.video_clip),
+            video_vae: text(environment("COMFYUI_VIDEO_VAE")).unwrap_or(defaults.video_vae),
+            audio_workflow_path: Some(workflow(
                 environment("COMFYUI_AUDIO_WORKFLOW_PATH"),
                 "ace-step-v1-3.5b-api.json",
-            ),
-            audio_checkpoint: environment("COMFYUI_AUDIO_CHECKPOINT")
+            )),
+            audio_checkpoint: text(environment("COMFYUI_AUDIO_CHECKPOINT"))
                 .unwrap_or(defaults.audio_checkpoint),
-            upscale_workflow_path: workflow(
+            upscale_workflow_path: Some(workflow(
                 environment("COMFYUI_UPSCALE_WORKFLOW_PATH"),
                 "upscale-image-api.json",
-            ),
-            upscale_model: environment("COMFYUI_UPSCALE_MODEL").unwrap_or(defaults.upscale_model),
-            artifact_root: environment("COMFYUI_ARTIFACT_ROOT")
+            )),
+            upscale_model: text(environment("COMFYUI_UPSCALE_MODEL"))
+                .unwrap_or(defaults.upscale_model),
+            artifact_root: text(environment("COMFYUI_ARTIFACT_ROOT"))
                 .map_or(defaults.artifact_root, PathBuf::from),
             classifier_model: text(environment("COMFYUI_CLASSIFIER_MODEL"))
                 .unwrap_or(defaults.classifier_model),
@@ -647,6 +649,27 @@ mod tests {
         assert_eq!(text(Some("   ".into())), None, "whitespace is not a value");
         assert_eq!(text(Some(String::new())), None);
         assert_eq!(text(None), None);
+    }
+
+    #[test]
+    fn a_blank_variable_reads_as_an_unset_one() {
+        let unset = configured(&[]);
+        for blank in ["", "  ", "\t\n"] {
+            let read = Config::from_variables(|_| Some(blank.to_string()), VISION_MODEL_VARIABLE);
+            assert_eq!(read, unset, "every variable set to {blank:?}");
+        }
+        assert_eq!(
+            configured(&[("COMFYUI_MODELS_DIRECTORY", " ")]).models_directory,
+            PathBuf::from(DEFAULT_MODELS_DIRECTORY)
+        );
+        assert_eq!(
+            configured(&[("COMFYUI_BASE_URL", "/")]).base_url,
+            DEFAULT_BASE_URL
+        );
+        assert_eq!(
+            configured(&[("COMFYUI_BASE_URL", " http://comfyui:8188/ ")]).base_url,
+            "http://comfyui:8188"
+        );
     }
 
     #[test]
