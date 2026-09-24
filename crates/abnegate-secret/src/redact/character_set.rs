@@ -1,3 +1,5 @@
+use crate::work;
+
 #[derive(Clone, Copy)]
 pub(super) enum CharacterSet {
     /// `[A-Za-z0-9]`
@@ -27,6 +29,7 @@ impl CharacterSet {
         while bytes.get(index).is_some_and(|byte| self.contains(*byte)) {
             index += 1;
         }
+        work::scanned(index - from);
         index
     }
 }
