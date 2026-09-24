@@ -2,9 +2,9 @@ use std::fmt;
 
 /// A repository on the host a pull request service answers for, as an owner
 /// and a name made only of the characters GitHub allows in them. Only
-/// [`crate::pull_request::PullRequestService::parse_github_url`] makes one, so
-/// every request path built from it addresses the repository it was parsed
-/// from and nothing else.
+/// [`crate::pull_request::PullRequestService`] makes one, from a URL it parsed
+/// or from GitHub's answer to creating the repository, so every request path
+/// built from it addresses that repository and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Repository {
     owner: String,
@@ -38,7 +38,7 @@ impl fmt::Display for Repository {
 
 /// An owner or repository name: what GitHub allows in one, and never a path
 /// traversal.
-fn named(segment: &str) -> bool {
+pub(super) fn named(segment: &str) -> bool {
     !segment.is_empty()
         && segment != "."
         && segment != ".."
