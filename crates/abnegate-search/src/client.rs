@@ -51,12 +51,20 @@ impl SearxngClient {
 
     /// Query SearXNG and return at most `result_count` hits, optionally
     /// restricted to results published within `range`.
+    ///
+    /// While the config's `enabled` switch is off, this returns
+    /// [`Error::Disabled`] and sends nothing.
     pub async fn search(
         &self,
         query: &str,
         range: Option<TimeRange>,
     ) -> Result<Vec<SearchHit>, Error> {
         let started = Instant::now();
+        if !self.config.enabled {
+            record(Outcome::Disabled, started.elapsed(), 0);
+            return Err(Error::Disabled);
+        }
+
         let query = sanitize_query(query);
         if query.is_empty() {
             record(Outcome::EmptyQuery, started.elapsed(), 0);
@@ -336,6 +344,45 @@ mod tests {
                 limit: MAXIMUM_BODY_BYTES
             }
         );
+    }
+
+    #[tokio::test]
+    async fn a_switched_off_client_refuses_without_sending_a_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(results(1)))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client =
+            SearxngClient::new(WebSearchConfig::new(search_url(&server)).with_enabled(false))
+                .expect("client");
+        for query in ["rust", "   "] {
+            assert_eq!(
+                client.search(query, None).await,
+                Err(Error::Disabled),
+                "{query:?}"
+            );
+        }
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_switched_on_client_still_searches() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(results(1)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client =
+            SearxngClient::new(WebSearchConfig::new(search_url(&server)).with_enabled(true))
+                .expect("client");
+        assert_eq!(client.search("rust", None).await.expect("search").len(), 1);
+        server.verify().await;
     }
 
     /// Chunked, so no length is declared and only counting the bytes as they

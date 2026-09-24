@@ -35,6 +35,9 @@ async fn context(message: &str) -> Result<Option<String>, Error> {
 
 `requested_for` is false while search is switched off, and otherwise asks
 `needs_web_search`, so the example searches only when the message calls for it.
+A client built from a switched-off config returns `Error::Disabled` from every
+search without sending a request, so the switch holds for a host that searches
+without asking `requested_for`.
 
 ## Configuration
 

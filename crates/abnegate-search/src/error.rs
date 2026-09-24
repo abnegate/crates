@@ -2,13 +2,17 @@
 
 use crate::outcome::Outcome;
 
-/// SearXNG request error. A caller is expected to treat these as non-fatal.
+/// Why a search failed. A caller is expected to treat these as non-fatal.
 ///
 /// No variant carries the request URL: it holds the query, and whatever
 /// credential the configured template embeds.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// Search is switched off in the [`WebSearchConfig`](crate::WebSearchConfig)
+    /// the client was built from, so no request was made.
+    #[error("Search is switched off")]
+    Disabled,
     /// The request did not complete: the client could not be built, the
     /// instance could not be reached, or the answer stopped part way.
     #[error("Search request failed: {0}")]
@@ -49,6 +53,7 @@ impl Error {
     /// How this failure is reported to a [`SearchObserver`](crate::SearchObserver).
     pub fn outcome(&self) -> Outcome {
         match self {
+            Self::Disabled => Outcome::Disabled,
             Self::Http(_) => Outcome::Unreachable,
             Self::Status(_) => Outcome::Status,
             Self::Malformed { .. } => Outcome::Malformed,
@@ -67,5 +72,12 @@ mod tests {
         let malformed = Error::malformed(&error);
         assert_eq!(malformed.outcome(), Outcome::Malformed);
         assert_ne!(malformed.outcome(), Outcome::Unreachable);
+    }
+
+    #[test]
+    fn a_refusal_while_switched_off_is_its_own_outcome() {
+        assert_eq!(Error::Disabled.outcome(), Outcome::Disabled);
+        assert_eq!(Outcome::Disabled.as_str(), "disabled");
+        assert_eq!(Error::Disabled.to_string(), "Search is switched off");
     }
 }

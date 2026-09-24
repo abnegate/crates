@@ -8,6 +8,8 @@ use std::fmt;
 pub enum Outcome {
     /// SearXNG answered and its results were read.
     Succeeded,
+    /// Search is switched off, so no request was made.
+    Disabled,
     /// Nothing was left of the message to search for, so no request was made.
     EmptyQuery,
     /// The request did not complete.
@@ -25,6 +27,7 @@ impl Outcome {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Succeeded => "ok",
+            Self::Disabled => "disabled",
             Self::EmptyQuery => "empty_query",
             Self::Unreachable => "http_error",
             Self::Status => "status_error",

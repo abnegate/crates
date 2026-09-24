@@ -36,10 +36,12 @@ const MAXIMUM_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WebSearchConfig {
-    /// Master switch for automatic lookups. When false,
-    /// [`requested_for`](Self::requested_for) selects no message and
+    /// Master switch for search. When false,
+    /// [`requested_for`](Self::requested_for) selects no message,
     /// [`SearchContext::new`](crate::SearchContext::new) reports search as
-    /// disabled. [`SearxngClient`](crate::SearxngClient) does not consult it.
+    /// disabled, and [`SearxngClient::search`](crate::SearxngClient::search)
+    /// returns [`Error::Disabled`](crate::Error::Disabled) without sending a
+    /// request.
     pub enabled: bool,
     /// Query URL template. `<query>` or `{query}` is replaced with the
     /// URL-encoded search string.
