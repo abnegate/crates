@@ -27,6 +27,7 @@ use reqwest::Response;
 use reqwest::StatusCode;
 use reqwest::header;
 use reqwest::header::HeaderMap;
+use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
 use std::num::NonZeroU64;
 use std::time::Duration;
@@ -40,6 +41,8 @@ mod conversation;
 mod fixtures;
 mod merging;
 mod pulls;
+#[cfg(test)]
+mod redirect_tests;
 mod repositories;
 
 /// What this crate calls itself to the GitHub API.
@@ -64,6 +67,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Longest a connection may take to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Redirects within the origin a request follows before it stops.
+const MAXIMUM_REDIRECTS: usize = 10;
 
 /// The header GitHub reports the requests left in the current window in.
 const RATE_LIMIT_REMAINING: &str = "x-ratelimit-remaining";
@@ -459,14 +465,30 @@ impl PullRequestService {
     }
 }
 
-/// A client that gives up on a request that stalls, and that refuses
+/// A client that gives up on a request that stalls, that follows a redirect
+/// only while it stays on the origin the request was sent to, and that refuses
 /// anything but HTTPS unless it is standing in for a test's mock server.
+///
+/// A redirect it will not follow comes back as the answer itself.
 fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
+    let redirect = Policy::custom(|attempt| {
+        let previous = attempt.previous();
+        let within = previous
+            .first()
+            .is_some_and(|sent| sent.origin() == attempt.url().origin());
+        if within && previous.len() <= MAXIMUM_REDIRECTS {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    });
+
     Ok(Client::builder()
         .user_agent(USER_AGENT)
         .timeout(timeout)
         .connect_timeout(CONNECT_TIMEOUT)
         .https_only(https_only)
+        .redirect(redirect)
         .build()?)
 }
 
