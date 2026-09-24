@@ -24,11 +24,14 @@
 //! [`BlockingQuestion`] recovers a question the agent stopped to ask.
 //! [`stream`] reads the raw Messages API stream the CLI is built on.
 //!
-//! The agent is given only [`INHERITED_VARIABLES`] from this process's
-//! environment, plus what the settings hand it, and every secret it is
-//! handed is scrubbed from what the run writes down, as written,
-//! JSON-escaped or percent-encoded. A secret the agent re-encodes any other
-//! way, such as in base64, is not recognised.
+//! The agent is given only the
+//! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names and
+//! those [`CliSettings::allow`] adds from this process's environment, plus
+//! what the settings hand it; a proxy reaches it only through
+//! [`CliSettings::with_proxy_variables`]. Every secret it is handed is
+//! scrubbed from what the run writes down, as written, JSON-escaped or
+//! percent-encoded. A secret the agent re-encodes any other way, such as in
+//! base64, is not recognised.
 //!
 //! ```no_run
 //! use abnegate_agent_cli::AgentKind;
@@ -130,7 +133,6 @@ pub use crate::settings::DEFAULT_JOURNAL_LIMIT;
 pub use crate::settings::DEFAULT_LINE_LIMIT;
 pub use crate::settings::DEFAULT_OUTPUT_LIMIT;
 pub use crate::settings::DEFAULT_TIMEOUT;
-pub use crate::settings::INHERITED_VARIABLES;
 pub use crate::settings::READ_ONLY_OPTIONS;
 pub use crate::settings::READ_ONLY_SWITCHES;
 pub use crate::settings::READ_ONLY_TOOLS;

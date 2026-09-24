@@ -73,8 +73,9 @@ const INSTRUCTIONS_SUFFIX: &str = ".md";
 /// of helper processes to do its work. It does reuse that crate's
 /// process-group termination and output caps, so a run that times out or
 /// fails takes the agent's whole process tree with it, and it is given only
-/// [`INHERITED_VARIABLES`](crate::INHERITED_VARIABLES) from this process's
-/// environment unless [`CliSettings::inherit_environment`] opts in.
+/// the [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names and
+/// those [`CliSettings::allow`] adds from this process's environment unless
+/// [`CliSettings::inherit_environment`] opts in.
 #[derive(Debug)]
 pub struct CliProvider {
     name: String,
@@ -614,6 +615,7 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use abnegate_exec::DEFAULT_ENVIRONMENT;
     use abnegate_llm::Completion;
     use abnegate_llm::CompletionProvider;
     use abnegate_llm::CompletionRequest;
@@ -632,7 +634,6 @@ mod tests {
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
     use crate::settings::CliSettings;
-    use crate::settings::INHERITED_VARIABLES;
     use crate::structured_result::StructuredResult;
 
     const ETXTBSY: i32 = 26;
@@ -1195,7 +1196,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         let shell = ["PWD", "SHLVL", "_", "OLDPWD"];
         for name in &names {
             assert!(
-                INHERITED_VARIABLES.contains(&name.as_str())
+                DEFAULT_ENVIRONMENT.contains(&name.as_str())
                     || AgentKind::Claude.configuration().contains(&name.as_str())
                     || shell.contains(&name.as_str())
                     || ["LINEAR_ISSUE_ID", "ANTHROPIC_API_KEY"].contains(&name.as_str()),

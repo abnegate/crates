@@ -10,7 +10,8 @@ final prose as a completion; `CliProvider::execute` returns the whole
 resume, the cost, or the run's log files. A Claude run can attach MCP servers,
 restrict its tools, or be confined to reading its working directory, and a run
 that fails in any way takes every process the agent forked with it. The agent is
-given only an allowlisted part of this process's environment, and every secret
+given only an allowlisted part of this process's environment, a proxy only
+through `CliSettings::with_proxy_variables`, and every secret
 it is handed is scrubbed from what the run writes down, as written,
 JSON-escaped or percent-encoded; a secret the agent re-encodes any other way is
 not recognised. Unix only.
