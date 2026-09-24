@@ -7,10 +7,12 @@ group is killed before the run is reported, so nothing it started outlives it. A
 run may ask to be confined: `Confinement` runs it under seatbelt on macOS or
 bubblewrap on Linux with no network access at all, and a confined job fails to
 spawn on a host where `Confinement::probe` cannot prove the sandbox holds, rather
-than running unconfined. A command sees only the allowlisted environment by
-default, and `InboundMessage`, `OutboundMessage` and `NdjsonCodec` carry the same
-work over a pipe as newline-delimited JSON. Unix only; confinement additionally
-needs macOS or Linux.
+than running unconfined. A command sees only an allowlisted environment by
+default, with no proxy variable in it: `EnvironmentPolicy` names what else it
+may see, and `Proxy` routes it through a proxy. `InboundMessage`,
+`OutboundMessage` and `NdjsonCodec` carry the same work over a pipe as
+newline-delimited JSON. Unix only; confinement additionally needs macOS or
+Linux.
 
 ## Features
 

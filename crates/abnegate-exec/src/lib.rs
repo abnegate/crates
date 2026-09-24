@@ -134,3 +134,7 @@ pub use proxy::DEFAULT_BYPASS;
 pub use proxy::PROXY_BYPASS_VARIABLE;
 pub use proxy::PROXY_URL_VARIABLE;
 pub use proxy::Proxy;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
