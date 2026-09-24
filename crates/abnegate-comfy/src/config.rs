@@ -10,29 +10,25 @@ use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
 use std::env;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Default header that carries [`Config::api_token`], the one the proxy in
 /// front of a token-protected ComfyUI checks.
 pub const TOKEN_HEADER: &str = "X-Zone-ComfyUI-Token";
 
-/// Variable [`Config::from_env`] reads the U2-Net weights path from, the same
+/// Variable [`Config::from_environment`] reads the U2-Net weights path from, the same
 /// one `abnegate-vision` documents.
 pub const VISION_MODEL_VARIABLE: &str = "ABNEGATE_VISION_MODEL";
 
 /// Floor on every timeout, since a zero timeout fails a request before it is sent.
-pub(crate) const MINIMUM_TIMEOUT_SECONDS: u64 = 1;
+pub(crate) const MINIMUM_TIMEOUT: Duration = Duration::from_secs(1);
 /// Floor on the poll interval, since a zero interval polls ComfyUI in a busy loop.
-const MINIMUM_POLL_INTERVAL_MILLISECONDS: u64 = 1;
-const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 120;
+const MINIMUM_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const MAXIMUM_REQUEST_TIMEOUT_SECONDS: u64 = 600;
-
-fn environment_flag(name: &str, default: bool) -> bool {
-    truthy(env::var(name).ok(), default)
-}
-
-fn environment_number(name: &str, default: u64, minimum: u64, maximum: u64) -> u64 {
-    bounded(env::var(name).ok(), default, minimum, maximum)
-}
+const DEFAULT_BASE_URL: &str = "http://comfyui:8188";
+const DEFAULT_ARTIFACT_ROOT: &str = "/app/artifacts";
+const DEFAULT_MODELS_DIRECTORY: &str = "/app/comfyui/models";
+const DEFAULT_WORKFLOW_DIRECTORY: &str = "/app/comfyui/workflows";
 
 /// Reading the value is the operating system's job; deciding what it means is
 /// this crate's, so the two are separable and only one of them needs a process
@@ -48,10 +44,6 @@ fn truthy(value: Option<String>, default: bool) -> bool {
 }
 
 /// A setting that is present but blank is not a setting.
-fn environment_text(name: &str) -> Option<String> {
-    text(env::var(name).ok())
-}
-
 fn text(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
@@ -69,58 +61,104 @@ fn bounded(value: Option<String>, default: u64, minimum: u64, maximum: u64) -> u
         .clamp(minimum, maximum)
 }
 
+fn seconds(value: Option<String>, default: Duration, minimum: u64, maximum: u64) -> Duration {
+    Duration::from_secs(bounded(value, default.as_secs(), minimum, maximum))
+}
+
+fn milliseconds(value: Option<String>, default: Duration, minimum: u64, maximum: u64) -> Duration {
+    let default = u64::try_from(default.as_millis()).unwrap_or(maximum);
+    Duration::from_millis(bounded(value, default, minimum, maximum))
+}
+
+fn frames(value: Option<String>, default: u32, minimum: u32, maximum: u32) -> u32 {
+    let frames = bounded(
+        value,
+        u64::from(default),
+        u64::from(minimum),
+        u64::from(maximum),
+    );
+    u32::try_from(frames).unwrap_or(maximum)
+}
+
+/// The graph at `value`, or the packaged graph `name` in the default workflow
+/// directory.
+fn workflow(value: Option<String>, name: &str) -> Option<PathBuf> {
+    Some(value.map_or_else(
+        || PathBuf::from(DEFAULT_WORKFLOW_DIRECTORY).join(name),
+        PathBuf::from,
+    ))
+}
+
 /// Direct image generation settings loaded from `COMFYUI_*` environment variables.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Config {
+    /// Whether generation and graph training may reach ComfyUI at all.
     pub enabled: bool,
+    /// ComfyUI server every request goes to, without a trailing slash.
     pub base_url: String,
+    /// Token sent in [`Config::token_header`] with every request.
     pub api_token: Option<SecretValue>,
     /// Header [`Config::api_token`] is sent in.
     pub token_header: String,
     /// Image graph whose directory may overlay the packaged recipes. `None`
     /// uses the recipes and graphs packaged with the crate.
     pub workflow_path: Option<PathBuf>,
+    /// Image checkpoint, or a LoRA whose sidecar names its base.
     pub checkpoint: String,
     /// `None` uses the packaged text-to-video graph.
     pub video_workflow_path: Option<PathBuf>,
+    /// Diffusion model the video graphs load.
     pub video_unet: String,
+    /// Text encoder the video graphs load.
     pub video_clip: String,
+    /// VAE the video graphs load.
     pub video_vae: String,
     /// `None` uses the packaged text-to-audio graph.
     pub audio_workflow_path: Option<PathBuf>,
+    /// Checkpoint the audio graph loads.
     pub audio_checkpoint: String,
     /// `None` uses the packaged upscale graphs.
     pub upscale_workflow_path: Option<PathBuf>,
+    /// Model the upscale graphs load.
     pub upscale_model: String,
+    /// Directory a host keeps generated media under.
     pub artifact_root: PathBuf,
+    /// Model a host classifies prompts with; `auto` leaves the choice to it.
     pub classifier_model: String,
-    pub classifier_timeout_seconds: u64,
+    /// Ceiling on one prompt classification.
+    pub classifier_timeout: Duration,
     /// Vision model that captions LoRA training images. Empty disables captioning.
     pub caption_model: String,
-    pub caption_timeout_seconds: u64,
+    /// Ceiling on one caption request.
+    pub caption_timeout: Duration,
     /// Ceiling on any one HTTP request. Generation and training are bounded by
     /// their own deadlines, not by this.
-    pub request_timeout_seconds: u64,
-    pub generation_timeout_seconds: u64,
-    pub video_generation_timeout_seconds: u64,
-    pub audio_generation_timeout_seconds: u64,
-    pub upscale_generation_timeout_seconds: u64,
-    pub poll_interval_milliseconds: u64,
+    pub request_timeout: Duration,
+    /// Deadline for one image generation, from submission to the last byte.
+    pub generation_timeout: Duration,
+    /// Deadline for one video generation.
+    pub video_generation_timeout: Duration,
+    /// Deadline for one audio generation.
+    pub audio_generation_timeout: Duration,
+    /// Deadline for one image or video upscale.
+    pub upscale_generation_timeout: Duration,
+    /// Wait between two polls of a submitted graph's history.
+    pub poll_interval: Duration,
     /// ComfyUI models root (`checkpoints/`, `loras/`, `diffusion_models/`, ...).
     pub models_directory: PathBuf,
     /// Optional command used to train a LoRA. Empty runs the packaged training
     /// graph on ComfyUI.
     pub train_command: Option<String>,
-    /// Wall clock budget for a ComfyUI train job.
-    pub train_timeout_seconds: u64,
+    /// Wall clock budget for a training run, graph or command.
+    pub train_timeout: Duration,
     /// Decoder that turns a submitted clip into training frames.
     pub ffmpeg: String,
     /// Reads a clip's duration, so a long one lowers its sampling rate instead
     /// of being cut short.
     pub ffprobe: String,
     /// Frames kept per second of submitted video.
-    pub frame_fps: u32,
+    pub frame_rate: u32,
     /// Frames one clip contributes to a training set.
     pub frame_limit: u32,
     /// U2-Net weights that locate the subject of a training image. `None`
@@ -135,7 +173,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: false,
-            base_url: "http://comfyui:8188".to_string(),
+            base_url: DEFAULT_BASE_URL.to_string(),
             api_token: None,
             token_header: TOKEN_HEADER.to_string(),
             workflow_path: None,
@@ -148,23 +186,23 @@ impl Default for Config {
             audio_checkpoint: "ace_step_v1_3.5b.safetensors".to_string(),
             upscale_workflow_path: None,
             upscale_model: "RealESRGAN_x4plus.safetensors".to_string(),
-            artifact_root: "/app/artifacts".into(),
+            artifact_root: PathBuf::from(DEFAULT_ARTIFACT_ROOT),
             classifier_model: "auto".to_string(),
-            classifier_timeout_seconds: 3,
+            classifier_timeout: Duration::from_secs(3),
             caption_model: String::new(),
-            caption_timeout_seconds: 60,
-            request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
-            generation_timeout_seconds: 300,
-            video_generation_timeout_seconds: 600,
-            audio_generation_timeout_seconds: 600,
-            upscale_generation_timeout_seconds: 600,
-            poll_interval_milliseconds: 500,
-            models_directory: PathBuf::from("/app/comfyui/models"),
+            caption_timeout: Duration::from_secs(60),
+            request_timeout: Duration::from_secs(120),
+            generation_timeout: Duration::from_secs(300),
+            video_generation_timeout: Duration::from_secs(600),
+            audio_generation_timeout: Duration::from_secs(600),
+            upscale_generation_timeout: Duration::from_secs(600),
+            poll_interval: Duration::from_millis(500),
+            models_directory: PathBuf::from(DEFAULT_MODELS_DIRECTORY),
             train_command: None,
-            train_timeout_seconds: 3600,
+            train_timeout: Duration::from_secs(3600),
             ffmpeg: "ffmpeg".to_string(),
             ffprobe: "ffprobe".to_string(),
-            frame_fps: 4,
+            frame_rate: 4,
             frame_limit: 48,
             vision_model: None,
             contract: Contract::default(),
@@ -175,8 +213,15 @@ impl Default for Config {
 impl Config {
     /// Settings from `COMFYUI_*`, with the U2-Net weights taken from
     /// [`VISION_MODEL_VARIABLE`].
-    pub fn from_env() -> Self {
-        Self::from_env_with_vision_model(VISION_MODEL_VARIABLE)
+    pub fn from_environment() -> Self {
+        Self::from_environment_with_vision_model(VISION_MODEL_VARIABLE)
+    }
+
+    /// [`Config::from_environment`], taking the U2-Net weights path from
+    /// `variable` instead, for a deployment that already names it something
+    /// else.
+    pub fn from_environment_with_vision_model(variable: &str) -> Self {
+        Self::from_variables(|name| env::var(name).ok(), variable)
     }
 
     /// Refuses settings that would fail every request, poll ComfyUI in a busy
@@ -184,46 +229,46 @@ impl Config {
     /// [`lora::train`](crate::lora::train) and [`train::run`](crate::train::run)
     /// call it first.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.poll_interval_milliseconds < MINIMUM_POLL_INTERVAL_MILLISECONDS {
+        if self.poll_interval < MINIMUM_POLL_INTERVAL {
             return Err(ConfigError::new(
-                "COMFYUI_POLL_INTERVAL_MS must be at least one millisecond",
+                "COMFYUI_POLL_INTERVAL_MILLISECONDS must be at least one millisecond",
             ));
         }
-        for (seconds, message) in [
+        for (timeout, message) in [
             (
-                self.request_timeout_seconds,
-                "COMFYUI_REQUEST_TIMEOUT_SECS must be at least one second",
+                self.request_timeout,
+                "COMFYUI_REQUEST_TIMEOUT_SECONDS must be at least one second",
             ),
             (
-                self.generation_timeout_seconds,
-                "COMFYUI_GENERATION_TIMEOUT_SECS must be at least one second",
+                self.generation_timeout,
+                "COMFYUI_GENERATION_TIMEOUT_SECONDS must be at least one second",
             ),
             (
-                self.video_generation_timeout_seconds,
-                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECS must be at least one second",
+                self.video_generation_timeout,
+                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS must be at least one second",
             ),
             (
-                self.audio_generation_timeout_seconds,
-                "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECS must be at least one second",
+                self.audio_generation_timeout,
+                "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS must be at least one second",
             ),
             (
-                self.upscale_generation_timeout_seconds,
-                "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECS must be at least one second",
+                self.upscale_generation_timeout,
+                "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECONDS must be at least one second",
             ),
             (
-                self.caption_timeout_seconds,
-                "COMFYUI_CAPTION_TIMEOUT_SECS must be at least one second",
+                self.caption_timeout,
+                "COMFYUI_CAPTION_TIMEOUT_SECONDS must be at least one second",
             ),
             (
-                self.classifier_timeout_seconds,
-                "COMFYUI_CLASSIFIER_TIMEOUT_SECS must be at least one second",
+                self.classifier_timeout,
+                "COMFYUI_CLASSIFIER_TIMEOUT_SECONDS must be at least one second",
             ),
             (
-                self.train_timeout_seconds,
-                "COMFYUI_TRAIN_TIMEOUT_SECS must be at least one second",
+                self.train_timeout,
+                "COMFYUI_TRAIN_TIMEOUT_SECONDS must be at least one second",
             ),
         ] {
-            if seconds < MINIMUM_TIMEOUT_SECONDS {
+            if timeout < MINIMUM_TIMEOUT {
                 return Err(ConfigError::new(message));
             }
         }
@@ -242,126 +287,124 @@ impl Config {
         self.contract.validate()
     }
 
-    /// [`Config::from_env`], taking the U2-Net weights path from `variable`
-    /// instead, for a deployment that already names it something else.
-    pub fn from_env_with_vision_model(variable: &str) -> Self {
-        let models_directory: PathBuf = env::var("COMFYUI_MODELS_DIR")
-            .unwrap_or_else(|_| "/app/comfyui/models".to_string())
-            .into();
+    /// Settings from whatever `environment` answers for each variable, so the
+    /// names are testable without touching the process environment.
+    fn from_variables(environment: impl Fn(&str) -> Option<String>, vision_model: &str) -> Self {
+        let defaults = Self::default();
+        let models_directory = environment("COMFYUI_MODELS_DIRECTORY")
+            .map_or(defaults.models_directory, PathBuf::from);
         Self {
-            enabled: environment_flag("COMFYUI_ENABLED", false),
-            base_url: env::var("COMFYUI_BASE_URL")
-                .unwrap_or_else(|_| "http://comfyui:8188".to_string())
+            enabled: truthy(environment("COMFYUI_ENABLED"), defaults.enabled),
+            base_url: environment("COMFYUI_BASE_URL")
+                .unwrap_or(defaults.base_url)
                 .trim_end_matches('/')
                 .to_string(),
-            api_token: token(env::var("COMFYUI_API_TOKEN").ok()),
-            token_header: environment_text("COMFYUI_TOKEN_HEADER")
-                .unwrap_or_else(|| TOKEN_HEADER.to_string()),
-            workflow_path: Some(
-                env::var("COMFYUI_WORKFLOW_PATH")
-                    .unwrap_or_else(|_| {
-                        "/app/comfyui/workflows/flux1-schnell-fp8-api.json".to_string()
-                    })
-                    .into(),
+            api_token: token(environment("COMFYUI_API_TOKEN")),
+            token_header: text(environment("COMFYUI_TOKEN_HEADER"))
+                .unwrap_or(defaults.token_header),
+            workflow_path: workflow(
+                environment("COMFYUI_WORKFLOW_PATH"),
+                "flux1-schnell-fp8-api.json",
             ),
-            checkpoint: env::var("COMFYUI_CHECKPOINT")
-                .unwrap_or_else(|_| "flux1-schnell-fp8.safetensors".to_string()),
-            video_workflow_path: Some(
-                env::var("COMFYUI_VIDEO_WORKFLOW_PATH")
-                    .unwrap_or_else(|_| {
-                        "/app/comfyui/workflows/wan2.2-ti2v-5b-api.json".to_string()
-                    })
-                    .into(),
+            checkpoint: environment("COMFYUI_CHECKPOINT").unwrap_or(defaults.checkpoint),
+            video_workflow_path: workflow(
+                environment("COMFYUI_VIDEO_WORKFLOW_PATH"),
+                "wan2.2-ti2v-5b-api.json",
             ),
-            video_unet: env::var("COMFYUI_VIDEO_UNET")
-                .unwrap_or_else(|_| "wan2.2_ti2v_5B_fp16.safetensors".to_string()),
-            video_clip: env::var("COMFYUI_VIDEO_CLIP")
-                .unwrap_or_else(|_| "umt5_xxl_fp8_e4m3fn_scaled.safetensors".to_string()),
-            video_vae: env::var("COMFYUI_VIDEO_VAE")
-                .unwrap_or_else(|_| "wan2.2_vae.safetensors".to_string()),
-            audio_workflow_path: Some(
-                env::var("COMFYUI_AUDIO_WORKFLOW_PATH")
-                    .unwrap_or_else(|_| {
-                        "/app/comfyui/workflows/ace-step-v1-3.5b-api.json".to_string()
-                    })
-                    .into(),
+            video_unet: environment("COMFYUI_VIDEO_UNET").unwrap_or(defaults.video_unet),
+            video_clip: environment("COMFYUI_VIDEO_CLIP").unwrap_or(defaults.video_clip),
+            video_vae: environment("COMFYUI_VIDEO_VAE").unwrap_or(defaults.video_vae),
+            audio_workflow_path: workflow(
+                environment("COMFYUI_AUDIO_WORKFLOW_PATH"),
+                "ace-step-v1-3.5b-api.json",
             ),
-            audio_checkpoint: env::var("COMFYUI_AUDIO_CHECKPOINT")
-                .unwrap_or_else(|_| "ace_step_v1_3.5b.safetensors".to_string()),
-            upscale_workflow_path: Some(
-                env::var("COMFYUI_UPSCALE_WORKFLOW_PATH")
-                    .unwrap_or_else(|_| "/app/comfyui/workflows/upscale-image-api.json".to_string())
-                    .into(),
+            audio_checkpoint: environment("COMFYUI_AUDIO_CHECKPOINT")
+                .unwrap_or(defaults.audio_checkpoint),
+            upscale_workflow_path: workflow(
+                environment("COMFYUI_UPSCALE_WORKFLOW_PATH"),
+                "upscale-image-api.json",
             ),
-            upscale_model: env::var("COMFYUI_UPSCALE_MODEL")
-                .unwrap_or_else(|_| "RealESRGAN_x4plus.safetensors".to_string()),
-            artifact_root: env::var("ARTIFACT_ROOT")
-                .unwrap_or_else(|_| "/app/artifacts".to_string())
-                .into(),
-            classifier_model: environment_text("COMFYUI_CLASSIFIER_MODEL")
-                .unwrap_or_else(|| "auto".to_string()),
-            classifier_timeout_seconds: environment_number(
-                "COMFYUI_CLASSIFIER_TIMEOUT_SECS",
-                3,
+            upscale_model: environment("COMFYUI_UPSCALE_MODEL").unwrap_or(defaults.upscale_model),
+            artifact_root: environment("COMFYUI_ARTIFACT_ROOT")
+                .map_or(defaults.artifact_root, PathBuf::from),
+            classifier_model: text(environment("COMFYUI_CLASSIFIER_MODEL"))
+                .unwrap_or(defaults.classifier_model),
+            classifier_timeout: seconds(
+                environment("COMFYUI_CLASSIFIER_TIMEOUT_SECONDS"),
+                defaults.classifier_timeout,
                 1,
                 30,
             ),
-            caption_model: environment_text("COMFYUI_CAPTION_MODEL").unwrap_or_default(),
-            caption_timeout_seconds: environment_number("COMFYUI_CAPTION_TIMEOUT_SECS", 60, 5, 600),
-            request_timeout_seconds: environment_number(
-                "COMFYUI_REQUEST_TIMEOUT_SECS",
-                DEFAULT_REQUEST_TIMEOUT_SECONDS,
-                MINIMUM_TIMEOUT_SECONDS,
+            caption_model: text(environment("COMFYUI_CAPTION_MODEL")).unwrap_or_default(),
+            caption_timeout: seconds(
+                environment("COMFYUI_CAPTION_TIMEOUT_SECONDS"),
+                defaults.caption_timeout,
+                5,
+                600,
+            ),
+            request_timeout: seconds(
+                environment("COMFYUI_REQUEST_TIMEOUT_SECONDS"),
+                defaults.request_timeout,
+                MINIMUM_TIMEOUT.as_secs(),
                 MAXIMUM_REQUEST_TIMEOUT_SECONDS,
             ),
-
-            generation_timeout_seconds: environment_number(
-                "COMFYUI_GENERATION_TIMEOUT_SECS",
-                300,
+            generation_timeout: seconds(
+                environment("COMFYUI_GENERATION_TIMEOUT_SECONDS"),
+                defaults.generation_timeout,
                 10,
                 3600,
             ),
-            video_generation_timeout_seconds: environment_number(
-                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECS",
-                600,
+            video_generation_timeout: seconds(
+                environment("COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS"),
+                defaults.video_generation_timeout,
                 10,
                 3600,
             ),
-            audio_generation_timeout_seconds: environment_number(
-                "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECS",
-                600,
+            audio_generation_timeout: seconds(
+                environment("COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS"),
+                defaults.audio_generation_timeout,
                 10,
                 3600,
             ),
-            upscale_generation_timeout_seconds: environment_number(
-                "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECS",
-                600,
+            upscale_generation_timeout: seconds(
+                environment("COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECONDS"),
+                defaults.upscale_generation_timeout,
                 10,
                 3600,
             ),
-            poll_interval_milliseconds: environment_number(
-                "COMFYUI_POLL_INTERVAL_MS",
-                500,
+            poll_interval: milliseconds(
+                environment("COMFYUI_POLL_INTERVAL_MILLISECONDS"),
+                defaults.poll_interval,
                 50,
                 5000,
             ),
-            vision_model: environment_text(variable)
+            vision_model: text(environment(vision_model))
                 .map(PathBuf::from)
                 .or_else(|| Some(models_directory.join("vision/u2net.onnx")))
                 .filter(|path| path.is_file()),
             models_directory,
-            train_command: environment_text("COMFYUI_TRAIN_COMMAND"),
-            train_timeout_seconds: environment_number(
-                "COMFYUI_TRAIN_TIMEOUT_SECS",
-                3600,
+            train_command: text(environment("COMFYUI_TRAIN_COMMAND")),
+            train_timeout: seconds(
+                environment("COMFYUI_TRAIN_TIMEOUT_SECONDS"),
+                defaults.train_timeout,
                 60,
                 14400,
             ),
-            ffmpeg: environment_text("COMFYUI_FFMPEG").unwrap_or_else(|| "ffmpeg".to_string()),
-            ffprobe: environment_text("COMFYUI_FFPROBE").unwrap_or_else(|| "ffprobe".to_string()),
-            frame_fps: environment_number("COMFYUI_TRAIN_FRAME_FPS", 4, 1, 30) as u32,
-            frame_limit: environment_number("COMFYUI_TRAIN_FRAME_LIMIT", 48, 1, 400) as u32,
-            contract: Contract::default(),
+            ffmpeg: text(environment("COMFYUI_FFMPEG")).unwrap_or(defaults.ffmpeg),
+            ffprobe: text(environment("COMFYUI_FFPROBE")).unwrap_or(defaults.ffprobe),
+            frame_rate: frames(
+                environment("COMFYUI_TRAIN_FRAME_RATE"),
+                defaults.frame_rate,
+                1,
+                30,
+            ),
+            frame_limit: frames(
+                environment("COMFYUI_TRAIN_FRAME_LIMIT"),
+                defaults.frame_limit,
+                1,
+                400,
+            ),
+            contract: defaults.contract,
         }
     }
 }
@@ -369,6 +412,17 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+    use std::collections::HashMap;
+
+    fn configured(variables: &[(&str, &str)]) -> Config {
+        let variables: HashMap<&str, &str> = variables.iter().copied().collect();
+        Config::from_variables(
+            |name| variables.get(name).map(|value| (*value).to_string()),
+            VISION_MODEL_VARIABLE,
+        )
+    }
 
     #[test]
     fn the_defaults_name_no_path_on_the_machine_that_built_the_crate() {
@@ -385,19 +439,116 @@ mod tests {
             );
         }
         assert_eq!(defaults.audio_checkpoint, "ace_step_v1_3.5b.safetensors");
-        assert_eq!(defaults.audio_generation_timeout_seconds, 600);
+        assert_eq!(defaults.audio_generation_timeout, Duration::from_secs(600));
     }
 
     #[test]
     fn the_environment_defaults_to_the_container_graphs() {
-        if env::var_os("COMFYUI_AUDIO_WORKFLOW_PATH").is_none() {
-            assert_eq!(
-                Config::from_env().audio_workflow_path,
-                Some(PathBuf::from(
-                    "/app/comfyui/workflows/ace-step-v1-3.5b-api.json"
-                ))
-            );
-        }
+        assert_eq!(
+            configured(&[]).audio_workflow_path,
+            Some(PathBuf::from(DEFAULT_WORKFLOW_DIRECTORY).join("ace-step-v1-3.5b-api.json"))
+        );
+    }
+
+    #[test]
+    fn an_empty_environment_reads_as_the_defaults() {
+        let read = configured(&[]);
+        let defaults = Config::default();
+        assert_eq!(read.base_url, defaults.base_url);
+        assert_eq!(read.models_directory, defaults.models_directory);
+        assert_eq!(read.artifact_root, defaults.artifact_root);
+        assert_eq!(read.request_timeout, defaults.request_timeout);
+        assert_eq!(read.poll_interval, defaults.poll_interval);
+        assert_eq!(read.train_timeout, defaults.train_timeout);
+        assert_eq!(read.frame_rate, defaults.frame_rate);
+    }
+
+    #[test]
+    fn every_renamed_variable_is_read_under_its_spelled_out_name() {
+        let config = configured(&[
+            ("COMFYUI_CLASSIFIER_TIMEOUT_SECONDS", "7"),
+            ("COMFYUI_CAPTION_TIMEOUT_SECONDS", "70"),
+            ("COMFYUI_REQUEST_TIMEOUT_SECONDS", "90"),
+            ("COMFYUI_GENERATION_TIMEOUT_SECONDS", "400"),
+            ("COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS", "700"),
+            ("COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS", "800"),
+            ("COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECONDS", "900"),
+            ("COMFYUI_TRAIN_TIMEOUT_SECONDS", "7200"),
+            ("COMFYUI_POLL_INTERVAL_MILLISECONDS", "250"),
+            ("COMFYUI_MODELS_DIRECTORY", "/srv/comfyui/models"),
+            ("COMFYUI_TRAIN_FRAME_RATE", "6"),
+            ("COMFYUI_ARTIFACT_ROOT", "/srv/artifacts"),
+        ]);
+        assert_eq!(config.classifier_timeout, Duration::from_secs(7));
+        assert_eq!(config.caption_timeout, Duration::from_secs(70));
+        assert_eq!(config.request_timeout, Duration::from_secs(90));
+        assert_eq!(config.generation_timeout, Duration::from_secs(400));
+        assert_eq!(config.video_generation_timeout, Duration::from_secs(700));
+        assert_eq!(config.audio_generation_timeout, Duration::from_secs(800));
+        assert_eq!(config.upscale_generation_timeout, Duration::from_secs(900));
+        assert_eq!(config.train_timeout, Duration::from_secs(7200));
+        assert_eq!(config.poll_interval, Duration::from_millis(250));
+        assert_eq!(
+            config.models_directory,
+            PathBuf::from("/srv/comfyui/models")
+        );
+        assert_eq!(config.frame_rate, 6);
+        assert_eq!(config.artifact_root, PathBuf::from("/srv/artifacts"));
+    }
+
+    #[test]
+    fn the_environment_is_read_under_these_names_and_no_others() {
+        let asked = RefCell::new(BTreeSet::new());
+        Config::from_variables(
+            |name| {
+                asked.borrow_mut().insert(name.to_string());
+                None
+            },
+            VISION_MODEL_VARIABLE,
+        );
+        let expected: BTreeSet<String> = [
+            "ABNEGATE_VISION_MODEL",
+            "COMFYUI_API_TOKEN",
+            "COMFYUI_ARTIFACT_ROOT",
+            "COMFYUI_AUDIO_CHECKPOINT",
+            "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS",
+            "COMFYUI_AUDIO_WORKFLOW_PATH",
+            "COMFYUI_BASE_URL",
+            "COMFYUI_CAPTION_MODEL",
+            "COMFYUI_CAPTION_TIMEOUT_SECONDS",
+            "COMFYUI_CHECKPOINT",
+            "COMFYUI_CLASSIFIER_MODEL",
+            "COMFYUI_CLASSIFIER_TIMEOUT_SECONDS",
+            "COMFYUI_ENABLED",
+            "COMFYUI_FFMPEG",
+            "COMFYUI_FFPROBE",
+            "COMFYUI_GENERATION_TIMEOUT_SECONDS",
+            "COMFYUI_MODELS_DIRECTORY",
+            "COMFYUI_POLL_INTERVAL_MILLISECONDS",
+            "COMFYUI_REQUEST_TIMEOUT_SECONDS",
+            "COMFYUI_TOKEN_HEADER",
+            "COMFYUI_TRAIN_COMMAND",
+            "COMFYUI_TRAIN_FRAME_LIMIT",
+            "COMFYUI_TRAIN_FRAME_RATE",
+            "COMFYUI_TRAIN_TIMEOUT_SECONDS",
+            "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECONDS",
+            "COMFYUI_UPSCALE_MODEL",
+            "COMFYUI_UPSCALE_WORKFLOW_PATH",
+            "COMFYUI_VIDEO_CLIP",
+            "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS",
+            "COMFYUI_VIDEO_UNET",
+            "COMFYUI_VIDEO_VAE",
+            "COMFYUI_VIDEO_WORKFLOW_PATH",
+            "COMFYUI_WORKFLOW_PATH",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(
+            asked.into_inner(),
+            expected,
+            "a renamed variable is read under its new name alone, with no fallback"
+        );
     }
 
     #[test]
@@ -447,7 +598,7 @@ mod tests {
     #[test]
     fn frame_sampling_has_defaults_a_clip_can_be_trained_on() {
         let defaults = Config::default();
-        assert_eq!(defaults.frame_fps, 4);
+        assert_eq!(defaults.frame_rate, 4);
         assert_eq!(defaults.frame_limit, 48);
         assert_eq!(defaults.ffmpeg, "ffmpeg");
         assert_eq!(defaults.ffprobe, "ffprobe");
@@ -459,12 +610,19 @@ mod tests {
 
     #[test]
     fn subject_detection_stays_off_until_the_weights_are_actually_there() {
-        if env::var_os(VISION_MODEL_VARIABLE).is_some()
-            || env::var_os("COMFYUI_MODELS_DIR").is_some()
-        {
-            return;
-        }
-        assert_eq!(Config::from_env().vision_model, None);
+        let models = tempfile::tempdir().unwrap();
+        let directory = models.path().display().to_string();
+        assert_eq!(
+            configured(&[("COMFYUI_MODELS_DIRECTORY", &directory)]).vision_model,
+            None
+        );
+        let weights = models.path().join("vision/u2net.onnx");
+        std::fs::create_dir_all(weights.parent().unwrap()).unwrap();
+        std::fs::write(&weights, b"weights").unwrap();
+        assert_eq!(
+            configured(&[("COMFYUI_MODELS_DIRECTORY", &directory)]).vision_model,
+            Some(weights)
+        );
     }
 
     /// Set by Cargo, to its own binary, for every test process: a variable
@@ -477,7 +635,7 @@ mod tests {
             return;
         };
         assert_eq!(
-            Config::from_env_with_vision_model(SET_TO_A_FILE).vision_model,
+            Config::from_environment_with_vision_model(SET_TO_A_FILE).vision_model,
             Some(PathBuf::from(cargo))
         );
     }
@@ -490,7 +648,7 @@ mod tests {
     #[test]
     fn a_zero_poll_interval_is_refused_rather_than_polled_in_a_busy_loop() {
         let config = Config {
-            poll_interval_milliseconds: 0,
+            poll_interval: Duration::ZERO,
             ..Config::default()
         };
         assert!(config.validate().is_err());
@@ -499,21 +657,21 @@ mod tests {
                 .validate()
                 .unwrap_err()
                 .message()
-                .contains("COMFYUI_POLL_INTERVAL_MS")
+                .contains("COMFYUI_POLL_INTERVAL_MILLISECONDS")
         );
     }
 
     #[test]
     fn a_zero_timeout_is_refused_rather_than_failing_every_request() {
         let zeroed: [fn(&mut Config); 8] = [
-            |config| config.request_timeout_seconds = 0,
-            |config| config.generation_timeout_seconds = 0,
-            |config| config.video_generation_timeout_seconds = 0,
-            |config| config.audio_generation_timeout_seconds = 0,
-            |config| config.upscale_generation_timeout_seconds = 0,
-            |config| config.caption_timeout_seconds = 0,
-            |config| config.classifier_timeout_seconds = 0,
-            |config| config.train_timeout_seconds = 0,
+            |config| config.request_timeout = Duration::ZERO,
+            |config| config.generation_timeout = Duration::ZERO,
+            |config| config.video_generation_timeout = Duration::ZERO,
+            |config| config.audio_generation_timeout = Duration::ZERO,
+            |config| config.upscale_generation_timeout = Duration::ZERO,
+            |config| config.caption_timeout = Duration::ZERO,
+            |config| config.classifier_timeout = Duration::ZERO,
+            |config| config.train_timeout = Duration::ZERO,
         ];
         for zero in zeroed {
             let mut config = Config::default();
@@ -568,8 +726,10 @@ mod tests {
     #[test]
     fn the_token_travels_in_the_header_the_proxy_checks_unless_told_otherwise() {
         assert_eq!(Config::default().token_header, TOKEN_HEADER);
-        if env::var_os("COMFYUI_TOKEN_HEADER").is_none() {
-            assert_eq!(Config::from_env().token_header, TOKEN_HEADER);
-        }
+        assert_eq!(configured(&[]).token_header, TOKEN_HEADER);
+        assert_eq!(
+            configured(&[("COMFYUI_TOKEN_HEADER", "X-Proxy-Token")]).token_header,
+            "X-Proxy-Token"
+        );
     }
 }

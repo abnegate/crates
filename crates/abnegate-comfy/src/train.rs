@@ -192,14 +192,7 @@ async fn execute(
             error: failure.error,
             cleanup: failure.cleanup,
         })?;
-    if let Err(failure) = wait_prompt(
-        client,
-        config,
-        prompt,
-        Duration::from_secs(config.train_timeout_seconds),
-    )
-    .await
-    {
+    if let Err(failure) = wait_prompt(client, config, prompt, config.train_timeout).await {
         return Err(Failure {
             error: failure.error,
             cleanup: failure.cleanup,
@@ -892,7 +885,7 @@ async fn cancel_and_wait(
         {
             return true;
         }
-        tokio::time::sleep(Duration::from_millis(config.poll_interval_milliseconds)).await;
+        tokio::time::sleep(config.poll_interval).await;
     }
 }
 
@@ -1153,8 +1146,8 @@ mod tests {
             enabled: true,
             base_url: server.uri(),
             api_token: Some("secret".into()),
-            train_timeout_seconds: 60,
-            poll_interval_milliseconds: 50,
+            train_timeout: Duration::from_secs(60),
+            poll_interval: Duration::from_millis(50),
             models_directory: std::env::temp_dir().join(format!("comfy-models-{}", Uuid::new_v4())),
             ..Default::default()
         }
@@ -1275,8 +1268,8 @@ mod tests {
         finishes(&server, prompt).await;
         serves(&server, vec![7u8; 20_000]).await;
         let config = Config {
-            train_timeout_seconds: 1,
-            request_timeout_seconds: 30,
+            train_timeout: Duration::from_secs(1),
+            request_timeout: Duration::from_secs(30),
             ..config(&server)
         };
 
@@ -1664,7 +1657,7 @@ mod tests {
     async fn a_zero_training_budget_is_refused_before_anything_is_sent() {
         let server = MockServer::start().await;
         let config = Config {
-            train_timeout_seconds: 0,
+            train_timeout: Duration::ZERO,
             ..config(&server)
         };
         let work = dataset();
@@ -1900,7 +1893,7 @@ mod tests {
         assert_eq!(contract.artifact_prefix, "zone-lora-");
         assert_eq!(contract.probe_prefix, "zone-probe-");
         assert_eq!(contract.variable("OUTPUT"), "ZONE_TRAIN_OUTPUT");
-        assert_eq!(contract.variable("DIR"), "ZONE_TRAIN_DIR");
+        assert_eq!(contract.variable("DIRECTORY"), "ZONE_TRAIN_DIRECTORY");
         assert_eq!(contract.input_variable(), "ZONE_COMFY_INPUT");
     }
 
@@ -2111,7 +2104,7 @@ mod tests {
             &reqwest::Client::new(),
             &Config {
                 base_url: server.uri(),
-                poll_interval_milliseconds: 1,
+                poll_interval: Duration::from_millis(1),
                 ..Default::default()
             },
             prompt,
@@ -2162,7 +2155,7 @@ mod tests {
             .await;
         let config = Config {
             base_url: server.uri(),
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             ..Default::default()
         };
         let failure = queue(&reqwest::Client::new(), &config, json!({}))

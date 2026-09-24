@@ -362,7 +362,7 @@ async fn train_with_pipeline(
             .env(contract.variable("FINAL_NAME"), &filename)
             .env(contract.variable("ATTEMPT"), &attempt.id)
             .env(contract.variable("BASE"), &recipe.id)
-            .env(contract.variable("DIR"), &attempt.root)
+            .env(contract.variable("DIRECTORY"), &attempt.root)
             .env(contract.variable("OUTPUT"), &staged)
             .env(contract.variable("TRIGGER"), trigger)
             .env(
@@ -379,7 +379,7 @@ async fn train_with_pipeline(
             .env("COMFYUI_BASE_URL", &config.base_url)
             .env(
                 contract.variable("TIMEOUT"),
-                config.train_timeout_seconds.to_string(),
+                config.train_timeout.as_secs().to_string(),
             )
             .env(
                 contract.input_variable(),
@@ -402,7 +402,7 @@ async fn train_with_pipeline(
                     .env(contract.variable("VAE"), vae);
             }
         }
-        let trained = run_trainer(process, Duration::from_secs(config.train_timeout_seconds)).await;
+        let trained = run_trainer(process, config.train_timeout).await;
         if let Err(error) = trained {
             crate::train::cleanup_with(&http, config, &run).await;
             return Err(error);
@@ -1468,7 +1468,7 @@ mod tests {
             base_url: "http://127.0.0.1:9".to_string(),
             models_directory: models,
             train_command: Some(command.to_string()),
-            train_timeout_seconds: 2,
+            train_timeout: Duration::from_secs(2),
             contract: contract(),
             ..Default::default()
         };
@@ -1727,9 +1727,9 @@ mod tests {
         let command = r#"
             test "$TRAIN_NAME" = "legacy-style.safetensors" || exit 11
             test "$TRAIN_FINAL_NAME" = "$TRAIN_NAME" || exit 12
-            test "$TRAIN_ATTEMPT" = "$(basename "$TRAIN_DIR")" || exit 13
+            test "$TRAIN_ATTEMPT" = "$(basename "$TRAIN_DIRECTORY")" || exit 13
             test "$(basename "$TRAIN_OUTPUT")" = "$TRAIN_ATTEMPT.safetensors" || exit 14
-            case "$TRAIN_OUTPUT" in "$TRAIN_DIR"/*) ;; *) exit 15 ;; esac
+            case "$TRAIN_OUTPUT" in "$TRAIN_DIRECTORY"/*) ;; *) exit 15 ;; esac
             printf legacy > "$TRAIN_OUTPUT"
         "#;
         let (_root, config) = harness(command);
@@ -1746,6 +1746,28 @@ mod tests {
 
         assert_eq!(fs::read(outcome.path).unwrap(), b"legacy");
         assert!(training_entries(&config).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_dataset_directory_is_handed_over_under_its_spelled_out_name() {
+        let command = r#"
+            test -d "$TRAIN_DIRECTORY/targets" || exit 41
+            test "$(env | grep "^TRAIN_DI" | cut -d= -f1)" = TRAIN_DIRECTORY || exit 42
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+
+        let outcome = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("directory-name"),
+            keep_all,
+        )
+        .await
+        .expect("the trainer finds its dataset under <prefix>_DIRECTORY alone");
+
+        assert_eq!(fs::read(outcome.path).unwrap(), b"lora");
     }
 
     /// A models root with the output directory the writer needs.
@@ -1834,7 +1856,7 @@ mod tests {
         let config = Config {
             models_directory: root.clone(),
             train_command: Some("true".into()),
-            poll_interval_milliseconds: 0,
+            poll_interval: Duration::ZERO,
             ..Default::default()
         };
         let error = rejected(&config, request("my-style", "flux-schnell", Some("ohwx"))).await;
@@ -1952,7 +1974,7 @@ mod tests {
             finished.display()
         );
         let (_root, mut config) = harness(&command);
-        config.train_timeout_seconds = 1;
+        config.train_timeout = Duration::from_secs(1);
 
         let error = rejected(&config, identity("slow")).await;
         let returned = std::time::SystemTime::now();
@@ -2023,7 +2045,7 @@ mod tests {
     async fn a_trainer_past_its_budget_takes_everything_it_started_with_it() {
         let (sleep, pattern) = marked_sleep();
         let (_root, mut config) = harness(&format!("{sleep} & wait"));
-        config.train_timeout_seconds = 1;
+        config.train_timeout = Duration::from_secs(1);
 
         let error = rejected(&config, identity("abandoned")).await;
 
@@ -2283,7 +2305,7 @@ mod tests {
             enabled: true,
             base_url: server.uri(),
             train_command: None,
-            poll_interval_milliseconds: 50,
+            poll_interval: Duration::from_millis(50),
             ..Default::default()
         };
         let outcome = train(
@@ -2399,7 +2421,7 @@ mod tests {
             test "$TRAIN_IMAGE_COUNT" = "2" || exit 11
             test "$TRAIN_NAME" = "edit-style.safetensors" || exit 31
             test "$TRAIN_FINAL_NAME" = "edit-style.safetensors" || exit 12
-            test "$TRAIN_ATTEMPT" = "$(basename "$TRAIN_DIR")" || exit 14
+            test "$TRAIN_ATTEMPT" = "$(basename "$TRAIN_DIRECTORY")" || exit 14
             test "$(basename "$TRAIN_OUTPUT")" = "$TRAIN_ATTEMPT.safetensors" || exit 13
             test "$TRAIN_ARCHITECTURE" = "qwen_edit" || exit 23
             test "$TRAIN_UNET" = "qwen_image_edit_2511_fp8mixed.safetensors" || exit 24
@@ -2411,14 +2433,14 @@ mod tests {
             test "$folder_id" != "$TRAIN_FOLDER" || exit 28
             test "$artifact_id" != "$TRAIN_ARTIFACT" || exit 29
             test "$folder_id" != "$artifact_id" || exit 30
-            test "$(cat "$TRAIN_DIR/targets/0000.txt")" = "change zero" || exit 17
-            test "$(cat "$TRAIN_DIR/targets/0001.txt")" = "change two" || exit 20
-            test ! -e "$TRAIN_DIR/targets/0002.png" || exit 21
-            test ! -e "$TRAIN_DIR/control_1/0002.png" || exit 22
-            cp "$TRAIN_DIR/targets/0000.png" "KEPT/target-0.png" || exit 15
-            cp "$TRAIN_DIR/control_1/0000.png" "KEPT/control-0.png" || exit 16
-            cp "$TRAIN_DIR/targets/0001.png" "KEPT/target-1.png" || exit 18
-            cp "$TRAIN_DIR/control_1/0001.png" "KEPT/control-1.png" || exit 19
+            test "$(cat "$TRAIN_DIRECTORY/targets/0000.txt")" = "change zero" || exit 17
+            test "$(cat "$TRAIN_DIRECTORY/targets/0001.txt")" = "change two" || exit 20
+            test ! -e "$TRAIN_DIRECTORY/targets/0002.png" || exit 21
+            test ! -e "$TRAIN_DIRECTORY/control_1/0002.png" || exit 22
+            cp "$TRAIN_DIRECTORY/targets/0000.png" "KEPT/target-0.png" || exit 15
+            cp "$TRAIN_DIRECTORY/control_1/0000.png" "KEPT/control-0.png" || exit 16
+            cp "$TRAIN_DIRECTORY/targets/0001.png" "KEPT/target-1.png" || exit 18
+            cp "$TRAIN_DIRECTORY/control_1/0001.png" "KEPT/control-1.png" || exit 19
             printf trained > "$TRAIN_OUTPUT"
         "#;
         let kept = tempfile::tempdir().expect("kept dataset");
@@ -2530,13 +2552,13 @@ mod tests {
         let staged = tempfile::tempdir().expect("staged target");
         let target = staged.path().join("target.png");
         let command = format!(
-            "cp \"$TRAIN_DIR/targets/0000.png\" \"{}\"; printf trained > \"$TRAIN_OUTPUT\"",
+            "cp \"$TRAIN_DIRECTORY/targets/0000.png\" \"{}\"; printf trained > \"$TRAIN_OUTPUT\"",
             target.display()
         );
         let (_root, mut config) = harness(&command);
         config.enabled = true;
         config.base_url = server.uri();
-        config.poll_interval_milliseconds = 1;
+        config.poll_interval = Duration::from_millis(1);
 
         let outcome = train_with_remediation(
             &config,
@@ -2724,9 +2746,9 @@ mod tests {
             enabled: true,
             base_url: server.uri(),
             models_directory: models,
-            poll_interval_milliseconds: 1,
+            poll_interval: Duration::from_millis(1),
             train_command: None,
-            train_timeout_seconds: 2,
+            train_timeout: Duration::from_secs(2),
             ..Default::default()
         };
         let outcome = train_with_screening(
@@ -2853,8 +2875,8 @@ mod tests {
     #[tokio::test]
     async fn non_edit_training_rejects_controls_and_never_stages_a_control_folder() {
         let command = r#"
-            test ! -e "$TRAIN_DIR/control_1" || exit 31
-            test "$(cat "$TRAIN_DIR/targets/0000.txt")" = "ohwx, a portrait" || exit 32
+            test ! -e "$TRAIN_DIRECTORY/control_1" || exit 31
+            test "$(cat "$TRAIN_DIRECTORY/targets/0000.txt")" = "ohwx, a portrait" || exit 32
             printf trained > "$TRAIN_OUTPUT"
         "#;
         let (_root, config) = harness(command);

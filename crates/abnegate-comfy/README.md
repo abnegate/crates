@@ -28,7 +28,7 @@ use abnegate_comfy::{Client, Config, Error};
 use tokio::sync::{broadcast, mpsc};
 
 async fn lighthouse() -> Result<(), Error> {
-    let client = Client::new(Config::from_env())?;
+    let client = Client::new(Config::from_environment())?;
     let (_stop, mut cancel) = broadcast::channel(1);
     let (progress, _updates) = mpsc::unbounded_channel();
 

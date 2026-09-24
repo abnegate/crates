@@ -12,7 +12,7 @@
 //! use abnegate_comfy::{Client, Config};
 //! use tokio::sync::{broadcast, mpsc};
 //!
-//! let client = Client::new(Config::from_env())?;
+//! let client = Client::new(Config::from_environment())?;
 //! let (_stop, mut cancel) = broadcast::channel(1);
 //! let (progress, _updates) = mpsc::unbounded_channel();
 //! let images = client
@@ -31,7 +31,7 @@
 //! # async fn example(request: abnegate_comfy::lora::TrainRequest) -> Result<(), Box<dyn std::error::Error>> {
 //! use abnegate_comfy::{Config, lora};
 //!
-//! let config = Config::from_env();
+//! let config = Config::from_environment();
 //! let outcome = lora::train(&config, litellm_host(), litellm_key(), request).await?;
 //! # let _ = outcome;
 //! # Ok(())
@@ -51,7 +51,7 @@
 //! use abnegate_comfy::{Config, video};
 //!
 //! let clip = video::extract(
-//!     &Config::from_env(),
+//!     &Config::from_environment(),
 //!     &std::fs::read("subject.mp4")?,
 //!     "subject.mp4",
 //!     video::Options { fps: 4, resolution: 512, mirror: true, limit: 48 },

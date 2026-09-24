@@ -40,7 +40,7 @@ pub struct Contract {
     pub probe_prefix: String,
     /// Prefix of the variables handed to
     /// [`Config::train_command`](crate::Config::train_command): the command
-    /// reads the dataset from `<prefix>_DIR` and writes the adapter to
+    /// reads the dataset from `<prefix>_DIRECTORY` and writes the adapter to
     /// `<prefix>_OUTPUT`.
     pub environment_prefix: String,
     /// Prefix of `<prefix>_INPUT`, the ComfyUI input directory handed to

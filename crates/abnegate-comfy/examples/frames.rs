@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = arguments.next().unwrap_or_else(|| "frames".to_string());
     std::fs::create_dir_all(&output)?;
 
-    let config = Config::from_env();
+    let config = Config::from_environment();
     println!(
         "subject detection: {}",
         match &config.vision_model {

@@ -1,7 +1,7 @@
 //! The HTTP client every ComfyUI request goes through.
 
 use crate::config::Config;
-use crate::config::MINIMUM_TIMEOUT_SECONDS;
+use crate::config::MINIMUM_TIMEOUT;
 use reqwest::RequestBuilder;
 use reqwest::header::HeaderValue;
 use reqwest::redirect::Policy;
@@ -25,7 +25,7 @@ pub(crate) fn client(config: &Config) -> reqwest::Result<reqwest::Client> {
 }
 
 pub(crate) fn request_timeout(config: &Config) -> Duration {
-    Duration::from_secs(config.request_timeout_seconds.max(MINIMUM_TIMEOUT_SECONDS))
+    config.request_timeout.max(MINIMUM_TIMEOUT)
 }
 
 /// Marks the token sensitive so reqwest and hyper keep it out of their own
@@ -128,12 +128,9 @@ mod tests {
     #[test]
     fn a_request_timeout_of_zero_is_raised_to_the_floor() {
         let config = Config {
-            request_timeout_seconds: 0,
+            request_timeout: Duration::ZERO,
             ..Config::default()
         };
-        assert_eq!(
-            request_timeout(&config),
-            Duration::from_secs(MINIMUM_TIMEOUT_SECONDS)
-        );
+        assert_eq!(request_timeout(&config), MINIMUM_TIMEOUT);
     }
 }
