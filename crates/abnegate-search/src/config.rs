@@ -3,6 +3,7 @@
 use std::env;
 use std::fmt;
 use std::str::FromStr;
+use std::time::Duration;
 
 use abnegate_secret::REDACTED;
 
@@ -20,17 +21,20 @@ const WEB_SEARCH_METADATA_KEY: &str = "web_search";
 const TRUTHY: [&str; 4] = ["1", "true", "yes", "on"];
 
 const DEFAULT_RESULT_COUNT: usize = 5;
-const MIN_RESULT_COUNT: usize = 1;
-const MAX_RESULT_COUNT: usize = 20;
+const MINIMUM_RESULT_COUNT: usize = 1;
+const MAXIMUM_RESULT_COUNT: usize = 20;
 
-const DEFAULT_TIMEOUT_SECS: u64 = 15;
-const MIN_TIMEOUT_SECS: u64 = 1;
-const MAX_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+const MINIMUM_TIMEOUT: Duration = Duration::from_secs(1);
+const MAXIMUM_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Web search settings loaded from `SEARCH_*` environment variables.
+/// Web search settings, built with [`new`](Self::new) or read by
+/// [`from_environment`](Self::from_environment).
 ///
+/// [`Default`] is switched off and points at [`DEFAULT_SEARXNG_QUERY_URL`].
 /// `Debug` leaves out the query URL, which may carry a credential.
 #[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WebSearchConfig {
     /// Master switch. When false, no request ever reaches SearXNG.
     pub enabled: bool,
@@ -39,8 +43,9 @@ pub struct WebSearchConfig {
     pub query_url: String,
     /// Max results injected into the prompt, held to 1–20 by the client.
     pub result_count: usize,
-    /// HTTP timeout for a single SearXNG request, held to 1–60 by the client.
-    pub timeout_secs: u64,
+    /// HTTP timeout for a single SearXNG request, held to 1–60 seconds by the
+    /// client.
+    pub timeout: Duration,
 }
 
 impl Default for WebSearchConfig {
@@ -49,24 +54,56 @@ impl Default for WebSearchConfig {
             enabled: false,
             query_url: DEFAULT_SEARXNG_QUERY_URL.to_string(),
             result_count: DEFAULT_RESULT_COUNT,
-            timeout_secs: DEFAULT_TIMEOUT_SECS,
+            timeout: DEFAULT_TIMEOUT,
         }
     }
 }
 
 impl WebSearchConfig {
+    /// Search switched on, against the instance `query_url` names, with the
+    /// default result count and timeout.
+    pub fn new(query_url: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            query_url: query_url.into(),
+            ..Self::default()
+        }
+    }
+
+    /// This config with the master switch set to `enabled`.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// This config keeping at most `result_count` hits, held to 1–20 by the
+    /// client.
+    pub fn with_result_count(mut self, result_count: usize) -> Self {
+        self.result_count = result_count;
+        self
+    }
+
+    /// This config giving each request `timeout`, held to 1–60 seconds by the
+    /// client.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
     /// Load from `SEARCH_*` environment variables.
     ///
     /// An unset variable falls back to a deployment default rather than to
     /// [`Default`]: search is on unless `SEARCH_ENABLE_WEB_SEARCH` says
     /// otherwise, and the URL is [`DEFAULT_SEARXNG_QUERY_URL`].
-    pub fn from_env() -> Self {
+    pub fn from_environment() -> Self {
         Self {
             enabled: truthy(ENABLED_VARIABLE, true),
             query_url: env::var(QUERY_URL_VARIABLE)
                 .unwrap_or_else(|_| DEFAULT_SEARXNG_QUERY_URL.to_string()),
             result_count: parsed(RESULT_COUNT_VARIABLE).unwrap_or(DEFAULT_RESULT_COUNT),
-            timeout_secs: parsed(TIMEOUT_VARIABLE).unwrap_or(DEFAULT_TIMEOUT_SECS),
+            timeout: parsed(TIMEOUT_VARIABLE)
+                .map(Duration::from_secs)
+                .unwrap_or(DEFAULT_TIMEOUT),
         }
         .bounded()
     }
@@ -88,8 +125,10 @@ impl WebSearchConfig {
 
     /// This config with the result count and timeout held to their ranges.
     pub(crate) fn bounded(mut self) -> Self {
-        self.result_count = self.result_count.clamp(MIN_RESULT_COUNT, MAX_RESULT_COUNT);
-        self.timeout_secs = self.timeout_secs.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
+        self.result_count = self
+            .result_count
+            .clamp(MINIMUM_RESULT_COUNT, MAXIMUM_RESULT_COUNT);
+        self.timeout = self.timeout.clamp(MINIMUM_TIMEOUT, MAXIMUM_TIMEOUT);
         self
     }
 }
@@ -101,7 +140,7 @@ impl fmt::Debug for WebSearchConfig {
             .field("enabled", &self.enabled)
             .field("query_url", &REDACTED)
             .field("result_count", &self.result_count)
-            .field("timeout_secs", &self.timeout_secs)
+            .field("timeout", &self.timeout)
             .finish()
     }
 }
@@ -123,11 +162,9 @@ mod tests {
 
     #[test]
     fn the_query_url_never_appears_in_debug() {
-        let config = WebSearchConfig {
-            query_url: "https://searcher:hunter2@search.example.test/search?token=abc&q=<query>"
-                .to_string(),
-            ..WebSearchConfig::default()
-        };
+        let config = WebSearchConfig::new(
+            "https://searcher:hunter2@search.example.test/search?token=abc&q=<query>",
+        );
         let rendered = format!("{config:?}");
         for leaked in ["hunter2", "token=abc", "search.example.test"] {
             assert!(!rendered.contains(leaked), "leaked {leaked}: {rendered}");
@@ -137,26 +174,22 @@ mod tests {
 
     #[test]
     fn out_of_range_settings_are_held_to_their_bounds() {
-        let low = WebSearchConfig {
-            result_count: 0,
-            timeout_secs: 0,
-            ..WebSearchConfig::default()
-        }
-        .bounded();
+        let low = WebSearchConfig::default()
+            .with_result_count(0)
+            .with_timeout(Duration::ZERO)
+            .bounded();
         assert_eq!(
-            (low.result_count, low.timeout_secs),
-            (MIN_RESULT_COUNT, MIN_TIMEOUT_SECS)
+            (low.result_count, low.timeout),
+            (MINIMUM_RESULT_COUNT, MINIMUM_TIMEOUT)
         );
 
-        let high = WebSearchConfig {
-            result_count: 500,
-            timeout_secs: 86_400,
-            ..WebSearchConfig::default()
-        }
-        .bounded();
+        let high = WebSearchConfig::default()
+            .with_result_count(500)
+            .with_timeout(Duration::from_secs(86_400))
+            .bounded();
         assert_eq!(
-            (high.result_count, high.timeout_secs),
-            (MAX_RESULT_COUNT, MAX_TIMEOUT_SECS)
+            (high.result_count, high.timeout),
+            (MAXIMUM_RESULT_COUNT, MAXIMUM_TIMEOUT)
         );
     }
 }

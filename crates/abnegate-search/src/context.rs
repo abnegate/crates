@@ -5,9 +5,9 @@ use abnegate_secret::sanitize;
 use crate::config::WebSearchConfig;
 use crate::hit::SearchHit;
 
-const MAX_TITLE_CHARS: usize = 200;
-const MAX_URL_CHARS: usize = 500;
-const MAX_SNIPPET_CHARS: usize = 1_000;
+const MAXIMUM_TITLE_CHARACTERS: usize = 200;
+const MAXIMUM_URL_CHARACTERS: usize = 500;
+const MAXIMUM_SNIPPET_CHARACTERS: usize = 1_000;
 const ELLIPSIS: char = '\u{2026}';
 const OPENING_REPLACEMENT: char = '\u{2039}';
 const CLOSING_REPLACEMENT: char = '\u{203a}';
@@ -115,13 +115,13 @@ pub fn format_search_context(hits: &[SearchHit]) -> String {
         text.push_str(&format!(
             "{} {}\n   {}\n",
             label(hit.identifier.as_deref(), index + 1),
-            untrusted(&hit.title, MAX_TITLE_CHARS),
-            untrusted(&hit.url, MAX_URL_CHARS)
+            untrusted(&hit.title, MAXIMUM_TITLE_CHARACTERS),
+            untrusted(&hit.url, MAXIMUM_URL_CHARACTERS)
         ));
         if !hit.snippet.is_empty() {
             text.push_str(&format!(
                 "   {}\n",
-                untrusted(&hit.snippet, MAX_SNIPPET_CHARS)
+                untrusted(&hit.snippet, MAXIMUM_SNIPPET_CHARACTERS)
             ));
         }
         text.push('\n');
@@ -170,12 +170,11 @@ mod tests {
 
     #[test]
     fn format_search_context_lists_hits() {
-        let text = format_search_context(&[SearchHit {
-            title: "Rust".to_string(),
-            url: "https://www.rust-lang.org/".to_string(),
-            snippet: "A language.".to_string(),
-            identifier: None,
-        }]);
+        let text = format_search_context(&[SearchHit::new(
+            "Rust",
+            "https://www.rust-lang.org/",
+            "A language.",
+        )]);
         assert!(text.contains("Web search results (via SearXNG)"));
         assert!(text.contains("1. Rust"));
         assert!(text.contains("https://www.rust-lang.org/"));
@@ -189,18 +188,9 @@ mod tests {
     fn an_identified_hit_renders_its_identifier_on_its_own_line() {
         let identifier = "web:7b19f4";
         let hits = [
-            SearchHit {
-                title: "Rust".to_string(),
-                url: "https://www.rust-lang.org/".to_string(),
-                snippet: "A language.".to_string(),
-                identifier: Some(identifier.to_string()),
-            },
-            SearchHit {
-                title: "Cargo".to_string(),
-                url: "https://doc.rust-lang.org/cargo/".to_string(),
-                snippet: String::new(),
-                identifier: None,
-            },
+            SearchHit::new("Rust", "https://www.rust-lang.org/", "A language.")
+                .with_identifier(identifier),
+            SearchHit::new("Cargo", "https://doc.rust-lang.org/cargo/", ""),
         ];
         let text = format_search_context(&hits);
 
@@ -240,12 +230,11 @@ mod tests {
 
     #[test]
     fn the_results_preamble_says_what_to_do_with_a_hit_that_could_not_be_registered() {
-        let text = format_search_context(&[SearchHit {
-            title: "Cargo".to_string(),
-            url: "https://doc.rust-lang.org/cargo/".to_string(),
-            snippet: String::new(),
-            identifier: None,
-        }]);
+        let text = format_search_context(&[SearchHit::new(
+            "Cargo",
+            "https://doc.rust-lang.org/cargo/",
+            "",
+        )]);
         assert!(
             text.contains("1. Cargo"),
             "the fixture must reach the state the rule covers: {text}"
@@ -345,12 +334,11 @@ mod tests {
 
     #[test]
     fn successful_search_preserves_evidence_and_corrects_stale_capabilities() {
-        let context = SearchContext::Results(vec![SearchHit {
-            title: "Auckland weather".to_string(),
-            url: "https://example.com/weather".to_string(),
-            snippet: "Current forecast.".to_string(),
-            identifier: None,
-        }]);
+        let context = SearchContext::Results(vec![SearchHit::new(
+            "Auckland weather",
+            "https://example.com/weather",
+            "Current forecast.",
+        )]);
         let prompt = context.prompt();
         let capability = context.capability();
         assert!(prompt.contains("Search outcome for this turn: succeeded"));
@@ -381,12 +369,7 @@ mod tests {
     }
 
     fn hit(text: &str) -> SearchHit {
-        SearchHit {
-            title: text.to_string(),
-            url: text.to_string(),
-            snippet: text.to_string(),
-            identifier: Some("web:a3f21c".to_string()),
-        }
+        SearchHit::new(text, text, text).with_identifier("web:a3f21c")
     }
 
     #[test]
@@ -445,7 +428,7 @@ mod tests {
             .max()
             .expect("lines");
         assert!(
-            longest <= MAX_SNIPPET_CHARS + "[web:a3f21c] ".len(),
+            longest <= MAXIMUM_SNIPPET_CHARACTERS + "[web:a3f21c] ".len(),
             "{longest}"
         );
         assert!(text.contains(ELLIPSIS));

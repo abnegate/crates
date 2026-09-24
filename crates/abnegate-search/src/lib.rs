@@ -10,7 +10,7 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use abnegate_search::{SearxngClient, TimeRange, WebSearchConfig};
 //!
-//! let client = SearxngClient::new(WebSearchConfig::from_env())?;
+//! let client = SearxngClient::new(WebSearchConfig::from_environment())?;
 //! let results = client
 //!     .search("rust release notes", Some(TimeRange::Week))
 //!     .await?;
@@ -42,10 +42,14 @@ mod time_range;
 pub use crate::client::SearxngClient;
 pub use crate::config::{DEFAULT_SEARXNG_QUERY_URL, WebSearchConfig};
 pub use crate::context::{SearchContext, format_search_context};
-pub use crate::error::SearchError;
+pub use crate::error::Error;
 pub use crate::hit::SearchHit;
 pub use crate::intent::needs_web_search;
 pub use crate::observe::{SearchObserver, observe_searches};
 pub use crate::outcome::Outcome;
 pub use crate::query::{build_search_url, sanitize_query};
 pub use crate::time_range::TimeRange;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

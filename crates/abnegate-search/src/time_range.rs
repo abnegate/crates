@@ -21,7 +21,7 @@ impl TimeRange {
     pub const PARAMETER: &'static str = "time_range";
 
     /// Every variant, narrowest first, for schemas and error messages.
-    pub const ALL: [Self; 3] = [Self::Day, Self::Week, Self::Month];
+    pub const ALL: &'static [Self] = &[Self::Day, Self::Week, Self::Month];
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn the_wire_form_is_the_lowercase_variant_name() {
-        for range in TimeRange::ALL {
+        for &range in TimeRange::ALL {
             assert_eq!(
                 serde_json::to_value(range).expect("serialize"),
                 json!(range.as_str()),
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn only_the_three_advertised_values_parse() {
-        for range in TimeRange::ALL {
+        for &range in TimeRange::ALL {
             assert_eq!(
                 serde_json::from_value::<TimeRange>(json!(range.as_str())).expect("parse"),
                 range

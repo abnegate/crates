@@ -3,7 +3,7 @@
 use crate::time_range::TimeRange;
 
 /// Truncate user messages so a pasted file cannot become the search query.
-const MAX_QUERY_CHARS: usize = 500;
+const MAXIMUM_QUERY_CHARACTERS: usize = 500;
 
 /// Query placeholders a configured URL template may carry.
 const ANGLE_QUERY_PLACEHOLDER: &str = "<query>";
@@ -21,7 +21,7 @@ pub fn sanitize_query(content: &str) -> String {
     without_attachments
         .trim()
         .chars()
-        .take(MAX_QUERY_CHARS)
+        .take(MAXIMUM_QUERY_CHARACTERS)
         .collect::<String>()
         .trim()
         .to_string()
@@ -210,6 +210,9 @@ mod tests {
         let content = "What is Rust?\n\nAttached file: notes.md\n```md\nsecret\n```";
         assert_eq!(sanitize_query(content), "What is Rust?");
         assert!(sanitize_query("   ").is_empty());
-        assert_eq!(sanitize_query(&"x".repeat(600)).len(), MAX_QUERY_CHARS);
+        assert_eq!(
+            sanitize_query(&"x".repeat(600)).len(),
+            MAXIMUM_QUERY_CHARACTERS
+        );
     }
 }
