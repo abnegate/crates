@@ -2,7 +2,7 @@ use super::*;
 use crate::commit_sha::CommitSha;
 use crate::pull_request::ChangedFile;
 use crate::pull_request::PullRequestDetail;
-use crate::pull_request::github_pull_request_full::GitHubPullRequestFull;
+use crate::pull_request::github_pull::GitHubPull;
 
 impl PullRequestService {
     /// Read a pull request back as GitHub describes it now.
@@ -20,7 +20,7 @@ impl PullRequestService {
     ) -> PullRequestResult<PullRequestDetail> {
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let pull: GitHubPullRequestFull = self
+        let pull: GitHubPull = self
             .get(
                 self.origin.endpoint(&[
                     "repos",
@@ -64,7 +64,7 @@ impl PullRequestService {
 }
 
 /// The pull request GitHub answered with, its branches and commits parsed.
-fn detail(pull: GitHubPullRequestFull) -> PullRequestResult<PullRequestDetail> {
+fn detail(pull: GitHubPull) -> PullRequestResult<PullRequestDetail> {
     Ok(PullRequestDetail {
         node_id: pull.node_id,
         number: pull.number,

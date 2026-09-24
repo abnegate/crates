@@ -8,7 +8,7 @@ use std::num::NonZeroU64;
 /// own. What identifies it is required; what GitHub computes in the
 /// background, or leaves out of a smaller answer, falls back to its default.
 #[derive(Debug, Deserialize)]
-pub(super) struct GitHubPullRequestFull {
+pub(super) struct GitHubPull {
     pub(super) node_id: String,
     pub(super) number: NonZeroU64,
     pub(super) title: String,
