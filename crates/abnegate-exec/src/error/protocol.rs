@@ -26,7 +26,12 @@ pub enum ProtocolError {
 
     /// A line ran past the codec's length limit
     #[error("Line too long: {length} bytes (limit: {limit})")]
-    LineTooLong { length: usize, limit: usize },
+    LineTooLong {
+        /// Bytes read without finding the end of the line
+        length: usize,
+        /// The longest line the codec accepts
+        limit: usize,
+    },
 
     /// I/O error during communication
     #[error("I/O error: {0}")]

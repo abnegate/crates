@@ -28,7 +28,12 @@ pub enum ExecutorError {
 
     /// Output went past the limit
     #[error("Output limit exceeded: {written} bytes (limit: {limit})")]
-    OutputLimitExceeded { written: usize, limit: usize },
+    OutputLimitExceeded {
+        /// Bytes of output the command produced
+        written: usize,
+        /// The most bytes it could deliver
+        limit: usize,
+    },
 
     /// Invalid workspace path
     #[error("Invalid workspace path: {0}")]

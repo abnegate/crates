@@ -33,7 +33,9 @@ pub enum JobState {
 
     /// Job timed out
     TimedOut {
+        /// The limit the job ran past
         timeout: Duration,
+        /// How long the job ran before it was stopped
         duration: Duration,
     },
 }

@@ -19,8 +19,12 @@ pub enum OutboundMessage {
     #[serde(rename = "HelloAck")]
     #[non_exhaustive]
     HelloAcknowledged {
+        /// The protocol version the runner speaks
         protocol_version: String,
+        /// The version of this crate the runner was built from
         runner_version: String,
+        /// The capabilities the runner honours, by their
+        /// [handshake names](super::Capability::as_str)
         capabilities: Vec<String>,
     },
 
