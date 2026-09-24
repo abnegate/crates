@@ -1526,6 +1526,29 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         );
     }
 
+    /// Prose that fills the limit exactly is all the run may keep, and an
+    /// empty piece after it adds nothing, so the run still completes.
+    #[tokio::test]
+    async fn empty_prose_after_a_full_limit_is_not_an_overflow() {
+        const PROSE: &str = "0123456789012345678901234567890123456789";
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = format!(
+            r#"
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{PROSE}"}}]}}}}'
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":""}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'
+"#
+        );
+        let settings = settings(&directory, &script).with_output_limit(PROSE.len());
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some(PROSE));
+    }
+
     #[tokio::test]
     async fn a_long_stream_around_short_prose_is_not_mistaken_for_runaway_output() {
         let directory = TempDir::new().expect("a temporary directory");
