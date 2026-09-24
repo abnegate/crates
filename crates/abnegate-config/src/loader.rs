@@ -15,9 +15,13 @@ use crate::path::path;
 
 /// Where a configuration file lives and how to unseal it.
 ///
-/// Values written as `ENC[v1:...]` envelopes are decrypted on load once a
-/// master key is given; without one they are handed to the application exactly
-/// as they were written.
+/// Values written as closed `ENC[v<digits>:...]` envelopes are decrypted on
+/// load once a master key is given; without one they are handed to the
+/// application exactly as they were written. An envelope of any version counts
+/// as sealed, so one sealed by a later release is never read as plaintext:
+/// with a key, loading it fails with [`Error::Decrypt`] whose source is
+/// [`abnegate_secret::Error::UnsupportedVersion`], and without one it is kept
+/// as it was written.
 pub struct Loader<'key> {
     path: PathBuf,
     key: Option<&'key MasterKey>,
@@ -139,6 +143,8 @@ mod tests {
     }
 
     type Ports = BTreeMap<String, u32>;
+
+    const LATER_ENVELOPE: &str = "ENC[v2:c2VhbGVkIGJ5IGEgbGF0ZXIgcmVsZWFzZQ==]";
 
     #[derive(Debug)]
     struct OnlySealed;
@@ -295,6 +301,42 @@ mod tests {
         assert!(
             matches!(&error, Error::Decrypt { field, .. } if field == "password"),
             "{error:?}"
+        );
+    }
+
+    #[test]
+    fn an_envelope_of_a_later_version_fails_the_load_with_a_key() {
+        let (_directory, path) = written(&format!("password = \"{LATER_ENVELOPE}\"\n"));
+
+        let error = Loader::at(&path)
+            .master_key(&MasterKey::generate().unwrap())
+            .load::<Settings>()
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                Error::Decrypt {
+                    field,
+                    source: abnegate_secret::Error::UnsupportedVersion { version, .. },
+                } if field == "password" && version == "2"
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn an_envelope_of_a_later_version_is_kept_as_written_without_a_key() {
+        let (_directory, path) = written(&format!("password = \"{LATER_ENVELOPE}\"\n"));
+
+        let config = Loader::at(&path).load::<Settings>().unwrap();
+        config.save().unwrap();
+
+        let saved = fs::read_to_string(&path).unwrap();
+        assert_eq!(config.value().password, LATER_ENVELOPE);
+        assert!(
+            saved.contains(&format!("password = \"{LATER_ENVELOPE}\"\n")),
+            "{saved}"
         );
     }
 

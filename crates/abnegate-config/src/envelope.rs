@@ -15,8 +15,13 @@ pub(crate) use crate::envelope::location::Location;
 pub(crate) use crate::envelope::sealed::Sealed;
 pub(crate) use crate::envelope::segment::Segment;
 
-/// Find every `ENC[v1:...]` envelope in `document`, decrypting each in place
-/// when `key` is given and leaving it as it is when not.
+/// Find every closed `ENC[v<digits>:...]` envelope in `document`, decrypting
+/// each in place when `key` is given and leaving it as it is when not.
+///
+/// An envelope of any version counts as sealed. One this release cannot open
+/// fails with [`Error::Decrypt`] whose source is
+/// [`abnegate_secret::Error::UnsupportedVersion`] when `key` is given, and is
+/// kept as it was written when not.
 pub(crate) fn unseal(document: &mut Value, key: Option<&MasterKey>) -> Result<Vec<Sealed>, Error> {
     let mut received = Vec::new();
 

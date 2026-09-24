@@ -3,7 +3,8 @@ use toml::Value;
 
 use crate::envelope::location::Location;
 
-/// A value that arrived as an `ENC[v1:...]` envelope.
+/// A value that arrived as a closed `ENC[v<digits>:...]` envelope of any
+/// version.
 ///
 /// It is remembered by where it sat, by what the application was handed there
 /// (the plaintext when the loader had a key, the envelope itself when it did

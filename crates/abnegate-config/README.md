@@ -6,10 +6,12 @@ which `MasterKey` unseals it, `abnegate_config::path` and
 `abnegate_config::directory` derive the conventional locations from an
 `Application` name, `EnvironmentFile` upserts keys in a `.env` file, and
 `TokenStore` keeps credentials in the platform keyring. Any string in the file
-written as an `ENC[v1:...]` envelope is decrypted on load when the loader is
-given a master key, and `Config::save` seals those values again wherever they
-now appear, refusing rather than write one in the clear. Every file this crate
-writes is replaced atomically and is readable only by its owner.
+written as a closed `ENC[v<digits>:...]` envelope counts as sealed, whatever its
+version: it is decrypted on load when the loader is given a master key (a
+version this release cannot open fails the load), and `Config::save` seals
+those values again wherever they now appear, refusing rather than write one in
+the clear. Every file this crate writes is replaced atomically and is readable
+only by its owner.
 
 ## Locations
 

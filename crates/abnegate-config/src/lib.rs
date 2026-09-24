@@ -38,9 +38,13 @@
 //!
 //! # Sealed values
 //!
-//! Any string in the file written as an `ENC[v1:...]` envelope is decrypted on
-//! load when the loader is given a master key, so an application reads a
-//! password as a password and never learns that it was encrypted at rest.
+//! Any string in the file written as a closed `ENC[v<digits>:...]` envelope is
+//! treated as sealed, whatever its version. It is decrypted on load when the
+//! loader is given a master key, so an application reads a password as a
+//! password and never learns that it was encrypted at rest. An envelope of a
+//! version this release cannot open fails the load with [`Error::Decrypt`],
+//! whose source is [`abnegate_secret::Error::UnsupportedVersion`], when there
+//! is a key, and is kept as it was written when there is not.
 //! [`Config::save`] seals those same values again wherever they now appear,
 //! under a renamed key or at a position an array shifted them to by losing
 //! other elements, and refuses rather than write one in the clear: with
