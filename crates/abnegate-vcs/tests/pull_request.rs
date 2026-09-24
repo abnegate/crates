@@ -1,4 +1,5 @@
-//! Naming a change and opening a pull request for it, through the public API.
+//! Naming a change, and opening, checking and merging a pull request for it,
+//! through the public API.
 
 use abnegate_vcs::git::GitService;
 use abnegate_vcs::subject::Kind;
@@ -59,8 +60,28 @@ fn a_pull_request_is_titled_with_a_conventional_commit_subject() {
 
 #[cfg(feature = "github")]
 mod pull_requests {
-    use abnegate_vcs::pull_request::Description;
-    use abnegate_vcs::pull_request::PullRequestService;
+    use abnegate_secret::SecretValue;
+    use abnegate_vcs::BranchName;
+    use abnegate_vcs::ChecksOutcome;
+    use abnegate_vcs::CommitSha;
+    use abnegate_vcs::Description;
+    use abnegate_vcs::MergeMethod;
+    use abnegate_vcs::Mergeability;
+    use abnegate_vcs::MergeableState;
+    use abnegate_vcs::MergedPullRequest;
+    use abnegate_vcs::PullRequestDetail;
+    use abnegate_vcs::PullRequestService;
+    use abnegate_vcs::PullRequestState;
+    use serde_json::json;
+    use std::num::NonZeroU64;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_json;
+    use wiremock::matchers::header;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    use wiremock::matchers::query_param;
 
     fn task() -> uuid::Uuid {
         uuid::Uuid::parse_str("12345678-1234-1234-1234-123456789abc").unwrap()
@@ -152,5 +173,139 @@ mod pull_requests {
         .render();
 
         assert!(!body.contains("## Files"), "{body}");
+    }
+
+    /// Each step takes what the one before it returned: the head the pull
+    /// request was read at is the commit whose checks are read, and the head
+    /// the merge insists on.
+    #[tokio::test]
+    async fn a_pull_request_is_driven_from_checks_to_merge_through_the_public_api() {
+        let head = "a".repeat(40);
+        let merged = "c".repeat(40);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/pulls/7"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "node_id": "PR_kwDOAcme7",
+                "number": 7,
+                "title": "(feat): basket totals",
+                "body": "Adds totals to the basket.",
+                "state": "open",
+                "draft": false,
+                "merged": false,
+                "merge_commit_sha": null,
+                "head": { "ref": "task/one", "sha": head },
+                "base": { "ref": "main", "sha": "b".repeat(40) },
+                "html_url": "https://github.com/acme/project/pull/7",
+                "mergeable": true,
+                "mergeable_state": "clean",
+                "changed_files": 3,
+                "additions": 120,
+                "deletions": 14,
+                "commits": 2,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/repos/acme/project/commits/{head}/check-runs"
+            )))
+            .and(query_param("filter", "latest"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "total_count": 1,
+                "check_runs": [{ "name": "build", "status": "completed", "conclusion": "success" }],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/acme/project/commits/{head}/status")))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "total_count": 1,
+                "statuses": [{ "context": "lint", "state": "success" }],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/repos/acme/project/pulls/7/merge"))
+            .and(header("authorization", "Bearer token"))
+            .and(body_json(json!({
+                "commit_title": "(feat): basket totals (#7)",
+                "commit_message": "Adds totals to the basket.",
+                "sha": head,
+                "merge_method": "squash",
+            })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "sha": merged, "merged": true })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::standing_in_for("github.com", &server.uri()).unwrap();
+        let reference = service
+            .pull_request("https://github.com/acme/project/pull/7")
+            .unwrap();
+        let token = SecretValue::new("token");
+
+        let pull = service.fetch_pull(&reference, &token).await.unwrap();
+
+        assert_eq!(
+            pull,
+            PullRequestDetail {
+                node_id: "PR_kwDOAcme7".to_string(),
+                number: NonZeroU64::new(7).unwrap(),
+                title: "(feat): basket totals".to_string(),
+                body: Some("Adds totals to the basket.".to_string()),
+                state: PullRequestState::Open,
+                draft: false,
+                merged: false,
+                merge_commit_sha: None,
+                head: BranchName::parse("task/one").unwrap(),
+                head_sha: CommitSha::parse(&head).unwrap(),
+                base: BranchName::parse("main").unwrap(),
+                mergeable: Mergeability::Clean,
+                mergeable_state: MergeableState::Clean,
+                changed_files: 3,
+                additions: 120,
+                deletions: 14,
+                commits: 2,
+                url: "https://github.com/acme/project/pull/7".to_string(),
+            }
+        );
+
+        let checks = service
+            .fetch_checks(reference.repository(), &token, &pull.head_sha)
+            .await
+            .unwrap();
+
+        assert_eq!(checks, ChecksOutcome::Success);
+        assert_eq!(checks.label(), "success");
+
+        let merge = service
+            .merge(
+                &reference,
+                &token,
+                Some(pull.node_id.as_str()),
+                &pull.head_sha,
+                &format!("{} (#{})", pull.title, pull.number),
+                pull.body.as_deref().unwrap_or_default(),
+                MergeMethod::Squash,
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            merge,
+            MergedPullRequest {
+                sha: Some(CommitSha::parse(&merged).unwrap()),
+                administrator: false,
+            }
+        );
     }
 }
