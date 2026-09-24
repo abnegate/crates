@@ -96,3 +96,7 @@ pub use crate::notifier::Notifier;
 pub use crate::report::Report;
 pub use crate::severity::Severity;
 pub use crate::smtp::SmtpConfig;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
