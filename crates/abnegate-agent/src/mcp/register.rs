@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use super::McpConfig;
 use super::McpHub;
-use crate::tools::ToolRegistry;
+use crate::tool::ToolRegistry;
 
 /// Attach every tool from a connected hub to `registry`, and return how many
 /// were added.

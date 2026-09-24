@@ -10,14 +10,14 @@ use tokio::time::timeout;
 
 use super::format::format_call_result;
 use super::session::McpSession;
-use crate::tools::MAX_TOOL_OUTPUT_CHARACTERS;
-use crate::tools::TIMEOUT_SLACK;
-use crate::tools::Tier;
-use crate::tools::Tool;
-use crate::tools::ToolContext;
-use crate::tools::ToolError;
-use crate::tools::ToolResult;
-use crate::tools::trim_middle;
+use crate::tool::MAX_TOOL_OUTPUT_CHARACTERS;
+use crate::tool::TIMEOUT_SLACK;
+use crate::tool::Tier;
+use crate::tool::Tool;
+use crate::tool::ToolContext;
+use crate::tool::ToolError;
+use crate::tool::ToolResult;
+use crate::tool::trim_middle;
 
 const MAX_MCP_OUTPUT_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS;
 

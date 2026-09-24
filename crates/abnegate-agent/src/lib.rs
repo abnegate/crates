@@ -4,8 +4,8 @@
 //! through, a ReAct loop that drives it, and the context, history and session
 //! handling a long conversation needs.
 //!
-//! [`tools`] holds the [`Tool`] trait and a [`ToolRegistry`] of file, command
-//! and background-job tools. Every tool declares its own [`tools::Tier`], so
+//! [`tool`] holds the [`Tool`] trait and a [`ToolRegistry`] of file, command
+//! and background-job tools. Every tool declares its own [`tool::Tier`], so
 //! batching and confirmation read a call's consequences from the tool itself.
 //! File tools stay beneath the working directory, resolving each path once
 //! against a descriptor for the root so a symlink swapped in after the check
@@ -16,7 +16,7 @@
 //! [`Agent`] runs the loop: ask the model, run the tools it calls, feed their
 //! results back, until it answers. A call whose tier needs confirming runs
 //! only once [`AgentCallback::approve`] allows it, which by default it does
-//! not; the approver is handed a [`tools::Preview`] of what the call will do,
+//! not; the approver is handed a [`tool::Preview`] of what the call will do,
 //! verbatim but for its escapes and flagged whenever part of it had to be
 //! left out. Every call is held to its tool's own timeout, and stopped with
 //! the run if the run is dropped. Each request goes through
@@ -67,7 +67,6 @@
 //!   a [`ToolRegistry`], configured from the environment under an
 //!   application's own prefix.
 
-pub mod agent;
 mod application;
 pub mod chat;
 pub mod context;
@@ -75,21 +74,13 @@ mod error;
 #[cfg(feature = "mcp")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub mod mcp;
+mod run;
 pub mod session;
 pub mod template;
 #[cfg(test)]
 mod test_support;
-pub mod tools;
+pub mod tool;
 
-pub use crate::agent::Agent;
-pub use crate::agent::AgentCallback;
-pub use crate::agent::AgentConfig;
-pub use crate::agent::AgentError;
-pub use crate::agent::AgentPhase;
-pub use crate::agent::AgentState;
-pub use crate::agent::AgentStep;
-pub use crate::agent::NoOpCallback;
-pub use crate::agent::ToolCallResult;
 pub use crate::application::Application;
 pub use crate::application::ApplicationError;
 pub use crate::application::DEFAULT_APPLICATION;
@@ -104,6 +95,15 @@ pub use crate::mcp::McpHub;
 #[cfg(feature = "mcp")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub use crate::mcp::McpServerSpec;
+pub use crate::run::Agent;
+pub use crate::run::AgentCallback;
+pub use crate::run::AgentConfig;
+pub use crate::run::AgentError;
+pub use crate::run::AgentPhase;
+pub use crate::run::AgentState;
+pub use crate::run::AgentStep;
+pub use crate::run::NoOpCallback;
+pub use crate::run::ToolCallResult;
 pub use crate::session::FileSessionStore;
 pub use crate::session::Session;
 pub use crate::session::SessionStore;
@@ -111,8 +111,8 @@ pub use crate::session::SessionSummary;
 pub use crate::template::TemplateContext;
 pub use crate::template::TemplateError;
 pub use crate::template::TemplateRenderer;
-pub use crate::tools::Tool;
-pub use crate::tools::ToolContext;
-pub use crate::tools::ToolError;
-pub use crate::tools::ToolRegistry;
-pub use crate::tools::ToolResult;
+pub use crate::tool::Tool;
+pub use crate::tool::ToolContext;
+pub use crate::tool::ToolError;
+pub use crate::tool::ToolRegistry;
+pub use crate::tool::ToolResult;

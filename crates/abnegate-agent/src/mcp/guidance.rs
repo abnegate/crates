@@ -1,5 +1,5 @@
 use super::name::server_prefix;
-use crate::tools::ToolRegistry;
+use crate::tool::ToolRegistry;
 
 /// What the model is told about any attached MCP tools, whichever server they
 /// came from.

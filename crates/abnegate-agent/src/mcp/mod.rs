@@ -19,14 +19,14 @@
 //!
 //! [`McpConfig::from_env`] does the same under [`DEFAULT_PREFIX`].
 //!
-//! Children are given the [`DEFAULT_ENVIRONMENT`](crate::tools::DEFAULT_ENVIRONMENT)
+//! Children are given the [`DEFAULT_ENVIRONMENT`](crate::tool::DEFAULT_ENVIRONMENT)
 //! names from this process and [`McpServerSpec::environment`], or the whole
 //! environment when [`McpServerSpec::inherit_environment`] is set. When
 //! `ABNEGATE_EXEC_PROXY_URL` is set, the proxy variables it implies are then
 //! applied on top, so a server cannot route around it. Configure only
 //! trusted executables.
 //!
-//! [`ToolRegistry`]: crate::tools::ToolRegistry
+//! [`ToolRegistry`]: crate::tool::ToolRegistry
 
 mod config;
 mod config_error;
