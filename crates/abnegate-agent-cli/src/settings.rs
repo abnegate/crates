@@ -112,7 +112,8 @@ pub struct CliSettings {
     /// reaches the child only through [`CliSettings::with_proxy_variables`]
     /// or a name [allowed](CliSettings::allow) here. A value passed this way
     /// is not one of the secrets the run scrubs by value; a password in a
-    /// URL is still redacted like any other credential-shaped text.
+    /// URL is still redacted like any other credential-shaped text. A token
+    /// belongs in [`environment`](CliSettings::environment) instead.
     pub allowed: BTreeSet<String>,
     /// Give the child the host's whole environment, less the agent's
     /// [scrubbed](crate::AgentKind::scrubbed) variables, instead of
@@ -242,6 +243,9 @@ impl CliSettings {
         self
     }
 
+    /// Set `variable` to `value` in the child's environment, as a secret
+    /// the run scrubs from whatever it writes down. See
+    /// [`CliSettings::environment`].
     pub fn with_environment(
         mut self,
         variable: impl Into<String>,
@@ -258,6 +262,10 @@ impl CliSettings {
 
     /// Also give the child each of `names` from this process's environment,
     /// when this process has it set. See [`CliSettings::allowed`].
+    ///
+    /// For host variables that are not secret: an allowed value is not
+    /// scrubbed from what the run writes down. Give the child a token with
+    /// [`CliSettings::with_environment`], whose values are.
     pub fn allow<I>(mut self, names: I) -> Self
     where
         I: IntoIterator,
