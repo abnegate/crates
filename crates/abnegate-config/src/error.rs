@@ -1,7 +1,6 @@
 use std::io;
 use std::path::PathBuf;
 
-use abnegate_secret::SecretError;
 use thiserror::Error;
 #[cfg(feature = "keyring")]
 use zeroize::Zeroize;
@@ -44,13 +43,13 @@ pub enum ConfigError {
     Decrypt {
         field: String,
         #[source]
-        source: SecretError,
+        source: abnegate_secret::Error,
     },
     #[error("Failed to encrypt '{field}'")]
     Encrypt {
         field: String,
         #[source]
-        source: SecretError,
+        source: abnegate_secret::Error,
     },
     #[error("'{field}' arrived sealed and there is no master key to seal it again")]
     SealedWithoutKey { field: String },
@@ -145,7 +144,7 @@ mod tests {
     fn decryption_failures_name_the_field() {
         let error = ConfigError::Decrypt {
             field: "database.password".to_string(),
-            source: SecretError::Decryption,
+            source: abnegate_secret::Error::Decryption,
         };
         assert_eq!(error.to_string(), "Failed to decrypt 'database.password'");
     }
@@ -170,7 +169,7 @@ mod tests {
             ConfigError::NoHomeDirectory,
             ConfigError::Encrypt {
                 field: "token".to_string(),
-                source: SecretError::Encryption,
+                source: abnegate_secret::Error::Encryption,
             },
             ConfigError::InvalidKey {
                 key: "1KEY".to_string(),

@@ -21,7 +21,7 @@
 //!     redact(concat!("fatal: bad token ghp_", "0123456789abcdefghij")),
 //!     "fatal: bad token [REDACTED]"
 //! );
-//! # Ok::<(), abnegate_secret::SecretError>(())
+//! # Ok::<(), abnegate_secret::Error>(())
 //! ```
 //!
 //! # Features
@@ -49,7 +49,7 @@ mod work;
 pub use crate::encryption::decrypt_value;
 pub use crate::encryption::encrypt_value;
 pub use crate::encryption::is_encrypted;
-pub use crate::error::SecretError;
+pub use crate::error::Error;
 pub use crate::key::MasterKey;
 pub use crate::key::default_key_path;
 pub use crate::key::load_master_key;
@@ -59,5 +59,9 @@ pub use crate::redact::REDACTED;
 pub use crate::redact::redact;
 pub use crate::sanitize::sanitize;
 pub use crate::sanitize::sanitize_owned;
-pub use crate::value::OptionalSecretExt;
+pub use crate::value::OptionalSecretExtension;
 pub use crate::value::SecretValue;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

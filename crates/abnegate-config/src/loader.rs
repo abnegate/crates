@@ -103,7 +103,7 @@ impl<'key> Loader<'key> {
 }
 
 fn duplicate(key: &MasterKey) -> Option<MasterKey> {
-    MasterKey::from_hex(&key.to_hex()).ok()
+    MasterKey::from_hexadecimal(&key.to_hexadecimal()).ok()
 }
 
 /// Why `content` does not fit `T`, told from the file as it was written so a

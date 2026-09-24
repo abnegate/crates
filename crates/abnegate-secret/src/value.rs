@@ -45,6 +45,7 @@ pub struct SecretValue {
 }
 
 impl SecretValue {
+    /// Hold `value` as a credential.
     pub fn new(value: impl Into<String>) -> Self {
         Self {
             inner: value.into(),
@@ -56,6 +57,7 @@ impl SecretValue {
         &self.inner
     }
 
+    /// Whether the credential is empty, without exposing it.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -119,12 +121,12 @@ impl<'de> Deserialize<'de> for SecretValue {
 }
 
 /// `Option<SecretValue>` counterparts to the `Option<String>` methods.
-pub trait OptionalSecretExt {
+pub trait OptionalSecretExtension {
     /// The exposed credential, as [`Option::as_deref`] would give it.
     fn expose_as_deref(&self) -> Option<&str>;
 }
 
-impl OptionalSecretExt for Option<SecretValue> {
+impl OptionalSecretExtension for Option<SecretValue> {
     fn expose_as_deref(&self) -> Option<&str> {
         self.as_ref().map(SecretValue::expose)
     }
