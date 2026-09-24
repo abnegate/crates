@@ -175,3 +175,7 @@ pub use crate::resolution::judge;
 pub use crate::subject::Kind;
 pub use crate::subject::Subject;
 pub use crate::worktree::Unfinished;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
