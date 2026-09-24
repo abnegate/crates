@@ -9,7 +9,7 @@ use serde_json::json;
 
 use super::blocking;
 use super::read_text;
-use crate::tool::MAX_TOOL_OUTPUT_CHARACTERS;
+use crate::tool::MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 use crate::tool::Tool;
 use crate::tool::ToolContext;
 use crate::tool::ToolError;
@@ -17,7 +17,7 @@ use crate::tool::ToolResult;
 
 /// A page of file text, the same budget every tool spends on output it pages
 /// for itself.
-pub(super) const FILE_PAGE_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS;
+pub(super) const FILE_PAGE_CHARACTERS: usize = MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 
 /// Read a file's contents
 pub struct ReadFileTool;

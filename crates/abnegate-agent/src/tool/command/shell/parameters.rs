@@ -11,7 +11,7 @@ pub(crate) struct RunShellParameters {
     #[serde(default)]
     pub(crate) reason: Option<String>,
     #[serde(default, rename = "max_output_chars")]
-    pub(crate) max_output_characters: Option<u64>,
+    pub(crate) maximum_output_characters: Option<u64>,
     #[serde(default)]
     pub(crate) background: bool,
 }

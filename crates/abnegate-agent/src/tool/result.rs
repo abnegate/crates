@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::text::ERROR_PREFIX;
-use super::text::MAX_TOOL_MESSAGE_CHARACTERS;
+use super::text::MAXIMUM_TOOL_MESSAGE_CHARACTERS;
 use super::text::trim_middle;
 
 /// What a tool call produced, success or failure, as the model will read it.
@@ -46,7 +46,7 @@ impl ToolResult {
     }
 
     /// The text the model is given for this result, capped at
-    /// [`MAX_TOOL_MESSAGE_CHARACTERS`].
+    /// [`MAXIMUM_TOOL_MESSAGE_CHARACTERS`].
     pub fn to_message(&self) -> String {
         let message = if self.success {
             self.output.clone().unwrap_or_default()
@@ -56,14 +56,14 @@ impl ToolResult {
                 self.error.as_deref().unwrap_or("Unknown error")
             )
         };
-        trim_middle(&message, MAX_TOOL_MESSAGE_CHARACTERS)
+        trim_middle(&message, MAXIMUM_TOOL_MESSAGE_CHARACTERS)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::MAX_TOOL_OUTPUT_CHARACTERS;
+    use crate::tool::MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 
     #[test]
     fn test_tool_result_success() {
@@ -111,7 +111,7 @@ mod tests {
         assert!(message.ends_with("TAIL_MARKER"), "{message}");
         assert!(message.contains("characters trimmed"), "{message}");
         assert!(
-            message.chars().count() <= MAX_TOOL_MESSAGE_CHARACTERS,
+            message.chars().count() <= MAXIMUM_TOOL_MESSAGE_CHARACTERS,
             "{message}"
         );
     }
@@ -125,7 +125,7 @@ mod tests {
         assert!(message.contains("characters trimmed"), "{message}");
         assert!(!message.contains('\u{fffd}'), "{message}");
         assert!(
-            message.chars().count() <= MAX_TOOL_MESSAGE_CHARACTERS,
+            message.chars().count() <= MAXIMUM_TOOL_MESSAGE_CHARACTERS,
             "{message}"
         );
     }
@@ -137,11 +137,12 @@ mod tests {
     /// model received the first and last halves of a page with the body gone.
     #[test]
     fn a_full_page_and_its_framing_are_not_cut_a_second_time() {
-        let page = "p".repeat(MAX_TOOL_OUTPUT_CHARACTERS);
-        let framed =
-            format!("{page}\n[truncated; total=99999 offset=0 next={MAX_TOOL_OUTPUT_CHARACTERS}]");
+        let page = "p".repeat(MAXIMUM_TOOL_OUTPUT_CHARACTERS);
+        let framed = format!(
+            "{page}\n[truncated; total=99999 offset=0 next={MAXIMUM_TOOL_OUTPUT_CHARACTERS}]"
+        );
         assert!(
-            framed.chars().count() > MAX_TOOL_OUTPUT_CHARACTERS,
+            framed.chars().count() > MAXIMUM_TOOL_OUTPUT_CHARACTERS,
             "the framing has to overflow the tool budget for this to be a test"
         );
 

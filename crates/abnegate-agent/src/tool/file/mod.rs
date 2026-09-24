@@ -50,14 +50,14 @@ pub(crate) fn confine(resolved: &Path, context: &ToolContext) -> Result<(), Tool
 }
 
 /// The text of the file at `path`, refused past the context's
-/// `max_file_size`.
+/// `maximum_file_size`.
 ///
 /// The limit is held on what is read as well as on the size the file reports,
 /// so a file growing while it is read is refused rather than cut short. This
 /// blocks, so it runs off the async workers: through [`blocking`], or inside a
 /// blocking task of the caller's own.
 pub(super) fn read_text(context: &ToolContext, path: &Path) -> Result<String, ToolError> {
-    let limit = context.max_file_size as u64;
+    let limit = context.maximum_file_size as u64;
     let file = beneath::open(context, path, Access::Read)?;
     let size = file.metadata().map_err(unreadable)?.len();
     if size > limit {
@@ -81,7 +81,7 @@ pub(super) fn read_text(context: &ToolContext, path: &Path) -> Result<String, To
 fn too_large(size: u64, context: &ToolContext) -> ToolError {
     ToolError::Execution(format!(
         "File too large ({size} bytes, max {})",
-        context.max_file_size
+        context.maximum_file_size
     ))
 }
 

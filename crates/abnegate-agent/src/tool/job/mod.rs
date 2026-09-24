@@ -52,12 +52,11 @@ pub const WAIT_FOR: &str = "wait_for";
 ///
 /// The same cap a foreground shell command is held to: backgrounding is a way
 /// to stop blocking the loop, not a way to buy a longer command.
-pub const MAX_JOB_LIFETIME: Duration =
-    Duration::from_secs(super::command::MAX_SHELL_TIMEOUT_SECONDS);
+pub const MAXIMUM_JOB_LIFETIME: Duration = super::command::MAXIMUM_SHELL_TIMEOUT;
 
 /// Ceiling on a job's log file, past which the job is killed and reported as
 /// flooded rather than truncated and reported as fine.
-pub const MAX_JOB_LOG_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAXIMUM_JOB_LOG_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Where job logs live, inside the application directory of the session's own
 /// working tree.
@@ -96,7 +95,7 @@ const LOG_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Widest a single UTF-8 character is, and so the most a read holds back while
 /// waiting for the rest of one.
-const MAX_CHARACTER_BYTES: usize = 4;
+const MAXIMUM_CHARACTER_BYTES: usize = 4;
 
 /// Asked of git rather than joined onto `.git`: in a linked worktree `.git` is
 /// a pointer file and the real exclude lives in the common directory.

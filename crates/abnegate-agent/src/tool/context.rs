@@ -5,7 +5,7 @@ use super::EnvironmentPolicy;
 use super::Session;
 use crate::Application;
 
-const DEFAULT_MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
+const DEFAULT_MAXIMUM_FILE_SIZE: usize = 10 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Where and how a tool call runs.
@@ -27,7 +27,7 @@ pub struct ToolContext {
     /// has as the child starts, and nothing else.
     pub environment: EnvironmentPolicy,
     /// Largest file, in bytes, a tool will read into memory.
-    pub max_file_size: usize,
+    pub maximum_file_size: usize,
     /// How long a command runs when its call names no limit of its own.
     pub command_timeout: Duration,
     /// Whether tools may act outside `working_directory`.
@@ -101,7 +101,7 @@ impl Default for ToolContext {
         Self {
             working_directory: std::env::current_dir().unwrap_or_default(),
             environment: EnvironmentPolicy::allowlist(),
-            max_file_size: DEFAULT_MAX_FILE_SIZE,
+            maximum_file_size: DEFAULT_MAXIMUM_FILE_SIZE,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
             unrestricted: false,
             session: Session::Detached,
@@ -120,7 +120,7 @@ mod tests {
         assert!(
             context.working_directory.exists() || context.working_directory.as_os_str().is_empty()
         );
-        assert_eq!(context.max_file_size, 10 * 1024 * 1024);
+        assert_eq!(context.maximum_file_size, 10 * 1024 * 1024);
         assert_eq!(context.command_timeout, Duration::from_secs(300));
         assert_eq!(context.application, Application::default());
         assert!(!context.environment.inherits());

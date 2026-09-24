@@ -13,7 +13,7 @@ use super::*;
 use crate::test_support::CHILD_TEST;
 use crate::test_support::assert_passed;
 use crate::test_support::captured_logs;
-use crate::tool::MAX_TOOL_MESSAGE_CHARACTERS;
+use crate::tool::MAXIMUM_TOOL_MESSAGE_CHARACTERS;
 use crate::tool::Session;
 use crate::tool::Tool;
 
@@ -21,7 +21,7 @@ fn create_test_context() -> ToolContext {
     ToolContext {
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
         environment: crate::tool::EnvironmentPolicy::empty(),
-        max_file_size: 1024 * 1024,
+        maximum_file_size: 1024 * 1024,
         command_timeout: std::time::Duration::from_secs(30),
         unrestricted: false,
         session: Session::Detached,
@@ -646,7 +646,7 @@ async fn a_shell_call_may_not_block_on_sleep_past_the_cap() {
     let message = error.to_string();
     assert!(message.contains("300"), "{message}");
     assert!(
-        message.contains(&MAX_SLEEP_SECONDS.to_string()),
+        message.contains(&MAXIMUM_SLEEP.as_secs().to_string()),
         "the refusal names the cap it enforces: {message}"
     );
 }
@@ -678,7 +678,7 @@ fn the_shell_schema_states_the_sleep_cap() {
         .to_string();
 
     assert!(
-        described.contains(&MAX_SLEEP_SECONDS.to_string()),
+        described.contains(&MAXIMUM_SLEEP.as_secs().to_string()),
         "{described}"
     );
     assert!(described.contains("sleep"), "{described}");
@@ -742,7 +742,7 @@ fn huge_output_context(body: &str) -> (tempfile::TempDir, ToolContext) {
 async fn run_shell_output_keeps_its_tail_through_to_message() {
     let body = format!(
         "HEAD_MARKER{}TAIL_MARKER",
-        "x".repeat(MAX_SHELL_OUTPUT_CHARACTERS * 4)
+        "x".repeat(MAXIMUM_SHELL_OUTPUT_CHARACTERS * 4)
     );
     let (_dir, context) = huge_output_context(&body);
 
@@ -758,28 +758,31 @@ async fn run_shell_output_keeps_its_tail_through_to_message() {
         "the transcript cut threw away the end of the output: {message}"
     );
     assert!(
-        message.chars().count() <= MAX_TOOL_MESSAGE_CHARACTERS,
+        message.chars().count() <= MAXIMUM_TOOL_MESSAGE_CHARACTERS,
         "{}",
         message.chars().count()
     );
 }
 
 #[test]
-fn max_output_chars_clamps_into_range() {
-    assert_eq!(clamp_output_characters(None), MAX_SHELL_OUTPUT_CHARACTERS);
+fn the_output_cap_clamps_into_range() {
+    assert_eq!(
+        clamp_output_characters(None),
+        MAXIMUM_SHELL_OUTPUT_CHARACTERS
+    );
     assert_eq!(clamp_output_characters(Some(2_000)), 2_000);
     assert_eq!(
-        clamp_output_characters(Some(MAX_SHELL_OUTPUT_CHARACTERS as u64 * 100)),
-        MAX_SHELL_OUTPUT_CHARACTERS,
+        clamp_output_characters(Some(MAXIMUM_SHELL_OUTPUT_CHARACTERS as u64 * 100)),
+        MAXIMUM_SHELL_OUTPUT_CHARACTERS,
         "the knob must never raise the ceiling"
     );
     assert_eq!(
         clamp_output_characters(Some(u64::MAX)),
-        MAX_SHELL_OUTPUT_CHARACTERS
+        MAXIMUM_SHELL_OUTPUT_CHARACTERS
     );
     assert_eq!(
         clamp_output_characters(Some(0)),
-        MIN_SHELL_OUTPUT_CHARACTERS
+        MINIMUM_SHELL_OUTPUT_CHARACTERS
     );
 }
 
@@ -787,16 +790,16 @@ fn max_output_chars_clamps_into_range() {
 fn params_read_an_optional_max_output_chars() {
     let command: RunCommandParameters =
         serde_json::from_value(json!({"command": "cargo", "max_output_chars": 2_000})).unwrap();
-    assert_eq!(command.max_output_characters, Some(2_000));
+    assert_eq!(command.maximum_output_characters, Some(2_000));
 
     let shell: RunShellParameters =
         serde_json::from_value(json!({"command": "cargo test", "max_output_chars": 2_000}))
             .unwrap();
-    assert_eq!(shell.max_output_characters, Some(2_000));
+    assert_eq!(shell.maximum_output_characters, Some(2_000));
 
     let without: RunShellParameters =
         serde_json::from_value(json!({"command": "cargo test"})).unwrap();
-    assert_eq!(without.max_output_characters, None);
+    assert_eq!(without.maximum_output_characters, None);
 }
 
 /// The knob clamps every number it is given, but only after serde has
@@ -811,7 +814,7 @@ fn the_schema_refuses_the_negative_max_output_chars_the_parser_cannot_read() {
         RunShellTool.parameters_schema(),
     ] {
         assert_eq!(
-            schema["properties"][MAX_OUTPUT_PARAMETER]["minimum"],
+            schema["properties"][MAXIMUM_OUTPUT_PARAMETER]["minimum"],
             json!(0)
         );
     }
@@ -832,7 +835,7 @@ fn the_schema_refuses_the_negative_max_output_chars_the_parser_cannot_read() {
     );
     assert_eq!(
         clamp_output_characters(Some(0)),
-        MIN_SHELL_OUTPUT_CHARACTERS
+        MINIMUM_SHELL_OUTPUT_CHARACTERS
     );
 }
 
@@ -843,7 +846,7 @@ fn shell_schemas_offer_max_output_chars_without_requiring_it() {
         RunShellTool.parameters_schema(),
     ] {
         assert_eq!(
-            schema["properties"][MAX_OUTPUT_PARAMETER]["type"],
+            schema["properties"][MAXIMUM_OUTPUT_PARAMETER]["type"],
             "integer"
         );
         assert!(
@@ -851,7 +854,7 @@ fn shell_schemas_offer_max_output_chars_without_requiring_it() {
                 .as_array()
                 .expect("required array")
                 .iter()
-                .any(|name| name.as_str() == Some(MAX_OUTPUT_PARAMETER))
+                .any(|name| name.as_str() == Some(MAXIMUM_OUTPUT_PARAMETER))
         );
     }
 }
@@ -861,7 +864,7 @@ async fn run_shell_spends_only_the_requested_max_output_chars() {
     const REQUESTED: usize = 2_000;
     let body = format!(
         "HEAD_MARKER{}TAIL_MARKER",
-        "x".repeat(MAX_SHELL_OUTPUT_CHARACTERS * 4)
+        "x".repeat(MAXIMUM_SHELL_OUTPUT_CHARACTERS * 4)
     );
     let (_dir, context) = huge_output_context(&body);
 
@@ -885,7 +888,7 @@ async fn run_shell_spends_only_the_requested_max_output_chars() {
 async fn run_shell_cannot_raise_the_cap_above_the_constant() {
     let body = format!(
         "HEAD_MARKER{}TAIL_MARKER",
-        "x".repeat(MAX_SHELL_OUTPUT_CHARACTERS * 4)
+        "x".repeat(MAXIMUM_SHELL_OUTPUT_CHARACTERS * 4)
     );
     let (_dir, context) = huge_output_context(&body);
 
@@ -899,8 +902,8 @@ async fn run_shell_cannot_raise_the_cap_above_the_constant() {
         .to_message();
 
     let chars = message.chars().count();
-    assert!(chars <= MAX_SHELL_OUTPUT_CHARACTERS, "{chars}");
-    assert!(chars > MAX_SHELL_OUTPUT_CHARACTERS - 100, "{chars}");
+    assert!(chars <= MAXIMUM_SHELL_OUTPUT_CHARACTERS, "{chars}");
+    assert!(chars > MAXIMUM_SHELL_OUTPUT_CHARACTERS - 100, "{chars}");
     assert!(message.contains("TAIL_MARKER"), "{message}");
 }
 
@@ -994,7 +997,7 @@ async fn run_command_trims_huge_stdout() {
     assert!(output.contains("HEAD_MARKER"), "{output}");
     assert!(output.contains("TAIL_MARKER"), "{output}");
     assert!(output.contains("characters trimmed"), "{output}");
-    assert!(output.chars().count() <= MAX_SHELL_OUTPUT_CHARACTERS);
+    assert!(output.chars().count() <= MAXIMUM_SHELL_OUTPUT_CHARACTERS);
     assert!(output.chars().count() < body.chars().count());
 }
 
@@ -1026,7 +1029,7 @@ async fn run_command_trims_huge_error_payload() {
     assert!(!result.success);
     let error = result.error.unwrap();
     assert!(error.contains("characters trimmed"), "{error}");
-    assert!(error.chars().count() <= MAX_SHELL_OUTPUT_CHARACTERS);
+    assert!(error.chars().count() <= MAXIMUM_SHELL_OUTPUT_CHARACTERS);
     assert!(
         error.contains("HEAD_LEFT") || error.contains("Command exited"),
         "{error}"
@@ -1099,7 +1102,7 @@ async fn the_sleep_cap_does_not_tell_a_backgrounded_call_to_background_itself() 
     let error = RunShellTool
         .execute(
             json!({
-                "command": format!("sleep {}", MAX_SLEEP_SECONDS + 60),
+                "command": format!("sleep {}", MAXIMUM_SLEEP.as_secs() + 60),
                 "background": true,
                 "reason": "Wait for the deploy."
             }),
@@ -1114,7 +1117,7 @@ async fn the_sleep_cap_does_not_tell_a_backgrounded_call_to_background_itself() 
         "the call had already done that: {message}"
     );
     assert!(
-        message.contains(WAIT_FOR) && message.contains(&MAX_SLEEP_SECONDS.to_string()),
+        message.contains(WAIT_FOR) && message.contains(&MAXIMUM_SLEEP.as_secs().to_string()),
         "the refusal still says what the cap is and what to do instead: {message}"
     );
     assert!(
@@ -1211,7 +1214,7 @@ async fn a_backgrounded_shell_call_may_not_block_on_sleep_past_the_cap() {
     let message = error.to_string();
     assert!(message.contains("300"), "{message}");
     assert!(
-        message.contains(&MAX_SLEEP_SECONDS.to_string()),
+        message.contains(&MAXIMUM_SLEEP.as_secs().to_string()),
         "{message}"
     );
     assert!(
@@ -1560,17 +1563,13 @@ fn a_call_limit_is_held_between_a_second_and_the_shell_maximum() {
         call_limit(Some(0), default),
         std::time::Duration::from_secs(1)
     );
-    assert_eq!(
-        call_limit(Some(31_536_000), default),
-        std::time::Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS)
-    );
+    assert_eq!(call_limit(Some(31_536_000), default), MAXIMUM_SHELL_TIMEOUT);
     assert_eq!(
         call_limit(None, std::time::Duration::from_secs(86_400)),
-        std::time::Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS)
+        MAXIMUM_SHELL_TIMEOUT
     );
     assert!(
-        RunCommandTool.timeout(&create_test_context())
-            > std::time::Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS),
+        RunCommandTool.timeout(&create_test_context()) > MAXIMUM_SHELL_TIMEOUT,
         "the outer bound must not pre-empt the longest call"
     );
 }
@@ -1610,5 +1609,5 @@ fn the_shell_schemas_keep_their_wire_keys() {
     assert_eq!(parsed.arguments, ["status"]);
     assert_eq!(parsed.working_directory.as_deref(), Some("sub"));
     assert_eq!(parsed.timeout_seconds, Some(5));
-    assert_eq!(parsed.max_output_characters, Some(900));
+    assert_eq!(parsed.maximum_output_characters, Some(900));
 }

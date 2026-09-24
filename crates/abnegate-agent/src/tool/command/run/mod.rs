@@ -9,13 +9,13 @@ use serde_json::json;
 use tokio::time::Duration;
 
 use super::BACKGROUND_PARAMETER;
-use super::MAX_OUTPUT_PARAMETER;
-use super::MAX_SHELL_TIMEOUT_SECONDS;
+use super::MAXIMUM_OUTPUT_PARAMETER;
+use super::MAXIMUM_SHELL_TIMEOUT;
 use super::background;
 use super::background_property;
 use super::call_limit;
 use super::clamp_output_characters;
-use super::max_output_property;
+use super::maximum_output_property;
 use super::run_preview;
 use super::working_directory;
 use crate::tool::ERROR_PREFIX;
@@ -87,7 +87,7 @@ impl Tool for RunCommandTool {
     }
 
     fn timeout(&self, _context: &ToolContext) -> Duration {
-        Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS) + TIMEOUT_SLACK
+        MAXIMUM_SHELL_TIMEOUT + TIMEOUT_SLACK
     }
 
     fn parameters_schema(&self) -> Value {
@@ -111,11 +111,12 @@ impl Tool for RunCommandTool {
                     "type": "integer",
                     "description": format!(
                         "Wall-clock limit in seconds. Defaults to the configured command \
-                         timeout; at most {MAX_SHELL_TIMEOUT_SECONDS}."
+                         timeout; at most {}.",
+                        MAXIMUM_SHELL_TIMEOUT.as_secs()
                     )
                 },
                 BACKGROUND_PARAMETER: background_property(),
-                MAX_OUTPUT_PARAMETER: max_output_property(),
+                MAXIMUM_OUTPUT_PARAMETER: maximum_output_property(),
                 REASON_PARAMETER: reason_property()
             },
             "required": ["command", REASON_PARAMETER]
@@ -191,7 +192,7 @@ impl Tool for RunCommandTool {
             result = "(no output)".to_string();
         }
 
-        let output_characters = clamp_output_characters(parameters.max_output_characters);
+        let output_characters = clamp_output_characters(parameters.maximum_output_characters);
 
         if output.status.success() {
             Ok(ToolResult::success(trim_middle(&result, output_characters)))

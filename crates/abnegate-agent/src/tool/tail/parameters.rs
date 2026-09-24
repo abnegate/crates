@@ -7,5 +7,5 @@ pub(crate) struct TailJobParameters {
     #[serde(default)]
     pub(crate) since: Option<u64>,
     #[serde(default, rename = "max_output_chars")]
-    pub(crate) max_output_characters: Option<u64>,
+    pub(crate) maximum_output_characters: Option<u64>,
 }

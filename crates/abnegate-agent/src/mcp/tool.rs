@@ -10,7 +10,7 @@ use tokio::time::timeout;
 
 use super::format::format_call_result;
 use super::session::McpSession;
-use crate::tool::MAX_TOOL_OUTPUT_CHARACTERS;
+use crate::tool::MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 use crate::tool::TIMEOUT_SLACK;
 use crate::tool::Tier;
 use crate::tool::Tool;
@@ -19,7 +19,7 @@ use crate::tool::ToolError;
 use crate::tool::ToolResult;
 use crate::tool::trim_middle;
 
-const MAX_MCP_OUTPUT_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS;
+const MAX_MCP_OUTPUT_CHARACTERS: usize = MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 
 /// One tool advertised by a connected MCP server.
 pub struct McpTool {
