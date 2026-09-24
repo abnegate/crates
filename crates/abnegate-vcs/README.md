@@ -23,7 +23,7 @@ to take `--ref-format` for `init` and `clone`.
 ## Features
 
 - `github`: `PullRequestService`, which opens, reads, checks, reviews and merges pull requests on GitHub or a GitHub Enterprise install, reads back how each one was received, and creates repositories there, over the REST and GraphQL APIs.
-- `test-support`: `RepositoryUrl::local` and `PullRequestService::standing_in_for`, which reach a repository on the local disk or a mock API server; only a test should enable it.
+- `testing`: `RepositoryUrl::local` and `PullRequestService::standing_in_for`, which reach a repository on the local disk or a mock API server; only a test should enable it.
 
 ## Usage
 

@@ -212,7 +212,7 @@ impl PullRequestService {
     /// No operator setting produces one: a configured origin has to answer for
     /// a host it can be reached at over HTTPS. Tests use this to drive the
     /// real request path against a mock server.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn standing_in_for(host: &str, url: &str) -> PullRequestResult<Self> {
         Self::addressing(Origin::standing_in_for(host, url)?, false, REQUEST_TIMEOUT)
     }
