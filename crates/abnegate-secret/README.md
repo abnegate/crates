@@ -21,9 +21,9 @@ cargo add abnegate-secret
 ```
 
 ```rust,no_run
-use abnegate_secret::{MasterKey, SecretError, SecretValue, decrypt_value, encrypt_value, redact};
+use abnegate_secret::{Error, MasterKey, SecretValue, decrypt_value, encrypt_value, redact};
 
-fn main() -> Result<(), SecretError> {
+fn main() -> Result<(), Error> {
     let key = MasterKey::generate()?;
     let password = SecretValue::new("hunter2");
 

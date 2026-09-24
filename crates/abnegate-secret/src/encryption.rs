@@ -7,7 +7,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use zeroize::Zeroize;
 
-use crate::error::SecretError;
+use crate::error::Error;
 use crate::key::MasterKey;
 use crate::random;
 use crate::value::SecretValue;
@@ -32,19 +32,18 @@ pub fn is_encrypted(value: &str) -> bool {
 /// let sealed = encrypt_value(&SecretValue::new("sk-live-0123456789"), &key)?;
 /// assert!(sealed.starts_with("ENC[v1:"));
 /// assert_eq!(decrypt_value(&sealed, &key)?.expose(), "sk-live-0123456789");
-/// # Ok::<(), abnegate_secret::SecretError>(())
+/// # Ok::<(), abnegate_secret::Error>(())
 /// ```
-pub fn encrypt_value(value: &SecretValue, key: &MasterKey) -> Result<String, SecretError> {
-    let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).map_err(|_| SecretError::Encryption)?;
+pub fn encrypt_value(value: &SecretValue, key: &MasterKey) -> Result<String, Error> {
+    let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).map_err(|_| Error::Encryption)?;
 
     let mut nonce_bytes = [0u8; NONCE_BYTES];
     random::fill(&mut nonce_bytes)?;
-    let nonce =
-        Nonce::<U12>::try_from(nonce_bytes.as_slice()).map_err(|_| SecretError::Encryption)?;
+    let nonce = Nonce::<U12>::try_from(nonce_bytes.as_slice()).map_err(|_| Error::Encryption)?;
 
     let ciphertext = cipher
         .encrypt(&nonce, value.expose().as_bytes())
-        .map_err(|_| SecretError::Encryption)?;
+        .map_err(|_| Error::Encryption)?;
 
     let mut sealed = Vec::with_capacity(NONCE_BYTES + ciphertext.len());
     sealed.extend_from_slice(&nonce_bytes);
@@ -60,8 +59,8 @@ pub fn encrypt_value(value: &SecretValue, key: &MasterKey) -> Result<String, Sec
 ///
 /// Values written before the envelope existed keep working; each one is
 /// reported through `tracing::debug!` as it is read. A value that opens an
-/// envelope without closing it is [`SecretError::Truncated`], never plaintext.
-pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, SecretError> {
+/// envelope without closing it is [`Error::Truncated`], never plaintext.
+pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error> {
     let Some(body) = value.strip_prefix(ENVELOPE_PREFIX) else {
         tracing::debug!(
             "Plaintext secret read from storage; re-save it to seal it in an ENC[v1:...] envelope"
@@ -69,31 +68,27 @@ pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Secret
         return Ok(SecretValue::new(value));
     };
 
-    let encoded = body
-        .strip_suffix(ENVELOPE_SUFFIX)
-        .ok_or(SecretError::Truncated)?;
-    let sealed = BASE64
-        .decode(encoded)
-        .map_err(|_| SecretError::InvalidBase64)?;
+    let encoded = body.strip_suffix(ENVELOPE_SUFFIX).ok_or(Error::Truncated)?;
+    let sealed = BASE64.decode(encoded).map_err(|_| Error::InvalidBase64)?;
 
     if sealed.len() < NONCE_BYTES + TAG_BYTES {
-        return Err(SecretError::Truncated);
+        return Err(Error::Truncated);
     }
 
     let (nonce_bytes, ciphertext) = sealed.split_at(NONCE_BYTES);
-    let nonce = Nonce::<U12>::try_from(nonce_bytes).map_err(|_| SecretError::Decryption)?;
+    let nonce = Nonce::<U12>::try_from(nonce_bytes).map_err(|_| Error::Decryption)?;
 
-    let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).map_err(|_| SecretError::Decryption)?;
+    let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).map_err(|_| Error::Decryption)?;
     let plaintext = cipher
         .decrypt(&nonce, ciphertext)
-        .map_err(|_| SecretError::Decryption)?;
+        .map_err(|_| Error::Decryption)?;
 
     match String::from_utf8(plaintext) {
         Ok(text) => Ok(SecretValue::new(text)),
         Err(error) => {
             let mut bytes = error.into_bytes();
             bytes.zeroize();
-            Err(SecretError::InvalidUtf8)
+            Err(Error::InvalidUtf8)
         }
     }
 }
@@ -192,7 +187,7 @@ mod tests {
             encrypt_value(&SecretValue::new("secret"), &MasterKey::generate().unwrap()).unwrap();
         assert!(matches!(
             decrypt_value(&sealed, &MasterKey::generate().unwrap()),
-            Err(SecretError::Decryption)
+            Err(Error::Decryption)
         ));
     }
 
@@ -213,7 +208,7 @@ mod tests {
         let key = MasterKey::generate().unwrap();
         assert!(matches!(
             decrypt_value("ENC[v1:not!valid@base64#]", &key),
-            Err(SecretError::InvalidBase64)
+            Err(Error::InvalidBase64)
         ));
     }
 
@@ -224,10 +219,7 @@ mod tests {
             "{ENVELOPE_PREFIX}{}{ENVELOPE_SUFFIX}",
             BASE64.encode(b"short")
         );
-        assert!(matches!(
-            decrypt_value(&short, &key),
-            Err(SecretError::Truncated)
-        ));
+        assert!(matches!(decrypt_value(&short, &key), Err(Error::Truncated)));
     }
 
     #[test]
@@ -241,7 +233,7 @@ mod tests {
             ENVELOPE_PREFIX,
         ] {
             assert!(
-                matches!(decrypt_value(truncated, &key), Err(SecretError::Truncated)),
+                matches!(decrypt_value(truncated, &key), Err(Error::Truncated)),
                 "{truncated} was read as plaintext"
             );
         }

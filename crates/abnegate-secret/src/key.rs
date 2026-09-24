@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
-use crate::error::SecretError;
+use crate::error::Error;
 use crate::random;
 use crate::redact::REDACTED;
 
@@ -44,7 +44,7 @@ impl MasterKey {
     }
 
     /// A fresh key drawn from the operating system's random source.
-    pub fn generate() -> Result<Self, SecretError> {
+    pub fn generate() -> Result<Self, Error> {
         let mut generated = Self {
             key: [0u8; KEY_BYTES],
         };
@@ -52,14 +52,13 @@ impl MasterKey {
         Ok(generated)
     }
 
-    pub fn from_hex(hexadecimal: &str) -> Result<Self, SecretError> {
-        let decoded =
-            hex::decode(hexadecimal.trim()).map_err(|_| SecretError::InvalidHexadecimal)?;
+    pub fn from_hex(hexadecimal: &str) -> Result<Self, Error> {
+        let decoded = hex::decode(hexadecimal.trim()).map_err(|_| Error::InvalidHexadecimal)?;
         let decoded = Zeroizing::new(decoded);
         let key = decoded
             .as_slice()
             .try_into()
-            .map_err(|_| SecretError::KeyLength {
+            .map_err(|_| Error::KeyLength {
                 expected: KEY_BYTES,
                 actual: decoded.len(),
             })?;
@@ -94,10 +93,10 @@ impl fmt::Debug for MasterKey {
 /// Fails rather than falling back to the working directory when there is no
 /// home directory, so a key is never picked up from wherever the process
 /// happens to start.
-pub fn default_key_path(application: &str) -> Result<PathBuf, SecretError> {
+pub fn default_key_path(application: &str) -> Result<PathBuf, Error> {
     dirs::home_dir()
         .map(|home| key_path_under(&home, application))
-        .ok_or(SecretError::NoHomeDirectory)
+        .ok_or(Error::NoHomeDirectory)
 }
 
 /// The master key `application` is configured with, in order of precedence:
@@ -108,7 +107,7 @@ pub fn default_key_path(application: &str) -> Result<PathBuf, SecretError> {
 /// plaintext mode. A key variable that is not UTF-8, or a missing home
 /// directory when neither variable is set, is an error rather than a silent
 /// fall through to plaintext mode.
-pub fn load_master_key(application: &str) -> Result<Option<MasterKey>, SecretError> {
+pub fn load_master_key(application: &str) -> Result<Option<MasterKey>, Error> {
     load_master_key_from(application, |name| env::var_os(name), dirs::home_dir())
 }
 
@@ -116,16 +115,14 @@ fn load_master_key_from(
     application: &str,
     variable: impl Fn(&str) -> Option<OsString>,
     home: Option<PathBuf>,
-) -> Result<Option<MasterKey>, SecretError> {
+) -> Result<Option<MasterKey>, Error> {
     let prefix = environment_prefix(application);
 
     let key_variable = format!("{prefix}{KEY_VARIABLE_SUFFIX}");
     if let Some(value) = variable(&key_variable).filter(|value| !value.is_empty()) {
-        let hexadecimal = value
-            .into_string()
-            .map_err(|_| SecretError::InvalidEnvironment {
-                variable: key_variable,
-            })?;
+        let hexadecimal = value.into_string().map_err(|_| Error::InvalidEnvironment {
+            variable: key_variable,
+        })?;
         return MasterKey::from_hex(&Zeroizing::new(hexadecimal)).map(Some);
     }
 
@@ -134,7 +131,7 @@ fn load_master_key_from(
         return read_key_file(Path::new(&path)).map(Some);
     }
 
-    let home = home.ok_or(SecretError::NoHomeDirectory)?;
+    let home = home.ok_or(Error::NoHomeDirectory)?;
     let path = key_path_under(&home, application);
     if path.exists() {
         return read_key_file(&path).map(Some);
@@ -144,8 +141,8 @@ fn load_master_key_from(
 }
 
 /// Read a hexadecimal master key from `path`.
-pub fn read_key_file(path: &Path) -> Result<MasterKey, SecretError> {
-    let content = fs::read_to_string(path).map_err(|source| SecretError::ReadKeyFile {
+pub fn read_key_file(path: &Path) -> Result<MasterKey, Error> {
+    let content = fs::read_to_string(path).map_err(|source| Error::ReadKeyFile {
         path: path.to_path_buf(),
         source,
     })?;
@@ -161,8 +158,8 @@ pub fn read_key_file(path: &Path) -> Result<MasterKey, SecretError> {
 /// links to it do not carry over. Missing parent directories are created
 /// owner-only, and the key and its directory entry are flushed to disk before
 /// this returns.
-pub fn write_key_file(path: &Path, key: &MasterKey) -> Result<(), SecretError> {
-    let failed = |source: io::Error| SecretError::WriteKeyFile {
+pub fn write_key_file(path: &Path, key: &MasterKey) -> Result<(), Error> {
+    let failed = |source: io::Error| Error::WriteKeyFile {
         path: path.to_path_buf(),
         source,
     };
@@ -190,8 +187,8 @@ fn key_path_under(home: &Path, application: &str) -> PathBuf {
     home.join(format!(".{application}")).join(KEY_FILE_NAME)
 }
 
-fn temporary_path(path: &Path) -> Result<PathBuf, SecretError> {
-    let name = path.file_name().ok_or_else(|| SecretError::WriteKeyFile {
+fn temporary_path(path: &Path) -> Result<PathBuf, Error> {
+    let name = path.file_name().ok_or_else(|| Error::WriteKeyFile {
         path: path.to_path_buf(),
         source: io::Error::new(io::ErrorKind::InvalidInput, "the path names no file"),
     })?;
@@ -306,7 +303,7 @@ mod tests {
     fn rejects_the_wrong_key_length() {
         assert!(matches!(
             MasterKey::from_hex("abcdef"),
-            Err(SecretError::KeyLength {
+            Err(Error::KeyLength {
                 expected: 32,
                 actual: 3
             })
@@ -317,7 +314,7 @@ mod tests {
     fn rejects_characters_that_are_not_hexadecimal() {
         assert!(matches!(
             MasterKey::from_hex("not_valid_hex_string_of_64_chars_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"),
-            Err(SecretError::InvalidHexadecimal)
+            Err(Error::InvalidHexadecimal)
         ));
     }
 
@@ -460,7 +457,7 @@ mod tests {
         let path = Path::new("/nonexistent/abnegate/master.key");
         assert!(matches!(
             read_key_file(path),
-            Err(SecretError::ReadKeyFile { path: reported, .. }) if reported == path
+            Err(Error::ReadKeyFile { path: reported, .. }) if reported == path
         ));
     }
 
@@ -518,7 +515,7 @@ mod tests {
     fn without_a_home_directory_the_key_is_not_looked_for_in_the_working_directory() {
         assert!(matches!(
             load_master_key_from(APPLICATION, environment(&[]), None),
-            Err(SecretError::NoHomeDirectory)
+            Err(Error::NoHomeDirectory)
         ));
     }
 
@@ -533,7 +530,7 @@ mod tests {
         let home = tempfile::TempDir::new().unwrap();
         assert!(matches!(
             load_master_key_from(APPLICATION, invalid, Some(home.path().into())),
-            Err(SecretError::InvalidEnvironment { variable }) if variable == "EXAMPLE_MASTER_KEY"
+            Err(Error::InvalidEnvironment { variable }) if variable == "EXAMPLE_MASTER_KEY"
         ));
     }
 
