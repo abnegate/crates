@@ -7,6 +7,7 @@ use std::fmt;
 /// Displayed, it is the text followed by [`Excerpt::MARKER`] when it was cut,
 /// so a reader of the rendered text knows it holds only the start.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Excerpt {
     /// What was kept.
     pub text: String,

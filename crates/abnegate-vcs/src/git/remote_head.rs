@@ -5,6 +5,7 @@ use crate::commit_sha::CommitSha;
 /// reports them: what a run starts from is asked of the repository, not read
 /// from a ref every run of it shares.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RemoteHead {
     /// The branch the remote names as its default.
     pub branch: BranchName,

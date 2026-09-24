@@ -3,6 +3,7 @@ use std::num::NonZeroU64;
 
 /// A pull request that was just opened.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CreatedPullRequest {
     /// Where the pull request can be read.
     pub url: String,

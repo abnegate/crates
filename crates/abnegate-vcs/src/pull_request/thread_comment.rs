@@ -1,5 +1,6 @@
 /// One comment in a review thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ThreadComment {
     /// The comment's REST identifier, which a reply is addressed to, when
     /// GitHub gives one.

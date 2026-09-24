@@ -129,14 +129,11 @@ fn inside(conflict: &Conflict, arguments: &[&str]) -> String {
 }
 
 fn request(origin: &Path) -> ConflictRequest {
-    ConflictRequest {
-        remote: RepositoryUrl::local(origin).unwrap(),
-        token: None,
-        head: BranchName::parse("feature").unwrap(),
-        base: BranchName::parse("main").unwrap(),
-        expected_head: None,
-        expected_base: None,
-    }
+    ConflictRequest::new(
+        RepositoryUrl::local(origin).unwrap(),
+        BranchName::parse("feature").unwrap(),
+        BranchName::parse("main").unwrap(),
+    )
 }
 
 #[tokio::test]
@@ -196,9 +193,8 @@ async fn a_branch_that_merges_cleanly_is_nothing_to_repair() {
 #[tokio::test]
 async fn a_head_that_moved_since_the_caller_looked_refuses_to_reproduce() {
     let origin = conflicting_origin();
-    let mut request = request(origin.path());
-    request.expected_head =
-        Some(CommitSha::parse("0123456789abcdef0123456789abcdef01234567").unwrap());
+    let request = request(origin.path())
+        .with_expected_head(CommitSha::parse("0123456789abcdef0123456789abcdef01234567").unwrap());
 
     let outcome = ConflictService::new().reproduce(&request).await;
     match outcome {
@@ -213,9 +209,9 @@ async fn the_expected_commits_let_a_caller_pin_the_state_it_reproduced() {
     let head = CommitSha::parse(&git(origin.path(), &["rev-parse", "feature"])).unwrap();
     let base = CommitSha::parse(&git(origin.path(), &["rev-parse", "main"])).unwrap();
 
-    let mut request = request(origin.path());
-    request.expected_head = Some(head.clone());
-    request.expected_base = Some(base.clone());
+    let request = request(origin.path())
+        .with_expected_head(head.clone())
+        .with_expected_base(base.clone());
 
     let conflict = ConflictService::new().reproduce(&request).await.unwrap();
     assert_eq!(conflict.head(), &head);
