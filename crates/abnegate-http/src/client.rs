@@ -63,10 +63,7 @@ mod tests {
     #[async_trait]
     impl HttpClient for GetOnly {
         async fn get(&self, url: &str, _headers: Vec<(&str, String)>) -> Result<HttpResponse> {
-            Ok(HttpResponse {
-                status: 200,
-                body: url.to_string(),
-            })
+            Ok(HttpResponse::new(200, url))
         }
     }
 

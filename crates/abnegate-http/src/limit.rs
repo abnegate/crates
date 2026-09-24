@@ -23,10 +23,8 @@ const RETAINED_WINDOWS: u32 = 2;
 /// use abnegate_http::{RateLimitConfig, RateLimiter};
 /// use std::time::Duration;
 ///
-/// let limiter: RateLimiter<String> = RateLimiter::new(RateLimitConfig {
-///     limit: 1,
-///     window: Duration::from_secs(60),
-/// });
+/// let limiter: RateLimiter<String> =
+///     RateLimiter::new(RateLimitConfig::new(1, Duration::from_secs(60)));
 ///
 /// assert!(limiter.check_rate_limit("tenant-a".to_string()).allowed);
 /// assert!(!limiter.check_rate_limit("tenant-a".to_string()).allowed);
@@ -122,7 +120,7 @@ mod tests {
     use uuid::Uuid;
 
     fn limiter<K: Eq + Hash>(limit: u32, window: Duration) -> RateLimiter<K> {
-        RateLimiter::new(RateLimitConfig { limit, window })
+        RateLimiter::new(RateLimitConfig::new(limit, window))
     }
 
     #[test]
@@ -229,10 +227,7 @@ mod tests {
 
     #[test]
     fn rate_limit_reset_timestamp() {
-        let config = RateLimitConfig {
-            limit: 1,
-            window: Duration::from_secs(60),
-        };
+        let config = RateLimitConfig::new(1, Duration::from_secs(60));
         let limiter: RateLimiter<Uuid> = RateLimiter::new(config);
         let start = Instant::now();
 

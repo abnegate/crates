@@ -69,7 +69,7 @@ impl ReqwestHttpClient {
         let body = read_capped(response, self.body_limit).await?;
         let body = String::from_utf8(body)
             .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
-        Ok(HttpResponse { status, body })
+        Ok(HttpResponse::new(status, body))
     }
 }
 
