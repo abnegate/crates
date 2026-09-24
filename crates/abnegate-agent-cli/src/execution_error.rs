@@ -49,8 +49,6 @@ impl From<ExecutionError> for ProviderError {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use abnegate_llm::ProviderError;
 
     use super::ExecutionError;
@@ -58,11 +56,11 @@ mod tests {
 
     #[test]
     fn it_reads_as_the_error_inside_it_and_keeps_the_logs() {
-        let log = ExecutionLogFiles {
-            stdout: PathBuf::from("/tmp/run.stdout.log"),
-            stderr: PathBuf::from("/tmp/run.stderr.log"),
-            events: PathBuf::from("/tmp/run.events.jsonl"),
-        };
+        let log = ExecutionLogFiles::new(
+            "/tmp/run.stdout.log",
+            "/tmp/run.stderr.log",
+            "/tmp/run.events.jsonl",
+        );
         let error = ExecutionError::new(
             ProviderError::Timeout {
                 provider: "claude".to_string(),

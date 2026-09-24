@@ -8,6 +8,7 @@ use serde::Serialize;
 /// All three are prompt tokens, and dropping the cached ones understates a
 /// long conversation's real prompt size by most of it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CliUsage {
     #[serde(default)]
     pub input_tokens: Option<u64>,
@@ -20,6 +21,29 @@ pub struct CliUsage {
 }
 
 impl CliUsage {
+    /// Fresh input and output counts, with nothing read from or written to
+    /// the cache.
+    pub fn new(input_tokens: u64, output_tokens: u64) -> Self {
+        Self {
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+        }
+    }
+
+    /// Count `tokens` of the prompt as read from the cache.
+    pub fn with_cache_read_input_tokens(mut self, tokens: u64) -> Self {
+        self.cache_read_input_tokens = Some(tokens);
+        self
+    }
+
+    /// Count `tokens` of the prompt as written to the cache.
+    pub fn with_cache_creation_input_tokens(mut self, tokens: u64) -> Self {
+        self.cache_creation_input_tokens = Some(tokens);
+        self
+    }
+
     /// Every token the model read, fresh or from the cache.
     pub fn prompt_tokens(&self) -> u64 {
         [
@@ -78,6 +102,12 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(20));
         assert_eq!(usage.cache_read_input_tokens, Some(30));
         assert_eq!(usage.cache_creation_input_tokens, Some(40));
+        assert_eq!(
+            usage,
+            CliUsage::new(10, 20)
+                .with_cache_read_input_tokens(30)
+                .with_cache_creation_input_tokens(40)
+        );
     }
 
     #[test]
@@ -92,11 +122,7 @@ mod tests {
 
     #[test]
     fn debug_names_the_counters() {
-        let usage = CliUsage {
-            input_tokens: Some(100),
-            output_tokens: Some(200),
-            ..CliUsage::default()
-        };
+        let usage = CliUsage::new(100, 200);
         let debug = format!("{usage:?}");
         assert!(debug.contains("input_tokens"));
         assert!(debug.contains("100"));
@@ -104,12 +130,9 @@ mod tests {
 
     #[test]
     fn cached_prompt_tokens_count_as_prompt_tokens() {
-        let usage = CliUsage {
-            input_tokens: Some(9),
-            output_tokens: Some(77),
-            cache_read_input_tokens: Some(27_700),
-            cache_creation_input_tokens: Some(1_200),
-        };
+        let usage = CliUsage::new(9, 77)
+            .with_cache_read_input_tokens(27_700)
+            .with_cache_creation_input_tokens(1_200);
 
         let normalised = Usage::from(&usage);
         assert_eq!(normalised.prompt_tokens, 9 + 1_200 + 27_700);
@@ -119,11 +142,7 @@ mod tests {
 
     #[test]
     fn counts_past_the_normalised_width_saturate() {
-        let usage = CliUsage {
-            input_tokens: Some(u64::MAX),
-            output_tokens: Some(u64::from(u32::MAX) + 1),
-            ..CliUsage::default()
-        };
+        let usage = CliUsage::new(u64::MAX, u64::from(u32::MAX) + 1);
 
         let normalised = Usage::from(&usage);
         assert_eq!(normalised.prompt_tokens, u32::MAX);

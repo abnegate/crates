@@ -16,6 +16,7 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Where one run's logs are written.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ExecutionLogFiles {
     /// The agent's decoded prose, scrubbed of secrets.
     pub stdout: PathBuf,
@@ -28,6 +29,19 @@ pub struct ExecutionLogFiles {
 }
 
 impl ExecutionLogFiles {
+    /// Files at the paths given, which are neither created nor checked.
+    pub fn new(
+        stdout: impl Into<PathBuf>,
+        stderr: impl Into<PathBuf>,
+        events: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+            events: events.into(),
+        }
+    }
+
     /// Name one run's files under `root/<agent>/<UTC day>/`, creating those
     /// two directories readable by their owner alone, and refusing either
     /// when it is a link.
@@ -263,12 +277,15 @@ mod tests {
 
     #[test]
     fn files_clone_and_debug_by_field() {
-        let files = ExecutionLogFiles {
-            stdout: PathBuf::from("/tmp/test.stdout.log"),
-            stderr: PathBuf::from("/tmp/test.stderr.log"),
-            events: PathBuf::from("/tmp/test.events.jsonl"),
-        };
+        let files = ExecutionLogFiles::new(
+            "/tmp/test.stdout.log",
+            "/tmp/test.stderr.log",
+            PathBuf::from("/tmp/test.events.jsonl"),
+        );
 
+        assert_eq!(files.stdout, PathBuf::from("/tmp/test.stdout.log"));
+        assert_eq!(files.stderr, PathBuf::from("/tmp/test.stderr.log"));
+        assert_eq!(files.events, PathBuf::from("/tmp/test.events.jsonl"));
         assert_eq!(files.clone(), files);
         let debug = format!("{files:?}");
         assert!(debug.contains("stdout"));

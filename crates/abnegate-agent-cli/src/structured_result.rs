@@ -11,6 +11,7 @@ use crate::question::BlockingQuestion;
 /// [`StructuredResult::SCHEMA`], which replaces scraping the agent's prose for
 /// a pull request link or a question marker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct StructuredResult {
     #[serde(default)]
     pub summary: String,

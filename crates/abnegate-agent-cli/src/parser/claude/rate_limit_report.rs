@@ -8,6 +8,7 @@ const ALLOWED: [&str; 2] = ["allowed", "allowed_warning"];
 /// It serialises back to the CLI's own field names, so a report quoted in a
 /// failure still reads as the CLI wrote it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RateLimitReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,

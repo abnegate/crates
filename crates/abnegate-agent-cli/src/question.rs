@@ -5,6 +5,7 @@ use serde::Serialize;
 
 /// A question the agent needs a human to answer before it can go on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BlockingQuestion {
     pub question: String,
     /// What the agent found that made the question necessary.
@@ -19,6 +20,38 @@ pub struct BlockingQuestion {
 }
 
 impl BlockingQuestion {
+    /// A question with no context, proposed answers or reason attached yet.
+    pub fn new(question: impl Into<String>) -> Self {
+        Self {
+            question: question.into(),
+            context: None,
+            options: Vec::new(),
+            why: None,
+        }
+    }
+
+    /// Attach what made the question necessary.
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context = Some(context.into());
+        self
+    }
+
+    /// Propose answers, after any proposed so far.
+    pub fn with_options<I>(mut self, options: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        self.options.extend(options.into_iter().map(Into::into));
+        self
+    }
+
+    /// Attach why the question could not be decided without a human.
+    pub fn with_why(mut self, why: impl Into<String>) -> Self {
+        self.why = Some(why.into());
+        self
+    }
+
     /// The first question found in `output` as a line of the form
     /// `<marker> {"question": ...}`.
     ///
@@ -160,13 +193,23 @@ mod tests {
     }
 
     #[test]
+    fn a_question_built_from_its_parts_matches_the_one_the_agent_prints() {
+        let built = BlockingQuestion::new("Which DB?")
+            .with_context("Found postgres and mysql")
+            .with_options(["postgres", "mysql"])
+            .with_options(vec!["sqlite".to_string()])
+            .with_why("Cannot determine from config");
+
+        let printed = extract(
+            r#"AGENT_QUESTION: {"question":"Which DB?","context":"Found postgres and mysql","options":["postgres","mysql","sqlite"],"why":"Cannot determine from config"}"#,
+        )
+        .expect("a question");
+        assert_eq!(built, printed);
+    }
+
+    #[test]
     fn a_question_round_trips_without_its_absent_fields() {
-        let question = BlockingQuestion {
-            question: "Which branch?".to_string(),
-            context: None,
-            options: vec!["main".to_string()],
-            why: None,
-        };
+        let question = BlockingQuestion::new("Which branch?").with_options(["main"]);
 
         let json = serde_json::to_value(&question).expect("serialisable");
         assert!(json.get("context").is_none());
