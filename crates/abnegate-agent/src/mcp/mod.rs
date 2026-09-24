@@ -49,7 +49,7 @@ pub use guidance::Guidance;
 pub use guidance::guidance;
 pub use guidance::guidance_for_tools;
 pub use hub::McpHub;
-pub use name::MAX_TOOL_NAME_CHARACTERS;
+pub use name::MAXIMUM_TOOL_NAME_CHARACTERS;
 pub use name::SEPARATOR;
 pub use name::qualified_tool_name;
 pub use name::unique_qualified_tool_name;

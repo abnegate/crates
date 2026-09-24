@@ -12,20 +12,20 @@ use sha2::Sha256;
 pub const SEPARATOR: &str = "__";
 
 /// Longest name an OpenAI-style function may have.
-pub const MAX_TOOL_NAME_CHARACTERS: usize = 64;
+pub const MAXIMUM_TOOL_NAME_CHARACTERS: usize = 64;
 
 /// Longest the server part of a name may be, short enough that its prefix
-/// survives any cut [`MAX_TOOL_NAME_CHARACTERS`] forces.
-const MAX_SERVER_CHARACTERS: usize = 32;
+/// survives any cut [`MAXIMUM_TOOL_NAME_CHARACTERS`] forces.
+const MAXIMUM_SERVER_CHARACTERS: usize = 32;
 
-/// Hex characters of the digest a cut name ends in.
+/// Hexadecimal characters of the digest a cut name ends in.
 const DIGEST_CHARACTERS: usize = 8;
 
 const UNNAMED_SERVER: &str = "server";
 const UNNAMED_TOOL: &str = "tool";
 
 /// `server` + `tool` → a function name safe for OpenAI-style tool calling:
-/// `server__tool`, at most [`MAX_TOOL_NAME_CHARACTERS`] long.
+/// `server__tool`, at most [`MAXIMUM_TOOL_NAME_CHARACTERS`] long.
 ///
 /// A tool already named under its server's prefix keeps its name. A name
 /// that would run long is cut and ends in a digest of the whole, so two long
@@ -66,7 +66,7 @@ fn joined(server: &str, tool: &str) -> String {
 
 /// A server's name as its tools carry it: sanitized, with no run of
 /// underscores inside it and none at either end, so it can never hold the
-/// separator, and cut to [`MAX_SERVER_CHARACTERS`].
+/// separator, and cut to [`MAXIMUM_SERVER_CHARACTERS`].
 fn server_identifier(server: &str) -> String {
     let sanitized = sanitize_identifier(server, UNNAMED_SERVER);
     let collapsed: Vec<&str> = sanitized
@@ -74,7 +74,7 @@ fn server_identifier(server: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect();
     let joined = collapsed.join("_");
-    let cut: String = joined.chars().take(MAX_SERVER_CHARACTERS).collect();
+    let cut: String = joined.chars().take(MAXIMUM_SERVER_CHARACTERS).collect();
     match cut.trim_end_matches('_') {
         "" => UNNAMED_SERVER.to_string(),
         identifier => identifier.to_string(),
@@ -103,11 +103,11 @@ fn sanitize_identifier(value: &str, fallback: &str) -> String {
 
 /// `name`, or its start and a digest of the whole when it is too long.
 fn fit(name: &str) -> String {
-    if name.len() <= MAX_TOOL_NAME_CHARACTERS {
+    if name.len() <= MAXIMUM_TOOL_NAME_CHARACTERS {
         return name.to_string();
     }
     let digest = hex::encode(Sha256::digest(name.as_bytes()));
-    let kept = MAX_TOOL_NAME_CHARACTERS - DIGEST_CHARACTERS - 1;
+    let kept = MAXIMUM_TOOL_NAME_CHARACTERS - DIGEST_CHARACTERS - 1;
     format!("{}_{}", &name[..kept], &digest[..DIGEST_CHARACTERS])
 }
 
@@ -177,7 +177,7 @@ mod tests {
 
         let name = qualified_tool_name(server, long);
 
-        assert_eq!(name.len(), MAX_TOOL_NAME_CHARACTERS);
+        assert_eq!(name.len(), MAXIMUM_TOOL_NAME_CHARACTERS);
         assert_eq!(name, qualified_tool_name(server, long), "the cut is stable");
         assert_ne!(
             name,
@@ -193,6 +193,6 @@ mod tests {
         let mut used = HashSet::from([name.clone()]);
         let second = unique_qualified_tool_name(&mut used, server, long);
         assert_ne!(second, name);
-        assert_eq!(second.len(), MAX_TOOL_NAME_CHARACTERS);
+        assert_eq!(second.len(), MAXIMUM_TOOL_NAME_CHARACTERS);
     }
 }

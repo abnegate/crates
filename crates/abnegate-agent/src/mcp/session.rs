@@ -27,7 +27,7 @@ use crate::tool::process::Group;
 
 /// Most of a server's stderr logged, after which the rest is read and
 /// dropped so the server never blocks writing to it.
-const MAX_LOGGED_STDERR_BYTES: usize = 64 * 1024;
+const MAXIMUM_LOGGED_STDERR_BYTES: usize = 64 * 1024;
 
 const STDERR_BUFFER_BYTES: usize = 4 * 1024;
 
@@ -163,7 +163,7 @@ impl Drop for McpSession {
     }
 }
 
-/// Log what a server writes to stderr, up to [`MAX_LOGGED_STDERR_BYTES`],
+/// Log what a server writes to stderr, up to [`MAXIMUM_LOGGED_STDERR_BYTES`],
 /// and keep reading past that so it never fills the pipe.
 async fn log_stderr(server: String, mut stderr: ChildStderr) {
     let mut buffer = vec![0; STDERR_BUFFER_BYTES];
@@ -173,17 +173,17 @@ async fn log_stderr(server: String, mut stderr: ChildStderr) {
             Ok(0) | Err(_) => return,
             Ok(read) => read,
         };
-        if logged >= MAX_LOGGED_STDERR_BYTES {
+        if logged >= MAXIMUM_LOGGED_STDERR_BYTES {
             continue;
         }
-        let kept = read.min(MAX_LOGGED_STDERR_BYTES - logged);
+        let kept = read.min(MAXIMUM_LOGGED_STDERR_BYTES - logged);
         logged += kept;
         tracing::debug!(
             server = %server,
             stderr = %String::from_utf8_lossy(&buffer[..kept]).trim_end(),
             "MCP server wrote to stderr"
         );
-        if logged >= MAX_LOGGED_STDERR_BYTES {
+        if logged >= MAXIMUM_LOGGED_STDERR_BYTES {
             tracing::debug!(server = %server, "MCP server stderr past its limit; dropping the rest");
         }
     }
