@@ -28,6 +28,14 @@ const OID: &str = "/mergePullRequest/pullRequest/mergeCommit/oid";
 /// needs its conflict repaired rather than an administrator's override.
 const NOT_MERGEABLE: &str = "not mergeable";
 
+/// What GitHub's REST API says of a merge refused because the head or the
+/// base branch changed while it was being made, which a fresh read retries.
+const MODIFIED: &str = "was modified";
+
+/// What GitHub's GraphQL API says of a merge refused because the head moved
+/// from the one it was asked to expect.
+const HEAD_MODIFIED: &str = "Head branch was modified";
+
 /// What a refused administrator merge adds to branch protection's reason.
 const ADMINISTRATOR_REFUSED: &str = "administrator merge refused";
 
@@ -50,7 +58,9 @@ impl PullRequestService {
     /// administrator. A refusal by protection is
     /// [`PullRequestError::Protected`], carrying GitHub's reason and, when the
     /// administrator merge was refused too, that reason as well. A head that
-    /// moved is [`PullRequestError::HeadMoved`]. A merge that happened is
+    /// moved, or a branch GitHub says was modified while it merged, is
+    /// [`PullRequestError::HeadMoved`], which a fresh read and a retry
+    /// resolve. A merge that happened is
     /// never reported as a failure, even when the commit it made cannot be
     /// read. An administrator merge is reported only when GitHub's answer
     /// says the pull request merged; any other answer is
@@ -103,6 +113,9 @@ impl PullRequestService {
         match status {
             StatusCode::UNPROCESSABLE_ENTITY => {
                 Err(PullRequestError::NotMergeable(refusal.summary()))
+            }
+            StatusCode::METHOD_NOT_ALLOWED if refusal.mentions(MODIFIED) => {
+                Err(PullRequestError::HeadMoved)
             }
             StatusCode::METHOD_NOT_ALLOWED if refusal.mentions(NOT_MERGEABLE) => {
                 Err(PullRequestError::NotMergeable(refusal.summary()))
@@ -166,10 +179,18 @@ async fn merge_commit(response: Response) -> Option<CommitSha> {
 }
 
 /// What the errors an administrator merge was refused with mean: a spent rate
-/// limit is one, and anything else is protection's refusal.
+/// limit is one, a head that moved is another, and anything else is
+/// protection's refusal.
 fn administrator_refusal(reason: &str, errors: &[GraphQlError]) -> PullRequestError {
     if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
+    }
+    let moved = HEAD_MODIFIED.to_ascii_lowercase();
+    if errors
+        .iter()
+        .any(|error| error.message.to_ascii_lowercase().contains(&moved))
+    {
+        return PullRequestError::HeadMoved;
     }
     if reported(errors, NOT_FOUND) || reported(errors, FORBIDDEN) {
         return protected(reason, "");
@@ -402,6 +423,41 @@ mod tests {
                 "{node:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_merge_refused_because_a_branch_was_modified_is_a_moved_head() {
+        for message in [
+            "Base branch was modified. Review and try the merge again.",
+            "Head branch was modified. Review and try the merge again.",
+        ] {
+            let server =
+                answering(refusing(405, message), merged_as(commit('d').as_str()), 0).await;
+
+            let failure = attempt(&server, Some(NODE), true).await.unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::HeadMoved),
+                "{message}: {failure:?}"
+            );
+        }
+
+        let server = answering(
+            refusing(405, APPROVAL),
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "mergePullRequest": null },
+                "errors": [{ "message": "Head branch was modified. Review and try the merge again." }],
+            })),
+            1,
+        )
+        .await;
+
+        let failure = attempt(&server, Some(NODE), true).await.unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::HeadMoved),
+            "{failure:?}"
+        );
     }
 
     #[tokio::test]

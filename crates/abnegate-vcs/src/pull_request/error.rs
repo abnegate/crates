@@ -47,7 +47,8 @@ pub enum PullRequestError {
     Protected(String),
 
     /// The pull request's head moved after it was read, so it was not merged
-    /// at a commit nobody had looked at.
+    /// at a commit nobody had looked at; or GitHub says a branch was modified
+    /// while it merged. Either way a fresh read and a retry may succeed.
     #[error("The pull request's head moved since it was read")]
     HeadMoved,
 
