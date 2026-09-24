@@ -347,11 +347,7 @@ impl PullRequestService {
 
     /// Send `request` and read its answer as `T`, or as the refusal it is.
     async fn exchange<T: DeserializeOwned>(&self, request: RequestBuilder) -> PullRequestResult<T> {
-        let response = request.send().await?;
-        if !response.status().is_success() {
-            return Err(refusal(response).await);
-        }
-        decode(response).await
+        decode(answered(request).await?).await
     }
 
     async fn get<T: DeserializeOwned>(
@@ -504,6 +500,15 @@ fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
         .https_only(https_only)
         .redirect(redirect)
         .build()?)
+}
+
+/// The successful answer to `request`, or the refusal it is.
+async fn answered(request: RequestBuilder) -> PullRequestResult<Response> {
+    let response = request.send().await?;
+    match response.status().is_success() {
+        true => Ok(response),
+        false => Err(refusal(response).await),
+    }
 }
 
 /// A successful answer read as `T`, from no more than
@@ -670,7 +675,7 @@ mod tests {
 
     /// The response to a request sent to a server that answers once with
     /// `answer`, byte for byte.
-    async fn answered(answer: String) -> Response {
+    async fn served(answer: String) -> Response {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1165,13 +1170,13 @@ mod tests {
         let limit = 100;
         for frame in [declared, streamed] {
             let within: GitHubPullRequestDetail =
-                decode_within(answered(frame(&padded(limit))).await, limit)
+                decode_within(served(frame(&padded(limit))).await, limit)
                     .await
                     .unwrap();
             assert_eq!(within.mergeable, Some(true));
 
             let failure = decode_within::<GitHubPullRequestDetail>(
-                answered(frame(&padded(limit + 1))).await,
+                served(frame(&padded(limit + 1))).await,
                 limit,
             )
             .await
@@ -1192,7 +1197,7 @@ mod tests {
     #[tokio::test]
     async fn a_length_declared_past_the_bound_is_refused_before_the_body_is_read() {
         let response =
-            answered("HTTP/1.1 200 OK\r\ncontent-length: 1000000\r\n\r\n{}".to_string()).await;
+            served("HTTP/1.1 200 OK\r\ncontent-length: 1000000\r\n\r\n{}".to_string()).await;
 
         let failure = decode_within::<serde_json::Value>(response, 100)
             .await
@@ -1208,8 +1213,7 @@ mod tests {
     /// not one too long or one this crate cannot parse.
     #[tokio::test]
     async fn an_answer_cut_short_is_a_failed_read() {
-        let response =
-            answered("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n{}".to_string()).await;
+        let response = served("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n{}".to_string()).await;
 
         let failure = decode_within::<serde_json::Value>(response, 1024)
             .await

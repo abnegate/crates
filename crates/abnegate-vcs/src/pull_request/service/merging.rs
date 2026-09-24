@@ -213,12 +213,12 @@ mod tests {
     }
 
     fn merged_as(oid: &str) -> ResponseTemplate {
-        answered(json!({
+        carrying(json!({
             "mergePullRequest": { "pullRequest": { "mergeCommit": { "oid": oid } } },
         }))
     }
 
-    fn answered(data: Value) -> ResponseTemplate {
+    fn carrying(data: Value) -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(json!({ "data": data }))
     }
 
@@ -654,7 +654,7 @@ mod tests {
             json!({ "mergePullRequest": { "pullRequest": { "mergeCommit": { "oid": "not-a-commit" } } } }),
             json!({ "mergePullRequest": null }),
         ] {
-            let server = answering(refusing(405, APPROVAL), answered(data.clone()), 1).await;
+            let server = answering(refusing(405, APPROVAL), carrying(data.clone()), 1).await;
 
             assert_eq!(
                 attempt(&server, Some(NODE), true).await.unwrap(),

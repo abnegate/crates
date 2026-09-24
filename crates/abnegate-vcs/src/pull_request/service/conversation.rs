@@ -128,14 +128,11 @@ impl PullRequestService {
             "replies",
         ]);
 
-        let response = self
-            .request(Method::POST, url, token, ACCEPT)
-            .json(&CommentRequest { body })
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            return Err(refusal(response).await);
-        }
+        answered(
+            self.request(Method::POST, url, token, ACCEPT)
+                .json(&CommentRequest { body }),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -170,7 +167,7 @@ mod tests {
         }
     }
 
-    fn answered(comment: &IssueComment) -> Value {
+    fn described(comment: &IssueComment) -> Value {
         json!({
             "id": comment.id,
             "user": { "login": comment.author },
@@ -246,7 +243,7 @@ mod tests {
             .and(query_param("page", "1"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(full.iter().map(answered).collect::<Vec<Value>>()),
+                    .set_body_json(full.iter().map(described).collect::<Vec<Value>>()),
             )
             .expect(1)
             .mount(&server)
@@ -318,7 +315,7 @@ mod tests {
             .and(header("authorization", "Bearer token"))
             .and(header("accept", ACCEPT))
             .and(body_json(json!({ "body": "@review-bot review" })))
-            .respond_with(ResponseTemplate::new(201).set_body_json(answered(&posted)))
+            .respond_with(ResponseTemplate::new(201).set_body_json(described(&posted)))
             .expect(1)
             .mount(&server)
             .await;
