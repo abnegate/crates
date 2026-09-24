@@ -104,6 +104,7 @@ pub use crate::notification::Notification;
 pub use crate::notifier::Notifier;
 pub use crate::report::Report;
 pub use crate::severity::Severity;
+pub use crate::smtp::Sender;
 pub use crate::smtp::SmtpConfig;
 
 #[cfg(doctest)]
