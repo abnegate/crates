@@ -21,6 +21,8 @@ pub enum AgentEvent {
     Tool(ToolCall),
     Usage(Usage),
     Failed(String),
+    /// The agent ended its turn, and why, in its own words.
+    #[non_exhaustive]
     Finished {
         finish_reason: Option<String>,
     },
@@ -44,6 +46,14 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
+    /// The agent ended its turn for `reason`, in its own words, when it gave
+    /// one.
+    pub fn finished(reason: Option<String>) -> Self {
+        Self::Finished {
+            finish_reason: reason,
+        }
+    }
+
     /// A tool the agent ran, as the function call it amounts to.
     pub fn tool(id: String, name: String, arguments: String) -> Self {
         Self::Tool(ToolCall::function(id, name, arguments))
@@ -73,12 +83,17 @@ mod tests {
         assert!(!AgentEvent::Text("hello".to_string()).terminal());
         assert!(!AgentEvent::Usage(Usage::new(1, 1)).terminal());
         assert!(AgentEvent::Failed("nope".to_string()).terminal());
-        assert!(
-            AgentEvent::Finished {
-                finish_reason: None
-            }
-            .terminal()
-        );
+        assert!(AgentEvent::finished(None).terminal());
+    }
+
+    #[test]
+    fn a_finished_turn_keeps_its_reason() {
+        let AgentEvent::Finished { finish_reason, .. } =
+            AgentEvent::finished(Some("success".to_string()))
+        else {
+            panic!("expected a finished turn");
+        };
+        assert_eq!(finish_reason.as_deref(), Some("success"));
     }
 
     #[test]

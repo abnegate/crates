@@ -1,6 +1,6 @@
 //! Newline framing for a child process reading in arbitrary chunks.
 
-use crate::error::Overlong;
+use crate::overlong_error::OverlongError;
 
 const NEWLINE: u8 = b'\n';
 const CARRIAGE_RETURN: &[u8] = b"\r";
@@ -16,9 +16,10 @@ const PREFIX: usize = 1024;
 /// its own would corrupt it. Byte `0x0A` cannot occur inside a UTF-8 sequence,
 /// so splitting first and decoding whole lines afterwards is always safe.
 ///
-/// A line past the limit is reported once, as [`Overlong`] with the start of
-/// the line, and the rest of it is thrown away as it arrives; framing picks
-/// up again after its newline, so one oversized event costs only itself.
+/// A line past the limit is reported once, as [`OverlongError`] with the
+/// start of the line, and the rest of it is thrown away as it arrives;
+/// framing picks up again after its newline, so one oversized event costs
+/// only itself.
 /// Each byte is searched for a newline once however many reads a line spans.
 #[derive(Debug)]
 pub struct Lines {
@@ -60,7 +61,7 @@ impl Lines {
     }
 
     /// The next complete line, or `None` while one is still arriving.
-    pub fn take(&mut self) -> Result<Option<String>, Overlong> {
+    pub fn take(&mut self) -> Result<Option<String>, OverlongError> {
         let searched = self.start + self.scanned;
         let Some(offset) = self.buffer[searched..]
             .iter()
@@ -92,7 +93,7 @@ impl Lines {
     }
 
     /// The trailing line of a stream that ended without a final newline.
-    pub fn flush(&mut self) -> Result<Option<String>, Overlong> {
+    pub fn flush(&mut self) -> Result<Option<String>, OverlongError> {
         if self.discarding {
             self.discarding = false;
             return Ok(None);
@@ -106,9 +107,9 @@ impl Lines {
         outcome
     }
 
-    fn overlong(&self, end: usize) -> Overlong {
+    fn overlong(&self, end: usize) -> OverlongError {
         let prefix = &self.buffer[self.start..end.min(self.start + PREFIX)];
-        Overlong {
+        OverlongError {
             limit: self.limit,
             prefix: String::from_utf8_lossy(prefix).into_owned(),
         }
@@ -138,7 +139,7 @@ mod tests {
     use std::time::Instant;
 
     use super::Lines;
-    use crate::error::Overlong;
+    use crate::overlong_error::OverlongError;
 
     fn drain(lines: &mut Lines) -> Vec<String> {
         let mut taken = Vec::new();
@@ -148,8 +149,8 @@ mod tests {
         taken
     }
 
-    fn overlong(limit: usize, prefix: &str) -> Overlong {
-        Overlong {
+    fn overlong(limit: usize, prefix: &str) -> OverlongError {
+        OverlongError {
             limit,
             prefix: prefix.to_string(),
         }

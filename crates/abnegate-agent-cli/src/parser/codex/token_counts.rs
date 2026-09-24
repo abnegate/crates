@@ -5,12 +5,11 @@ use serde::Deserialize;
 /// Anthropic it reports it as part of `input_tokens` rather than beside it, so
 /// the cached count is not added again.
 #[derive(Debug, Deserialize)]
-#[non_exhaustive]
-pub struct TokenCounts {
+pub(crate) struct TokenCounts {
     #[serde(default)]
-    pub input_tokens: u32,
+    pub(crate) input_tokens: u32,
     #[serde(default)]
-    pub output_tokens: u32,
+    pub(crate) output_tokens: u32,
 }
 
 impl From<TokenCounts> for Usage {

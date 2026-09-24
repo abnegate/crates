@@ -6,16 +6,54 @@ use uuid::Uuid;
 
 use super::Session;
 
-/// Session metadata for listing
+/// What a list of saved sessions shows of each one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SessionSummary {
+    /// The session's id.
     pub id: Uuid,
+    /// The session's title.
     pub title: String,
+    /// When the session was created.
     pub created_at: DateTime<Utc>,
+    /// When the session's state last changed.
     pub updated_at: DateTime<Utc>,
+    /// The project the run worked in, when it had one.
     #[serde(alias = "project_dir")]
     pub project_directory: Option<String>,
+    /// Whether the run's turn has ended.
     pub finished: bool,
+}
+
+impl SessionSummary {
+    /// Session `id` called `title`, unfinished and in no project.
+    pub fn new(
+        id: Uuid,
+        title: impl Into<String>,
+        created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id,
+            title: title.into(),
+            created_at,
+            updated_at,
+            project_directory: None,
+            finished: false,
+        }
+    }
+
+    /// The same summary, for a run that worked in `directory`.
+    pub fn with_project_directory(mut self, directory: impl Into<String>) -> Self {
+        self.project_directory = Some(directory.into());
+        self
+    }
+
+    /// The same summary, for a run whose turn has ended or not.
+    pub fn with_finished(mut self, finished: bool) -> Self {
+        self.finished = finished;
+        self
+    }
 }
 
 impl From<&Session> for SessionSummary {

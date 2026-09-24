@@ -21,7 +21,7 @@ use super::patch::ApplyPatchParameters;
 use super::read::FILE_PAGE_CHARACTERS;
 use super::read::page_text;
 use super::read::select_lines;
-use super::search::SEARCH_MAX_RESULTS;
+use super::search::MAXIMUM_SEARCH_RESULTS;
 use super::search::search_tree;
 use super::write::WriteFileParameters;
 use crate::test_support::captured_logs;
@@ -51,7 +51,7 @@ fn create_test_context(directory: &Path) -> ToolContext {
     ToolContext {
         working_directory: cwd,
         environment: crate::tool::EnvironmentPolicy::empty(),
-        max_file_size: 1024 * 1024,
+        maximum_file_size: 1024 * 1024,
         command_timeout: std::time::Duration::from_secs(30),
         unrestricted: false,
         session: Session::Detached,
@@ -1013,13 +1013,13 @@ fn the_search_walk_skips_a_file_past_the_size_limit() {
     )
     .unwrap();
     let mut context = create_test_context(directory.path());
-    context.max_file_size = 1_024;
+    context.maximum_file_size = 1_024;
 
     let (found, _) = search_tree(
         &context.working_directory,
         "open sesame please",
         true,
-        SEARCH_MAX_RESULTS,
+        MAXIMUM_SEARCH_RESULTS,
         &context,
     );
 
@@ -1030,7 +1030,7 @@ fn the_search_walk_skips_a_file_past_the_size_limit() {
 fn a_file_at_the_limit_reads_and_one_past_it_is_refused() {
     let directory = tempdir().unwrap();
     let mut context = create_test_context(directory.path());
-    context.max_file_size = 8;
+    context.maximum_file_size = 8;
     fs::write(directory.path().join("small.txt"), "12345678").unwrap();
     fs::write(directory.path().join("large.txt"), "123456789").unwrap();
 
@@ -1081,7 +1081,7 @@ fn a_walk_through_links_that_loop_back_ends() {
         &context.working_directory,
         "open sesame please",
         true,
-        SEARCH_MAX_RESULTS,
+        MAXIMUM_SEARCH_RESULTS,
         &context,
     );
     assert!(started.elapsed() < Duration::from_secs(10));
@@ -1115,7 +1115,7 @@ fn the_search_walk_finds_files_under_a_working_directory_reached_through_a_link(
         &root,
         "open sesame please",
         true,
-        SEARCH_MAX_RESULTS,
+        MAXIMUM_SEARCH_RESULTS,
         &context,
     );
 
@@ -1166,7 +1166,7 @@ fn the_search_walk_does_not_follow_a_symlink_out_of_cwd() {
         &root,
         "open sesame please",
         true,
-        SEARCH_MAX_RESULTS,
+        MAXIMUM_SEARCH_RESULTS,
         &context,
     );
 
@@ -1196,7 +1196,7 @@ fn the_search_walk_does_not_read_a_symlink_to_a_file_out_of_cwd() {
         &root,
         "open sesame please",
         true,
-        SEARCH_MAX_RESULTS,
+        MAXIMUM_SEARCH_RESULTS,
         &context,
     );
 
@@ -1462,7 +1462,7 @@ async fn search_code_ignores_huge_max_results() {
     assert!(result.success);
     let output = result.output.unwrap();
     assert!(output.contains("truncated at 100 results"), "{output}");
-    assert_eq!(output.matches("hit ").count(), SEARCH_MAX_RESULTS);
+    assert_eq!(output.matches("hit ").count(), MAXIMUM_SEARCH_RESULTS);
 }
 
 #[tokio::test]
@@ -2053,7 +2053,7 @@ async fn search_code_never_reads_an_entry_swapped_out_of_cwd() {
             &context.working_directory,
             SECRET,
             true,
-            SEARCH_MAX_RESULTS,
+            MAXIMUM_SEARCH_RESULTS,
             &context,
         );
         if !results.is_empty() {

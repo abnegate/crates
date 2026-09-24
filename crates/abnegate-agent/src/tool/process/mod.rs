@@ -26,7 +26,7 @@ use super::ToolContext;
 use super::ToolError;
 
 /// Most bytes kept from the start of each stream, and again from its end.
-pub(crate) const MAX_CAPTURE_BYTES: usize = 64 * 1024;
+pub(crate) const MAXIMUM_CAPTURE_BYTES: usize = 64 * 1024;
 
 /// How long the rest of a group may keep a pipe open once its leader has
 /// exited, before it is killed.
@@ -56,7 +56,7 @@ pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
 ///
 /// Whatever the leader leaves running is given [`GROUP_GRACE`] to finish and
 /// then killed with it, so a call returns once its command has, and nothing
-/// it started outlives it. Output is held to [`MAX_CAPTURE_BYTES`] from each
+/// it started outlives it. Output is held to [`MAXIMUM_CAPTURE_BYTES`] from each
 /// end of each stream.
 pub(crate) async fn run(mut command: Command, limit: Duration) -> Result<Finished, ToolError> {
     command
@@ -121,7 +121,7 @@ struct Stream {
 
 impl Stream {
     fn read(pipe: Option<impl AsyncRead + Unpin + Send + 'static>) -> Self {
-        let capture = Arc::new(Mutex::new(Capture::new(MAX_CAPTURE_BYTES)));
+        let capture = Arc::new(Mutex::new(Capture::new(MAXIMUM_CAPTURE_BYTES)));
         let reader = pipe.map(|pipe| tokio::spawn(drain(pipe, Arc::clone(&capture))));
         Self { capture, reader }
     }
@@ -237,7 +237,7 @@ mod tests {
         .await
         .expect("the command finishes");
 
-        assert!(finished.stdout.len() < 2 * MAX_CAPTURE_BYTES + 100);
+        assert!(finished.stdout.len() < 2 * MAXIMUM_CAPTURE_BYTES + 100);
         assert!(finished.stdout.starts_with("xxxx"));
         assert!(finished.stdout.trim_end().ends_with("END"));
         assert!(finished.stdout.contains("bytes of output dropped"));

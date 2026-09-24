@@ -7,8 +7,7 @@ use crate::parser::codex::token_counts::TokenCounts;
 /// One line of `codex exec --json`.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
-#[non_exhaustive]
-pub enum Event {
+pub(crate) enum Event {
     #[serde(rename = "thread.started")]
     Thread {
         #[serde(default)]

@@ -6,8 +6,10 @@ use serde::Deserialize;
 #[non_exhaustive]
 pub enum CliContentBlock {
     #[serde(rename = "text")]
+    #[non_exhaustive]
     Text { text: String },
     #[serde(rename = "tool_use")]
+    #[non_exhaustive]
     ToolUse {
         id: String,
         name: String,

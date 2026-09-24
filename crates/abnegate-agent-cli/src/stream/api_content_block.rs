@@ -6,11 +6,13 @@ use serde::Deserialize;
 #[non_exhaustive]
 pub enum ApiContentBlock {
     #[serde(rename = "text")]
+    #[non_exhaustive]
     Text {
         #[serde(default)]
         text: String,
     },
     #[serde(rename = "tool_use")]
+    #[non_exhaustive]
     ToolUse {
         #[serde(default)]
         id: String,

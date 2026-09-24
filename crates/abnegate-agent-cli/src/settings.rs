@@ -1,6 +1,7 @@
 //! How a spawned coding agent is run.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -25,13 +26,17 @@ pub const DEFAULT_LINE_LIMIT: usize = 1024 * 1024;
 /// share of the disk.
 pub const DEFAULT_JOURNAL_LIMIT: u64 = 64 * 1024 * 1024;
 
-/// The host variables a child is given unless it
-/// [inherits the whole environment](CliSettings::inherit_environment): where
-/// to find programs, whose home and account it runs as, where temporary
-/// files go, and how to render text. The account matters on macOS, where the
-/// agent finds its sign-in in the Keychain under `USER`.
-pub const INHERITED_VARIABLES: &[&str] = &[
-    "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM",
+/// The proxy variables [`CliSettings::with_proxy_variables`] allows, in
+/// both the upper and the lower case tools read them in.
+const PROXY_VARIABLES: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
 ];
 
 /// Claude Code's tools that read files but never change anything, and the
@@ -99,9 +104,20 @@ pub struct CliSettings {
     /// them, but never scrubbed: flags such as `DISABLE_AUTOUPDATER=1`,
     /// whose values would otherwise be redacted wherever they appear.
     pub variables: BTreeMap<String, String>,
+    /// Host variables the child is given on top of
+    /// [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT), each with
+    /// this process's own value and only when this process has it set.
+    ///
+    /// Empty by default: a proxy URL can carry credentials, so a proxy
+    /// reaches the child only through [`CliSettings::with_proxy_variables`]
+    /// or a name [allowed](CliSettings::allow) here. A value passed this way
+    /// is not one of the secrets the run scrubs by value; a password in a
+    /// URL is still redacted like any other credential-shaped text.
+    pub allowed: BTreeSet<String>,
     /// Give the child the host's whole environment, less the agent's
     /// [scrubbed](crate::AgentKind::scrubbed) variables, instead of
-    /// [`INHERITED_VARIABLES`] alone.
+    /// [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) and the
+    /// [`allowed`](CliSettings::allowed) names alone.
     ///
     /// Off by default: the agent runs tools the model chooses, and anything
     /// in its environment is theirs to read. Without it the child is also
@@ -109,7 +125,7 @@ pub struct CliSettings {
     /// variables, its [sign-in](crate::AgentKind::credentials) variables when
     /// the credential is [inherited](Credential::Inherited), and each host
     /// variable an attached MCP server refers to. Anything else it needs,
-    /// such as a proxy or a certificate bundle, is set explicitly.
+    /// such as a proxy, is [allowed](CliSettings::allow) or set explicitly.
     pub inherit_environment: bool,
     /// Extra flags passed through verbatim, after the streaming flags and
     /// before the model. Nothing here is checked against the agent, except
@@ -142,8 +158,8 @@ pub struct CliSettings {
     /// [`CliSettings::web`].
     ///
     /// Anything the agent would otherwise read from the user's settings, such
-    /// as a provider or proxy variable, is passed in `variables` or
-    /// `environment` instead.
+    /// as a provider or proxy variable, is passed in `variables`,
+    /// `environment` or `allowed` instead.
     pub read_only: bool,
     /// Allow the [`WEB_TOOLS`] without asking, and make them available to a
     /// [read-only](CliSettings::read_only) run, which otherwise has neither.
@@ -179,6 +195,7 @@ impl Default for CliSettings {
             line_limit: DEFAULT_LINE_LIMIT,
             environment: BTreeMap::new(),
             variables: BTreeMap::new(),
+            allowed: BTreeSet::new(),
             inherit_environment: false,
             arguments: Vec::new(),
             schema: None,
@@ -237,6 +254,27 @@ impl CliSettings {
     pub fn with_variable(mut self, variable: impl Into<String>, value: impl Into<String>) -> Self {
         self.variables.insert(variable.into(), value.into());
         self
+    }
+
+    /// Also give the child each of `names` from this process's environment,
+    /// when this process has it set. See [`CliSettings::allowed`].
+    pub fn allow<I>(mut self, names: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        self.allowed.extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Also give the child this process's proxy settings: `HTTP_PROXY`,
+    /// `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`, in upper and lower case,
+    /// each when this process has it set.
+    ///
+    /// For an agent that reaches its API through a proxy. Off by default,
+    /// because a proxy URL can carry credentials.
+    pub fn with_proxy_variables(self) -> Self {
+        self.allow(PROXY_VARIABLES.iter().copied())
     }
 
     /// Opt in to [`CliSettings::inherit_environment`].
@@ -341,6 +379,7 @@ mod tests {
         assert_eq!(settings.timeout, DEFAULT_TIMEOUT);
         assert!(settings.environment.is_empty());
         assert!(settings.variables.is_empty());
+        assert!(settings.allowed.is_empty());
         assert!(!settings.inherit_environment);
         assert!(settings.arguments.is_empty());
         assert!(settings.schema.is_none());
@@ -440,6 +479,48 @@ mod tests {
                 .get("DISABLE_AUTOUPDATER")
                 .map(String::as_str),
             Some("1")
+        );
+    }
+
+    #[test]
+    fn allowed_names_accumulate() {
+        let settings = CliSettings::default()
+            .allow(["LINEAR_API_URL"])
+            .allow(vec!["SSL_CERT_DIR".to_string()]);
+
+        assert_eq!(
+            settings
+                .allowed
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["LINEAR_API_URL", "SSL_CERT_DIR"]
+        );
+    }
+
+    #[test]
+    fn the_proxy_variables_are_allowed_in_both_cases() {
+        let settings = CliSettings::default()
+            .allow(["LINEAR_API_URL"])
+            .with_proxy_variables();
+
+        assert_eq!(
+            settings
+                .allowed
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "ALL_PROXY",
+                "HTTPS_PROXY",
+                "HTTP_PROXY",
+                "LINEAR_API_URL",
+                "NO_PROXY",
+                "all_proxy",
+                "http_proxy",
+                "https_proxy",
+                "no_proxy",
+            ]
         );
     }
 

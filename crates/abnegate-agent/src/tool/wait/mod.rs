@@ -17,7 +17,7 @@ use super::ToolError;
 use super::ToolResult;
 use super::job::JobExited;
 use super::job::Jobs;
-use super::job::MAX_JOB_LIFETIME;
+use super::job::MAXIMUM_JOB_LIFETIME;
 use super::job::TAIL_JOB;
 use super::job::WAIT_FOR;
 
@@ -74,7 +74,7 @@ impl Tool for WaitForTool {
                     "description": format!(
                         "Longest to wait, in seconds. Default {}, at most {}.",
                         DEFAULT_WAIT.as_secs(),
-                        MAX_JOB_LIFETIME.as_secs()
+                        MAXIMUM_JOB_LIFETIME.as_secs()
                     )
                 }
             },
@@ -88,7 +88,7 @@ impl Tool for WaitForTool {
     }
 
     fn timeout(&self, _context: &ToolContext) -> Duration {
-        MAX_JOB_LIFETIME + TIMEOUT_SLACK
+        MAXIMUM_JOB_LIFETIME + TIMEOUT_SLACK
     }
 
     async fn execute(
@@ -101,7 +101,7 @@ impl Tool for WaitForTool {
         let limit = parameters
             .timeout_seconds
             .map_or(DEFAULT_WAIT, Duration::from_secs)
-            .clamp(Duration::from_secs(1), MAX_JOB_LIFETIME);
+            .clamp(Duration::from_secs(1), MAXIMUM_JOB_LIFETIME);
 
         let settled =
             Jobs::settled(context.session, &parameters.id).map_err(ToolError::Execution)?;
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn the_outer_timeout_covers_the_longest_wait() {
-        assert!(WaitForTool.timeout(&ToolContext::default()) > MAX_JOB_LIFETIME);
+        assert!(WaitForTool.timeout(&ToolContext::default()) > MAXIMUM_JOB_LIFETIME);
         assert_eq!(WaitForTool.tier(), Tier::Read);
     }
 }

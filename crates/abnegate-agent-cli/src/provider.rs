@@ -73,8 +73,9 @@ const INSTRUCTIONS_SUFFIX: &str = ".md";
 /// of helper processes to do its work. It does reuse that crate's
 /// process-group termination and output caps, so a run that times out or
 /// fails takes the agent's whole process tree with it, and it is given only
-/// [`INHERITED_VARIABLES`](crate::INHERITED_VARIABLES) from this process's
-/// environment unless [`CliSettings::inherit_environment`] opts in.
+/// the [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names and
+/// those [`CliSettings::allow`] adds from this process's environment unless
+/// [`CliSettings::inherit_environment`] opts in.
 #[derive(Debug)]
 pub struct CliProvider {
     name: String,
@@ -160,7 +161,7 @@ impl CliProvider {
                     "provider": self.name,
                     "agent": self.agent.as_str(),
                     "model": request.model,
-                    "timeout_seconds": self.settings.timeout.as_secs(),
+                    "timeout_seconds": self.settings.timeout.as_secs_f64(),
                     "working_directory": self.settings.working_directory,
                     "arguments": logged,
                 }),
@@ -170,7 +171,7 @@ impl CliProvider {
             provider = %self.name,
             agent = %self.agent,
             label,
-            timeout_seconds = self.settings.timeout.as_secs(),
+            timeout_seconds = self.settings.timeout.as_secs_f64(),
             "starting agent"
         );
 
@@ -355,7 +356,7 @@ impl CliProvider {
                 journal
                     .append(
                         Record::TimedOut,
-                        json!({ "timeout_seconds": self.settings.timeout.as_secs() }),
+                        json!({ "timeout_seconds": self.settings.timeout.as_secs_f64() }),
                     )
                     .await;
                 tracing::warn!(provider = %self.name, label, "agent timed out; stopping its process group");
@@ -611,6 +612,7 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use abnegate_exec::DEFAULT_ENVIRONMENT;
     use abnegate_llm::Completion;
     use abnegate_llm::CompletionProvider;
     use abnegate_llm::CompletionRequest;
@@ -629,7 +631,6 @@ mod tests {
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
     use crate::settings::CliSettings;
-    use crate::settings::INHERITED_VARIABLES;
     use crate::structured_result::StructuredResult;
 
     const ETXTBSY: i32 = 26;
@@ -991,6 +992,42 @@ sleep 120
         }
     }
 
+    /// The journal gives the timeout in seconds with its fraction, so a
+    /// limit under a second is not recorded as no time at all.
+    #[tokio::test]
+    async fn a_timeout_under_a_second_is_journalled_with_its_fraction() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let settings = settings(&directory, "sleep 120")
+            .with_timeout(Duration::from_millis(500))
+            .with_log(&root);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let failure = provider
+            .execute(request(&[Message::user("hi")]), "test-run")
+            .await
+            .expect_err("a timeout");
+
+        assert!(
+            matches!(*failure.error, ProviderError::Timeout { .. }),
+            "{failure:?}"
+        );
+        let files = failure.log.expect("the run's logs");
+        let journal = std::fs::read_to_string(&files.events).expect("the journal");
+        let journalled: Vec<Option<f64>> = journal
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("a journal entry"))
+            .filter(|entry| {
+                matches!(
+                    entry["event"].as_str(),
+                    Some("execution_initialized" | "subprocess_timed_out")
+                )
+            })
+            .map(|entry| entry["data"]["timeout_seconds"].as_f64())
+            .collect();
+        assert_eq!(journalled, [Some(0.5), Some(0.5)], "{journal}");
+    }
+
     #[tokio::test]
     async fn a_timed_out_agent_that_ignores_termination_is_killed_with_its_group() {
         let directory = TempDir::new().expect("a temporary directory");
@@ -1192,7 +1229,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         let shell = ["PWD", "SHLVL", "_", "OLDPWD"];
         for name in &names {
             assert!(
-                INHERITED_VARIABLES.contains(&name.as_str())
+                DEFAULT_ENVIRONMENT.contains(&name.as_str())
                     || AgentKind::Claude.configuration().contains(&name.as_str())
                     || shell.contains(&name.as_str())
                     || ["LINEAR_ISSUE_ID", "ANTHROPIC_API_KEY"].contains(&name.as_str()),
@@ -1520,6 +1557,29 @@ echo '{"type":"result","subtype":"success","is_error":false}'
             matches!(&error, ProviderError::Malformed { message, .. } if message.contains("prose exceeded 1024 bytes")),
             "expected an overflow, got {error:?}"
         );
+    }
+
+    /// Prose that fills the limit exactly is all the run may keep, and an
+    /// empty piece after it adds nothing, so the run still completes.
+    #[tokio::test]
+    async fn empty_prose_after_a_full_limit_is_not_an_overflow() {
+        const PROSE: &str = "0123456789012345678901234567890123456789";
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = format!(
+            r#"
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{PROSE}"}}]}}}}'
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":""}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'
+"#
+        );
+        let settings = settings(&directory, &script).with_output_limit(PROSE.len());
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some(PROSE));
     }
 
     #[tokio::test]

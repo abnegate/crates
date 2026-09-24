@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::future::Future;
 use std::io;
+use std::process::Output;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Once;
@@ -10,6 +11,22 @@ use tracing_subscriber::fmt::MakeWriter;
 /// Set in a test's own child process, naming the test the child should run,
 /// so a test that needs a pristine process environment can re-run itself.
 pub(crate) const CHILD_TEST: &str = "ABNEGATE_AGENT_CHILD_TEST";
+
+/// Fail unless the re-run of one test that produced `output` passed and
+/// ran that test at all: a name that matches no test runs nothing and still
+/// exits zero, proving nothing.
+pub(crate) fn assert_passed(output: &Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("1 passed"),
+        "the child ran no test, so it proved nothing\n{stdout}"
+    );
+}
 
 /// One subscriber for the whole binary, because a scoped one is not
 /// reliable here: `tracing` caches each callsite's interest globally, and a

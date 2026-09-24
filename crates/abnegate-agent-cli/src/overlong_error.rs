@@ -6,7 +6,8 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("one event exceeded {limit} bytes")]
 #[non_exhaustive]
-pub struct Overlong {
+pub struct OverlongError {
+    /// The cap the line broke, in bytes.
     pub limit: usize,
     /// The start of the line, enough to tell what kind of event it was.
     pub prefix: String,
@@ -14,12 +15,12 @@ pub struct Overlong {
 
 #[cfg(test)]
 mod tests {
-    use super::Overlong;
+    use super::OverlongError;
 
     #[test]
     fn the_cap_is_named_in_the_message() {
         assert_eq!(
-            Overlong {
+            OverlongError {
                 limit: 256,
                 prefix: "{\"type\":\"user\"".to_string(),
             }

@@ -11,10 +11,10 @@ use std::time::Duration;
 pub use run::RunCommandTool;
 use serde_json::Value;
 use serde_json::json;
-pub use shell::MAX_SLEEP_SECONDS;
+pub use shell::MAXIMUM_SLEEP;
 pub use shell::RunShellTool;
 
-use super::MAX_TOOL_OUTPUT_CHARACTERS;
+use super::MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 use super::Rendering;
 use super::ToolContext;
 use super::ToolError;
@@ -26,18 +26,18 @@ use super::job::JobCommand;
 use super::job::Jobs;
 use super::job::WAIT_FOR;
 
-pub(super) const MAX_OUTPUT_PARAMETER: &str = "max_output_chars";
+pub(super) const MAXIMUM_OUTPUT_PARAMETER: &str = "max_output_chars";
 const BACKGROUND_PARAMETER: &str = "background";
 
 /// Cap on returned output, so one noisy command cannot fill the context
 /// window. Spends the shared tool budget, which the transcript cap sits above,
 /// so what the tool keeps is what the model is given even once the exit-code
 /// line and the `Error: ` prefix are wrapped around it.
-const MAX_SHELL_OUTPUT_CHARACTERS: usize = MAX_TOOL_OUTPUT_CHARACTERS;
+const MAXIMUM_SHELL_OUTPUT_CHARACTERS: usize = MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 
 /// Floor for a caller-supplied cap, below which neither end of the output
 /// holds enough to diagnose anything.
-const MIN_SHELL_OUTPUT_CHARACTERS: usize = 500;
+const MINIMUM_SHELL_OUTPUT_CHARACTERS: usize = 500;
 
 /// Resolve `max_output_chars` against the built-in cap.
 ///
@@ -46,22 +46,22 @@ const MIN_SHELL_OUTPUT_CHARACTERS: usize = 500;
 pub(super) fn clamp_output_characters(requested: Option<u64>) -> usize {
     match requested {
         Some(characters) => characters.clamp(
-            MIN_SHELL_OUTPUT_CHARACTERS as u64,
-            MAX_SHELL_OUTPUT_CHARACTERS as u64,
+            MINIMUM_SHELL_OUTPUT_CHARACTERS as u64,
+            MAXIMUM_SHELL_OUTPUT_CHARACTERS as u64,
         ) as usize,
-        None => MAX_SHELL_OUTPUT_CHARACTERS,
+        None => MAXIMUM_SHELL_OUTPUT_CHARACTERS,
     }
 }
 
-pub(super) fn max_output_property() -> Value {
+pub(super) fn maximum_output_property() -> Value {
     json!({
         "type": "integer",
         // Parsed into a u64, so a negative fails the call instead of clamping.
         "minimum": 0,
         "description": format!(
             "Cap returned output at this many characters, keeping head and tail. Default \
-             {MAX_SHELL_OUTPUT_CHARACTERS}; larger values clamp down, values under \
-             {MIN_SHELL_OUTPUT_CHARACTERS} clamp up."
+             {MAXIMUM_SHELL_OUTPUT_CHARACTERS}; larger values clamp down, values under \
+             {MINIMUM_SHELL_OUTPUT_CHARACTERS} clamp up."
         )
     })
 }
@@ -78,15 +78,18 @@ fn background_property() -> Value {
 }
 
 /// Longest a single shell command may run, whatever it asks for.
-pub(super) const MAX_SHELL_TIMEOUT_SECONDS: u64 = 900;
+pub(super) const MAXIMUM_SHELL_TIMEOUT: Duration = Duration::from_secs(900);
+
+/// Shortest a single shell command may be given, whatever it asks for.
+const MINIMUM_SHELL_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How long one call may run: what it asked for, or `default` when it asked
-/// for nothing, held between a second and [`MAX_SHELL_TIMEOUT_SECONDS`].
+/// for nothing, held between [`MINIMUM_SHELL_TIMEOUT`] and
+/// [`MAXIMUM_SHELL_TIMEOUT`].
 pub(super) fn call_limit(requested: Option<u64>, default: Duration) -> Duration {
-    requested.map_or(default, Duration::from_secs).clamp(
-        Duration::from_secs(1),
-        Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS),
-    )
+    requested
+        .map_or(default, Duration::from_secs)
+        .clamp(MINIMUM_SHELL_TIMEOUT, MAXIMUM_SHELL_TIMEOUT)
 }
 
 /// Where the command runs, resolved and confined the way every other

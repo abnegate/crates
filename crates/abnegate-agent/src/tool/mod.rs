@@ -11,7 +11,6 @@
 mod beneath;
 mod command;
 mod context;
-mod environment;
 mod error;
 mod file;
 pub mod job;
@@ -30,15 +29,15 @@ mod wait;
 
 use std::time::Duration;
 
+pub use abnegate_exec::DEFAULT_ENVIRONMENT;
+pub use abnegate_exec::EnvironmentPolicy;
 use abnegate_llm::ToolDefinition;
 pub use abnegate_secret::sanitize;
 use async_trait::async_trait;
-pub use command::MAX_SLEEP_SECONDS;
+pub use command::MAXIMUM_SLEEP;
 pub use command::RunCommandTool;
 pub use command::RunShellTool;
 pub use context::ToolContext;
-pub use environment::DEFAULT_ENVIRONMENT;
-pub use environment::EnvironmentPolicy;
 pub use error::ToolError;
 pub use file::ApplyPatchTool;
 pub use file::ListFilesTool;
@@ -56,9 +55,9 @@ use serde_json::Value;
 pub use session::Session;
 pub(crate) use text::ERROR_PREFIX;
 pub use text::LINE_BREAK;
-pub use text::MAX_PREVIEW_CHARACTERS;
-pub use text::MAX_TOOL_MESSAGE_CHARACTERS;
-pub use text::MAX_TOOL_OUTPUT_CHARACTERS;
+pub use text::MAXIMUM_PREVIEW_CHARACTERS;
+pub use text::MAXIMUM_TOOL_MESSAGE_CHARACTERS;
+pub use text::MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 pub(crate) use text::quote;
 pub(crate) use text::trim_middle;
 pub(crate) use text::word;
@@ -66,8 +65,6 @@ pub use tier::CONFIRMED_FROM;
 pub use tier::Tier;
 pub use vision::is_vision_url;
 pub use wait::WaitForTool;
-
-pub use crate::application::DEFAULT_APPLICATION;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 

@@ -20,7 +20,7 @@ use super::JobStarted;
 use super::JobStatus;
 use super::JobTail;
 use super::KILL_TIMEOUT;
-use super::MAX_CHARACTER_BYTES;
+use super::MAXIMUM_CHARACTER_BYTES;
 use super::UNAVAILABLE;
 use super::entry::Job;
 use super::excluded;
@@ -60,7 +60,7 @@ impl Jobs {
         session: Session,
         id: &str,
         since: u64,
-        max_characters: usize,
+        maximum_characters: usize,
     ) -> Result<JobTail, String> {
         if session == Session::Detached {
             return Err(UNAVAILABLE.to_string());
@@ -79,7 +79,7 @@ impl Jobs {
         };
 
         let Ok(Ok(buffer)) =
-            tokio::task::spawn_blocking(move || log.read(since, max_characters)).await
+            tokio::task::spawn_blocking(move || log.read(since, maximum_characters)).await
         else {
             return Ok(unread);
         };
@@ -349,7 +349,7 @@ fn decode(buffer: &[u8], settled: bool) -> (String, usize) {
         Ok(text) => (text.to_string(), buffer.len()),
         Err(error) => {
             let whole = error.valid_up_to();
-            if whole == 0 && (settled || buffer.len() > MAX_CHARACTER_BYTES) {
+            if whole == 0 && (settled || buffer.len() > MAXIMUM_CHARACTER_BYTES) {
                 return (String::from_utf8_lossy(buffer).into_owned(), buffer.len());
             }
             (

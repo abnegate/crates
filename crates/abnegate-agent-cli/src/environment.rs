@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 
+use abnegate_exec::DEFAULT_ENVIRONMENT;
 use abnegate_llm::Credential;
 use abnegate_secret::SecretValue;
 use tokio::process::Command;
@@ -11,11 +12,11 @@ use crate::kind::AgentKind;
 use crate::mcp::McpAttachment;
 use crate::mcp::expand;
 use crate::settings::CliSettings;
-use crate::settings::INHERITED_VARIABLES;
 
-/// The child's environment: an allowlist of host variables and the agent's
-/// own configuration variables, or the whole host environment when the
-/// caller opts in, with every explicit value set on top.
+/// The child's environment: an allowlist of host variables, the caller's
+/// allowed names and the agent's own configuration variables, or the whole
+/// host environment when the caller opts in, with every explicit value set
+/// on top.
 ///
 /// Explicit values go on in rising precedence: the agent's sign-in
 /// variables from the host when its credential is inherited, host variables
@@ -48,9 +49,15 @@ impl Environment {
             secrets: Vec::new(),
         };
         if !environment.inherit {
-            for variable in INHERITED_VARIABLES.iter().chain(agent.configuration()) {
+            let allowed = settings.allowed.iter().map(String::as_str);
+            for variable in DEFAULT_ENVIRONMENT
+                .iter()
+                .copied()
+                .chain(allowed)
+                .chain(agent.configuration().iter().copied())
+            {
                 if let Some(value) = host(variable) {
-                    environment.inherited.insert((*variable).to_string(), value);
+                    environment.inherited.insert(variable.to_string(), value);
                 }
             }
         }
@@ -134,7 +141,7 @@ impl Environment {
     /// Give the child a host variable that is not on the allowlist, which
     /// makes its value a secret.
     fn pass(&mut self, variable: &str, host: &dyn Fn(&str) -> Option<OsString>) {
-        if INHERITED_VARIABLES.contains(&variable) {
+        if DEFAULT_ENVIRONMENT.contains(&variable) {
             return;
         }
         if let Some(value) = host(variable).and_then(|value| value.into_string().ok()) {
@@ -169,6 +176,11 @@ mod tests {
             ("HOME", "/home/agent"),
             ("USER", "agent"),
             ("LOGNAME", "agent"),
+            ("TZ", "Europe/Paris"),
+            ("SSL_CERT_FILE", "/etc/ssl/corporate.pem"),
+            ("HTTPS_PROXY", "http://proxy.internal:3128"),
+            ("no_proxy", "localhost,127.0.0.1"),
+            ("LINEAR_API_URL", "https://linear.internal"),
             ("AWS_SECRET_ACCESS_KEY", "aws-host-secret"),
             ("GITHUB_TOKEN", "ghp-host-token"),
             ("ANTHROPIC_API_KEY", concat!("sk-ant-", "host-key")),
@@ -223,10 +235,17 @@ mod tests {
                 "LINEAR_ISSUE_ID",
                 "LOGNAME",
                 "PATH",
+                "SSL_CERT_FILE",
+                "TZ",
                 "USER"
             ]
         );
         assert_eq!(variables["PATH"].as_deref(), Some("/usr/bin:/bin"));
+        assert_eq!(
+            variables["SSL_CERT_FILE"].as_deref(),
+            Some("/etc/ssl/corporate.pem"),
+            "an agent behind a private certificate authority verifies its API"
+        );
         assert_eq!(
             variables["USER"].as_deref(),
             Some("agent"),
@@ -247,6 +266,57 @@ mod tests {
                 concat!("sk-ant-", "oat-host-token"),
                 "ENG-42"
             ]
+        );
+    }
+
+    #[test]
+    fn a_proxy_reaches_the_child_only_when_the_caller_allows_it() {
+        let confined = Environment::new(AgentKind::Claude, &CliSettings::default(), None, &host());
+        let variables = set(&confined);
+        assert!(!variables.contains_key("HTTPS_PROXY"), "{variables:?}");
+        assert!(!variables.contains_key("no_proxy"), "{variables:?}");
+
+        let settings = CliSettings::default().with_proxy_variables();
+        let proxied = Environment::new(AgentKind::Claude, &settings, None, &host());
+        let variables = set(&proxied);
+        assert_eq!(
+            variables["HTTPS_PROXY"].as_deref(),
+            Some("http://proxy.internal:3128")
+        );
+        assert_eq!(
+            variables["no_proxy"].as_deref(),
+            Some("localhost,127.0.0.1")
+        );
+        assert!(!variables.contains_key("HTTP_PROXY"), "unset on the host");
+        assert!(
+            exposed(&proxied)
+                .iter()
+                .all(|secret| !secret.contains("proxy.internal"))
+        );
+    }
+
+    #[test]
+    fn an_allowed_name_reaches_the_child_with_the_hosts_value() {
+        let settings = CliSettings::default().allow(["LINEAR_API_URL", "NEVER_SET_ON_THE_HOST"]);
+        let environment = Environment::new(AgentKind::Codex, &settings, None, &host());
+
+        let variables = set(&environment);
+        assert_eq!(
+            variables["LINEAR_API_URL"].as_deref(),
+            Some("https://linear.internal")
+        );
+        assert!(!variables.contains_key("NEVER_SET_ON_THE_HOST"));
+        assert!(!variables.contains_key("GITHUB_TOKEN"));
+
+        let inheriting = Environment::new(
+            AgentKind::Codex,
+            &settings.inherit_environment(),
+            None,
+            &host(),
+        );
+        assert!(
+            !set(&inheriting).contains_key("LINEAR_API_URL"),
+            "inherited, not set"
         );
     }
 

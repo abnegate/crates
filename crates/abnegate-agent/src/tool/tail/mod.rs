@@ -16,9 +16,9 @@ use super::Tool;
 use super::ToolContext;
 use super::ToolError;
 use super::ToolResult;
-use super::command::MAX_OUTPUT_PARAMETER;
+use super::command::MAXIMUM_OUTPUT_PARAMETER;
 use super::command::clamp_output_characters;
-use super::command::max_output_property;
+use super::command::maximum_output_property;
 use super::job::JobStatus;
 use super::job::JobTail;
 use super::job::Jobs;
@@ -82,7 +82,7 @@ impl Tool for TailJobTool {
                          from the start."
                     )
                 },
-                MAX_OUTPUT_PARAMETER: max_output_property()
+                MAXIMUM_OUTPUT_PARAMETER: maximum_output_property()
             },
             "required": [ID_PARAMETER],
             "additionalProperties": false
@@ -101,7 +101,7 @@ impl Tool for TailJobTool {
             context.session,
             &parameters.id,
             parameters.since.unwrap_or_default(),
-            clamp_output_characters(parameters.max_output_characters),
+            clamp_output_characters(parameters.maximum_output_characters),
         )
         .await
         .map_err(ToolError::Execution)?;
@@ -337,7 +337,7 @@ mod tests {
                  start."
             )
         );
-        assert!(properties.contains_key(MAX_OUTPUT_PARAMETER));
+        assert!(properties.contains_key(MAXIMUM_OUTPUT_PARAMETER));
         assert!(
             !properties.contains_key(crate::tool::REASON_PARAMETER),
             "a read states no reason"
@@ -369,7 +369,7 @@ mod tests {
 
         let result = TailJobTool
             .execute(
-                json!({ ID_PARAMETER: job.clone(), MAX_OUTPUT_PARAMETER: 1 }),
+                json!({ ID_PARAMETER: job.clone(), MAXIMUM_OUTPUT_PARAMETER: 1 }),
                 &context,
             )
             .await

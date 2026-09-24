@@ -83,7 +83,6 @@
 //!   a [`ToolRegistry`], configured from the environment under an
 //!   application's own prefix.
 
-mod application;
 pub mod chat;
 pub mod context;
 mod error;
@@ -97,9 +96,10 @@ pub mod template;
 mod test_support;
 pub mod tool;
 
-pub use crate::application::Application;
-pub use crate::application::ApplicationError;
-pub use crate::application::DEFAULT_APPLICATION;
+pub use abnegate_config::Application;
+pub use abnegate_config::ApplicationError;
+pub use abnegate_config::DEFAULT_APPLICATION;
+
 pub use crate::error::Error;
 pub use crate::error::Result;
 #[cfg(feature = "mcp")]

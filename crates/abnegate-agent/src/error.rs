@@ -1,7 +1,7 @@
+use abnegate_config::ApplicationError;
 use thiserror::Error;
 
-use crate::application::ApplicationError;
-use crate::chat;
+use crate::chat::ChatError;
 use crate::context::ContextError;
 #[cfg(feature = "mcp")]
 use crate::mcp::McpConfigError;
@@ -29,7 +29,7 @@ pub enum Error {
     #[error("Session error: {0}")]
     Session(#[from] SessionError),
     #[error("Chat store error: {0}")]
-    Chat(#[from] chat::Error),
+    Chat(#[from] ChatError),
     #[cfg(feature = "mcp")]
     #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
     #[error("MCP error: {0}")]
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn test_chat_error_display() {
-        let error: Error = chat::Error::Busy.into();
+        let error: Error = ChatError::Busy.into();
         assert_eq!(
             error.to_string(),
             "Chat store error: This chat already has an active response"

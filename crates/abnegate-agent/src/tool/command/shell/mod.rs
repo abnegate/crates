@@ -9,13 +9,13 @@ use serde_json::json;
 use tokio::time::Duration;
 
 use super::BACKGROUND_PARAMETER;
-use super::MAX_OUTPUT_PARAMETER;
-use super::MAX_SHELL_TIMEOUT_SECONDS;
+use super::MAXIMUM_OUTPUT_PARAMETER;
+use super::MAXIMUM_SHELL_TIMEOUT;
 use super::background;
 use super::background_property;
 use super::call_limit;
 use super::clamp_output_characters;
-use super::max_output_property;
+use super::maximum_output_property;
 use super::run_preview;
 use super::working_directory;
 use crate::tool::REASON_PARAMETER;
@@ -49,7 +49,7 @@ pub struct RunShellTool;
 /// A run that has produced nothing for this long is announced as stalled, so a
 /// longer sleep reads as a wedged run rather than a waiting one. Waiting past
 /// it belongs between calls, where the loop can still see what is happening.
-pub const MAX_SLEEP_SECONDS: u64 = 60;
+pub const MAXIMUM_SLEEP: Duration = Duration::from_secs(60);
 
 /// How long a shell call runs when it names no limit of its own.
 const DEFAULT_SHELL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -134,7 +134,8 @@ fn sleep_refusal(seconds: f64, backgrounded: bool) -> String {
     };
     format!(
         "This command sleeps for {seconds} seconds, and a call may block on sleep for at most \
-         {MAX_SLEEP_SECONDS}. {remedy} wait for it with {WAIT_FOR}{tail}"
+         {}. {remedy} wait for it with {WAIT_FOR}{tail}",
+        MAXIMUM_SLEEP.as_secs()
     )
 }
 
@@ -156,7 +157,7 @@ impl Tool for RunShellTool {
     /// The directory the command runs in and the command byte for byte as
     /// `sh` reads it, blank space and blank lines included, each verbatim but
     /// for the preview's escapes. The card is already held to
-    /// [`MAX_PREVIEW_CHARACTERS`](crate::tool::MAX_PREVIEW_CHARACTERS), so
+    /// [`MAXIMUM_PREVIEW_CHARACTERS`](crate::tool::MAXIMUM_PREVIEW_CHARACTERS), so
     /// squeezing would shorten nothing it needs and hide what the shell reads.
     fn preview(&self, parameters: &Value) -> Option<Rendering> {
         let parameters: RunShellParameters = serde_json::from_value(parameters.clone()).ok()?;
@@ -174,9 +175,9 @@ impl Tool for RunShellTool {
                     "type": "string",
                     "description": format!(
                         "Shell command to run, e.g. 'cargo test 2>&1 | tail -40'. It may not \
-                         block on sleep for more than {MAX_SLEEP_SECONDS} seconds: to wait longer, \
-                         start it with {BACKGROUND_PARAMETER}: true and wait for it with \
-                         {WAIT_FOR}."
+                         block on sleep for more than {} seconds: to wait longer, start it with \
+                         {BACKGROUND_PARAMETER}: true and wait for it with {WAIT_FOR}.",
+                        MAXIMUM_SLEEP.as_secs()
                     )
                 },
                 "cwd": {
@@ -188,7 +189,7 @@ impl Tool for RunShellTool {
                     "description": "Wall-clock limit in seconds. Default 120, maximum 900."
                 },
                 BACKGROUND_PARAMETER: background_property(),
-                MAX_OUTPUT_PARAMETER: max_output_property(),
+                MAXIMUM_OUTPUT_PARAMETER: maximum_output_property(),
                 REASON_PARAMETER: reason_property()
             },
             "required": ["command", REASON_PARAMETER]
@@ -196,7 +197,7 @@ impl Tool for RunShellTool {
     }
 
     fn timeout(&self, _context: &ToolContext) -> Duration {
-        Duration::from_secs(MAX_SHELL_TIMEOUT_SECONDS) + TIMEOUT_SLACK
+        MAXIMUM_SHELL_TIMEOUT + TIMEOUT_SLACK
     }
 
     async fn execute(
@@ -221,7 +222,7 @@ impl Tool for RunShellTool {
         }
 
         if let Some(seconds) = total_sleep(&parameters.command)
-            && seconds > MAX_SLEEP_SECONDS as f64
+            && seconds > MAXIMUM_SLEEP.as_secs_f64()
         {
             return Err(ToolError::Execution(sleep_refusal(
                 seconds,
@@ -267,7 +268,7 @@ impl Tool for RunShellTool {
         // should read the compiler error rather than conclude the tool broke.
         Ok(ToolResult::success(trim_middle(
             report.trim_end(),
-            clamp_output_characters(parameters.max_output_characters),
+            clamp_output_characters(parameters.maximum_output_characters),
         )))
     }
 }

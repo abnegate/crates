@@ -15,10 +15,10 @@ pub(super) use visit::Visit;
 use crate::tool::ToolError;
 
 /// Deepest a walk descends below the directory it started from.
-pub(super) const MAX_WALK_DEPTH: usize = 64;
+pub(super) const MAXIMUM_WALK_DEPTH: usize = 64;
 
 /// Most entries one walk looks at before it gives up.
-pub(super) const MAX_WALK_ENTRIES: usize = 100_000;
+pub(super) const MAXIMUM_WALK_ENTRIES: usize = 100_000;
 
 /// Longest one walk runs, kept inside the default tool timeout so a walk
 /// that runs out of time still reports what it found.
@@ -41,7 +41,7 @@ impl Walk {
     pub(super) fn new(limit: Duration) -> Self {
         Self {
             deadline: Instant::now() + limit,
-            remaining: MAX_WALK_ENTRIES,
+            remaining: MAXIMUM_WALK_ENTRIES,
             visited: HashSet::new(),
             stopped: None,
         }
@@ -112,7 +112,7 @@ impl Walk {
     }
 
     fn enter(&mut self, directory: PathBuf, depth: usize) -> Option<fs::ReadDir> {
-        if depth + 1 > MAX_WALK_DEPTH {
+        if depth + 1 > MAXIMUM_WALK_DEPTH {
             self.stopped = Some("too deep");
             return None;
         }
@@ -166,14 +166,14 @@ mod tests {
     fn a_walk_past_its_depth_says_so() {
         let root = tempfile::tempdir().unwrap();
         let mut deep = root.path().to_path_buf();
-        for _ in 0..=MAX_WALK_DEPTH {
+        for _ in 0..=MAXIMUM_WALK_DEPTH {
             deep.push("d");
         }
         std::fs::create_dir_all(&deep).unwrap();
 
         let (seen, stopped) = names(root.path());
 
-        assert_eq!(seen.len(), MAX_WALK_DEPTH + 1);
+        assert_eq!(seen.len(), MAXIMUM_WALK_DEPTH + 1);
         assert_eq!(stopped, Some("too deep"));
     }
 

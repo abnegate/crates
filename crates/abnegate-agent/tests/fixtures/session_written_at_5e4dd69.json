@@ -1,0 +1,126 @@
+{
+  "id": "6015c984-c9a0-4972-8aac-fa68f31a5280",
+  "title": "Build graph",
+  "state": {
+    "id": "6015c984-c9a0-4972-8aac-fa68f31a5280",
+    "phase": "complete",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are careful.",
+        "name": null,
+        "tool_calls": null,
+        "tool_call_id": null,
+        "images": [],
+        "generated_images": []
+      },
+      {
+        "role": "user",
+        "content": "Draw the build graph",
+        "name": null,
+        "tool_calls": null,
+        "tool_call_id": null,
+        "images": [
+          "/api/artifacts/source.png"
+        ],
+        "generated_images": []
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "name": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"Cargo.toml\"}"
+            }
+          }
+        ],
+        "tool_call_id": null,
+        "images": [],
+        "generated_images": [],
+        "reasoning_content": "Read the manifest first."
+      },
+      {
+        "role": "tool",
+        "content": "[workspace]\nmembers = [\"crates/*\"]",
+        "name": null,
+        "tool_calls": null,
+        "tool_call_id": "call_1",
+        "images": [],
+        "generated_images": []
+      },
+      {
+        "role": "assistant",
+        "content": "Here is the graph.",
+        "name": null,
+        "tool_calls": null,
+        "tool_call_id": null,
+        "images": [],
+        "generated_images": [
+          "data:image/png;base64,iVBORw0KGgo="
+        ]
+      }
+    ],
+    "summary": {
+      "content": "The user asked for the build graph.",
+      "coverage": {
+        "entries": [
+          "message-2",
+          "message-3"
+        ],
+        "fingerprint": "a1b2c3"
+      },
+      "revision": 2
+    },
+    "consumed": 4,
+    "steps": [
+      {
+        "id": "39773ef0-f399-4943-b291-109b2b23f052",
+        "phase": "acting",
+        "message": null,
+        "tool_calls": [
+          {
+            "call": {
+              "id": "call_1",
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"Cargo.toml\"}"
+              }
+            },
+            "result": "[workspace]\nmembers = [\"crates/*\"]",
+            "success": true,
+            "duration_milliseconds": 1500
+          }
+        ],
+        "started_at": "2026-09-24T14:08:49.546486Z",
+        "completed_at": "2026-09-24T14:08:49.546487Z"
+      },
+      {
+        "id": "07f8354c-98c0-4909-8c41-0b1766b09f85",
+        "phase": "responding",
+        "message": {
+          "role": "assistant",
+          "content": "Here is the graph."
+        },
+        "tool_calls": null,
+        "started_at": "2026-09-24T14:08:49.546488Z",
+        "completed_at": "2026-09-24T14:08:49.546488Z"
+      }
+    ],
+    "iteration": 2,
+    "tokens_used": 321,
+    "finished": true,
+    "final_response": "Here is the graph.",
+    "error": null,
+    "started_at": "2026-09-24T14:08:49.546453Z",
+    "finished_at": "2026-09-24T14:08:49.546489Z"
+  },
+  "created_at": "2026-09-24T14:08:49.546489Z",
+  "updated_at": "2026-09-24T14:08:49.546489Z",
+  "project_directory": "/work/project"
+}

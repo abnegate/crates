@@ -2,8 +2,7 @@ use serde::Deserialize;
 
 /// The nested error a `turn.failed` event may carry.
 #[derive(Debug, Deserialize)]
-#[non_exhaustive]
-pub struct Reason {
+pub(crate) struct Reason {
     #[serde(default)]
-    pub message: Option<String>,
+    pub(crate) message: Option<String>,
 }

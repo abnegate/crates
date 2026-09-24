@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn files_clone_and_debug_by_field() {
+    fn the_constructor_keeps_each_path_as_given() {
         let files = ExecutionLogFiles::new(
             "/tmp/test.stdout.log",
             "/tmp/test.stderr.log",
@@ -286,6 +286,16 @@ mod tests {
         assert_eq!(files.stdout, PathBuf::from("/tmp/test.stdout.log"));
         assert_eq!(files.stderr, PathBuf::from("/tmp/test.stderr.log"));
         assert_eq!(files.events, PathBuf::from("/tmp/test.events.jsonl"));
+    }
+
+    #[test]
+    fn files_clone_and_debug_by_field() {
+        let files = ExecutionLogFiles::new(
+            "/tmp/test.stdout.log",
+            "/tmp/test.stderr.log",
+            "/tmp/test.events.jsonl",
+        );
+
         assert_eq!(files.clone(), files);
         let debug = format!("{files:?}");
         assert!(debug.contains("stdout"));
