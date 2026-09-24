@@ -42,10 +42,6 @@ mod test_support;
 mod transport;
 mod url;
 
-#[cfg(doctest)]
-#[doc = include_str!("../README.md")]
-struct ReadmeDoctests;
-
 pub use crate::backoff::Backoff;
 pub use crate::body::read_capped;
 pub use crate::classify::is_hard_error;
@@ -64,3 +60,7 @@ pub use crate::public::public_client_builder;
 pub use crate::response::HttpResponse;
 pub use crate::transport::ReqwestHttpClient;
 pub use crate::url::validate_public_url;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
