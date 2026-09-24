@@ -585,10 +585,16 @@ fn classified(status: StatusCode, headers: &HeaderMap) -> Option<PullRequestErro
 /// A refusal no status explains, named by its status and GitHub's own words.
 fn unexpected(status: StatusCode, refusal: &GitHubRefusal) -> PullRequestError {
     let summary = refusal.summary();
+    let returned = returned(status);
     PullRequestError::GitHubApi(match summary.is_empty() {
-        true => format!("GitHub API returned {status}"),
-        false => format!("GitHub API returned {status}: {summary}"),
+        true => returned,
+        false => format!("{returned}: {summary}"),
     })
+}
+
+/// An answer named by its status alone.
+fn returned(status: StatusCode) -> String {
+    format!("GitHub API returned {status}")
 }
 
 /// The first `limit` bytes of an answer's body, read no further, and whether

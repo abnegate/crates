@@ -110,21 +110,18 @@ impl PullRequestService {
         }
 
         let refusal = refusal_of(response).await;
+        let reason = reason(status, &refusal);
         match status {
-            StatusCode::UNPROCESSABLE_ENTITY => {
-                Err(PullRequestError::NotMergeable(refusal.summary()))
-            }
+            StatusCode::UNPROCESSABLE_ENTITY => Err(PullRequestError::NotMergeable(reason)),
             StatusCode::METHOD_NOT_ALLOWED if refusal.mentions(MODIFIED) => {
                 Err(PullRequestError::HeadMoved)
             }
             StatusCode::METHOD_NOT_ALLOWED if refusal.mentions(NOT_MERGEABLE) => {
-                Err(PullRequestError::NotMergeable(refusal.summary()))
+                Err(PullRequestError::NotMergeable(reason))
             }
             StatusCode::METHOD_NOT_ALLOWED => match node.filter(|_| administrator) {
-                Some(node) => {
-                    administrator_merge(self, node, token, &request, &refusal.summary()).await
-                }
-                None => Err(PullRequestError::Protected(refusal.summary())),
+                Some(node) => administrator_merge(self, node, token, &request, &reason).await,
+                None => Err(PullRequestError::Protected(reason)),
             },
             _ => Err(unexpected(status, &refusal)),
         }
@@ -199,16 +196,23 @@ fn administrator_refusal(reason: &str, errors: &[GraphQlError]) -> PullRequestEr
 }
 
 /// Branch protection's `reason`, then the administrator merge's refusal and
-/// GitHub's `messages` about it, each left out when there is nothing to say.
+/// GitHub's `messages` about it, which are left out when there are none.
 fn protected(reason: &str, messages: &str) -> PullRequestError {
     let refused = match messages.is_empty() {
         true => ADMINISTRATOR_REFUSED.to_string(),
         false => format!("{ADMINISTRATOR_REFUSED}: {messages}"),
     };
-    PullRequestError::Protected(match reason.is_empty() {
-        true => refused,
-        false => format!("{reason}{SEPARATOR}{refused}"),
-    })
+    PullRequestError::Protected(format!("{reason}{SEPARATOR}{refused}"))
+}
+
+/// GitHub's words about a merge it refused with `status`, or that status
+/// when it gave none.
+fn reason(status: StatusCode, refusal: &GitHubRefusal) -> String {
+    let summary = refusal.summary();
+    match summary.is_empty() {
+        true => returned(status),
+        false => summary,
+    }
 }
 
 #[cfg(test)]
@@ -671,11 +675,15 @@ mod tests {
                 true,
                 r#"Protected("Changes must be made through a pull request.; administrator merge refused: Base branch was modified")"#,
             ),
-            (silent(405), false, r#"Protected("")"#),
+            (
+                silent(405),
+                false,
+                r#"Protected("GitHub API returned 405 Method Not Allowed")"#,
+            ),
             (
                 silent(405),
                 true,
-                r#"Protected("administrator merge refused: Base branch was modified")"#,
+                r#"Protected("GitHub API returned 405 Method Not Allowed; administrator merge refused: Base branch was modified")"#,
             ),
             (
                 noisy(422),
@@ -725,6 +733,40 @@ mod tests {
                 !format!("{failure} {failure:?}").contains("SENTINEL"),
                 "{failure:?}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_merge_refusal_github_gives_no_reason_for_is_named_by_its_status() {
+        for (response, administrator, expected) in [
+            (
+                ResponseTemplate::new(405),
+                false,
+                r#"Protected("GitHub API returned 405 Method Not Allowed")"#,
+            ),
+            (
+                ResponseTemplate::new(405).set_body_json(json!({ "message": " \n " })),
+                false,
+                r#"Protected("GitHub API returned 405 Method Not Allowed")"#,
+            ),
+            (
+                ResponseTemplate::new(422),
+                true,
+                r#"NotMergeable("GitHub API returned 422 Unprocessable Entity")"#,
+            ),
+            (
+                ResponseTemplate::new(422).set_body_json(json!({ "errors": [] })),
+                true,
+                r#"NotMergeable("GitHub API returned 422 Unprocessable Entity")"#,
+            ),
+        ] {
+            let server = answering(response, merged_as(commit('d').as_str()), 0).await;
+
+            let failure = attempt(&server, Some(NODE), administrator)
+                .await
+                .unwrap_err();
+
+            assert_eq!(format!("{failure:?}"), expected);
         }
     }
 
