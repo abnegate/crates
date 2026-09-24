@@ -1,4 +1,4 @@
-use crate::pull_request::service::bounded;
+use crate::pull_request::service::summarised;
 use serde_json::Value;
 
 /// The field GitHub states a refusal in, on the answer and on each detail.
@@ -6,9 +6,6 @@ const MESSAGE: &str = "message";
 
 /// The field GitHub lists a refusal's details under.
 const ERRORS: &str = "errors";
-
-/// What joins GitHub's words when they are summarised on one line.
-const SEPARATOR: &str = "; ";
 
 /// What GitHub said in refusing a request: its message and each detail listed
 /// under `errors`, and nothing else its answer carried.
@@ -50,21 +47,10 @@ impl GitHubRefusal {
             .any(|said| said.to_ascii_lowercase().contains(&words))
     }
 
-    /// GitHub's message and details on one line, without control characters,
-    /// cut short once it grows too long to carry in an error.
+    /// GitHub's message and details on one line, sanitised, cut short once
+    /// it grows too long to carry in an error.
     pub(super) fn summary(&self) -> String {
-        let words: Vec<String> = self
-            .said()
-            .map(|said| {
-                said.chars()
-                    .filter(|character| !character.is_control())
-                    .collect::<String>()
-                    .trim()
-                    .to_string()
-            })
-            .filter(|said| !said.is_empty())
-            .collect();
-        bounded(&words.join(SEPARATOR)).to_string()
+        summarised(self.said())
     }
 
     fn said(&self) -> impl Iterator<Item = &str> {
@@ -81,6 +67,7 @@ fn detail(entry: &Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::service::bounded;
 
     #[test]
     fn github_s_words_are_found_in_its_message_and_in_every_error_detail() {
@@ -159,5 +146,27 @@ mod tests {
         .summary();
         assert_eq!(summary, bounded(&long));
         assert!(summary.len() < long.len(), "{}", summary.len());
+    }
+
+    #[test]
+    fn a_summary_carries_nothing_that_could_hide_a_credential_or_forge_a_line() {
+        let refusal = GitHubRefusal::parse(
+            serde_json::json!({
+                "message": "one\u{2028}two\u{2029}three",
+                "errors": [
+                    "a\u{202E}b\u{200B}c\u{2066}d\u{FEFF}",
+                    "\u{1b}[31mred\u{1b}[0m",
+                    concat!("rejected ghp_", "0123456789abcdefghij"),
+                    "\u{200B}\u{2028}",
+                ],
+            })
+            .to_string()
+            .as_bytes(),
+        );
+
+        assert_eq!(
+            refusal.summary(),
+            "onetwothree; abcd; red; rejected [REDACTED]"
+        );
     }
 }

@@ -1,12 +1,12 @@
 use super::*;
 use crate::pull_request::ReviewThreadRecord;
 use crate::pull_request::ThreadComment;
-use crate::pull_request::github_review_thread::GitHubReviewThread;
-use crate::pull_request::github_review_threads::GitHubReviewThreads;
-use crate::pull_request::github_thread_comment::GitHubThreadComment;
 use crate::pull_request::graphql_page_info::GraphQlPageInfo;
 use crate::pull_request::graphql_pull_request::GraphQlPullRequest;
+use crate::pull_request::graphql_query::GraphQlQuery;
 use crate::pull_request::graphql_repository::GraphQlRepository;
+use crate::pull_request::graphql_review_thread::GraphQlReviewThread;
+use crate::pull_request::graphql_thread_comment::GraphQlThreadComment;
 use serde::de::IgnoredAny;
 use serde_json::json;
 use std::collections::HashSet;
@@ -33,7 +33,7 @@ impl PullRequestService {
         thread: &str,
         token: &SecretValue,
     ) -> PullRequestResult<()> {
-        self.graphql::<IgnoredAny, _>(token, RESOLVE, &serde_json::json!({ "id": thread }))
+        self.graphql::<IgnoredAny, _>(token, RESOLVE, &json!({ "id": thread }))
             .await?;
         Ok(())
     }
@@ -45,7 +45,9 @@ impl PullRequestService {
     /// and stops at the page limit every paged read keeps to. Each thread
     /// carries at most its first twenty comments, and a thread met twice is
     /// kept once. A repository or pull request GitHub cannot find, or will not
-    /// show the token, is [`PullRequestError::NotFound`].
+    /// show the token, is [`PullRequestError::NotFound`]. A page longer than
+    /// the 16 MiB this crate reads is [`PullRequestError::GitHubApi`], never a
+    /// partial or empty list.
     pub async fn fetch_review_threads(
         &self,
         reference: &PullRequestReference,
@@ -57,7 +59,7 @@ impl PullRequestService {
         let mut after: Option<String> = None;
 
         for _ in 0..MAXIMUM_PAGES {
-            let answer: GraphQlRepository<GraphQlPullRequest<GitHubReviewThreads>> = self
+            let answer: GraphQlQuery<GraphQlRepository<GraphQlPullRequest>> = self
                 .graphql(
                     token,
                     THREADS,
@@ -71,7 +73,7 @@ impl PullRequestService {
                 .await?;
             let page = answer
                 .repository
-                .and_then(|repository| repository.pull_request)
+                .and_then(|found| found.pull_request)
                 .ok_or(PullRequestError::NotFound)?
                 .review_threads;
 
@@ -100,7 +102,7 @@ fn next_cursor(page: Option<GraphQlPageInfo>, after: Option<&str>) -> Option<Str
 }
 
 /// A review thread as GitHub's GraphQL API answered for it, with its comments.
-fn record(thread: GitHubReviewThread) -> ReviewThreadRecord {
+fn record(thread: GraphQlReviewThread) -> ReviewThreadRecord {
     ReviewThreadRecord {
         id: thread.id,
         resolved: thread.is_resolved,
@@ -112,7 +114,7 @@ fn record(thread: GitHubReviewThread) -> ReviewThreadRecord {
 }
 
 /// A comment in a review thread, with an empty author where GitHub names none.
-fn comment(written: GitHubThreadComment) -> ThreadComment {
+fn comment(written: GraphQlThreadComment) -> ThreadComment {
     ThreadComment {
         database_id: written.database_id,
         author: written
@@ -132,7 +134,6 @@ mod tests {
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::Value;
-    use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::Request;
@@ -366,7 +367,7 @@ mod tests {
                     Some(&next.to_string()),
                 )
             })
-            .expect(MAXIMUM_PAGES as u64)
+            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
             .mount(&server)
             .await;
         let service = stand_in(&server).await;

@@ -20,22 +20,39 @@ const FAILING_CONCLUSIONS: [GitHubCheckConclusion; 6] = [
     GitHubCheckConclusion::StartupFailure,
 ];
 
+/// Conclusions that settle a run without failing the commit.
+const PASSING_CONCLUSIONS: [GitHubCheckConclusion; 3] = [
+    GitHubCheckConclusion::Success,
+    GitHubCheckConclusion::Neutral,
+    GitHubCheckConclusion::Skipped,
+];
+
 /// Commit status states that fail a commit.
 const FAILING_STATES: [GitHubStatusState; 2] =
     [GitHubStatusState::Failure, GitHubStatusState::Error];
+
+/// Commit status states that settle a context without failing the commit.
+const PASSING_STATES: [GitHubStatusState; 1] = [GitHubStatusState::Success];
 
 impl PullRequestService {
     /// What the check runs and commit statuses on `commit` add up to.
     ///
     /// Only each check's latest attempt counts, and both are read page after
     /// page, so a failure past the first page still fails the commit. A
-    /// failure anywhere wins, named. Otherwise a run still going, a pending
-    /// status, or a read that could not reach every row makes the outcome
-    /// pending: a walk stopped at the page limit on a full page, or one that
-    /// collected fewer rows than GitHub counted, is never a success. A neutral
-    /// or skipped run fails nothing but has still reported. Nothing reporting
-    /// at all is [`ChecksOutcome::Absent`], whose meaning a caller decides: a
-    /// new repository has no checks yet, and that is not a pass.
+    /// failure anywhere wins, named. Otherwise the outcome is a success only
+    /// when every run and status said it passed: a run still going, one that
+    /// finished stale, with a conclusion this crate does not know or with
+    /// none, a status pending or in a state this crate does not know, and a
+    /// read that could not reach every row all make it pending. A walk
+    /// stopped at the page limit on a full page, or one that collected fewer
+    /// rows than GitHub counted, is never a success. A neutral or skipped run
+    /// fails nothing and counts as passing. Nothing reporting at all is
+    /// [`ChecksOutcome::Absent`], whose meaning a caller decides: a new
+    /// repository has no checks yet, and that is not a pass.
+    ///
+    /// A page longer than the 16 MiB this crate reads is
+    /// [`PullRequestError::GitHubApi`], never a partial outcome and never
+    /// [`ChecksOutcome::Absent`].
     pub async fn fetch_checks(
         &self,
         repository: &Repository,
@@ -93,7 +110,9 @@ async fn walk<P: DeserializeOwned, R>(
         let short = batch.len() < PAGE_SIZE;
         collected.extend(batch);
         if short {
-            let every = total.is_none_or(|total| total <= collected.len() as u64);
+            let every = total.is_none_or(|counted| {
+                u64::try_from(collected.len()).is_ok_and(|read| counted <= read)
+            });
             return Ok((collected, every));
         }
     }
@@ -102,16 +121,12 @@ async fn walk<P: DeserializeOwned, R>(
 }
 
 /// What the runs and statuses read add up to: every failure, named, ahead of
-/// anything pending or unread, ahead of silence, ahead of success.
+/// anything that has not said it passed or was not read, ahead of silence,
+/// ahead of success.
 fn fold(runs: &[GitHubCheckRun], statuses: &[GitHubCommitStatus], every: bool) -> ChecksOutcome {
     let failed: BTreeSet<&str> = runs
         .iter()
-        .filter(|run| {
-            run.status == GitHubCheckStatus::Completed
-                && run
-                    .conclusion
-                    .is_some_and(|conclusion| FAILING_CONCLUSIONS.contains(&conclusion))
-        })
+        .filter(|run| concluded(run, &FAILING_CONCLUSIONS))
         .map(|run| run.name.as_str())
         .chain(
             statuses
@@ -120,17 +135,15 @@ fn fold(runs: &[GitHubCheckRun], statuses: &[GitHubCommitStatus], every: bool) -
                 .map(|status| status.context.as_str()),
         )
         .collect();
-    let pending = !every
-        || runs
+    let passed = every
+        && runs.iter().all(|run| concluded(run, &PASSING_CONCLUSIONS))
+        && statuses
             .iter()
-            .any(|run| run.status != GitHubCheckStatus::Completed)
-        || statuses
-            .iter()
-            .any(|status| status.state == GitHubStatusState::Pending);
+            .all(|status| PASSING_STATES.contains(&status.state));
 
     if !failed.is_empty() {
         ChecksOutcome::Failure(failed.into_iter().map(str::to_string).collect())
-    } else if pending {
+    } else if !passed {
         ChecksOutcome::Pending
     } else if runs.is_empty() && statuses.is_empty() {
         ChecksOutcome::Absent
@@ -139,9 +152,18 @@ fn fold(runs: &[GitHubCheckRun], statuses: &[GitHubCommitStatus], every: bool) -
     }
 }
 
+/// Whether `run` finished with one of `conclusions`.
+fn concluded(run: &GitHubCheckRun, conclusions: &[GitHubCheckConclusion]) -> bool {
+    run.status == GitHubCheckStatus::Completed
+        && run
+            .conclusion
+            .is_some_and(|conclusion| conclusions.contains(&conclusion))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::stand_in;
@@ -530,22 +552,146 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_conclusion_or_state_fails_nothing_and_an_unknown_run_is_still_going() {
-        let finished: Vec<GitHubCheckRun> = serde_json::from_value(json!([
-            { "name": "build", "status": "completed", "conclusion": "superseded" },
-        ]))
-        .unwrap();
-        let unnamed: Vec<GitHubCheckRun> = serde_json::from_value(json!([
-            { "name": "build", "status": "deferred", "conclusion": null },
-        ]))
-        .unwrap();
+    fn a_run_or_status_that_never_said_it_passed_fails_nothing_and_is_pending() {
+        let unsettled = [
+            json!({ "name": "build", "status": "completed", "conclusion": "stale" }),
+            json!({ "name": "build", "status": "completed", "conclusion": "superseded" }),
+            json!({ "name": "build", "status": "completed", "conclusion": null }),
+            json!({ "name": "build", "status": "completed" }),
+            json!({ "name": "build", "status": "deferred", "conclusion": null }),
+        ];
+        for run in unsettled {
+            let runs: Vec<GitHubCheckRun> = serde_json::from_value(json!([run])).unwrap();
+            let failing: Vec<GitHubCheckRun> = serde_json::from_value(json!([
+                run,
+                { "name": "test", "status": "completed", "conclusion": "failure" },
+            ]))
+            .unwrap();
+
+            assert_eq!(fold(&runs, &[], true), ChecksOutcome::Pending, "{run}");
+            assert_eq!(
+                fold(&failing, &[], true),
+                ChecksOutcome::Failure(vec!["test".to_string()]),
+                "{run}"
+            );
+        }
+
         let unknown: Vec<GitHubCommitStatus> = serde_json::from_value(json!([
             { "context": "ci/deploy", "state": "abandoned" },
         ]))
         .unwrap();
+        assert_eq!(fold(&[], &unknown, true), ChecksOutcome::Pending);
+    }
 
-        assert_eq!(fold(&finished, &[], true), ChecksOutcome::Success);
-        assert_eq!(fold(&unnamed, &[], true), ChecksOutcome::Pending);
-        assert_eq!(fold(&[], &unknown, true), ChecksOutcome::Success);
+    #[tokio::test]
+    async fn a_check_read_github_refuses_is_an_error_and_never_absent() {
+        let refusals: [(ResponseTemplate, Expected); 4] = [
+            (ResponseTemplate::new(401), |failure| {
+                matches!(failure, PullRequestError::AuthenticationFailed)
+            }),
+            (ResponseTemplate::new(403), |failure| {
+                matches!(failure, PullRequestError::Forbidden)
+            }),
+            (
+                ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
+                |failure| matches!(failure, PullRequestError::RateLimited),
+            ),
+            (ResponseTemplate::new(404), |failure| {
+                matches!(failure, PullRequestError::NotFound)
+            }),
+        ];
+
+        let sha = commit('a');
+        for (refused, other) in [(runs(&sha), statuses(&sha)), (statuses(&sha), runs(&sha))] {
+            for (refusal, expected) in &refusals {
+                let server = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path(refused.as_str()))
+                    .respond_with(refusal.clone())
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                answering(
+                    &server,
+                    other.clone(),
+                    json!({ "total_count": 0, "check_runs": [], "statuses": [] }),
+                )
+                .await;
+                let service = stand_in(&server).await;
+
+                let read = service
+                    .fetch_checks(&project(&service), &token(), &sha)
+                    .await;
+
+                assert!(read.as_ref().is_err_and(expected), "{refused}: {read:?}");
+            }
+        }
+    }
+
+    /// A check-runs page with no runs, padded to exactly `length` bytes with a
+    /// sentinel no error may repeat.
+    fn padded(length: usize) -> String {
+        let opening = r#"{"total_count":0,"check_runs":[],"padding":"RAW-SENTINEL"#;
+        let closing = r#""}"#;
+        let padding = "x".repeat(length - opening.len() - closing.len());
+        format!("{opening}{padding}{closing}")
+    }
+
+    #[tokio::test]
+    async fn a_check_runs_page_past_the_answer_bound_is_an_error_and_never_absent() {
+        let server = MockServer::start().await;
+        let sha = commit('f');
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(padded(MAXIMUM_ANSWER_BYTES + 1)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        answering(
+            &server,
+            statuses(&sha),
+            json!({ "total_count": 0, "statuses": [] }),
+        )
+        .await;
+        let service = stand_in(&server).await;
+
+        let read = service
+            .fetch_checks(&project(&service), &token(), &sha)
+            .await;
+
+        assert!(
+            matches!(read, Err(PullRequestError::GitHubApi(ref text)) if text == OVERSIZED),
+            "a page too long to read is not an empty one: {read:?}"
+        );
+        assert!(!format!("{read:?}").contains("RAW-SENTINEL"), "{read:?}");
+    }
+
+    #[tokio::test]
+    async fn a_commit_whose_only_run_is_stale_is_pending() {
+        let server = MockServer::start().await;
+        let sha = commit('e');
+        answering(
+            &server,
+            runs(&sha),
+            json!({
+                "total_count": 1,
+                "check_runs": [{ "name": "build", "status": "completed", "conclusion": "stale" }],
+            }),
+        )
+        .await;
+        answering(
+            &server,
+            statuses(&sha),
+            json!({ "total_count": 0, "statuses": [] }),
+        )
+        .await;
+
+        assert_eq!(
+            outcome(&server, &sha).await,
+            ChecksOutcome::Pending,
+            "a run GitHub marked stale never said it passed"
+        );
     }
 }

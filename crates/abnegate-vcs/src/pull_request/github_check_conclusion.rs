@@ -14,7 +14,8 @@ pub(super) enum GitHubCheckConclusion {
     StartupFailure,
     Success,
     TimedOut,
-    /// A conclusion this crate does not know yet, which fails nothing.
+    /// A conclusion this crate does not know yet, which fails nothing but is
+    /// no pass either, so it keeps the commit pending.
     #[serde(other)]
     Unknown,
 }

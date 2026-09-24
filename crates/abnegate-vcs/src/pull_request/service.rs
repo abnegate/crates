@@ -20,6 +20,7 @@ use crate::pull_request::origin::host_of;
 use crate::pull_request::repository_detail::RepositoryDetail;
 use crate::pull_request::tally;
 use abnegate_secret::SecretValue;
+use abnegate_secret::sanitize;
 use reqwest::Client;
 use reqwest::Method;
 use reqwest::RequestBuilder;
@@ -79,14 +80,29 @@ const RATE_LIMIT_REMAINING: &str = "x-ratelimit-remaining";
 /// The header GitHub's secondary rate limit says how long to wait in.
 const RETRY_AFTER: &str = "retry-after";
 
+/// What GitHub says of a spent rate limit on a 403 that carries no header
+/// saying so.
+const RATE_LIMIT: &str = "rate limit";
+
 /// Most of GitHub's own words carried into [`PullRequestError::GitHubApi`].
 const MAXIMUM_ERROR_BYTES: usize = 1024;
+
+/// What joins GitHub's words when several are carried on one line.
+const SEPARATOR: &str = "; ";
+
+/// Characters that end a line without being control characters.
+const LINE_BREAKS: [char; 2] = ['\u{2028}', '\u{2029}'];
 
 /// Most of an error body read for GitHub's words about it.
 const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
 
-/// Most of a successful answer read. A longer one is refused, never parsed in
-/// part.
+/// Most bytes of a successful answer read. A longer one is refused whole,
+/// never parsed in part.
+///
+/// The bound counts bytes, not characters. A character takes up to four bytes
+/// in UTF-8 and up to six as a JSON `\u` escape, so a page of a hundred
+/// comments at GitHub's limit of 65,536 characters each can outgrow it, and
+/// such a page is an error rather than a shorter list.
 const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 
 /// What an answer this crate cannot read is reported as, in place of the
@@ -95,6 +111,11 @@ const UNREADABLE: &str = "GitHub answered in a form this crate cannot read";
 
 /// What an answer longer than [`MAXIMUM_ANSWER_BYTES`] is reported as.
 const OVERSIZED: &str = "GitHub's answer was larger than this crate reads";
+
+/// What the answer to a request that is not a read is reported as when a
+/// redirect carried the request somewhere else.
+const REDIRECTED: &str =
+    "GitHub redirected a request that is not a read, so its answer is not to that request";
 
 /// What GitHub says when a pull request for the branch is already open.
 const ALREADY_EXISTS: &str = "A pull request already exists";
@@ -266,11 +287,11 @@ impl PullRequestService {
             draft,
         };
 
-        let response = self
-            .request(Method::POST, url, token, ACCEPT)
-            .json(&request)
-            .send()
-            .await?;
+        let response = sent(
+            self.request(Method::POST, url, token, ACCEPT)
+                .json(&request),
+        )
+        .await?;
 
         let status = response.status();
         if status.is_success() {
@@ -281,11 +302,7 @@ impl PullRequestService {
                 state: created.state,
             });
         }
-        if let Some(failure) = classified(status, response.headers()) {
-            return Err(failure);
-        }
-
-        let refusal = refusal_of(response).await;
+        let refusal = explained(response).await?;
         if status == StatusCode::UNPROCESSABLE_ENTITY && refusal.mentions(ALREADY_EXISTS) {
             return Err(PullRequestError::PullRequestAlreadyExists(head.clone()));
         }
@@ -342,11 +359,7 @@ impl PullRequestService {
 
     /// Send `request` and read its answer as `T`, or as the refusal it is.
     async fn exchange<T: DeserializeOwned>(&self, request: RequestBuilder) -> PullRequestResult<T> {
-        let response = request.send().await?;
-        if !response.status().is_success() {
-            return Err(refusal(response).await);
-        }
-        decode(response).await
+        decode(answered(request).await?).await
     }
 
     async fn get<T: DeserializeOwned>(
@@ -501,6 +514,34 @@ fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
         .build()?)
 }
 
+/// The answer to `request`, whatever its status, from where it was sent.
+///
+/// Following a redirect turns any request but a read into a GET of wherever
+/// the redirect points, or sends it on somewhere it was not addressed, so the
+/// answer to one that is not a GET, from an address other than the one it was
+/// sent to, is refused whatever it says.
+async fn sent(request: RequestBuilder) -> PullRequestResult<Response> {
+    let (client, request) = request.build_split();
+    let request = request?;
+    let read = request.method() == Method::GET;
+    let url = request.url().clone();
+    let response = client.execute(request).await?;
+    if !read && response.url() != &url {
+        return Err(PullRequestError::GitHubApi(REDIRECTED.to_string()));
+    }
+    Ok(response)
+}
+
+/// The successful answer to `request`, from where it was sent, or the refusal
+/// it is.
+async fn answered(request: RequestBuilder) -> PullRequestResult<Response> {
+    let response = sent(request).await?;
+    match response.status().is_success() {
+        true => Ok(response),
+        false => Err(refusal(response).await),
+    }
+}
+
 /// A successful answer read as `T`, from no more than
 /// [`MAXIMUM_ANSWER_BYTES`] of it. An answer that is longer, or is not the JSON
 /// expected, is reported in fixed words, because the parser's own message
@@ -551,16 +592,25 @@ fn classified(status: StatusCode, headers: &HeaderMap) -> Option<PullRequestErro
 /// A refusal no status explains, named by its status and GitHub's own words.
 fn unexpected(status: StatusCode, refusal: &GitHubRefusal) -> PullRequestError {
     let summary = refusal.summary();
+    let returned = returned(status);
     PullRequestError::GitHubApi(match summary.is_empty() {
-        true => format!("GitHub API returned {status}"),
-        false => format!("GitHub API returned {status}: {summary}"),
+        true => returned,
+        false => format!("{returned}: {summary}"),
     })
+}
+
+/// An answer named by its status alone.
+fn returned(status: StatusCode) -> String {
+    format!("GitHub API returned {status}")
 }
 
 /// The first `limit` bytes of an answer's body, read no further, and whether
 /// any of it remained unread.
 async fn read_prefix(mut response: Response, limit: usize) -> PullRequestResult<(Vec<u8>, bool)> {
-    let mut prefix = Vec::new();
+    let declared = response
+        .content_length()
+        .map_or(0, |length| usize::try_from(length).unwrap_or(usize::MAX));
+    let mut prefix = Vec::with_capacity(declared.min(limit));
     while let Some(chunk) = response.chunk().await? {
         let room = limit - prefix.len();
         if chunk.len() > room {
@@ -582,13 +632,35 @@ async fn refusal_of(response: Response) -> GitHubRefusal {
         .unwrap_or_default()
 }
 
-/// What an unsuccessful answer means: what its status says on its own, or
-/// else its status and GitHub's own words.
+/// What GitHub said in refusing, for a caller to read more into, unless the
+/// refusal means something on its own, which is then the error.
+///
+/// A 403 that carries no rate-limit header is read before it is called
+/// forbidden, because GitHub's secondary rate limit can say so only in words.
+async fn explained(response: Response) -> PullRequestResult<GitHubRefusal> {
+    match classified(response.status(), response.headers()) {
+        Some(PullRequestError::Forbidden) => Err(forbidden(&refusal_of(response).await)),
+        Some(failure) => Err(failure),
+        None => Ok(refusal_of(response).await),
+    }
+}
+
+/// What a 403 without a rate-limit header means: a spent rate limit when
+/// GitHub's words say so, and otherwise a token that may not do this.
+fn forbidden(refusal: &GitHubRefusal) -> PullRequestError {
+    match refusal.mentions(RATE_LIMIT) {
+        true => PullRequestError::RateLimited,
+        false => PullRequestError::Forbidden,
+    }
+}
+
+/// What an unsuccessful answer means: what it says on its own, or else its
+/// status and GitHub's own words.
 async fn refusal(response: Response) -> PullRequestError {
     let status = response.status();
-    match classified(status, response.headers()) {
-        Some(failure) => failure,
-        None => unexpected(status, &refusal_of(response).await),
+    match explained(response).await {
+        Ok(refusal) => unexpected(status, &refusal),
+        Err(failure) => failure,
     }
 }
 
@@ -597,11 +669,44 @@ pub(super) fn bounded(text: &str) -> &str {
     &text[..text.floor_char_boundary(MAXIMUM_ERROR_BYTES)]
 }
 
+/// GitHub's words on one line fit to carry in an error: each with any
+/// credential redacted, and terminal sequences, invisible formatting, control
+/// characters and line breaks removed, then trimmed, left out when nothing is
+/// left, joined, and cut to [`MAXIMUM_ERROR_BYTES`].
+pub(super) fn summarised<'a>(said: impl IntoIterator<Item = &'a str>) -> String {
+    let mut line = String::new();
+    for words in said {
+        if line.len() >= MAXIMUM_ERROR_BYTES {
+            break;
+        }
+        let cleaned = cleaned(words);
+        if cleaned.is_empty() {
+            continue;
+        }
+        if !line.is_empty() {
+            line.push_str(SEPARATOR);
+        }
+        line.push_str(&cleaned);
+    }
+    bounded(&line).to_string()
+}
+
+/// `words` sanitised, without control characters or line breaks, and
+/// trimmed.
+fn cleaned(words: &str) -> String {
+    let kept: String = sanitize(words)
+        .chars()
+        .filter(|character| !character.is_control() && !LINE_BREAKS.contains(character))
+        .collect();
+    kept.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pull_request::PullRequestState;
     use crate::pull_request::ReviewTally;
+    use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::seven;
@@ -665,29 +770,97 @@ mod tests {
 
     /// The response to a request sent to a server that answers once with
     /// `answer`, byte for byte.
-    async fn answered(answer: String) -> Response {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
+    ///
+    /// wiremock frames every body itself, so it can send neither a chunked
+    /// body nor one shorter than the length it declares; these tests write
+    /// the answer by hand instead.
+    async fn served(answer: String) -> Response {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port to listen on");
+        let address = listener
+            .local_addr()
+            .expect("the address the listener is bound to");
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
+            let (mut stream, _) = listener.accept().await.expect("the client to connect");
             let mut request = Vec::new();
             let mut buffer = [0; 1024];
             while !request.ends_with(b"\r\n\r\n") {
-                let read = stream.read(&mut buffer).await.unwrap();
+                let read = stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("the request to be readable");
                 if read == 0 {
                     break;
                 }
                 request.extend_from_slice(&buffer[..read]);
             }
-            stream.write_all(answer.as_bytes()).await.unwrap();
+            stream
+                .write_all(answer.as_bytes())
+                .await
+                .expect("the answer to be writable");
         });
 
         client(false, REQUEST_TIMEOUT)
-            .unwrap()
+            .expect("a client")
             .get(format!("http://{address}"))
             .send()
             .await
-            .unwrap()
+            .expect("an answer from the stand-in server")
+    }
+
+    /// Following a 301, 302 or 303 turns any other method into a GET and drops
+    /// its body; a 307 or 308 re-sends it somewhere it was not addressed.
+    /// Either way the answer is not to the request that was sent.
+    #[tokio::test]
+    async fn an_answer_a_request_that_is_not_a_read_was_redirected_to_is_refused() {
+        let server = MockServer::start().await;
+        for (target, status) in [("found", 200), ("missing", 404)] {
+            Mock::given(path(format!("/{target}")))
+                .respond_with(ResponseTemplate::new(status).set_body_json(serde_json::json!({})))
+                .mount(&server)
+                .await;
+        }
+        for redirect in [301, 302, 303, 307, 308] {
+            for target in ["found", "missing"] {
+                Mock::given(path(format!("/{redirect}/{target}")))
+                    .respond_with(
+                        ResponseTemplate::new(redirect)
+                            .insert_header("location", format!("{}/{target}", server.uri())),
+                    )
+                    .mount(&server)
+                    .await;
+            }
+        }
+        let client = client(false, REQUEST_TIMEOUT).unwrap();
+
+        for redirect in [301, 302, 303, 307, 308] {
+            for target in ["found", "missing"] {
+                let url = format!("{}/{redirect}/{target}", server.uri());
+                for changing in [Method::POST, Method::PUT, Method::DELETE] {
+                    let answer = answered(
+                        client
+                            .request(changing.clone(), &url)
+                            .json(&serde_json::json!({ "body": "sent once" })),
+                    )
+                    .await;
+
+                    assert!(
+                        matches!(answer, Err(PullRequestError::GitHubApi(ref text)) if text == REDIRECTED),
+                        "{changing} {redirect} to {target}: {answer:?}"
+                    );
+                }
+            }
+
+            let read = answered(client.get(format!("{}/{redirect}/found", server.uri()))).await;
+            assert!(read.is_ok(), "GET {redirect}: {read:?}");
+        }
+
+        for changing in [Method::POST, Method::PUT, Method::DELETE] {
+            let answer =
+                answered(client.request(changing.clone(), format!("{}/found", server.uri()))).await;
+            assert!(answer.is_ok(), "{changing} unredirected: {answer:?}");
+        }
     }
 
     #[test]
@@ -1051,27 +1224,38 @@ mod tests {
     /// token GitHub refused, and a 404 on opening is not a missing branch.
     #[tokio::test]
     async fn every_refusal_is_reported_as_what_it_is() {
-        for (response, expected) in [
-            (ResponseTemplate::new(401), "AuthenticationFailed"),
-            (ResponseTemplate::new(403), "Forbidden"),
+        let refusals: [(ResponseTemplate, Expected); 8] = [
+            (ResponseTemplate::new(401), |failure| {
+                matches!(failure, PullRequestError::AuthenticationFailed)
+            }),
+            (ResponseTemplate::new(403), |failure| {
+                matches!(failure, PullRequestError::Forbidden)
+            }),
             (
                 ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
-                "RateLimited",
+                |failure| matches!(failure, PullRequestError::RateLimited),
             ),
-            (ResponseTemplate::new(429), "RateLimited"),
+            (ResponseTemplate::new(429), |failure| {
+                matches!(failure, PullRequestError::RateLimited)
+            }),
             (
                 ResponseTemplate::new(403).insert_header("retry-after", "60"),
-                "RateLimited",
+                |failure| matches!(failure, PullRequestError::RateLimited),
             ),
-            (ResponseTemplate::new(404), "NotFound"),
+            (ResponseTemplate::new(404), |failure| {
+                matches!(failure, PullRequestError::NotFound)
+            }),
             (
                 ResponseTemplate::new(422).set_body_string(
                     "{\"message\":\"A pull request already exists for acme:feature.\"}",
                 ),
-                "PullRequestAlreadyExists",
+                |failure| matches!(failure, PullRequestError::PullRequestAlreadyExists(_)),
             ),
-            (ResponseTemplate::new(500), "GitHubApi"),
-        ] {
+            (ResponseTemplate::new(500), |failure| {
+                matches!(failure, PullRequestError::GitHubApi(_))
+            }),
+        ];
+        for (response, expected) in refusals {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/repos/acme/project/pulls"))
@@ -1094,10 +1278,43 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            assert!(
-                format!("{failure:?}").starts_with(expected),
-                "{expected}: {failure:?}"
-            );
+            assert!(expected(&failure), "{failure:?}");
+        }
+    }
+
+    /// GitHub's secondary rate limit can answer with a bare 403 that says so
+    /// only in words.
+    #[tokio::test]
+    async fn a_forbidden_answer_that_says_it_is_a_rate_limit_is_one() {
+        for (message, expected) in [
+            (
+                "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+                "RateLimited",
+            ),
+            (
+                "API rate limit exceeded for installation ID 1.",
+                "RateLimited",
+            ),
+            ("Resource not accessible by integration", "Forbidden"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/acme/project/pulls/7"))
+                .respond_with(
+                    ResponseTemplate::new(403)
+                        .set_body_json(serde_json::json!({ "message": message })),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .fetch_mergeability(&seven(&service), &token())
+                .await
+                .unwrap_err();
+
+            assert_eq!(format!("{failure:?}"), expected, "{message}");
         }
     }
 
@@ -1153,6 +1370,23 @@ mod tests {
         }
     }
 
+    /// A chunk that fills the prefix exactly does not end the read; the one
+    /// after it is what says more remained.
+    #[tokio::test]
+    async fn a_prefix_filled_on_a_chunk_boundary_still_says_more_remained() {
+        let limit = 100;
+        let filling = "a".repeat(limit);
+        let answer = format!(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n\
+             {limit:x}\r\n{filling}\r\n1\r\nb\r\n0\r\n\r\n"
+        );
+
+        let (prefix, more) = read_prefix(served(answer).await, limit).await.unwrap();
+
+        assert_eq!(prefix, filling.into_bytes());
+        assert!(more, "a byte followed the chunk that filled the prefix");
+    }
+
     /// However an answer is framed, it is read to its last byte while it fits,
     /// and one byte more is refused whole rather than parsed in part.
     #[tokio::test]
@@ -1160,13 +1394,13 @@ mod tests {
         let limit = 100;
         for frame in [declared, streamed] {
             let within: GitHubPullRequestDetail =
-                decode_within(answered(frame(&padded(limit))).await, limit)
+                decode_within(served(frame(&padded(limit))).await, limit)
                     .await
                     .unwrap();
             assert_eq!(within.mergeable, Some(true));
 
             let failure = decode_within::<GitHubPullRequestDetail>(
-                answered(frame(&padded(limit + 1))).await,
+                served(frame(&padded(limit + 1))).await,
                 limit,
             )
             .await
@@ -1187,7 +1421,7 @@ mod tests {
     #[tokio::test]
     async fn a_length_declared_past_the_bound_is_refused_before_the_body_is_read() {
         let response =
-            answered("HTTP/1.1 200 OK\r\ncontent-length: 1000000\r\n\r\n{}".to_string()).await;
+            served("HTTP/1.1 200 OK\r\ncontent-length: 1000000\r\n\r\n{}".to_string()).await;
 
         let failure = decode_within::<serde_json::Value>(response, 100)
             .await
@@ -1203,8 +1437,7 @@ mod tests {
     /// not one too long or one this crate cannot parse.
     #[tokio::test]
     async fn an_answer_cut_short_is_a_failed_read() {
-        let response =
-            answered("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n{}".to_string()).await;
+        let response = served("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n{}".to_string()).await;
 
         let failure = decode_within::<serde_json::Value>(response, 1024)
             .await

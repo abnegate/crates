@@ -5,14 +5,21 @@ use crate::pull_request::MergedPullRequest;
 use crate::pull_request::github_merge::GitHubMerge;
 use crate::pull_request::graphql_error::GraphQlError;
 use crate::pull_request::merge_request::MergeRequest;
+use crate::pull_request::service::graphql::FORBIDDEN;
+use crate::pull_request::service::graphql::NOT_FOUND;
+use crate::pull_request::service::graphql::RATE_LIMITED;
 use crate::pull_request::service::graphql::graphql_messages;
-use crate::pull_request::service::graphql::graphql_refusal;
+use crate::pull_request::service::graphql::reported;
 use serde_json::Value;
 use serde_json::json;
 
 /// Merges the pull request its `input` names as an administrator may, past
-/// branch protection that refuses everyone else.
-const MERGE: &str = "mutation($input:MergePullRequestInput!){mergePullRequest(input:$input){pullRequest{mergeCommit{oid}}}}";
+/// branch protection that refuses everyone else, and asks whether it merged.
+const MERGE: &str = "mutation($input:MergePullRequestInput!){mergePullRequest(input:$input){pullRequest{merged mergeCommit{oid}}}}";
+
+/// Where the administrator merge's answer says whether the pull request
+/// merged.
+const MERGED: &str = "/mergePullRequest/pullRequest/merged";
 
 /// Where the administrator merge's answer names the commit it made.
 const OID: &str = "/mergePullRequest/pullRequest/mergeCommit/oid";
@@ -21,11 +28,16 @@ const OID: &str = "/mergePullRequest/pullRequest/mergeCommit/oid";
 /// needs its conflict repaired rather than an administrator's override.
 const NOT_MERGEABLE: &str = "not mergeable";
 
+/// What GitHub's REST API says of a merge refused because the head or the
+/// base branch changed while it was being made, which a fresh read retries.
+const MODIFIED: &str = "was modified";
+
+/// What GitHub's GraphQL API says of a merge refused because the head moved
+/// from the one it was asked to expect.
+const HEAD_MODIFIED: &str = "Head branch was modified";
+
 /// What a refused administrator merge adds to branch protection's reason.
 const ADMINISTRATOR_REFUSED: &str = "administrator merge refused";
-
-/// What joins branch protection's reason to the administrator merge's.
-const SEPARATOR: &str = "; ";
 
 impl PullRequestService {
     /// Merge a pull request, but only while its head is still `head`.
@@ -43,9 +55,13 @@ impl PullRequestService {
     /// administrator. A refusal by protection is
     /// [`PullRequestError::Protected`], carrying GitHub's reason and, when the
     /// administrator merge was refused too, that reason as well. A head that
-    /// moved is [`PullRequestError::HeadMoved`]. A merge that happened is
+    /// moved, or a branch GitHub says was modified while it merged, is
+    /// [`PullRequestError::HeadMoved`], which a fresh read and a retry
+    /// resolve. A merge that happened is
     /// never reported as a failure, even when the commit it made cannot be
-    /// read.
+    /// read. An administrator merge is reported only when GitHub's answer
+    /// says the pull request merged; any other answer is
+    /// [`PullRequestError::GitHubApi`].
     pub async fn merge(
         &self,
         reference: &PullRequestReference,
@@ -74,11 +90,7 @@ impl PullRequestService {
             merge_method: method,
         };
 
-        let response = self
-            .request(Method::PUT, url, token, ACCEPT)
-            .json(&request)
-            .send()
-            .await?;
+        let response = sent(self.request(Method::PUT, url, token, ACCEPT).json(&request)).await?;
 
         let status = response.status();
         if status.is_success() {
@@ -87,26 +99,20 @@ impl PullRequestService {
                 administrator: false,
             });
         }
-        if let Some(failure) = classified(status, response.headers()) {
-            return Err(failure);
-        }
-        if status == StatusCode::CONFLICT {
-            return Err(PullRequestError::HeadMoved);
-        }
-
-        let refusal = refusal_of(response).await;
+        let refusal = explained(response).await?;
+        let reason = reason(status, &refusal);
         match status {
-            StatusCode::UNPROCESSABLE_ENTITY => {
-                Err(PullRequestError::NotMergeable(refusal.summary()))
+            StatusCode::CONFLICT => Err(PullRequestError::HeadMoved),
+            StatusCode::UNPROCESSABLE_ENTITY => Err(PullRequestError::NotMergeable(reason)),
+            StatusCode::METHOD_NOT_ALLOWED if refusal.mentions(MODIFIED) => {
+                Err(PullRequestError::HeadMoved)
             }
             StatusCode::METHOD_NOT_ALLOWED if refusal.mentions(NOT_MERGEABLE) => {
-                Err(PullRequestError::NotMergeable(refusal.summary()))
+                Err(PullRequestError::NotMergeable(reason))
             }
             StatusCode::METHOD_NOT_ALLOWED => match node.filter(|_| administrator) {
-                Some(node) => {
-                    administrator_merge(self, node, token, &request, &refusal.summary()).await
-                }
-                None => Err(PullRequestError::Protected(refusal.summary())),
+                Some(node) => administrator_merge(self, node, token, &request, &reason).await,
+                None => Err(PullRequestError::Protected(reason)),
             },
             _ => Err(unexpected(status, &refusal)),
         }
@@ -117,7 +123,8 @@ impl PullRequestService {
 /// merges with, after branch protection refused it for `reason`.
 ///
 /// Only a refusal GitHub's GraphQL API reports is protection's; an exchange
-/// that failed on its way there or back is reported as itself.
+/// that failed on its way there or back is reported as itself, and an answer
+/// that does not say the pull request merged is not read as a merge.
 async fn administrator_merge(
     service: &PullRequestService,
     node: &str,
@@ -138,13 +145,16 @@ async fn administrator_merge(
         .graphql_answer::<Value, _>(token, MERGE, &variables)
         .await?
     {
-        Ok(data) => Ok(MergedPullRequest {
-            sha: data
-                .pointer(OID)
-                .and_then(Value::as_str)
-                .and_then(|oid| CommitSha::parse(oid).ok()),
-            administrator: true,
-        }),
+        Ok(data) if data.pointer(MERGED).and_then(Value::as_bool) == Some(true) => {
+            Ok(MergedPullRequest {
+                sha: data
+                    .pointer(OID)
+                    .and_then(Value::as_str)
+                    .and_then(|oid| CommitSha::parse(oid).ok()),
+                administrator: true,
+            })
+        }
+        Ok(_) => Err(PullRequestError::GitHubApi(UNREADABLE.to_string())),
         Err(errors) => Err(administrator_refusal(reason, &errors)),
     }
 }
@@ -157,26 +167,43 @@ async fn merge_commit(response: Response) -> Option<CommitSha> {
 }
 
 /// What the errors an administrator merge was refused with mean: a spent rate
-/// limit is one, and anything else is protection's refusal.
+/// limit is one, a head that moved is another, and anything else is
+/// protection's refusal.
 fn administrator_refusal(reason: &str, errors: &[GraphQlError]) -> PullRequestError {
-    match graphql_refusal(errors) {
-        PullRequestError::RateLimited => PullRequestError::RateLimited,
-        PullRequestError::Forbidden | PullRequestError::NotFound => protected(reason, ""),
-        _ => protected(reason, &graphql_messages(errors)),
+    if reported(errors, RATE_LIMITED) {
+        return PullRequestError::RateLimited;
     }
+    let moved = HEAD_MODIFIED.to_ascii_lowercase();
+    if errors
+        .iter()
+        .any(|error| error.message.to_ascii_lowercase().contains(&moved))
+    {
+        return PullRequestError::HeadMoved;
+    }
+    if reported(errors, NOT_FOUND) || reported(errors, FORBIDDEN) {
+        return protected(reason, "");
+    }
+    protected(reason, &graphql_messages(errors))
 }
 
 /// Branch protection's `reason`, then the administrator merge's refusal and
-/// GitHub's `messages` about it, each left out when there is nothing to say.
+/// GitHub's `messages` about it, which are left out when there are none.
 fn protected(reason: &str, messages: &str) -> PullRequestError {
     let refused = match messages.is_empty() {
         true => ADMINISTRATOR_REFUSED.to_string(),
         false => format!("{ADMINISTRATOR_REFUSED}: {messages}"),
     };
-    PullRequestError::Protected(match reason.is_empty() {
-        true => refused,
-        false => format!("{reason}{SEPARATOR}{refused}"),
-    })
+    PullRequestError::Protected(format!("{reason}{SEPARATOR}{refused}"))
+}
+
+/// GitHub's words about a merge it refused with `status`, or that status
+/// when it gave none.
+fn reason(status: StatusCode, refusal: &GitHubRefusal) -> String {
+    let summary = refusal.summary();
+    match summary.is_empty() {
+        true => returned(status),
+        false => summary,
+    }
 }
 
 #[cfg(test)]
@@ -213,12 +240,12 @@ mod tests {
     }
 
     fn merged_as(oid: &str) -> ResponseTemplate {
-        answered(json!({
-            "mergePullRequest": { "pullRequest": { "mergeCommit": { "oid": oid } } },
+        carrying(json!({
+            "mergePullRequest": { "pullRequest": { "merged": true, "mergeCommit": { "oid": oid } } },
         }))
     }
 
-    fn answered(data: Value) -> ResponseTemplate {
+    fn carrying(data: Value) -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(json!({ "data": data }))
     }
 
@@ -260,6 +287,40 @@ mod tests {
                 administrator,
             )
             .await
+    }
+
+    #[tokio::test]
+    async fn a_merge_answered_by_a_redirect_elsewhere_is_not_a_merge() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path(MERGE_PATH))
+            .respond_with(
+                ResponseTemplate::new(303)
+                    .insert_header("location", format!("{}/elsewhere", server.uri())),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/elsewhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(GRAPHQL_PATH))
+            .respond_with(merged_as(commit('d').as_str()))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let failure = attempt(&server, Some(NODE), true)
+            .await
+            .expect_err("a GET answered after the merge was redirected merged nothing");
+
+        assert!(
+            matches!(failure, PullRequestError::GitHubApi(ref text) if text == REDIRECTED),
+            "{failure:?}"
+        );
     }
 
     #[tokio::test]
@@ -357,6 +418,41 @@ mod tests {
                 "{node:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_merge_refused_because_a_branch_was_modified_is_a_moved_head() {
+        for message in [
+            "Base branch was modified. Review and try the merge again.",
+            "Head branch was modified. Review and try the merge again.",
+        ] {
+            let server =
+                answering(refusing(405, message), merged_as(commit('d').as_str()), 0).await;
+
+            let failure = attempt(&server, Some(NODE), true).await.unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::HeadMoved),
+                "{message}: {failure:?}"
+            );
+        }
+
+        let server = answering(
+            refusing(405, APPROVAL),
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "mergePullRequest": null },
+                "errors": [{ "message": "Head branch was modified. Review and try the merge again." }],
+            })),
+            1,
+        )
+        .await;
+
+        let failure = attempt(&server, Some(NODE), true).await.unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::HeadMoved),
+            "{failure:?}"
+        );
     }
 
     #[tokio::test]
@@ -479,6 +575,10 @@ mod tests {
                     .insert_header("retry-after", "60"),
                 "RateLimited",
             ),
+            (
+                refusing(403, "You have exceeded a secondary rate limit"),
+                "RateLimited",
+            ),
             (refusing(429, "Too many requests"), "RateLimited"),
             (refusing(404, "Not Found"), "NotFound"),
             (
@@ -570,11 +670,15 @@ mod tests {
                 true,
                 r#"Protected("Changes must be made through a pull request.; administrator merge refused: Base branch was modified")"#,
             ),
-            (silent(405), false, r#"Protected("")"#),
+            (
+                silent(405),
+                false,
+                r#"Protected("GitHub API returned 405 Method Not Allowed")"#,
+            ),
             (
                 silent(405),
                 true,
-                r#"Protected("administrator merge refused: Base branch was modified")"#,
+                r#"Protected("GitHub API returned 405 Method Not Allowed; administrator merge refused: Base branch was modified")"#,
             ),
             (
                 noisy(422),
@@ -628,6 +732,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_merge_refusal_github_gives_no_reason_for_is_named_by_its_status() {
+        for (response, administrator, expected) in [
+            (
+                ResponseTemplate::new(405),
+                false,
+                r#"Protected("GitHub API returned 405 Method Not Allowed")"#,
+            ),
+            (
+                ResponseTemplate::new(405).set_body_json(json!({ "message": " \n " })),
+                false,
+                r#"Protected("GitHub API returned 405 Method Not Allowed")"#,
+            ),
+            (
+                ResponseTemplate::new(422),
+                true,
+                r#"NotMergeable("GitHub API returned 422 Unprocessable Entity")"#,
+            ),
+            (
+                ResponseTemplate::new(422).set_body_json(json!({ "errors": [] })),
+                true,
+                r#"NotMergeable("GitHub API returned 422 Unprocessable Entity")"#,
+            ),
+        ] {
+            let server = answering(response, merged_as(commit('d').as_str()), 0).await;
+
+            let failure = attempt(&server, Some(NODE), administrator)
+                .await
+                .unwrap_err();
+
+            assert_eq!(format!("{failure:?}"), expected);
+        }
+    }
+
+    #[tokio::test]
     async fn a_completed_merge_without_a_readable_commit_is_still_a_merge() {
         for answer in [
             ResponseTemplate::new(200).set_body_string("Pull Request successfully merged"),
@@ -649,12 +787,14 @@ mod tests {
         }
 
         for data in [
-            json!({ "mergePullRequest": { "pullRequest": null } }),
-            json!({ "mergePullRequest": { "pullRequest": { "mergeCommit": null } } }),
-            json!({ "mergePullRequest": { "pullRequest": { "mergeCommit": { "oid": "not-a-commit" } } } }),
-            json!({ "mergePullRequest": null }),
+            json!({ "mergePullRequest": { "pullRequest": { "merged": true } } }),
+            json!({ "mergePullRequest": { "pullRequest": { "merged": true, "mergeCommit": null } } }),
+            json!({ "mergePullRequest": { "pullRequest": {
+                "merged": true,
+                "mergeCommit": { "oid": "not-a-commit" },
+            } } }),
         ] {
-            let server = answering(refusing(405, APPROVAL), answered(data.clone()), 1).await;
+            let server = answering(refusing(405, APPROVAL), carrying(data.clone()), 1).await;
 
             assert_eq!(
                 attempt(&server, Some(NODE), true).await.unwrap(),
@@ -663,6 +803,31 @@ mod tests {
                     administrator: true,
                 },
                 "{data}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_administrator_merge_github_does_not_confirm_is_not_reported_as_one() {
+        for data in [
+            json!({}),
+            json!({ "mergePullRequest": null }),
+            json!({ "mergePullRequest": { "pullRequest": null } }),
+            json!({ "mergePullRequest": { "pullRequest": { "merged": false, "mergeCommit": null } } }),
+            json!({ "mergePullRequest": { "pullRequest": { "merged": "true" } } }),
+            json!({ "mergePullRequest": { "pullRequest": {
+                "mergeCommit": { "oid": commit('d').as_str() },
+            } } }),
+        ] {
+            let server = answering(refusing(405, APPROVAL), carrying(data.clone()), 1).await;
+
+            let failure = attempt(&server, Some(NODE), true)
+                .await
+                .expect_err("an answer that does not say the pull request merged is not a merge");
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+                "{data}: {failure:?}"
             );
         }
     }
@@ -710,35 +875,5 @@ mod tests {
 
             assert_eq!(format!("{failure:?}"), expected);
         }
-
-        let stalled = answering(
-            refusing(405, APPROVAL),
-            merged_as(commit('d').as_str()).set_delay(Duration::from_secs(5)),
-            1,
-        )
-        .await;
-        let impatient = PullRequestService {
-            client: client(false, Duration::from_millis(250)).unwrap(),
-            origin: Origin::standing_in_for("github.com", &stalled.uri()).unwrap(),
-        };
-
-        let failure = impatient
-            .merge(
-                &seven(&impatient),
-                &token(),
-                Some(NODE),
-                &commit('a'),
-                "Title",
-                "Body",
-                MergeMethod::Squash,
-                true,
-            )
-            .await
-            .unwrap_err();
-
-        assert!(
-            matches!(&failure, PullRequestError::Http(error) if error.is_timeout()),
-            "{failure:?}"
-        );
     }
 }

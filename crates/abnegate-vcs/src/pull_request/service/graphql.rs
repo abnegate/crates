@@ -5,23 +5,20 @@ use crate::pull_request::graphql_response::GraphQlResponse;
 use serde::Serialize;
 
 /// The kind GitHub's GraphQL API names a spent rate limit with.
-const RATE_LIMITED: &str = "RATE_LIMITED";
+pub(super) const RATE_LIMITED: &str = "RATE_LIMITED";
 
 /// The kind GitHub's GraphQL API names something missing, or not visible to
 /// the token, with.
-const NOT_FOUND: &str = "NOT_FOUND";
+pub(super) const NOT_FOUND: &str = "NOT_FOUND";
 
 /// The kind GitHub's GraphQL API names something the token may not do with.
-const FORBIDDEN: &str = "FORBIDDEN";
+pub(super) const FORBIDDEN: &str = "FORBIDDEN";
 
 /// What a refusal GitHub named no kind for says ahead of GitHub's own words.
 const REFUSED: &str = "GitHub's GraphQL API refused";
 
 /// What an answer that carried neither data nor errors is reported as.
 const NO_DATA: &str = "GitHub's GraphQL API answered with no data";
-
-/// What joins the messages of several GraphQL errors.
-const SEPARATOR: &str = "; ";
 
 impl PullRequestService {
     /// One GraphQL call, with any error GitHub reported turned into the
@@ -70,18 +67,13 @@ impl PullRequestService {
 /// anything missing, anything missing ahead of anything forbidden, and
 /// GitHub's own words for the rest.
 pub(super) fn graphql_refusal(errors: &[GraphQlError]) -> PullRequestError {
-    let reported = |kind: &str| {
-        errors
-            .iter()
-            .any(|error| error.kind.as_deref() == Some(kind))
-    };
-    if reported(RATE_LIMITED) {
+    if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
     }
-    if reported(NOT_FOUND) {
+    if reported(errors, NOT_FOUND) {
         return PullRequestError::NotFound;
     }
-    if reported(FORBIDDEN) {
+    if reported(errors, FORBIDDEN) {
         return PullRequestError::Forbidden;
     }
 
@@ -92,19 +84,17 @@ pub(super) fn graphql_refusal(errors: &[GraphQlError]) -> PullRequestError {
     PullRequestError::GitHubApi(format!("{REFUSED}: {messages}"))
 }
 
-/// Every message in a set of GraphQL errors, joined, with no control
-/// characters, and cut at 1 kB on a character boundary.
-pub(super) fn graphql_messages(errors: &[GraphQlError]) -> String {
-    let messages: String = errors
+/// Whether any of a set of GraphQL errors is of `kind`.
+pub(super) fn reported(errors: &[GraphQlError], kind: &str) -> bool {
+    errors
         .iter()
-        .map(|error| error.message.as_str())
-        .filter(|message| !message.is_empty())
-        .collect::<Vec<&str>>()
-        .join(SEPARATOR)
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect();
-    bounded(&messages).to_string()
+        .any(|error| error.kind.as_deref() == Some(kind))
+}
+
+/// Every message in a set of GraphQL errors, sanitised and joined on one
+/// line, and cut at 1 kB on a character boundary.
+pub(super) fn graphql_messages(errors: &[GraphQlError]) -> String {
+    summarised(errors.iter().map(|error| error.message.as_str()))
 }
 
 #[cfg(test)]
@@ -349,13 +339,37 @@ mod tests {
         assert!(!failure.contains("after"));
     }
 
+    fn failed(message: &str) -> GraphQlError {
+        GraphQlError {
+            message: message.to_string(),
+            kind: None,
+        }
+    }
+
     #[test]
     fn a_graphql_error_message_cannot_forge_a_log_line() {
-        let errors = [GraphQlError {
-            message: "denied\nINFO forged\r\u{1b}[0m".to_string(),
-            kind: None,
-        }];
+        let errors = [
+            failed("denied\nINFO forged\r\u{1b}[0m"),
+            failed("one\u{2028}two\u{2029}three"),
+            failed("a\u{202E}b\u{200B}c\u{2066}d"),
+            failed(concat!("rejected ghp_", "0123456789abcdefghij")),
+        ];
 
-        assert_eq!(graphql_messages(&errors), "deniedINFO forged[0m");
+        assert_eq!(
+            graphql_messages(&errors),
+            "deniedINFO forged; onetwothree; abcd; rejected [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn a_graphql_error_message_with_nothing_left_to_say_is_left_out() {
+        let errors = [
+            failed("\u{1}\u{7}"),
+            failed("  padded\t "),
+            failed("\t"),
+            failed(""),
+        ];
+
+        assert_eq!(graphql_messages(&errors), "padded");
     }
 }

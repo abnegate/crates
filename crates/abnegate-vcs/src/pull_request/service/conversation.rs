@@ -12,7 +12,9 @@ impl PullRequestService {
     /// their summaries, oldest first.
     ///
     /// Reads no further than the first thousand comments, so on a longer
-    /// conversation the newest are the ones left unread.
+    /// conversation the newest are the ones left unread. A page longer than
+    /// the 16 MiB this crate reads is [`PullRequestError::GitHubApi`], never
+    /// a partial or empty list.
     pub async fn fetch_issue_comments(
         &self,
         reference: &PullRequestReference,
@@ -39,6 +41,12 @@ impl PullRequestService {
 
     /// Comment on a pull request's conversation, which is how a review bot is
     /// asked to look again, and return the identifier GitHub gave the comment.
+    ///
+    /// An error can follow a comment GitHub accepted: an answer that names no
+    /// identifier, or one this crate cannot read or that is too long to, is
+    /// [`PullRequestError::GitHubApi`] although the comment was posted. A
+    /// caller that retries on an error may post it twice, so it should look
+    /// for the comment before posting again.
     pub async fn post_issue_comment(
         &self,
         reference: &PullRequestReference,
@@ -70,6 +78,12 @@ impl PullRequestService {
     ///
     /// A token that opened the pull request may only comment: GitHub refuses
     /// it an approval of, or a request for changes to, its own change.
+    ///
+    /// An error can follow a review GitHub accepted: an answer that names no
+    /// identifier, or one this crate cannot read or that is too long to, is
+    /// [`PullRequestError::GitHubApi`] although the review was submitted. A
+    /// caller that retries on an error may submit it twice, so it should look
+    /// for the review before submitting again.
     pub async fn submit_review(
         &self,
         reference: &PullRequestReference,
@@ -126,14 +140,11 @@ impl PullRequestService {
             "replies",
         ]);
 
-        let response = self
-            .request(Method::POST, url, token, ACCEPT)
-            .json(&CommentRequest { body })
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            return Err(refusal(response).await);
-        }
+        answered(
+            self.request(Method::POST, url, token, ACCEPT)
+                .json(&CommentRequest { body }),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -168,7 +179,7 @@ mod tests {
         }
     }
 
-    fn answered(comment: &IssueComment) -> Value {
+    fn described(comment: &IssueComment) -> Value {
         json!({
             "id": comment.id,
             "user": { "login": comment.author },
@@ -231,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn the_conversation_is_read_with_every_comment_s_author_and_link() {
         let server = MockServer::start().await;
-        let full: Vec<IssueComment> = (1..=PAGE_SIZE as u64)
+        let full: Vec<IssueComment> = (1..=u64::try_from(PAGE_SIZE).unwrap())
             .map(|id| written(id, "review-bot", &format!("Summary {id}")))
             .collect();
         let silent = written(101, "", "");
@@ -244,7 +255,7 @@ mod tests {
             .and(query_param("page", "1"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(full.iter().map(answered).collect::<Vec<Value>>()),
+                    .set_body_json(full.iter().map(described).collect::<Vec<Value>>()),
             )
             .expect(1)
             .mount(&server)
@@ -316,7 +327,7 @@ mod tests {
             .and(header("authorization", "Bearer token"))
             .and(header("accept", ACCEPT))
             .and(body_json(json!({ "body": "@review-bot review" })))
-            .respond_with(ResponseTemplate::new(201).set_body_json(answered(&posted)))
+            .respond_with(ResponseTemplate::new(201).set_body_json(described(&posted)))
             .expect(1)
             .mount(&server)
             .await;
@@ -372,6 +383,68 @@ mod tests {
                 assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_reply_to_a_comment_github_cannot_find_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/project/pulls/7/comments/42/replies"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "message": "Not Found",
+                "documentation_url": SENTINEL,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .reply_to_review_comment(&seven(&service), &token(), 42, "Addressed.")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::NotFound), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_comment_carries_github_s_words_and_not_its_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/project/issues/7/comments"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "message": "Validation Failed",
+                "errors": [{
+                    "resource": "IssueComment",
+                    "code": "custom",
+                    "field": "body",
+                    "message": "Body is too long (maximum is 65536 characters)",
+                }],
+                "documentation_url": SENTINEL,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .post_issue_comment(&seven(&service), &token(), "@review-bot review")
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                failure,
+                PullRequestError::GitHubApi(ref text)
+                    if text == "GitHub API returned 422 Unprocessable Entity: \
+                                Validation Failed; Body is too long (maximum is 65536 characters)"
+            ),
+            "{failure:?}"
+        );
+        assert!(
+            !format!("{failure} {failure:?}").contains(SENTINEL),
+            "{failure:?}"
+        );
     }
 
     #[tokio::test]

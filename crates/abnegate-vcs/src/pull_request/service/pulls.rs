@@ -39,7 +39,8 @@ impl PullRequestService {
     ///
     /// Files are read a hundred at a time for at most ten pages, so a pull
     /// request that changes more than a thousand files is listed only that
-    /// far.
+    /// far. A page longer than the 16 MiB this crate reads is
+    /// [`PullRequestError::GitHubApi`], never a partial or empty list.
     pub async fn fetch_files(
         &self,
         reference: &PullRequestReference,

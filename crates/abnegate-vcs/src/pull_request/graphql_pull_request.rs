@@ -1,9 +1,11 @@
+use crate::pull_request::graphql_connection::GraphQlConnection;
+use crate::pull_request::graphql_review_thread::GraphQlReviewThread;
 use serde::Deserialize;
 
-/// The pull request a GraphQL query asked a repository for, which GitHub
-/// leaves null when the repository has no such pull request.
+/// A pull request in a GraphQL answer, holding one page of its review
+/// threads.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct GraphQlPullRequest<T> {
-    pub(super) pull_request: Option<T>,
+pub(super) struct GraphQlPullRequest {
+    pub(super) review_threads: GraphQlConnection<GraphQlReviewThread>,
 }

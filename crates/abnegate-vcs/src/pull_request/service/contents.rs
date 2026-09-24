@@ -82,15 +82,6 @@ impl PullRequestService {
     }
 }
 
-/// The answer to `request`, or the refusal it is.
-async fn answered(request: RequestBuilder) -> PullRequestResult<Response> {
-    let response = request.send().await?;
-    match response.status().is_success() {
-        true => Ok(response),
-        false => Err(refusal(response).await),
-    }
-}
-
 /// Whether an answer's `Content-Type` says it describes a directory's entries
 /// rather than holding a file's bytes.
 fn listing(headers: &HeaderMap) -> bool {
