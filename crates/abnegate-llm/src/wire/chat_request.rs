@@ -23,8 +23,9 @@ pub struct ChatRequest<'a> {
     pub tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
+    /// The most tokens the answer may use. Sent as `max_tokens`.
+    #[serde(rename = "max_tokens", skip_serializing_if = "Option::is_none")]
+    pub maximum_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,7 +89,7 @@ mod tests {
                 tools: None,
                 tool_choice: None,
                 temperature: None,
-                max_tokens: None,
+                maximum_tokens: None,
                 stream: None,
                 stop: None,
                 response_format: format,
@@ -135,7 +136,7 @@ mod tests {
             tools: None,
             tool_choice: None,
             temperature: Some(0.7),
-            max_tokens: Some(1000),
+            maximum_tokens: Some(1000),
             stream: Some(false),
             stop: None,
             response_format: None,
@@ -148,6 +149,27 @@ mod tests {
     }
 
     #[test]
+    fn the_answer_limit_is_sent_as_max_tokens() {
+        let messages = [Message::user("Hello")];
+        let request = ChatRequest {
+            model: "gpt-4",
+            messages: &messages,
+            tools: None,
+            tool_choice: None,
+            temperature: None,
+            maximum_tokens: Some(1000),
+            stream: None,
+            stop: None,
+            response_format: None,
+        };
+
+        let body = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(body["max_tokens"], 1000);
+        assert!(body.get("maximum_tokens").is_none(), "{body}");
+    }
+
+    #[test]
     fn unset_options_are_omitted_rather_than_sent_as_null() {
         let messages = [Message::user("Hello")];
         let request = ChatRequest {
@@ -156,7 +178,7 @@ mod tests {
             tools: None,
             tool_choice: None,
             temperature: None,
-            max_tokens: None,
+            maximum_tokens: None,
             stream: None,
             stop: None,
             response_format: None,
@@ -184,7 +206,7 @@ mod tests {
             tools: Some(&tools),
             tool_choice: Some(ToolChoice::auto()),
             temperature: Some(0.5),
-            max_tokens: Some(2048),
+            maximum_tokens: Some(2048),
             stream: Some(false),
             stop: None,
             response_format: None,
@@ -210,7 +232,7 @@ mod tests {
             tools: None,
             tool_choice: None,
             temperature: None,
-            max_tokens: None,
+            maximum_tokens: None,
             stream: None,
             stop: None,
             response_format: None,

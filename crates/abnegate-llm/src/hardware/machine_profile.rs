@@ -154,7 +154,7 @@ impl MachineProfile {
     /// Maximum VRAM available for concurrent model loading.
     /// For discrete GPUs only VRAM counts. For unified memory the
     /// full pool is available but we reserve 20% for the OS.
-    pub fn max_concurrent_vram(&self) -> f64 {
+    pub fn maximum_concurrent_vram(&self) -> f64 {
         if self.unified_memory {
             self.gpu_vram_gb * 0.80
         } else {
@@ -1437,10 +1437,10 @@ mod tests {
     #[test]
     fn unified_memory_reserves_a_fifth_for_the_operating_system() {
         let unified = MachineProfile::from_preset("m4-max-64").unwrap();
-        assert!((unified.max_concurrent_vram() - 64.0 * 0.80).abs() < f64::EPSILON);
+        assert!((unified.maximum_concurrent_vram() - 64.0 * 0.80).abs() < f64::EPSILON);
 
         let discrete = MachineProfile::from_preset("5900x-3080ti").unwrap();
-        assert!((discrete.max_concurrent_vram() - 12.0).abs() < f64::EPSILON);
+        assert!((discrete.maximum_concurrent_vram() - 12.0).abs() < f64::EPSILON);
     }
 
     #[test]

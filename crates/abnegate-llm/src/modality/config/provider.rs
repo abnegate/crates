@@ -75,7 +75,7 @@ impl ProviderConfig {
             strategy.parse().unwrap_or_else(|_| {
                 if strategy.starts_with(BUDGET_PREFIX) {
                     CostStrategy::Budget {
-                        max_usd: DEFAULT_BUDGET_USD,
+                        maximum_usd: DEFAULT_BUDGET_USD,
                     }
                 } else {
                     CostStrategy::BestValue
@@ -220,8 +220,8 @@ mod tests {
         config.cost_strategy = Some("budget:25.50".into());
 
         match config.parse_cost_strategy().unwrap() {
-            CostStrategy::Budget { max_usd } => {
-                assert!((max_usd - 25.50).abs() < f64::EPSILON);
+            CostStrategy::Budget { maximum_usd } => {
+                assert!((maximum_usd - 25.50).abs() < f64::EPSILON);
             }
             other => panic!("expected Budget, got {other:?}"),
         }
@@ -236,7 +236,7 @@ mod tests {
             assert_eq!(
                 config.parse_cost_strategy(),
                 Some(CostStrategy::Budget {
-                    max_usd: DEFAULT_BUDGET_USD
+                    maximum_usd: DEFAULT_BUDGET_USD
                 }),
                 "{budget}"
             );
@@ -249,8 +249,8 @@ mod tests {
         config.cost_strategy = Some("budget:lots".into());
 
         match config.parse_cost_strategy().unwrap() {
-            CostStrategy::Budget { max_usd } => {
-                assert!((max_usd - DEFAULT_BUDGET_USD).abs() < f64::EPSILON);
+            CostStrategy::Budget { maximum_usd } => {
+                assert!((maximum_usd - DEFAULT_BUDGET_USD).abs() < f64::EPSILON);
             }
             other => panic!("expected Budget, got {other:?}"),
         }

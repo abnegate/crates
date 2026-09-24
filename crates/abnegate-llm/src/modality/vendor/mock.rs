@@ -15,8 +15,8 @@ use crate::modality::{
 };
 use crate::provider::ProviderError;
 
-const MAX_CONTEXT_TOKENS: u32 = 100_000;
-const MAX_KEY_CHARACTERS: usize = 60;
+const MAXIMUM_CONTEXT_TOKENS: u32 = 100_000;
+const MAXIMUM_KEY_CHARACTERS: usize = 60;
 
 /// Answers keyed by the schema or prompt they belong to.
 pub struct MockProvider {
@@ -109,7 +109,7 @@ fn slug(text: &str) -> String {
     let mut last_dash = true;
     let mut previous_was_lower = false;
 
-    for character in text.chars().take(MAX_KEY_CHARACTERS) {
+    for character in text.chars().take(MAXIMUM_KEY_CHARACTERS) {
         if character.is_ascii_alphanumeric() {
             if character.is_ascii_uppercase() && previous_was_lower && !last_dash {
                 out.push('-');
@@ -139,8 +139,8 @@ impl TextProvider for MockProvider {
         true
     }
 
-    fn max_context_tokens(&self) -> u32 {
-        MAX_CONTEXT_TOKENS
+    fn maximum_context_tokens(&self) -> u32 {
+        MAXIMUM_CONTEXT_TOKENS
     }
 
     async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
@@ -196,7 +196,7 @@ mod tests {
             system_prompt: "You are the StoryAnalyst.".into(),
             user_prompt: "Analyse this.".into(),
             temperature: 0.0,
-            max_tokens: 1024,
+            maximum_tokens: 1024,
             response_format: Some(ResponseFormat::Json {
                 schema: Some(serde_json::json!({ "title": title })),
                 strict: false,
@@ -335,6 +335,6 @@ mod tests {
         let provider = MockProvider::new(MISSING);
         assert_eq!(provider.name(), "mock");
         assert!(provider.supports_structured_output());
-        assert_eq!(provider.max_context_tokens(), MAX_CONTEXT_TOKENS);
+        assert_eq!(provider.maximum_context_tokens(), MAXIMUM_CONTEXT_TOKENS);
     }
 }

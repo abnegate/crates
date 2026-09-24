@@ -1,5 +1,5 @@
 use crate::catalog::medium_filter::ModelMediumFilter;
-use crate::catalog::page::MAX_PAGE_SIZE;
+use crate::catalog::page::MAXIMUM_PAGE_SIZE;
 use crate::catalog::size_filter::ModelSizeFilter;
 use crate::catalog::sort::ModelSort;
 
@@ -18,10 +18,10 @@ pub struct BrowseQuery<'a> {
 }
 
 impl BrowseQuery<'_> {
-    /// `limit` held to `1..=MAX_PAGE_SIZE`: a page of none would name its own
+    /// `limit` held to `1..=MAXIMUM_PAGE_SIZE`: a page of none would name its own
     /// cursor as the next one, and a caller following it would never finish.
     pub fn page_size(&self) -> usize {
-        self.limit.clamp(1, MAX_PAGE_SIZE)
+        self.limit.clamp(1, MAXIMUM_PAGE_SIZE)
     }
 }
 
@@ -45,6 +45,6 @@ mod tests {
     fn a_page_size_is_held_between_one_and_the_largest_page() {
         assert_eq!(with_limit(0).page_size(), 1);
         assert_eq!(with_limit(20).page_size(), 20);
-        assert_eq!(with_limit(5_000).page_size(), MAX_PAGE_SIZE);
+        assert_eq!(with_limit(5_000).page_size(), MAXIMUM_PAGE_SIZE);
     }
 }

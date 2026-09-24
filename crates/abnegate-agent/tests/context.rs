@@ -90,7 +90,7 @@ async fn provider(
     });
     Provider {
         client: LlmClient::new(
-            LlmConfig::new(format!("http://{address}/v1"), "test", "").with_max_tokens(1024),
+            LlmConfig::new(format!("http://{address}/v1"), "test", "").with_maximum_tokens(1024),
         ),
         requests,
         task,

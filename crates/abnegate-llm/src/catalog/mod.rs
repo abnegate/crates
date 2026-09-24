@@ -65,7 +65,7 @@ pub use ollama::OllamaProvider;
 pub use openrouter::DEFAULT_OPENROUTER_MODELS_URL;
 pub use openrouter::OpenRouterProvider;
 pub use page::DEFAULT_PAGE_SIZE;
-pub use page::MAX_PAGE_SIZE;
+pub use page::MAXIMUM_PAGE_SIZE;
 pub use page::ModelPage;
 pub use parse::extract_model_family;
 pub use parse::extract_parameter_size;

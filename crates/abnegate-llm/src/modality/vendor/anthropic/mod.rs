@@ -25,7 +25,7 @@ use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://api.anthropic.com";
 const DEFAULT_MODEL: &str = "claude-opus-5";
-const MAX_CONTEXT_TOKENS: u32 = 200_000;
+const MAXIMUM_CONTEXT_TOKENS: u32 = 200_000;
 const NAME: &str = "anthropic";
 const TOOL: &str = "structured_output";
 const VERSION: &str = "2023-06-01";
@@ -88,7 +88,7 @@ impl AnthropicProvider {
     pub fn build_request_body(&self, request: &TextRequest) -> serde_json::Value {
         serde_json::json!({
             "model": self.model,
-            "max_tokens": request.max_tokens,
+            "max_tokens": request.maximum_tokens,
             "system": request.system_prompt,
             "messages": [
                 { "role": "user", "content": request.user_prompt }
@@ -303,8 +303,8 @@ impl TextProvider for AnthropicProvider {
         true
     }
 
-    fn max_context_tokens(&self) -> u32 {
-        MAX_CONTEXT_TOKENS
+    fn maximum_context_tokens(&self) -> u32 {
+        MAXIMUM_CONTEXT_TOKENS
     }
 
     async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
@@ -336,7 +336,7 @@ impl TextProvider for AnthropicProvider {
 
         let body = serde_json::json!({
             "model": self.model,
-            "max_tokens": request.max_tokens,
+            "max_tokens": request.maximum_tokens,
             "system": request.system_prompt,
             "messages": [
                 { "role": "user", "content": request.user_prompt }
@@ -427,7 +427,7 @@ mod tests {
             system_prompt: "You are a helpful assistant.".into(),
             user_prompt: "Hello, world!".into(),
             temperature: 0.7,
-            max_tokens: 1024,
+            maximum_tokens: 1024,
             response_format: None,
             context: None,
         };
@@ -459,7 +459,7 @@ mod tests {
     fn the_extremes_of_a_request_survive_the_body() {
         let mut request = TextRequest::new("precise", "classify this");
         request.temperature = 0.0;
-        request.max_tokens = 200_000;
+        request.maximum_tokens = 200_000;
 
         let body = provider().build_request_body(&request);
 
@@ -515,7 +515,7 @@ mod tests {
         let provider = provider();
         assert_eq!(provider.name(), "anthropic");
         assert!(provider.supports_structured_output());
-        assert_eq!(provider.max_context_tokens(), MAX_CONTEXT_TOKENS);
+        assert_eq!(provider.maximum_context_tokens(), MAXIMUM_CONTEXT_TOKENS);
     }
 
     #[test]

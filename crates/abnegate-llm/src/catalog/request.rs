@@ -1,6 +1,6 @@
 use crate::catalog::medium_filter::ModelMediumFilter;
 use crate::catalog::page::DEFAULT_PAGE_SIZE;
-use crate::catalog::page::MAX_PAGE_SIZE;
+use crate::catalog::page::MAXIMUM_PAGE_SIZE;
 use crate::catalog::query::BrowseQuery;
 use crate::catalog::size_filter::ModelSizeFilter;
 use crate::catalog::sort::ModelSort;
@@ -31,11 +31,11 @@ pub struct BrowseRequest {
 }
 
 impl BrowseRequest {
-    /// The page size asked for, held to `1..=MAX_PAGE_SIZE`.
+    /// The page size asked for, held to `1..=MAXIMUM_PAGE_SIZE`.
     pub fn limit(&self) -> usize {
         self.limit
             .unwrap_or(DEFAULT_PAGE_SIZE)
-            .clamp(1, MAX_PAGE_SIZE)
+            .clamp(1, MAXIMUM_PAGE_SIZE)
     }
 
     pub fn to_browse_query(&self) -> BrowseQuery<'_> {
@@ -115,7 +115,7 @@ mod tests {
                 ..Default::default()
             }
             .limit(),
-            MAX_PAGE_SIZE
+            MAXIMUM_PAGE_SIZE
         );
     }
 

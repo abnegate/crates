@@ -7,7 +7,9 @@ pub struct TextRequest {
     pub system_prompt: String,
     pub user_prompt: String,
     pub temperature: f64,
-    pub max_tokens: u32,
+    /// The most tokens the answer may use. Serialised as `max_tokens`.
+    #[serde(rename = "max_tokens")]
+    pub maximum_tokens: u32,
     pub response_format: Option<ResponseFormat>,
     pub context: Option<serde_json::Value>,
 }
@@ -18,7 +20,7 @@ impl TextRequest {
             system_prompt: system_prompt.into(),
             user_prompt: user_prompt.into(),
             temperature: 0.7,
-            max_tokens: 4096,
+            maximum_tokens: 4096,
             response_format: None,
             context: None,
         }
@@ -35,9 +37,20 @@ mod tests {
         assert_eq!(request.system_prompt, "system");
         assert_eq!(request.user_prompt, "user");
         assert!((request.temperature - 0.7).abs() < f64::EPSILON);
-        assert_eq!(request.max_tokens, 4096);
+        assert_eq!(request.maximum_tokens, 4096);
         assert!(request.response_format.is_none());
         assert!(request.context.is_none());
+    }
+
+    #[test]
+    fn the_answer_limit_keeps_its_serialised_name() {
+        let body = serde_json::to_value(TextRequest::new("system", "user")).unwrap();
+        assert_eq!(body["max_tokens"], 4096);
+        assert!(body.get("maximum_tokens").is_none(), "{body}");
+
+        let saved = r#"{"system_prompt":"s","user_prompt":"u","temperature":0.2,"max_tokens":512,"response_format":null,"context":null}"#;
+        let request: TextRequest = serde_json::from_str(saved).unwrap();
+        assert_eq!(request.maximum_tokens, 512);
     }
 
     #[test]
@@ -46,7 +59,7 @@ mod tests {
             system_prompt: "System prompt here".into(),
             user_prompt: "User prompt here".into(),
             temperature: 0.3,
-            max_tokens: 2000,
+            maximum_tokens: 2000,
             response_format: Some(ResponseFormat::Json {
                 schema: None,
                 strict: false,
@@ -60,7 +73,7 @@ mod tests {
         assert_eq!(roundtrip.system_prompt, "System prompt here");
         assert_eq!(roundtrip.user_prompt, "User prompt here");
         assert!((roundtrip.temperature - 0.3).abs() < f64::EPSILON);
-        assert_eq!(roundtrip.max_tokens, 2000);
+        assert_eq!(roundtrip.maximum_tokens, 2000);
         assert!(roundtrip.response_format.is_some());
         assert!(roundtrip.context.is_some());
     }

@@ -32,7 +32,7 @@ fn request<'a>(model: &'a str, messages: &'a [Message]) -> ChatRequest<'a> {
         tools: None,
         tool_choice: None,
         temperature: None,
-        max_tokens: Some(4096),
+        maximum_tokens: Some(4096),
         stream: None,
         stop: None,
         response_format: None,
@@ -77,14 +77,14 @@ fn a_client_exposes_the_config_it_was_built_from() {
         "sk-custom-key",
     )
     .with_temperature(0.3)
-    .with_max_tokens(8192);
+    .with_maximum_tokens(8192);
     let client = LlmClient::new(config.clone());
 
     assert_eq!(client.config().base_url, config.base_url);
     assert_eq!(client.config().api_key.expose(), "sk-custom-key");
     assert_eq!(client.config().default_model, "gpt-4-turbo");
     assert!((client.config().temperature - 0.3).abs() < f32::EPSILON);
-    assert_eq!(client.config().max_tokens, 8192);
+    assert_eq!(client.config().maximum_tokens, 8192);
 }
 
 #[test]

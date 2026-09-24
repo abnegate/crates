@@ -22,8 +22,8 @@ const DEFAULT_MODEL: &str = "gpt-5.4";
 const EMBEDDING_DIMENSIONS: u32 = 768;
 const EMBEDDING_MODEL: &str = "text-embedding-3-small";
 const IMAGE_MODEL: &str = "dall-e-3";
-const MAX_CONTEXT_TOKENS: u32 = 128_000;
-const MAX_RESOLUTION: (u32, u32) = (1792, 1024);
+const MAXIMUM_CONTEXT_TOKENS: u32 = 128_000;
+const MAXIMUM_RESOLUTION: (u32, u32) = (1792, 1024);
 const TRANSCRIPTION_MODEL: &str = "whisper-1";
 /// Model families that reason before answering. OpenAI rejects `max_tokens`
 /// and any `temperature` but the default for these.
@@ -96,9 +96,9 @@ impl OpenAiProvider {
         });
 
         if is_reasoning_model(&self.model) {
-            body["max_completion_tokens"] = request.max_tokens.into();
+            body["max_completion_tokens"] = request.maximum_tokens.into();
         } else {
-            body["max_tokens"] = request.max_tokens.into();
+            body["max_tokens"] = request.maximum_tokens.into();
             body["temperature"] = request.temperature.into();
         }
 
@@ -238,8 +238,8 @@ impl TextProvider for OpenAiProvider {
         true
     }
 
-    fn max_context_tokens(&self) -> u32 {
-        MAX_CONTEXT_TOKENS
+    fn maximum_context_tokens(&self) -> u32 {
+        MAXIMUM_CONTEXT_TOKENS
     }
 
     async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
@@ -276,8 +276,8 @@ impl ImageProvider for OpenAiProvider {
         vec!["vivid".into(), "natural".into()]
     }
 
-    fn max_resolution(&self) -> (u32, u32) {
-        MAX_RESOLUTION
+    fn maximum_resolution(&self) -> (u32, u32) {
+        MAXIMUM_RESOLUTION
     }
 
     async fn generate(&self, request: &ImageRequest) -> Result<ImageResponse, ProviderError> {
@@ -458,7 +458,7 @@ mod tests {
             system_prompt: "You are a coding assistant.".into(),
             user_prompt: "Write hello world in Rust.".into(),
             temperature: 0.5,
-            max_tokens: 2048,
+            maximum_tokens: 2048,
             response_format: None,
             context: None,
         }
@@ -748,8 +748,8 @@ mod tests {
         assert_eq!(EmbeddingProvider::name(&provider), "openai");
         assert_eq!(TranscriptionProvider::name(&provider), "openai");
         assert!(provider.supports_structured_output());
-        assert_eq!(provider.max_context_tokens(), MAX_CONTEXT_TOKENS);
-        assert_eq!(provider.max_resolution(), MAX_RESOLUTION);
+        assert_eq!(provider.maximum_context_tokens(), MAXIMUM_CONTEXT_TOKENS);
+        assert_eq!(provider.maximum_resolution(), MAXIMUM_RESOLUTION);
         assert_eq!(provider.dimensions(), EMBEDDING_DIMENSIONS);
         let styles = provider.supported_styles();
         assert!(styles.contains(&"vivid".to_string()));

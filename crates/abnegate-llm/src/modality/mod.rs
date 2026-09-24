@@ -105,7 +105,7 @@ mod tests {
             false
         }
 
-        fn max_context_tokens(&self) -> u32 {
+        fn maximum_context_tokens(&self) -> u32 {
             0
         }
 
@@ -141,7 +141,7 @@ mod tests {
             Vec::new()
         }
 
-        fn max_resolution(&self) -> (u32, u32) {
+        fn maximum_resolution(&self) -> (u32, u32) {
             (0, 0)
         }
 
@@ -172,7 +172,7 @@ mod tests {
             Vec::new()
         }
 
-        fn max_duration_seconds(&self) -> f64 {
+        fn maximum_duration_seconds(&self) -> f64 {
             0.0
         }
 

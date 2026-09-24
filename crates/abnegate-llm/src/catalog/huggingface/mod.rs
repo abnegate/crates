@@ -14,7 +14,7 @@ use crate::catalog::huggingface::model::HuggingFaceModel;
 use crate::catalog::huggingface::sibling::HuggingFaceSibling;
 use crate::catalog::huggingface::variant::GgufVariant;
 use crate::catalog::medium_filter::ModelMediumFilter;
-use crate::catalog::page::MAX_PAGE_SIZE;
+use crate::catalog::page::MAXIMUM_PAGE_SIZE;
 use crate::catalog::page::ModelPage;
 use crate::catalog::parse::download_parameter_billions;
 use crate::catalog::parse::extract_all_parameter_sizes;
@@ -53,7 +53,7 @@ pub const DEFAULT_HUGGINGFACE_MODELS_URL: &str = "https://huggingface.co/api/mod
 /// Pages fetched when HuggingFace cannot apply the requested sort natively.
 const WINDOW_PAGES: usize = 5;
 /// Extra scan budget for size filters, which can skip most downloads-ranked rows.
-const FILTER_MAX_PAGES: usize = 15;
+const FILTER_MAXIMUM_PAGES: usize = 15;
 
 static GGUF_SHARD_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)-\d{5}-of-\d{5}$").expect("gguf shard pattern"));
@@ -160,7 +160,7 @@ impl ModelProvider for HuggingFaceProvider {
         // refine it, then paginate with an offset cursor.
         let offset = parse_cursor_offset(options.cursor, page_size).unwrap_or(0);
         let needs_sorted_window = uses_local_sort(options.sort);
-        let max_pages = window_pages(needs_sorted_window);
+        let maximum_pages = window_pages(needs_sorted_window);
         let mut accumulated = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pages = 0;
@@ -171,14 +171,14 @@ impl ModelProvider for HuggingFaceProvider {
                 &self.client,
                 &options,
                 cursor.as_deref(),
-                MAX_PAGE_SIZE,
+                MAXIMUM_PAGE_SIZE,
             )
             .await?;
             pages += 1;
             accumulated.extend(page);
             cursor = next;
 
-            if cursor.is_none() || pages >= max_pages {
+            if cursor.is_none() || pages >= maximum_pages {
                 break;
             }
 
@@ -196,7 +196,7 @@ impl ModelProvider for HuggingFaceProvider {
             page.next_cursor,
             cursor.is_some(),
             needs_sorted_window,
-            pages >= max_pages,
+            pages >= maximum_pages,
             offset,
             page.models.len(),
         );
@@ -208,7 +208,7 @@ fn window_pages(needs_sorted_window: bool) -> usize {
     if needs_sorted_window {
         WINDOW_PAGES
     } else {
-        FILTER_MAX_PAGES
+        FILTER_MAXIMUM_PAGES
     }
 }
 
@@ -1106,7 +1106,7 @@ mod tests {
         assert!(!uses_local_sort(ModelSort::DownloadsDescending));
         assert!(!uses_local_sort(ModelSort::DownloadsAscending));
         assert_eq!(window_pages(true), WINDOW_PAGES);
-        assert_eq!(window_pages(false), FILTER_MAX_PAGES);
+        assert_eq!(window_pages(false), FILTER_MAXIMUM_PAGES);
     }
 
     #[test]

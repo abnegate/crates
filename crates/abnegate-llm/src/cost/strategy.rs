@@ -14,7 +14,13 @@ pub enum CostStrategy {
     CheapestPossible,
     BestQuality,
     BestValue,
-    Budget { max_usd: f64 },
+    /// Best value while the whole batch costs at most `maximum_usd` dollars;
+    /// past that, each task gets the best model the rest of the budget
+    /// affords, or else the cheapest local one. Serialised as `max_usd`.
+    Budget {
+        #[serde(rename = "max_usd")]
+        maximum_usd: f64,
+    },
     LocalFirst,
 }
 
@@ -38,7 +44,9 @@ impl FromStr for CostStrategy {
             .and_then(|amount| amount.trim().parse::<f64>().ok())
             .filter(|amount| amount.is_finite() && *amount >= 0.0)
             .ok_or_else(|| ParseError::new(KIND, value))?;
-        Ok(Self::Budget { max_usd: budget })
+        Ok(Self::Budget {
+            maximum_usd: budget,
+        })
     }
 }
 
@@ -52,7 +60,7 @@ mod tests {
             CostStrategy::CheapestPossible,
             CostStrategy::BestQuality,
             CostStrategy::BestValue,
-            CostStrategy::Budget { max_usd: 5.0 },
+            CostStrategy::Budget { maximum_usd: 5.0 },
             CostStrategy::LocalFirst,
         ];
 
@@ -61,6 +69,20 @@ mod tests {
             let roundtrip: CostStrategy = serde_json::from_str(&json).unwrap();
             assert_eq!(*strategy, roundtrip);
         }
+    }
+
+    #[test]
+    fn a_budget_keeps_its_serialised_name() {
+        let budget = CostStrategy::Budget { maximum_usd: 5.0 };
+
+        assert_eq!(
+            serde_json::to_value(&budget).unwrap(),
+            serde_json::json!({ "Budget": { "max_usd": 5.0 } })
+        );
+        assert_eq!(
+            serde_json::from_str::<CostStrategy>(r#"{"Budget":{"max_usd":5.0}}"#).unwrap(),
+            budget
+        );
     }
 
     #[test]
@@ -74,8 +96,8 @@ mod tests {
             ("value", CostStrategy::BestValue),
             ("local-first", CostStrategy::LocalFirst),
             ("local", CostStrategy::LocalFirst),
-            ("budget:25.50", CostStrategy::Budget { max_usd: 25.5 }),
-            ("budget:0", CostStrategy::Budget { max_usd: 0.0 }),
+            ("budget:25.50", CostStrategy::Budget { maximum_usd: 25.5 }),
+            ("budget:0", CostStrategy::Budget { maximum_usd: 0.0 }),
         ] {
             assert_eq!(name.parse::<CostStrategy>(), Ok(expected), "{name}");
         }

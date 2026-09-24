@@ -181,7 +181,7 @@ impl LlmClient {
             tools,
             tool_choice: None,
             temperature: Some(self.config.temperature),
-            max_tokens: Some(options.reserved),
+            maximum_tokens: Some(options.reserved),
             stream: Some(stream),
             stop: (!self.stop.is_empty()).then_some(self.stop.as_slice()),
             response_format: None,
@@ -190,7 +190,7 @@ impl LlmClient {
 
     fn reserved(&self) -> RequestOptions {
         RequestOptions {
-            reserved: self.config.max_tokens,
+            reserved: self.config.maximum_tokens,
         }
     }
 

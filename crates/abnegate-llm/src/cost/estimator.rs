@@ -72,8 +72,8 @@ impl CostEstimator {
         let estimate = assemble(requests, &assignments, pricing, strategy.clone());
 
         match strategy {
-            CostStrategy::Budget { max_usd } if estimate.total_usd > max_usd => {
-                Self::apply_budget_constraint(requests, pricing, strategy, max_usd)
+            CostStrategy::Budget { maximum_usd } if estimate.total_usd > maximum_usd => {
+                Self::apply_budget_constraint(requests, pricing, strategy, maximum_usd)
             }
             _ => estimate,
         }
@@ -142,7 +142,7 @@ impl CostEstimator {
         requests: &[TaskSpec],
         pricing: &[ModelPricing],
         strategy: CostStrategy,
-        max_usd: f64,
+        maximum_usd: f64,
     ) -> CostEstimate {
         let mut by_quality: Vec<(usize, f64)> = requests
             .iter()
@@ -155,7 +155,7 @@ impl CostEstimator {
             .collect();
         by_quality.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
 
-        let mut remaining = max_usd;
+        let mut remaining = maximum_usd;
         let mut assignments: Vec<Option<&ModelPricing>> = vec![None; requests.len()];
         for (index, _) in by_quality {
             let task = &requests[index];
@@ -640,7 +640,7 @@ mod tests {
         let estimate = CostEstimator::estimate_batch_cost(
             &tasks,
             &pricing,
-            CostStrategy::Budget { max_usd: 100.0 },
+            CostStrategy::Budget { maximum_usd: 100.0 },
         );
 
         assert!(estimate.total_usd <= 100.0);
@@ -659,7 +659,7 @@ mod tests {
         let estimate = CostEstimator::estimate_batch_cost(
             &tasks,
             &pricing,
-            CostStrategy::Budget { max_usd: 3.0 },
+            CostStrategy::Budget { maximum_usd: 3.0 },
         );
 
         assert!(estimate.total_usd <= 3.0 + f64::EPSILON);
@@ -678,7 +678,7 @@ mod tests {
         let estimate = CostEstimator::estimate_batch_cost(
             &tasks,
             &pricing,
-            CostStrategy::Budget { max_usd: 0.01 },
+            CostStrategy::Budget { maximum_usd: 0.01 },
         );
 
         assert!(estimate.total_usd <= 0.01 + f64::EPSILON);
@@ -718,7 +718,7 @@ mod tests {
         let estimate = CostEstimator::estimate_batch_cost(
             &tasks,
             &pricing,
-            CostStrategy::Budget { max_usd: 3.0 },
+            CostStrategy::Budget { maximum_usd: 3.0 },
         );
 
         assert_eq!(estimate.total_usd, 2.0);
