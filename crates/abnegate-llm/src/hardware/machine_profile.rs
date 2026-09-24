@@ -1561,33 +1561,33 @@ mod tests {
     }
 
     #[test]
-    fn every_gpu_type_round_trips() {
-        let types = vec![
-            GpuType::AppleSilicon {
-                chip: "M4 Max".into(),
-                gpu_cores: 40,
-            },
-            GpuType::NvidiaDesktop {
-                model: "RTX 4090".into(),
-                cuda_cores: 16384,
-            },
-            GpuType::NvidiaLaptop {
-                model: "RTX 4060".into(),
-                cuda_cores: 3072,
-            },
-            GpuType::AmdDesktop {
-                model: "RX 7900 XTX".into(),
-            },
-            GpuType::IntelArc {
-                model: "A770".into(),
-            },
-            GpuType::CpuOnly,
-        ];
-        for gpu in &types {
-            let json = serde_json::to_string(gpu).unwrap();
-            let roundtrip: GpuType = serde_json::from_str(&json).unwrap();
-            let json2 = serde_json::to_string(&roundtrip).unwrap();
-            assert_eq!(json, json2);
+    fn every_gpu_type_round_trips_under_its_wire_name() {
+        for (gpu, wire) in [
+            (
+                GpuType::apple_silicon("M4 Max", 40),
+                serde_json::json!({ "AppleSilicon": { "chip": "M4 Max", "gpu_cores": 40 } }),
+            ),
+            (
+                GpuType::nvidia_desktop("RTX 4090", 16384),
+                serde_json::json!({ "NvidiaDesktop": { "model": "RTX 4090", "cuda_cores": 16384 } }),
+            ),
+            (
+                GpuType::nvidia_laptop("RTX 4060", 3072),
+                serde_json::json!({ "NvidiaLaptop": { "model": "RTX 4060", "cuda_cores": 3072 } }),
+            ),
+            (
+                GpuType::amd_desktop("RX 7900 XTX"),
+                serde_json::json!({ "AmdDesktop": { "model": "RX 7900 XTX" } }),
+            ),
+            (
+                GpuType::intel_arc("A770"),
+                serde_json::json!({ "IntelArc": { "model": "A770" } }),
+            ),
+            (GpuType::CpuOnly, serde_json::json!("CpuOnly")),
+        ] {
+            assert_eq!(serde_json::to_value(&gpu).unwrap(), wire);
+            let roundtrip: GpuType = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&roundtrip).unwrap(), wire);
         }
     }
 

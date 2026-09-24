@@ -11,12 +11,30 @@ const FUNCTION_TYPE: &str = "function";
 /// and a forced tool is an object naming it. Each string reads back as the
 /// mode it names, and a string that names no mode is refused rather than
 /// read as some other one.
+///
+/// [`ToolChoice::Specific`] may gain a field in a minor release, so it is
+/// built with [`ToolChoice::specific`] and a pattern outside this crate ends
+/// in `..`:
+///
+/// ```compile_fail,E0638
+/// use abnegate_llm::ToolChoice;
+///
+/// fn forced(choice: &ToolChoice) -> Option<&str> {
+///     match choice {
+///         ToolChoice::Specific { r#type: _, function } => Some(&function.name),
+///         _ => None,
+///     }
+/// }
+/// # let _ = forced(&ToolChoice::specific("read_file"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum ToolChoice {
+    /// Leave the choice to the model, forbid tools, or require one.
     Mode(ToolMode),
     /// Force a specific tool.
+    #[non_exhaustive]
     Specific {
         r#type: String,
         function: SpecificFunction,
@@ -24,18 +42,22 @@ pub enum ToolChoice {
 }
 
 impl ToolChoice {
+    /// The model decides whether to call a tool.
     pub fn auto() -> Self {
         Self::Mode(ToolMode::Auto)
     }
 
+    /// The model calls no tool.
     pub fn none() -> Self {
         Self::Mode(ToolMode::None)
     }
 
+    /// The model calls at least one tool.
     pub fn required() -> Self {
         Self::Mode(ToolMode::Required)
     }
 
+    /// The model calls the function `name`.
     pub fn specific(name: impl Into<String>) -> Self {
         Self::Specific {
             r#type: FUNCTION_TYPE.to_string(),

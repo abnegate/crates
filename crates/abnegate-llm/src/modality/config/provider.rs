@@ -127,9 +127,7 @@ impl ProviderConfig {
         self.cost_strategy.as_deref().map(|strategy| {
             strategy.parse().unwrap_or_else(|_| {
                 if strategy.starts_with(BUDGET_PREFIX) {
-                    CostStrategy::Budget {
-                        maximum_usd: DEFAULT_BUDGET_USD,
-                    }
+                    CostStrategy::budget(DEFAULT_BUDGET_USD)
                 } else {
                     CostStrategy::BestValue
                 }
@@ -255,7 +253,7 @@ mod tests {
         assert!(!json.contains("sk-"), "{json}");
         assert_eq!(
             roundtrip.parse_cost_strategy(),
-            Some(CostStrategy::Budget { maximum_usd: 10.0 })
+            Some(CostStrategy::budget(10.0))
         );
         let image = roundtrip.image_provider.unwrap();
         assert_eq!(image.provider, "openai");
@@ -332,9 +330,7 @@ mod tests {
 
             assert_eq!(
                 config.parse_cost_strategy(),
-                Some(CostStrategy::Budget {
-                    maximum_usd: DEFAULT_BUDGET_USD
-                }),
+                Some(CostStrategy::budget(DEFAULT_BUDGET_USD)),
                 "{budget}"
             );
         }

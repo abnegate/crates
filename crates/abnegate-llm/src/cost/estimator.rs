@@ -637,11 +637,8 @@ mod tests {
         let pricing = default_pricing();
         let tasks = [task("Image", TaskCategory::Image, 1)];
 
-        let estimate = CostEstimator::estimate_batch_cost(
-            &tasks,
-            &pricing,
-            CostStrategy::Budget { maximum_usd: 100.0 },
-        );
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::budget(100.0));
 
         assert!(estimate.total_usd <= 100.0);
         assert_eq!(estimate.breakdown.len(), 1);
@@ -656,11 +653,8 @@ mod tests {
             task("Images", TaskCategory::Image, 5),
         ];
 
-        let estimate = CostEstimator::estimate_batch_cost(
-            &tasks,
-            &pricing,
-            CostStrategy::Budget { maximum_usd: 3.0 },
-        );
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::budget(3.0));
 
         assert!(estimate.total_usd <= 3.0 + f64::EPSILON);
         assert!(!estimate.breakdown.is_empty());
@@ -675,11 +669,8 @@ mod tests {
             task("C", TaskCategory::Music, 50),
         ];
 
-        let estimate = CostEstimator::estimate_batch_cost(
-            &tasks,
-            &pricing,
-            CostStrategy::Budget { maximum_usd: 0.01 },
-        );
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::budget(0.01));
 
         assert!(estimate.total_usd <= 0.01 + f64::EPSILON);
         assert!(estimate.breakdown.iter().all(|item| item.is_local));
@@ -715,11 +706,8 @@ mod tests {
             task("Video", TaskCategory::Video, 10),
         ];
 
-        let estimate = CostEstimator::estimate_batch_cost(
-            &tasks,
-            &pricing,
-            CostStrategy::Budget { maximum_usd: 3.0 },
-        );
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::budget(3.0));
 
         assert_eq!(estimate.total_usd, 2.0);
         assert_eq!(estimate.unassigned, vec!["Video".to_string()]);

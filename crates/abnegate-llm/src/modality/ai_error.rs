@@ -4,10 +4,26 @@ use std::fmt;
 use crate::provider::ProviderError;
 
 /// What went wrong when asking a model.
+///
+/// Only an [`AiClient`](crate::AiClient) builds one. A variant may gain a
+/// field in a minor release, so a pattern outside this crate ends in `..`:
+///
+/// ```compile_fail,E0638
+/// use abnegate_llm::AiError;
+///
+/// fn wanted(error: &AiError) -> Option<&str> {
+///     match error {
+///         AiError::NoProvider { wanted } => Some(wanted),
+///         _ => None,
+///     }
+/// }
+/// # let _ = wanted;
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum AiError {
     /// This run has no provider. Not a failure, a configuration.
+    #[non_exhaustive]
     NoProvider {
         /// What the caller was trying to do, so the message can say what is
         /// being given up.
@@ -16,7 +32,13 @@ pub enum AiError {
     /// The provider was reached and refused, or could not be reached.
     Provider(ProviderError),
     /// An answer came back but was not the shape that was asked for.
-    Shape { schema: String, detail: String },
+    #[non_exhaustive]
+    Shape {
+        /// The name of the schema the answer was asked to fit.
+        schema: String,
+        /// How the answer missed it.
+        detail: String,
+    },
 }
 
 impl fmt::Display for AiError {
