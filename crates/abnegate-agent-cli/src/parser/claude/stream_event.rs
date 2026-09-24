@@ -7,7 +7,7 @@ use crate::event::AgentEvent;
 use crate::parser::claude::cli_content_block::CliContentBlock;
 use crate::parser::claude::cli_message::CliMessage;
 use crate::parser::claude::cli_usage::CliUsage;
-use crate::parser::claude::rate_limit_info::RateLimitInfo;
+use crate::parser::claude::rate_limit_report::RateLimitReport;
 
 /// The wording a throttled run is reported with.
 ///
@@ -63,14 +63,15 @@ pub enum StreamEvent {
         usage: Option<CliUsage>,
     },
     /// A throttling report. Anything but explicit headroom fails the run,
-    /// a report with no status at all included, as it did in claudear: the
-    /// event exists to announce a limit being hit, and waiting out a refused
-    /// run costs far more than stopping one.
+    /// a report with no status at all included: the event exists to
+    /// announce a limit being hit, and waiting out a refused run costs far
+    /// more than stopping one.
     #[serde(rename = "rate_limit_event")]
     RateLimit {
+        /// The report itself, read from `rate_limit_info`.
         #[serde(default, rename = "rate_limit_info")]
-        info: Option<RateLimitInfo>,
-        /// Where some releases put the reset time instead of inside `info`.
+        report: Option<RateLimitReport>,
+        /// Where some releases put the reset time instead of inside `report`.
         #[serde(default, rename = "resetsAt")]
         resets_at: Option<serde_json::Value>,
     },
@@ -118,10 +119,10 @@ impl StreamEvent {
                 }
                 events.push(conclusion(subtype, is_error, result));
             }
-            Self::RateLimit { info, resets_at } => {
-                let info = info.unwrap_or_default();
-                if !info.allowed() {
-                    events.push(AgentEvent::Failed(throttled(info, resets_at)));
+            Self::RateLimit { report, resets_at } => {
+                let report = report.unwrap_or_default();
+                if !report.allowed() {
+                    events.push(AgentEvent::Failed(throttled(report, resets_at)));
                 }
             }
             Self::Assistant { message: None } | Self::User {} | Self::Unknown => {}
@@ -167,12 +168,12 @@ fn conclusion(subtype: Option<String>, is_error: bool, result: Option<String>) -
     )
 }
 
-fn throttled(mut info: RateLimitInfo, resets_at: Option<serde_json::Value>) -> String {
-    if info.resets_at.is_none() {
-        info.resets_at = resets_at;
+fn throttled(mut report: RateLimitReport, resets_at: Option<serde_json::Value>) -> String {
+    if report.resets_at.is_none() {
+        report.resets_at = resets_at;
     }
-    let report = serde_json::to_string(&info).unwrap_or_default();
-    format!("{THROTTLED}: {report}")
+    let quoted = serde_json::to_string(&report).unwrap_or_default();
+    format!("{THROTTLED}: {quoted}")
 }
 
 #[cfg(test)]
@@ -463,13 +464,14 @@ mod tests {
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","utilization":0.5}}"#,
         );
         let StreamEvent::RateLimit {
-            info: Some(info), ..
+            report: Some(report),
+            ..
         } = event
         else {
             panic!("unexpected event: {event:?}");
         };
-        assert_eq!(info.status.as_deref(), Some("allowed"));
-        assert!((info.utilization.expect("a utilisation") - 0.5).abs() < f64::EPSILON);
+        assert_eq!(report.status.as_deref(), Some("allowed"));
+        assert!((report.utilization.expect("a utilisation") - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -478,7 +480,7 @@ mod tests {
         assert_eq!(
             event,
             StreamEvent::RateLimit {
-                info: None,
+                report: None,
                 resets_at: Some(json!("2026-02-23T06:00:00Z")),
             }
         );

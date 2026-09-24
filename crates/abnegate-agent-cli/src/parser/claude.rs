@@ -3,13 +3,13 @@
 mod cli_content_block;
 mod cli_message;
 mod cli_usage;
-mod rate_limit_info;
+mod rate_limit_report;
 mod stream_event;
 
 pub use crate::parser::claude::cli_content_block::CliContentBlock;
 pub use crate::parser::claude::cli_message::CliMessage;
 pub use crate::parser::claude::cli_usage::CliUsage;
-pub use crate::parser::claude::rate_limit_info::RateLimitInfo;
+pub use crate::parser::claude::rate_limit_report::RateLimitReport;
 pub use crate::parser::claude::stream_event::StreamEvent;
 
 use serde_json::Value;

@@ -121,7 +121,7 @@ pub use crate::mcp::McpTransport;
 pub use crate::parser::claude::CliContentBlock;
 pub use crate::parser::claude::CliMessage;
 pub use crate::parser::claude::CliUsage;
-pub use crate::parser::claude::RateLimitInfo;
+pub use crate::parser::claude::RateLimitReport;
 pub use crate::parser::claude::StreamEvent;
 pub use crate::provider::CliProvider;
 pub use crate::question::BlockingQuestion;
