@@ -59,11 +59,11 @@ impl PullRequestService {
     /// reported only when GitHub's answer says the pull request merged; any
     /// other answer is [`PullRequestError::GitHubApi`].
     ///
-    /// Neither attempt follows a redirect. GitHub answers a merge in a
-    /// repository that was renamed or transferred with a 307 to its new
-    /// address, and that merge is refused as [`PullRequestError::GitHubApi`],
-    /// without being made there, until this crate re-issues such writes
-    /// itself.
+    /// GitHub answers a merge in a repository that was renamed or transferred
+    /// with a 307 to its new address on the same origin, and the merge is
+    /// asked for there, with the same head, method and message. Any other
+    /// redirect is [`PullRequestError::GitHubApi`], and the merge is not made
+    /// where it points.
     pub async fn merge(
         &self,
         reference: &PullRequestReference,
@@ -332,10 +332,10 @@ mod tests {
 
     /// GitHub answers a merge in a renamed or transferred repository with a
     /// 307 to the repository's numeric address, which keeps the PUT and its
-    /// body: following it would merge the pull request and then report that
-    /// merge as a failure.
+    /// body. The merge is made there, once, with the head and method it was
+    /// asked for, and reported as the merge it is.
     #[tokio::test]
-    async fn a_merge_github_redirects_is_refused_and_never_sent_on() {
+    async fn a_merge_in_a_renamed_repository_is_made_where_github_redirects_it() {
         let server = MockServer::start().await;
         Mock::given(method("PUT"))
             .and(path(MERGE_PATH))
@@ -348,12 +348,19 @@ mod tests {
             .await;
         Mock::given(method("PUT"))
             .and(path(MOVED_MERGE_PATH))
+            .and(header("authorization", "Bearer token"))
+            .and(body_json(json!({
+                "commit_title": "Title",
+                "commit_message": "Body",
+                "sha": commit('a').as_str(),
+                "merge_method": "squash",
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "sha": commit('b').as_str(),
                 "merged": true,
                 "message": "Pull Request successfully merged",
             })))
-            .expect(0)
+            .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -363,22 +370,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let failure = attempt(&server, Some(NODE), true)
-            .await
-            .expect_err("a merge GitHub redirected was not made");
+        let merged = attempt(&server, Some(NODE), true).await.unwrap();
 
-        assert!(
-            matches!(failure, PullRequestError::GitHubApi(ref text) if text == REDIRECTED),
-            "{failure:?}"
-        );
-        assert!(
-            server
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .all(|request| request.url.path() != MOVED_MERGE_PATH),
-            "the merge was sent on to where GitHub redirected it"
+        assert_eq!(
+            merged,
+            MergedPullRequest {
+                sha: Some(commit('b')),
+                administrator: false,
+            }
         );
     }
 

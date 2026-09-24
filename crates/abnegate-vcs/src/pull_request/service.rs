@@ -23,6 +23,7 @@ use abnegate_secret::SecretValue;
 use abnegate_secret::sanitize;
 use reqwest::Client;
 use reqwest::Method;
+use reqwest::Request;
 use reqwest::RequestBuilder;
 use reqwest::Response;
 use reqwest::StatusCode;
@@ -71,7 +72,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longest a connection may take to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Redirects within the origin a read follows before it stops.
+/// Redirects within the origin a request follows before it stops.
 const MAXIMUM_REDIRECTS: usize = 10;
 
 /// The header GitHub reports the requests left in the current window in.
@@ -114,7 +115,7 @@ const UNREADABLE: &str = "GitHub answered in a form this crate cannot read";
 const OVERSIZED: &str = "GitHub's answer was larger than this crate reads";
 
 /// What a request that is not a read is reported as when GitHub answers it
-/// with a redirect, which it is never sent on to.
+/// with a redirect it is not sent on to.
 const REDIRECTED: &str =
     "GitHub redirected a request that is not a read; it was not sent on to the new address";
 
@@ -157,10 +158,14 @@ const GIT_SUFFIX: &str = ".git";
 ///
 /// A read follows a redirect only while it stays on that origin, for at most
 /// ten hops. A write, meaning any request but a GET and so every GraphQL call,
-/// never follows one, because following it would carry the write out wherever
-/// the redirect points before its answer could be read. A write GitHub answers
-/// with a redirect, as it answers one to a repository that was renamed or
-/// transferred, is [`PullRequestError::GitHubApi`] and is not sent on.
+/// is sent again whole, with its method, body and headers, only where a 307 or
+/// 308 points on that origin, as GitHub answers a write to a repository that
+/// was renamed or transferred, and again for at most ten hops. A write
+/// answered by any other redirect is [`PullRequestError::GitHubApi`] and is
+/// not sent on: a 301, 302 or 303, which may turn it into a GET or drop its
+/// body; a redirect to another origin, which would carry the token there; one
+/// whose `Location` is missing or cannot be read; one past the tenth hop; and
+/// any redirect of a write whose body can be sent only once.
 ///
 /// A status that says what it means on its own is reported as that: 401 as
 /// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
@@ -581,31 +586,76 @@ fn within_origin() -> Policy {
     })
 }
 
-/// Whether a request sent with `method` is a read, and so may follow a
-/// redirect.
+/// Whether a request sent with `method` is a read, and so goes out on the
+/// client that follows redirects within the origin itself.
 fn reads(method: &Method) -> bool {
     *method == Method::GET
 }
 
-/// The answer to `request`, whatever its status, from where it was sent.
+/// The answer to `request`, whatever its status, from where it was last sent.
 ///
-/// A write goes out on a client that follows no redirect, because following
-/// one carries the write out somewhere it was not addressed: a 307 or 308
-/// re-sends any method with its body, a 301 or 302 re-sends every method but
-/// POST, and a 303, or a 301 or 302 to a POST, turns it into a GET of
-/// wherever the redirect points. So a write GitHub answers with a redirect is
-/// refused, and so is one answered from anywhere but the address it was sent
-/// to.
+/// A read goes out on a client that follows redirects within the origin
+/// itself. A write goes out on one that follows none, and is sent on only as
+/// [`written`] allows.
 async fn sent(request: RequestBuilder) -> PullRequestResult<Response> {
     let (client, request) = request.build_split();
     let request = request?;
-    let read = reads(request.method());
-    let url = request.url().clone();
-    let response = client.execute(request).await?;
-    if !read && (response.status().is_redirection() || response.url() != &url) {
-        return Err(PullRequestError::GitHubApi(REDIRECTED.to_string()));
+    match reads(request.method()) {
+        true => Ok(client.execute(request).await?),
+        false => written(&client, request).await,
     }
-    Ok(response)
+}
+
+/// The answer to the write `request`, sent again whole, with its method, body
+/// and headers, wherever a 307 or 308 points on the origin it was sent to,
+/// for at most [`MAXIMUM_REDIRECTS`] hops.
+///
+/// Every other redirect is refused unsent. A 301 or 302 re-sends every method
+/// but POST without saying it kept the body, and a 303, or a 301 or 302 to a
+/// POST, turns the write into a GET of wherever it points, whose answer says
+/// nothing of the write. A redirect to another origin would carry the token
+/// there. A `Location` that is missing or cannot be read points nowhere, and
+/// a body that cannot be cloned cannot be sent twice. An answer from anywhere
+/// but the address last sent to is refused too.
+async fn written(client: &Client, mut request: Request) -> PullRequestResult<Response> {
+    let mut hops = 0;
+    loop {
+        let again = request.try_clone();
+        let url = request.url().clone();
+        let response = client.execute(request).await?;
+        if response.url() != &url {
+            return Err(redirected());
+        }
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        let next = onward(&response).filter(|_| hops < MAXIMUM_REDIRECTS);
+        let (Some(mut again), Some(next)) = (again, next) else {
+            return Err(redirected());
+        };
+        *again.url_mut() = next;
+        request = again;
+        hops += 1;
+    }
+}
+
+/// Where a 307 or 308 sends a write on to: its `Location`, resolved against
+/// the address the write was sent to, when that stays on the same origin.
+fn onward(response: &Response) -> Option<Url> {
+    if !matches!(
+        response.status(),
+        StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT
+    ) {
+        return None;
+    }
+    let location = response.headers().get(header::LOCATION)?.to_str().ok()?;
+    let next = response.url().join(location).ok()?;
+    (next.origin() == response.url().origin()).then_some(next)
+}
+
+/// A write GitHub redirected somewhere it is not sent on to.
+fn redirected() -> PullRequestError {
+    PullRequestError::GitHubApi(REDIRECTED.to_string())
 }
 
 /// The successful answer to `request`, from where it was sent, or the refusal
