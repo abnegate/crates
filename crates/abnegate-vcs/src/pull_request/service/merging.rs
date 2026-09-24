@@ -11,8 +11,12 @@ use serde_json::Value;
 use serde_json::json;
 
 /// Merges the pull request its `input` names as an administrator may, past
-/// branch protection that refuses everyone else.
-const MERGE: &str = "mutation($input:MergePullRequestInput!){mergePullRequest(input:$input){pullRequest{mergeCommit{oid}}}}";
+/// branch protection that refuses everyone else, and asks whether it merged.
+const MERGE: &str = "mutation($input:MergePullRequestInput!){mergePullRequest(input:$input){pullRequest{merged mergeCommit{oid}}}}";
+
+/// Where the administrator merge's answer says whether the pull request
+/// merged.
+const MERGED: &str = "/mergePullRequest/pullRequest/merged";
 
 /// Where the administrator merge's answer names the commit it made.
 const OID: &str = "/mergePullRequest/pullRequest/mergeCommit/oid";
@@ -45,7 +49,9 @@ impl PullRequestService {
     /// administrator merge was refused too, that reason as well. A head that
     /// moved is [`PullRequestError::HeadMoved`]. A merge that happened is
     /// never reported as a failure, even when the commit it made cannot be
-    /// read.
+    /// read. An administrator merge is reported only when GitHub's answer
+    /// says the pull request merged; any other answer is
+    /// [`PullRequestError::GitHubApi`].
     pub async fn merge(
         &self,
         reference: &PullRequestReference,
@@ -113,7 +119,8 @@ impl PullRequestService {
 /// merges with, after branch protection refused it for `reason`.
 ///
 /// Only a refusal GitHub's GraphQL API reports is protection's; an exchange
-/// that failed on its way there or back is reported as itself.
+/// that failed on its way there or back is reported as itself, and an answer
+/// that does not say the pull request merged is not read as a merge.
 async fn administrator_merge(
     service: &PullRequestService,
     node: &str,
@@ -134,13 +141,16 @@ async fn administrator_merge(
         .graphql_answer::<Value, _>(token, MERGE, &variables)
         .await?
     {
-        Ok(data) => Ok(MergedPullRequest {
-            sha: data
-                .pointer(OID)
-                .and_then(Value::as_str)
-                .and_then(|oid| CommitSha::parse(oid).ok()),
-            administrator: true,
-        }),
+        Ok(data) if data.pointer(MERGED).and_then(Value::as_bool) == Some(true) => {
+            Ok(MergedPullRequest {
+                sha: data
+                    .pointer(OID)
+                    .and_then(Value::as_str)
+                    .and_then(|oid| CommitSha::parse(oid).ok()),
+                administrator: true,
+            })
+        }
+        Ok(_) => Err(PullRequestError::GitHubApi(UNREADABLE.to_string())),
         Err(errors) => Err(administrator_refusal(reason, &errors)),
     }
 }
@@ -210,7 +220,7 @@ mod tests {
 
     fn merged_as(oid: &str) -> ResponseTemplate {
         carrying(json!({
-            "mergePullRequest": { "pullRequest": { "mergeCommit": { "oid": oid } } },
+            "mergePullRequest": { "pullRequest": { "merged": true, "mergeCommit": { "oid": oid } } },
         }))
     }
 
@@ -679,10 +689,12 @@ mod tests {
         }
 
         for data in [
-            json!({ "mergePullRequest": { "pullRequest": null } }),
-            json!({ "mergePullRequest": { "pullRequest": { "mergeCommit": null } } }),
-            json!({ "mergePullRequest": { "pullRequest": { "mergeCommit": { "oid": "not-a-commit" } } } }),
-            json!({ "mergePullRequest": null }),
+            json!({ "mergePullRequest": { "pullRequest": { "merged": true } } }),
+            json!({ "mergePullRequest": { "pullRequest": { "merged": true, "mergeCommit": null } } }),
+            json!({ "mergePullRequest": { "pullRequest": {
+                "merged": true,
+                "mergeCommit": { "oid": "not-a-commit" },
+            } } }),
         ] {
             let server = answering(refusing(405, APPROVAL), carrying(data.clone()), 1).await;
 
@@ -693,6 +705,31 @@ mod tests {
                     administrator: true,
                 },
                 "{data}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_administrator_merge_github_does_not_confirm_is_not_reported_as_one() {
+        for data in [
+            json!({}),
+            json!({ "mergePullRequest": null }),
+            json!({ "mergePullRequest": { "pullRequest": null } }),
+            json!({ "mergePullRequest": { "pullRequest": { "merged": false, "mergeCommit": null } } }),
+            json!({ "mergePullRequest": { "pullRequest": { "merged": "true" } } }),
+            json!({ "mergePullRequest": { "pullRequest": {
+                "mergeCommit": { "oid": commit('d').as_str() },
+            } } }),
+        ] {
+            let server = answering(refusing(405, APPROVAL), carrying(data.clone()), 1).await;
+
+            let failure = attempt(&server, Some(NODE), true)
+                .await
+                .expect_err("an answer that does not say the pull request merged is not a merge");
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+                "{data}: {failure:?}"
             );
         }
     }
