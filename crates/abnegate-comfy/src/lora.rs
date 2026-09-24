@@ -1778,6 +1778,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_dataset_directory_is_handed_over_under_its_spelled_out_name() {
+        const NAME: &str =
+            "lora::tests::the_dataset_directory_is_handed_over_under_its_spelled_out_name";
+        if crate::child::delegated(NAME, &[]).await {
+            return;
+        }
         let command = r#"
             test -d "$TRAIN_DIRECTORY/targets" || exit 41
             test "$(env | grep "^TRAIN_DI" | cut -d= -f1)" = TRAIN_DIRECTORY || exit 42
