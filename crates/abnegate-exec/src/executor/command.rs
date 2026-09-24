@@ -138,7 +138,7 @@ impl CommandExecutor {
                     .env_clear()
                     .envs(inherited)
                     .envs(environment);
-                Proxy::from_env().apply(&mut process);
+                Proxy::from_environment().apply(&mut process);
                 configure(&mut process);
                 session::lead(&mut process, None);
                 process.spawn()
@@ -557,7 +557,7 @@ mod tests {
         const NAME: &str = "executor::command::tests::proxy_overrides_request_environment";
         if delegated_to_child(
             NAME,
-            &[(crate::proxy::PROXY_URL_ENV, "http://127.0.0.1:28888")],
+            &[(crate::proxy::PROXY_URL_VARIABLE, "http://127.0.0.1:28888")],
         )
         .await
         {
@@ -571,7 +571,7 @@ mod tests {
                 ("http_proxy".to_string(), "http://wrong:8888".to_string()),
                 ("NO_PROXY".to_string(), "*".to_string()),
                 ("no_proxy".to_string(), "*".to_string()),
-                (crate::proxy::PROXY_URL_ENV.to_string(), String::new()),
+                (crate::proxy::PROXY_URL_VARIABLE.to_string(), String::new()),
             ])),
         )
         .await;

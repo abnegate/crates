@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use abnegate_exec::PROXY_URL_ENV;
+use abnegate_exec::PROXY_URL_VARIABLE;
 use serde_json::json;
 use tokio::process::Command;
 
@@ -137,7 +137,7 @@ async fn proxy_overrides_command_and_shell_environment() {
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env(CHILD_TEST, NAME)
-            .env(PROXY_URL_ENV, "http://127.0.0.1:28888")
+            .env(PROXY_URL_VARIABLE, "http://127.0.0.1:28888")
             .output()
             .await
             .unwrap();
@@ -155,7 +155,7 @@ async fn proxy_overrides_command_and_shell_environment() {
         ("http_proxy".to_string(), "http://wrong:8888".to_string()),
         ("NO_PROXY".to_string(), "*".to_string()),
         ("no_proxy".to_string(), "*".to_string()),
-        (PROXY_URL_ENV.to_string(), "".to_string()),
+        (PROXY_URL_VARIABLE.to_string(), "".to_string()),
     ]);
     for output in environments(&context).await {
         for key in [
