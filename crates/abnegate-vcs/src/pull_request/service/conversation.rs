@@ -41,6 +41,12 @@ impl PullRequestService {
 
     /// Comment on a pull request's conversation, which is how a review bot is
     /// asked to look again, and return the identifier GitHub gave the comment.
+    ///
+    /// An error can follow a comment GitHub accepted: an answer that names no
+    /// identifier, or one this crate cannot read or that is too long to, is
+    /// [`PullRequestError::GitHubApi`] although the comment was posted. A
+    /// caller that retries on an error may post it twice, so it should look
+    /// for the comment before posting again.
     pub async fn post_issue_comment(
         &self,
         reference: &PullRequestReference,
@@ -72,6 +78,12 @@ impl PullRequestService {
     ///
     /// A token that opened the pull request may only comment: GitHub refuses
     /// it an approval of, or a request for changes to, its own change.
+    ///
+    /// An error can follow a review GitHub accepted: an answer that names no
+    /// identifier, or one this crate cannot read or that is too long to, is
+    /// [`PullRequestError::GitHubApi`] although the review was submitted. A
+    /// caller that retries on an error may submit it twice, so it should look
+    /// for the review before submitting again.
     pub async fn submit_review(
         &self,
         reference: &PullRequestReference,
