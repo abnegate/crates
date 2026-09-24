@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use abnegate_llm::LlmClient;
+use abnegate_llm::CompletionProvider;
+use abnegate_llm::CompletionRequest;
 use abnegate_llm::Message;
 use abnegate_llm::RequestOptions;
 use abnegate_llm::Role;
@@ -49,7 +50,9 @@ pub(super) const MAXIMUM_EMPTY_RESPONSES: usize = 3;
 /// A ReAct loop: think, call tools, observe their results, until the model
 /// answers or the iteration budget runs out.
 pub struct Agent {
-    llm: LlmClient,
+    provider: Arc<dyn CompletionProvider>,
+    summarizer: Arc<dyn CompletionProvider>,
+    model: String,
     tools: ToolRegistry,
     config: AgentConfig,
     context: Arc<ToolContext>,
@@ -58,24 +61,42 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// An agent that asks `model` through `provider` and acts with `tools`,
+    /// each call running under `context`.
+    ///
+    /// The provider answers every round, and writes the summaries compaction
+    /// asks for unless [`with_summarizer`](Self::with_summarizer) names
+    /// another. [`AgentConfig::temperature`], when set, is asked for on every
+    /// round in place of the provider's own.
     pub fn new(
-        llm: LlmClient,
+        provider: Arc<dyn CompletionProvider>,
+        model: impl Into<String>,
         tools: ToolRegistry,
         config: AgentConfig,
         context: ToolContext,
     ) -> Self {
-        let llm = match config.temperature {
-            Some(temperature) => llm.with_temperature(temperature),
-            None => llm,
-        };
         Self {
-            llm,
+            summarizer: Arc::clone(&provider),
+            provider,
+            model: model.into(),
             tools,
             policy: Policy::new(None, config.maximum_tokens, ContextSource::Unknown),
             config,
             context: Arc::new(context),
             guidance: None,
         }
+    }
+
+    /// Write compaction's summaries through `summarizer` rather than the
+    /// agent's own provider.
+    ///
+    /// A summary is a structured rewrite, asked for at temperature 0 of the
+    /// same model. A request cannot take back what a provider adds to every
+    /// request it sends, so when the agent's provider stops on custom
+    /// sequences or asks for reasoning, give compaction one that does neither.
+    pub fn with_summarizer(mut self, summarizer: Arc<dyn CompletionProvider>) -> Self {
+        self.summarizer = summarizer;
+        self
     }
 
     /// Use a verified/configured effective capacity without guessing from the model name.
@@ -163,36 +184,33 @@ impl Agent {
                 })
                 .collect();
             let prepared = context::prepare(
-                &self.llm,
-                &self.llm.config().default_model,
+                self.summarizer.as_ref(),
+                &self.model,
                 &entries,
                 Some(&tool_definitions),
                 &self.policy,
                 state.summary.as_ref(),
             )
             .await?;
-            let response = self
-                .llm
-                .chat_with_options(
-                    &self.llm.config().default_model,
-                    &prepared.messages,
-                    Some(&tool_definitions),
-                    RequestOptions::new(self.policy.reserved),
-                )
-                .await?;
+            let request = CompletionRequest::new(
+                &self.model,
+                &prepared.messages,
+                RequestOptions::new(self.policy.reserved),
+            )
+            .with_tools(&tool_definitions);
+            let request = match self.config.temperature {
+                Some(temperature) => request.with_temperature(temperature),
+                None => request,
+            };
+            let completion = self.provider.complete(request).await?;
             state.summary = prepared.summary;
             state.consumed = state.messages.len();
 
-            if let Some(usage) = &response.usage {
+            if let Some(usage) = &completion.usage {
                 state.tokens_used = state.tokens_used.saturating_add(usage.total_tokens);
             }
 
-            let Some(choice) = response.choices.first() else {
-                Self::unanswered(state, &mut empty, step)?;
-                continue;
-            };
-
-            let mut message = choice.message.clone();
+            let mut message = completion.message;
             let mut identifiers: HashSet<_> = state
                 .messages
                 .iter()
@@ -239,7 +257,7 @@ impl Agent {
                 continue;
             }
 
-            let finished = choice
+            let finished = completion
                 .finish_reason
                 .as_deref()
                 .is_none_or(|reason| !UNFINISHED_REASONS.contains(&reason));

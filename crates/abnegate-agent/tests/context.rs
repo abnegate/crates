@@ -1,5 +1,10 @@
 use std::sync::Arc;
 
+use abnegate_agent::Agent;
+use abnegate_agent::AgentConfig;
+use abnegate_agent::NoOpCallback;
+use abnegate_agent::ToolContext;
+use abnegate_agent::ToolRegistry;
 use abnegate_agent::context;
 use abnegate_agent::context::ContextError;
 use abnegate_agent::context::ContextSource;
@@ -8,6 +13,8 @@ use abnegate_agent::context::Coverage;
 use abnegate_agent::context::Entry;
 use abnegate_agent::context::Policy;
 use abnegate_agent::context::Summary;
+use abnegate_llm::Effort;
+use abnegate_llm::HttpProvider;
 use abnegate_llm::LlmClient;
 use abnegate_llm::LlmConfig;
 use abnegate_llm::Message;
@@ -15,6 +22,7 @@ use abnegate_llm::RequestOptions;
 use abnegate_llm::Role;
 use abnegate_llm::ToolCall;
 use abnegate_llm::ToolDefinition;
+use abnegate_llm::provider::testing::StubProvider;
 use futures::StreamExt;
 use serde_json::Value;
 use serde_json::json;
@@ -30,10 +38,26 @@ struct Provider {
     task: tokio::task::JoinHandle<()>,
 }
 
+impl Provider {
+    /// A completion provider over the recorded endpoint.
+    fn completions(&self) -> HttpProvider {
+        HttpProvider::new("test", self.client.clone())
+    }
+}
+
 impl Drop for Provider {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+/// The first line of the request compaction sends for a summary.
+const SUMMARY_INSTRUCTIONS: &str = "Maintain a compact historical conversation record.";
+
+fn asks_for_a_summary(request: &Value) -> bool {
+    request["messages"][0]["content"]
+        .as_str()
+        .is_some_and(|content| content.starts_with(SUMMARY_INSTRUCTIONS))
 }
 
 async fn provider(
@@ -182,7 +206,7 @@ async fn active_turn_compacts_consumed_pairs_and_reuses_summary_without_recursiv
     .await;
     let history = active_history();
     let prepared = context::prepare(
-        &provider.client,
+        &provider.completions(),
         "test",
         &history,
         None,
@@ -235,7 +259,7 @@ async fn active_turn_compacts_consumed_pairs_and_reuses_summary_without_recursiv
     let calls = provider.requests.lock().await.len();
     for _ in 0..12 {
         let repeated = context::prepare(
-            &provider.client,
+            &provider.completions(),
             "test",
             &history,
             None,
@@ -297,7 +321,7 @@ async fn a_later_user_allows_previous_protected_user_and_consumed_groups_into_de
     let provider = provider(|_| response(structured()), false).await;
     let mut history = active_history();
     let first = context::prepare(
-        &provider.client,
+        &provider.completions(),
         "test",
         &history,
         None,
@@ -319,7 +343,7 @@ async fn a_later_user_allows_previous_protected_user_and_consumed_groups_into_de
     ));
     let count = provider.requests.lock().await.len();
     let next = context::prepare(
-        &provider.client,
+        &provider.completions(),
         "test",
         &history,
         None,
@@ -367,9 +391,16 @@ async fn fresh_seven_results_and_long_suffix_reach_actual_provider_unchanged() {
         )
     }));
     let settings = policy(300_000);
-    let prepared = context::prepare(&provider.client, "test", &history, None, &settings, None)
-        .await
-        .unwrap();
+    let prepared = context::prepare(
+        &provider.completions(),
+        "test",
+        &history,
+        None,
+        &settings,
+        None,
+    )
+    .await
+    .unwrap();
     provider
         .client
         .chat_with_options(
@@ -413,7 +444,7 @@ async fn unconsumed_overflow_skips_summarizer_even_when_older_history_is_eligibl
         entry("current", Message::user("Continue"), true, false),
     ];
     match context::prepare(
-        &provider.client,
+        &provider.completions(),
         "test",
         &history,
         None,
@@ -457,7 +488,7 @@ async fn indivisible_fresh_result_and_latest_user_overflow_do_not_call_summarize
     ] {
         assert!(matches!(
             context::prepare(
-                &provider.client,
+                &provider.completions(),
                 "test",
                 &history,
                 None,
@@ -484,7 +515,7 @@ async fn invalid_summary_never_advances_coverage_or_mutates_history() {
             context::coverage(&history, &["calls-a".into(), "result-a".into()]).unwrap();
         assert!(
             context::prepare(
-                &provider.client,
+                &provider.completions(),
                 "test",
                 &history,
                 None,
@@ -509,7 +540,7 @@ async fn failed_summary_replays_original_history_only_when_it_still_fits() {
         entry("current", Message::user("Current"), true, false),
     ];
     let prepared = context::prepare(
-        &provider.client,
+        &provider.completions(),
         "test",
         &history,
         None,
@@ -591,7 +622,7 @@ async fn unknown_capacity_does_not_guess_model_limits_or_discard_history() {
     let history = active_history();
     let settings = Policy::new(None, 4096, ContextSource::Unknown);
     let prepared = context::prepare(
-        &provider.client,
+        &provider.completions(),
         "gpt-future-1m",
         &history,
         None,
@@ -652,70 +683,145 @@ fn tools_and_message_framing_match_projection_estimates_and_threshold_is_saturat
     );
 }
 
+/// Compaction used to clear the agent's own client of its stop sequences and
+/// reasoning before asking it for a summary. A provider cannot be cleared, so
+/// the agent hands summaries to a summarizer set apart, and every round still
+/// goes out with the stops and reasoning its provider sends.
 #[tokio::test]
-async fn summaries_clear_character_stops_without_changing_ordinary_generation() {
+async fn stops_and_reasoning_reach_every_round_and_no_summary_from_a_summarizer_set_apart() {
     let provider = provider(
         |request| {
-            let mut content = structured();
-            if let Some(end) = request["stop"].as_array().and_then(|stops| {
-                stops
-                    .iter()
-                    .filter_map(|stop| content.find(stop.as_str().unwrap()))
-                    .min()
-            }) {
-                content.truncate(end);
+            if asks_for_a_summary(request) {
+                response(structured())
+            } else {
+                response("Done".into())
             }
-            response(content)
         },
         false,
     )
     .await;
-    let stops = vec!["}".into(), "<|end|>".into()];
+    let stops = vec!["}".to_string(), "<|end|>".to_string()];
     let client = provider
         .client
         .clone()
         .with_stop(stops.clone())
         .with_temperature(0.7)
+        .with_reasoning("test", Effort::Medium)
         .with_ollama_context("test", 5_000);
-    let history = active_history();
-    let settings = policy(5_000);
-    let prepared = context::prepare(&client, "test", &history, None, &settings, None)
+    let summarizer = client.clone().with_stop(Vec::new()).without_reasoning();
+    let agent = Agent::new(
+        Arc::new(HttpProvider::new("rounds", client)),
+        "test",
+        ToolRegistry::new(),
+        AgentConfig::default().with_system_prompt("Be brief."),
+        ToolContext::default(),
+    )
+    .with_context_policy(policy(5_000))
+    .with_summarizer(Arc::new(HttpProvider::new("summaries", summarizer)));
+
+    let mut state = agent
+        .run("x".repeat(12_800), &NoOpCallback)
+        .await
+        .expect("the first turn still fits");
+    agent
+        .continue_run(&mut state, "Again.", &NoOpCallback)
         .await
         .expect("character stops must not truncate structured summaries");
-    let summary = prepared.summary.as_ref().unwrap();
-    assert_eq!(summary.revision, 1);
-    assert_eq!(summary.coverage.entries, ["calls-a", "result-a"]);
-    assert_eq!(prepared.usage.status, ContextStatus::Compacted);
-    assert_eq!(prepared.usage.limit, settings.limit);
-    assert_eq!(prepared.usage.reserved, settings.reserved);
-    assert!(prepared.usage.used <= settings.threshold().unwrap());
 
-    let ordinary = client
-        .chat_with_options(
-            "test",
-            &prepared.messages,
-            None,
-            RequestOptions::new(settings.reserved),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        ordinary.choices[0].message.content.as_deref(),
-        structured().strip_suffix('}')
-    );
+    let summary = state.summary.as_ref().expect("the second turn compacted");
+    assert_eq!(summary.revision, 1);
     let requests = provider.requests.lock().await;
-    let (ordinary, summaries) = requests.split_last().unwrap();
-    assert!(summaries.len() > 1, "exercise every summary chunk");
+    let (summaries, rounds): (Vec<&Value>, Vec<&Value>) = requests
+        .iter()
+        .partition(|request| asks_for_a_summary(request));
+    assert!(!summaries.is_empty());
+    assert_eq!(rounds.len(), 2, "one request a round");
     for summary in summaries {
-        assert!(summary.get("stop").is_none());
+        assert!(summary.get("stop").is_none(), "{summary}");
+        assert!(summary.get("reasoning_effort").is_none(), "{summary}");
         assert_eq!(summary["temperature"], 0.0);
+        assert_eq!(summary["num_ctx"], 5_000);
+        assert_eq!(summary["max_tokens"], 1024);
     }
-    assert_eq!(ordinary["stop"], json!(stops));
-    assert_eq!(ordinary["temperature"].as_f64().unwrap() as f32, 0.7);
-    for request in requests.iter() {
-        assert_eq!(request["num_ctx"], 5_000);
-        assert_eq!(request["max_tokens"], settings.reserved);
+    for round in rounds {
+        assert_eq!(round["stop"], json!(stops));
+        assert_eq!(round["reasoning_effort"], "medium");
+        assert_eq!(round["temperature"].as_f64().unwrap() as f32, 0.7);
+        assert_eq!(round["num_ctx"], 5_000);
     }
+}
+
+/// Whatever provider writes a summary is asked for it of the model it was
+/// given, with no tools offered and nothing sampled.
+#[tokio::test]
+async fn a_summary_is_asked_of_the_given_model_at_temperature_zero_without_tools() {
+    let summarizer = StubProvider::answering("stub", structured());
+
+    let prepared = context::prepare(
+        &summarizer,
+        "qwen3",
+        &active_history(),
+        None,
+        &policy(5_000),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(prepared.usage.status, ContextStatus::Compacted);
+    assert!(summarizer.calls() > 1, "the long result is chunked");
+    let seen = summarizer.seen().unwrap();
+    assert_eq!(seen.model, "qwen3");
+    assert_eq!(seen.temperature, Some(0.0));
+    assert!(seen.tools.is_none());
+    assert_eq!(seen.options.reserved, 1024);
+    assert!(
+        seen.messages[0]
+            .content
+            .as_deref()
+            .is_some_and(|content| content.starts_with(SUMMARY_INSTRUCTIONS))
+    );
+}
+
+/// A summarizer that cannot answer leaves the history as it was while it
+/// still fits, and its failure is reported once it does not.
+#[tokio::test]
+async fn a_failing_summarizer_blocks_compaction_and_reports_why_once_nothing_fits() {
+    let summarizer = StubProvider::failing("stub", "the summarizer is offline");
+
+    let prepared = context::prepare(
+        &summarizer,
+        "test",
+        &[
+            entry("old", Message::user("x".repeat(12_800)), false, true),
+            entry("current", Message::user("Current"), true, false),
+        ],
+        None,
+        &policy(5_000),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(prepared.usage.status, ContextStatus::Blocked);
+    assert!(prepared.summary.is_none());
+
+    let error = context::prepare(
+        &summarizer,
+        "test",
+        &[
+            entry("old", Message::user("x".repeat(40_000)), false, true),
+            entry("current", Message::user("Current"), true, false),
+        ],
+        None,
+        &policy(5_000),
+        None,
+    )
+    .await
+    .expect_err("history past the input limit cannot go out as it was");
+    assert!(
+        matches!(&error, ContextError::Provider(failure) if failure.to_string().contains("offline")),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]
@@ -723,9 +829,16 @@ async fn runtime_context_is_model_bound_and_identical_on_summary_and_ordinary_re
     let provider = provider(|_| response(structured()), false).await;
     let client = provider.client.clone().with_ollama_context("test", 5_000);
     let history = active_history();
-    let prepared = context::prepare(&client, "test", &history, None, &policy(5_000), None)
-        .await
-        .unwrap();
+    let prepared = context::prepare(
+        &HttpProvider::new("test", client.clone()),
+        "test",
+        &history,
+        None,
+        &policy(5_000),
+        None,
+    )
+    .await
+    .unwrap();
     client
         .chat_with_options("test", &prepared.messages, None, RequestOptions::new(1024))
         .await
@@ -746,31 +859,6 @@ async fn runtime_context_is_model_bound_and_identical_on_summary_and_ordinary_re
     }
     assert!(requests.last().unwrap().get("num_ctx").is_none());
     assert_eq!(requests.last().unwrap()["max_tokens"], 512);
-}
-
-#[tokio::test]
-async fn reasoning_is_enabled_on_ordinary_requests_and_stripped_from_summaries() {
-    let provider = provider(|_| response(structured()), false).await;
-    let client = provider
-        .client
-        .clone()
-        .with_reasoning("test", abnegate_llm::Effort::Medium)
-        .with_ollama_context("test", 5_000);
-    let history = active_history();
-    let prepared = context::prepare(&client, "test", &history, None, &policy(5_000), None)
-        .await
-        .unwrap();
-    client
-        .chat_with_options("test", &prepared.messages, None, RequestOptions::new(4096))
-        .await
-        .unwrap();
-    let requests = provider.requests.lock().await;
-    let (ordinary, summaries) = requests.split_last().unwrap();
-    assert!(!summaries.is_empty());
-    for summary in summaries {
-        assert!(summary.get("reasoning_effort").is_none());
-    }
-    assert_eq!(ordinary["reasoning_effort"], "medium");
 }
 
 #[tokio::test]
@@ -815,12 +903,20 @@ async fn cancelling_summarization_keeps_checkpoint_and_canonical_evidence_unchan
         notified.notify_one();
         std::future::pending::<()>().await;
     });
-    let client = LlmClient::new(LlmConfig::new(format!("http://{address}/v1"), "test", ""));
+    let summarizer = HttpProvider::new(
+        "test",
+        LlmClient::new(LlmConfig::new(format!("http://{address}/v1"), "test", "")),
+    );
     let history = active_history();
     let original = context::coverage(&history, &["calls-a".into(), "result-a".into()]).unwrap();
     let settings = policy(5_000);
     let mut future = Box::pin(context::prepare(
-        &client, "test", &history, None, &settings, None,
+        &summarizer,
+        "test",
+        &history,
+        None,
+        &settings,
+        None,
     ));
     tokio::select! { _ = reached.notified() => {}, _ = &mut future => panic!("summarizer should be pending") }
     drop(future);
@@ -879,7 +975,7 @@ async fn many_small_messages_are_batched_into_one_summary_request() {
             >= settings.threshold().unwrap()
     );
     let prepared = context::prepare(
-        &provider.client,
+        &provider.completions(),
         "test",
         &history,
         Some(&tools),
@@ -902,18 +998,16 @@ async fn cli_continuation_preserves_assistant_prose_and_disambiguates_reused_pro
         if request["messages"].as_array().unwrap().last().unwrap()["role"] == "tool" { response("Finished".into()) }
         else { json!({"id":"reply", "object":"chat.completion", "created":0, "model":"test", "choices":[{"index":0,"message":{"role":"assistant","content":"I am checking the evidence","tool_calls":[{"id":"call0","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}).to_string() }
     }, false).await;
-    let agent = abnegate_agent::Agent::new(
-        provider.client.clone(),
-        abnegate_agent::ToolRegistry::new(),
-        abnegate_agent::AgentConfig::default(),
-        abnegate_agent::ToolContext::default(),
+    let agent = Agent::new(
+        Arc::new(provider.completions()),
+        "test",
+        ToolRegistry::new(),
+        AgentConfig::default(),
+        ToolContext::default(),
     );
-    let mut state = agent
-        .run("First turn", &abnegate_agent::NoOpCallback)
-        .await
-        .unwrap();
+    let mut state = agent.run("First turn", &NoOpCallback).await.unwrap();
     agent
-        .continue_run(&mut state, "Second turn", &abnegate_agent::NoOpCallback)
+        .continue_run(&mut state, "Second turn", &NoOpCallback)
         .await
         .unwrap();
     let envelopes: Vec<_> = state
@@ -983,7 +1077,7 @@ async fn incomplete_or_duplicate_tool_outcomes_fail_before_inference() {
     for history in [missing, duplicate] {
         assert!(matches!(
             context::prepare(
-                &provider.client,
+                &provider.completions(),
                 "test",
                 &history,
                 None,
@@ -1004,7 +1098,7 @@ async fn fenced_structured_summary_is_validated_with_deterministic_sampling() {
     )
     .await;
     let prepared = context::prepare(
-        &provider.client,
+        &provider.completions(),
         "test",
         &active_history(),
         None,
@@ -1047,7 +1141,7 @@ async fn eighty_text_rows_compact_at_4096_without_spending_context_on_unretrieva
         false,
     ));
     let prepared = context::prepare(
-        &provider.client,
+        &provider.completions(),
         "test",
         &history,
         None,
@@ -1117,7 +1211,7 @@ async fn sustained_tool_history_keeps_full_coverage_without_an_unbounded_prompt_
         4,
     );
     let prepared = context::prepare(
-        &provider.client,
+        &provider.completions(),
         "test",
         &history,
         None,

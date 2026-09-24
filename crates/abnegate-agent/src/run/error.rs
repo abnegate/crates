@@ -1,3 +1,4 @@
+use abnegate_llm::ProviderError;
 use thiserror::Error;
 
 use crate::context::ContextError;
@@ -6,8 +7,9 @@ use crate::context::ContextError;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum RunError {
-    #[error("LLM error: {0}")]
-    Llm(#[from] abnegate_llm::Error),
+    /// The provider failed to answer a round.
+    #[error("Provider error: {0}")]
+    Provider(#[from] ProviderError),
     /// The conversation could not be prepared to fit the model's context.
     #[error("Context error: {0}")]
     Context(#[from] ContextError),

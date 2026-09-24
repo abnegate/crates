@@ -13,28 +13,45 @@
 //! whole when they finish or overrun, and see only the allowlisted
 //! environment the [`ToolContext`] names.
 //!
-//! [`Agent`] runs the loop: ask the model, run the tools it calls, feed their
-//! results back, until it answers. A call whose tier needs confirming runs
-//! only once [`AgentCallback::approve`] allows it, which by default it does
-//! not; the approver is handed a [`tool::Preview`] of what the call will do,
-//! verbatim but for its escapes and flagged whenever part of it had to be
-//! left out. Every call is held to its tool's own timeout, and stopped with
-//! the run if the run is dropped. Each request goes through
-//! [`context::prepare`], which folds consumed history into a checkpoint when
-//! the model's context would overflow, without ever editing the history.
+//! [`Agent`] runs the loop over any
+//! [`CompletionProvider`](abnegate_llm::CompletionProvider): ask the model, run
+//! the tools it calls, feed their results back, until it answers. The model is
+//! named when the agent is built, so one provider can serve several agents,
+//! each asking its own. A call whose tier needs confirming runs only once
+//! [`AgentCallback::approve`] allows it, which by default it does not; the
+//! approver is handed a [`tool::Preview`] of what the call will do, verbatim
+//! but for its escapes and flagged whenever part of it had to be left out.
+//! Every call is held to its tool's own timeout, and stopped with the run if
+//! the run is dropped. Each request goes through [`context::prepare`], which
+//! folds consumed history into a checkpoint when the model's context would
+//! overflow, without ever editing the history.
 //!
 //! [`chat`] is the storage boundary a multi-turn chat session needs, leased so
 //! only one response is ever live per chat; [`session`] saves and reloads agent
 //! runs; [`template`] renders `{{key}}` prompt templates.
 //!
 //! ```no_run
-//! use abnegate_agent::{Agent, AgentConfig, NoOpCallback, ToolContext, ToolRegistry};
-//! use abnegate_llm::{LlmClient, LlmConfig};
+//! use std::sync::Arc;
 //!
-//! # async fn example() -> Result<(), abnegate_agent::RunError> {
-//! let llm = LlmClient::new(LlmConfig::new("http://127.0.0.1:4000/v1", "qwen3", ""));
+//! use abnegate_agent::Agent;
+//! use abnegate_agent::AgentConfig;
+//! use abnegate_agent::NoOpCallback;
+//! use abnegate_agent::RunError;
+//! use abnegate_agent::ToolContext;
+//! use abnegate_agent::ToolRegistry;
+//! use abnegate_llm::Credential;
+//! use abnegate_llm::HttpProvider;
+//!
+//! # async fn example() -> Result<(), RunError> {
+//! let provider = HttpProvider::connect(
+//!     "gateway",
+//!     "http://127.0.0.1:4000/v1",
+//!     &Credential::Inherited,
+//!     "qwen3",
+//! );
 //! let agent = Agent::new(
-//!     llm,
+//!     Arc::new(provider),
+//!     "qwen3",
 //!     ToolRegistry::with_defaults(),
 //!     AgentConfig::default(),
 //!     ToolContext::default(),
@@ -116,3 +133,7 @@ pub use crate::tool::ToolContext;
 pub use crate::tool::ToolError;
 pub use crate::tool::ToolRegistry;
 pub use crate::tool::ToolResult;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
