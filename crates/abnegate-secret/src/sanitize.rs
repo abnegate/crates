@@ -274,10 +274,11 @@ mod tests {
     #[test]
     fn unterminated_string_sequences_are_scanned_once() {
         for introducer in ["\u{1b}]", "\u{1b}P", "\u{1b}X", "\u{1b}^", "\u{1b}_"] {
-            let text = introducer.repeat(LENGTH / introducer.len());
-            let sanitized = work::assert_linear(&text, sanitize);
-
-            assert_eq!(sanitized, "", "{introducer:?} left a payload behind");
+            work::assert_linear(
+                LENGTH / introducer.len(),
+                |repetitions| introducer.repeat(repetitions),
+                |text| assert_eq!(sanitize(text), "", "{introducer:?} left a payload behind"),
+            );
         }
     }
 

@@ -1300,37 +1300,53 @@ mod tests {
 
     #[test]
     fn redaction_is_linear_in_the_length_of_minified_json() {
-        let json = "\"k\":1,".repeat(LENGTH / 6);
-        let redacted = work::assert_linear(&json, redact);
-
-        assert!(matches!(redacted, Cow::Borrowed(_)));
+        let unit = "\"k\":1,";
+        work::assert_linear(
+            LENGTH / unit.len(),
+            |repetitions| unit.repeat(repetitions),
+            |json| assert!(matches!(redact(json), Cow::Borrowed(_))),
+        );
     }
 
     #[test]
     fn a_url_that_never_closes_its_userinfo_is_scanned_once() {
-        let text = format!("http://x{}", ":1".repeat(LENGTH / 2));
-        let redacted = work::assert_linear(&text, redact);
-
-        assert!(matches!(redacted, Cow::Borrowed(_)));
+        let unit = ":1";
+        work::assert_linear(
+            LENGTH / unit.len(),
+            |repetitions| format!("http://x{}", unit.repeat(repetitions)),
+            |text| assert!(matches!(redact(text), Cow::Borrowed(_))),
+        );
     }
 
     #[test]
     fn repeated_private_key_markers_are_scanned_once() {
         for marker in ["-----BEGIN ", "-----BEGIN PRIVATE KEY "] {
-            work::assert_linear(&marker.repeat(LENGTH / marker.len()), redact);
+            work::assert_linear(
+                LENGTH / marker.len(),
+                |repetitions| marker.repeat(repetitions),
+                |text| {
+                    redact(text);
+                },
+            );
         }
     }
 
     #[test]
     fn named_values_that_stop_short_are_scanned_once() {
-        for text in [
-            "password=a,".repeat(LENGTH / 11),
-            format!("password={}", "a,b=".repeat(LENGTH / 4)),
-            format!("password={}", "=a".repeat(LENGTH / 2)),
-            "--password -".repeat(LENGTH / 12),
-            " \"!".repeat(LENGTH / 3),
+        for (prefix, unit) in [
+            ("", "password=a,"),
+            ("password=", "a,b="),
+            ("password=", "=a"),
+            ("", "--password -"),
+            ("", " \"!"),
         ] {
-            work::assert_linear(&text, redact);
+            work::assert_linear(
+                LENGTH / unit.len(),
+                |repetitions| format!("{prefix}{}", unit.repeat(repetitions)),
+                |text| {
+                    redact(text);
+                },
+            );
         }
     }
 
