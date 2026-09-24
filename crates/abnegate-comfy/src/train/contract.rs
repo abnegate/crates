@@ -46,9 +46,12 @@ pub struct Contract {
     /// [`Config::train_command`](crate::Config::train_command): the command
     /// reads the dataset from `<prefix>_DIRECTORY` and writes the adapter to
     /// `<prefix>_OUTPUT`. Beside them it gets `COMFYUI_BASE_URL`, the server
-    /// in [`Config::base_url`](crate::Config::base_url). Any variable this
-    /// process has under the prefix reaches the command too, so a deployment
-    /// keeps its trainer's own settings there.
+    /// in [`Config::base_url`](crate::Config::base_url), and, when
+    /// [`Config::api_token`](crate::Config::api_token) is set,
+    /// `COMFYUI_API_TOKEN` with `COMFYUI_TOKEN_HEADER`, the token and the
+    /// header in [`Config::token_header`](crate::Config::token_header) it
+    /// travels in. Any variable this process has under the prefix reaches the
+    /// command too, so a deployment keeps its trainer's own settings there.
     pub environment_prefix: String,
     /// Prefix of `<prefix>_INPUT`, the ComfyUI input directory handed to
     /// [`Config::train_command`](crate::Config::train_command).

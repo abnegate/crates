@@ -482,16 +482,23 @@ async fn train_with_pipeline(
 /// What the external trainer is given besides its run's own variables: the
 /// names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT), every
 /// variable this process has under the contract's environment prefix, and the
-/// ComfyUI server. Nothing else of this process's environment, which holds
-/// credentials the trainer has no use for.
+/// ComfyUI server with the token and header that reach it. Nothing else of
+/// this process's environment, which holds credentials the trainer has no use
+/// for.
 fn trainer_environment(config: &Config) -> EnvironmentPolicy {
     let prefix = format!("{}_", config.contract.environment_prefix);
     let settings = std::env::vars_os()
         .filter_map(|(name, _)| name.into_string().ok())
         .filter(|name| name.starts_with(&prefix));
-    EnvironmentPolicy::allowlist()
+    let environment = EnvironmentPolicy::allowlist()
         .allow(settings)
-        .with("COMFYUI_BASE_URL", config.base_url.as_str())
+        .with("COMFYUI_BASE_URL", config.base_url.as_str());
+    match &config.api_token {
+        Some(token) => environment
+            .with("COMFYUI_API_TOKEN", token.clone())
+            .with("COMFYUI_TOKEN_HEADER", config.token_header.as_str()),
+        None => environment,
+    }
 }
 
 /// Runs the external trainer to completion within `budget`.
@@ -1849,6 +1856,32 @@ mod tests {
             printf lora > "$TRAIN_OUTPUT"
         "#;
         let (_root, config) = harness(command);
+
+        trained_by(&config).await;
+    }
+
+    #[tokio::test]
+    async fn the_trainer_is_handed_the_comfyui_token_and_the_header_it_travels_in() {
+        const NAME: &str =
+            "lora::tests::the_trainer_is_handed_the_comfyui_token_and_the_header_it_travels_in";
+        if crate::child::delegated(NAME, &[]).await {
+            return;
+        }
+        assert!(
+            std::env::var_os("COMFYUI_API_TOKEN").is_none(),
+            "the host must not hold the token, or inheriting it would pass"
+        );
+        let command = r#"
+            test "$COMFYUI_API_TOKEN" = t || exit 91
+            test "$COMFYUI_TOKEN_HEADER" = X-Proxy-Token || exit 92
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+        let config = Config {
+            api_token: Some(SecretValue::new("t")),
+            token_header: "X-Proxy-Token".into(),
+            ..config
+        };
 
         trained_by(&config).await;
     }
