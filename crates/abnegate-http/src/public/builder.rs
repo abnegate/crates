@@ -10,7 +10,7 @@ use std::time::Duration;
 
 /// Redirect hops a caller-supplied fetch may follow. Each one is validated, so
 /// this bounds the chain rather than the trust.
-const MAX_REDIRECTS: usize = 3;
+const MAXIMUM_REDIRECTS: usize = 3;
 
 /// Configures a [`PublicClient`].
 ///
@@ -46,7 +46,7 @@ impl PublicClientBuilder {
             .builder
             .dns_resolver(PublicResolver)
             .redirect(Policy::custom(|attempt| {
-                if attempt.previous().len() > MAX_REDIRECTS {
+                if attempt.previous().len() > MAXIMUM_REDIRECTS {
                     return attempt.error(Error::TooManyRedirects);
                 }
                 match validate_public_url(attempt.url().as_str()) {
