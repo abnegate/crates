@@ -3,7 +3,6 @@
 //! Queries go to whatever URL is configured, so the instance may be a local
 //! container, a private deployment, or a public one.
 
-use std::time::Duration;
 use std::time::Instant;
 
 use reqwest::redirect::Policy;
@@ -11,7 +10,7 @@ use reqwest::{Client, Response};
 
 use crate::config::WebSearchConfig;
 use crate::entry::Entry;
-use crate::error::SearchError;
+use crate::error::Error;
 use crate::hit::SearchHit;
 use crate::observe::record;
 use crate::outcome::Outcome;
@@ -23,7 +22,7 @@ const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VE
 
 /// The most of an answer that is read. SearXNG's JSON for a page of results
 /// is a few tens of kilobytes.
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+const MAXIMUM_BODY_BYTES: usize = 1024 * 1024;
 
 /// HTTP client for one SearXNG instance.
 ///
@@ -38,15 +37,15 @@ impl SearxngClient {
     /// A client for the instance `config` names.
     ///
     /// The result count and timeout are held to the same bounds
-    /// [`WebSearchConfig::from_env`] applies, however `config` was built.
-    pub fn new(config: WebSearchConfig) -> Result<Self, SearchError> {
+    /// [`WebSearchConfig::from_environment`] applies, however `config` was built.
+    pub fn new(config: WebSearchConfig) -> Result<Self, Error> {
         let config = config.bounded();
         let http = Client::builder()
             .redirect(Policy::none())
-            .timeout(Duration::from_secs(config.timeout_secs))
+            .timeout(config.timeout)
             .user_agent(USER_AGENT)
             .build()
-            .map_err(SearchError::http)?;
+            .map_err(Error::http)?;
         Ok(Self { http, config })
     }
 
@@ -56,7 +55,7 @@ impl SearxngClient {
         &self,
         query: &str,
         range: Option<TimeRange>,
-    ) -> Result<Vec<SearchHit>, SearchError> {
+    ) -> Result<Vec<SearchHit>, Error> {
         let started = Instant::now();
         let query = sanitize_query(query);
         if query.is_empty() {
@@ -72,26 +71,17 @@ impl SearxngClient {
         result
     }
 
-    async fn fetch(
-        &self,
-        query: &str,
-        range: Option<TimeRange>,
-    ) -> Result<Vec<SearchHit>, SearchError> {
+    async fn fetch(&self, query: &str, range: Option<TimeRange>) -> Result<Vec<SearchHit>, Error> {
         let url = build_search_url(&self.config.query_url, query, range);
-        let response = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(SearchError::http)?;
+        let response = self.http.get(&url).send().await.map_err(Error::http)?;
         let status = response.status();
         if !status.is_success() {
-            return Err(SearchError::Status(status.as_u16()));
+            return Err(Error::Status(status.as_u16()));
         }
 
         let body = read_bounded(response).await?;
         let reply: Reply =
-            serde_json::from_slice(&body).map_err(|error| SearchError::malformed(&error))?;
+            serde_json::from_slice(&body).map_err(|error| Error::malformed(&error))?;
         Ok(reply
             .results
             .into_iter()
@@ -101,24 +91,24 @@ impl SearxngClient {
     }
 }
 
-/// The body of `response`, refused once it passes [`MAX_BODY_BYTES`].
+/// The body of `response`, refused once it passes [`MAXIMUM_BODY_BYTES`].
 ///
 /// A declared length is checked up front, and the chunks are counted as they
 /// arrive for an answer that declares none.
-async fn read_bounded(mut response: Response) -> Result<Vec<u8>, SearchError> {
-    let too_large = SearchError::TooLarge {
-        limit: MAX_BODY_BYTES,
+async fn read_bounded(mut response: Response) -> Result<Vec<u8>, Error> {
+    let too_large = Error::TooLarge {
+        limit: MAXIMUM_BODY_BYTES,
     };
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_BODY_BYTES as u64)
+        .is_some_and(|length| length > MAXIMUM_BODY_BYTES as u64)
     {
         return Err(too_large);
     }
 
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(SearchError::http)? {
-        if body.len() + chunk.len() > MAX_BODY_BYTES {
+    while let Some(chunk) = response.chunk().await.map_err(Error::http)? {
+        if body.len() + chunk.len() > MAXIMUM_BODY_BYTES {
             return Err(too_large);
         }
         body.extend_from_slice(&chunk);
@@ -132,18 +122,18 @@ mod tests {
     use crate::observe::observe_searches;
     use serde_json::json;
     use std::sync::{Mutex, PoisonError};
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_client(query_url: String, result_count: usize) -> SearxngClient {
-        SearxngClient::new(WebSearchConfig {
-            enabled: true,
-            query_url,
-            result_count,
-            timeout_secs: 5,
-        })
+        SearxngClient::new(
+            WebSearchConfig::new(query_url)
+                .with_result_count(result_count)
+                .with_timeout(Duration::from_secs(5)),
+        )
         .expect("client")
     }
 
@@ -169,18 +159,8 @@ mod tests {
         assert_eq!(
             hits,
             vec![
-                SearchHit {
-                    title: "Example".to_string(),
-                    url: "https://example.com".to_string(),
-                    snippet: "A snippet".to_string(),
-                    identifier: None,
-                },
-                SearchHit {
-                    title: "Other".to_string(),
-                    url: "https://other.test".to_string(),
-                    snippet: String::new(),
-                    identifier: None,
-                },
+                SearchHit::new("Example", "https://example.com", "A snippet"),
+                SearchHit::new("Other", "https://other.test", ""),
             ]
         );
     }
@@ -217,7 +197,7 @@ mod tests {
 
         let client = test_client(format!("{}/search?q=<query>&format=json", server.uri()), 5);
         let error = client.search("q", None).await.expect_err("http error");
-        assert!(matches!(error, SearchError::Status(429)));
+        assert!(matches!(error, Error::Status(429)));
     }
 
     #[tokio::test]
@@ -233,7 +213,7 @@ mod tests {
     /// answers a request that actually carries the narrowed range.
     #[tokio::test]
     async fn search_sends_the_range_to_the_engine() {
-        for range in TimeRange::ALL {
+        for &range in TimeRange::ALL {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/search"))
@@ -302,7 +282,7 @@ mod tests {
             .await
             .expect_err("nothing listens on port 1");
 
-        assert!(matches!(error, SearchError::Http(_)), "{error:?}");
+        assert!(matches!(error, Error::Http(_)), "{error:?}");
         let rendered = format!("{error} {error:?}");
         for leaked in ["hunter2", "private", "127.0.0.1:1/search"] {
             assert!(!rendered.contains(leaked), "leaked {leaked}: {rendered}");
@@ -330,13 +310,13 @@ mod tests {
             .search("rust", None)
             .await
             .expect_err("a redirect is not an answer");
-        assert_eq!(error, SearchError::Status(302));
+        assert_eq!(error, Error::Status(302));
     }
 
     #[tokio::test]
     async fn an_oversized_answer_is_refused() {
         let server = MockServer::start().await;
-        let padding = "x".repeat(MAX_BODY_BYTES);
+        let padding = "x".repeat(MAXIMUM_BODY_BYTES);
         Mock::given(method("GET"))
             .and(path("/search"))
             .respond_with(
@@ -352,8 +332,8 @@ mod tests {
             .expect_err("too large");
         assert_eq!(
             error,
-            SearchError::TooLarge {
-                limit: MAX_BODY_BYTES
+            Error::TooLarge {
+                limit: MAXIMUM_BODY_BYTES
             }
         );
     }
@@ -372,7 +352,7 @@ mod tests {
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n")
                 .await;
-            for _ in 0..(2 * MAX_BODY_BYTES / chunk.len()) {
+            for _ in 0..(2 * MAXIMUM_BODY_BYTES / chunk.len()) {
                 let header = format!("{:x}\r\n", chunk.len());
                 if stream.write_all(header.as_bytes()).await.is_err()
                     || stream.write_all(&chunk).await.is_err()
@@ -390,8 +370,8 @@ mod tests {
             .expect_err("too large");
         assert_eq!(
             error,
-            SearchError::TooLarge {
-                limit: MAX_BODY_BYTES
+            Error::TooLarge {
+                limit: MAXIMUM_BODY_BYTES
             }
         );
     }
@@ -422,12 +402,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = SearxngClient::new(WebSearchConfig {
-            enabled: true,
-            query_url: search_url(&server),
-            result_count: 5,
-            timeout_secs: 0,
-        })
+        let client = SearxngClient::new(
+            WebSearchConfig::new(search_url(&server)).with_timeout(Duration::ZERO),
+        )
         .expect("client");
         assert_eq!(client.search("rust", None).await.expect("search").len(), 1);
     }
@@ -457,7 +434,7 @@ mod tests {
             .search("rust", None)
             .await
             .expect_err("not JSON");
-        assert!(matches!(error, SearchError::Malformed { .. }), "{error:?}");
+        assert!(matches!(error, Error::Malformed { .. }), "{error:?}");
         assert!(
             OBSERVED
                 .lock()

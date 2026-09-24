@@ -6,15 +6,21 @@
 //! [`needs_web_search`] decides whether a message is worth a lookup at all, and
 //! [`SearchContext`] turns the outcome into prompt text a model can cite.
 //!
+//! Search is off until it is switched on, by `SEARCH_ENABLE_WEB_SEARCH` or
+//! [`WebSearchConfig::new`]. [`WebSearchConfig::requested_for`] consults that
+//! switch and [`SearxngClient`] does not, so a host asks the config first.
+//!
 //! ```no_run
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn example() -> Result<(), abnegate_search::Error> {
 //! use abnegate_search::{SearxngClient, TimeRange, WebSearchConfig};
 //!
-//! let client = SearxngClient::new(WebSearchConfig::from_env())?;
-//! let results = client
-//!     .search("rust release notes", Some(TimeRange::Week))
-//!     .await?;
-//! # let _ = results;
+//! let message = "What are the latest Rust release notes?";
+//! let config = WebSearchConfig::from_environment();
+//! if config.requested_for(message, None) {
+//!     let client = SearxngClient::new(config)?;
+//!     let results = client.search(message, Some(TimeRange::Week)).await?;
+//! #   let _ = results;
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -42,10 +48,14 @@ mod time_range;
 pub use crate::client::SearxngClient;
 pub use crate::config::{DEFAULT_SEARXNG_QUERY_URL, WebSearchConfig};
 pub use crate::context::{SearchContext, format_search_context};
-pub use crate::error::SearchError;
+pub use crate::error::Error;
 pub use crate::hit::SearchHit;
 pub use crate::intent::needs_web_search;
 pub use crate::observe::{SearchObserver, observe_searches};
 pub use crate::outcome::Outcome;
 pub use crate::query::{build_search_url, sanitize_query};
 pub use crate::time_range::TimeRange;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

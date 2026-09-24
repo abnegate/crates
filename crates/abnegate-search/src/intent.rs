@@ -3,7 +3,7 @@
 use crate::query::sanitize_query;
 
 /// Shorter than this, a message is a reply rather than a question.
-const MIN_QUERY_LENGTH: usize = 8;
+const MINIMUM_QUERY_LENGTH: usize = 8;
 
 /// Heuristic: does this message benefit from live web results?
 ///
@@ -11,7 +11,7 @@ const MIN_QUERY_LENGTH: usize = 8;
 /// questions; turns it on for news, prices, weather, recency, and lookups.
 pub fn needs_web_search(content: &str) -> bool {
     let query = sanitize_query(content);
-    if query.len() < MIN_QUERY_LENGTH {
+    if query.len() < MINIMUM_QUERY_LENGTH {
         return false;
     }
 

@@ -22,11 +22,6 @@ impl Entry {
             .title
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| url.clone());
-        Some(SearchHit {
-            title,
-            url,
-            snippet: self.content.unwrap_or_default(),
-            identifier: None,
-        })
+        Some(SearchHit::new(title, url, self.content.unwrap_or_default()))
     }
 }

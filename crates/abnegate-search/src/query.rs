@@ -3,7 +3,7 @@
 use crate::time_range::TimeRange;
 
 /// Truncate user messages so a pasted file cannot become the search query.
-const MAX_QUERY_CHARS: usize = 500;
+const MAXIMUM_QUERY_CHARACTERS: usize = 500;
 
 /// Query placeholders a configured URL template may carry.
 const ANGLE_QUERY_PLACEHOLDER: &str = "<query>";
@@ -21,7 +21,7 @@ pub fn sanitize_query(content: &str) -> String {
     without_attachments
         .trim()
         .chars()
-        .take(MAX_QUERY_CHARS)
+        .take(MAXIMUM_QUERY_CHARACTERS)
         .collect::<String>()
         .trim()
         .to_string()
@@ -72,23 +72,23 @@ mod tests {
     fn build_search_url_replaces_placeholders() {
         assert_eq!(
             build_search_url(DEFAULT_SEARXNG_QUERY_URL, "open source", None),
-            "http://gluetun:8080/search?q=open%20source&format=json"
+            "http://127.0.0.1:8080/search?q=open%20source&format=json"
         );
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search?q={query}&format=json",
+                "http://127.0.0.1:8080/search?q={query}&format=json",
                 "a&b",
                 None
             ),
-            "http://gluetun:8080/search?q=a%26b&format=json"
+            "http://127.0.0.1:8080/search?q=a%26b&format=json"
         );
         assert_eq!(
-            build_search_url("http://gluetun:8080/search", "hello", None),
-            "http://gluetun:8080/search?q=hello&format=json"
+            build_search_url("http://127.0.0.1:8080/search", "hello", None),
+            "http://127.0.0.1:8080/search?q=hello&format=json"
         );
         assert_eq!(
-            build_search_url("http://gluetun:8080/search?lang=en", "hello", None),
-            "http://gluetun:8080/search?lang=en&q=hello&format=json"
+            build_search_url("http://127.0.0.1:8080/search?lang=en", "hello", None),
+            "http://127.0.0.1:8080/search?lang=en&q=hello&format=json"
         );
     }
 
@@ -103,31 +103,31 @@ mod tests {
                 "open source",
                 Some(TimeRange::Day)
             ),
-            "http://gluetun:8080/search?q=open%20source&format=json&time_range=day"
+            "http://127.0.0.1:8080/search?q=open%20source&format=json&time_range=day"
         );
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search?q={query}&format=json",
+                "http://127.0.0.1:8080/search?q={query}&format=json",
                 "a&b",
                 Some(TimeRange::Week)
             ),
-            "http://gluetun:8080/search?q=a%26b&format=json&time_range=week"
+            "http://127.0.0.1:8080/search?q=a%26b&format=json&time_range=week"
         );
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search",
+                "http://127.0.0.1:8080/search",
                 "hello",
                 Some(TimeRange::Month)
             ),
-            "http://gluetun:8080/search?q=hello&format=json&time_range=month"
+            "http://127.0.0.1:8080/search?q=hello&format=json&time_range=month"
         );
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search?lang=en",
+                "http://127.0.0.1:8080/search?lang=en",
                 "hello",
                 Some(TimeRange::Day)
             ),
-            "http://gluetun:8080/search?lang=en&q=hello&format=json&time_range=day"
+            "http://127.0.0.1:8080/search?lang=en&q=hello&format=json&time_range=day"
         );
     }
 
@@ -138,31 +138,31 @@ mod tests {
     fn build_search_url_keeps_a_template_fragment_behind_the_parameters() {
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search?q={query}&format=json#view",
+                "http://127.0.0.1:8080/search?q={query}&format=json#view",
                 "hello",
                 Some(TimeRange::Day)
             ),
-            "http://gluetun:8080/search?q=hello&format=json&time_range=day#view"
+            "http://127.0.0.1:8080/search?q=hello&format=json&time_range=day#view"
         );
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search/<query>#view",
+                "http://127.0.0.1:8080/search/<query>#view",
                 "hello",
                 Some(TimeRange::Week)
             ),
-            "http://gluetun:8080/search/hello?time_range=week#view"
+            "http://127.0.0.1:8080/search/hello?time_range=week#view"
         );
         assert_eq!(
-            build_search_url("http://gluetun:8080/search#view", "hello", None),
-            "http://gluetun:8080/search?q=hello&format=json#view"
+            build_search_url("http://127.0.0.1:8080/search#view", "hello", None),
+            "http://127.0.0.1:8080/search?q=hello&format=json#view"
         );
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search#view",
+                "http://127.0.0.1:8080/search#view",
                 "hello",
                 Some(TimeRange::Month)
             ),
-            "http://gluetun:8080/search?q=hello&format=json&time_range=month#view"
+            "http://127.0.0.1:8080/search?q=hello&format=json&time_range=month#view"
         );
     }
 
@@ -172,11 +172,11 @@ mod tests {
     fn build_search_url_ignores_a_question_mark_inside_a_fragment() {
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search/<query>#view?tab=all",
+                "http://127.0.0.1:8080/search/<query>#view?tab=all",
                 "hello",
                 Some(TimeRange::Day)
             ),
-            "http://gluetun:8080/search/hello?time_range=day#view?tab=all"
+            "http://127.0.0.1:8080/search/hello?time_range=day#view?tab=all"
         );
     }
 
@@ -184,24 +184,24 @@ mod tests {
     #[test]
     fn build_search_url_opens_a_query_string_for_a_path_placeholder() {
         assert_eq!(
-            build_search_url("http://gluetun:8080/search/<query>", "hello", None),
-            "http://gluetun:8080/search/hello"
+            build_search_url("http://127.0.0.1:8080/search/<query>", "hello", None),
+            "http://127.0.0.1:8080/search/hello"
         );
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search/<query>",
+                "http://127.0.0.1:8080/search/<query>",
                 "hello",
                 Some(TimeRange::Week)
             ),
-            "http://gluetun:8080/search/hello?time_range=week"
+            "http://127.0.0.1:8080/search/hello?time_range=week"
         );
         assert_eq!(
             build_search_url(
-                "http://gluetun:8080/search/{query}",
+                "http://127.0.0.1:8080/search/{query}",
                 "open source",
                 Some(TimeRange::Month)
             ),
-            "http://gluetun:8080/search/open%20source?time_range=month"
+            "http://127.0.0.1:8080/search/open%20source?time_range=month"
         );
     }
 
@@ -210,6 +210,9 @@ mod tests {
         let content = "What is Rust?\n\nAttached file: notes.md\n```md\nsecret\n```";
         assert_eq!(sanitize_query(content), "What is Rust?");
         assert!(sanitize_query("   ").is_empty());
-        assert_eq!(sanitize_query(&"x".repeat(600)).len(), MAX_QUERY_CHARS);
+        assert_eq!(
+            sanitize_query(&"x".repeat(600)).len(),
+            MAXIMUM_QUERY_CHARACTERS
+        );
     }
 }
