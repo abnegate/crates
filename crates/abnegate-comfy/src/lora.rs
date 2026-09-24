@@ -1498,12 +1498,10 @@ mod tests {
     /// A real image whose colour follows its name, so a crop can still be
     /// traced back to the upload it was made from.
     fn image(target: &str, caption: &str, reference: Option<&str>) -> TrainImage {
-        TrainImage {
-            filename: format!("{target}.png"),
-            caption: caption.to_string(),
-            bytes_base64: encoded(colour(target)),
-            before_base64: reference.map(|value| encoded(colour(value))),
-            group: None,
+        let image = TrainImage::new(format!("{target}.png"), caption, encoded(colour(target)));
+        match reference {
+            Some(reference) => image.with_before_base64(encoded(colour(reference))),
+            None => image,
         }
     }
 
@@ -1566,21 +1564,16 @@ mod tests {
     }
 
     fn identity(name: &str) -> TrainRequest {
-        TrainRequest {
-            name: name.to_string(),
-            base: "flux-schnell".to_string(),
-            trigger: Some("ohwx".to_string()),
-            images: vec![image("target", "a portrait", None)],
-        }
+        TrainRequest::new(
+            name,
+            "flux-schnell",
+            vec![image("target", "a portrait", None)],
+        )
+        .with_trigger("ohwx")
     }
 
     fn edit(images: Vec<TrainImage>) -> TrainRequest {
-        TrainRequest {
-            name: "edit-style".to_string(),
-            base: "qwen-image-edit".to_string(),
-            trigger: None,
-            images,
-        }
+        TrainRequest::new("edit-style", "qwen-image-edit", images)
     }
 
     fn keep_all(images: &[Vec<u8>], _resolution: u32) -> Verdict {
@@ -1673,12 +1666,10 @@ mod tests {
     }
 
     fn upload(caption: &str, group: Option<usize>) -> TrainImage {
-        TrainImage {
-            filename: "a.png".into(),
-            caption: caption.into(),
-            bytes_base64: encoded([12, 34, 56]),
-            before_base64: None,
-            group,
+        let image = TrainImage::new("a.png", caption, encoded([12, 34, 56]));
+        match group {
+            Some(group) => image.with_group(group),
+            None => image,
         }
     }
 
@@ -2349,24 +2340,23 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// A deployment's own node pack, overridden field by field the only way a
-    /// caller outside the crate can: every node, namespace, variable prefix,
+    /// A deployment's own node pack: every node, namespace, variable prefix,
     /// sidecar and publication directory under a brand of its own.
     fn acme() -> Contract {
-        let mut contract = Contract::default();
-        contract.train_lora_node = "AcmeTrainLoRA".into();
-        contract.cleanup_training_run_node = "AcmeCleanupTrainingRun".into();
-        contract.load_train_dataset_node = "AcmeLoadTrainDataset".into();
-        contract.probe_loss_node = "AcmeProbeLoss".into();
-        contract.stage_training_artifact_node = "AcmeStageTrainingArtifact".into();
-        contract.folder_prefix = "acme-train-".into();
-        contract.artifact_prefix = "acme-lora-".into();
-        contract.probe_prefix = "acme-probe-".into();
-        contract.environment_prefix = "ACME_TRAIN".into();
-        contract.input_environment_prefix = "ACME_COMFY".into();
-        contract.sidecar_suffix = ".acme.json".into();
-        contract.publication_directory = ".acme-publish".into();
-        contract
+        Contract {
+            train_lora_node: "AcmeTrainLoRA".into(),
+            cleanup_training_run_node: "AcmeCleanupTrainingRun".into(),
+            load_train_dataset_node: "AcmeLoadTrainDataset".into(),
+            probe_loss_node: "AcmeProbeLoss".into(),
+            stage_training_artifact_node: "AcmeStageTrainingArtifact".into(),
+            folder_prefix: "acme-train-".into(),
+            artifact_prefix: "acme-lora-".into(),
+            probe_prefix: "acme-probe-".into(),
+            environment_prefix: "ACME_TRAIN".into(),
+            input_environment_prefix: "ACME_COMFY".into(),
+            sidecar_suffix: ".acme.json".into(),
+            publication_directory: ".acme-publish".into(),
+        }
     }
 
     /// Checks the adapter was published under `acme()`'s names alone, and that

@@ -3,6 +3,7 @@ use serde::Serialize;
 
 /// What one clip yielded.
 #[derive(Clone, Debug, Serialize)]
+#[non_exhaustive]
 pub struct Clip {
     pub frames: Vec<Frame>,
     /// Frames pulled out of the video before selection.

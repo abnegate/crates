@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub const MAXIMUM_SOURCE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct SourceImage {
     pub bytes: bytes::Bytes,
     pub mime: String,
@@ -24,6 +25,8 @@ impl fmt::Debug for SourceImage {
 }
 
 impl SourceImage {
+    /// An image to upload, refused when it is empty, over
+    /// [`MAXIMUM_SOURCE_IMAGE_BYTES`], or not PNG, JPEG or WebP.
     pub fn new(bytes: impl Into<bytes::Bytes>, mime: &str) -> Result<Self, Error> {
         let mime = normalize_source_mime(mime)?;
         let bytes = bytes.into();

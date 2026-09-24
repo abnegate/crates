@@ -261,10 +261,8 @@ mod tests {
     fn write_qwen_sidecar(weight: &Path) {
         write_sidecar(
             weight,
-            &WeightSidecar {
-                recipe_id: "qwen-image-edit-adapter".into(),
-                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
-            },
+            &WeightSidecar::new("qwen-image-edit-adapter")
+                .with_huggingface_base("Qwen/Qwen-Image-Edit-2511"),
             &Contract::default(),
         )
         .unwrap();
@@ -439,10 +437,11 @@ mod tests {
     }
 
     fn overridden() -> Contract {
-        let mut contract = Contract::default();
-        contract.sidecar_suffix = ".binding.json".into();
-        contract.publication_directory = ".binding-publish".into();
-        contract
+        Contract {
+            sidecar_suffix: ".binding.json".into(),
+            publication_directory: ".binding-publish".into(),
+            ..Contract::default()
+        }
     }
 
     #[test]

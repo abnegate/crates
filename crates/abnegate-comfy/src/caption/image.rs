@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::fmt;
 
 #[derive(Deserialize)]
+#[non_exhaustive]
 pub struct CaptionImage {
     pub filename: String,
     pub bytes_base64: String,

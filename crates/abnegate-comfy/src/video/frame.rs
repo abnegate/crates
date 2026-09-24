@@ -3,6 +3,7 @@ use std::fmt;
 
 /// One training image pulled from a clip.
 #[derive(Clone, Serialize)]
+#[non_exhaustive]
 pub struct Frame {
     pub filename: String,
     pub bytes_base64: String,

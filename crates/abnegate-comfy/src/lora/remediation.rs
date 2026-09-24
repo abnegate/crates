@@ -4,6 +4,7 @@ use serde::Serialize;
 
 /// One target the pipeline tried to repair before selecting the training set.
 #[derive(Debug, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub struct Remediation {
     pub source_index: usize,
     pub filename: String,

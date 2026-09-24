@@ -303,19 +303,20 @@ impl Client {
         let workflow = if let Some(source) = source {
             let _ = progress.send("Uploading source image...".to_string());
             let uploaded = self.upload_source(source, cancel, deadline).await?;
-            recipe.apply(Fill {
-                prompt,
-                seed: rand::random::<u64>() & i64::MAX as u64,
-                weights: fill_weights,
-                source: Some(uploaded.as_str()),
-            })?
+            recipe.apply(
+                Fill::new(
+                    prompt,
+                    rand::random::<u64>() & i64::MAX as u64,
+                    fill_weights,
+                )
+                .with_source(uploaded.as_str()),
+            )?
         } else {
-            recipe.apply(Fill {
+            recipe.apply(Fill::new(
                 prompt,
-                seed: rand::random::<u64>() & i64::MAX as u64,
-                weights: fill_weights,
-                source: None,
-            })?
+                rand::random::<u64>() & i64::MAX as u64,
+                fill_weights,
+            ))?
         };
         self.submit_and_collect(
             workflow,
@@ -802,12 +803,11 @@ pub fn build_flux_schnell_workflow(
 ) -> Result<Value, Error> {
     RecipeCatalog::packaged()?
         .image_recipe_for("flux1-schnell-fp8.safetensors")?
-        .apply(Fill {
+        .apply(Fill::new(
             prompt,
             seed,
-            weights: HashMap::from([("checkpoint", checkpoint)]),
-            source: None,
-        })
+            HashMap::from([("checkpoint", checkpoint)]),
+        ))
 }
 
 /// Build the default image-to-image recipe and mutate only approved inputs.
@@ -819,12 +819,10 @@ pub fn build_flux_schnell_image_to_image_workflow(
 ) -> Result<Value, Error> {
     RecipeCatalog::packaged()?
         .image_recipe_for("flux1-schnell-fp8.safetensors")?
-        .apply(Fill {
-            prompt,
-            seed,
-            weights: HashMap::from([("checkpoint", checkpoint)]),
-            source: Some(image_name),
-        })
+        .apply(
+            Fill::new(prompt, seed, HashMap::from([("checkpoint", checkpoint)]))
+                .with_source(image_name),
+        )
 }
 
 fn load_workflow_file(path: &Path) -> Result<Value, Error> {

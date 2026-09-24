@@ -54,7 +54,7 @@
 //!     &Config::from_environment(),
 //!     &std::fs::read("subject.mp4")?,
 //!     "subject.mp4",
-//!     video::Options { fps: 4, resolution: 512, mirror: true, limit: 48 },
+//!     video::Options::new(4, 512, true, 48),
 //! )
 //! .await?;
 //! # let _ = clip;

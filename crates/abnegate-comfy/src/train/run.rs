@@ -3,6 +3,7 @@ use crate::train::Contract;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Run {
     pub folder: String,
     pub artifact: String,

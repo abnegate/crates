@@ -43,6 +43,7 @@ fn default_checkpoints_per_run() -> u32 {
 
 /// How much better an adapter fits its own training images than its base does.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[non_exhaustive]
 pub struct Quality {
     pub improvement: f32,
     pub checkpoint: String,
