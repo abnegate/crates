@@ -6,8 +6,10 @@ use tokio_util::sync::CancellationToken;
 use super::process_group::ProcessGroup;
 use super::stdin_handle::StdinHandle;
 
-/// Handle to a running job
+/// Handle to a running job, as
+/// [`CommandExecutor::spawn`](super::CommandExecutor::spawn) returns it
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct JobHandle {
     /// Process ID
     pub pid: u32,
