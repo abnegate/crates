@@ -116,13 +116,28 @@ impl McpSession {
                     message: error.to_string(),
                 })?;
 
+        Self::listed(name, &server, client, group).await
+    }
+
+    /// The session for `server`, whose handshake `client` has completed, with
+    /// the tools its server lists that `server` [allows](McpServer::allows),
+    /// as a CLI allows them.
+    pub(super) async fn listed(
+        name: &str,
+        server: &McpServer,
+        client: RunningService<RoleClient, ()>,
+        group: Group,
+    ) -> Result<Self, McpError> {
         let remote_tools = client
             .list_all_tools()
             .await
             .map_err(|error| McpError::Handshake {
                 server: name.to_string(),
                 message: error.to_string(),
-            })?;
+            })?
+            .into_iter()
+            .filter(|tool| server.allows(&tool.name))
+            .collect();
 
         let mut session = Self::new(name.to_string(), remote_tools, client);
         session.group = group;

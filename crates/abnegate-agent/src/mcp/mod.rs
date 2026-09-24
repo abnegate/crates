@@ -2,11 +2,13 @@
 //!
 //! [`McpHub::connect`] launches every enabled command server in an
 //! [`McpConfig`], completes the handshake with each, and lists what it
-//! advertises. [`register`] then adds each remote tool to a registry as
-//! `server__tool`, so one server cannot answer for another's tools or for a
-//! built-in. A server that fails to start or to answer in time is logged and
-//! skipped, and so is a [disabled](McpServer::disabled) one or one reached by
-//! URL, which only a CLI can attach.
+//! advertises, keeping only the tools the server
+//! [allows](McpServer::allows), as a CLI allows them. [`register`] then adds
+//! each remote tool to a registry as `server__tool`, so one server cannot
+//! answer for another's tools or for a built-in. A server that fails to start
+//! or to answer in time is logged and skipped, and so is a
+//! [disabled](McpServer::disabled) one or one reached by URL, which only a
+//! CLI can attach.
 //!
 //! The configuration is `abnegate-agent-cli`'s, re-exported here, so one
 //! `mcp.json` drives both this client and a coding agent CLI.

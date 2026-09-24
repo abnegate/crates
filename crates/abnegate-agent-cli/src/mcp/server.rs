@@ -58,8 +58,10 @@ pub struct McpServer {
     pub transport: Option<McpTransport>,
     /// Headers sent to an HTTP or SSE server.
     pub headers: BTreeMap<String, SecretValue>,
-    /// The tools to allow without prompting. Empty allows every tool the
-    /// server offers.
+    /// The tools to allow without prompting, by the names the server gives
+    /// them. Empty allows every tool the server offers. A launcher that
+    /// starts the server itself offers a model only the tools this allows:
+    /// see [`McpServer::allows`].
     pub tools: Vec<String>,
     /// The directory a stdio server starts in, or wherever its launcher
     /// chooses when unset.
@@ -230,6 +232,14 @@ impl McpServer {
         valid_name(name)
             && !name.contains(SEPARATOR)
             && self.tools.iter().all(|tool| valid_name(tool))
+    }
+
+    /// Whether this server allows `tool`, as the server itself names it:
+    /// every tool when [`McpServer::tools`] is empty, and otherwise only the
+    /// tools it names, the same ones [`McpServer::allowed_tools`] allows on a
+    /// CLI.
+    pub fn allows(&self, tool: &str) -> bool {
+        self.tools.is_empty() || self.tools.iter().any(|named| named == tool)
     }
 
     /// The `--allowedTools` entries for this server under `name`.
@@ -494,6 +504,16 @@ mod tests {
         ] {
             assert!(!McpServer::scoped(permission), "{permission}");
         }
+    }
+
+    #[test]
+    fn a_server_allows_every_tool_unless_it_names_some() {
+        assert!(stdio().allows("anything"));
+
+        let scoped = stdio().with_tools(["search"]);
+        assert!(scoped.allows("search"));
+        assert!(!scoped.allows("delete"));
+        assert_eq!(scoped.allowed_tools("docs"), ["mcp__docs__search"]);
     }
 
     #[test]

@@ -26,7 +26,8 @@ impl McpHub {
         }
     }
 
-    /// Launch every enabled command server in `config` and connect to it.
+    /// Launch every enabled command server in `config` and connect to it,
+    /// keeping only the tools each server [allows](McpServer::allows).
     ///
     /// A [disabled](McpServer::disabled) server is skipped. So is one reached
     /// by URL, which only a CLI attaches, and one with neither a command nor
@@ -150,6 +151,7 @@ mod tests {
     use crate::tool::Tier;
     use crate::tool::ToolContext;
     use crate::tool::ToolRegistry;
+    use crate::tool::process::Group;
 
     #[derive(Clone, Default)]
     struct Echo;
@@ -452,6 +454,70 @@ mod tests {
 
         drop(hub);
         server_task.abort();
+    }
+
+    #[derive(Clone, Default)]
+    struct Pair;
+
+    #[tool_router]
+    impl Pair {
+        #[tool(description = "The first of two tools")]
+        fn one(&self) -> String {
+            "one".to_string()
+        }
+
+        #[tool(description = "The second of two tools")]
+        fn two(&self) -> String {
+            "two".to_string()
+        }
+    }
+
+    #[tool_handler]
+    impl ServerHandler for Pair {}
+
+    /// The tools `server` has registered once its session lists what
+    /// [`Pair`] offers.
+    async fn registered(server: &McpServer) -> Vec<String> {
+        let (client_to_server, server_from_client) = tokio::io::duplex(64 * 1024);
+        let (server_to_client, client_from_server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            let server = Pair
+                .serve((server_from_client, server_to_client))
+                .await
+                .expect("server serve");
+            let _ = server.waiting().await;
+        });
+        let client = ().serve((client_from_server, client_to_server)).await.expect("client serve");
+        let session = McpSession::listed("pair", server, client, Group::led_by(None))
+            .await
+            .expect("listed");
+        let hub = McpHub {
+            sessions: vec![Arc::new(session)],
+        };
+
+        let mut registry = ToolRegistry::new();
+        register(&mut registry, &hub);
+        let mut names: Vec<String> = registry.names().into_iter().map(str::to_string).collect();
+        names.sort();
+
+        drop(registry);
+        drop(hub);
+        server_task.abort();
+        names
+    }
+
+    /// A CLI allows only the tools a server names, so the hub registers only
+    /// those, or one `mcp.json` would hand a model tools through the hub that
+    /// a CLI withholds. A server that names none offers all of them.
+    #[tokio::test]
+    async fn a_server_that_names_its_tools_registers_only_those() {
+        let pair = McpServer::command("pair", Vec::<String>::new());
+
+        assert_eq!(
+            registered(&pair.clone().with_tools(["one"])).await,
+            ["pair__one"]
+        );
+        assert_eq!(registered(&pair).await, ["pair__one", "pair__two"]);
     }
 
     #[tokio::test]
