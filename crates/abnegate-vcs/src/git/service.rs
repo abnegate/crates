@@ -95,9 +95,6 @@ const SYMBOLIC_REFERENCE: &str = "ref: ";
 /// What a set-aside branch is renamed with, ahead of the time it was set aside.
 const ABANDONED: &str = ".abandoned.";
 
-/// What a diff cut at [`MAXIMUM_DIFF_BYTES`] ends with.
-const TRUNCATED: &str = "...[truncated]";
-
 /// The status letters and the space before a path in a porcelain listing.
 const STATUS_WIDTH: usize = 3;
 

@@ -2,6 +2,7 @@ use super::*;
 use crate::git::GITLINK_MODE;
 use crate::git::WorktreeEntry;
 use crate::git::native;
+use crate::truncation;
 use tokio::io::AsyncWriteExt;
 
 /// The status a change check runs: every untracked path, and no descent into a
@@ -628,7 +629,7 @@ impl GitService {
                 while end > 0 && !diff_text.is_char_boundary(end) {
                     end -= 1;
                 }
-                format!("{}{TRUNCATED}", &diff_text[..end])
+                format!("{}{}", &diff_text[..end], truncation::MARKER)
             }
             false => diff_text.to_string(),
         };
@@ -2825,8 +2826,8 @@ mod configuration_tests {
             .await
             .unwrap();
 
-        assert!(summary.diff_text.ends_with(TRUNCATED));
-        assert!(summary.diff_text.len() <= MAXIMUM_DIFF_BYTES + TRUNCATED.len());
+        assert!(summary.diff_text.ends_with(truncation::MARKER));
+        assert!(summary.diff_text.len() <= MAXIMUM_DIFF_BYTES + truncation::MARKER.len());
     }
 
     #[tokio::test]
@@ -3001,8 +3002,8 @@ mod configuration_tests {
             .await
             .unwrap();
 
-        assert!(summary.diff_text.ends_with(TRUNCATED));
-        assert!(summary.diff_text.len() <= MAXIMUM_DIFF_BYTES + TRUNCATED.len());
+        assert!(summary.diff_text.ends_with(truncation::MARKER));
+        assert!(summary.diff_text.len() <= MAXIMUM_DIFF_BYTES + truncation::MARKER.len());
         assert!(
             started.elapsed() < Duration::from_secs(60),
             "a capped diff must be torn down, not read to the end"

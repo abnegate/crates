@@ -7,6 +7,7 @@ pub struct DiffSummary {
     pub insertions: u32,
     /// Lines removed, against the last commit.
     pub deletions: u32,
-    /// The diff against the last commit, cut at 50 kB.
+    /// The diff against the last commit, cut at 50 kB. A cut diff ends in a
+    /// line saying so.
     pub diff_text: String,
 }
