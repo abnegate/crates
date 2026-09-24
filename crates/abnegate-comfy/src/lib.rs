@@ -77,6 +77,12 @@
 //!   `abnegate-vision` on ONNX Runtime, when [`Config::vision_model`] points at
 //!   the weights. Without it a photo is cropped on its centre and a video frame
 //!   on whatever moved. Off by default.
+//!
+//! # Platform support
+//!
+//! The crate builds on Linux, Android, FreeBSD and Apple platforms only, the
+//! ones `abnegate-exec` supports, because the training command, ffmpeg and
+//! ffprobe run under its environment policy.
 
 mod caption;
 #[cfg(test)]

@@ -18,6 +18,12 @@ it the crate records nothing.
 
 - `saliency`: frames training crops on the subject U2-Net finds, through `abnegate-vision` on ONNX Runtime, when `Config::vision_model` points at the weights; without it a photo is cropped on its centre and a video frame on whatever moved.
 
+## Platform support
+
+The crate builds on Linux, Android, FreeBSD and Apple platforms only, the ones
+`abnegate-exec` supports, because the training command, ffmpeg and ffprobe run
+under its environment policy.
+
 ## Usage
 
 ```sh
