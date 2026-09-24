@@ -5,6 +5,7 @@ use crate::parser::claude::cli_usage::CliUsage;
 
 /// The `message` an `assistant` event carries.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
 pub struct CliMessage {
     #[serde(default)]
     pub content: Vec<CliContentBlock>,

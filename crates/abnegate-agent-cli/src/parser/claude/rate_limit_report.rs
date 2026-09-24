@@ -8,7 +8,8 @@ const ALLOWED: [&str; 2] = ["allowed", "allowed_warning"];
 /// It serialises back to the CLI's own field names, so a report quoted in a
 /// failure still reads as the CLI wrote it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct RateLimitInfo {
+#[non_exhaustive]
+pub struct RateLimitReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// A Unix timestamp or an RFC 3339 string, depending on the CLI release.
@@ -25,7 +26,7 @@ pub struct RateLimitInfo {
     pub utilization: Option<f64>,
 }
 
-impl RateLimitInfo {
+impl RateLimitReport {
     /// Whether this reports headroom rather than refusing the request.
     ///
     /// Only an explicit headroom status counts. A report with no status at
@@ -39,24 +40,24 @@ impl RateLimitInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::RateLimitInfo;
+    use super::RateLimitReport;
 
     #[test]
     fn a_headroom_report_is_allowed() {
-        let info: RateLimitInfo = serde_json::from_str(
+        let report: RateLimitReport = serde_json::from_str(
             r#"{"status":"allowed_warning","resetsAt":1772096400,"rateLimitType":"seven_day","utilization":0.81,"isUsingOverage":false,"surpassedThreshold":0.75}"#,
         )
         .expect("a rate limit report");
 
-        assert!(info.allowed());
-        assert_eq!(info.kind.as_deref(), Some("seven_day"));
-        assert_eq!(info.resets_at, Some(serde_json::json!(1772096400)));
-        assert!((info.utilization.expect("a utilisation") - 0.81).abs() < f64::EPSILON);
+        assert!(report.allowed());
+        assert_eq!(report.kind.as_deref(), Some("seven_day"));
+        assert_eq!(report.resets_at, Some(serde_json::json!(1772096400)));
+        assert!((report.utilization.expect("a utilisation") - 0.81).abs() < f64::EPSILON);
     }
 
     #[test]
     fn a_report_serialises_under_the_clis_own_names() {
-        let info = RateLimitInfo {
+        let report = RateLimitReport {
             status: Some("rejected".to_string()),
             resets_at: Some(serde_json::json!("2026-02-23T06:00:00Z")),
             kind: Some("seven_day".to_string()),
@@ -64,14 +65,14 @@ mod tests {
         };
 
         assert_eq!(
-            serde_json::to_string(&info).expect("serialisable"),
+            serde_json::to_string(&report).expect("serialisable"),
             r#"{"status":"rejected","resetsAt":"2026-02-23T06:00:00Z","rateLimitType":"seven_day"}"#
         );
     }
 
     #[test]
     fn a_refusal_or_a_missing_status_is_not_allowed() {
-        let exceeded: RateLimitInfo = serde_json::from_str(
+        let exceeded: RateLimitReport = serde_json::from_str(
             r#"{"status":"exceeded","resetsAt":"2026-02-23T06:00:00Z","rateLimitType":"seven_day","utilization":1.0}"#,
         )
         .expect("a rate limit report");
@@ -81,6 +82,6 @@ mod tests {
             Some("2026-02-23T06:00:00Z")
         );
 
-        assert!(!RateLimitInfo::default().allowed());
+        assert!(!RateLimitReport::default().allowed());
     }
 }
