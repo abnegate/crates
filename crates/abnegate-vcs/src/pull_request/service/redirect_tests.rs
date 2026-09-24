@@ -14,6 +14,15 @@ use wiremock::matchers::path;
 /// The path GitHub reads a repository's details from.
 const REPOSITORY: &str = "/repos/acme/project";
 
+/// Every status a server redirects a request with.
+const REDIRECTS: [u16; 5] = [301, 302, 303, 307, 308];
+
+/// The methods a request that is not a read goes out with.
+const WRITES: [Method; 3] = [Method::POST, Method::PUT, Method::DELETE];
+
+/// Where the redirects a test answers with point, one address per status.
+const TARGETS: &str = "/to";
+
 fn moved(location: String) -> ResponseTemplate {
     ResponseTemplate::new(301).insert_header("location", location)
 }
@@ -147,9 +156,9 @@ async fn a_redirect_within_the_origin_is_not_followed_out_of_it() {
     );
 }
 
-/// A 302 or 303 turns a POST into a GET of wherever it points, so whatever
-/// answers there says nothing about the comment or the mutation that was
-/// asked for.
+/// A POST GitHub answers with a 302 or 303 is not followed to a GET of
+/// wherever the redirect points, whose answer would say nothing about the
+/// comment or the mutation that was asked for.
 #[tokio::test]
 async fn a_redirected_post_is_not_taken_for_its_answer() {
     let server = MockServer::start().await;
@@ -177,6 +186,7 @@ async fn a_redirected_post_is_not_taken_for_its_answer() {
             "id": 5,
             "data": { "resolveReviewThread": { "thread": { "isResolved": true } } },
         })))
+        .expect(0)
         .mount(&server)
         .await;
     let service = stand_in(&server).await;
@@ -191,5 +201,98 @@ async fn a_redirected_post_is_not_taken_for_its_answer() {
             matches!(answer, Err(PullRequestError::GitHubApi(ref text)) if text == REDIRECTED),
             "a POST answered by a GET did nothing it was asked to: {answer:?}"
         );
+    }
+}
+
+/// GitHub answers a write to a renamed or transferred repository with a
+/// redirect to its new address. A 307 or 308 keeps any method and its body,
+/// and a 301 or 302 keeps every method but POST, so following one would carry
+/// the write out there before its answer could be refused. A write is refused
+/// where it was sent and never sent on, whatever answers at the target; a read
+/// still follows.
+#[tokio::test]
+async fn a_redirected_write_is_refused_and_never_sent_on() {
+    let server = MockServer::start().await;
+    for redirect in REDIRECTS {
+        for (target, status) in [("found", 200), ("missing", 404)] {
+            let to = format!("{TARGETS}/{redirect}/{target}");
+            Mock::given(method("GET"))
+                .and(path(&to))
+                .respond_with(ResponseTemplate::new(status).set_body_json(serde_json::json!({})))
+                .mount(&server)
+                .await;
+            for write in WRITES {
+                Mock::given(method(write.as_str()))
+                    .and(path(&to))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+                    .expect(0)
+                    .mount(&server)
+                    .await;
+            }
+            Mock::given(path(format!("/{redirect}/{target}")))
+                .respond_with(
+                    ResponseTemplate::new(redirect)
+                        .insert_header("location", format!("{}{to}", server.uri())),
+                )
+                .mount(&server)
+                .await;
+        }
+    }
+    Mock::given(path("/direct"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .mount(&server)
+        .await;
+    let service = stand_in(&server).await;
+    let address = |route: &str| Url::parse(&format!("{}{route}", server.uri())).unwrap();
+
+    for redirect in REDIRECTS {
+        for target in ["found", "missing"] {
+            for write in WRITES {
+                let answer = answered(
+                    service
+                        .request(
+                            write.clone(),
+                            address(&format!("/{redirect}/{target}")),
+                            &token(),
+                            ACCEPT,
+                        )
+                        .json(&serde_json::json!({ "body": "sent once" })),
+                )
+                .await;
+
+                assert!(
+                    matches!(answer, Err(PullRequestError::GitHubApi(ref text)) if text == REDIRECTED),
+                    "{write} {redirect} to {target}: {answer:?}"
+                );
+            }
+        }
+
+        let read = answered(service.request(
+            Method::GET,
+            address(&format!("/{redirect}/found")),
+            &token(),
+            ACCEPT,
+        ))
+        .await;
+        assert!(read.is_ok(), "GET {redirect}: {read:?}");
+    }
+
+    let carried: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.method != Method::GET && request.url.path().starts_with(TARGETS))
+        .map(|request| format!("{} {}", request.method, request.url.path()))
+        .collect();
+    assert!(
+        carried.is_empty(),
+        "a redirected write was carried out where the redirect pointed: {carried:?}"
+    );
+
+    for write in WRITES {
+        let answer =
+            answered(service.request(write.clone(), address("/direct"), &token(), ACCEPT)).await;
+        assert!(answer.is_ok(), "{write} unredirected: {answer:?}");
     }
 }

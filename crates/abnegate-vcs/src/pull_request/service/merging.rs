@@ -28,13 +28,10 @@ const OID: &str = "/mergePullRequest/pullRequest/mergeCommit/oid";
 /// needs its conflict repaired rather than an administrator's override.
 const NOT_MERGEABLE: &str = "not mergeable";
 
-/// What GitHub's REST API says of a merge refused because the head or the
-/// base branch changed while it was being made, which a fresh read retries.
+/// What GitHub says, through REST or GraphQL, of a merge refused because the
+/// head or the base branch changed while it was being made, which a fresh read
+/// retries.
 const MODIFIED: &str = "was modified";
-
-/// What GitHub's GraphQL API says of a merge refused because the head moved
-/// from the one it was asked to expect.
-const HEAD_MODIFIED: &str = "Head branch was modified";
 
 /// What a refused administrator merge adds to branch protection's reason.
 const ADMINISTRATOR_REFUSED: &str = "administrator merge refused";
@@ -57,11 +54,16 @@ impl PullRequestService {
     /// administrator merge was refused too, that reason as well. A head that
     /// moved, or a branch GitHub says was modified while it merged, is
     /// [`PullRequestError::HeadMoved`], which a fresh read and a retry
-    /// resolve. A merge that happened is
-    /// never reported as a failure, even when the commit it made cannot be
-    /// read. An administrator merge is reported only when GitHub's answer
-    /// says the pull request merged; any other answer is
-    /// [`PullRequestError::GitHubApi`].
+    /// resolve. A merge that happened is never reported as a failure, even
+    /// when the commit it made cannot be read. An administrator merge is
+    /// reported only when GitHub's answer says the pull request merged; any
+    /// other answer is [`PullRequestError::GitHubApi`].
+    ///
+    /// Neither attempt follows a redirect. GitHub answers a merge in a
+    /// repository that was renamed or transferred with a 307 to its new
+    /// address, and that merge is refused as [`PullRequestError::GitHubApi`],
+    /// without being made there, until this crate re-issues such writes
+    /// itself.
     pub async fn merge(
         &self,
         reference: &PullRequestReference,
@@ -167,16 +169,16 @@ async fn merge_commit(response: Response) -> Option<CommitSha> {
 }
 
 /// What the errors an administrator merge was refused with mean: a spent rate
-/// limit is one, a head that moved is another, and anything else is
-/// protection's refusal.
+/// limit is one, a head or base branch GitHub says was modified is a moved
+/// head, and anything else is protection's refusal.
 fn administrator_refusal(reason: &str, errors: &[GraphQlError]) -> PullRequestError {
     if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
     }
-    let moved = HEAD_MODIFIED.to_ascii_lowercase();
+    let modified = MODIFIED.to_ascii_lowercase();
     if errors
         .iter()
-        .any(|error| error.message.to_ascii_lowercase().contains(&moved))
+        .any(|error| error.message.to_ascii_lowercase().contains(&modified))
     {
         return PullRequestError::HeadMoved;
     }
@@ -227,6 +229,10 @@ mod tests {
 
     /// Where the administrator merge is asked for.
     const GRAPHQL_PATH: &str = "/graphql";
+
+    /// Where GitHub redirects pull request 7's merge once its repository has
+    /// been renamed or transferred.
+    const MOVED_MERGE_PATH: &str = "/repositories/1/pulls/7/merge";
 
     /// The GraphQL node id of pull request 7.
     const NODE: &str = "PR_node";
@@ -304,6 +310,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/elsewhere"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(0)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -315,11 +322,63 @@ mod tests {
 
         let failure = attempt(&server, Some(NODE), true)
             .await
-            .expect_err("a GET answered after the merge was redirected merged nothing");
+            .expect_err("a merge GitHub redirected was not made");
 
         assert!(
             matches!(failure, PullRequestError::GitHubApi(ref text) if text == REDIRECTED),
             "{failure:?}"
+        );
+    }
+
+    /// GitHub answers a merge in a renamed or transferred repository with a
+    /// 307 to the repository's numeric address, which keeps the PUT and its
+    /// body: following it would merge the pull request and then report that
+    /// merge as a failure.
+    #[tokio::test]
+    async fn a_merge_github_redirects_is_refused_and_never_sent_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path(MERGE_PATH))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}{MOVED_MERGE_PATH}", server.uri())),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(MOVED_MERGE_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "sha": commit('b').as_str(),
+                "merged": true,
+                "message": "Pull Request successfully merged",
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(GRAPHQL_PATH))
+            .respond_with(merged_as(commit('d').as_str()))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let failure = attempt(&server, Some(NODE), true)
+            .await
+            .expect_err("a merge GitHub redirected was not made");
+
+        assert!(
+            matches!(failure, PullRequestError::GitHubApi(ref text) if text == REDIRECTED),
+            "{failure:?}"
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.url.path() != MOVED_MERGE_PATH),
+            "the merge was sent on to where GitHub redirected it"
         );
     }
 
@@ -385,7 +444,7 @@ mod tests {
             refusing(405, "Required status check \"test\" is expected."),
             ResponseTemplate::new(200).set_body_json(json!({
                 "data": null,
-                "errors": [{ "message": "Base branch was modified. Review and try the merge again." }],
+                "errors": [{ "message": "Repository rule violations found" }],
             })),
             1,
         )
@@ -395,7 +454,7 @@ mod tests {
             PullRequestError::Protected(reason) => assert_eq!(
                 reason,
                 "Required status check \"test\" is expected.; administrator merge refused: \
-                 Base branch was modified. Review and try the merge again."
+                 Repository rule violations found"
             ),
             other => panic!("{other:?}"),
         }
@@ -437,22 +496,27 @@ mod tests {
             );
         }
 
-        let server = answering(
-            refusing(405, APPROVAL),
-            ResponseTemplate::new(200).set_body_json(json!({
-                "data": { "mergePullRequest": null },
-                "errors": [{ "message": "Head branch was modified. Review and try the merge again." }],
-            })),
-            1,
-        )
-        .await;
+        for message in [
+            "Base branch was modified. Review and try the merge again.",
+            "Head branch was modified. Review and try the merge again.",
+        ] {
+            let server = answering(
+                refusing(405, APPROVAL),
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": { "mergePullRequest": null },
+                    "errors": [{ "message": message }],
+                })),
+                1,
+            )
+            .await;
 
-        let failure = attempt(&server, Some(NODE), true).await.unwrap_err();
+            let failure = attempt(&server, Some(NODE), true).await.unwrap_err();
 
-        assert!(
-            matches!(failure, PullRequestError::HeadMoved),
-            "{failure:?}"
-        );
+            assert!(
+                matches!(failure, PullRequestError::HeadMoved),
+                "administrator merge, {message}: {failure:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -653,7 +717,7 @@ mod tests {
         let graphql = ResponseTemplate::new(200).set_body_json(json!({
             "data": { "mergePullRequest": "RAW-SENTINEL" },
             "errors": [{
-                "message": "Base branch was modified",
+                "message": "Repository rule violations found",
                 "path": ["RAW-SENTINEL"],
                 "extensions": { "raw": "RAW-SENTINEL" },
             }],
@@ -668,7 +732,7 @@ mod tests {
             (
                 noisy(405),
                 true,
-                r#"Protected("Changes must be made through a pull request.; administrator merge refused: Base branch was modified")"#,
+                r#"Protected("Changes must be made through a pull request.; administrator merge refused: Repository rule violations found")"#,
             ),
             (
                 silent(405),
@@ -678,7 +742,7 @@ mod tests {
             (
                 silent(405),
                 true,
-                r#"Protected("GitHub API returned 405 Method Not Allowed; administrator merge refused: Base branch was modified")"#,
+                r#"Protected("GitHub API returned 405 Method Not Allowed; administrator merge refused: Repository rule violations found")"#,
             ),
             (
                 noisy(422),

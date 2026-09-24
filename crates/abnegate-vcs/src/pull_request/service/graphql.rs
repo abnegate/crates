@@ -357,7 +357,7 @@ mod tests {
 
         assert_eq!(
             graphql_messages(&errors),
-            "deniedINFO forged; onetwothree; abcd; rejected [REDACTED]"
+            "denied INFO forged; one two three; abcd; rejected [REDACTED]"
         );
     }
 

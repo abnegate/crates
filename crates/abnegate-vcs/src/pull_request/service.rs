@@ -71,7 +71,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longest a connection may take to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Redirects within the origin a request follows before it stops.
+/// Redirects within the origin a read follows before it stops.
 const MAXIMUM_REDIRECTS: usize = 10;
 
 /// The header GitHub reports the requests left in the current window in.
@@ -90,8 +90,9 @@ const MAXIMUM_ERROR_BYTES: usize = 1024;
 /// What joins GitHub's words when several are carried on one line.
 const SEPARATOR: &str = "; ";
 
-/// Characters that end a line without being control characters.
-const LINE_BREAKS: [char; 2] = ['\u{2028}', '\u{2029}'];
+/// What a run of whitespace, control characters and line breaks in GitHub's
+/// words becomes.
+const SPACE: &str = " ";
 
 /// Most of an error body read for GitHub's words about it.
 const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
@@ -112,10 +113,10 @@ const UNREADABLE: &str = "GitHub answered in a form this crate cannot read";
 /// What an answer longer than [`MAXIMUM_ANSWER_BYTES`] is reported as.
 const OVERSIZED: &str = "GitHub's answer was larger than this crate reads";
 
-/// What the answer to a request that is not a read is reported as when a
-/// redirect carried the request somewhere else.
+/// What a request that is not a read is reported as when GitHub answers it
+/// with a redirect, which it is never sent on to.
 const REDIRECTED: &str =
-    "GitHub redirected a request that is not a read, so its answer is not to that request";
+    "GitHub redirected a request that is not a read; it was not sent on to the new address";
 
 /// What GitHub says when a pull request for the branch is already open.
 const ALREADY_EXISTS: &str = "A pull request already exists";
@@ -152,8 +153,14 @@ const GIT_SUFFIX: &str = ".git";
 /// - Creating a repository: [`Self::create_repository`].
 ///
 /// Review threads, resolving one, and an administrator's merge go to GitHub's
-/// GraphQL API; everything else goes to its REST API, at the same origin. A
-/// request follows a redirect only while it stays on that origin.
+/// GraphQL API; everything else goes to its REST API, at the same origin.
+///
+/// A read follows a redirect only while it stays on that origin, for at most
+/// ten hops. A write, meaning any request but a GET and so every GraphQL call,
+/// never follows one, because following it would carry the write out wherever
+/// the redirect points before its answer could be read. A write GitHub answers
+/// with a redirect, as it answers one to a repository that was renamed or
+/// transferred, is [`PullRequestError::GitHubApi`] and is not sent on.
 ///
 /// A status that says what it means on its own is reported as that: 401 as
 /// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
@@ -176,13 +183,14 @@ const GIT_SUFFIX: &str = ".git";
 /// protection is asked again through the administrator's GraphQL mutation.
 /// Errors GitHub's GraphQL API reports in answer to that mutation become
 /// [`PullRequestError::Protected`], apart from a spent rate limit, which stays
-/// [`PullRequestError::RateLimited`], and a head GitHub says was modified,
-/// which is [`PullRequestError::HeadMoved`]. A refusal of the mutation at the
-/// HTTP level, such as [`PullRequestError::Forbidden`] or
+/// [`PullRequestError::RateLimited`], and a head or base branch GitHub says
+/// was modified, which is [`PullRequestError::HeadMoved`]. A refusal of the
+/// mutation at the HTTP level, such as [`PullRequestError::Forbidden`] or
 /// [`PullRequestError::NotFound`], passes through unchanged.
 #[derive(Debug, Clone)]
 pub struct PullRequestService {
-    client: Client,
+    reader: Client,
+    writer: Client,
     origin: Origin,
 }
 
@@ -195,10 +203,7 @@ impl PullRequestService {
     /// Address the origin an operator configured, for the repositories it
     /// answers for: an HTTPS URL, with or without a trailing slash.
     pub fn configured(url: &str) -> PullRequestResult<Self> {
-        Ok(Self {
-            client: client(true, REQUEST_TIMEOUT)?,
-            origin: Origin::configured(url)?,
-        })
+        Self::addressing(Origin::configured(url)?, true, REQUEST_TIMEOUT)
     }
 
     /// Address `url` as a stand-in for repositories on `host`, over whatever
@@ -209,9 +214,17 @@ impl PullRequestService {
     /// real request path against a mock server.
     #[cfg(any(test, feature = "test-support"))]
     pub fn standing_in_for(host: &str, url: &str) -> PullRequestResult<Self> {
+        Self::addressing(Origin::standing_in_for(host, url)?, false, REQUEST_TIMEOUT)
+    }
+
+    /// Address `origin` with a client for reads, which follows a redirect
+    /// only within the origin, and one for writes, which follows none; each
+    /// gives up on a request after `timeout`.
+    fn addressing(origin: Origin, https_only: bool, timeout: Duration) -> PullRequestResult<Self> {
         Ok(Self {
-            client: client(false, REQUEST_TIMEOUT)?,
-            origin: Origin::standing_in_for(host, url)?,
+            reader: client(https_only, timeout, within_origin())?,
+            writer: client(https_only, timeout, Policy::none())?,
+            origin,
         })
     }
 
@@ -387,7 +400,9 @@ impl PullRequestService {
         Ok(open.into_iter().next().map(|found| found.html_url))
     }
 
-    /// A request to `url` that carries `token` and asks for an answer in `accept`.
+    /// A request to `url` that carries `token` and asks for an answer in
+    /// `accept`, sent by the client for reads when it is one and by the
+    /// client for writes otherwise.
     fn request(
         &self,
         method: Method,
@@ -395,7 +410,11 @@ impl PullRequestService {
         token: &SecretValue,
         accept: &'static str,
     ) -> RequestBuilder {
-        self.client
+        let client = match reads(&method) {
+            true => &self.reader,
+            false => &self.writer,
+        };
+        client
             .request(method, url)
             .bearer_auth(token.expose())
             .header(header::ACCEPT, accept)
@@ -531,24 +550,12 @@ impl PullRequestService {
     }
 }
 
-/// A client that gives up on a request that stalls, that follows a redirect
-/// only while it stays on the origin the request was sent to, and that refuses
-/// anything but HTTPS unless it is standing in for a test's mock server.
+/// A client that gives up on a request that stalls, that follows redirects as
+/// `redirect` says, and that refuses anything but HTTPS unless it is standing
+/// in for a test's mock server.
 ///
 /// A redirect it will not follow comes back as the answer itself.
-fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
-    let redirect = Policy::custom(|attempt| {
-        let previous = attempt.previous();
-        let within = previous
-            .first()
-            .is_some_and(|sent| sent.origin() == attempt.url().origin());
-        if within && previous.len() <= MAXIMUM_REDIRECTS {
-            attempt.follow()
-        } else {
-            attempt.stop()
-        }
-    });
-
+fn client(https_only: bool, timeout: Duration, redirect: Policy) -> PullRequestResult<Client> {
     Ok(Client::builder()
         .user_agent(USER_AGENT)
         .timeout(timeout)
@@ -558,19 +565,44 @@ fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
         .build()?)
 }
 
+/// Reads follow a redirect only while it stays on the origin the read was sent
+/// to, and for no more than [`MAXIMUM_REDIRECTS`] hops.
+fn within_origin() -> Policy {
+    Policy::custom(|attempt| {
+        let previous = attempt.previous();
+        let within = previous
+            .first()
+            .is_some_and(|sent| sent.origin() == attempt.url().origin());
+        if within && previous.len() <= MAXIMUM_REDIRECTS {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+/// Whether a request sent with `method` is a read, and so may follow a
+/// redirect.
+fn reads(method: &Method) -> bool {
+    *method == Method::GET
+}
+
 /// The answer to `request`, whatever its status, from where it was sent.
 ///
-/// Following a redirect turns any request but a read into a GET of wherever
-/// the redirect points, or sends it on somewhere it was not addressed, so the
-/// answer to one that is not a GET, from an address other than the one it was
-/// sent to, is refused whatever it says.
+/// A write goes out on a client that follows no redirect, because following
+/// one carries the write out somewhere it was not addressed: a 307 or 308
+/// re-sends any method with its body, a 301 or 302 re-sends every method but
+/// POST, and a 303, or a 301 or 302 to a POST, turns it into a GET of
+/// wherever the redirect points. So a write GitHub answers with a redirect is
+/// refused, and so is one answered from anywhere but the address it was sent
+/// to.
 async fn sent(request: RequestBuilder) -> PullRequestResult<Response> {
     let (client, request) = request.build_split();
     let request = request?;
-    let read = request.method() == Method::GET;
+    let read = reads(request.method());
     let url = request.url().clone();
     let response = client.execute(request).await?;
-    if !read && response.url() != &url {
+    if !read && (response.status().is_redirection() || response.url() != &url) {
         return Err(PullRequestError::GitHubApi(REDIRECTED.to_string()));
     }
     Ok(response)
@@ -650,11 +682,15 @@ fn returned(status: StatusCode) -> String {
 
 /// The first `limit` bytes of an answer's body, read no further, and whether
 /// any of it remained unread.
+///
+/// Room is set aside up front for the length the answer declares, but never
+/// for more than `limit` or [`MAXIMUM_ANSWER_BYTES`]; past that the prefix
+/// grows only as bytes arrive.
 async fn read_prefix(mut response: Response, limit: usize) -> PullRequestResult<(Vec<u8>, bool)> {
     let declared = response
         .content_length()
         .map_or(0, |length| usize::try_from(length).unwrap_or(usize::MAX));
-    let mut prefix = Vec::with_capacity(declared.min(limit));
+    let mut prefix = Vec::with_capacity(declared.min(limit).min(MAXIMUM_ANSWER_BYTES));
     while let Some(chunk) = response.chunk().await? {
         let room = limit - prefix.len();
         if chunk.len() > room {
@@ -714,9 +750,10 @@ pub(super) fn bounded(text: &str) -> &str {
 }
 
 /// GitHub's words on one line fit to carry in an error: each with any
-/// credential redacted, and terminal sequences, invisible formatting, control
-/// characters and line breaks removed, then trimmed, left out when nothing is
-/// left, joined, and cut to [`MAXIMUM_ERROR_BYTES`].
+/// credential redacted, terminal sequences and invisible formatting removed,
+/// and every run of whitespace, control characters and line breaks made one
+/// space, then trimmed, left out when nothing is left, joined, and cut to
+/// [`MAXIMUM_ERROR_BYTES`].
 pub(super) fn summarised<'a>(said: impl IntoIterator<Item = &'a str>) -> String {
     let mut line = String::new();
     for words in said {
@@ -735,14 +772,24 @@ pub(super) fn summarised<'a>(said: impl IntoIterator<Item = &'a str>) -> String 
     bounded(&line).to_string()
 }
 
-/// `words` sanitised, without control characters or line breaks, and
-/// trimmed.
+/// `words` sanitised, with every run of whitespace, control characters and
+/// line breaks made one space, and trimmed.
+///
+/// Words the redactor read apart stay apart: removing what separated them
+/// would join two halves into a credential it never saw whole.
 fn cleaned(words: &str) -> String {
-    let kept: String = sanitize(words)
-        .chars()
-        .filter(|character| !character.is_control() && !LINE_BREAKS.contains(character))
+    let sanitized = sanitize(words);
+    let kept: Vec<&str> = sanitized
+        .split(separates)
+        .filter(|word| !word.is_empty())
         .collect();
-    kept.trim().to_string()
+    kept.join(SPACE)
+}
+
+/// Whether `character` separates words: whitespace, which takes in the line
+/// and paragraph separators, or a control character.
+fn separates(character: char) -> bool {
+    character.is_whitespace() || character.is_control()
 }
 
 #[cfg(test)]
@@ -767,6 +814,10 @@ mod tests {
     use wiremock::matchers::method;
     use wiremock::matchers::path;
     use wiremock::matchers::query_param;
+
+    /// The longest length hyper lets an answer declare; it refuses the two
+    /// above it, which it keeps for itself.
+    const LONGEST_DECLARED: u64 = u64::MAX - 2;
 
     fn github() -> PullRequestService {
         PullRequestService::new().unwrap()
@@ -845,66 +896,13 @@ mod tests {
                 .expect("the answer to be writable");
         });
 
-        client(false, REQUEST_TIMEOUT)
-            .expect("a client")
-            .get(format!("http://{address}"))
-            .send()
-            .await
-            .expect("an answer from the stand-in server")
-    }
-
-    /// Following a 301, 302 or 303 turns any other method into a GET and drops
-    /// its body; a 307 or 308 re-sends it somewhere it was not addressed.
-    /// Either way the answer is not to the request that was sent.
-    #[tokio::test]
-    async fn an_answer_a_request_that_is_not_a_read_was_redirected_to_is_refused() {
-        let server = MockServer::start().await;
-        for (target, status) in [("found", 200), ("missing", 404)] {
-            Mock::given(path(format!("/{target}")))
-                .respond_with(ResponseTemplate::new(status).set_body_json(serde_json::json!({})))
-                .mount(&server)
-                .await;
-        }
-        for redirect in [301, 302, 303, 307, 308] {
-            for target in ["found", "missing"] {
-                Mock::given(path(format!("/{redirect}/{target}")))
-                    .respond_with(
-                        ResponseTemplate::new(redirect)
-                            .insert_header("location", format!("{}/{target}", server.uri())),
-                    )
-                    .mount(&server)
-                    .await;
-            }
-        }
-        let client = client(false, REQUEST_TIMEOUT).unwrap();
-
-        for redirect in [301, 302, 303, 307, 308] {
-            for target in ["found", "missing"] {
-                let url = format!("{}/{redirect}/{target}", server.uri());
-                for changing in [Method::POST, Method::PUT, Method::DELETE] {
-                    let answer = answered(
-                        client
-                            .request(changing.clone(), &url)
-                            .json(&serde_json::json!({ "body": "sent once" })),
-                    )
-                    .await;
-
-                    assert!(
-                        matches!(answer, Err(PullRequestError::GitHubApi(ref text)) if text == REDIRECTED),
-                        "{changing} {redirect} to {target}: {answer:?}"
-                    );
-                }
-            }
-
-            let read = answered(client.get(format!("{}/{redirect}/found", server.uri()))).await;
-            assert!(read.is_ok(), "GET {redirect}: {read:?}");
-        }
-
-        for changing in [Method::POST, Method::PUT, Method::DELETE] {
-            let answer =
-                answered(client.request(changing.clone(), format!("{}/found", server.uri()))).await;
-            assert!(answer.is_ok(), "{changing} unredirected: {answer:?}");
-        }
+        sent(
+            client(false, REQUEST_TIMEOUT, within_origin())
+                .expect("a client")
+                .get(format!("http://{address}")),
+        )
+        .await
+        .expect("an answer from the stand-in server")
     }
 
     #[test]
@@ -1400,12 +1398,13 @@ mod tests {
                 .respond_with(ResponseTemplate::new(200).set_body_string("b".repeat(length)))
                 .mount(&server)
                 .await;
-            let response = client(false, REQUEST_TIMEOUT)
-                .unwrap()
-                .get(server.uri())
-                .send()
-                .await
-                .unwrap();
+            let response = sent(
+                client(false, REQUEST_TIMEOUT, within_origin())
+                    .unwrap()
+                    .get(server.uri()),
+            )
+            .await
+            .unwrap();
 
             let (prefix, more) = read_prefix(response, limit).await.unwrap();
 
@@ -1429,6 +1428,21 @@ mod tests {
 
         assert_eq!(prefix, filling.into_bytes());
         assert!(more, "a byte followed the chunk that filled the prefix");
+    }
+
+    /// The room set aside for an answer is bounded whatever length it
+    /// declares and whatever limit a caller passes, so an answer cannot make
+    /// this crate ask for more memory than there is.
+    #[tokio::test]
+    async fn a_prefix_sets_aside_bounded_room_whatever_length_is_declared() {
+        let response = served(format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {LONGEST_DECLARED}\r\n\r\n{{}}"
+        ))
+        .await;
+
+        let read = read_prefix(response, usize::MAX).await;
+
+        assert!(matches!(read, Err(PullRequestError::Http(_))), "{read:?}");
     }
 
     /// However an answer is framed, it is read to its last byte while it fits,
@@ -1677,33 +1691,43 @@ mod tests {
     }
 
     /// A server that accepts the connection and never answers is given up on
-    /// rather than waited for, by the same client every service is built with.
+    /// rather than waited for, by both clients every service is built with.
     #[tokio::test]
     async fn a_request_that_stalls_is_given_up_on() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "mergeable": true }))
-                    .set_delay(Duration::from_secs(10)),
-            )
-            .mount(&server)
-            .await;
-        let service = PullRequestService {
-            client: client(false, Duration::from_millis(200)).unwrap(),
-            origin: Origin::standing_in_for("github.com", &server.uri()).unwrap(),
-        };
+        for stalled in ["GET", "POST"] {
+            Mock::given(method(stalled))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "mergeable": true, "id": 1 }))
+                        .set_delay(Duration::from_secs(10)),
+                )
+                .mount(&server)
+                .await;
+        }
+        let service = PullRequestService::addressing(
+            Origin::standing_in_for("github.com", &server.uri()).unwrap(),
+            false,
+            Duration::from_millis(200),
+        )
+        .unwrap();
         let started = std::time::Instant::now();
 
-        let failure = service
+        let read = service
             .fetch_mergeability(&seven(&service), &token())
             .await
-            .unwrap_err();
+            .map(|_| ());
+        let written = service
+            .post_issue_comment(&seven(&service), &token(), "body")
+            .await
+            .map(|_| ());
 
-        assert!(
-            matches!(failure, PullRequestError::Http(ref error) if error.is_timeout()),
-            "{failure:?}"
-        );
+        for failure in [read, written] {
+            assert!(
+                matches!(failure, Err(PullRequestError::Http(ref error)) if error.is_timeout()),
+                "{failure:?}"
+            );
+        }
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
