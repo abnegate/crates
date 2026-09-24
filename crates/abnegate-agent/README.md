@@ -25,10 +25,10 @@ cargo add abnegate-agent abnegate-llm
 ```
 
 ```rust,no_run
-use abnegate_agent::{Agent, AgentConfig, AgentError, NoOpCallback, ToolContext, ToolRegistry};
+use abnegate_agent::{Agent, AgentConfig, NoOpCallback, RunError, ToolContext, ToolRegistry};
 use abnegate_llm::{LlmClient, LlmConfig};
 
-async fn list() -> Result<(), AgentError> {
+async fn list() -> Result<(), RunError> {
     let llm = LlmClient::new(LlmConfig::new("http://127.0.0.1:4000/v1", "qwen3", ""));
     let tools = ToolRegistry::with_defaults();
     let agent = Agent::new(llm, tools, AgentConfig::default(), ToolContext::default());

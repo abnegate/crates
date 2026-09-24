@@ -14,10 +14,10 @@ use uuid::Uuid;
 
 use super::AgentCallback;
 use super::AgentConfig;
-use super::AgentError;
 use super::AgentPhase;
 use super::AgentState;
 use super::AgentStep;
+use super::RunError;
 use super::ToolCallResult;
 use super::task::Task;
 use crate::context;
@@ -99,7 +99,7 @@ impl Agent {
         &self,
         prompt: impl Into<String>,
         callback: &dyn AgentCallback,
-    ) -> Result<AgentState, AgentError> {
+    ) -> Result<AgentState, RunError> {
         let system_prompt = self
             .config
             .system_prompt
@@ -119,7 +119,7 @@ impl Agent {
         state: &mut AgentState,
         user_message: impl Into<String>,
         callback: &dyn AgentCallback,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), RunError> {
         state.add_message(Message::user(user_message));
         state.phase = AgentPhase::Thinking;
         state.iteration = 0;
@@ -134,14 +134,14 @@ impl Agent {
         &self,
         state: &mut AgentState,
         callback: &dyn AgentCallback,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), RunError> {
         let tool_definitions = self.tools.definitions();
         let mut empty = 0;
 
         loop {
             if state.iteration >= self.config.max_iterations {
-                state.fail("Maximum iterations exceeded");
-                return Err(AgentError::MaxIterations);
+                state.fail(RunError::IterationLimit.to_string());
+                return Err(RunError::IterationLimit);
             }
 
             state.iteration += 1;
@@ -274,14 +274,14 @@ impl Agent {
         state: &mut AgentState,
         empty: &mut usize,
         step: AgentStep,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), RunError> {
         state.add_step(step.complete());
         *empty += 1;
         if *empty < MAX_EMPTY_RESPONSES {
             return Ok(());
         }
-        state.fail(AgentError::Empty.to_string());
-        Err(AgentError::Empty)
+        state.fail(RunError::Empty.to_string());
+        Err(RunError::Empty)
     }
 
     fn respond(state: &mut AgentState, callback: &dyn AgentCallback, response: &str) {

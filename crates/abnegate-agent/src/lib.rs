@@ -31,7 +31,7 @@
 //! use abnegate_agent::{Agent, AgentConfig, NoOpCallback, ToolContext, ToolRegistry};
 //! use abnegate_llm::{LlmClient, LlmConfig};
 //!
-//! # async fn example() -> Result<(), abnegate_agent::AgentError> {
+//! # async fn example() -> Result<(), abnegate_agent::RunError> {
 //! let llm = LlmClient::new(LlmConfig::new("http://127.0.0.1:4000/v1", "qwen3", ""));
 //! let agent = Agent::new(
 //!     llm,
@@ -98,11 +98,11 @@ pub use crate::mcp::McpServerSpec;
 pub use crate::run::Agent;
 pub use crate::run::AgentCallback;
 pub use crate::run::AgentConfig;
-pub use crate::run::AgentError;
 pub use crate::run::AgentPhase;
 pub use crate::run::AgentState;
 pub use crate::run::AgentStep;
 pub use crate::run::NoOpCallback;
+pub use crate::run::RunError;
 pub use crate::run::ToolCallResult;
 pub use crate::session::FileSessionStore;
 pub use crate::session::Session;

@@ -23,6 +23,7 @@ use wiremock::matchers::method;
 use super::Agent;
 use super::AgentConfig;
 use super::NoOpCallback;
+use super::RunError;
 use crate::tool::EnvironmentPolicy;
 use crate::tool::Preview;
 use crate::tool::RunShellTool;
@@ -660,10 +661,7 @@ async fn a_model_that_keeps_answering_with_nothing_fails_the_turn_soon() {
             .await
             .expect_err("nothing usable never becomes an answer");
 
-        assert!(
-            matches!(error, super::AgentError::Empty),
-            "{reply}: {error}"
-        );
+        assert!(matches!(error, RunError::Empty), "{reply}: {error}");
         assert_eq!(
             provider.received.lock().unwrap().len(),
             super::r#loop::MAX_EMPTY_RESPONSES,

@@ -5,13 +5,19 @@ use crate::context::ContextError;
 /// Why a run stopped short of an answer.
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum AgentError {
+pub enum RunError {
     #[error("LLM error: {0}")]
     Llm(#[from] abnegate_llm::Error),
+    /// The conversation could not be prepared to fit the model's context.
     #[error("Context error: {0}")]
     Context(#[from] ContextError),
-    #[error("Max iterations exceeded")]
-    MaxIterations,
+    /// The turn spent
+    /// [`AgentConfig::max_iterations`](super::AgentConfig::max_iterations)
+    /// model rounds without an answer.
+    #[error("Maximum iterations exceeded")]
+    IterationLimit,
+    /// The model answered with neither text nor a tool call too many rounds in
+    /// a row.
     #[error("The model answered with nothing usable too many times in a row")]
     Empty,
 }

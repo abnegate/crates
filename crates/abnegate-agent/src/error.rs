@@ -7,7 +7,7 @@ use crate::context::ContextError;
 use crate::mcp::McpConfigError;
 #[cfg(feature = "mcp")]
 use crate::mcp::McpError;
-use crate::run::AgentError;
+use crate::run::RunError;
 use crate::session::SessionError;
 use crate::tool::ToolError;
 
@@ -20,8 +20,8 @@ pub enum Error {
     Llm(#[from] abnegate_llm::Error),
     #[error("Tool error: {0}")]
     Tool(#[from] ToolError),
-    #[error("Agent error: {0}")]
-    Agent(#[from] AgentError),
+    #[error("Run error: {0}")]
+    Run(#[from] RunError),
     #[error("Application error: {0}")]
     Application(#[from] ApplicationError),
     #[error("Context error: {0}")]
@@ -69,16 +69,16 @@ mod tests {
 
     #[test]
     fn test_iteration_limit_error() {
-        let error: Error = AgentError::MaxIterations.into();
-        assert_eq!(error.to_string(), "Agent error: Max iterations exceeded");
+        let error: Error = RunError::IterationLimit.into();
+        assert_eq!(error.to_string(), "Run error: Maximum iterations exceeded");
     }
 
     #[test]
     fn test_empty_error() {
-        let error: Error = AgentError::Empty.into();
+        let error: Error = RunError::Empty.into();
         assert_eq!(
             error.to_string(),
-            "Agent error: The model answered with nothing usable too many times in a row"
+            "Run error: The model answered with nothing usable too many times in a row"
         );
     }
 
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_result_type_err() {
-        let result: Result<i32> = Err(AgentError::Empty.into());
+        let result: Result<i32> = Err(RunError::Empty.into());
         assert!(result.is_err());
     }
 

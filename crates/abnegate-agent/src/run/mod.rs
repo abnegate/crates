@@ -25,7 +25,7 @@ mod tests;
 
 pub use callback::AgentCallback;
 pub use config::AgentConfig;
-pub use error::AgentError;
+pub use error::RunError;
 pub use r#loop::Agent;
 pub use no_op::NoOpCallback;
 pub use phase::AgentPhase;
