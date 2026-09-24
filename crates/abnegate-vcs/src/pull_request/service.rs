@@ -28,6 +28,16 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 use url::Url;
 
+mod branches;
+mod checks;
+mod contents;
+mod conversation;
+#[cfg(test)]
+mod fixtures;
+mod merging;
+mod pulls;
+mod repositories;
+
 /// What this crate calls itself to the GitHub API.
 const USER_AGENT: &str = "abnegate-vcs";
 
@@ -465,6 +475,11 @@ mod tests {
     use super::*;
     use crate::pull_request::PullRequestState;
     use crate::pull_request::ReviewTally;
+    use crate::pull_request::service::fixtures::commit;
+    use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::seven;
+    use crate::pull_request::service::fixtures::stand_in;
+    use crate::pull_request::service::fixtures::token;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -482,10 +497,6 @@ mod tests {
         PullRequestService::configured("https://github.example.com/api/v3").unwrap()
     }
 
-    fn token() -> SecretValue {
-        SecretValue::new("token")
-    }
-
     fn pair(repository: Repository) -> (String, String) {
         (
             repository.owner().to_string(),
@@ -495,16 +506,6 @@ mod tests {
 
     fn acme() -> (String, String) {
         ("acme".to_string(), "project".to_string())
-    }
-
-    async fn stand_in(server: &MockServer) -> PullRequestService {
-        PullRequestService::standing_in_for("github.com", &server.uri()).unwrap()
-    }
-
-    fn seven(service: &PullRequestService) -> PullRequestReference {
-        service
-            .pull_request("https://github.com/acme/project/pull/7")
-            .unwrap()
     }
 
     #[test]
@@ -745,8 +746,8 @@ mod tests {
                 "state": "open",
                 "title": "title",
                 "body": null,
-                "head": { "ref": "feature", "sha": "a" },
-                "base": { "ref": "main", "sha": "b" },
+                "head": { "ref": "feature", "sha": commit('a').as_str() },
+                "base": { "ref": "main", "sha": commit('b').as_str() },
             })
         };
 
@@ -773,15 +774,13 @@ mod tests {
                 "state": "open",
                 "title": "(fix): title",
                 "body": "body",
-                "head": { "ref": "feature/one", "sha": "a" },
-                "base": { "ref": "main", "sha": "b" },
+                "head": { "ref": "feature/one", "sha": commit('a').as_str() },
+                "base": { "ref": "main", "sha": commit('b').as_str() },
             })))
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
-        let repository = service
-            .parse_github_url("https://github.com/acme/project")
-            .unwrap();
+        let repository = project(&service);
 
         let created = service
             .create_pull_request(
@@ -817,16 +816,14 @@ mod tests {
                     "state": "open",
                     "title": "title",
                     "body": null,
-                    "head": { "ref": head, "sha": "a" },
-                    "base": { "ref": "main", "sha": "b" },
+                    "head": { "ref": head, "sha": commit('a').as_str() },
+                    "base": { "ref": "main", "sha": commit('b').as_str() },
                 }])),
             )
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
-        let repository = service
-            .parse_github_url("https://github.com/acme/project")
-            .unwrap();
+        let repository = project(&service);
 
         let found = service
             .pull_request_exists_for_branch(
@@ -855,9 +852,7 @@ mod tests {
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
-        let repository = service
-            .parse_github_url("https://github.com/acme/project")
-            .unwrap();
+        let repository = project(&service);
 
         assert_eq!(
             service
@@ -902,9 +897,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let service = stand_in(&server).await;
-            let repository = service
-                .parse_github_url("https://github.com/acme/project")
-                .unwrap();
+            let repository = project(&service);
 
             let failure = service
                 .create_pull_request(
