@@ -55,6 +55,7 @@ dependencies = [
 name = "abnegate-comfy"
 version = "0.1.0"
 dependencies = [
+ "abnegate-exec",
  "abnegate-llm",
  "abnegate-secret",
  "abnegate-vision",

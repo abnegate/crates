@@ -147,15 +147,23 @@ pub struct Config {
     pub poll_interval: Duration,
     /// ComfyUI models root (`checkpoints/`, `loras/`, `diffusion_models/`, ...).
     pub models_directory: PathBuf,
-    /// Optional command used to train a LoRA. Empty runs the packaged training
-    /// graph on ComfyUI.
+    /// Optional command used to train a LoRA, run with `sh -c`. Empty runs the
+    /// packaged training graph on ComfyUI.
+    ///
+    /// The command never sees this process's whole environment. It gets the
+    /// names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT),
+    /// every variable this process has under
+    /// [`Contract::environment_prefix`], and the variables that prefix
+    /// documents; anything else it needs, it sets itself.
     pub train_command: Option<String>,
     /// Wall clock budget for a training run, graph or command.
     pub train_timeout: Duration,
-    /// Decoder that turns a submitted clip into training frames.
+    /// Decoder that turns a submitted clip into training frames. It sees only
+    /// the names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT)
+    /// of this process's environment.
     pub ffmpeg: String,
     /// Reads a clip's duration, so a long one lowers its sampling rate instead
-    /// of being cut short.
+    /// of being cut short. Its environment is the one [`Config::ffmpeg`] gets.
     pub ffprobe: String,
     /// Frames kept per second of submitted video.
     pub frame_rate: u32,

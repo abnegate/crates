@@ -117,6 +117,14 @@ deployment that relied on the old defaults sets them itself.
   `COMFYUI_*_WORKFLOW_PATH` to its file under `/app/comfyui/workflows`.
 - **Training command.** The dataset directory arrives as `<prefix>_DIRECTORY`
   (for the contract above, `ACME_TRAIN_DIRECTORY`) in place of `<prefix>_DIR`.
+  The command no longer inherits the whole environment. It gets the names in
+  `abnegate_exec::DEFAULT_ENVIRONMENT`, every variable already under its
+  `<prefix>_`, and its run's own `<prefix>_*` variables and `COMFYUI_BASE_URL`.
+  Anything else it needs, it sets itself.
+- **ffmpeg and ffprobe.** They get only the names in
+  `abnegate_exec::DEFAULT_ENVIRONMENT`. A decoder that needs more, such as a
+  library path, is pointed at through `COMFYUI_FFMPEG` or `COMFYUI_FFPROBE` as a
+  wrapper script that sets it.
 
 These environment variables are renamed, and the old names are no longer read:
 

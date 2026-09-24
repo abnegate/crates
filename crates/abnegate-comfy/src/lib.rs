@@ -79,6 +79,8 @@
 //!   on whatever moved. Off by default.
 
 mod caption;
+#[cfg(test)]
+mod child;
 mod client;
 mod config;
 mod dataset;

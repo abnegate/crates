@@ -30,6 +30,7 @@ use crate::inventory::{WeightDocument, WeightSidecar, publication_marker, sideca
 use crate::recipe::{RecipeCatalog, TrainingModel, sanitize_weight_filename};
 use crate::subject::{CENTRE, Subject};
 use crate::train::{Contract, Run};
+use abnegate_exec::EnvironmentPolicy;
 use abnegate_secret::SecretValue;
 use abnegate_vision::gravity::Point;
 use abnegate_vision::{Raster, Rendered, decode};
@@ -360,6 +361,7 @@ async fn train_with_pipeline(
         let run = Run::new(contract);
         attempt.register(&run, contract)?;
         let mut process = Command::new("sh");
+        trainer_environment(config).apply(&mut process);
         process
             .arg("-c")
             .arg(command)
@@ -381,7 +383,6 @@ async fn train_with_pipeline(
             .env(contract.variable("FOLDER"), &run.folder)
             .env(contract.variable("ARTIFACT"), &run.artifact)
             .env(contract.variable("DEFER_CLEANUP"), "1")
-            .env("COMFYUI_BASE_URL", &config.base_url)
             .env(
                 contract.variable("TIMEOUT"),
                 config.train_timeout.as_secs().to_string(),
@@ -476,6 +477,21 @@ async fn train_with_pipeline(
             attempted,
         },
     })
+}
+
+/// What the external trainer is given besides its run's own variables: the
+/// names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT), every
+/// variable this process has under the contract's environment prefix, and the
+/// ComfyUI server. Nothing else of this process's environment, which holds
+/// credentials the trainer has no use for.
+fn trainer_environment(config: &Config) -> EnvironmentPolicy {
+    let prefix = format!("{}_", config.contract.environment_prefix);
+    let settings = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| name.starts_with(&prefix));
+    EnvironmentPolicy::allowlist()
+        .allow(settings)
+        .with("COMFYUI_BASE_URL", config.base_url.as_str())
 }
 
 /// Runs the external trainer to completion within `budget`.
@@ -1773,6 +1789,68 @@ mod tests {
         .expect("the trainer finds its dataset under <prefix>_DIRECTORY alone");
 
         assert_eq!(fs::read(outcome.path).unwrap(), b"lora");
+    }
+
+    async fn trained_by(config: &Config) {
+        let outcome = train_with_screening(
+            config,
+            String::new(),
+            SecretValue::new(""),
+            identity("environment"),
+            keep_all,
+        )
+        .await
+        .expect("the trainer saw the environment it expected");
+        assert_eq!(fs::read(outcome.path).unwrap(), b"lora");
+    }
+
+    #[tokio::test]
+    async fn a_variable_only_the_host_has_never_reaches_the_trainer() {
+        const NAME: &str = "lora::tests::a_variable_only_the_host_has_never_reaches_the_trainer";
+        if crate::child::delegated(
+            NAME,
+            &[
+                ("ABNEGATE_COMFY_TEST_HOST_ONLY", "host-value"),
+                ("COMFYUI_API_TOKEN", "host-token"),
+                ("ABNEGATE_TRAIN_STEPS", "9"),
+            ],
+        )
+        .await
+        {
+            return;
+        }
+        let command = r#"
+            test -z "${ABNEGATE_COMFY_TEST_HOST_ONLY+set}" || exit 71
+            test -z "${COMFYUI_API_TOKEN+set}" || exit 72
+            test -z "${COMFYUI_TOKEN_HEADER+set}" || exit 73
+            test -z "${ABNEGATE_TRAIN_STEPS+set}" || exit 74
+            test -n "$PATH" || exit 75
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+
+        trained_by(&config).await;
+    }
+
+    #[tokio::test]
+    async fn the_trainer_keeps_the_hosts_own_settings_under_its_prefix() {
+        const NAME: &str = "lora::tests::the_trainer_keeps_the_hosts_own_settings_under_its_prefix";
+        if crate::child::delegated(
+            NAME,
+            &[("TRAIN_STEPS", "2000"), ("TRAIN_OUTPUT", "/host/elsewhere")],
+        )
+        .await
+        {
+            return;
+        }
+        let command = r#"
+            test "$TRAIN_STEPS" = 2000 || exit 81
+            test "$TRAIN_OUTPUT" != /host/elsewhere || exit 82
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+
+        trained_by(&config).await;
     }
 
     /// A models root with the output directory the writer needs.
