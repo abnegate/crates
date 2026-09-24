@@ -23,7 +23,12 @@ cargo add abnegate-notify
 ```
 
 ```rust,no_run
-use abnegate_notify::{Discord, Error, Fanout, Notification, Severity, Slack};
+use abnegate_notify::Discord;
+use abnegate_notify::Error;
+use abnegate_notify::Fanout;
+use abnegate_notify::Notification;
+use abnegate_notify::Severity;
+use abnegate_notify::Slack;
 
 async fn announce() -> Result<(), Error> {
     let fanout = Fanout::new()

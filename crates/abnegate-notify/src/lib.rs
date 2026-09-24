@@ -9,7 +9,11 @@
 //!
 //! ```no_run
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! use abnegate_notify::{Discord, Fanout, Notification, Severity, Slack};
+//! use abnegate_notify::Discord;
+//! use abnegate_notify::Fanout;
+//! use abnegate_notify::Notification;
+//! use abnegate_notify::Severity;
+//! use abnegate_notify::Slack;
 //!
 //! let fanout = Fanout::new()
 //!     .with(Slack::new("https://hooks.slack.com/services/T000/B000/xxxx")?)
@@ -77,20 +81,25 @@ mod severity;
 mod smtp;
 mod text;
 
+pub use crate::backend::Discord;
 #[cfg(feature = "smtp")]
 pub use crate::backend::Email;
-pub use crate::backend::{Discord, Slack};
+pub use crate::backend::Slack;
 pub use crate::channel::Channel;
 pub use crate::delivery::Delivery;
-pub use crate::endpoint::{Endpoint, EndpointError};
+pub use crate::endpoint::Endpoint;
+pub use crate::endpoint::EndpointError;
 pub use crate::error::Error;
-pub use crate::fanout::{DEFAULT_TIMEOUT, Fanout};
+pub use crate::fanout::DEFAULT_TIMEOUT;
+pub use crate::fanout::Fanout;
 pub use crate::field::Field;
 pub use crate::mail::Mail;
 #[cfg(feature = "smtp")]
 pub use crate::mail::Mailer;
 #[cfg(feature = "testing")]
-pub use crate::mail::{MockMailer, SentMail};
+pub use crate::mail::MockMailer;
+#[cfg(feature = "testing")]
+pub use crate::mail::SentMail;
 pub use crate::notification::Notification;
 pub use crate::notifier::Notifier;
 pub use crate::report::Report;

@@ -1,47 +1,20 @@
 //! A webhook target that has been checked before anything is sent to it.
 
+mod error;
+
 use std::fmt;
 
 use abnegate_secret::SecretValue;
-use reqwest::{Client, RequestBuilder};
-use thiserror::Error;
-use url::{Host, Url};
+use reqwest::Client;
+use reqwest::RequestBuilder;
+use url::Host;
+use url::Url;
+
+pub use crate::endpoint::error::EndpointError;
 
 const LOOPBACK_SUFFIX: &str = ".localhost";
 const LOOPBACK_NAME: &str = "localhost";
 const REQUIRED_SCHEME: &str = "https";
-
-/// Why a webhook URL was refused.
-///
-/// A rejected URL is never quoted back: the path of a webhook URL is the
-/// credential, so only the host reaches the message.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum EndpointError {
-    #[error("the webhook URL could not be parsed")]
-    Malformed,
-
-    #[error("a webhook must use {REQUIRED_SCHEME}, not {scheme}")]
-    Scheme { scheme: String },
-
-    #[error("the webhook URL has no host")]
-    MissingHost,
-
-    #[error("the webhook URL embeds credentials in its authority")]
-    EmbeddedCredentials,
-
-    #[error("a webhook may not name port {port}")]
-    Port { port: u16 },
-
-    #[error("{host} is an IP literal, which a webhook may not target")]
-    AddressLiteral { host: String },
-
-    #[error("{host} resolves to the local machine")]
-    Loopback { host: String },
-
-    #[error("{host} is not an allowed host for this channel")]
-    HostNotAllowed { host: String },
-}
 
 /// A validated webhook URL, held as the credential it is.
 ///
