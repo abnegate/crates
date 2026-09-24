@@ -1,7 +1,11 @@
 //! A crop, rendered.
 
+use std::fmt;
+
 /// A rendered crop: 8-bit RGB, row-major, `width * height * 3` bytes.
-#[derive(Debug, Clone)]
+///
+/// `Debug` reports the pixel buffer by its length, not its samples.
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct Rendered {
     /// The image's width, in pixels.
@@ -20,5 +24,30 @@ impl Rendered {
             height,
             pixels,
         }
+    }
+}
+
+impl fmt::Debug for Rendered {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Rendered")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("pixels", &format_args!("{} bytes", self.pixels.len()))
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_reports_the_pixels_by_length() {
+        let rendered = Rendered::new(4, 2, vec![7; 4 * 2 * 3]);
+        assert_eq!(
+            format!("{rendered:?}"),
+            "Rendered { width: 4, height: 2, pixels: 24 bytes }"
+        );
     }
 }
