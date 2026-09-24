@@ -8,6 +8,7 @@
 
 mod changed_file;
 mod checks_outcome;
+mod comment_request;
 mod create_request;
 mod created;
 mod created_repository;
@@ -18,6 +19,8 @@ mod excerpt;
 mod file_status;
 mod github_branch;
 mod github_comment;
+mod github_identified;
+mod github_issue_comment;
 mod github_pull_request;
 mod github_pull_request_detail;
 mod github_refusal;
@@ -38,6 +41,7 @@ mod repository;
 mod repository_detail;
 mod repository_path;
 mod review_event;
+mod review_request;
 mod review_state;
 mod review_tally;
 mod review_thread_record;
