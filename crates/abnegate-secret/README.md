@@ -20,7 +20,7 @@ those on your own `sqlx` or `rusqlite` dependency.
 cargo add abnegate-secret
 ```
 
-```rust,no_run
+```rust
 use abnegate_secret::{Error, MasterKey, SecretValue, decrypt_value, encrypt_value, redact};
 
 fn main() -> Result<(), Error> {
