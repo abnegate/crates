@@ -16,7 +16,7 @@ and reloads agent runs, and `template` renders `{{key}}` prompt templates.
 
 ## Features
 
-- `mcp`: an MCP client that launches stdio servers and adds their tools to a `ToolRegistry`, configured from the environment under an application's own prefix.
+- `mcp`: an MCP client that launches stdio servers and adds their tools to a `ToolRegistry`. Its configuration is `abnegate-agent-cli`'s `McpConfig`, re-exported here, so one `mcp.json` drives this client and a coding agent CLI alike.
 
 ## Usage
 
@@ -64,3 +64,31 @@ The model is named when the agent is built, so one provider can serve several
 agents. When the provider stops on custom sequences or asks for reasoning, give
 compaction a provider that does neither with `Agent::with_summarizer`: a summary
 is a structured rewrite, asked for at temperature 0.
+
+## MCP
+
+With the `mcp` feature, `McpConfig::from_environment` reads the servers an
+application configured under its own prefix: `ACME_MCP_SERVERS` inline,
+`ACME_MCP_CONFIG` naming a file, or `~/.acme/mcp.json`, each in the
+`mcpServers` shape. `mcp::with_defaults_and_mcp` launches every enabled command
+server and adds its tools to the default registry as `server__tool`. A server
+marked `"disabled": true`, or one reached by `url`, which only a CLI attaches,
+is skipped. Each server's child sees only the allowlisted environment plus its
+own `env`, unless it sets `inherit_environment`, and starts in its `cwd` when
+it names one.
+
+This example needs the `mcp` feature, so it is not compiled with this README;
+the same example is compiled in the `mcp` module's documentation.
+
+```rust,ignore
+use abnegate_agent::McpConfig;
+use abnegate_agent::McpServer;
+use abnegate_agent::mcp::with_defaults_and_mcp;
+
+async fn tools() {
+    let config = McpConfig::from_environment("ACME")
+        .fallback("notes", McpServer::command("notes-server", ["mcp"]));
+    let registry = with_defaults_and_mcp(&config).await;
+    println!("{:?}", registry.names());
+}
+```
