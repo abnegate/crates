@@ -1415,8 +1415,8 @@ mod tests {
         let inputs = &body["prompt"]["5"]["inputs"];
         assert_eq!(
             inputs["steps"],
-            packaged_config().unwrap().min_steps,
-            "two images clamp up to min_steps"
+            packaged_config().unwrap().minimum_steps,
+            "two images clamp up to the minimum step count"
         );
         assert_eq!(inputs["save_name"], started.artifact);
         assert_eq!(
@@ -2201,9 +2201,9 @@ mod tests {
     #[test]
     fn the_floor_and_ceiling_bound_training() {
         let config = packaged_config().unwrap();
-        assert!(config.min_steps <= config.max_steps);
-        assert_eq!(config.steps(1), config.min_steps);
-        assert_eq!(config.steps(usize::MAX), config.max_steps);
+        assert!(config.minimum_steps <= config.maximum_steps);
+        assert_eq!(config.steps(1), config.minimum_steps);
+        assert_eq!(config.steps(usize::MAX), config.maximum_steps);
     }
 
     #[test]
@@ -2211,8 +2211,8 @@ mod tests {
         let config = packaged_config().unwrap();
         let raw: Value = serde_json::from_str(PACKAGED_TRAIN_CONFIG).unwrap();
         assert_eq!(raw["passes_per_image"], config.passes_per_image);
-        assert_eq!(raw["min_steps"], config.min_steps);
-        assert_eq!(raw["max_steps"], config.max_steps);
+        assert_eq!(raw["min_steps"], config.minimum_steps);
+        assert_eq!(raw["max_steps"], config.maximum_steps);
         assert_eq!(raw["rank"], config.rank);
         assert_eq!(raw["learning_rate"], config.learning_rate);
         assert_eq!(raw["lora_dtype"], config.lora_dtype);

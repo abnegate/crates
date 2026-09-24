@@ -5,8 +5,10 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct TrainConfig {
     pub(crate) passes_per_image: u32,
-    pub(crate) min_steps: u32,
-    pub(crate) max_steps: u32,
+    #[serde(rename = "min_steps")]
+    pub(crate) minimum_steps: u32,
+    #[serde(rename = "max_steps")]
+    pub(crate) maximum_steps: u32,
     pub(crate) rank: u32,
     pub(crate) learning_rate: f64,
     pub(crate) lora_dtype: String,
@@ -29,7 +31,7 @@ impl TrainConfig {
         u32::try_from(image_count.max(1))
             .unwrap_or(u32::MAX)
             .saturating_mul(self.passes_per_image)
-            .clamp(self.min_steps, self.max_steps)
+            .clamp(self.minimum_steps, self.maximum_steps)
     }
 }
 
