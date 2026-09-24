@@ -1,10 +1,6 @@
-#[cfg(unix)]
 use nix::errno::Errno;
-#[cfg(unix)]
 use nix::sys::signal::Signal;
-#[cfg(unix)]
 use nix::sys::signal::killpg;
-#[cfg(unix)]
 use nix::unistd::Pid;
 use std::io;
 use tokio::process::Child;
@@ -22,7 +18,6 @@ pub(super) struct ProcessGroup {
 impl ProcessGroup {
     /// Spawns `command` as the leader of a new process group.
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
-        #[cfg(unix)]
         command.process_group(0);
         let child = command.spawn()?;
         let group = Self { leader: child.id() };
@@ -43,7 +38,6 @@ impl Drop for ProcessGroup {
     }
 }
 
-#[cfg(unix)]
 fn terminate(leader: u32) {
     let Some(group) = i32::try_from(leader)
         .ok()
@@ -59,6 +53,3 @@ fn terminate(leader: u32) {
         }
     }
 }
-
-#[cfg(not(unix))]
-fn terminate(_leader: u32) {}

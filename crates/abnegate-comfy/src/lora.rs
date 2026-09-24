@@ -1328,16 +1328,10 @@ fn sync_file(path: &Path) -> Result<(), TrainError> {
         .map_err(failed)
 }
 
-#[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), TrainError> {
     fs::File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(failed)
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> Result<(), TrainError> {
-    Ok(())
 }
 
 fn remove_entry(path: &Path) {
