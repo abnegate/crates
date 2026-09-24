@@ -125,7 +125,7 @@ mod tests {
         let policy = spec.environment_policy();
         assert!(!policy.inherits());
         assert_eq!(
-            policy.get("NOTES_TOKEN").map(SecretValue::expose),
+            policy.get("NOTES_TOKEN").as_ref().map(SecretValue::expose),
             Some("token")
         );
         for name in policy.names().filter(|name| *name != "NOTES_TOKEN") {

@@ -114,6 +114,35 @@ async fn shelling_tools_give_the_child_only_the_context_environment() {
     }
 }
 
+/// The default context passes on the timezone, so a command does not read
+/// the clock as UTC, and the certificate bundle, so it can verify a server
+/// behind a private certificate authority; each is read from this process as
+/// the child starts.
+#[tokio::test]
+async fn the_default_context_passes_the_timezone_and_the_certificates() {
+    const NAME: &str =
+        "tool::command::tests::the_default_context_passes_the_timezone_and_the_certificates";
+    const TIMEZONE: &str = "TZ=Europe/Paris";
+    const CERTIFICATES: &str = "SSL_CERT_FILE=/etc/ssl/private-authority.pem";
+    if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD_TEST, NAME)
+            .envs([TIMEZONE, CERTIFICATES].map(|line| line.split_once('=').unwrap()))
+            .output()
+            .await
+            .unwrap();
+        assert_passed(&output);
+        return;
+    }
+
+    for output in environments(&ToolContext::default()).await {
+        for line in [TIMEZONE, CERTIFICATES] {
+            assert!(output.lines().any(|seen| seen == line), "{line}: {output}");
+        }
+    }
+}
+
 fn shell_test_context() -> ToolContext {
     let mut context = create_test_context();
     context.unrestricted = true;

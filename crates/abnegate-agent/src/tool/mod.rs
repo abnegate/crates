@@ -11,7 +11,6 @@
 mod beneath;
 mod command;
 mod context;
-mod environment;
 mod error;
 mod file;
 pub mod job;
@@ -30,6 +29,8 @@ mod wait;
 
 use std::time::Duration;
 
+pub use abnegate_exec::DEFAULT_ENVIRONMENT;
+pub use abnegate_exec::EnvironmentPolicy;
 use abnegate_llm::ToolDefinition;
 pub use abnegate_secret::sanitize;
 use async_trait::async_trait;
@@ -37,8 +38,6 @@ pub use command::MAX_SLEEP_SECONDS;
 pub use command::RunCommandTool;
 pub use command::RunShellTool;
 pub use context::ToolContext;
-pub use environment::DEFAULT_ENVIRONMENT;
-pub use environment::EnvironmentPolicy;
 pub use error::ToolError;
 pub use file::ApplyPatchTool;
 pub use file::ListFilesTool;

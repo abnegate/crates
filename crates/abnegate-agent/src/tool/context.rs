@@ -22,9 +22,9 @@ const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct ToolContext {
     /// The root file tools stay beneath and commands run in by default.
     pub working_directory: PathBuf,
-    /// The whole environment a spawned child is given: by default the
-    /// [`DEFAULT_ENVIRONMENT`](super::DEFAULT_ENVIRONMENT) names from this
-    /// process and nothing else.
+    /// The whole environment a spawned child is given: by default each
+    /// [`DEFAULT_ENVIRONMENT`](super::DEFAULT_ENVIRONMENT) name this process
+    /// has as the child starts, and nothing else.
     pub environment: EnvironmentPolicy,
     /// Largest file, in bytes, a tool will read into memory.
     pub max_file_size: usize,
