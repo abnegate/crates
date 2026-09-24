@@ -548,6 +548,36 @@ mod tests {
         assert!(!output.contains(MARKER), "{output}");
     }
 
+    #[tokio::test]
+    async fn a_confined_run_keeps_a_policy_variable_beneath_the_sandbox() {
+        if !sandbox::proven(ConfinementMode::SingleCommand).await {
+            return;
+        }
+        let executor = CommandExecutor::with_config(
+            ExecutorConfig::default().with_environment(
+                EnvironmentPolicy::allowlist()
+                    .with("POLICY_LAYER", "policy")
+                    .with("HOME", "/policy"),
+            ),
+        );
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+
+        let output = environment_of(
+            &executor,
+            confined("confined-policy", &root, "/usr/bin/env"),
+        )
+        .await;
+        let lines: Vec<&str> = output.lines().collect();
+
+        assert!(lines.contains(&"POLICY_LAYER=policy"), "{output}");
+        assert!(
+            lines.contains(&format!("HOME={}", root.display()).as_str()),
+            "the sandbox's own HOME outranks the policy's: {output}"
+        );
+        assert!(!lines.contains(&"HOME=/policy"), "{output}");
+    }
+
     /// The first confined job waits for the sandbox to be proven, and none of
     /// that wait belongs to the job: its timeout and reported duration count
     /// from the spawn. Runs in a child process, where no verdict is cached.
