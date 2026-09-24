@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::wire::FUNCTION_TYPE;
 use crate::wire::specific_function::SpecificFunction;
 use crate::wire::tool_mode::ToolMode;
-
-const FUNCTION_TYPE: &str = "function";
 
 /// Whether, and which, tool the model must call.
 ///
