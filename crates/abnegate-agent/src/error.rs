@@ -16,8 +16,6 @@ use crate::tool::ToolError;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
-    #[error("LLM error: {0}")]
-    Llm(#[from] abnegate_llm::Error),
     #[error("Tool error: {0}")]
     Tool(#[from] ToolError),
     #[error("Run error: {0}")]
@@ -51,15 +49,6 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-
-    #[test]
-    fn test_llm_error_display() {
-        let error: Error = abnegate_llm::Error::Stream("Connection refused".to_string()).into();
-        assert_eq!(
-            error.to_string(),
-            "LLM error: Stream error: Connection refused"
-        );
-    }
 
     #[test]
     fn test_tool_error_display() {
