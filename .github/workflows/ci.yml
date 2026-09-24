@@ -325,7 +325,6 @@ jobs:
           persist-credentials: false
 
       - name: Refuse donor names in published sources
-        continue-on-error: true
         run: |
           hits=$({
             grep -rniw zone crates/*/src crates/*/tests crates/*/examples crates/*/README.md 2>/dev/null | grep -v timezone
