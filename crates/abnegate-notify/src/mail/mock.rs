@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::error::NotifyError;
+use crate::error::Error;
 use crate::mail::Mail;
 use crate::mail::sent::SentMail;
 
@@ -37,7 +37,7 @@ impl MockMailer {
 
 #[async_trait]
 impl Mail for MockMailer {
-    async fn send(&self, recipient: &str, subject: &str, body: &str) -> Result<(), NotifyError> {
+    async fn send(&self, recipient: &str, subject: &str, body: &str) -> Result<(), Error> {
         self.sent.lock().await.push(SentMail {
             recipient: recipient.to_string(),
             subject: subject.to_string(),

@@ -9,7 +9,7 @@ use reqwest::{Client, Response, StatusCode};
 use serde_json::Value;
 
 use crate::endpoint::Endpoint;
-use crate::error::NotifyError;
+use crate::error::Error;
 use crate::fanout::{DEFAULT_TIMEOUT, MINIMUM_TIMEOUT};
 use crate::text::truncate;
 
@@ -36,13 +36,13 @@ pub(crate) struct Webhook {
 }
 
 impl Webhook {
-    pub(crate) fn new(endpoint: Endpoint) -> Result<Self, NotifyError> {
+    pub(crate) fn new(endpoint: Endpoint) -> Result<Self, Error> {
         let client = Client::builder()
             .redirect(Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)
             .user_agent(USER_AGENT)
             .build()
-            .map_err(|error| NotifyError::Malformed {
+            .map_err(|error| Error::Malformed {
                 message: strip_url(error),
             })?;
 
@@ -66,7 +66,7 @@ impl Webhook {
         self.timeout = Some(timeout.max(MINIMUM_TIMEOUT));
     }
 
-    pub(crate) async fn post(&self, payload: &Value) -> Result<Response, NotifyError> {
+    pub(crate) async fn post(&self, payload: &Value) -> Result<Response, Error> {
         let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
         let response = self
             .endpoint
@@ -83,24 +83,24 @@ impl Webhook {
         }
 
         if status == StatusCode::TOO_MANY_REQUESTS {
-            return Err(NotifyError::RateLimited {
+            return Err(Error::RateLimited {
                 host: self.host().to_string(),
                 retry_after: retry_after(&response),
             });
         }
 
-        Err(NotifyError::Rejected {
+        Err(Error::Rejected {
             host: self.host().to_string(),
             status: status.as_u16(),
             body: self.read_failure_body(response).await,
         })
     }
 
-    fn unsent(&self, error: reqwest::Error, timeout: Duration) -> NotifyError {
+    fn unsent(&self, error: reqwest::Error, timeout: Duration) -> Error {
         if error.is_timeout() && !error.is_connect() {
-            return NotifyError::Timeout { after: timeout };
+            return Error::Timeout { after: timeout };
         }
-        NotifyError::Unreachable {
+        Error::Unreachable {
             host: self.host().to_string(),
             message: strip_url(error),
         }
@@ -192,7 +192,7 @@ mod tests {
             .expect_err("rejected");
 
         match error {
-            NotifyError::Rejected { status, body, .. } => {
+            Error::Rejected { status, body, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(body, "invalid_payload");
             }
@@ -215,7 +215,7 @@ mod tests {
             .expect_err("rejected");
 
         match error {
-            NotifyError::Rejected { body, .. } => {
+            Error::Rejected { body, .. } => {
                 assert!(
                     body.chars().count() <= MAX_ERROR_BODY_CHARS,
                     "body was {} chars",
@@ -296,7 +296,7 @@ mod tests {
             .post(&json!({}))
             .await
             .expect_err("rate limited");
-        assert!(matches!(error, NotifyError::RateLimited { .. }));
+        assert!(matches!(error, Error::RateLimited { .. }));
         assert_eq!(error.retry_after(), None);
     }
 
@@ -318,7 +318,7 @@ mod tests {
             .expect_err("a redirect is not a delivery");
 
         match error {
-            NotifyError::Rejected { status, .. } => assert_eq!(status, 302),
+            Error::Rejected { status, .. } => assert_eq!(status, 302),
             other => panic!("expected the redirect to be reported, got {other:?}"),
         }
     }
@@ -354,7 +354,7 @@ mod tests {
         let error = webhook.post(&json!({})).await.expect_err("too slow");
         assert_eq!(
             error,
-            NotifyError::Timeout {
+            Error::Timeout {
                 after: Duration::from_millis(100)
             }
         );

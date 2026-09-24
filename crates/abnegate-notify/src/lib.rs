@@ -83,7 +83,7 @@ pub use crate::backend::{Discord, Slack};
 pub use crate::channel::Channel;
 pub use crate::delivery::Delivery;
 pub use crate::endpoint::{Endpoint, EndpointError};
-pub use crate::error::NotifyError;
+pub use crate::error::Error;
 pub use crate::fanout::{DEFAULT_TIMEOUT, Fanout};
 pub use crate::field::Field;
 pub use crate::mail::Mail;

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::backend::webhook::Webhook;
 use crate::channel::Channel;
 use crate::endpoint::Endpoint;
-use crate::error::NotifyError;
+use crate::error::Error;
 use crate::notification::Notification;
 use crate::notifier::Notifier;
 use crate::severity::Severity;
@@ -40,7 +40,7 @@ pub struct Discord {
 
 impl Discord {
     /// Point at `webhook_url`, which must be a Discord webhook URL.
-    pub fn new(webhook_url: &str) -> Result<Self, NotifyError> {
+    pub fn new(webhook_url: &str) -> Result<Self, Error> {
         let endpoint = Endpoint::new(webhook_url, HOSTS)?;
         Ok(Self {
             webhook: Webhook::new(endpoint)?,
@@ -157,7 +157,7 @@ impl Notifier for Discord {
         self.webhook.timeout()
     }
 
-    async fn deliver(&self, notification: &Notification) -> Result<(), NotifyError> {
+    async fn deliver(&self, notification: &Notification) -> Result<(), Error> {
         self.webhook.post(&self.payload(notification)).await?;
         Ok(())
     }
@@ -212,7 +212,7 @@ mod tests {
             .expect_err("lookalike host must be refused");
         assert!(matches!(
             error,
-            NotifyError::Endpoint(EndpointError::HostNotAllowed { .. })
+            Error::Endpoint(EndpointError::HostNotAllowed { .. })
         ));
     }
 
@@ -435,7 +435,7 @@ mod tests {
             .expect_err("too slow");
         assert_eq!(
             error,
-            NotifyError::Timeout {
+            Error::Timeout {
                 after: Duration::from_millis(100)
             }
         );

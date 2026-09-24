@@ -9,14 +9,14 @@ use abnegate_secret::sanitize_owned;
 #[cfg(feature = "smtp")]
 use lettre::message::Mailbox;
 #[cfg(feature = "smtp")]
-use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::AsyncSmtpTransportBuilder;
 #[cfg(feature = "smtp")]
-use lettre::transport::smtp::{AsyncSmtpTransportBuilder, Error};
+use lettre::transport::smtp::authentication::Credentials;
 #[cfg(feature = "smtp")]
 use lettre::{Address, AsyncSmtpTransport, Tokio1Executor};
 
 #[cfg(feature = "smtp")]
-use crate::error::NotifyError;
+use crate::error::Error;
 
 /// Implicit-TLS submissions port, the one port `relay` is built for.
 #[cfg(feature = "smtp")]
@@ -49,7 +49,7 @@ impl SmtpConfig {
     /// A builder rather than a transport: building one is what starts
     /// `lettre`'s connection pool when its `pool` feature is on, and that
     /// needs a running Tokio runtime to construct and to drop.
-    pub(crate) fn builder(&self) -> Result<AsyncSmtpTransportBuilder, NotifyError> {
+    pub(crate) fn builder(&self) -> Result<AsyncSmtpTransportBuilder, Error> {
         let builder = if self.port == SUBMISSIONS_PORT {
             AsyncSmtpTransport::<Tokio1Executor>::relay(&self.host)
         } else {
@@ -61,7 +61,7 @@ impl SmtpConfig {
         Ok(builder.port(self.port).credentials(credentials))
     }
 
-    pub(crate) fn sender(&self) -> Result<Mailbox, NotifyError> {
+    pub(crate) fn sender(&self) -> Result<Mailbox, Error> {
         mailbox(&self.from_address, Some(self.from_name.clone()))
     }
 }
@@ -84,8 +84,8 @@ impl fmt::Debug for SmtpConfig {
 ///
 /// An address is personal data, and the error is headed for a log line.
 #[cfg(feature = "smtp")]
-pub(crate) fn mailbox(address: &str, name: Option<String>) -> Result<Mailbox, NotifyError> {
-    let parsed: Address = address.parse().map_err(|_| NotifyError::Malformed {
+pub(crate) fn mailbox(address: &str, name: Option<String>) -> Result<Mailbox, Error> {
+    let parsed: Address = address.parse().map_err(|_| Error::Malformed {
         message: "an email address could not be parsed".to_string(),
     })?;
     Ok(Mailbox::new(name, parsed))
@@ -96,8 +96,8 @@ pub(crate) fn mailbox(address: &str, name: Option<String>) -> Result<Mailbox, No
 /// A relay's reply text is written by the far end, so it is treated like any
 /// other outside text on its way to a log line.
 #[cfg(feature = "smtp")]
-pub(crate) fn failure(host: &str, error: Error) -> NotifyError {
-    NotifyError::Smtp {
+pub(crate) fn failure(host: &str, error: lettre::transport::smtp::Error) -> Error {
+    Error::Smtp {
         host: host.to_string(),
         message: sanitize_owned(error.to_string()),
     }
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn an_unparseable_address_is_refused_without_being_quoted() {
         let error = mailbox("someone.private@@example.test", None).expect_err("bad address");
-        assert!(matches!(error, NotifyError::Malformed { .. }));
+        assert!(matches!(error, Error::Malformed { .. }));
         assert!(
             !error.to_string().contains("someone.private"),
             "the address reached the message: {error}"

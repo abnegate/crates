@@ -23,9 +23,9 @@ cargo add abnegate-notify
 ```
 
 ```rust,no_run
-use abnegate_notify::{Discord, Fanout, Notification, NotifyError, Severity, Slack};
+use abnegate_notify::{Discord, Error, Fanout, Notification, Severity, Slack};
 
-async fn announce() -> Result<(), NotifyError> {
+async fn announce() -> Result<(), Error> {
     let fanout = Fanout::new()
         .with(Slack::new("https://hooks.slack.com/services/T000/B000/xxxx")?)
         .with(Discord::new("https://discord.com/api/webhooks/1/xxxx")?);

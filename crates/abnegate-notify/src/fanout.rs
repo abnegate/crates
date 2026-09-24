@@ -8,7 +8,7 @@ use tokio::task::{Id, JoinSet};
 use tokio::time::timeout;
 
 use crate::delivery::Delivery;
-use crate::error::NotifyError;
+use crate::error::Error;
 use crate::notification::Notification;
 use crate::notifier::Notifier;
 use crate::report::Report;
@@ -97,7 +97,7 @@ impl Fanout {
             let handle = tasks.spawn(async move {
                 let outcome = match timeout(budget, notifier.deliver(&notification)).await {
                     Ok(outcome) => outcome,
-                    Err(_) => Err(NotifyError::Timeout { after: budget }),
+                    Err(_) => Err(Error::Timeout { after: budget }),
                 };
                 (index, describe(notifier.as_ref(), outcome))
             });
@@ -117,7 +117,7 @@ impl Fanout {
                         channel = %notifier.channel(),
                         "Notification channel panicked"
                     );
-                    collected.push((index, describe(notifier, Err(NotifyError::Panicked))));
+                    collected.push((index, describe(notifier, Err(Error::Panicked))));
                 }
             }
         }
@@ -140,7 +140,7 @@ impl Fanout {
     }
 }
 
-fn describe(notifier: &dyn Notifier, outcome: Result<(), NotifyError>) -> Delivery {
+fn describe(notifier: &dyn Notifier, outcome: Result<(), Error>) -> Delivery {
     let channel = notifier.channel();
     let name = notifier
         .name()
@@ -218,7 +218,7 @@ mod tests {
         assert!(
             failure
                 .error()
-                .is_some_and(|error| matches!(error, NotifyError::Rejected { status: 404, .. }))
+                .is_some_and(|error| matches!(error, Error::Rejected { status: 404, .. }))
         );
         assert!(!failure.is_retryable());
     }

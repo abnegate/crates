@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::error::NotifyError;
+use crate::error::Error;
 
 #[cfg(feature = "smtp")]
 mod mailer;
@@ -31,5 +31,6 @@ pub use crate::mail::sent::SentMail;
 /// payload of the message it appears in.
 #[async_trait]
 pub trait Mail: Send + Sync {
-    async fn send(&self, recipient: &str, subject: &str, body: &str) -> Result<(), NotifyError>;
+    /// Send `subject` and `body` to `recipient`.
+    async fn send(&self, recipient: &str, subject: &str, body: &str) -> Result<(), Error>;
 }

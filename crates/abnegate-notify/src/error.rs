@@ -2,51 +2,80 @@
 
 use std::time::Duration;
 
-use thiserror::Error;
-
 use crate::endpoint::EndpointError;
 
-/// A single channel's failure.
+/// What building a channel, or delivering through one, can fail with.
 ///
 /// No variant carries the endpoint URL. A webhook URL is a bearer credential,
 /// and an error message is the shortest path from a credential to a log file,
 /// so failures name the host and nothing more.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum NotifyError {
+pub enum Error {
+    /// The channel did not finish within its budget.
     #[error("delivery timed out after {}ms", .after.as_millis())]
-    Timeout { after: Duration },
+    Timeout {
+        /// The budget the channel was given.
+        after: Duration,
+    },
 
+    /// The channel's task panicked, and the panic went no further.
     #[error("the notifier panicked")]
     Panicked,
 
+    /// The provider answered with a status that is neither success nor a rate
+    /// limit, redirects included.
     #[error("{host} rejected the notification with HTTP {status}: {body}")]
     Rejected {
+        /// The provider's host, which is safe to log.
         host: String,
+        /// The HTTP status it answered with.
         status: u16,
+        /// The start of its answer, bounded and sanitized.
         body: String,
     },
 
+    /// The provider answered `429 Too Many Requests`.
     #[error("{host} is rate limiting this webhook{}", retry_hint(.retry_after))]
     RateLimited {
+        /// The provider's host, which is safe to log.
         host: String,
+        /// How long the provider asked the caller to wait, when it said.
         retry_after: Option<Duration>,
     },
 
+    /// The request never reached the provider, or its answer never arrived.
     #[error("could not reach {host}: {message}")]
-    Unreachable { host: String, message: String },
+    Unreachable {
+        /// The provider's host, which is safe to log.
+        host: String,
+        /// The transport's reason, with the request URL removed.
+        message: String,
+    },
 
+    /// The SMTP relay could not be reached, or refused the message.
     #[error("SMTP delivery via {host} failed: {message}")]
-    Smtp { host: String, message: String },
+    Smtp {
+        /// The relay's host, which is safe to log.
+        host: String,
+        /// The relay's reason, sanitized.
+        message: String,
+    },
 
+    /// A message, an address or a client could not be built from what the
+    /// caller supplied.
     #[error("the message could not be built: {message}")]
-    Malformed { message: String },
+    Malformed {
+        /// What could not be built, never quoting an address back.
+        message: String,
+    },
 
+    /// The webhook URL was refused before anything was sent to it.
     #[error(transparent)]
     Endpoint(#[from] EndpointError),
 }
 
-impl NotifyError {
+impl Error {
     /// Whether sending the same notification again could plausibly succeed.
     ///
     /// A rejected payload and an unusable endpoint will fail identically no
@@ -83,7 +112,7 @@ mod tests {
 
     #[test]
     fn a_timeout_reports_how_long_it_waited() {
-        let error = NotifyError::Timeout {
+        let error = Error::Timeout {
             after: Duration::from_millis(2500),
         };
         assert_eq!(error.to_string(), "delivery timed out after 2500ms");
@@ -92,7 +121,7 @@ mod tests {
 
     #[test]
     fn a_rate_limit_reports_the_wait_when_the_provider_gave_one() {
-        let told = NotifyError::RateLimited {
+        let told = Error::RateLimited {
             host: "discord.com".to_string(),
             retry_after: Some(Duration::from_millis(1200)),
         };
@@ -102,7 +131,7 @@ mod tests {
         );
         assert_eq!(told.retry_after(), Some(Duration::from_millis(1200)));
 
-        let untold = NotifyError::RateLimited {
+        let untold = Error::RateLimited {
             host: "discord.com".to_string(),
             retry_after: None,
         };
@@ -115,7 +144,7 @@ mod tests {
 
     #[test]
     fn client_rejections_are_permanent_and_server_rejections_are_not() {
-        let malformed = NotifyError::Rejected {
+        let malformed = Error::Rejected {
             host: "hooks.slack.com".to_string(),
             status: 400,
             body: "invalid_payload".to_string(),
@@ -123,7 +152,7 @@ mod tests {
         assert!(!malformed.is_retryable());
 
         for status in [500, 502, 503, 408, 429] {
-            let transient = NotifyError::Rejected {
+            let transient = Error::Rejected {
                 host: "hooks.slack.com".to_string(),
                 status,
                 body: String::new(),
@@ -137,7 +166,7 @@ mod tests {
 
     #[test]
     fn a_panic_is_never_retried() {
-        assert!(!NotifyError::Panicked.is_retryable());
-        assert_eq!(NotifyError::Panicked.to_string(), "the notifier panicked");
+        assert!(!Error::Panicked.is_retryable());
+        assert_eq!(Error::Panicked.to_string(), "the notifier panicked");
     }
 }
