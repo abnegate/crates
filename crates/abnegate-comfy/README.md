@@ -156,4 +156,6 @@ spell out what they build: `build_flux_schnell_image_to_image_workflow`,
 Structs with public fields are `#[non_exhaustive]`, so the ones a caller passes
 in are built with `video::Options::new`, `recipe::Fill::new`,
 `inventory::WeightSidecar::new`, `lora::TrainRequest::new` and
-`lora::TrainImage::new`.
+`lora::TrainImage::new`. `video::Options::new` takes the frame rate and
+resolution; mirroring and the frame limit default to on and 48, and
+`with_mirror` and `with_limit` change them.

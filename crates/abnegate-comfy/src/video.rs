@@ -1076,18 +1076,7 @@ mod tests {
     #[test]
     fn a_clip_ffmpeg_read_nothing_out_of_is_not_a_training_set() {
         let stills = tempfile::tempdir().unwrap();
-        let error = build(
-            stills.path(),
-            8.0,
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
-            &Subject::none(),
-        )
-        .unwrap_err();
+        let error = build(stills.path(), 8.0, Options::new(4, 512), &Subject::none()).unwrap_err();
         assert!(matches!(error, TrainError::Invalid(_)), "{error}");
     }
 
@@ -1108,12 +1097,7 @@ mod tests {
             },
             b"clip",
             "clip.mp4",
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
+            Options::new(4, 512),
         )
         .await
         .unwrap_err();
@@ -1125,19 +1109,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_upload_is_rejected_before_ffmpeg_runs() {
-        let error = extract(
-            &Config::default(),
-            &[],
-            "clip.mp4",
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
-        )
-        .await
-        .unwrap_err();
+        let error = extract(&Config::default(), &[], "clip.mp4", Options::new(4, 512))
+            .await
+            .unwrap_err();
         assert!(matches!(error, TrainError::Invalid(_)), "{error}");
     }
 
@@ -1279,12 +1253,7 @@ mod tests {
             },
             b"clip",
             "clip.mp4",
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
+            Options::new(4, 512),
         )
         .await
         .unwrap_err();
@@ -1301,12 +1270,7 @@ mod tests {
             &Config::default(),
             b"this is not a video",
             "notes.txt",
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
+            Options::new(4, 512),
         )
         .await
         .unwrap_err();
@@ -1327,12 +1291,7 @@ mod tests {
             &Config::default(),
             &std::fs::read(&clip).unwrap(),
             "clip.mp4",
-            Options {
-                fps: 3,
-                resolution: 256,
-                mirror: true,
-                limit: 48,
-            },
+            Options::new(3, 256),
         )
         .await
         .unwrap();
@@ -1391,12 +1350,7 @@ mod tests {
         let clip = work.path().join("clip.webm");
         synthesize(&clip, MOVING_SUBJECT, "1").await;
         let bytes = std::fs::read(&clip).unwrap();
-        let options = Options {
-            fps: 2,
-            resolution: 64,
-            mirror: false,
-            limit: 4,
-        };
+        let options = Options::new(2, 64).with_mirror(false).with_limit(4);
 
         extract(&Config::default(), &bytes, "clip.webm", options)
             .await
@@ -1421,12 +1375,7 @@ mod tests {
             &Config::default(),
             &std::fs::read(&clip).unwrap(),
             "clip.mp4",
-            Options {
-                fps: 3,
-                resolution: 128,
-                mirror: false,
-                limit: 48,
-            },
+            Options::new(3, 128).with_mirror(false),
         )
         .await
         .unwrap();
@@ -1456,12 +1405,7 @@ mod tests {
             &Config::default(),
             &std::fs::read(&clip).unwrap(),
             "still.mp4",
-            Options {
-                fps: 4,
-                resolution: 128,
-                mirror: false,
-                limit: 48,
-            },
+            Options::new(4, 128).with_mirror(false),
         )
         .await
         .unwrap();

@@ -163,7 +163,7 @@ fn a_tripod_clip_is_framed_on_its_subject_rather_than_on_the_middle() {
     assert!(built.success(), "could not build the test clip");
 
     let bytes = std::fs::read(&clip).unwrap();
-    let options = abnegate_comfy::video::Options::new(2, 256, false, 48);
+    let options = abnegate_comfy::video::Options::new(2, 256).with_mirror(false);
     let mut blind = config.clone();
     blind.vision_model = None;
 

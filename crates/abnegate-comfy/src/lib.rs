@@ -53,7 +53,7 @@
 //!     &Config::from_environment(),
 //!     &std::fs::read("subject.mp4")?,
 //!     "subject.mp4",
-//!     video::Options::new(4, 512, true, 48),
+//!     video::Options::new(4, 512),
 //! )
 //! .await?;
 //! # let _ = clip;
