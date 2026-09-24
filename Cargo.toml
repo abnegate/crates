@@ -46,7 +46,7 @@ nix = { version = "0.31", features = ["fs", "process", "signal", "user"] }
 octocrab = "0.54"
 # Pre-release candidates bump breakingly, so this is the one range that is not a
 # caret: rc.14 would resolve alongside rc.13 and link two ONNX runtimes.
-ort = { version = ">=2.0.0-rc.13, <2.0.0-rc.14", default-features = false, features = ["std", "api-24", "download-binaries", "tls-native"] }
+ort = { version = ">=2.0.0-rc.13, <2.0.0-rc.14", default-features = false, features = ["std", "api-24"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
 proptest = "1"
 rand = "0.10"

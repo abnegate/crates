@@ -12,7 +12,7 @@ intermediate is ever built.
 
 ## Features
 
-- `saliency`: `Analyzer` and the `saliency` module, subject detection with U2-Net over ONNX Runtime. The roughly 168 MiB `u2net.onnx` export is not vendored.
+- `saliency`: `Analyzer` and the `saliency` module, subject detection with U2-Net over ONNX Runtime. The roughly 168 MiB `u2net.onnx` export is not vendored. The build downloads ONNX Runtime's prebuilt binaries; to load a runtime you ship instead, enable `ort/load-dynamic` in your own manifest.
 
 ## Usage
 

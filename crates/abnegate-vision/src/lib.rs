@@ -55,7 +55,9 @@
 //! # Features
 //!
 //! - `saliency`: `Analyzer` and the `saliency` module, subject detection with
-//!   U2-Net over ONNX Runtime. Off by default.
+//!   U2-Net over ONNX Runtime. Off by default. The build downloads ONNX
+//!   Runtime's prebuilt binaries; a consumer that ships its own runtime
+//!   enables `ort/load-dynamic` to load it at run time instead.
 //!
 //! [autogravity]: https://github.com/appwrite/autogravity
 
