@@ -306,9 +306,7 @@ mod tests {
         let image = png_with_text(64 * 1024);
         assert!(decode(&image).is_ok(), "the full budget admits it");
 
-        let error = decode_within(&image, 1024)
-            .err()
-            .expect("the decoder has to stop at the budget");
+        let error = decode_within(&image, 1024).expect_err("the decoder has to stop at the budget");
         assert!(
             matches!(error, DecodeError::Decode(image::ImageError::Limits(_))),
             "{error:?}"

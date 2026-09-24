@@ -23,7 +23,8 @@
 //!
 //! ```no_run
 //! # #[cfg(feature = "saliency")] {
-//! use abnegate_vision::{Analyzer, Target};
+//! use abnegate_vision::Analyzer;
+//! use abnegate_vision::Target;
 //!
 //! let analyzer = Analyzer::open("models/u2net.onnx")?;
 //! let crop = analyzer.crop(&std::fs::read("photo.jpg")?, Target::square(1024))?;
@@ -40,7 +41,12 @@
 //! # Without it
 //!
 //! ```no_run
-//! use abnegate_vision::{Error, Point, Rendered, Target, crop, decode};
+//! use abnegate_vision::Error;
+//! use abnegate_vision::Point;
+//! use abnegate_vision::Rendered;
+//! use abnegate_vision::Target;
+//! use abnegate_vision::crop;
+//! use abnegate_vision::decode;
 //!
 //! fn frame(data: &[u8]) -> Result<Rendered, Error> {
 //!     let raster = decode::decode(data)?;
@@ -56,8 +62,20 @@
 //!
 //! - `saliency`: `Analyzer` and the `saliency` module, subject detection with
 //!   U2-Net over ONNX Runtime. Off by default. The build downloads ONNX
-//!   Runtime's prebuilt binaries; a consumer that ships its own runtime
-//!   enables `ort/load-dynamic` to load it at run time instead.
+//!   Runtime's prebuilt binaries.
+//!
+//! A consumer that ships its own runtime loads it at run time instead by
+//! declaring `ort` with the same pre-release range this crate uses and the
+//! `load-dynamic` feature, so that Cargo resolves a single `ort` for both:
+//!
+//! ```toml
+//! ort = { version = ">=2.0.0-rc.13, <2.0.0-rc.14", default-features = false, features = ["load-dynamic"] }
+//! ```
+//!
+//! The download is then skipped, but `saliency` still enables
+//! `ort/download-binaries` and `ort/tls-native`, so the build script's
+//! downloader is still compiled against the platform's native TLS, which on
+//! Linux needs the OpenSSL development headers.
 //!
 //! [autogravity]: https://github.com/appwrite/autogravity
 
@@ -68,10 +86,15 @@ pub mod preprocess;
 
 mod error;
 
-pub use crate::crop::{CropError, Region, Rendered, Target};
-pub use crate::decode::{DecodeError, Raster};
+pub use crate::crop::CropError;
+pub use crate::crop::Region;
+pub use crate::crop::Rendered;
+pub use crate::crop::Target;
+pub use crate::decode::DecodeError;
+pub use crate::decode::Raster;
 pub use crate::error::Error;
-pub use crate::gravity::{GravityError, Point};
+pub use crate::gravity::GravityError;
+pub use crate::gravity::Point;
 pub use crate::preprocess::PreprocessError;
 
 #[cfg(feature = "saliency")]
@@ -85,7 +108,16 @@ mod exclusive;
 
 #[cfg(feature = "saliency")]
 #[cfg_attr(docsrs, doc(cfg(feature = "saliency")))]
-pub use crate::analyzer::{Analyzer, AnalyzerError, Crop, Focus};
+pub use crate::analyzer::Analyzer;
+#[cfg(feature = "saliency")]
+#[cfg_attr(docsrs, doc(cfg(feature = "saliency")))]
+pub use crate::analyzer::AnalyzerError;
+#[cfg(feature = "saliency")]
+#[cfg_attr(docsrs, doc(cfg(feature = "saliency")))]
+pub use crate::analyzer::Crop;
+#[cfg(feature = "saliency")]
+#[cfg_attr(docsrs, doc(cfg(feature = "saliency")))]
+pub use crate::analyzer::Focus;
 #[cfg(feature = "saliency")]
 #[cfg_attr(docsrs, doc(cfg(feature = "saliency")))]
 pub use crate::saliency::SaliencyError;

@@ -12,7 +12,22 @@ intermediate is ever built.
 
 ## Features
 
-- `saliency`: `Analyzer` and the `saliency` module, subject detection with U2-Net over ONNX Runtime. The roughly 168 MiB `u2net.onnx` export is not vendored. The build downloads ONNX Runtime's prebuilt binaries; to load a runtime you ship instead, enable `ort/load-dynamic` in your own manifest.
+- `saliency`: `Analyzer` and the `saliency` module, subject detection with U2-Net over ONNX Runtime. The roughly 168 MiB `u2net.onnx` export is not vendored. The build downloads ONNX Runtime's prebuilt binaries.
+
+### Loading your own ONNX Runtime
+
+To load a runtime you ship instead of the downloaded one, declare `ort` in your
+own manifest with the same pre-release range this crate uses and the
+`load-dynamic` feature, so that Cargo resolves a single `ort` for both:
+
+```toml
+ort = { version = ">=2.0.0-rc.13, <2.0.0-rc.14", default-features = false, features = ["load-dynamic"] }
+```
+
+The download is then skipped, but `saliency` still enables
+`ort/download-binaries` and `ort/tls-native`, so the build script's downloader
+is still compiled against the platform's native TLS, which on Linux needs the
+OpenSSL development headers.
 
 ## Usage
 
@@ -21,7 +36,12 @@ cargo add abnegate-vision
 ```
 
 ```rust,no_run
-use abnegate_vision::{Error, Point, Rendered, Target, crop, decode};
+use abnegate_vision::Error;
+use abnegate_vision::Point;
+use abnegate_vision::Rendered;
+use abnegate_vision::Target;
+use abnegate_vision::crop;
+use abnegate_vision::decode;
 
 fn frame(data: &[u8]) -> Result<Rendered, Error> {
     let raster = decode::decode(data)?;

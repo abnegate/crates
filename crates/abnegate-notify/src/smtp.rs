@@ -1,5 +1,7 @@
 //! How to reach an SMTP relay.
 
+mod sender;
+
 use std::fmt;
 
 use abnegate_secret::SecretValue;
@@ -7,16 +9,22 @@ use abnegate_secret::SecretValue;
 #[cfg(feature = "smtp")]
 use abnegate_secret::sanitize_owned;
 #[cfg(feature = "smtp")]
+use lettre::Address;
+#[cfg(feature = "smtp")]
+use lettre::AsyncSmtpTransport;
+#[cfg(feature = "smtp")]
+use lettre::Tokio1Executor;
+#[cfg(feature = "smtp")]
 use lettre::message::Mailbox;
 #[cfg(feature = "smtp")]
 use lettre::transport::smtp::AsyncSmtpTransportBuilder;
 #[cfg(feature = "smtp")]
 use lettre::transport::smtp::authentication::Credentials;
-#[cfg(feature = "smtp")]
-use lettre::{Address, AsyncSmtpTransport, Tokio1Executor};
 
 #[cfg(feature = "smtp")]
 use crate::error::Error;
+
+pub use crate::smtp::sender::Sender;
 
 /// Implicit-TLS submissions port, the one port `relay` is built for.
 #[cfg(feature = "smtp")]
@@ -39,21 +47,20 @@ pub struct SmtpConfig {
     pub user: String,
     /// The relay password.
     pub password: SecretValue,
-    /// The address every message is sent from.
-    pub from_address: String,
-    /// The display name shown beside `from_address`.
-    pub from_name: String,
+    /// Who every message is sent from.
+    pub sender: Sender,
 }
 
 impl SmtpConfig {
     /// The relay at `host` and `port`, signed in to as `user` with `password`,
-    /// sending as `from_name <from_address>`.
+    /// sending every message as `sender`.
     ///
     /// Nothing is checked or connected here: the addresses are parsed when a
     /// `Mailer` or an `Email` channel is built from this, and the relay is
     /// reached only when a message is sent.
     ///
     /// ```
+    /// use abnegate_notify::Sender;
     /// use abnegate_notify::SmtpConfig;
     ///
     /// let relay = SmtpConfig::new(
@@ -61,26 +68,24 @@ impl SmtpConfig {
     ///     587,
     ///     "postmaster",
     ///     "relay-password",
-    ///     "noreply@example.test",
-    ///     "Notifications",
+    ///     Sender::new("noreply@example.test").with_name("Notifications"),
     /// );
     /// assert_eq!(relay.host, "smtp.example.test");
+    /// assert_eq!(relay.sender.address, "noreply@example.test");
     /// ```
     pub fn new(
         host: impl Into<String>,
         port: u16,
         user: impl Into<String>,
         password: impl Into<SecretValue>,
-        from_address: impl Into<String>,
-        from_name: impl Into<String>,
+        sender: Sender,
     ) -> Self {
         Self {
             host: host.into(),
             port,
             user: user.into(),
             password: password.into(),
-            from_address: from_address.into(),
-            from_name: from_name.into(),
+            sender,
         }
     }
 }
@@ -108,10 +113,6 @@ impl SmtpConfig {
         let credentials = Credentials::new(self.user.clone(), self.password.expose().to_string());
         Ok(builder.port(self.port).credentials(credentials))
     }
-
-    pub(crate) fn sender(&self) -> Result<Mailbox, Error> {
-        mailbox(&self.from_address, Some(self.from_name.clone()))
-    }
 }
 
 impl fmt::Debug for SmtpConfig {
@@ -122,8 +123,7 @@ impl fmt::Debug for SmtpConfig {
             .field("port", &self.port)
             .field("user", &self.user)
             .field("password", &self.password)
-            .field("from_address", &self.from_address)
-            .field("from_name", &self.from_name)
+            .field("sender", &self.sender)
             .finish()
     }
 }
@@ -155,14 +155,17 @@ pub(crate) fn failure(host: &str, error: lettre::transport::smtp::Error) -> Erro
 mod tests {
     use super::*;
 
+    fn sender() -> Sender {
+        Sender::new("noreply@example.test").with_name("Notifications")
+    }
+
     fn config() -> SmtpConfig {
         SmtpConfig::new(
             "smtp.example.test",
             587,
             "postmaster",
             "hunter2-not-a-real-password",
-            "noreply@example.test",
-            "Notifications",
+            sender(),
         )
     }
 
@@ -172,8 +175,7 @@ mod tests {
         assert_eq!(config.host, "smtp.example.test");
         assert_eq!(config.port, 587);
         assert_eq!(config.user, "postmaster");
-        assert_eq!(config.from_address, "noreply@example.test");
-        assert_eq!(config.from_name, "Notifications");
+        assert_eq!(config.sender, sender());
     }
 
     #[test]

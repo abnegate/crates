@@ -155,11 +155,40 @@ mod tests {
             return;
         }
 
-        let output = Command::new(env::current_exe().expect("the test binary"))
-            .args(["--exact", NAME, "--nocapture"])
-            .env(CHILD, NAME)
-            .env("EXAMPLE_CLI_CONFIG_DIRECTORY", OVERRIDE)
-            .env_remove("EXAMPLE_CLI_CONFIG_PATH")
+        assert_child_passes(
+            NAME,
+            Command::new(env::current_exe().expect("the test binary"))
+                .env("EXAMPLE_CLI_CONFIG_DIRECTORY", OVERRIDE)
+                .env_remove("EXAMPLE_CLI_CONFIG_PATH"),
+        );
+    }
+
+    #[test]
+    fn the_retired_directory_variable_is_ignored() {
+        const NAME: &str = "path::tests::the_retired_directory_variable_is_ignored";
+        const RETIRED: &str = "/srv/example-cli";
+
+        let application = application("example-cli");
+        if env::var(CHILD).as_deref() == Ok(NAME) {
+            let default = dirs::home_dir().unwrap().join(application.directory());
+            assert_eq!(directory(&application).unwrap(), default);
+            assert_eq!(path(&application).unwrap(), default.join(FILE_NAME));
+            return;
+        }
+
+        assert_child_passes(
+            NAME,
+            Command::new(env::current_exe().expect("the test binary"))
+                .env("EXAMPLE_CLI_CONFIG_DIR", RETIRED)
+                .env_remove("EXAMPLE_CLI_CONFIG_DIRECTORY")
+                .env_remove("EXAMPLE_CLI_CONFIG_PATH"),
+        );
+    }
+
+    fn assert_child_passes(name: &str, command: &mut Command) {
+        let output = command
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, name)
             .output()
             .expect("the child runs");
         let stdout = String::from_utf8_lossy(&output.stdout);

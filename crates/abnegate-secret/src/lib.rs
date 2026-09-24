@@ -40,6 +40,7 @@ mod database;
 mod encryption;
 mod error;
 mod key;
+mod optional;
 mod random;
 mod redact;
 mod sanitize;
@@ -55,11 +56,11 @@ pub use crate::key::default_key_path;
 pub use crate::key::load_master_key;
 pub use crate::key::read_key_file;
 pub use crate::key::write_key_file;
+pub use crate::optional::OptionalSecretExtension;
 pub use crate::redact::REDACTED;
 pub use crate::redact::redact;
 pub use crate::sanitize::sanitize;
 pub use crate::sanitize::sanitize_owned;
-pub use crate::value::OptionalSecretExtension;
 pub use crate::value::SecretValue;
 
 #[cfg(doctest)]

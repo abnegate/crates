@@ -3,16 +3,20 @@
 use std::fmt;
 
 use async_trait::async_trait;
+use lettre::AsyncTransport;
+use lettre::Message;
+use lettre::Tokio1Executor;
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::AsyncSmtpTransportBuilder;
-use lettre::{AsyncTransport, Message, Tokio1Executor};
 
 use crate::channel::Channel;
 use crate::error::Error;
 use crate::notification::Notification;
 use crate::notifier::Notifier;
-use crate::smtp::{SmtpConfig, failure, mailbox};
+use crate::smtp::SmtpConfig;
+use crate::smtp::failure;
+use crate::smtp::mailbox;
 
 /// Delivers to a fixed set of recipients through one SMTP relay.
 ///
@@ -39,7 +43,7 @@ impl Email {
             });
         }
 
-        let from = config.sender()?;
+        let from = config.sender.mailbox()?;
         let recipients = recipients
             .iter()
             .map(|recipient| mailbox(recipient, None))
@@ -119,16 +123,20 @@ impl fmt::Debug for Email {
 mod tests {
     use super::*;
     use crate::severity::Severity;
+    use crate::smtp::Sender;
 
-    fn config() -> SmtpConfig {
+    fn config_from(sender: Sender) -> SmtpConfig {
         SmtpConfig::new(
             "smtp.example.test",
             587,
             "postmaster",
             "hunter2-not-a-real-password",
-            "noreply@example.test",
-            "Notifications",
+            sender,
         )
+    }
+
+    fn config() -> SmtpConfig {
+        config_from(Sender::new("noreply@example.test").with_name("Notifications"))
     }
 
     fn email() -> Email {
@@ -165,8 +173,7 @@ mod tests {
 
     #[test]
     fn an_unparseable_sender_is_refused() {
-        let mut broken = config();
-        broken.from_address = "@@@".to_string();
+        let broken = config_from(Sender::new("@@@"));
         assert!(matches!(
             Email::new(&broken, &["sam@example.test"]).expect_err("bad sender"),
             Error::Malformed { .. }

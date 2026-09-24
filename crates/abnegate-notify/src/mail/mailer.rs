@@ -3,14 +3,18 @@
 use std::fmt;
 
 use async_trait::async_trait;
+use lettre::AsyncTransport;
+use lettre::Message;
+use lettre::Tokio1Executor;
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::AsyncSmtpTransportBuilder;
-use lettre::{AsyncTransport, Message, Tokio1Executor};
 
 use crate::error::Error;
 use crate::mail::Mail;
-use crate::smtp::{SmtpConfig, failure, mailbox};
+use crate::smtp::SmtpConfig;
+use crate::smtp::failure;
+use crate::smtp::mailbox;
 
 /// A [`Mail`] that sends through an SMTP relay.
 ///
@@ -30,7 +34,7 @@ impl Mailer {
     /// Nothing connects until a message is sent.
     pub fn new(config: &SmtpConfig) -> Result<Self, Error> {
         Ok(Self {
-            from: config.sender()?,
+            from: config.sender.mailbox()?,
             builder: config.builder()?,
             host: config.host.clone(),
         })
@@ -83,16 +87,20 @@ impl fmt::Debug for Mailer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::smtp::Sender;
 
-    fn config() -> SmtpConfig {
+    fn config_from(sender: Sender) -> SmtpConfig {
         SmtpConfig::new(
             "smtp.example.test",
             587,
             "postmaster",
             "hunter2-not-a-real-password",
-            "noreply@example.test",
-            "Notifications",
+            sender,
         )
+    }
+
+    fn config() -> SmtpConfig {
+        config_from(Sender::new("noreply@example.test").with_name("Notifications"))
     }
 
     fn mailer() -> Mailer {
@@ -100,13 +108,22 @@ mod tests {
     }
 
     fn rendered(recipient: &str, subject: &str, body: &str) -> String {
+        rendered_by(&mailer(), recipient, subject, body)
+    }
+
+    fn rendered_by(mailer: &Mailer, recipient: &str, subject: &str, body: &str) -> String {
         String::from_utf8(
-            mailer()
+            mailer
                 .compose(recipient, subject, body)
                 .expect("composed")
                 .formatted(),
         )
         .expect("utf-8")
+    }
+
+    fn sent_as(sender: Sender) -> String {
+        let mailer = Mailer::new(&config_from(sender)).expect("configured");
+        rendered_by(&mailer, "person@example.test", "Subject", "Body")
     }
 
     /// A plain test rather than a Tokio one: no runtime is running here.
@@ -129,12 +146,40 @@ mod tests {
 
     #[test]
     fn an_unparseable_sender_is_refused() {
-        let mut broken = config();
-        broken.from_address = "@@@".to_string();
+        let broken = config_from(Sender::new("@@@"));
         assert!(matches!(
             Mailer::new(&broken).expect_err("bad sender"),
             Error::Malformed { .. }
         ));
+    }
+
+    #[test]
+    fn the_sender_is_the_from_header() {
+        let message = sent_as(Sender::new("alerts@example.test").with_name("Build Alerts"));
+        assert!(
+            message.contains("From: \"Build Alerts\" <alerts@example.test>\r\n"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_sender_without_a_name_is_the_bare_address() {
+        let message = sent_as(Sender::new("alerts@example.test"));
+        assert!(
+            message.contains("From: alerts@example.test\r\n"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_blank_name_is_left_out() {
+        for name in ["", "   "] {
+            let message = sent_as(Sender::new("alerts@example.test").with_name(name));
+            assert!(
+                message.contains("From: alerts@example.test\r\n"),
+                "{name:?}: {message}"
+            );
+        }
     }
 
     #[test]
