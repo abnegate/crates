@@ -7,8 +7,10 @@
 //! [`SearchContext`] turns the outcome into prompt text a model can cite.
 //!
 //! Search is off until it is switched on, by `SEARCH_ENABLE_WEB_SEARCH` or
-//! [`WebSearchConfig::new`]. [`WebSearchConfig::requested_for`] consults that
-//! switch and [`SearxngClient`] does not, so a host asks the config first.
+//! [`WebSearchConfig::new`]. While it is off,
+//! [`WebSearchConfig::requested_for`] selects no message and
+//! [`SearxngClient::search`] returns [`Error::Disabled`] without sending a
+//! request, so a host that asks the config first never sees that error.
 //!
 //! ```no_run
 //! # async fn example() -> Result<(), abnegate_search::Error> {
