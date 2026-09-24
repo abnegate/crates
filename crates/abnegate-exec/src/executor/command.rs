@@ -482,8 +482,15 @@ mod tests {
         );
     }
 
+    /// Runs in a child test process, where no proxy is configured, so the
+    /// command's environment is exactly the policy and the request.
     #[tokio::test]
     async fn a_policy_variable_reaches_the_command_beneath_the_request() {
+        const NAME: &str =
+            "executor::command::tests::a_policy_variable_reaches_the_command_beneath_the_request";
+        if child::delegated(NAME, &[]).await {
+            return;
+        }
         let executor = CommandExecutor::with_config(
             ExecutorConfig::default().with_environment(
                 EnvironmentPolicy::empty()
