@@ -56,6 +56,7 @@ pub mod pull_request;
 mod repository_url;
 pub mod resolution;
 pub mod subject;
+mod truncation;
 pub mod worktree;
 
 pub use crate::branch_name::BranchName;
