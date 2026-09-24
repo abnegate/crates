@@ -13,7 +13,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ExecutorError;
-use crate::protocol::InboundMessage;
 use crate::protocol::OutboundMessage;
 use crate::protocol::RunStart;
 use crate::proxy::Proxy;
@@ -56,30 +55,34 @@ impl CommandExecutor {
         &self.config
     }
 
-    /// Spawn a command and start streaming output.
+    /// Start the command `request` names and stream what becomes of it
+    /// through `sender`: `RunStarted`, its output, then one `RunExit` or
+    /// `RunError`.
     ///
-    /// Returns a job handle that can be used to cancel the job.
-    /// Output is sent through the provided channel.
+    /// Returns a handle that can cancel the job. A runner serving
+    /// [`InboundMessage`](crate::protocol::InboundMessage)s routes each
+    /// `RunStart` it reads here; the other messages are its own to answer.
     pub async fn spawn(
         &self,
-        request: &InboundMessage,
+        request: &RunStart,
         sender: mpsc::Sender<OutboundMessage>,
     ) -> Result<JobHandle, ExecutorError> {
         self.spawn_with_cancellation(request, sender, CancellationToken::new())
             .await
     }
 
-    /// Spawn a command that stops when `cancellation` is cancelled.
+    /// [`spawn`](Self::spawn) a command that stops when `cancellation` is
+    /// cancelled.
     ///
     /// Pass the token [`JobRegistry::register`](crate::job::JobRegistry::register)
     /// returned, so that cancelling the job through the registry stops it.
     pub async fn spawn_with_cancellation(
         &self,
-        request: &InboundMessage,
+        request: &RunStart,
         sender: mpsc::Sender<OutboundMessage>,
         cancellation: CancellationToken,
     ) -> Result<JobHandle, ExecutorError> {
-        let InboundMessage::RunStart(RunStart {
+        let RunStart {
             job_id,
             workspace,
             command,
@@ -89,10 +92,7 @@ impl CommandExecutor {
             output_limit,
             working_directory,
             confinement,
-        }) = request
-        else {
-            return Err(ExecutorError::NotRunStart);
-        };
+        } = request;
 
         if !workspace.exists() {
             return Err(ExecutorError::InvalidWorkspace(format!(
@@ -238,7 +238,6 @@ mod tests {
     use crate::protocol::ConfinementRequest;
     use crate::protocol::ErrorCode;
     use crate::protocol::LogLevel;
-    use crate::protocol::Ping;
 
     use super::*;
 
@@ -345,10 +344,7 @@ mod tests {
 
     async fn run(executor: &CommandExecutor, request: RunStart) -> Run {
         let (sender, receiver) = mpsc::channel(100);
-        executor
-            .spawn(&InboundMessage::RunStart(request), sender)
-            .await
-            .unwrap();
+        executor.spawn(&request, sender).await.unwrap();
         finish(receiver).await
     }
 
@@ -559,10 +555,7 @@ mod tests {
         let before = Instant::now();
 
         let spawned = CommandExecutor::new()
-            .spawn(
-                &InboundMessage::RunStart(confined("first-confined", &root, "/usr/bin/true")),
-                sender,
-            )
+            .spawn(&confined("first-confined", &root, "/usr/bin/true"), sender)
             .await;
         let spawning = before.elapsed();
 
@@ -702,10 +695,7 @@ mod tests {
         let executor = CommandExecutor::new();
         let (sender, mut receiver) = mpsc::channel(100);
         let handle = executor
-            .spawn(
-                &shell("partial-line", "printf prompt; sleep 30").into(),
-                sender,
-            )
+            .spawn(&shell("partial-line", "printf prompt; sleep 30"), sender)
             .await
             .unwrap();
 
@@ -745,7 +735,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let handle = executor
             .spawn_with_cancellation(
-                &shell("cancelled", "sleep 30").into(),
+                &shell("cancelled", "sleep 30"),
                 sender,
                 cancellation.clone(),
             )
@@ -774,7 +764,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel(100);
         let request = shell("timeout", "sleep 30 & echo $!; sleep 30")
             .with_timeout(Duration::from_millis(200));
-        let handle = executor.spawn(&request.into(), sender).await.unwrap();
+        let handle = executor.spawn(&request, sender).await.unwrap();
 
         let run = finish(receiver).await;
 
@@ -793,7 +783,7 @@ mod tests {
         let (sender, _receiver) = mpsc::channel(1);
         let request = shell("unread", "sleep 30").with_timeout(Duration::from_millis(200));
 
-        let handle = executor.spawn(&request.into(), sender).await.unwrap();
+        let handle = executor.spawn(&request, sender).await.unwrap();
 
         assert!(
             gone(handle.pid).await,
@@ -819,7 +809,7 @@ mod tests {
 
         for (request, cancelled) in endings {
             let (sender, receiver) = mpsc::channel(100);
-            let handle = executor.spawn(&request.into(), sender).await.unwrap();
+            let handle = executor.spawn(&request, sender).await.unwrap();
             if cancelled {
                 handle.cancel();
             }
@@ -874,7 +864,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         executor
             .spawn_with_cancellation(
-                &shell("late-cancel", "sleep 60 & echo $!; exit 0").into(),
+                &shell("late-cancel", "sleep 60 & echo $!; exit 0"),
                 sender,
                 cancellation.clone(),
             )
@@ -951,7 +941,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel(100);
 
         let handle = executor
-            .spawn(&shell("cancel-test", "sleep 10").into(), sender)
+            .spawn(&shell("cancel-test", "sleep 10"), sender)
             .await
             .unwrap();
         assert!(!handle.is_cancelled());
@@ -968,7 +958,7 @@ mod tests {
         let (sender, _receiver) = mpsc::channel(100);
 
         let handle = executor
-            .spawn(&shell("elapsed-test", "echo test").into(), sender)
+            .spawn(&shell("elapsed-test", "echo test"), sender)
             .await
             .unwrap();
 
@@ -1039,8 +1029,7 @@ mod tests {
                 &shell(
                     "stalled-consumer-test",
                     &format!("sleep {}", SLEPT.as_secs_f64()),
-                )
-                .into(),
+                ),
                 sender,
             )
             .await
@@ -1106,7 +1095,7 @@ mod tests {
         let mut request = shell("test-2", "true");
         request.workspace = PathBuf::from("/nonexistent/path");
 
-        match executor.spawn(&request.into(), sender).await {
+        match executor.spawn(&request, sender).await {
             Err(ExecutorError::InvalidWorkspace(message)) => {
                 assert!(message.contains("does not exist"));
             }
@@ -1121,26 +1110,9 @@ mod tests {
         let mut request = shell("file-workspace-test", "true");
         request.workspace = PathBuf::from("/etc/passwd");
 
-        match executor.spawn(&request.into(), sender).await {
+        match executor.spawn(&request, sender).await {
             Err(ExecutorError::InvalidWorkspace(message)) => {
                 assert!(message.contains("not a directory"));
-            }
-            other => panic!("Wrong result: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn a_message_other_than_run_start_is_an_invalid_message() {
-        let executor = CommandExecutor::new();
-        let (sender, _receiver) = mpsc::channel(100);
-
-        let result = executor
-            .spawn(&InboundMessage::Ping(Ping::new("1")), sender)
-            .await;
-
-        match result {
-            Err(error @ ExecutorError::NotRunStart) => {
-                assert_eq!(error.to_error_code(), ErrorCode::InvalidMessage);
             }
             other => panic!("Wrong result: {other:?}"),
         }
@@ -1160,7 +1132,7 @@ mod tests {
         let mut request = shell("invalid-command-test", "");
         request.command = "/nonexistent/binary/that/doesnt/exist".to_string();
 
-        match executor.spawn(&request.into(), sender).await {
+        match executor.spawn(&request, sender).await {
             Err(ExecutorError::SpawnFailed(_)) => {}
             other => panic!("Wrong result: {other:?}"),
         }

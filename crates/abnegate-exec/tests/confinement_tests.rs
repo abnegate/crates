@@ -129,13 +129,11 @@ fn text(path: &Path) -> String {
     path.to_str().unwrap().to_string()
 }
 
-fn confined_run(job_id: &str, root: &Path, target: &Path) -> InboundMessage {
-    InboundMessage::RunStart(
-        RunStart::new(job_id, root, "/bin/cat")
-            .with_arguments([text(target)])
-            .with_timeout(Duration::from_secs(15))
-            .with_confinement(request(root)),
-    )
+fn confined_run(job_id: &str, root: &Path, target: &Path) -> RunStart {
+    RunStart::new(job_id, root, "/bin/cat")
+        .with_arguments([text(target)])
+        .with_timeout(Duration::from_secs(15))
+        .with_confinement(request(root))
 }
 
 async fn collect_messages(
@@ -613,15 +611,13 @@ async fn test_spawn_fails_closed_when_confinement_cannot_be_established() {
     let workspace = workspace();
     let (sender, mut receiver) = mpsc::channel(100);
 
-    let request = InboundMessage::RunStart(
-        RunStart::new("unprovable", workspace.root.clone(), "/bin/cat")
-            .with_arguments([text(&workspace.granted)])
-            .with_timeout(Duration::from_secs(15))
-            .with_confinement(ConfinementRequest::new(
-                vec![workspace.root.join("does-not-exist")],
-                vec![],
-            )),
-    );
+    let request = RunStart::new("unprovable", workspace.root.clone(), "/bin/cat")
+        .with_arguments([text(&workspace.granted)])
+        .with_timeout(Duration::from_secs(15))
+        .with_confinement(ConfinementRequest::new(
+            vec![workspace.root.join("does-not-exist")],
+            vec![],
+        ));
 
     let result = CommandExecutor::new().spawn(&request, sender).await;
 
@@ -669,7 +665,7 @@ async fn test_a_host_that_requires_confinement_proves_it() {
     }
 }
 
-async fn run_confined(request: &InboundMessage) -> Vec<OutboundMessage> {
+async fn run_confined(request: &RunStart) -> Vec<OutboundMessage> {
     let (sender, mut receiver) = mpsc::channel(1000);
     CommandExecutor::new().spawn(request, sender).await.unwrap();
     collect_messages(&mut receiver, Duration::from_secs(20)).await
@@ -831,7 +827,7 @@ async fn attempt_connection(root: &Path, client: &str, confined: bool) -> (bool,
         .with_arguments(args)
         .with_timeout(Duration::from_secs(15));
     run.confinement = confined.then(|| Box::new(request(root)));
-    let messages = run_confined(&InboundMessage::RunStart(run)).await;
+    let messages = run_confined(&run).await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     acceptor.abort();
@@ -917,13 +913,11 @@ fn confined_tree_run(
     root: &Path,
     script: &str,
     execute_roots: Vec<PathBuf>,
-) -> InboundMessage {
-    InboundMessage::RunStart(
-        RunStart::new(job_id, root, SHELL)
-            .with_arguments([script])
-            .with_timeout(Duration::from_secs(20))
-            .with_confinement(tree_request(root, execute_roots)),
-    )
+) -> RunStart {
+    RunStart::new(job_id, root, SHELL)
+        .with_arguments([script])
+        .with_timeout(Duration::from_secs(20))
+        .with_confinement(tree_request(root, execute_roots))
 }
 
 #[test]
@@ -1210,12 +1204,12 @@ async fn test_single_command_mode_bounds_a_second_process_or_refuses_it() {
         &format!("cat {} > child.marker\n", workspace.denied.display()),
     );
 
-    let messages = run_confined(&InboundMessage::RunStart(
-        RunStart::new("single-second-process", workspace.root.clone(), SHELL)
+    let messages = run_confined(
+        &RunStart::new("single-second-process", workspace.root.clone(), SHELL)
             .with_arguments([PARENT_SCRIPT])
             .with_timeout(Duration::from_secs(20))
             .with_confinement(request(&workspace.root)),
-    ))
+    )
     .await;
 
     if HOST_BACKEND.is_some_and(Backend::enforces_single_process) {
@@ -1328,10 +1322,8 @@ async fn test_a_confined_tree_blocks_a_grandchild_connection_that_otherwise_succ
             PARENT_SCRIPT,
             vec![PathBuf::from(SHELL_DIRECTORY), client_directory.clone()],
         );
-        if let InboundMessage::RunStart(run) = &mut request
-            && !confined
-        {
-            run.confinement = None;
+        if !confined {
+            request.confinement = None;
         }
 
         let messages = run_confined(&request).await;
@@ -1434,7 +1426,7 @@ async fn test_a_preloaded_library_never_runs_in_the_bubblewrap_host() {
         .with_environment([("LD_PRELOAD", text(&library))])
         .with_timeout(Duration::from_secs(15));
         run.confinement = confined.then(|| Box::new(request(&workspace.root)));
-        InboundMessage::RunStart(run)
+        run
     };
 
     run_confined(&preloading(false)).await;

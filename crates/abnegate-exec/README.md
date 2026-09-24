@@ -30,7 +30,6 @@ use std::time::Duration;
 
 use abnegate_exec::CommandExecutor;
 use abnegate_exec::ExecutorError;
-use abnegate_exec::InboundMessage;
 use abnegate_exec::OutboundMessage;
 use abnegate_exec::RunStart;
 use tokio::sync::mpsc;
@@ -41,7 +40,7 @@ async fn greet() -> Result<(), ExecutorError> {
         .with_timeout(Duration::from_secs(5));
     let (sender, mut receiver) = mpsc::channel(64);
     CommandExecutor::new()
-        .spawn(&InboundMessage::RunStart(request), sender)
+        .spawn(&request, sender)
         .await?;
     while let Some(message) = receiver.recv().await {
         println!("{message:?}");

@@ -14,27 +14,22 @@ use abnegate_exec::executor::ExecutorConfig;
 use abnegate_exec::job::JobRegistry;
 use abnegate_exec::job::JobState;
 use abnegate_exec::protocol::ErrorCode;
-use abnegate_exec::protocol::InboundMessage;
 use abnegate_exec::protocol::LogLevel;
 use abnegate_exec::protocol::OutboundMessage;
 use abnegate_exec::protocol::RunStart;
 use base64::prelude::*;
 use tokio::sync::mpsc;
 
-fn create_echo_request(job_id: &str, message: &str) -> InboundMessage {
-    InboundMessage::RunStart(
-        RunStart::new(job_id, "/tmp", "echo")
-            .with_arguments([message])
-            .with_timeout(Duration::from_secs(5)),
-    )
+fn create_echo_request(job_id: &str, message: &str) -> RunStart {
+    RunStart::new(job_id, "/tmp", "echo")
+        .with_arguments([message])
+        .with_timeout(Duration::from_secs(5))
 }
 
-fn create_bash_request(job_id: &str, script: &str) -> InboundMessage {
-    InboundMessage::RunStart(
-        RunStart::new(job_id, "/tmp", "bash")
-            .with_arguments(["-c", script])
-            .with_timeout(Duration::from_secs(30)),
-    )
+fn create_bash_request(job_id: &str, script: &str) -> RunStart {
+    RunStart::new(job_id, "/tmp", "bash")
+        .with_arguments(["-c", script])
+        .with_timeout(Duration::from_secs(30))
 }
 
 fn decode_output_data(data: &str) -> String {
@@ -194,11 +189,9 @@ async fn test_command_with_arguments() {
     let executor = CommandExecutor::new();
     let (sender, mut receiver) = mpsc::channel(100);
 
-    let request = InboundMessage::RunStart(
-        RunStart::new("args-1", "/tmp", "printf")
-            .with_arguments(["%s-%s-%s", "a", "b", "c"])
-            .with_timeout(Duration::from_secs(5)),
-    );
+    let request = RunStart::new("args-1", "/tmp", "printf")
+        .with_arguments(["%s-%s-%s", "a", "b", "c"])
+        .with_timeout(Duration::from_secs(5));
 
     let _handle = executor.spawn(&request, sender).await.unwrap();
     let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
@@ -219,12 +212,10 @@ async fn test_environment_variables() {
     let executor = CommandExecutor::new();
     let (sender, mut receiver) = mpsc::channel(100);
 
-    let request = InboundMessage::RunStart(
-        RunStart::new("env-1", "/tmp", "bash")
-            .with_arguments(["-c", "echo $MY_VAR"])
-            .with_environment([("MY_VAR", "test_value_123")])
-            .with_timeout(Duration::from_secs(5)),
-    );
+    let request = RunStart::new("env-1", "/tmp", "bash")
+        .with_arguments(["-c", "echo $MY_VAR"])
+        .with_environment([("MY_VAR", "test_value_123")])
+        .with_timeout(Duration::from_secs(5));
 
     let _handle = executor.spawn(&request, sender).await.unwrap();
     let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
@@ -248,11 +239,9 @@ async fn test_custom_working_dir() {
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().to_path_buf();
 
-    let request = InboundMessage::RunStart(
-        RunStart::new("cwd-1", temp_path.clone(), "pwd")
-            .with_timeout(Duration::from_secs(5))
-            .with_working_directory(temp_path.clone()),
-    );
+    let request = RunStart::new("cwd-1", temp_path.clone(), "pwd")
+        .with_timeout(Duration::from_secs(5))
+        .with_working_directory(temp_path.clone());
 
     let _handle = executor.spawn(&request, sender).await.unwrap();
     let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
@@ -277,11 +266,9 @@ async fn test_command_timeout() {
     );
     let (sender, mut receiver) = mpsc::channel(100);
 
-    let request = InboundMessage::RunStart(
-        RunStart::new("timeout-1", "/tmp", "sleep")
-            .with_arguments(["10"])
-            .with_timeout(Duration::from_millis(500)),
-    );
+    let request = RunStart::new("timeout-1", "/tmp", "sleep")
+        .with_arguments(["10"])
+        .with_timeout(Duration::from_millis(500));
 
     let _handle = executor.spawn(&request, sender).await.unwrap();
     let messages = collect_messages(&mut receiver, Duration::from_secs(5)).await;
@@ -305,11 +292,7 @@ async fn test_invalid_workspace() {
     let executor = CommandExecutor::new();
     let (sender, _receiver) = mpsc::channel(100);
 
-    let request = InboundMessage::RunStart(RunStart::new(
-        "bad-ws-1",
-        "/nonexistent/path/that/does/not/exist",
-        "ls",
-    ));
+    let request = RunStart::new("bad-ws-1", "/nonexistent/path/that/does/not/exist", "ls");
 
     let result = executor.spawn(&request, sender).await;
     assert!(result.is_err());
@@ -320,14 +303,12 @@ async fn test_invalid_command() {
     let executor = CommandExecutor::new();
     let (sender, _receiver) = mpsc::channel(100);
 
-    let request = InboundMessage::RunStart(
-        RunStart::new(
-            "bad-cmd-1",
-            "/tmp",
-            "nonexistent_command_that_does_not_exist_12345",
-        )
-        .with_timeout(Duration::from_secs(5)),
-    );
+    let request = RunStart::new(
+        "bad-cmd-1",
+        "/tmp",
+        "nonexistent_command_that_does_not_exist_12345",
+    )
+    .with_timeout(Duration::from_secs(5));
 
     let result = executor.spawn(&request, sender).await;
 
@@ -339,15 +320,13 @@ async fn test_output_limit() {
     let executor = CommandExecutor::new();
     let (sender, mut receiver) = mpsc::channel(100);
 
-    let request = InboundMessage::RunStart(
-        RunStart::new("limit-1", "/tmp", "bash")
-            .with_arguments([
-                "-c",
-                "for index in $(seq 1 300); do echo \"This is line $index of output\"; done",
-            ])
-            .with_timeout(Duration::from_secs(5))
-            .with_output_limit(500),
-    );
+    let request = RunStart::new("limit-1", "/tmp", "bash")
+        .with_arguments([
+            "-c",
+            "for index in $(seq 1 300); do echo \"This is line $index of output\"; done",
+        ])
+        .with_timeout(Duration::from_secs(5))
+        .with_output_limit(500);
 
     let _handle = executor.spawn(&request, sender).await.unwrap();
 
