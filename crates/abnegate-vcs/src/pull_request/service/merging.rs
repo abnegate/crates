@@ -57,11 +57,16 @@ impl PullRequestService {
     /// administrator merge was refused too, that reason as well. A head that
     /// moved, or a branch GitHub says was modified while it merged, is
     /// [`PullRequestError::HeadMoved`], which a fresh read and a retry
-    /// resolve. A merge that happened is
-    /// never reported as a failure, even when the commit it made cannot be
-    /// read. An administrator merge is reported only when GitHub's answer
-    /// says the pull request merged; any other answer is
-    /// [`PullRequestError::GitHubApi`].
+    /// resolve. A merge that happened is never reported as a failure, even
+    /// when the commit it made cannot be read. An administrator merge is
+    /// reported only when GitHub's answer says the pull request merged; any
+    /// other answer is [`PullRequestError::GitHubApi`].
+    ///
+    /// Neither attempt follows a redirect. GitHub answers a merge in a
+    /// repository that was renamed or transferred with a 307 to its new
+    /// address, and that merge is refused as [`PullRequestError::GitHubApi`],
+    /// without being made there, until this crate re-issues such writes
+    /// itself.
     pub async fn merge(
         &self,
         reference: &PullRequestReference,
@@ -228,6 +233,10 @@ mod tests {
     /// Where the administrator merge is asked for.
     const GRAPHQL_PATH: &str = "/graphql";
 
+    /// Where GitHub redirects pull request 7's merge once its repository has
+    /// been renamed or transferred.
+    const MOVED_MERGE_PATH: &str = "/repositories/1/pulls/7/merge";
+
     /// The GraphQL node id of pull request 7.
     const NODE: &str = "PR_node";
 
@@ -304,6 +313,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/elsewhere"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(0)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -315,11 +325,63 @@ mod tests {
 
         let failure = attempt(&server, Some(NODE), true)
             .await
-            .expect_err("a GET answered after the merge was redirected merged nothing");
+            .expect_err("a merge GitHub redirected was not made");
 
         assert!(
             matches!(failure, PullRequestError::GitHubApi(ref text) if text == REDIRECTED),
             "{failure:?}"
+        );
+    }
+
+    /// GitHub answers a merge in a renamed or transferred repository with a
+    /// 307 to the repository's numeric address, which keeps the PUT and its
+    /// body: following it would merge the pull request and then report that
+    /// merge as a failure.
+    #[tokio::test]
+    async fn a_merge_github_redirects_is_refused_and_never_sent_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path(MERGE_PATH))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}{MOVED_MERGE_PATH}", server.uri())),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(MOVED_MERGE_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "sha": commit('b').as_str(),
+                "merged": true,
+                "message": "Pull Request successfully merged",
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(GRAPHQL_PATH))
+            .respond_with(merged_as(commit('d').as_str()))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let failure = attempt(&server, Some(NODE), true)
+            .await
+            .expect_err("a merge GitHub redirected was not made");
+
+        assert!(
+            matches!(failure, PullRequestError::GitHubApi(ref text) if text == REDIRECTED),
+            "{failure:?}"
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.url.path() != MOVED_MERGE_PATH),
+            "the merge was sent on to where GitHub redirected it"
         );
     }
 
