@@ -10,8 +10,8 @@ use toml::Value;
 use crate::application::Application;
 use crate::config::Config;
 use crate::envelope;
-use crate::error::ConfigError;
-use crate::path::config_path;
+use crate::error::Error;
+use crate::path::path;
 
 /// Where a configuration file lives and how to unseal it.
 ///
@@ -25,8 +25,8 @@ pub struct Loader<'key> {
 
 impl<'key> Loader<'key> {
     /// Load from the conventional location for `application`.
-    pub fn new(application: &Application) -> Result<Self, ConfigError> {
-        Ok(Self::at(config_path(application)?))
+    pub fn new(application: &Application) -> Result<Self, Error> {
+        Ok(Self::at(path(application)?))
     }
 
     /// Load from an exact path.
@@ -54,10 +54,10 @@ impl<'key> Loader<'key> {
         self.path.is_file()
     }
 
-    /// Read the file, failing with [`ConfigError::Missing`] when it is absent.
-    pub fn load<T: DeserializeOwned>(&self) -> Result<Config<T>, ConfigError> {
+    /// Read the file, failing with [`Error::Missing`] when it is absent.
+    pub fn load<T: DeserializeOwned>(&self) -> Result<Config<T>, Error> {
         if !self.exists() {
-            return Err(ConfigError::Missing {
+            return Err(Error::Missing {
                 path: self.path.clone(),
             });
         }
@@ -66,7 +66,7 @@ impl<'key> Loader<'key> {
     }
 
     /// Read the file, falling back to [`Default`] when it is absent.
-    pub fn load_or_default<T: DeserializeOwned + Default>(&self) -> Result<Config<T>, ConfigError> {
+    pub fn load_or_default<T: DeserializeOwned + Default>(&self) -> Result<Config<T>, Error> {
         if !self.exists() {
             return Ok(Config::new(self.path.clone(), T::default()));
         }
@@ -74,22 +74,21 @@ impl<'key> Loader<'key> {
         self.read()
     }
 
-    fn read<T: DeserializeOwned>(&self) -> Result<Config<T>, ConfigError> {
-        let content = fs::read_to_string(&self.path).map_err(|source| ConfigError::Read {
+    fn read<T: DeserializeOwned>(&self) -> Result<Config<T>, Error> {
+        let content = fs::read_to_string(&self.path).map_err(|source| Error::Read {
             path: self.path.clone(),
             source,
         })?;
 
-        let mut document: Value =
-            toml::from_str(&content).map_err(|source| ConfigError::Parse {
-                path: self.path.clone(),
-                source,
-            })?;
+        let mut document: Value = toml::from_str(&content).map_err(|source| Error::Parse {
+            path: self.path.clone(),
+            source,
+        })?;
 
         let sealed = envelope::unseal(&mut document, self.key)?;
         let key = self.key.filter(|_| !sealed.is_empty()).and_then(duplicate);
 
-        let value = document.try_into().map_err(|source| ConfigError::Parse {
+        let value = document.try_into().map_err(|source| Error::Parse {
             path: self.path.clone(),
             source: if sealed.is_empty() {
                 source
@@ -158,7 +157,7 @@ mod tests {
         }
     }
 
-    fn rendered(error: &ConfigError) -> String {
+    fn rendered(error: &Error) -> String {
         let mut rendered = format!("{error}\n{error:?}\n");
         let mut source = error.source();
         while let Some(cause) = source {
@@ -208,7 +207,7 @@ mod tests {
         let error = Loader::at(&path).load::<Settings>().unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::Missing { path: reported } if reported == &path),
+            matches!(&error, Error::Missing { path: reported } if reported == &path),
             "{error:?}"
         );
     }
@@ -240,7 +239,7 @@ mod tests {
         let error = Loader::at(&path).load::<Settings>().unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::Parse { path: reported, .. } if reported == &path),
+            matches!(&error, Error::Parse { path: reported, .. } if reported == &path),
             "{error:?}"
         );
     }
@@ -251,7 +250,7 @@ mod tests {
 
         let error = Loader::at(&path).load::<Settings>().unwrap_err();
 
-        assert!(matches!(error, ConfigError::Parse { .. }), "{error:?}");
+        assert!(matches!(error, Error::Parse { .. }), "{error:?}");
     }
 
     #[test]
@@ -294,7 +293,7 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::Decrypt { field, .. } if field == "password"),
+            matches!(&error, Error::Decrypt { field, .. } if field == "password"),
             "{error:?}"
         );
     }
@@ -312,7 +311,7 @@ mod tests {
 
         let rendered = rendered(&error);
         assert!(
-            matches!(&error, ConfigError::Parse { path: reported, .. } if reported == &path),
+            matches!(&error, Error::Parse { path: reported, .. } if reported == &path),
             "{rendered}"
         );
         assert!(!rendered.contains("hunter2"), "{rendered}");
@@ -331,7 +330,7 @@ mod tests {
             .unwrap_err();
 
         let rendered = rendered(&error);
-        assert!(matches!(error, ConfigError::Parse { .. }), "{rendered}");
+        assert!(matches!(error, Error::Parse { .. }), "{rendered}");
         assert!(!rendered.contains("hunter2"), "{rendered}");
     }
 

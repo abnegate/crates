@@ -9,6 +9,7 @@ use serde::Serialize;
 /// The expiry is stored as integer Unix seconds, the shape entries already in
 /// the keyring were written in.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
 pub struct TokenMetadata {
     pub host: String,
     #[serde(with = "chrono::serde::ts_seconds")]
@@ -20,6 +21,8 @@ pub struct TokenMetadata {
 }
 
 impl TokenMetadata {
+    /// A token issued by `host` that expires at `expires_at`, with no identity
+    /// attached: set `user_id` and `email` on the result when they are known.
     pub fn new(host: impl Into<String>, expires_at: DateTime<Utc>) -> Self {
         Self {
             host: host.into(),
@@ -64,21 +67,21 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_written_by_the_zone_cli_still_reads() {
+    fn an_entry_already_in_the_keyring_still_reads() {
         let restored: TokenMetadata = serde_json::from_str(
             r#"{
-            "host": "https://api.zone.io",
+            "host": "https://api.example.com",
             "expires_at": 1800000000,
             "user_id": "abc-456",
-            "email": "user@zone.io"
+            "email": "user@example.com"
         }"#,
         )
         .unwrap();
 
-        assert_eq!(restored.host, "https://api.zone.io");
+        assert_eq!(restored.host, "https://api.example.com");
         assert_eq!(restored.expires_at.timestamp(), 1_800_000_000);
         assert_eq!(restored.user_id, Some("abc-456".to_string()));
-        assert_eq!(restored.email, Some("user@zone.io".to_string()));
+        assert_eq!(restored.email, Some("user@example.com".to_string()));
     }
 
     #[test]

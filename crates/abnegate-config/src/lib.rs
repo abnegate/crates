@@ -4,9 +4,9 @@
 //!
 //! [`Config`] is the application's own settings type loaded from a TOML file,
 //! [`Loader`] chooses where that file lives and which [`MasterKey`] unseals it,
-//! [`config_path`] derives the conventional location from an [`Application`]
-//! name, [`EnvironmentFile`] upserts keys in a `.env` file, and `TokenStore`
-//! keeps credentials in the platform keyring.
+//! [`path`](fn@path) and [`directory`] derive the conventional locations from
+//! an [`Application`] name, [`EnvironmentFile`] upserts keys in a `.env` file,
+//! and `TokenStore` keeps credentials in the platform keyring.
 //!
 //! Every file this crate writes is replaced atomically and is readable only by
 //! its owner, as is any directory it creates to hold one.
@@ -44,8 +44,8 @@
 //! [`Config::save`] seals those same values again wherever they now appear,
 //! under a renamed key or at a position an array shifted them to by losing
 //! other elements, and refuses rather than write one in the clear: with
-//! [`ConfigError::SealedWithoutKey`] when there is no key to seal it with, and
-//! with [`ConfigError::SealedShapeChanged`] when a sealed value has gone and
+//! [`Error::SealedWithoutKey`] when there is no key to seal it with, and
+//! with [`Error::SealedShapeChanged`] when a sealed value has gone and
 //! cannot be told apart from one that was renamed and edited.
 //!
 //! A value counts as moved only while at least as many strings hold it as the
@@ -114,15 +114,21 @@ mod private_file;
 mod token;
 
 pub use crate::application::Application;
+pub use crate::application::ApplicationError;
+pub use crate::application::DEFAULT_APPLICATION;
 pub use crate::config::Config;
 pub use crate::environment::EnvironmentFile;
-pub use crate::error::ConfigError;
+pub use crate::error::Error;
 pub use crate::loader::Loader;
-pub use crate::path::config_dir;
-pub use crate::path::config_path;
+pub use crate::path::directory;
+pub use crate::path::path;
 #[cfg(feature = "keyring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
 pub use crate::token::TokenMetadata;
 #[cfg(feature = "keyring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
 pub use crate::token::TokenStore;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

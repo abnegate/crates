@@ -9,7 +9,7 @@ use toml::Value;
 use crate::application::Application;
 use crate::envelope;
 use crate::envelope::Sealed;
-use crate::error::ConfigError;
+use crate::error::Error;
 use crate::loader::Loader;
 use crate::private_file::PrivateFile;
 
@@ -69,8 +69,8 @@ impl<T> Config<T> {
 impl<T: DeserializeOwned> Config<T> {
     /// Load `application`'s settings from the conventional location.
     ///
-    /// Fails with [`ConfigError::Missing`] when the file is not there.
-    pub fn load(application: &Application) -> Result<Self, ConfigError> {
+    /// Fails with [`Error::Missing`] when the file is not there.
+    pub fn load(application: &Application) -> Result<Self, Error> {
         Loader::new(application)?.load()
     }
 }
@@ -78,7 +78,7 @@ impl<T: DeserializeOwned> Config<T> {
 impl<T: DeserializeOwned + Default> Config<T> {
     /// Load `application`'s settings, falling back to [`Default`] when the file
     /// is not there. Nothing is written until [`Config::save`] is called.
-    pub fn load_or_default(application: &Application) -> Result<Self, ConfigError> {
+    pub fn load_or_default(application: &Application) -> Result<Self, Error> {
         Loader::new(application)?.load_or_default()
     }
 }
@@ -97,25 +97,25 @@ impl<T: Serialize> Config<T> {
     /// Values are sealed with the key the [`Loader`] was given. Without one, a
     /// value that still holds its envelope is written as it was, and one that
     /// would be written in the clear, a neighbour that has to be sealed among
-    /// them, fails with [`ConfigError::SealedWithoutKey`] rather than reach the
+    /// them, fails with [`Error::SealedWithoutKey`] rather than reach the
     /// disk. A sealed value whose location is gone fails with
-    /// [`ConfigError::SealedShapeChanged`] when fewer strings in the settings
+    /// [`Error::SealedShapeChanged`] when fewer strings in the settings
     /// hold it than the file did, or when it was empty, since it cannot be told
     /// apart from one that moved to a new key and was edited on the way.
     ///
     /// The file is replaced atomically and is readable only by its owner; a
     /// directory created for it is too.
-    pub fn save(&self) -> Result<(), ConfigError> {
+    pub fn save(&self) -> Result<(), Error> {
         self.write(self.key.as_ref())
     }
 
     /// Write the settings out, sealing every value that arrived sealed with
     /// `key` instead of the key they were loaded with.
-    pub fn save_sealed(&self, key: &MasterKey) -> Result<(), ConfigError> {
+    pub fn save_sealed(&self, key: &MasterKey) -> Result<(), Error> {
         self.write(Some(key))
     }
 
-    fn write(&self, key: Option<&MasterKey>) -> Result<(), ConfigError> {
+    fn write(&self, key: Option<&MasterKey>) -> Result<(), Error> {
         let mut document = Value::try_from(&self.value)?;
         envelope::seal(&mut document, &self.sealed, key)?;
 
@@ -401,7 +401,7 @@ mod tests {
     fn an_application_without_a_configuration_file_reports_it_missing() {
         let error = Config::<Settings>::load(&absent()).unwrap_err();
 
-        assert!(matches!(error, ConfigError::Missing { .. }), "{error:?}");
+        assert!(matches!(error, Error::Missing { .. }), "{error:?}");
     }
 
     #[test]
@@ -593,7 +593,7 @@ mod tests {
         let error = config.save().unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedWithoutKey { field } if field == "password"),
+            matches!(&error, Error::SealedWithoutKey { field } if field == "password"),
             "{error:?}"
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
@@ -696,7 +696,7 @@ mod tests {
         let error = config.save().unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            matches!(&error, Error::SealedShapeChanged { field } if field == "api_key"),
             "{error:?}"
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
@@ -719,7 +719,7 @@ mod tests {
         let error = config.save().unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            matches!(&error, Error::SealedShapeChanged { field } if field == "api_key"),
             "{error:?}"
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
@@ -743,7 +743,7 @@ mod tests {
         let error = config.save().unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            matches!(&error, Error::SealedShapeChanged { field } if field == "api_key"),
             "{error:?}"
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
@@ -764,7 +764,7 @@ mod tests {
         let error = config.save().unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            matches!(&error, Error::SealedShapeChanged { field } if field == "api_key"),
             "{error:?}"
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), before);

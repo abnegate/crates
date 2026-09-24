@@ -5,10 +5,12 @@ use thiserror::Error;
 #[cfg(feature = "keyring")]
 use zeroize::Zeroize;
 
+use crate::application::ApplicationError;
+
 /// Every way this crate can fail to locate, read, or write configuration.
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum ConfigError {
+pub enum Error {
     #[error("Configuration file '{path}' does not exist")]
     Missing { path: PathBuf },
     #[error("Failed to read '{path}'")]
@@ -33,10 +35,9 @@ pub enum ConfigError {
     Serialize(#[from] toml::ser::Error),
     #[error("Home directory not found")]
     NoHomeDirectory,
-    #[error(
-        "Application name '{name}' must start with a letter or digit and contain only letters, digits, '-' and '_'"
-    )]
-    InvalidApplication { name: String },
+    /// A name given as an [`Application`](crate::Application) is not one.
+    #[error(transparent)]
+    Application(#[from] ApplicationError),
     #[error("'{key}' is not an environment variable name")]
     InvalidKey { key: String },
     #[error("Failed to decrypt '{field}'")]
@@ -74,7 +75,7 @@ pub enum ConfigError {
 }
 
 #[cfg(feature = "keyring")]
-impl From<keyring::Error> for ConfigError {
+impl From<keyring::Error> for Error {
     fn from(error: keyring::Error) -> Self {
         match error {
             keyring::Error::BadEncoding(mut credential)
@@ -93,7 +94,7 @@ mod tests {
 
     #[test]
     fn missing_files_are_named() {
-        let error = ConfigError::Missing {
+        let error = Error::Missing {
             path: PathBuf::from("/tmp/example/config.toml"),
         };
         assert_eq!(
@@ -104,7 +105,7 @@ mod tests {
 
     #[test]
     fn read_failures_are_named() {
-        let error = ConfigError::Read {
+        let error = Error::Read {
             path: PathBuf::from("/tmp/example/config.toml"),
             source: io::Error::new(io::ErrorKind::NotFound, "File not found"),
         };
@@ -117,32 +118,47 @@ mod tests {
     #[test]
     fn a_missing_home_directory_is_reported() {
         assert_eq!(
-            ConfigError::NoHomeDirectory.to_string(),
+            Error::NoHomeDirectory.to_string(),
             "Home directory not found"
+        );
+    }
+
+    #[test]
+    fn an_invalid_application_converts_with_its_own_message() {
+        let invalid = ApplicationError::Invalid {
+            name: "../example".to_string(),
+        };
+
+        let error = Error::from(invalid.clone());
+
+        assert_eq!(error.to_string(), invalid.to_string());
+        assert!(
+            matches!(&error, Error::Application(ApplicationError::Invalid { name }) if name == "../example"),
+            "{error:?}"
         );
     }
 
     #[test]
     fn parse_failures_carry_the_source() {
         let source = toml::from_str::<toml::Value>("invalid { toml").unwrap_err();
-        let error = ConfigError::Parse {
+        let error = Error::Parse {
             path: PathBuf::from("config.toml"),
             source,
         };
-        assert!(matches!(error, ConfigError::Parse { .. }));
+        assert!(matches!(error, Error::Parse { .. }));
         assert!(error.to_string().contains("config.toml"));
     }
 
     #[test]
     fn serialize_failures_convert() {
         let source = toml::to_string_pretty(&toml::Value::Integer(1)).unwrap_err();
-        let error: ConfigError = source.into();
-        assert!(matches!(error, ConfigError::Serialize(_)));
+        let error: Error = source.into();
+        assert!(matches!(error, Error::Serialize(_)));
     }
 
     #[test]
     fn decryption_failures_name_the_field() {
-        let error = ConfigError::Decrypt {
+        let error = Error::Decrypt {
             field: "database.password".to_string(),
             source: abnegate_secret::Error::Decryption,
         };
@@ -151,7 +167,7 @@ mod tests {
 
     #[test]
     fn a_sealed_field_without_a_key_is_named() {
-        let error = ConfigError::SealedWithoutKey {
+        let error = Error::SealedWithoutKey {
             field: "database.password".to_string(),
         };
         assert_eq!(
@@ -163,18 +179,18 @@ mod tests {
     #[test]
     fn every_error_is_debuggable() {
         let errors = [
-            ConfigError::Missing {
+            Error::Missing {
                 path: PathBuf::from("config.toml"),
             },
-            ConfigError::NoHomeDirectory,
-            ConfigError::Encrypt {
+            Error::NoHomeDirectory,
+            Error::Encrypt {
                 field: "token".to_string(),
                 source: abnegate_secret::Error::Encryption,
             },
-            ConfigError::InvalidKey {
+            Error::InvalidKey {
                 key: "1KEY".to_string(),
             },
-            ConfigError::SealedShapeChanged {
+            Error::SealedShapeChanged {
                 field: "hosts[0]".to_string(),
             },
         ];
@@ -194,13 +210,10 @@ mod tests {
             keyring::Error::BadEncoding(CREDENTIAL.to_vec()),
             keyring::Error::BadDataFormat(CREDENTIAL.to_vec(), platform),
         ] {
-            let error = ConfigError::from(source);
+            let error = Error::from(source);
             let rendered = format!("{error:?} {error}");
 
-            assert!(
-                matches!(error, ConfigError::CredentialUnreadable),
-                "{rendered}"
-            );
+            assert!(matches!(error, Error::CredentialUnreadable), "{rendered}");
             assert!(!rendered.contains("hunter2"), "{rendered}");
             assert!(!rendered.contains("104, 117, 110"), "{rendered}");
         }
@@ -209,13 +222,10 @@ mod tests {
     #[cfg(feature = "keyring")]
     #[test]
     fn other_store_failures_stay_wrapped() {
-        let error = ConfigError::from(keyring::Error::NoStorageAccess("locked".into()));
+        let error = Error::from(keyring::Error::NoStorageAccess("locked".into()));
 
         assert!(
-            matches!(
-                error,
-                ConfigError::Keyring(keyring::Error::NoStorageAccess(_))
-            ),
+            matches!(error, Error::Keyring(keyring::Error::NoStorageAccess(_))),
             "{error:?}"
         );
     }

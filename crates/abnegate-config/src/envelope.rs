@@ -9,7 +9,7 @@ use abnegate_secret::encrypt_value;
 use abnegate_secret::is_encrypted;
 use toml::Value;
 
-use crate::error::ConfigError;
+use crate::error::Error;
 
 pub(crate) use crate::envelope::location::Location;
 pub(crate) use crate::envelope::sealed::Sealed;
@@ -17,10 +17,7 @@ pub(crate) use crate::envelope::segment::Segment;
 
 /// Find every `ENC[v1:...]` envelope in `document`, decrypting each in place
 /// when `key` is given and leaving it as it is when not.
-pub(crate) fn unseal(
-    document: &mut Value,
-    key: Option<&MasterKey>,
-) -> Result<Vec<Sealed>, ConfigError> {
+pub(crate) fn unseal(document: &mut Value, key: Option<&MasterKey>) -> Result<Vec<Sealed>, Error> {
     let mut received = Vec::new();
 
     visit(document, &mut Location::default(), &mut |text, location| {
@@ -41,17 +38,17 @@ pub(crate) fn unseal(
 ///
 /// Without a key, a location that still holds its envelope is left alone and
 /// one that would be written in the clear fails with
-/// [`ConfigError::SealedWithoutKey`]. A value that has gone from its location
-/// fails with [`ConfigError::SealedShapeChanged`] when fewer strings in the
+/// [`Error::SealedWithoutKey`]. A value that has gone from its location
+/// fails with [`Error::SealedShapeChanged`] when fewer strings in the
 /// document hold it than did on load, or when it was empty, since it cannot be
 /// told apart from one that moved to a new key and was edited.
 pub(crate) fn seal(
     document: &mut Value,
     sealed: &[Sealed],
     key: Option<&MasterKey>,
-) -> Result<(), ConfigError> {
+) -> Result<(), Error> {
     if let Some(lost) = sealed.iter().find(|value| value.is_lost(document)) {
-        return Err(ConfigError::SealedShapeChanged {
+        return Err(Error::SealedShapeChanged {
             field: lost.location().to_string(),
         });
     }
@@ -79,7 +76,7 @@ fn seal_at(
     document: &mut Value,
     location: &Location,
     key: Option<&MasterKey>,
-) -> Result<(), ConfigError> {
+) -> Result<(), Error> {
     match location.resolve_mut(document) {
         None => Ok(()),
         Some(Value::String(text)) if is_encrypted(text) => Ok(()),
@@ -87,7 +84,7 @@ fn seal_at(
             *text = encrypt(text, location, key)?;
             Ok(())
         }
-        Some(_) => Err(ConfigError::SealedShapeChanged {
+        Some(_) => Err(Error::SealedShapeChanged {
             field: location.to_string(),
         }),
     }
@@ -97,12 +94,12 @@ fn decrypt(
     text: &mut String,
     location: &Location,
     key: Option<&MasterKey>,
-) -> Result<SecretValue, ConfigError> {
+) -> Result<SecretValue, Error> {
     let Some(key) = key else {
         return Ok(SecretValue::new(text.as_str()));
     };
 
-    let plaintext = decrypt_value(text, key).map_err(|source| ConfigError::Decrypt {
+    let plaintext = decrypt_value(text, key).map_err(|source| Error::Decrypt {
         field: location.to_string(),
         source,
     })?;
@@ -111,18 +108,14 @@ fn decrypt(
     Ok(plaintext)
 }
 
-fn encrypt(
-    text: &str,
-    location: &Location,
-    key: Option<&MasterKey>,
-) -> Result<String, ConfigError> {
+fn encrypt(text: &str, location: &Location, key: Option<&MasterKey>) -> Result<String, Error> {
     let Some(key) = key else {
-        return Err(ConfigError::SealedWithoutKey {
+        return Err(Error::SealedWithoutKey {
             field: location.to_string(),
         });
     };
 
-    encrypt_value(&SecretValue::new(text), key).map_err(|source| ConfigError::Encrypt {
+    encrypt_value(&SecretValue::new(text), key).map_err(|source| Error::Encrypt {
         field: location.to_string(),
         source,
     })
@@ -132,9 +125,9 @@ fn visit<Visitor>(
     value: &mut Value,
     location: &mut Location,
     visitor: &mut Visitor,
-) -> Result<(), ConfigError>
+) -> Result<(), Error>
 where
-    Visitor: FnMut(&mut String, &Location) -> Result<(), ConfigError>,
+    Visitor: FnMut(&mut String, &Location) -> Result<(), Error>,
 {
     match value {
         Value::String(text) => visitor(text, location)?,
@@ -205,8 +198,8 @@ mod tests {
         unseal(&mut toml::from_str(content).unwrap(), key).unwrap()
     }
 
-    fn shape_changed_at(error: &ConfigError, expected: &str) -> bool {
-        matches!(error, ConfigError::SealedShapeChanged { field } if field == expected)
+    fn shape_changed_at(error: &Error, expected: &str) -> bool {
+        matches!(error, Error::SealedShapeChanged { field } if field == expected)
     }
 
     #[test]
@@ -266,7 +259,7 @@ mod tests {
         let error = unseal(&mut document, Some(&MasterKey::generate().unwrap())).unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::Decrypt { field, .. } if field == "database.password"),
+            matches!(&error, Error::Decrypt { field, .. } if field == "database.password"),
             "{error:?}"
         );
     }
@@ -284,7 +277,7 @@ mod tests {
         let error = unseal(&mut document, Some(&MasterKey::generate().unwrap())).unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::Decrypt { field, .. } if field == "hosts[1]"),
+            matches!(&error, Error::Decrypt { field, .. } if field == "hosts[1]"),
             "{error:?}"
         );
     }
@@ -313,7 +306,7 @@ mod tests {
         let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "password"),
+            matches!(&error, Error::SealedShapeChanged { field } if field == "password"),
             "{error:?}"
         );
     }
@@ -380,7 +373,7 @@ mod tests {
         let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "api_key"),
+            matches!(&error, Error::SealedShapeChanged { field } if field == "api_key"),
             "{error:?}"
         );
         assert_eq!(document["token"].as_str(), Some("correct-horse"));
@@ -654,7 +647,7 @@ mod tests {
         let error = seal(&mut document, &sealed, None).unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedWithoutKey { field } if field == "hosts[0]"),
+            matches!(&error, Error::SealedWithoutKey { field } if field == "hosts[0]"),
             "{error:?}"
         );
     }
@@ -668,7 +661,7 @@ mod tests {
         let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedShapeChanged { field } if field == "password"),
+            matches!(&error, Error::SealedShapeChanged { field } if field == "password"),
             "{error:?}"
         );
     }
@@ -685,7 +678,7 @@ mod tests {
         let error = seal(&mut document, &sealed, Some(&key)).unwrap_err();
 
         assert!(
-            matches!(error, ConfigError::SealedShapeChanged { .. }),
+            matches!(error, Error::SealedShapeChanged { .. }),
             "{error:?}"
         );
     }
@@ -712,7 +705,7 @@ mod tests {
         let error = seal(&mut document, &sealed, None).unwrap_err();
 
         assert!(
-            matches!(&error, ConfigError::SealedWithoutKey { field } if field == "database.password"),
+            matches!(&error, Error::SealedWithoutKey { field } if field == "database.password"),
             "{error:?}"
         );
     }
