@@ -5,8 +5,11 @@ use crate::pull_request::MergedPullRequest;
 use crate::pull_request::github_merge::GitHubMerge;
 use crate::pull_request::graphql_error::GraphQlError;
 use crate::pull_request::merge_request::MergeRequest;
+use crate::pull_request::service::graphql::FORBIDDEN;
+use crate::pull_request::service::graphql::NOT_FOUND;
+use crate::pull_request::service::graphql::RATE_LIMITED;
 use crate::pull_request::service::graphql::graphql_messages;
-use crate::pull_request::service::graphql::graphql_refusal;
+use crate::pull_request::service::graphql::reported;
 use serde_json::Value;
 use serde_json::json;
 
@@ -165,11 +168,13 @@ async fn merge_commit(response: Response) -> Option<CommitSha> {
 /// What the errors an administrator merge was refused with mean: a spent rate
 /// limit is one, and anything else is protection's refusal.
 fn administrator_refusal(reason: &str, errors: &[GraphQlError]) -> PullRequestError {
-    match graphql_refusal(errors) {
-        PullRequestError::RateLimited => PullRequestError::RateLimited,
-        PullRequestError::Forbidden | PullRequestError::NotFound => protected(reason, ""),
-        _ => protected(reason, &graphql_messages(errors)),
+    if reported(errors, RATE_LIMITED) {
+        return PullRequestError::RateLimited;
     }
+    if reported(errors, NOT_FOUND) || reported(errors, FORBIDDEN) {
+        return protected(reason, "");
+    }
+    protected(reason, &graphql_messages(errors))
 }
 
 /// Branch protection's `reason`, then the administrator merge's refusal and

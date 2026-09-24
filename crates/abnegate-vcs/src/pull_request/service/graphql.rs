@@ -5,14 +5,14 @@ use crate::pull_request::graphql_response::GraphQlResponse;
 use serde::Serialize;
 
 /// The kind GitHub's GraphQL API names a spent rate limit with.
-const RATE_LIMITED: &str = "RATE_LIMITED";
+pub(super) const RATE_LIMITED: &str = "RATE_LIMITED";
 
 /// The kind GitHub's GraphQL API names something missing, or not visible to
 /// the token, with.
-const NOT_FOUND: &str = "NOT_FOUND";
+pub(super) const NOT_FOUND: &str = "NOT_FOUND";
 
 /// The kind GitHub's GraphQL API names something the token may not do with.
-const FORBIDDEN: &str = "FORBIDDEN";
+pub(super) const FORBIDDEN: &str = "FORBIDDEN";
 
 /// What a refusal GitHub named no kind for says ahead of GitHub's own words.
 const REFUSED: &str = "GitHub's GraphQL API refused";
@@ -70,18 +70,13 @@ impl PullRequestService {
 /// anything missing, anything missing ahead of anything forbidden, and
 /// GitHub's own words for the rest.
 pub(super) fn graphql_refusal(errors: &[GraphQlError]) -> PullRequestError {
-    let reported = |kind: &str| {
-        errors
-            .iter()
-            .any(|error| error.kind.as_deref() == Some(kind))
-    };
-    if reported(RATE_LIMITED) {
+    if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
     }
-    if reported(NOT_FOUND) {
+    if reported(errors, NOT_FOUND) {
         return PullRequestError::NotFound;
     }
-    if reported(FORBIDDEN) {
+    if reported(errors, FORBIDDEN) {
         return PullRequestError::Forbidden;
     }
 
@@ -90,6 +85,13 @@ pub(super) fn graphql_refusal(errors: &[GraphQlError]) -> PullRequestError {
         return PullRequestError::GitHubApi(REFUSED.to_string());
     }
     PullRequestError::GitHubApi(format!("{REFUSED}: {messages}"))
+}
+
+/// Whether any of a set of GraphQL errors is of `kind`.
+pub(super) fn reported(errors: &[GraphQlError], kind: &str) -> bool {
+    errors
+        .iter()
+        .any(|error| error.kind.as_deref() == Some(kind))
 }
 
 /// Every message in a set of GraphQL errors, joined, with no control
