@@ -6,15 +6,21 @@
 //! [`needs_web_search`] decides whether a message is worth a lookup at all, and
 //! [`SearchContext`] turns the outcome into prompt text a model can cite.
 //!
+//! Search is off until it is switched on, by `SEARCH_ENABLE_WEB_SEARCH` or
+//! [`WebSearchConfig::new`]. [`WebSearchConfig::requested_for`] consults that
+//! switch and [`SearxngClient`] does not, so a host asks the config first.
+//!
 //! ```no_run
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn example() -> Result<(), abnegate_search::Error> {
 //! use abnegate_search::{SearxngClient, TimeRange, WebSearchConfig};
 //!
-//! let client = SearxngClient::new(WebSearchConfig::from_environment())?;
-//! let results = client
-//!     .search("rust release notes", Some(TimeRange::Week))
-//!     .await?;
-//! # let _ = results;
+//! let message = "What are the latest Rust release notes?";
+//! let config = WebSearchConfig::from_environment();
+//! if config.requested_for(message, None) {
+//!     let client = SearxngClient::new(config)?;
+//!     let results = client.search(message, Some(TimeRange::Week)).await?;
+//! #   let _ = results;
+//! }
 //! # Ok(())
 //! # }
 //! ```
