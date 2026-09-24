@@ -26,8 +26,14 @@ cargo add abnegate-agent-cli abnegate-llm
 ```
 
 ```rust,no_run
-use abnegate_agent_cli::{AgentKind, CliProvider, CliSettings};
-use abnegate_llm::{CompletionProvider, CompletionRequest, Message, ProviderError, RequestOptions};
+use abnegate_agent_cli::AgentKind;
+use abnegate_agent_cli::CliProvider;
+use abnegate_agent_cli::CliSettings;
+use abnegate_llm::CompletionProvider;
+use abnegate_llm::CompletionRequest;
+use abnegate_llm::Message;
+use abnegate_llm::ProviderError;
+use abnegate_llm::RequestOptions;
 
 async fn explain() -> Result<(), ProviderError> {
     let settings = CliSettings::default()
