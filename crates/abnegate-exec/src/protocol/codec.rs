@@ -144,10 +144,8 @@ mod tests {
         assert!(result.is_some());
 
         match result.unwrap() {
-            InboundMessage::Hello {
-                protocol_version, ..
-            } => {
-                assert_eq!(protocol_version, "1.0");
+            InboundMessage::Hello(hello) => {
+                assert_eq!(hello.protocol_version, "1.0");
             }
             _ => panic!("Wrong message type"),
         }
@@ -184,12 +182,12 @@ mod tests {
         let second = codec.decode(&mut buffer).unwrap().unwrap();
 
         match first {
-            InboundMessage::Ping { id } => assert_eq!(id, "1"),
+            InboundMessage::Ping(ping) => assert_eq!(ping.id, "1"),
             _ => panic!("Wrong message type"),
         }
 
         match second {
-            InboundMessage::Ping { id } => assert_eq!(id, "2"),
+            InboundMessage::Ping(ping) => assert_eq!(ping.id, "2"),
             _ => panic!("Wrong message type"),
         }
     }
@@ -207,7 +205,7 @@ mod tests {
         for index in 0..100 {
             let message = codec.decode(&mut buffer).unwrap().unwrap();
             match message {
-                InboundMessage::Ping { id } => assert_eq!(id, index.to_string()),
+                InboundMessage::Ping(ping) => assert_eq!(ping.id, index.to_string()),
                 _ => panic!("Wrong message type"),
             }
         }
@@ -345,7 +343,7 @@ mod tests {
 
         let message = codec.decode(&mut buffer).unwrap().unwrap();
         match message {
-            InboundMessage::Ping { id } => assert_eq!(id, "1"),
+            InboundMessage::Ping(ping) => assert_eq!(ping.id, "1"),
             _ => panic!("Wrong message type"),
         }
     }
@@ -554,8 +552,8 @@ mod tests {
 
         let result = codec.decode(&mut buffer).unwrap().unwrap();
         match result {
-            InboundMessage::Ping { id } => {
-                assert_eq!(id, "测试🎉");
+            InboundMessage::Ping(ping) => {
+                assert_eq!(ping.id, "测试🎉");
             }
             _ => panic!("Wrong message type"),
         }
@@ -662,8 +660,8 @@ mod tests {
         assert!(result.is_ok());
 
         match result.unwrap().unwrap() {
-            InboundMessage::RunStdin { data, .. } => {
-                assert_eq!(data.len(), 100_000);
+            InboundMessage::RunStdin(stdin) => {
+                assert_eq!(stdin.data.len(), 100_000);
             }
             _ => panic!("Wrong message type"),
         }
@@ -687,7 +685,7 @@ mod tests {
 
         let result = codec.decode(&mut buffer).unwrap().unwrap();
         match result {
-            InboundMessage::Ping { id } => assert_eq!(id, "test123"),
+            InboundMessage::Ping(ping) => assert_eq!(ping.id, "test123"),
             _ => panic!("Wrong message type"),
         }
     }

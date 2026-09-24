@@ -4,9 +4,9 @@
 //! crate, so renaming a Rust type or field must never move a byte on the
 //! wire. Every map here holds one entry, which fixes its order.
 
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use bytes::BytesMut;
 use serde::Serialize;
@@ -16,11 +16,16 @@ use tokio_util::codec::Encoder;
 
 use super::ConfinementRequest;
 use super::ErrorCode;
+use super::Hello;
 use super::InboundMessage;
 use super::LogLevel;
 use super::NdjsonCodec;
 use super::OutboundMessage;
+use super::Ping;
 use super::ProcessTreeRequest;
+use super::RunCancel;
+use super::RunStart;
+use super::RunStdin;
 
 fn encoded<T: Serialize>(message: T) -> String {
     let mut buffer = BytesMut::new();
@@ -46,65 +51,41 @@ where
 }
 
 fn full_run() -> InboundMessage {
-    InboundMessage::RunStart {
-        job_id: "job-1".to_string(),
-        workspace: PathBuf::from("/tmp/work"),
-        command: "cargo".to_string(),
-        args: vec!["test".to_string(), "--quiet".to_string()],
-        env: HashMap::from([("RUST_LOG".to_string(), "debug".to_string())]),
-        timeout_ms: Some(300_000),
-        max_output_bytes: Some(1_048_576),
-        working_dir: Some(PathBuf::from("/tmp/work/crate")),
-        confinement: Some(Box::new(ConfinementRequest {
-            read_roots: vec![PathBuf::from("/tmp/work")],
-            write_roots: vec![PathBuf::from("/tmp/work/target")],
-            process_tree: Some(ProcessTreeRequest {
-                execute_roots: vec![PathBuf::from("/usr/bin")],
-            }),
-        })),
-    }
+    InboundMessage::RunStart(
+        RunStart::new("job-1", "/tmp/work", "cargo")
+            .with_arguments(["test", "--quiet"])
+            .with_environment([("RUST_LOG", "debug")])
+            .with_timeout(Duration::from_secs(300))
+            .with_output_limit(1_048_576)
+            .with_working_directory("/tmp/work/crate")
+            .with_confinement(
+                ConfinementRequest::new(
+                    vec![PathBuf::from("/tmp/work")],
+                    vec![PathBuf::from("/tmp/work/target")],
+                )
+                .with_process_tree(ProcessTreeRequest::new(vec![PathBuf::from("/usr/bin")])),
+            ),
+    )
 }
 
 fn minimal_run() -> InboundMessage {
-    InboundMessage::RunStart {
-        job_id: "job-2".to_string(),
-        workspace: PathBuf::from("/tmp"),
-        command: "ls".to_string(),
-        args: vec![],
-        env: HashMap::new(),
-        timeout_ms: None,
-        max_output_bytes: None,
-        working_dir: None,
-        confinement: None,
-    }
+    InboundMessage::RunStart(RunStart::new("job-2", "/tmp", "ls"))
 }
 
 fn single_command_run() -> InboundMessage {
-    InboundMessage::RunStart {
-        job_id: "job-3".to_string(),
-        workspace: PathBuf::from("/tmp"),
-        command: "/bin/cat".to_string(),
-        args: vec!["granted".to_string()],
-        env: HashMap::new(),
-        timeout_ms: Some(15_000),
-        max_output_bytes: None,
-        working_dir: None,
-        confinement: Some(Box::new(ConfinementRequest {
-            read_roots: vec![PathBuf::from("/tmp")],
-            write_roots: vec![],
-            process_tree: None,
-        })),
-    }
+    InboundMessage::RunStart(
+        RunStart::new("job-3", "/tmp", "/bin/cat")
+            .with_arguments(["granted"])
+            .with_timeout(Duration::from_millis(15_000))
+            .with_confinement(ConfinementRequest::new(vec![PathBuf::from("/tmp")], vec![])),
+    )
 }
 
 #[test]
 fn every_inbound_message_keeps_its_bytes() {
     let cases = [
         (
-            InboundMessage::Hello {
-                protocol_version: "1.0".to_string(),
-                capabilities: vec!["cancel".to_string(), "stdin".to_string()],
-            },
+            InboundMessage::Hello(Hello::new("1.0").with_capabilities(["cancel", "stdin"])),
             r#"{"type":"Hello","protocol_version":"1.0","capabilities":["cancel","stdin"]}"#,
         ),
         (
@@ -120,24 +101,15 @@ fn every_inbound_message_keeps_its_bytes() {
             r#"{"type":"RunStart","job_id":"job-3","workspace":"/tmp","command":"/bin/cat","args":["granted"],"env":{},"timeout_ms":15000,"max_output_bytes":null,"working_dir":null,"confinement":{"read_roots":["/tmp"],"write_roots":[]}}"#,
         ),
         (
-            InboundMessage::RunStdin {
-                job_id: "job-1".to_string(),
-                data: "aGVsbG8K".to_string(),
-                eof: true,
-            },
+            InboundMessage::RunStdin(RunStdin::new("job-1", "aGVsbG8K").with_eof(true)),
             r#"{"type":"RunStdin","job_id":"job-1","data":"aGVsbG8K","eof":true}"#,
         ),
         (
-            InboundMessage::RunCancel {
-                job_id: "job-1".to_string(),
-                force: true,
-            },
+            InboundMessage::RunCancel(RunCancel::new("job-1").with_force(true)),
             r#"{"type":"RunCancel","job_id":"job-1","force":true}"#,
         ),
         (
-            InboundMessage::Ping {
-                id: "ping-1".to_string(),
-            },
+            InboundMessage::Ping(Ping::new("ping-1")),
             r#"{"type":"Ping","id":"ping-1"}"#,
         ),
     ];
@@ -243,10 +215,7 @@ fn a_sparse_inbound_line_takes_its_defaults() {
     let cases = [
         (
             r#"{"type":"Hello","protocol_version":"1.0"}"#,
-            InboundMessage::Hello {
-                protocol_version: "1.0".to_string(),
-                capabilities: vec![],
-            },
+            InboundMessage::Hello(Hello::new("1.0")),
         ),
         (
             r#"{"type":"RunStart","job_id":"job-2","workspace":"/tmp","command":"ls"}"#,
@@ -258,18 +227,11 @@ fn a_sparse_inbound_line_takes_its_defaults() {
         ),
         (
             r#"{"type":"RunStdin","job_id":"job-1","data":""}"#,
-            InboundMessage::RunStdin {
-                job_id: "job-1".to_string(),
-                data: String::new(),
-                eof: false,
-            },
+            InboundMessage::RunStdin(RunStdin::new("job-1", "")),
         ),
         (
             r#"{"type":"RunCancel","job_id":"job-1"}"#,
-            InboundMessage::RunCancel {
-                job_id: "job-1".to_string(),
-                force: false,
-            },
+            InboundMessage::RunCancel(RunCancel::new("job-1")),
         ),
     ];
 

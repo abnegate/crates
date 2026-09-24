@@ -27,28 +27,23 @@
 //! separate process driven by whatever started it.
 //!
 //! ```
-//! use std::collections::HashMap;
+//! use std::time::Duration;
 //!
 //! use abnegate_exec::CommandExecutor;
 //! use abnegate_exec::InboundMessage;
 //! use abnegate_exec::OutboundMessage;
+//! use abnegate_exec::RunStart;
 //! use tokio::sync::mpsc;
 //!
 //! # async fn run() -> Result<(), abnegate_exec::ExecutorError> {
 //! let (sender, mut receiver) = mpsc::channel(64);
 //! CommandExecutor::new()
 //!     .spawn(
-//!         &InboundMessage::RunStart {
-//!             job_id: "greet".to_string(),
-//!             workspace: std::env::temp_dir(),
-//!             command: "echo".to_string(),
-//!             args: vec!["hello".to_string()],
-//!             env: HashMap::new(),
-//!             working_dir: None,
-//!             timeout_ms: Some(5_000),
-//!             max_output_bytes: None,
-//!             confinement: None,
-//!         },
+//!         &InboundMessage::RunStart(
+//!             RunStart::new("greet", std::env::temp_dir(), "echo")
+//!                 .with_arguments(["hello"])
+//!                 .with_timeout(Duration::from_secs(5)),
+//!         ),
 //!         sender,
 //!     )
 //!     .await?;
@@ -67,7 +62,7 @@
 //!
 //! A command never inherits the executor's whole environment by default: it
 //! sees only the names in [`DEFAULT_ENVIRONMENT_ALLOWLIST`], with the
-//! executor's values, and the `RunStart.env` map on top. An executor that
+//! executor's values, and [`RunStart::environment`] on top. An executor that
 //! holds nothing a command must not read can opt into
 //! [`EnvironmentPolicy::Inherit`] through [`ExecutorConfig::environment`].
 //!
@@ -120,12 +115,17 @@ pub use job::JobState;
 pub use protocol::Capability;
 pub use protocol::ConfinementRequest;
 pub use protocol::ErrorCode;
+pub use protocol::Hello;
 pub use protocol::InboundMessage;
 pub use protocol::LogLevel;
 pub use protocol::NdjsonCodec;
 pub use protocol::OutboundMessage;
 pub use protocol::PROTOCOL_VERSION;
+pub use protocol::Ping;
 pub use protocol::ProcessTreeRequest;
+pub use protocol::RunCancel;
+pub use protocol::RunStart;
+pub use protocol::RunStdin;
 pub use proxy::DEFAULT_BYPASS;
 pub use proxy::PROXY_BYPASS_ENV;
 pub use proxy::PROXY_URL_ENV;

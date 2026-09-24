@@ -24,25 +24,23 @@ cargo add tokio --features sync
 ```
 
 ```rust,no_run
-use std::collections::HashMap;
+use std::time::Duration;
 
-use abnegate_exec::{CommandExecutor, ExecutorError, InboundMessage, OutboundMessage};
+use abnegate_exec::CommandExecutor;
+use abnegate_exec::ExecutorError;
+use abnegate_exec::InboundMessage;
+use abnegate_exec::OutboundMessage;
+use abnegate_exec::RunStart;
 use tokio::sync::mpsc;
 
 async fn greet() -> Result<(), ExecutorError> {
-    let request = InboundMessage::RunStart {
-        job_id: "greet".to_string(),
-        workspace: std::env::temp_dir(),
-        command: "echo".to_string(),
-        args: vec!["hello".to_string()],
-        env: HashMap::new(),
-        working_dir: None,
-        timeout_ms: Some(5_000),
-        max_output_bytes: None,
-        confinement: None,
-    };
+    let request = RunStart::new("greet", std::env::temp_dir(), "echo")
+        .with_arguments(["hello"])
+        .with_timeout(Duration::from_secs(5));
     let (sender, mut receiver) = mpsc::channel(64);
-    CommandExecutor::new().spawn(&request, sender).await?;
+    CommandExecutor::new()
+        .spawn(&InboundMessage::RunStart(request), sender)
+        .await?;
     while let Some(message) = receiver.recv().await {
         println!("{message:?}");
         if matches!(message, OutboundMessage::RunExit { .. }) {
