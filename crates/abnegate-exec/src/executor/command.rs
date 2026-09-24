@@ -120,24 +120,21 @@ impl CommandExecutor {
 
         // A job that asked to be confined never runs unconfined: an unproven
         // sandbox fails the spawn instead of falling back.
-        let inherited = self.config.environment.inherited();
         let spawned = match confinement {
             Some(request) => {
                 Confinement::probe(request.mode()).await?;
                 Confinement::new(command, arguments.clone(), working_directory)
                     .with_roots(request)
                     .with_environment(environment.clone())
-                    .with_inherited_environment(inherited)
+                    .with_inherited_environment(self.config.environment.inherited())
                     .host_invocation()?
                     .spawn(configure)
             }
             None => {
                 let mut process = Command::new(command);
-                process
-                    .args(arguments)
-                    .env_clear()
-                    .envs(inherited)
-                    .envs(environment);
+                process.args(arguments);
+                self.config.environment.apply(&mut process);
+                process.envs(environment);
                 Proxy::from_environment().apply(&mut process);
                 configure(&mut process);
                 session::lead(&mut process, None);
@@ -235,6 +232,7 @@ mod tests {
     use crate::executor::ConfinementMode;
     use crate::executor::EnvironmentPolicy;
     use crate::executor::GRACE_PERIOD;
+    use crate::executor::child;
     use crate::executor::sandbox;
     use crate::executor::sandbox::REQUIRE_CONFINEMENT;
     use crate::protocol::ConfinementRequest;
@@ -244,7 +242,6 @@ mod tests {
 
     use super::*;
 
-    const CHILD: &str = "ABNEGATE_EXEC_TEST_CHILD";
     const RUN_LIMIT: Duration = Duration::from_secs(10);
 
     /// Everything one run reported, in the order it arrived.
@@ -371,38 +368,6 @@ mod tests {
             ))
     }
 
-    /// Re-run the test `name` in a child test process whose environment is
-    /// `PATH` and [`REQUIRE_CONFINEMENT`] plus `environment`, so a test can
-    /// shape the executor's own environment, or start with no sandbox verdict
-    /// cached, without touching this process. Returns whether this call was
-    /// the parent, which has nothing left to do once the child passes.
-    async fn delegated_to_child(name: &str, environment: &[(&str, &str)]) -> bool {
-        if std::env::var(CHILD).as_deref() == Ok(name) {
-            return false;
-        }
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", name, "--nocapture"])
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env(CHILD, name)
-            .envs(std::env::var_os(REQUIRE_CONFINEMENT).map(|value| (REQUIRE_CONFINEMENT, value)))
-            .envs(environment.iter().copied())
-            .output()
-            .await
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success(),
-            "{stdout}\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            stdout.contains("1 passed"),
-            "the child ran no test, so it proved nothing\n{stdout}"
-        );
-        true
-    }
-
     fn environment_listing(environment: HashMap<String, String>) -> RunStart {
         RunStart::new("environment", std::env::temp_dir(), "env")
             .with_environment(environment)
@@ -421,7 +386,7 @@ mod tests {
             "executor::command::tests::the_default_policy_withholds_the_executor_environment";
         const MARKER: &str = "ABNEGATE_EXEC_TEST_MASTER_KEY";
         const VALUE: &str = "hunter2";
-        if delegated_to_child(NAME, &[(MARKER, VALUE), ("TERM", "xterm")]).await {
+        if child::delegated(NAME, &[(MARKER, VALUE), ("TERM", "xterm")]).await {
             return;
         }
 
@@ -443,11 +408,11 @@ mod tests {
             "executor::command::tests::inherit_passes_the_executor_environment_beneath_the_request";
         const MARKER: &str = "ABNEGATE_EXEC_TEST_MASTER_KEY";
         const SHADOWED: &str = "ABNEGATE_EXEC_TEST_SHADOWED";
-        if delegated_to_child(NAME, &[(MARKER, "hunter2"), (SHADOWED, "executor")]).await {
+        if child::delegated(NAME, &[(MARKER, "hunter2"), (SHADOWED, "executor")]).await {
             return;
         }
         let executor = CommandExecutor::with_config(
-            ExecutorConfig::default().with_environment(EnvironmentPolicy::Inherit),
+            ExecutorConfig::default().with_environment(EnvironmentPolicy::inherit()),
         );
 
         let output = environment_of(
@@ -474,10 +439,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_policy_variable_reaches_the_command_beneath_the_request() {
+        let executor = CommandExecutor::with_config(
+            ExecutorConfig::default().with_environment(
+                EnvironmentPolicy::empty()
+                    .with("LAYERED", "policy")
+                    .with("SHADOWED", "policy"),
+            ),
+        );
+
+        let output = environment_of(
+            &executor,
+            RunStart::new("environment", std::env::temp_dir(), "/usr/bin/env")
+                .with_environment([("SHADOWED", "request")])
+                .with_timeout(Duration::from_secs(5)),
+        )
+        .await;
+
+        let mut lines: Vec<&str> = output.lines().collect();
+        lines.sort_unstable();
+        assert_eq!(lines, ["LAYERED=policy", "SHADOWED=request"]);
+    }
+
+    #[tokio::test]
     async fn a_confined_run_layers_the_request_over_the_sandbox_over_the_policy() {
         const NAME: &str = "executor::command::tests::a_confined_run_layers_the_request_over_the_sandbox_over_the_policy";
         const MARKER: &str = "ABNEGATE_EXEC_TEST_MASTER_KEY";
-        if delegated_to_child(
+        if child::delegated(
             NAME,
             &[
                 (MARKER, "hunter2"),
@@ -515,7 +503,7 @@ mod tests {
     #[tokio::test]
     async fn the_first_confined_job_is_not_charged_for_proving_the_sandbox() {
         const NAME: &str = "executor::command::tests::the_first_confined_job_is_not_charged_for_proving_the_sandbox";
-        if delegated_to_child(NAME, &[]).await {
+        if child::delegated(NAME, &[]).await {
             return;
         }
         let workspace = tempfile::tempdir().unwrap();
@@ -555,7 +543,7 @@ mod tests {
     #[tokio::test]
     async fn proxy_overrides_request_environment() {
         const NAME: &str = "executor::command::tests::proxy_overrides_request_environment";
-        if delegated_to_child(
+        if child::delegated(
             NAME,
             &[(crate::proxy::PROXY_URL_VARIABLE, "http://127.0.0.1:28888")],
         )

@@ -96,6 +96,7 @@ dependencies = [
 name = "abnegate-exec"
 version = "0.1.0"
 dependencies = [
+ "abnegate-secret",
  "base64 0.23.1",
  "bytes",
  "dashmap",

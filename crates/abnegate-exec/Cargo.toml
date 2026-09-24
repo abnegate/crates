@@ -18,6 +18,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
 base64 = { workspace = true }
 bytes = { workspace = true }
 dashmap = { workspace = true }

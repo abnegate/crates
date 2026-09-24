@@ -38,9 +38,9 @@ pub struct ExecutorConfig {
     /// Grace period before SIGKILL after SIGTERM
     pub grace_period: Duration,
 
-    /// Which of the executor's own environment variables a command sees.
-    /// Defaults to [`EnvironmentPolicy::Allowlist`] of
-    /// [`DEFAULT_ENVIRONMENT_ALLOWLIST`](super::DEFAULT_ENVIRONMENT_ALLOWLIST).
+    /// The environment a command is given beneath its request's own.
+    /// Defaults to the [`allowlist`](EnvironmentPolicy::allowlist) of
+    /// [`DEFAULT_ENVIRONMENT`](super::DEFAULT_ENVIRONMENT).
     pub environment: EnvironmentPolicy,
 }
 

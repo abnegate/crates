@@ -4,6 +4,8 @@
 //! command execution with streaming output, timeouts, and cancellation.
 
 mod admission;
+#[cfg(test)]
+pub(crate) mod child;
 mod command;
 mod config;
 mod confinement;
@@ -37,7 +39,7 @@ pub use confinement::ConfinementError;
 pub use confinement::ConfinementMode;
 pub use confinement::HOST_BACKEND;
 pub use confinement::Invocation;
-pub use environment_policy::DEFAULT_ENVIRONMENT_ALLOWLIST;
+pub use environment_policy::DEFAULT_ENVIRONMENT;
 pub use environment_policy::EnvironmentPolicy;
 pub use job_handle::JobHandle;
 pub use output_kind::OutputKind;

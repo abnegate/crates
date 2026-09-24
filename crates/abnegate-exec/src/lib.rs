@@ -61,10 +61,11 @@
 //! # Environment
 //!
 //! A command never inherits the executor's whole environment by default: it
-//! sees only the names in [`DEFAULT_ENVIRONMENT_ALLOWLIST`], with the
-//! executor's values, and [`RunStart::environment`] on top. An executor that
-//! holds nothing a command must not read can opt into
-//! [`EnvironmentPolicy::Inherit`] through [`ExecutorConfig::environment`].
+//! sees only the names in [`DEFAULT_ENVIRONMENT`], with the executor's values,
+//! and [`RunStart::environment`] on top. [`ExecutorConfig::environment`] takes
+//! any [`EnvironmentPolicy`]: more names, variables of its own, or, for an
+//! executor that holds nothing a command must not read,
+//! [`EnvironmentPolicy::inherit`].
 //!
 //! # Proxy routing
 //!
@@ -95,6 +96,7 @@ pub mod job;
 pub mod protocol;
 pub mod proxy;
 
+pub use abnegate_secret::SecretValue;
 pub use error::DaemonError;
 pub use error::ExecutorError;
 pub use error::JobError;
@@ -104,7 +106,7 @@ pub use executor::CommandExecutor;
 pub use executor::Confinement;
 pub use executor::ConfinementError;
 pub use executor::ConfinementMode;
-pub use executor::DEFAULT_ENVIRONMENT_ALLOWLIST;
+pub use executor::DEFAULT_ENVIRONMENT;
 pub use executor::EnvironmentPolicy;
 pub use executor::ExecutorConfig;
 pub use executor::HOST_BACKEND;
