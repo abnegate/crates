@@ -65,13 +65,17 @@ mod pull_requests {
     use abnegate_vcs::ChecksOutcome;
     use abnegate_vcs::CommitSha;
     use abnegate_vcs::Description;
+    use abnegate_vcs::IssueComment;
     use abnegate_vcs::MergeMethod;
     use abnegate_vcs::Mergeability;
     use abnegate_vcs::MergeableState;
+    use abnegate_vcs::MergedPullRequest;
+    use abnegate_vcs::PullRequestDetail;
     use abnegate_vcs::PullRequestService;
-    use abnegate_vcs::PullRequestState;
     use abnegate_vcs::ReviewState;
+    use abnegate_vcs::ReviewThreadRecord;
     use abnegate_vcs::SubmittedReview;
+    use abnegate_vcs::ThreadComment;
     use abnegate_vcs::tally;
     use serde_json::json;
     use std::num::NonZeroU64;
@@ -255,24 +259,25 @@ mod pull_requests {
 
         let pull = service.fetch_pull(&reference, &token).await.unwrap();
 
-        assert_eq!(pull.node_id, "PR_kwDOAcme7");
-        assert_eq!(pull.number, NonZeroU64::new(7).unwrap());
-        assert_eq!(pull.title, "(feat): basket totals");
-        assert_eq!(pull.body.as_deref(), Some("Adds totals to the basket."));
-        assert_eq!(pull.state, PullRequestState::Open);
-        assert!(!pull.draft);
-        assert!(!pull.merged);
-        assert_eq!(pull.merge_commit_sha, None);
-        assert_eq!(pull.head, BranchName::parse("task/one").unwrap());
-        assert_eq!(pull.head_sha, CommitSha::parse(&head).unwrap());
-        assert_eq!(pull.base, BranchName::parse("main").unwrap());
-        assert_eq!(pull.mergeable, Mergeability::Clean);
-        assert_eq!(pull.mergeable_state, MergeableState::Clean);
-        assert_eq!(pull.changed_files, 3);
-        assert_eq!(pull.additions, 120);
-        assert_eq!(pull.deletions, 14);
-        assert_eq!(pull.commits, 2);
-        assert_eq!(pull.url, "https://github.com/acme/project/pull/7");
+        assert_eq!(
+            pull,
+            PullRequestDetail::new(
+                "PR_kwDOAcme7",
+                NonZeroU64::new(7).unwrap(),
+                "(feat): basket totals",
+                BranchName::parse("task/one").unwrap(),
+                CommitSha::parse(&head).unwrap(),
+                BranchName::parse("main").unwrap(),
+                "https://github.com/acme/project/pull/7",
+            )
+            .with_body("Adds totals to the basket.")
+            .with_mergeable(Mergeability::Clean)
+            .with_mergeable_state(MergeableState::Clean)
+            .with_changed_files(3)
+            .with_additions(120)
+            .with_deletions(14)
+            .with_commits(2)
+        );
 
         let checks = service
             .fetch_checks(reference.repository(), &token, &pull.head_sha)
@@ -296,7 +301,124 @@ mod pull_requests {
             .await
             .unwrap();
 
-        assert_eq!(merge.sha, Some(CommitSha::parse(&merged).unwrap()));
-        assert!(!merge.administrator);
+        assert_eq!(
+            merge,
+            MergedPullRequest::new(Some(CommitSha::parse(&merged).unwrap()), false)
+        );
+    }
+
+    /// A caller builds the comments and review threads it expects the way
+    /// this crate reads them back, so it can compare them whole.
+    #[tokio::test]
+    async fn comments_and_review_threads_read_back_as_the_values_a_caller_builds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/issues/7/comments"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 11,
+                "user": { "login": "review-bot" },
+                "body": "Looks good once the empty cart is handled.",
+                "html_url": "https://github.com/acme/project/pull/7#issuecomment-11",
+                "created_at": "2026-09-20T09:00:00Z",
+            }])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "repository": { "pullRequest": { "reviewThreads": {
+                    "pageInfo": { "hasNextPage": false, "endCursor": null },
+                    "nodes": [
+                        {
+                            "id": "PRRT_1",
+                            "isResolved": true,
+                            "isOutdated": false,
+                            "path": "src/cart.ts",
+                            "line": 12,
+                            "comments": { "nodes": [{
+                                "databaseId": 99,
+                                "body": "handle the empty cart",
+                                "url": "https://github.com/acme/project/pull/7#discussion_r99",
+                                "createdAt": "2026-09-20T10:00:00Z",
+                                "author": { "login": "review-bot" },
+                            }] },
+                        },
+                        {
+                            "id": "PRRT_2",
+                            "isResolved": false,
+                            "isOutdated": true,
+                            "path": null,
+                            "line": null,
+                            "comments": { "nodes": [{
+                                "databaseId": null,
+                                "body": "why the second total?",
+                                "url": "https://github.com/acme/project/pull/7#discussion_r100",
+                                "createdAt": "2026-09-21T09:30:00Z",
+                                "author": null,
+                            }] },
+                        },
+                    ],
+                } } } },
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::standing_in_for("github.com", &server.uri()).unwrap();
+        let reference = service
+            .pull_request("https://github.com/acme/project/pull/7")
+            .unwrap();
+        let token = SecretValue::new("token");
+
+        let comments = service
+            .fetch_issue_comments(&reference, &token)
+            .await
+            .unwrap();
+        let threads = service
+            .fetch_review_threads(&reference, &token)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            comments,
+            [IssueComment::new(
+                11,
+                "review-bot",
+                "Looks good once the empty cart is handled.",
+                "https://github.com/acme/project/pull/7#issuecomment-11",
+                "2026-09-20T09:00:00Z",
+            )]
+        );
+        assert_eq!(
+            threads,
+            [
+                ReviewThreadRecord::new(
+                    "PRRT_1",
+                    vec![ThreadComment::new(
+                        Some(99),
+                        "review-bot",
+                        "handle the empty cart",
+                        "https://github.com/acme/project/pull/7#discussion_r99",
+                        "2026-09-20T10:00:00Z",
+                    )],
+                )
+                .with_resolved(true)
+                .with_path("src/cart.ts")
+                .with_line(12),
+                ReviewThreadRecord::new(
+                    "PRRT_2",
+                    vec![ThreadComment::new(
+                        None,
+                        "",
+                        "why the second total?",
+                        "https://github.com/acme/project/pull/7#discussion_r100",
+                        "2026-09-21T09:30:00Z",
+                    )],
+                )
+                .with_outdated(true),
+            ]
+        );
     }
 }

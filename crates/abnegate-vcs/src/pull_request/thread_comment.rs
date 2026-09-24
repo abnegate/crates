@@ -14,3 +14,24 @@ pub struct ThreadComment {
     /// When it was written, as RFC 3339.
     pub created_at: String,
 }
+
+impl ThreadComment {
+    /// A comment written by `author` at `created_at`, as RFC 3339, saying
+    /// `body` and readable at `url`, which a reply is addressed to by
+    /// `database_id` when GitHub gives one.
+    pub fn new(
+        database_id: Option<u64>,
+        author: impl Into<String>,
+        body: impl Into<String>,
+        url: impl Into<String>,
+        created_at: impl Into<String>,
+    ) -> Self {
+        Self {
+            database_id,
+            author: author.into(),
+            body: body.into(),
+            url: url.into(),
+            created_at: created_at.into(),
+        }
+    }
+}
