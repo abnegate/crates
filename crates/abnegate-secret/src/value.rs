@@ -119,12 +119,12 @@ impl<'de> Deserialize<'de> for SecretValue {
 }
 
 /// `Option<SecretValue>` counterparts to the `Option<String>` methods.
-pub trait OptionalSecretExt {
+pub trait OptionalSecretExtension {
     /// The exposed credential, as [`Option::as_deref`] would give it.
     fn expose_as_deref(&self) -> Option<&str>;
 }
 
-impl OptionalSecretExt for Option<SecretValue> {
+impl OptionalSecretExtension for Option<SecretValue> {
     fn expose_as_deref(&self) -> Option<&str> {
         self.as_ref().map(SecretValue::expose)
     }

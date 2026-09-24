@@ -18,7 +18,7 @@ const PLAINTEXT: &str = "sk-live-known-answer-clé-🔐";
 
 #[test]
 fn a_v1_envelope_already_in_storage_still_opens() {
-    let key = MasterKey::from_hex(KEY).unwrap();
+    let key = MasterKey::from_hexadecimal(KEY).unwrap();
 
     assert!(is_encrypted(ENVELOPE));
     assert_eq!(decrypt_value(ENVELOPE, &key).unwrap().expose(), PLAINTEXT);

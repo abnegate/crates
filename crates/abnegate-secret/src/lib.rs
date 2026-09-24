@@ -59,5 +59,5 @@ pub use crate::redact::REDACTED;
 pub use crate::redact::redact;
 pub use crate::sanitize::sanitize;
 pub use crate::sanitize::sanitize_owned;
-pub use crate::value::OptionalSecretExt;
+pub use crate::value::OptionalSecretExtension;
 pub use crate::value::SecretValue;

@@ -52,7 +52,13 @@ impl MasterKey {
         Ok(generated)
     }
 
-    pub fn from_hex(hexadecimal: &str) -> Result<Self, Error> {
+    /// A key from the hexadecimal [`MasterKey::to_hexadecimal`] writes.
+    ///
+    /// Surrounding whitespace is ignored, so a key file's trailing newline is
+    /// harmless. Anything else that is not hexadecimal is
+    /// [`Error::InvalidHexadecimal`], and hexadecimal that decodes to other
+    /// than 32 bytes is [`Error::KeyLength`].
+    pub fn from_hexadecimal(hexadecimal: &str) -> Result<Self, Error> {
         let decoded = hex::decode(hexadecimal.trim()).map_err(|_| Error::InvalidHexadecimal)?;
         let decoded = Zeroizing::new(decoded);
         let key = decoded
@@ -66,7 +72,7 @@ impl MasterKey {
     }
 
     /// The key as hexadecimal, zeroized when dropped.
-    pub fn to_hex(&self) -> Zeroizing<String> {
+    pub fn to_hexadecimal(&self) -> Zeroizing<String> {
         Zeroizing::new(hex::encode(self.key))
     }
 
@@ -123,7 +129,7 @@ fn load_master_key_from(
         let hexadecimal = value.into_string().map_err(|_| Error::InvalidEnvironment {
             variable: key_variable,
         })?;
-        return MasterKey::from_hex(&Zeroizing::new(hexadecimal)).map(Some);
+        return MasterKey::from_hexadecimal(&Zeroizing::new(hexadecimal)).map(Some);
     }
 
     let file_variable = format!("{prefix}{KEY_FILE_VARIABLE_SUFFIX}");
@@ -146,7 +152,7 @@ pub fn read_key_file(path: &Path) -> Result<MasterKey, Error> {
         path: path.to_path_buf(),
         source,
     })?;
-    MasterKey::from_hex(&Zeroizing::new(content))
+    MasterKey::from_hexadecimal(&Zeroizing::new(content))
 }
 
 /// Write `key` to `path` as hexadecimal, readable only by its owner.
@@ -174,7 +180,7 @@ pub fn write_key_file(path: &Path, key: &MasterKey) -> Result<(), Error> {
     let temporary = temporary_path(path)?;
     let file = create_private_file(&temporary).map_err(failed)?;
     let persisted =
-        persist(file, key.to_hex().as_bytes()).and_then(|()| fs::rename(&temporary, path));
+        persist(file, key.to_hexadecimal().as_bytes()).and_then(|()| fs::rename(&temporary, path));
     if let Err(source) = persisted {
         let _ = fs::remove_file(&temporary);
         return Err(failed(source));
@@ -284,17 +290,17 @@ mod tests {
     #[test]
     fn hexadecimal_round_trips() {
         let key = MasterKey::generate().unwrap();
-        let hexadecimal: Zeroizing<String> = key.to_hex();
-        let restored = MasterKey::from_hex(&hexadecimal).unwrap();
+        let hexadecimal: Zeroizing<String> = key.to_hexadecimal();
+        let restored = MasterKey::from_hexadecimal(&hexadecimal).unwrap();
         assert_eq!(key.as_bytes(), restored.as_bytes());
     }
 
     #[test]
     fn hexadecimal_is_trimmed() {
         let key = MasterKey::generate().unwrap();
-        let padded = format!("  {}\n", key.to_hex().as_str());
+        let padded = format!("  {}\n", key.to_hexadecimal().as_str());
         assert_eq!(
-            MasterKey::from_hex(&padded).unwrap().as_bytes(),
+            MasterKey::from_hexadecimal(&padded).unwrap().as_bytes(),
             key.as_bytes()
         );
     }
@@ -302,7 +308,7 @@ mod tests {
     #[test]
     fn rejects_the_wrong_key_length() {
         assert!(matches!(
-            MasterKey::from_hex("abcdef"),
+            MasterKey::from_hexadecimal("abcdef"),
             Err(Error::KeyLength {
                 expected: 32,
                 actual: 3
@@ -313,7 +319,9 @@ mod tests {
     #[test]
     fn rejects_characters_that_are_not_hexadecimal() {
         assert!(matches!(
-            MasterKey::from_hex("not_valid_hex_string_of_64_chars_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"),
+            MasterKey::from_hexadecimal(
+                "not_valid_hex_string_of_64_chars_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            ),
             Err(Error::InvalidHexadecimal)
         ));
     }
@@ -474,7 +482,7 @@ mod tests {
         let key = MasterKey::generate().unwrap();
         let loaded = load_master_key_from(
             APPLICATION,
-            environment(&[("EXAMPLE_MASTER_KEY", key.to_hex().as_str())]),
+            environment(&[("EXAMPLE_MASTER_KEY", key.to_hexadecimal().as_str())]),
             None,
         )
         .unwrap()

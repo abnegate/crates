@@ -270,7 +270,7 @@ mod tests {
         let key = MasterKey::generate().unwrap();
         let sealed = encrypt_value(&SecretValue::new("sk-live-restored"), &key).unwrap();
 
-        let restored = MasterKey::from_hex(&key.to_hex()).unwrap();
+        let restored = MasterKey::from_hexadecimal(&key.to_hexadecimal()).unwrap();
         assert_eq!(
             decrypt_value(&sealed, &restored).unwrap().expose(),
             "sk-live-restored"
