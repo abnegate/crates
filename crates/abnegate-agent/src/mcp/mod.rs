@@ -36,6 +36,10 @@
 //! # }
 //! ```
 //!
+//! Each server is started with the references in its command, arguments and
+//! environment [expanded](McpServer::expanded) from this process's
+//! environment, as a CLI expands them.
+//!
 //! Children are given [`McpServer::environment_policy`]: the
 //! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names from this
 //! process and [`McpServer::environment`], or the whole environment when

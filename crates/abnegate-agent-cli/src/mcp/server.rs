@@ -13,6 +13,7 @@ use serde_json::json;
 
 use crate::kind::AgentKind;
 use crate::mcp::placeholders::Placeholders;
+use crate::mcp::placeholders::expand;
 use crate::mcp::placeholders::whole_reference;
 use crate::mcp::transport::McpTransport;
 
@@ -157,6 +158,41 @@ impl McpServer {
     pub fn disable(mut self) -> Self {
         self.disabled = true;
         self
+    }
+
+    /// The same server with every `${VAR}` and `${VAR:-default}` in its
+    /// command, arguments and environment values expanded through `lookup`,
+    /// as a CLI expands the file [`McpConfig::render`](crate::mcp::McpConfig::render)
+    /// writes, for a launcher that starts the server itself. A reference to a
+    /// variable `lookup` does not give, with no default, is left as written,
+    /// as the CLI leaves it.
+    ///
+    /// The URL and headers are left alone, since only a CLI attaches a remote
+    /// server and it applies its own rules to both, and so is the working
+    /// directory, which neither CLI expands.
+    pub fn expanded(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Self {
+        Self {
+            command: self
+                .command
+                .as_deref()
+                .map(|command| expand(command, lookup)),
+            arguments: self
+                .arguments
+                .iter()
+                .map(|argument| expand(argument, lookup))
+                .collect(),
+            environment: self
+                .environment
+                .iter()
+                .map(|(variable, value)| {
+                    (
+                        variable.clone(),
+                        SecretValue::new(expand(value.expose(), lookup)),
+                    )
+                })
+                .collect(),
+            ..self.clone()
+        }
     }
 
     /// The environment a launcher that starts this server itself gives it:
@@ -882,6 +918,42 @@ mod tests {
             .is_none(),
             "a remote server has no directory to start in"
         );
+    }
+
+    #[test]
+    fn expanding_a_server_expands_its_command_arguments_and_environment_as_a_cli_would() {
+        let lookup = |name: &str| (name == "HOST").then(|| "example.com".to_string());
+        let server = McpServer::command("${LAUNCHER:-uvx}", ["--host=${HOST}", "${MISSING}"])
+            .with_environment("URL", "https://${HOST}/mcp")
+            .with_environment("TOKEN", "${MISSING}")
+            .with_working_directory("/srv/${HOST}")
+            .with_tools(["search"]);
+
+        let expanded = server.expanded(&lookup);
+
+        assert_eq!(expanded.command.as_deref(), Some("uvx"));
+        assert_eq!(expanded.arguments, ["--host=example.com", "${MISSING}"]);
+        assert_eq!(
+            expanded
+                .environment
+                .iter()
+                .map(|(variable, value)| (variable.as_str(), value.expose()))
+                .collect::<Vec<_>>(),
+            [("TOKEN", "${MISSING}"), ("URL", "https://example.com/mcp")]
+        );
+        assert_eq!(
+            expanded.working_directory,
+            Some(PathBuf::from("/srv/${HOST}"))
+        );
+        assert_eq!(expanded.tools, ["search"]);
+    }
+
+    #[test]
+    fn expanding_a_remote_server_leaves_its_url_and_headers_to_the_cli() {
+        let lookup = |_: &str| Some("example.com".to_string());
+        let server = McpServer::remote("https://${HOST}/mcp").with_header("X-Host", "${HOST}");
+
+        assert_eq!(server.expanded(&lookup), server);
     }
 
     #[test]

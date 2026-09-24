@@ -74,10 +74,13 @@ impl McpSession {
         }
     }
 
-    /// The child is given the server's environment policy, and then the
-    /// process-level proxy policy on top of it. Its stderr is logged, up to a
-    /// bound, rather than written over this process's own.
+    /// The server's references are expanded from this process's environment,
+    /// as a CLI expands them. The child is given the server's environment
+    /// policy, and then the process-level proxy policy on top of it. Its
+    /// stderr is logged, up to a bound, rather than written over this
+    /// process's own.
     async fn handshake(name: &str, server: &McpServer) -> Result<Self, McpError> {
+        let server = server.expanded(&|variable| std::env::var(variable).ok());
         let Some(program) = &server.command else {
             return Err(McpError::Spawn {
                 server: name.to_string(),

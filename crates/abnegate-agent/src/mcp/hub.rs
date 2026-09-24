@@ -142,9 +142,11 @@ mod tests {
     use rmcp::tool_handler;
     use rmcp::tool_router;
     use serde::Deserialize;
+    use tokio::process::Command;
 
     use super::*;
     use crate::mcp::register;
+    use crate::test_support::CHILD_TEST;
     use crate::tool::Tier;
     use crate::tool::ToolContext;
     use crate::tool::ToolRegistry;
@@ -514,6 +516,77 @@ mod tests {
         assert!(!disabled.exists(), "a disabled server started");
         assert!(logs.contains("skipping a disabled MCP server"), "{logs}");
         assert!(logs.contains("skipping a remote MCP server"), "{logs}");
+    }
+
+    /// Set, in this test's own child process, to the value a reference to it
+    /// must expand to.
+    const REFERENCED: &str = "ABNEGATE_TEST_REFERENCE";
+
+    /// A CLI expands the references in a server's command, arguments and
+    /// environment before starting it, so the hub must too, or one `mcp.json`
+    /// would start the same server with different values on each path. A
+    /// variable nothing sets is left as written, as the CLI leaves it.
+    #[tokio::test]
+    async fn a_server_is_started_with_its_references_expanded_as_a_cli_expands_them() {
+        const NAME: &str = "mcp::hub::tests::a_server_is_started_with_its_references_expanded_as_a_cli_expands_them";
+        if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env(CHILD_TEST, NAME)
+                .env(REFERENCED, "value")
+                .output()
+                .await
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                stdout.contains("1 passed"),
+                "the child ran no test, so it proved nothing\n{stdout}"
+            );
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("recorded");
+        let server = McpServer::command(
+            "sh",
+            [
+                "-c".to_string(),
+                "printf '%s\\n' \"$2\" > \"$1\"; env >> \"$1\"; exec cat > /dev/null".to_string(),
+                "sh".to_string(),
+                path.to_string_lossy().into_owned(),
+                format!("--token=${{{REFERENCED}}}"),
+            ],
+        )
+        .with_environment("TOKEN", format!("${{{REFERENCED}}}"))
+        .with_environment("DEFAULTED", "${ABNEGATE_TEST_UNSET:-fallback}")
+        .with_environment("MISSING", "${ABNEGATE_TEST_UNSET}");
+
+        let hub = McpHub::connect_with_timeout(
+            &McpConfig::default().with_server("recorder", server),
+            Duration::from_secs(10),
+        )
+        .await;
+
+        assert!(hub.is_empty());
+        let recorded = std::fs::read_to_string(path).unwrap();
+        let (argument, environment) = recorded.split_once('\n').unwrap();
+        for expected in [
+            "TOKEN=value",
+            "DEFAULTED=fallback",
+            "MISSING=${ABNEGATE_TEST_UNSET}",
+        ] {
+            assert!(
+                environment.lines().any(|line| line == expected),
+                "{expected} is missing from\n{recorded}"
+            );
+        }
+        assert_eq!(argument, "--token=value");
     }
 
     #[cfg(unix)]
