@@ -3,16 +3,20 @@
 use std::fmt;
 
 use async_trait::async_trait;
+use lettre::AsyncTransport;
+use lettre::Message;
+use lettre::Tokio1Executor;
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::AsyncSmtpTransportBuilder;
-use lettre::{AsyncTransport, Message, Tokio1Executor};
 
 use crate::channel::Channel;
 use crate::error::Error;
 use crate::notification::Notification;
 use crate::notifier::Notifier;
-use crate::smtp::{SmtpConfig, failure, mailbox};
+use crate::smtp::SmtpConfig;
+use crate::smtp::failure;
+use crate::smtp::mailbox;
 
 /// Delivers to a fixed set of recipients through one SMTP relay.
 ///
@@ -126,9 +130,8 @@ mod tests {
             587,
             "postmaster",
             "hunter2-not-a-real-password",
-            "noreply@example.test",
-            "Notifications",
         )
+        .with_sender("noreply@example.test", "Notifications")
     }
 
     fn email() -> Email {

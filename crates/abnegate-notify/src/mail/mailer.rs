@@ -3,14 +3,18 @@
 use std::fmt;
 
 use async_trait::async_trait;
+use lettre::AsyncTransport;
+use lettre::Message;
+use lettre::Tokio1Executor;
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::AsyncSmtpTransportBuilder;
-use lettre::{AsyncTransport, Message, Tokio1Executor};
 
 use crate::error::Error;
 use crate::mail::Mail;
-use crate::smtp::{SmtpConfig, failure, mailbox};
+use crate::smtp::SmtpConfig;
+use crate::smtp::failure;
+use crate::smtp::mailbox;
 
 /// A [`Mail`] that sends through an SMTP relay.
 ///
@@ -90,9 +94,8 @@ mod tests {
             587,
             "postmaster",
             "hunter2-not-a-real-password",
-            "noreply@example.test",
-            "Notifications",
         )
+        .with_sender("noreply@example.test", "Notifications")
     }
 
     fn mailer() -> Mailer {
@@ -125,6 +128,20 @@ mod tests {
             .compose("not an address", "Subject", "Body")
             .expect_err("bad recipient");
         assert!(matches!(error, Error::Malformed { .. }));
+    }
+
+    #[test]
+    fn a_relay_without_a_sender_is_refused() {
+        let relay = SmtpConfig::new(
+            "smtp.example.test",
+            587,
+            "postmaster",
+            "hunter2-not-a-real-password",
+        );
+        assert!(matches!(
+            Mailer::new(&relay).expect_err("no sender"),
+            Error::Malformed { .. }
+        ));
     }
 
     #[test]

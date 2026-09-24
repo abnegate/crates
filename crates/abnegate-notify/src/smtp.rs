@@ -7,13 +7,17 @@ use abnegate_secret::SecretValue;
 #[cfg(feature = "smtp")]
 use abnegate_secret::sanitize_owned;
 #[cfg(feature = "smtp")]
+use lettre::Address;
+#[cfg(feature = "smtp")]
+use lettre::AsyncSmtpTransport;
+#[cfg(feature = "smtp")]
+use lettre::Tokio1Executor;
+#[cfg(feature = "smtp")]
 use lettre::message::Mailbox;
 #[cfg(feature = "smtp")]
 use lettre::transport::smtp::AsyncSmtpTransportBuilder;
 #[cfg(feature = "smtp")]
 use lettre::transport::smtp::authentication::Credentials;
-#[cfg(feature = "smtp")]
-use lettre::{Address, AsyncSmtpTransport, Tokio1Executor};
 
 #[cfg(feature = "smtp")]
 use crate::error::Error;
@@ -21,6 +25,9 @@ use crate::error::Error;
 /// Implicit-TLS submissions port, the one port `relay` is built for.
 #[cfg(feature = "smtp")]
 const SUBMISSIONS_PORT: u16 = 465;
+
+#[cfg(feature = "smtp")]
+const MISSING_SENDER: &str = "no sender address was given: name one with SmtpConfig::with_sender";
 
 /// The connection details for one SMTP relay.
 ///
@@ -39,49 +46,53 @@ pub struct SmtpConfig {
     pub user: String,
     /// The relay password.
     pub password: SecretValue,
-    /// The address every message is sent from.
+    /// The address every message is sent from, empty until
+    /// [`with_sender`](Self::with_sender) names one.
     pub from_address: String,
-    /// The display name shown beside `from_address`.
+    /// The display name shown beside `from_address`. Mail from an empty one
+    /// carries the bare address.
     pub from_name: String,
 }
 
 impl SmtpConfig {
-    /// The relay at `host` and `port`, signed in to as `user` with `password`,
-    /// sending as `from_name <from_address>`.
+    /// The relay at `host` and `port`, signed in to as `user` with `password`.
     ///
-    /// Nothing is checked or connected here: the addresses are parsed when a
-    /// `Mailer` or an `Email` channel is built from this, and the relay is
-    /// reached only when a message is sent.
+    /// Name the sender with [`with_sender`](Self::with_sender): a `Mailer` or
+    /// an `Email` channel built from a config without one is refused. Nothing
+    /// is checked or connected here: the addresses are parsed when a `Mailer`
+    /// or an `Email` channel is built from this, and the relay is reached only
+    /// when a message is sent.
     ///
     /// ```
     /// use abnegate_notify::SmtpConfig;
     ///
-    /// let relay = SmtpConfig::new(
-    ///     "smtp.example.test",
-    ///     587,
-    ///     "postmaster",
-    ///     "relay-password",
-    ///     "noreply@example.test",
-    ///     "Notifications",
-    /// );
+    /// let relay = SmtpConfig::new("smtp.example.test", 587, "postmaster", "relay-password")
+    ///     .with_sender("noreply@example.test", "Notifications");
     /// assert_eq!(relay.host, "smtp.example.test");
+    /// assert_eq!(relay.from_address, "noreply@example.test");
     /// ```
     pub fn new(
         host: impl Into<String>,
         port: u16,
         user: impl Into<String>,
         password: impl Into<SecretValue>,
-        from_address: impl Into<String>,
-        from_name: impl Into<String>,
     ) -> Self {
         Self {
             host: host.into(),
             port,
             user: user.into(),
             password: password.into(),
-            from_address: from_address.into(),
-            from_name: from_name.into(),
+            from_address: String::new(),
+            from_name: String::new(),
         }
+    }
+
+    /// Send every message from `address`, shown as `name <address>`.
+    #[must_use]
+    pub fn with_sender(mut self, address: impl Into<String>, name: impl Into<String>) -> Self {
+        self.from_address = address.into();
+        self.from_name = name.into();
+        self
     }
 }
 
@@ -110,6 +121,12 @@ impl SmtpConfig {
     }
 
     pub(crate) fn sender(&self) -> Result<Mailbox, Error> {
+        if self.from_address.is_empty() {
+            return Err(Error::Malformed {
+                message: MISSING_SENDER.to_string(),
+            });
+        }
+
         mailbox(&self.from_address, Some(self.from_name.clone()))
     }
 }
@@ -155,15 +172,17 @@ pub(crate) fn failure(host: &str, error: lettre::transport::smtp::Error) -> Erro
 mod tests {
     use super::*;
 
-    fn config() -> SmtpConfig {
+    fn relay() -> SmtpConfig {
         SmtpConfig::new(
             "smtp.example.test",
             587,
             "postmaster",
             "hunter2-not-a-real-password",
-            "noreply@example.test",
-            "Notifications",
         )
+    }
+
+    fn config() -> SmtpConfig {
+        relay().with_sender("noreply@example.test", "Notifications")
     }
 
     #[test]
@@ -174,6 +193,31 @@ mod tests {
         assert_eq!(config.user, "postmaster");
         assert_eq!(config.from_address, "noreply@example.test");
         assert_eq!(config.from_name, "Notifications");
+    }
+
+    #[test]
+    fn a_new_relay_names_no_sender() {
+        let relay = relay();
+        assert_eq!(relay.from_address, "");
+        assert_eq!(relay.from_name, "");
+    }
+
+    #[cfg(feature = "smtp")]
+    #[test]
+    fn a_relay_without_a_sender_is_refused_by_name() {
+        let error = relay().sender().expect_err("no sender");
+        assert!(matches!(error, Error::Malformed { .. }), "{error:?}");
+        assert!(error.to_string().contains("with_sender"), "{error}");
+    }
+
+    #[cfg(feature = "smtp")]
+    #[test]
+    fn an_empty_sender_name_sends_from_the_bare_address() {
+        let sender = relay()
+            .with_sender("noreply@example.test", "")
+            .sender()
+            .expect("parsed");
+        assert_eq!(sender.to_string(), "noreply@example.test");
     }
 
     #[test]
