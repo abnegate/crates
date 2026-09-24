@@ -23,10 +23,10 @@ keyring = ["dep:chrono", "dep:keyring", "dep:serde_json", "dep:zeroize"]
 
 [dependencies]
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
-chrono = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true, features = ["serde"] }
 dirs = { workspace = true }
 keyring = { workspace = true, optional = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }

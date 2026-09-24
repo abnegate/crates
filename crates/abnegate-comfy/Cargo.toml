@@ -30,25 +30,25 @@ saliency = ["abnegate-vision/saliency"]
 [dependencies]
 abnegate-llm = { path = "../abnegate-llm", version = "0.1.0" }
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
-
 abnegate-vision = { path = "../abnegate-vision", version = "0.1.0" }
 base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-image = { workspace = true }
+image = { workspace = true, features = ["jpeg", "png"] }
 rand = { workspace = true }
-reqwest = { workspace = true }
-serde = { workspace = true }
+reqwest = { workspace = true, features = ["json", "multipart"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["serde", "v4"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["process", "signal"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 wiremock = { workspace = true }

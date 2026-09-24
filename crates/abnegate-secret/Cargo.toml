@@ -29,7 +29,7 @@ dirs = { workspace = true }
 getrandom = { workspace = true, features = ["std"] }
 hex = { workspace = true }
 rusqlite = { workspace = true, optional = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 sqlx = { workspace = true, optional = true }
 subtle = { workspace = true }
 thiserror = { workspace = true }

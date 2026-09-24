@@ -23,9 +23,9 @@ abnegate-llm = { path = "../abnegate-llm", version = "0.1.0" }
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 tracing = { workspace = true }

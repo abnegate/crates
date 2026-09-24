@@ -21,11 +21,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 base64 = { workspace = true }
 bytes = { workspace = true }
 dashmap = { workspace = true }
-nix = { workspace = true, features = ["event"] }
-serde = { workspace = true }
+nix = { workspace = true, features = ["event", "fs", "process", "signal"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
