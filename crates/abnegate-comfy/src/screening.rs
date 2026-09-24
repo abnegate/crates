@@ -220,12 +220,7 @@ fn reduce(raster: &Raster) -> Option<Greyscale> {
     }
     let scale = f64::from(WORKING.min(long)) / f64::from(long);
     let target = Target::new(edge(width, scale), edge(height, scale));
-    let region = Region {
-        x: 0,
-        y: 0,
-        width,
-        height,
-    };
+    let region = Region::new(0, 0, width, height);
     let rendered = crop::render(raster, region, target).ok()?;
     Some(Greyscale {
         pixels: rendered

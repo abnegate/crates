@@ -1,6 +1,7 @@
 //! What decoding and cropping can fail with, without the model.
 
-use crate::{crop, decode};
+use crate::crop::CropError;
+use crate::decode::DecodeError;
 
 /// A failure from [`decode`](crate::decode) or [`crop`](crate::crop), for a
 /// caller that frames crops itself and wants one error type across both.
@@ -10,7 +11,7 @@ use crate::{crop, decode};
 #[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
-    Decode(#[from] decode::Error),
+    Decode(#[from] DecodeError),
     #[error(transparent)]
-    Crop(#[from] crop::Error),
+    Crop(#[from] CropError),
 }

@@ -1628,26 +1628,20 @@ mod tests {
 
     /// A real one-pixel image, so the dataset writer has something to decode.
     fn encoded(colour: [u8; 3]) -> String {
-        base64::engine::general_purpose::STANDARD.encode(
-            png(&Rendered {
-                width: 1,
-                height: 1,
-                pixels: colour.to_vec(),
-            })
-            .unwrap(),
-        )
+        base64::engine::general_purpose::STANDARD
+            .encode(png(&Rendered::new(1, 1, colour.to_vec())).unwrap())
     }
 
     /// A flat image of the given size, encoded the way an upload arrives.
     fn encoded_at(width: u32, height: u32) -> String {
         base64::engine::general_purpose::STANDARD.encode(
-            png(&Rendered {
+            png(&Rendered::new(
                 width,
                 height,
-                pixels: (0..width * height)
+                (0..width * height)
                     .flat_map(|index| [(index % 251) as u8, 40, 90])
                     .collect(),
-            })
+            ))
             .unwrap(),
         )
     }
@@ -2486,11 +2480,11 @@ mod tests {
     #[tokio::test]
     async fn a_repaired_target_is_rescreened_and_staged_instead_of_its_original() {
         let server = MockServer::start().await;
-        let repaired = png(&Rendered {
-            width: 2,
-            height: 2,
-            pixels: vec![220, 30, 90, 220, 30, 90, 220, 30, 90, 220, 30, 90],
-        })
+        let repaired = png(&Rendered::new(
+            2,
+            2,
+            vec![220, 30, 90, 220, 30, 90, 220, 30, 90, 220, 30, 90],
+        ))
         .expect("repaired fixture");
         Mock::given(method("POST"))
             .and(path("/upload/image"))

@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-saliency = ["dep:ort"]
+saliency = ["dep:ort", "ort/download-binaries", "ort/tls-native"]
 
 [dependencies]
 fast_image_resize = { workspace = true }

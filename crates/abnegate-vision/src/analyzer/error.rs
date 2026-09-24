@@ -1,6 +1,10 @@
 //! What finding a subject can fail with.
 
-use crate::{crop, decode, gravity, preprocess, saliency};
+use crate::crop::CropError;
+use crate::decode::DecodeError;
+use crate::gravity::GravityError;
+use crate::preprocess::PreprocessError;
+use crate::saliency::SaliencyError;
 
 /// Anything [`Analyzer`](crate::Analyzer) can fail with, from decoding the
 /// image to rendering its crop.
@@ -8,13 +12,13 @@ use crate::{crop, decode, gravity, preprocess, saliency};
 #[non_exhaustive]
 pub enum AnalyzerError {
     #[error(transparent)]
-    Decode(#[from] decode::Error),
+    Decode(#[from] DecodeError),
     #[error(transparent)]
-    Preprocess(#[from] preprocess::Error),
+    Preprocess(#[from] PreprocessError),
     #[error(transparent)]
-    Saliency(#[from] saliency::Error),
+    Saliency(#[from] SaliencyError),
     #[error(transparent)]
-    Gravity(#[from] gravity::Error),
+    Gravity(#[from] GravityError),
     #[error(transparent)]
-    Crop(#[from] crop::Error),
+    Crop(#[from] CropError),
 }

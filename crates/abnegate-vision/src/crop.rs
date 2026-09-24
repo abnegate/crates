@@ -3,7 +3,7 @@
 use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 
-use crate::decode::{Layout, MAX_PIXELS, Orientation, Raster};
+use crate::decode::{Layout, MAXIMUM_PIXELS, Orientation, Raster};
 use crate::gravity::Point;
 use crate::preprocess::map_pixel;
 
@@ -12,7 +12,7 @@ mod region;
 mod rendered;
 mod target;
 
-pub use crate::crop::error::Error;
+pub use crate::crop::error::CropError;
 pub use crate::crop::region::Region;
 pub use crate::crop::rendered::Rendered;
 pub use crate::crop::target::Target;
@@ -27,13 +27,13 @@ pub use crate::crop::target::Target;
 ///
 /// `focus` is normalized to the oriented image, which is the space
 /// `Analyzer` reports focal points in.
-pub fn plan(size: (u32, u32), target: Target, focus: Point) -> Result<Region, Error> {
+pub fn plan(size: (u32, u32), target: Target, focus: Point) -> Result<Region, CropError> {
     let (width, height) = size;
     if width == 0 || height == 0 {
-        return Err(Error::EmptySource);
+        return Err(CropError::EmptySource);
     }
     if target.width == 0 || target.height == 0 {
-        return Err(Error::EmptyTarget);
+        return Err(CropError::EmptyTarget);
     }
 
     let aspect = target.aspect();
@@ -44,12 +44,12 @@ pub fn plan(size: (u32, u32), target: Target, focus: Point) -> Result<Region, Er
         (width, scaled(f64::from(width) / aspect, height))
     };
 
-    Ok(Region {
-        x: offset(focus.x, crop_width, width),
-        y: offset(focus.y, crop_height, height),
-        width: crop_width,
-        height: crop_height,
-    })
+    Ok(Region::new(
+        offset(focus.x, crop_width, width),
+        offset(focus.y, crop_height, height),
+        crop_width,
+        crop_height,
+    ))
 }
 
 /// Renders a planned region to the target size.
@@ -60,23 +60,23 @@ pub fn plan(size: (u32, u32), target: Target, focus: Point) -> Result<Region, Er
 /// output.
 ///
 /// `region` is in the oriented image and has to lie wholly inside it, and the
-/// target is held to the same [`MAX_PIXELS`] ceiling as a decoded image.
-pub fn render(raster: &Raster, region: Region, target: Target) -> Result<Rendered, Error> {
+/// target is held to the same [`MAXIMUM_PIXELS`] ceiling as a decoded image.
+pub fn render(raster: &Raster, region: Region, target: Target) -> Result<Rendered, CropError> {
     if raster.width == 0 || raster.height == 0 {
-        return Err(Error::EmptySource);
+        return Err(CropError::EmptySource);
     }
     if target.width == 0 || target.height == 0 {
-        return Err(Error::EmptyTarget);
+        return Err(CropError::EmptyTarget);
     }
-    if target.area() > MAX_PIXELS {
-        return Err(Error::TargetTooLarge {
+    if target.area() > MAXIMUM_PIXELS {
+        return Err(CropError::TargetTooLarge {
             width: target.width,
             height: target.height,
         });
     }
     let size = raster.oriented_size();
     if !region.lies_within(size) {
-        return Err(Error::Region { region, size });
+        return Err(CropError::Region { region, size });
     }
 
     let source = to_source(raster.orientation, region, (raster.width, raster.height));
@@ -105,17 +105,17 @@ pub fn render(raster: &Raster, region: Region, target: Target) -> Result<Rendere
         );
     Resizer::new().resize(&view, &mut resized, &options)?;
 
-    Ok(Rendered {
-        width: target.width,
-        height: target.height,
-        pixels: orient(
+    Ok(Rendered::new(
+        target.width,
+        target.height,
+        orient(
             resized.buffer(),
             (resized_width, resized_height),
             target,
             raster.orientation,
             channels,
         ),
-    })
+    ))
 }
 
 /// Maps a region of the oriented image back to the stored pixel buffer.
@@ -127,12 +127,12 @@ fn to_source(orientation: Orientation, region: Region, size: (u32, u32)) -> Regi
         region.y + region.height - 1,
         size,
     );
-    Region {
-        x: near.0.min(far.0),
-        y: near.1.min(far.1),
-        width: near.0.abs_diff(far.0) + 1,
-        height: near.1.abs_diff(far.1) + 1,
-    }
+    Region::new(
+        near.0.min(far.0),
+        near.1.min(far.1),
+        near.0.abs_diff(far.0) + 1,
+        near.1.abs_diff(far.1) + 1,
+    )
 }
 
 /// Applies EXIF orientation to the rendered crop and flattens it to RGB.
@@ -181,41 +181,19 @@ mod tests {
                 pixels.extend_from_slice(&[x as u8, y as u8, 0]);
             }
         }
-        Raster {
-            width,
-            height,
-            layout: Layout::Rgb,
-            orientation,
-            pixels,
-        }
+        Raster::new(width, height, Layout::Rgb, pixels).with_orientation(orientation)
     }
 
     #[test]
     fn square_crop_of_a_landscape_image_takes_the_full_height() {
         let region = plan((1600, 900), Target::square(512), CENTRE).unwrap();
-        assert_eq!(
-            region,
-            Region {
-                x: 350,
-                y: 0,
-                width: 900,
-                height: 900
-            }
-        );
+        assert_eq!(region, Region::new(350, 0, 900, 900));
     }
 
     #[test]
     fn square_crop_of_a_portrait_image_takes_the_full_width() {
         let region = plan((900, 1600), Target::square(512), CENTRE).unwrap();
-        assert_eq!(
-            region,
-            Region {
-                x: 0,
-                y: 350,
-                width: 900,
-                height: 900
-            }
-        );
+        assert_eq!(region, Region::new(0, 350, 900, 900));
     }
 
     #[test]
@@ -263,11 +241,11 @@ mod tests {
     fn rejects_degenerate_sizes() {
         assert!(matches!(
             plan((0, 10), Target::square(8), CENTRE),
-            Err(Error::EmptySource)
+            Err(CropError::EmptySource)
         ));
         assert!(matches!(
             plan((10, 10), Target::new(0, 8), CENTRE),
-            Err(Error::EmptyTarget)
+            Err(CropError::EmptyTarget)
         ));
     }
 
@@ -295,13 +273,8 @@ mod tests {
                 rotated.extend_from_slice(&upright.pixels[source..source + 3]);
             }
         }
-        let sideways = Raster {
-            width: 48,
-            height: 64,
-            layout: Layout::Rgb,
-            orientation: Orientation::Rotate90,
-            pixels: rotated,
-        };
+        let sideways =
+            Raster::new(48, 64, Layout::Rgb, rotated).with_orientation(Orientation::Rotate90);
         assert_eq!(sideways.oriented_size(), (64, 48));
 
         let region = plan((64, 48), Target::square(16), CENTRE).unwrap();
@@ -323,28 +296,13 @@ mod tests {
     fn a_region_outside_the_image_is_refused_rather_than_rendered() {
         let source = raster(80, 60, Orientation::Normal);
         for region in [
-            Region {
-                x: 0,
-                y: 0,
-                width: 0,
-                height: 10,
-            },
-            Region {
-                x: u32::MAX,
-                y: 0,
-                width: 2,
-                height: 2,
-            },
-            Region {
-                x: 70,
-                y: 0,
-                width: 20,
-                height: 20,
-            },
+            Region::new(0, 0, 0, 10),
+            Region::new(u32::MAX, 0, 2, 2),
+            Region::new(70, 0, 20, 20),
         ] {
             let error = render(&source, region, Target::square(8)).expect_err("out of bounds");
             assert!(
-                matches!(error, Error::Region { size: (80, 60), .. }),
+                matches!(error, CropError::Region { size: (80, 60), .. }),
                 "{region:?} gave {error:?}"
             );
         }
@@ -353,38 +311,23 @@ mod tests {
     #[test]
     fn a_region_is_checked_against_the_oriented_image() {
         let sideways = raster(48, 64, Orientation::Rotate90);
-        let upright_whole = Region {
-            x: 0,
-            y: 0,
-            width: 64,
-            height: 48,
-        };
+        let upright_whole = Region::new(0, 0, 64, 48);
         assert!(render(&sideways, upright_whole, Target::square(8)).is_ok());
 
-        let stored_whole = Region {
-            x: 0,
-            y: 0,
-            width: 48,
-            height: 64,
-        };
+        let stored_whole = Region::new(0, 0, 48, 64);
         assert!(matches!(
             render(&sideways, stored_whole, Target::square(8)),
-            Err(Error::Region { size: (64, 48), .. })
+            Err(CropError::Region { size: (64, 48), .. })
         ));
     }
 
     #[test]
     fn a_target_beyond_the_pixel_ceiling_is_refused_before_it_is_allocated() {
         let source = raster(8, 8, Orientation::Normal);
-        let whole = Region {
-            x: 0,
-            y: 0,
-            width: 8,
-            height: 8,
-        };
+        let whole = Region::new(0, 0, 8, 8);
         assert!(matches!(
             render(&source, whole, Target::new(5_000, 4_001)),
-            Err(Error::TargetTooLarge {
+            Err(CropError::TargetTooLarge {
                 width: 5_000,
                 height: 4_001
             })

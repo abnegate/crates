@@ -4,15 +4,15 @@ use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 
 use crate::decode::{Layout, Orientation, Raster};
-use crate::gravity::Rect;
+use crate::gravity::Rectangle;
 
 mod error;
 
-pub use crate::preprocess::error::Error;
+pub use crate::preprocess::error::PreprocessError;
 
 /// ImageNet normalization, pre-folded into `value * scale + bias` per channel.
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-const STDDEV: [f32; 3] = [0.229, 0.224, 0.225];
+const STANDARD_DEVIATION: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Reusable scratch for one preprocessing pipeline. Sizing the buffers once at
 /// construction keeps steady-state analysis free of heap traffic.
@@ -45,12 +45,12 @@ impl Preprocessor {
     /// applying EXIF orientation and ImageNet normalization on the way. Unused
     /// tensor pixels stay neutral zero padding. Returns the rectangle the image
     /// content occupies.
-    pub fn prepare(&mut self, raster: &Raster) -> Result<Rect, Error> {
+    pub fn prepare(&mut self, raster: &Raster) -> Result<Rectangle, PreprocessError> {
         if self.width == 0 || self.height == 0 {
-            return Err(Error::Dimensions);
+            return Err(PreprocessError::Dimensions);
         }
         if raster.width == 0 || raster.height == 0 {
-            return Err(Error::Source);
+            return Err(PreprocessError::Source);
         }
 
         let (source_width, source_height) = raster.oriented_size();
@@ -77,7 +77,7 @@ impl Preprocessor {
             (offset_x, offset_y),
         );
 
-        Ok(Rect::new(
+        Ok(Rectangle::new(
             offset_x as i32,
             offset_y as i32,
             (offset_x + fitted_width) as i32,
@@ -85,7 +85,7 @@ impl Preprocessor {
         ))
     }
 
-    fn resize(&mut self, raster: &Raster, width: u32, height: u32) -> Result<(), Error> {
+    fn resize(&mut self, raster: &Raster, width: u32, height: u32) -> Result<(), PreprocessError> {
         let pixel_type = if raster.layout == Layout::Rgb {
             PixelType::U8x3
         } else {
@@ -120,8 +120,10 @@ impl Preprocessor {
         let channels = layout.channels();
         let opaque = layout == Layout::Rgb;
         let sample_scale = if opaque { 1.0 / 255.0 } else { 1.0 / 65535.0 };
-        let scale: [f32; 3] = std::array::from_fn(|channel| sample_scale / STDDEV[channel]);
-        let bias: [f32; 3] = std::array::from_fn(|channel| -MEAN[channel] / STDDEV[channel]);
+        let scale: [f32; 3] =
+            std::array::from_fn(|channel| sample_scale / STANDARD_DEVIATION[channel]);
+        let bias: [f32; 3] =
+            std::array::from_fn(|channel| -MEAN[channel] / STANDARD_DEVIATION[channel]);
 
         let (fitted_width, fitted_height) = (fitted.0 as usize, fitted.1 as usize);
         let stride = resized.0 as usize * channels;
@@ -192,28 +194,16 @@ mod tests {
 
     fn raster(width: u32, height: u32, layout: Layout, orientation: Orientation) -> Raster {
         let pixels = vec![200u8; (width * height) as usize * layout.channels()];
-        Raster {
-            width,
-            height,
-            layout,
-            orientation,
-            pixels,
-        }
+        Raster::new(width, height, layout, pixels).with_orientation(orientation)
     }
 
     #[test]
     fn produces_normalized_nchw() {
         let mut preprocessor = Preprocessor::new(1, 1);
-        let source = Raster {
-            width: 1,
-            height: 1,
-            layout: Layout::Rgb,
-            orientation: Orientation::Normal,
-            pixels: vec![255, 128, 0],
-        };
+        let source = Raster::new(1, 1, Layout::Rgb, vec![255, 128, 0]);
         let content = preprocessor.prepare(&source).unwrap();
 
-        assert_eq!(content, Rect::new(0, 0, 1, 1));
+        assert_eq!(content, Rectangle::new(0, 0, 1, 1));
         let want = [
             (1.0 - 0.485) / 0.229,
             (128.0 / 255.0 - 0.456) / 0.224,
@@ -227,9 +217,9 @@ mod tests {
     #[test]
     fn preserves_aspect_ratio_with_neutral_padding() {
         for (width, height, want) in [
-            (4, 2, Rect::new(0, 1, 4, 3)),
-            (2, 4, Rect::new(1, 0, 3, 4)),
-            (4, 4, Rect::new(0, 0, 4, 4)),
+            (4, 2, Rectangle::new(0, 1, 4, 3)),
+            (2, 4, Rectangle::new(1, 0, 3, 4)),
+            (4, 4, Rectangle::new(0, 0, 4, 4)),
         ] {
             let mut preprocessor = Preprocessor::new(4, 4);
             let source = raster(width, height, Layout::Rgb, Orientation::Normal);
@@ -238,10 +228,10 @@ mod tests {
 
             for y in 0..4i32 {
                 for x in 0..4i32 {
-                    let inside = x >= content.min_x
-                        && x < content.max_x
-                        && y >= content.min_y
-                        && y < content.max_y;
+                    let inside = x >= content.left
+                        && x < content.right
+                        && y >= content.top
+                        && y < content.bottom;
                     for channel in 0..3 {
                         let value = preprocessor.tensor()[channel * 16 + (y * 4 + x) as usize];
                         assert_eq!(inside, value != 0.0, "at ({x}, {y}) channel {channel}");
@@ -257,7 +247,7 @@ mod tests {
         let source = raster(4, 2, Layout::Rgb, Orientation::Rotate90);
         assert_eq!(
             preprocessor.prepare(&source).unwrap(),
-            Rect::new(1, 0, 3, 4)
+            Rectangle::new(1, 0, 3, 4)
         );
     }
 
@@ -265,6 +255,9 @@ mod tests {
     fn rejects_empty_images() {
         let mut preprocessor = Preprocessor::new(4, 4);
         let source = raster(0, 0, Layout::Rgb, Orientation::Normal);
-        assert!(matches!(preprocessor.prepare(&source), Err(Error::Source)));
+        assert!(matches!(
+            preprocessor.prepare(&source),
+            Err(PreprocessError::Source)
+        ));
     }
 }

@@ -150,7 +150,7 @@ fn a_caller_can_weigh_the_map_before_it_is_reduced_to_a_point() {
                 .enumerate()
                 .map(|(index, value)| {
                     let x = (index % 320) as i32;
-                    if x > (content.min_x + content.max_x) / 2 {
+                    if x > (content.left + content.right) / 2 {
                         value * 2.0
                     } else {
                         *value

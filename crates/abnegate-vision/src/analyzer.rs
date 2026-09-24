@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::crop::{Target, plan, render};
 use crate::decode::{self, Raster};
 use crate::exclusive::Exclusive;
-use crate::gravity::Rect;
+use crate::gravity::Rectangle;
 use crate::gravity::from_saliency_region;
 use crate::preprocess::Preprocessor;
 use crate::saliency::{INPUT_HEIGHT, INPUT_WIDTH, Model};
@@ -74,7 +74,7 @@ impl Analyzer {
     pub fn saliency<R>(
         &self,
         raster: &Raster,
-        read: impl FnOnce(&[f32], Rect) -> R,
+        read: impl FnOnce(&[f32], Rectangle) -> R,
     ) -> Result<R, AnalyzerError> {
         let mut preprocessor = self.take();
         let result = preprocessor

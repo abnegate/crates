@@ -35,7 +35,7 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "h
 nix = "0.31"
 # Pre-release candidates bump breakingly, so this is the one range that is not a
 # caret: rc.14 would resolve alongside rc.13 and link two ONNX runtimes.
-ort = { version = ">=2.0.0-rc.13, <2.0.0-rc.14", default-features = false, features = ["std", "api-24", "download-binaries", "tls-native"] }
+ort = { version = ">=2.0.0-rc.13, <2.0.0-rc.14", default-features = false, features = ["std", "api-24"] }
 rand = "0.10"
 regex = "1"
 reqwest = "0.13"

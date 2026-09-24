@@ -55,7 +55,9 @@
 //! # Features
 //!
 //! - `saliency`: `Analyzer` and the `saliency` module, subject detection with
-//!   U2-Net over ONNX Runtime. Off by default.
+//!   U2-Net over ONNX Runtime. Off by default. The build downloads ONNX
+//!   Runtime's prebuilt binaries; a consumer that ships its own runtime
+//!   enables `ort/load-dynamic` to load it at run time instead.
 //!
 //! [autogravity]: https://github.com/appwrite/autogravity
 
@@ -66,10 +68,11 @@ pub mod preprocess;
 
 mod error;
 
-pub use crate::crop::{Region, Rendered, Target};
-pub use crate::decode::Raster;
+pub use crate::crop::{CropError, Region, Rendered, Target};
+pub use crate::decode::{DecodeError, Raster};
 pub use crate::error::Error;
-pub use crate::gravity::Point;
+pub use crate::gravity::{GravityError, Point};
+pub use crate::preprocess::PreprocessError;
 
 #[cfg(feature = "saliency")]
 #[cfg_attr(docsrs, doc(cfg(feature = "saliency")))]
@@ -83,3 +86,10 @@ mod exclusive;
 #[cfg(feature = "saliency")]
 #[cfg_attr(docsrs, doc(cfg(feature = "saliency")))]
 pub use crate::analyzer::{Analyzer, AnalyzerError, Crop, Focus};
+#[cfg(feature = "saliency")]
+#[cfg_attr(docsrs, doc(cfg(feature = "saliency")))]
+pub use crate::saliency::SaliencyError;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
