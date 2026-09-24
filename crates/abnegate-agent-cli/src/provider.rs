@@ -161,7 +161,7 @@ impl CliProvider {
                     "provider": self.name,
                     "agent": self.agent.as_str(),
                     "model": request.model,
-                    "timeout_seconds": self.settings.timeout.as_secs(),
+                    "timeout_seconds": self.settings.timeout.as_secs_f64(),
                     "working_directory": self.settings.working_directory,
                     "arguments": logged,
                 }),
@@ -171,7 +171,7 @@ impl CliProvider {
             provider = %self.name,
             agent = %self.agent,
             label,
-            timeout_seconds = self.settings.timeout.as_secs(),
+            timeout_seconds = self.settings.timeout.as_secs_f64(),
             "starting agent"
         );
 
@@ -356,7 +356,7 @@ impl CliProvider {
                 journal
                     .append(
                         Record::TimedOut,
-                        json!({ "timeout_seconds": self.settings.timeout.as_secs() }),
+                        json!({ "timeout_seconds": self.settings.timeout.as_secs_f64() }),
                     )
                     .await;
                 tracing::warn!(provider = %self.name, label, "agent timed out; stopping its process group");
@@ -993,6 +993,42 @@ sleep 120
         ] {
             assert!(journal.contains(record), "{record} missing: {journal}");
         }
+    }
+
+    /// The journal gives the timeout in seconds with its fraction, so a
+    /// limit under a second is not recorded as no time at all.
+    #[tokio::test]
+    async fn a_timeout_under_a_second_is_journalled_with_its_fraction() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let settings = settings(&directory, "sleep 120")
+            .with_timeout(Duration::from_millis(500))
+            .with_log(&root);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let failure = provider
+            .execute(request(&[Message::user("hi")]), "test-run")
+            .await
+            .expect_err("a timeout");
+
+        assert!(
+            matches!(*failure.error, ProviderError::Timeout { .. }),
+            "{failure:?}"
+        );
+        let files = failure.log.expect("the run's logs");
+        let journal = std::fs::read_to_string(&files.events).expect("the journal");
+        let journalled: Vec<Option<f64>> = journal
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("a journal entry"))
+            .filter(|entry| {
+                matches!(
+                    entry["event"].as_str(),
+                    Some("execution_initialized" | "subprocess_timed_out")
+                )
+            })
+            .map(|entry| entry["data"]["timeout_seconds"].as_f64())
+            .collect();
+        assert_eq!(journalled, [Some(0.5), Some(0.5)], "{journal}");
     }
 
     #[tokio::test]
