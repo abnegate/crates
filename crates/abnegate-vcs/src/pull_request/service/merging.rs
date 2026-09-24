@@ -55,11 +55,11 @@ impl PullRequestService {
     /// administrator merge was refused too, that reason as well. A head that
     /// moved, or a branch GitHub says was modified while it merged, is
     /// [`PullRequestError::HeadMoved`], which a fresh read and a retry
-    /// resolve. A merge that happened is never reported as a failure, even
-    /// when the commit it made cannot be read. An administrator merge is
-    /// reported whenever GitHub's answer says the pull request merged,
-    /// whatever errors GitHub reported alongside it, and only then; an answer
-    /// that says neither that it merged nor why not is
+    /// resolve. A merge GitHub's answer reports is never reported as a
+    /// failure, even when the commit it made cannot be read. An administrator
+    /// merge is reported whenever GitHub's answer says the pull request
+    /// merged, whatever errors GitHub reported alongside it, and only then;
+    /// an answer that says neither that it merged nor why not is
     /// [`PullRequestError::GitHubApi`].
     ///
     /// GitHub answers a merge in a repository that was renamed or transferred

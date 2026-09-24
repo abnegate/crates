@@ -24,7 +24,10 @@ impl GitService {
     /// Add a worktree of a managed clone at `worktree_path`, in detached HEAD
     /// state at `checkout_ref`, and return it bound to the clone at `path`:
     /// the [`Checkout`] every other operation takes it by, with both paths
-    /// made absolute against the current directory.
+    /// made absolute against the current directory. A relative
+    /// `worktree_path` is read from there too, unlike the path
+    /// [`worktree::add`] takes, which is read against the clone, as git reads
+    /// it.
     ///
     /// A worktree of the same repository already standing there is replaced
     /// when it holds nothing that would be lost -- no uncommitted change and a
