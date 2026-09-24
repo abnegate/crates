@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use abnegate_notify::{Channel, Fanout, Notification, Notifier, NotifyError, Severity};
+use abnegate_notify::{Channel, Error, Fanout, Notification, Notifier, Severity};
 use async_trait::async_trait;
 
 /// A notifier that records what it was asked to send and then does as told.
@@ -54,13 +54,13 @@ impl Notifier for Stub {
         self.name.as_deref()
     }
 
-    async fn deliver(&self, _notification: &Notification) -> Result<(), NotifyError> {
+    async fn deliver(&self, _notification: &Notification) -> Result<(), Error> {
         match &self.outcome {
             Outcome::Succeed => {
                 self.delivered.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            Outcome::Fail => Err(NotifyError::Malformed {
+            Outcome::Fail => Err(Error::Malformed {
                 message: "nope".to_string(),
             }),
             Outcome::Hang => {
@@ -95,7 +95,7 @@ impl Notifier for Impatient {
         Some(Duration::from_millis(50))
     }
 
-    async fn deliver(&self, _notification: &Notification) -> Result<(), NotifyError> {
+    async fn deliver(&self, _notification: &Notification) -> Result<(), Error> {
         tokio::time::sleep(Duration::from_secs(3_600)).await;
         Ok(())
     }
@@ -114,7 +114,7 @@ impl Notifier for Instant {
         Some(Duration::ZERO)
     }
 
-    async fn deliver(&self, _notification: &Notification) -> Result<(), NotifyError> {
+    async fn deliver(&self, _notification: &Notification) -> Result<(), Error> {
         tokio::task::yield_now().await;
         Ok(())
     }
@@ -225,7 +225,7 @@ async fn a_hanging_channel_is_abandoned_at_the_timeout() {
     assert_eq!(timed_out.channel().as_str(), "discord");
     assert_eq!(
         timed_out.error(),
-        Some(&NotifyError::Timeout {
+        Some(&Error::Timeout {
             after: Duration::from_secs(2)
         })
     );
@@ -259,7 +259,7 @@ async fn a_channel_may_impose_a_tighter_budget_than_the_fanout() {
     assert_eq!(failure.channel().as_str(), "impatient");
     assert_eq!(
         failure.error(),
-        Some(&NotifyError::Timeout {
+        Some(&Error::Timeout {
             after: Duration::from_millis(50)
         })
     );
@@ -305,7 +305,7 @@ async fn a_panicking_channel_is_contained_and_reported() {
 
     let failure = report.failures().next().expect("one failure");
     assert_eq!(failure.channel().as_str(), "discord");
-    assert_eq!(failure.error(), Some(&NotifyError::Panicked));
+    assert_eq!(failure.error(), Some(&Error::Panicked));
     assert!(!failure.is_retryable());
 }
 

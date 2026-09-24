@@ -35,8 +35,8 @@
 //! - `smtp`: the `Email` channel, and `Mailer`, which sends one message through
 //!   a relay. Both pull in `lettre`. Slack, Discord and the shared webhook
 //!   client are always available.
-//! - `mock`: `MockMailer`, a [`Mail`] that records instead of sending, for a
-//!   caller's own tests.
+//! - `testing`: `MockMailer`, a [`Mail`] that records instead of sending, for
+//!   a caller's own tests.
 //!
 //! # Credentials
 //!
@@ -83,16 +83,20 @@ pub use crate::backend::{Discord, Slack};
 pub use crate::channel::Channel;
 pub use crate::delivery::Delivery;
 pub use crate::endpoint::{Endpoint, EndpointError};
-pub use crate::error::NotifyError;
+pub use crate::error::Error;
 pub use crate::fanout::{DEFAULT_TIMEOUT, Fanout};
 pub use crate::field::Field;
 pub use crate::mail::Mail;
 #[cfg(feature = "smtp")]
 pub use crate::mail::Mailer;
-#[cfg(feature = "mock")]
+#[cfg(feature = "testing")]
 pub use crate::mail::{MockMailer, SentMail};
 pub use crate::notification::Notification;
 pub use crate::notifier::Notifier;
 pub use crate::report::Report;
 pub use crate::severity::Severity;
 pub use crate::smtp::SmtpConfig;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

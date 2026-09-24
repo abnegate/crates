@@ -8,7 +8,7 @@ use lettre::message::header::ContentType;
 use lettre::transport::smtp::AsyncSmtpTransportBuilder;
 use lettre::{AsyncTransport, Message, Tokio1Executor};
 
-use crate::error::NotifyError;
+use crate::error::Error;
 use crate::mail::Mail;
 use crate::smtp::{SmtpConfig, failure, mailbox};
 
@@ -28,7 +28,7 @@ impl Mailer {
     /// Configure delivery through the relay described by `config`.
     ///
     /// Nothing connects until a message is sent.
-    pub fn new(config: &SmtpConfig) -> Result<Self, NotifyError> {
+    pub fn new(config: &SmtpConfig) -> Result<Self, Error> {
         Ok(Self {
             from: config.sender()?,
             builder: config.builder()?,
@@ -41,14 +41,14 @@ impl Mailer {
         &self.host
     }
 
-    fn compose(&self, recipient: &str, subject: &str, body: &str) -> Result<Message, NotifyError> {
+    fn compose(&self, recipient: &str, subject: &str, body: &str) -> Result<Message, Error> {
         Message::builder()
             .from(self.from.clone())
             .to(mailbox(recipient, None)?)
             .subject(subject)
             .header(ContentType::TEXT_PLAIN)
             .body(body.to_string())
-            .map_err(|error| NotifyError::Malformed {
+            .map_err(|error| Error::Malformed {
                 message: error.to_string(),
             })
     }
@@ -56,7 +56,7 @@ impl Mailer {
 
 #[async_trait]
 impl Mail for Mailer {
-    async fn send(&self, recipient: &str, subject: &str, body: &str) -> Result<(), NotifyError> {
+    async fn send(&self, recipient: &str, subject: &str, body: &str) -> Result<(), Error> {
         let message = self.compose(recipient, subject, body)?;
         self.builder
             .clone()
@@ -83,17 +83,16 @@ impl fmt::Debug for Mailer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use abnegate_secret::SecretValue;
 
     fn config() -> SmtpConfig {
-        SmtpConfig {
-            host: "smtp.example.test".to_string(),
-            port: 587,
-            user: "postmaster".to_string(),
-            password: SecretValue::new("hunter2-not-a-real-password"),
-            from_address: "noreply@example.test".to_string(),
-            from_name: "Notifications".to_string(),
-        }
+        SmtpConfig::new(
+            "smtp.example.test",
+            587,
+            "postmaster",
+            "hunter2-not-a-real-password",
+            "noreply@example.test",
+            "Notifications",
+        )
     }
 
     fn mailer() -> Mailer {
@@ -125,7 +124,7 @@ mod tests {
         let error = mailer()
             .compose("not an address", "Subject", "Body")
             .expect_err("bad recipient");
-        assert!(matches!(error, NotifyError::Malformed { .. }));
+        assert!(matches!(error, Error::Malformed { .. }));
     }
 
     #[test]
@@ -134,7 +133,7 @@ mod tests {
         broken.from_address = "@@@".to_string();
         assert!(matches!(
             Mailer::new(&broken).expect_err("bad sender"),
-            NotifyError::Malformed { .. }
+            Error::Malformed { .. }
         ));
     }
 

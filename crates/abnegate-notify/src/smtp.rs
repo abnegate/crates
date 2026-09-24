@@ -9,14 +9,14 @@ use abnegate_secret::sanitize_owned;
 #[cfg(feature = "smtp")]
 use lettre::message::Mailbox;
 #[cfg(feature = "smtp")]
-use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::AsyncSmtpTransportBuilder;
 #[cfg(feature = "smtp")]
-use lettre::transport::smtp::{AsyncSmtpTransportBuilder, Error};
+use lettre::transport::smtp::authentication::Credentials;
 #[cfg(feature = "smtp")]
 use lettre::{Address, AsyncSmtpTransport, Tokio1Executor};
 
 #[cfg(feature = "smtp")]
-use crate::error::NotifyError;
+use crate::error::Error;
 
 /// Implicit-TLS submissions port, the one port `relay` is built for.
 #[cfg(feature = "smtp")]
@@ -28,13 +28,61 @@ const SUBMISSIONS_PORT: u16 = 465;
 /// when the config is dropped, and readable only at the point it is handed to
 /// the transport.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct SmtpConfig {
+    /// The relay's host name, which is safe to log.
     pub host: String,
+    /// 465 for implicit TLS; any other port, usually 587, must upgrade with
+    /// STARTTLS before the credentials are sent.
     pub port: u16,
+    /// The name the relay signs in with.
     pub user: String,
+    /// The relay password.
     pub password: SecretValue,
+    /// The address every message is sent from.
     pub from_address: String,
+    /// The display name shown beside `from_address`.
     pub from_name: String,
+}
+
+impl SmtpConfig {
+    /// The relay at `host` and `port`, signed in to as `user` with `password`,
+    /// sending as `from_name <from_address>`.
+    ///
+    /// Nothing is checked or connected here: the addresses are parsed when a
+    /// `Mailer` or an `Email` channel is built from this, and the relay is
+    /// reached only when a message is sent.
+    ///
+    /// ```
+    /// use abnegate_notify::SmtpConfig;
+    ///
+    /// let relay = SmtpConfig::new(
+    ///     "smtp.example.test",
+    ///     587,
+    ///     "postmaster",
+    ///     "relay-password",
+    ///     "noreply@example.test",
+    ///     "Notifications",
+    /// );
+    /// assert_eq!(relay.host, "smtp.example.test");
+    /// ```
+    pub fn new(
+        host: impl Into<String>,
+        port: u16,
+        user: impl Into<String>,
+        password: impl Into<SecretValue>,
+        from_address: impl Into<String>,
+        from_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            user: user.into(),
+            password: password.into(),
+            from_address: from_address.into(),
+            from_name: from_name.into(),
+        }
+    }
 }
 
 #[cfg(feature = "smtp")]
@@ -49,7 +97,7 @@ impl SmtpConfig {
     /// A builder rather than a transport: building one is what starts
     /// `lettre`'s connection pool when its `pool` feature is on, and that
     /// needs a running Tokio runtime to construct and to drop.
-    pub(crate) fn builder(&self) -> Result<AsyncSmtpTransportBuilder, NotifyError> {
+    pub(crate) fn builder(&self) -> Result<AsyncSmtpTransportBuilder, Error> {
         let builder = if self.port == SUBMISSIONS_PORT {
             AsyncSmtpTransport::<Tokio1Executor>::relay(&self.host)
         } else {
@@ -61,7 +109,7 @@ impl SmtpConfig {
         Ok(builder.port(self.port).credentials(credentials))
     }
 
-    pub(crate) fn sender(&self) -> Result<Mailbox, NotifyError> {
+    pub(crate) fn sender(&self) -> Result<Mailbox, Error> {
         mailbox(&self.from_address, Some(self.from_name.clone()))
     }
 }
@@ -84,8 +132,8 @@ impl fmt::Debug for SmtpConfig {
 ///
 /// An address is personal data, and the error is headed for a log line.
 #[cfg(feature = "smtp")]
-pub(crate) fn mailbox(address: &str, name: Option<String>) -> Result<Mailbox, NotifyError> {
-    let parsed: Address = address.parse().map_err(|_| NotifyError::Malformed {
+pub(crate) fn mailbox(address: &str, name: Option<String>) -> Result<Mailbox, Error> {
+    let parsed: Address = address.parse().map_err(|_| Error::Malformed {
         message: "an email address could not be parsed".to_string(),
     })?;
     Ok(Mailbox::new(name, parsed))
@@ -96,8 +144,8 @@ pub(crate) fn mailbox(address: &str, name: Option<String>) -> Result<Mailbox, No
 /// A relay's reply text is written by the far end, so it is treated like any
 /// other outside text on its way to a log line.
 #[cfg(feature = "smtp")]
-pub(crate) fn failure(host: &str, error: Error) -> NotifyError {
-    NotifyError::Smtp {
+pub(crate) fn failure(host: &str, error: lettre::transport::smtp::Error) -> Error {
+    Error::Smtp {
         host: host.to_string(),
         message: sanitize_owned(error.to_string()),
     }
@@ -108,14 +156,24 @@ mod tests {
     use super::*;
 
     fn config() -> SmtpConfig {
-        SmtpConfig {
-            host: "smtp.example.test".to_string(),
-            port: 587,
-            user: "postmaster".to_string(),
-            password: SecretValue::new("hunter2-not-a-real-password"),
-            from_address: "noreply@example.test".to_string(),
-            from_name: "Notifications".to_string(),
-        }
+        SmtpConfig::new(
+            "smtp.example.test",
+            587,
+            "postmaster",
+            "hunter2-not-a-real-password",
+            "noreply@example.test",
+            "Notifications",
+        )
+    }
+
+    #[test]
+    fn each_part_is_kept_where_it_was_given() {
+        let config = config();
+        assert_eq!(config.host, "smtp.example.test");
+        assert_eq!(config.port, 587);
+        assert_eq!(config.user, "postmaster");
+        assert_eq!(config.from_address, "noreply@example.test");
+        assert_eq!(config.from_name, "Notifications");
     }
 
     #[test]
@@ -135,7 +193,7 @@ mod tests {
     #[test]
     fn an_unparseable_address_is_refused_without_being_quoted() {
         let error = mailbox("someone.private@@example.test", None).expect_err("bad address");
-        assert!(matches!(error, NotifyError::Malformed { .. }));
+        assert!(matches!(error, Error::Malformed { .. }));
         assert!(
             !error.to_string().contains("someone.private"),
             "the address reached the message: {error}"

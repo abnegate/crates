@@ -9,7 +9,7 @@ use lettre::transport::smtp::AsyncSmtpTransportBuilder;
 use lettre::{AsyncTransport, Message, Tokio1Executor};
 
 use crate::channel::Channel;
-use crate::error::NotifyError;
+use crate::error::Error;
 use crate::notification::Notification;
 use crate::notifier::Notifier;
 use crate::smtp::{SmtpConfig, failure, mailbox};
@@ -32,9 +32,9 @@ impl Email {
     /// Configure delivery through the relay in `config` to `recipients`.
     ///
     /// Nothing connects until a notification is delivered.
-    pub fn new(config: &SmtpConfig, recipients: &[&str]) -> Result<Self, NotifyError> {
+    pub fn new(config: &SmtpConfig, recipients: &[&str]) -> Result<Self, Error> {
         if recipients.is_empty() {
-            return Err(NotifyError::Malformed {
+            return Err(Error::Malformed {
                 message: "an email channel needs at least one recipient".to_string(),
             });
         }
@@ -43,7 +43,7 @@ impl Email {
         let recipients = recipients
             .iter()
             .map(|recipient| mailbox(recipient, None))
-            .collect::<Result<Vec<Mailbox>, NotifyError>>()?;
+            .collect::<Result<Vec<Mailbox>, Error>>()?;
 
         Ok(Self {
             builder: config.builder()?,
@@ -61,7 +61,7 @@ impl Email {
         self
     }
 
-    fn compose(&self, notification: &Notification) -> Result<Message, NotifyError> {
+    fn compose(&self, notification: &Notification) -> Result<Message, Error> {
         let mut builder = Message::builder()
             .from(self.from.clone())
             .subject(notification.title());
@@ -73,7 +73,7 @@ impl Email {
         builder
             .header(ContentType::TEXT_PLAIN)
             .body(notification.to_plain_text())
-            .map_err(|error| NotifyError::Malformed {
+            .map_err(|error| Error::Malformed {
                 message: error.to_string(),
             })
     }
@@ -89,7 +89,7 @@ impl Notifier for Email {
         self.name.as_deref()
     }
 
-    async fn deliver(&self, notification: &Notification) -> Result<(), NotifyError> {
+    async fn deliver(&self, notification: &Notification) -> Result<(), Error> {
         let message = self.compose(notification)?;
         self.builder
             .clone()
@@ -119,17 +119,16 @@ impl fmt::Debug for Email {
 mod tests {
     use super::*;
     use crate::severity::Severity;
-    use abnegate_secret::SecretValue;
 
     fn config() -> SmtpConfig {
-        SmtpConfig {
-            host: "smtp.example.test".to_string(),
-            port: 587,
-            user: "postmaster".to_string(),
-            password: SecretValue::new("hunter2-not-a-real-password"),
-            from_address: "noreply@example.test".to_string(),
-            from_name: "Notifications".to_string(),
-        }
+        SmtpConfig::new(
+            "smtp.example.test",
+            587,
+            "postmaster",
+            "hunter2-not-a-real-password",
+            "noreply@example.test",
+            "Notifications",
+        )
     }
 
     fn email() -> Email {
@@ -154,14 +153,14 @@ mod tests {
     #[test]
     fn a_channel_with_no_recipients_is_refused() {
         let error = Email::new(&config(), &[]).expect_err("no recipients");
-        assert!(matches!(error, NotifyError::Malformed { .. }));
+        assert!(matches!(error, Error::Malformed { .. }));
         assert!(error.to_string().contains("at least one recipient"));
     }
 
     #[test]
     fn an_unparseable_recipient_is_refused() {
         let error = Email::new(&config(), &["not an address"]).expect_err("bad recipient");
-        assert!(matches!(error, NotifyError::Malformed { .. }));
+        assert!(matches!(error, Error::Malformed { .. }));
     }
 
     #[test]
@@ -170,7 +169,7 @@ mod tests {
         broken.from_address = "@@@".to_string();
         assert!(matches!(
             Email::new(&broken, &["sam@example.test"]).expect_err("bad sender"),
-            NotifyError::Malformed { .. }
+            Error::Malformed { .. }
         ));
     }
 

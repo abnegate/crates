@@ -1,7 +1,7 @@
 //! What happened on one channel.
 
 use crate::channel::Channel;
-use crate::error::NotifyError;
+use crate::error::Error;
 
 /// The outcome of a single channel's attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9,11 +9,11 @@ use crate::error::NotifyError;
 pub struct Delivery {
     channel: Channel,
     name: String,
-    outcome: Result<(), NotifyError>,
+    outcome: Result<(), Error>,
 }
 
 impl Delivery {
-    pub(crate) fn new(channel: Channel, name: String, outcome: Result<(), NotifyError>) -> Self {
+    pub(crate) fn new(channel: Channel, name: String, outcome: Result<(), Error>) -> Self {
         Self {
             channel,
             name,
@@ -34,13 +34,13 @@ impl Delivery {
         self.outcome.is_ok()
     }
 
-    pub fn error(&self) -> Option<&NotifyError> {
+    pub fn error(&self) -> Option<&Error> {
         self.outcome.as_ref().err()
     }
 
     /// Whether sending to this channel again could plausibly work.
     pub fn is_retryable(&self) -> bool {
-        self.error().is_some_and(NotifyError::is_retryable)
+        self.error().is_some_and(Error::is_retryable)
     }
 }
 
@@ -64,7 +64,7 @@ mod tests {
         let delivery = Delivery::new(
             Channel::DISCORD,
             "discord".to_string(),
-            Err(NotifyError::Timeout {
+            Err(Error::Timeout {
                 after: Duration::from_secs(5),
             }),
         );

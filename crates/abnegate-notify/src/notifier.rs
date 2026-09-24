@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::channel::Channel;
-use crate::error::NotifyError;
+use crate::error::Error;
 use crate::notification::Notification;
 
 /// A single delivery destination.
@@ -33,5 +33,5 @@ pub trait Notifier: Send + Sync + 'static {
         None
     }
 
-    async fn deliver(&self, notification: &Notification) -> Result<(), NotifyError>;
+    async fn deliver(&self, notification: &Notification) -> Result<(), Error>;
 }

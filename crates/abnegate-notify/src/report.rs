@@ -63,7 +63,7 @@ impl Report {
 mod tests {
     use super::*;
     use crate::channel::Channel;
-    use crate::error::NotifyError;
+    use crate::error::Error;
     use std::time::Duration;
 
     fn delivered(name: &str) -> Delivery {
@@ -74,7 +74,7 @@ mod tests {
         Delivery::new(
             Channel::DISCORD,
             name.to_string(),
-            Err(NotifyError::Timeout {
+            Err(Error::Timeout {
                 after: Duration::from_secs(1),
             }),
         )
@@ -84,7 +84,7 @@ mod tests {
         Delivery::new(
             Channel::EMAIL,
             name.to_string(),
-            Err(NotifyError::Malformed {
+            Err(Error::Malformed {
                 message: "no recipients".to_string(),
             }),
         )

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::error::NotifyError;
+use crate::error::Error;
 use crate::mail::Mail;
 use crate::mail::sent::SentMail;
 
@@ -13,14 +13,15 @@ use crate::mail::sent::SentMail;
 ///
 /// It takes and answers exactly what the real one does, so a caller under
 /// test can hold either and assert on what would have gone out. It needs only
-/// the `mock` feature, so a downstream test suite need not build `lettre`.
-#[cfg_attr(docsrs, doc(cfg(feature = "mock")))]
+/// the `testing` feature, so a downstream test suite need not build `lettre`.
+#[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
 #[derive(Clone, Debug, Default)]
 pub struct MockMailer {
     sent: Arc<Mutex<Vec<SentMail>>>,
 }
 
 impl MockMailer {
+    /// A mailer that has recorded nothing yet.
     pub fn new() -> Self {
         Self::default()
     }
@@ -30,6 +31,7 @@ impl MockMailer {
         self.sent.lock().await.clone()
     }
 
+    /// Forget everything sent so far.
     pub async fn clear(&self) {
         self.sent.lock().await.clear();
     }
@@ -37,12 +39,11 @@ impl MockMailer {
 
 #[async_trait]
 impl Mail for MockMailer {
-    async fn send(&self, recipient: &str, subject: &str, body: &str) -> Result<(), NotifyError> {
-        self.sent.lock().await.push(SentMail {
-            recipient: recipient.to_string(),
-            subject: subject.to_string(),
-            body: body.to_string(),
-        });
+    async fn send(&self, recipient: &str, subject: &str, body: &str) -> Result<(), Error> {
+        self.sent
+            .lock()
+            .await
+            .push(SentMail::new(recipient, subject, body));
         Ok(())
     }
 }
@@ -72,11 +73,21 @@ mod tests {
             .await
             .expect("recorded");
 
-        let sent = mailer.sent().await;
-        assert_eq!(sent.len(), 2);
-        assert_eq!(sent[0].recipient, "person@example.test");
-        assert_eq!(sent[0].subject, "Verify your email address");
-        assert_eq!(sent[1].subject, "Reset your password");
+        assert_eq!(
+            mailer.sent().await,
+            vec![
+                SentMail::new(
+                    "person@example.test",
+                    "Verify your email address",
+                    "Open https://example.test/verify?t=abc",
+                ),
+                SentMail::new(
+                    "person@example.test",
+                    "Reset your password",
+                    "Open https://example.test/reset?t=abc",
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
