@@ -1,11 +1,13 @@
 //! Walks over the text that count the bytes they read.
 //!
-//! The redaction and sanitization scanners walk their text only through these
+//! The redaction and sanitization scanners walk their text through these
 //! helpers, so that a test can bound the bytes a scanner reads for each byte it
-//! is given and prove it linear without a clock. A walk is any read that goes
-//! further from the cursor than a fixed distance: a run, a search, a lookbehind,
-//! or a pass over a candidate. The `source` tests refuse a scanner that walks
-//! any other way, since the count cannot see such a walk.
+//! is given without a clock. A walk is any read that goes further from the
+//! cursor than a fixed distance: a run, a search, a lookbehind, or a pass over
+//! a candidate. The count cannot see a walk made any other way, so the `source`
+//! tests refuse each one they can recognise in the scanners' source. No reading
+//! of the source recognises them all, so the `linear` integration test also
+//! times the scanners in a release build.
 //!
 //! Under test every helper counts each index or byte it reads. Outside tests
 //! the count is a no-op, so each helper is the iterator it wraps.
@@ -131,8 +133,9 @@ fn scanned(_: usize) {}
 /// byte of either input, and when doubling the input at most doubles the bytes
 /// read, give or take [`SLACK`]. The second holds for a linear scan whatever
 /// its constant and fails for any faster growth, so neither check leans on the
-/// other. Both count only what goes through the helpers above, so every scanner
-/// is first checked to walk through nothing else.
+/// other. Both count only what goes through the helpers above, so the scanners
+/// are first checked against the `source` rule, which refuses the other walks
+/// it can recognise.
 #[cfg(test)]
 #[track_caller]
 pub(crate) fn assert_linear(

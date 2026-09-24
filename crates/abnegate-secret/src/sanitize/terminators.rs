@@ -15,6 +15,8 @@ pub(super) struct Terminators {
 }
 
 impl Terminators {
+    /// The terminators in `bytes`: where its last bell and its last string
+    /// terminator start.
     pub(super) fn new(bytes: &[u8]) -> Self {
         Self {
             bell: work::rfind(bytes, |index| bytes[index] == BELL),
