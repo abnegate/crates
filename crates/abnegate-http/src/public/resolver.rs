@@ -1,6 +1,6 @@
 use crate::address::literal;
 use crate::address::must_not_be_fetched;
-use crate::error::HttpError;
+use crate::error::Error;
 use crate::error::Result;
 use reqwest::dns::Addrs;
 use reqwest::dns::Name;
@@ -25,7 +25,7 @@ impl Resolve for PublicResolver {
             let host = name.as_str();
             if let Some(ip) = literal(host) {
                 if must_not_be_fetched(ip) {
-                    return Err(HttpError::PrivateAddress.into());
+                    return Err(Error::PrivateAddress.into());
                 }
                 return Ok(Box::new(iter::once(SocketAddr::new(ip, 0))) as Addrs);
             }
@@ -48,7 +48,7 @@ fn public_only(addresses: impl Iterator<Item = SocketAddr>, host: &str) -> Resul
         .collect();
 
     if public.is_empty() {
-        return Err(HttpError::UnfetchableResolution {
+        return Err(Error::UnfetchableResolution {
             host: host.to_string(),
         });
     }
@@ -121,10 +121,7 @@ mod tests {
                 .expect("a private literal must not be fetchable");
 
             assert!(
-                matches!(
-                    error.downcast_ref::<HttpError>(),
-                    Some(HttpError::PrivateAddress)
-                ),
+                matches!(error.downcast_ref::<Error>(), Some(Error::PrivateAddress)),
                 "{literal}: {error}"
             );
         }

@@ -13,7 +13,7 @@
 //! decide which of the two a failure deserves.
 //!
 //! ```
-//! use abnegate_http::{Backoff, HttpError, is_rate_limit_error, validate_public_url};
+//! use abnegate_http::{Backoff, Error, is_rate_limit_error, validate_public_url};
 //! use std::time::Duration;
 //!
 //! assert!(validate_public_url("http://169.254.169.254/latest").is_err());
@@ -25,7 +25,7 @@
 //! assert!(is_rate_limit_error("HTTP 429 Too Many Requests"));
 //!
 //! assert_eq!(Backoff::default().delay_with(0, 0.0), Duration::from_secs(60));
-//! # Ok::<(), HttpError>(())
+//! # Ok::<(), Error>(())
 //! ```
 
 mod address;
@@ -42,12 +42,16 @@ mod test_support;
 mod transport;
 mod url;
 
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 pub use crate::backoff::Backoff;
 pub use crate::body::read_capped;
 pub use crate::classify::is_hard_error;
 pub use crate::classify::is_rate_limit_error;
 pub use crate::client::HttpClient;
-pub use crate::error::HttpError;
+pub use crate::error::Error;
 pub use crate::error::Result;
 pub use crate::limit::Decision;
 pub use crate::limit::RateLimitConfig;

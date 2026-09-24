@@ -23,10 +23,8 @@ const RETAINED_WINDOWS: u32 = 2;
 /// use abnegate_http::{RateLimitConfig, RateLimiter};
 /// use std::time::Duration;
 ///
-/// let limiter: RateLimiter<String> = RateLimiter::new(RateLimitConfig {
-///     max_requests: 1,
-///     window: Duration::from_secs(60),
-/// });
+/// let limiter: RateLimiter<String> =
+///     RateLimiter::new(RateLimitConfig::new(1, Duration::from_secs(60)));
 ///
 /// assert!(limiter.check_rate_limit("tenant-a".to_string()).allowed);
 /// assert!(!limiter.check_rate_limit("tenant-a".to_string()).allowed);
@@ -72,7 +70,7 @@ impl<K: Eq + Hash> RateLimiter<K> {
         }
 
         let reset_at = record.window_start.checked_add(window);
-        if record.count >= self.config.max_requests {
+        if record.count >= self.config.limit {
             return Decision {
                 allowed: false,
                 remaining: 0,
@@ -83,7 +81,7 @@ impl<K: Eq + Hash> RateLimiter<K> {
         record.count += 1;
         Decision {
             allowed: true,
-            remaining: self.config.max_requests - record.count,
+            remaining: self.config.limit - record.count,
             reset_at,
         }
     }
@@ -121,11 +119,8 @@ mod tests {
     use std::time::Duration;
     use uuid::Uuid;
 
-    fn limiter<K: Eq + Hash>(max_requests: u32, window: Duration) -> RateLimiter<K> {
-        RateLimiter::new(RateLimitConfig {
-            max_requests,
-            window,
-        })
+    fn limiter<K: Eq + Hash>(limit: u32, window: Duration) -> RateLimiter<K> {
+        RateLimiter::new(RateLimitConfig::new(limit, window))
     }
 
     #[test]
@@ -232,10 +227,7 @@ mod tests {
 
     #[test]
     fn rate_limit_reset_timestamp() {
-        let config = RateLimitConfig {
-            max_requests: 1,
-            window: Duration::from_secs(60),
-        };
+        let config = RateLimitConfig::new(1, Duration::from_secs(60));
         let limiter: RateLimiter<Uuid> = RateLimiter::new(config);
         let start = Instant::now();
 
@@ -302,7 +294,7 @@ mod tests {
         assert!(!debug.contains("tenant-secret"), "{debug}");
         assert!(!debug.contains("api-key-0123456789"), "{debug}");
         assert!(debug.contains("keys: 2"), "{debug}");
-        assert!(debug.contains("max_requests: 10"), "{debug}");
+        assert!(debug.contains("limit: 10"), "{debug}");
     }
 
     #[test]

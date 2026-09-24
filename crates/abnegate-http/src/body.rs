@@ -1,4 +1,4 @@
-use crate::error::HttpError;
+use crate::error::Error;
 use crate::error::Result;
 
 /// Read at most `limit` bytes of `response`, refusing a body that does not fit
@@ -8,7 +8,7 @@ use crate::error::Result;
 /// is reserved only as bytes arrive, so a length a server declares and never
 /// sends costs nothing.
 pub async fn read_capped(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
-    let oversized = || HttpError::OversizedBody { limit };
+    let oversized = || Error::OversizedBody { limit };
     if response
         .content_length()
         .is_some_and(|length| u64::try_from(limit).is_ok_and(|limit| length > limit))
@@ -20,7 +20,7 @@ pub async fn read_capped(mut response: reqwest::Response, limit: usize) -> Resul
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| HttpError::UnreadableBody(error.without_url()))?
+        .map_err(|error| Error::UnreadableBody(error.without_url()))?
     {
         if chunk.len() > limit - body.len() {
             return Err(oversized());
@@ -91,7 +91,7 @@ mod tests {
             .expect_err("512 bytes do not fit under 128");
 
         assert!(
-            matches!(error, HttpError::OversizedBody { limit: 128 }),
+            matches!(error, Error::OversizedBody { limit: 128 }),
             "{error}"
         );
     }
@@ -109,7 +109,7 @@ mod tests {
             .expect_err("128 streamed bytes do not fit under 100");
 
         assert!(
-            matches!(error, HttpError::OversizedBody { limit: 100 }),
+            matches!(error, Error::OversizedBody { limit: 100 }),
             "{error}"
         );
     }
@@ -126,7 +126,7 @@ mod tests {
             .await
             .expect_err("the body ended early");
 
-        assert!(matches!(error, HttpError::UnreadableBody(_)), "{error}");
+        assert!(matches!(error, Error::UnreadableBody(_)), "{error}");
         assert!(!format!("{error:?}").contains("hunter2"), "{error:?}");
     }
 
@@ -139,7 +139,7 @@ mod tests {
             .expect_err("1000 declared bytes do not fit under 100");
 
         assert!(
-            matches!(error, HttpError::OversizedBody { limit: 100 }),
+            matches!(error, Error::OversizedBody { limit: 100 }),
             "{error}"
         );
     }
@@ -159,6 +159,6 @@ mod tests {
             .await
             .expect_err("the body ended four bytes in");
 
-        assert!(matches!(error, HttpError::UnreadableBody(_)), "{error}");
+        assert!(matches!(error, Error::UnreadableBody(_)), "{error}");
     }
 }

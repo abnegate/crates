@@ -51,11 +51,9 @@ impl AiClient {
         Self {
             provider: Some(provider),
             retries: DEFAULT_RETRIES,
-            backoff: Backoff {
-                base: BACKOFF_BASE,
-                maximum: BACKOFF_MAXIMUM,
-                ..Backoff::default()
-            },
+            backoff: Backoff::default()
+                .with_base(BACKOFF_BASE)
+                .with_maximum(BACKOFF_MAXIMUM),
             exchanges: Mutex::new(Vec::new()),
         }
     }
