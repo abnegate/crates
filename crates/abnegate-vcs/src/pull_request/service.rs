@@ -20,6 +20,7 @@ use crate::pull_request::origin::host_of;
 use crate::pull_request::repository_detail::RepositoryDetail;
 use crate::pull_request::tally;
 use abnegate_secret::SecretValue;
+use abnegate_secret::sanitize;
 use reqwest::Client;
 use reqwest::Method;
 use reqwest::RequestBuilder;
@@ -85,6 +86,12 @@ const RATE_LIMIT: &str = "rate limit";
 
 /// Most of GitHub's own words carried into [`PullRequestError::GitHubApi`].
 const MAXIMUM_ERROR_BYTES: usize = 1024;
+
+/// What joins GitHub's words when several are carried on one line.
+const SEPARATOR: &str = "; ";
+
+/// Characters that end a line without being control characters.
+const LINE_BREAKS: [char; 2] = ['\u{2028}', '\u{2029}'];
 
 /// Most of an error body read for GitHub's words about it.
 const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
@@ -657,6 +664,38 @@ async fn refusal(response: Response) -> PullRequestError {
 /// `text` cut to [`MAXIMUM_ERROR_BYTES`], never inside a character.
 pub(super) fn bounded(text: &str) -> &str {
     &text[..text.floor_char_boundary(MAXIMUM_ERROR_BYTES)]
+}
+
+/// GitHub's words on one line fit to carry in an error: each with any
+/// credential redacted, and terminal sequences, invisible formatting, control
+/// characters and line breaks removed, then trimmed, left out when nothing is
+/// left, joined, and cut to [`MAXIMUM_ERROR_BYTES`].
+pub(super) fn summarised<'a>(said: impl IntoIterator<Item = &'a str>) -> String {
+    let mut line = String::new();
+    for words in said {
+        if line.len() >= MAXIMUM_ERROR_BYTES {
+            break;
+        }
+        let cleaned = cleaned(words);
+        if cleaned.is_empty() {
+            continue;
+        }
+        if !line.is_empty() {
+            line.push_str(SEPARATOR);
+        }
+        line.push_str(&cleaned);
+    }
+    bounded(&line).to_string()
+}
+
+/// `words` sanitised, without control characters or line breaks, and
+/// trimmed.
+fn cleaned(words: &str) -> String {
+    let kept: String = sanitize(words)
+        .chars()
+        .filter(|character| !character.is_control() && !LINE_BREAKS.contains(character))
+        .collect();
+    kept.trim().to_string()
 }
 
 #[cfg(test)]

@@ -39,9 +39,6 @@ const HEAD_MODIFIED: &str = "Head branch was modified";
 /// What a refused administrator merge adds to branch protection's reason.
 const ADMINISTRATOR_REFUSED: &str = "administrator merge refused";
 
-/// What joins branch protection's reason to the administrator merge's.
-const SEPARATOR: &str = "; ";
-
 impl PullRequestService {
     /// Merge a pull request, but only while its head is still `head`.
     ///

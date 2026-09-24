@@ -20,9 +20,6 @@ const REFUSED: &str = "GitHub's GraphQL API refused";
 /// What an answer that carried neither data nor errors is reported as.
 const NO_DATA: &str = "GitHub's GraphQL API answered with no data";
 
-/// What joins the messages of several GraphQL errors.
-const SEPARATOR: &str = "; ";
-
 impl PullRequestService {
     /// One GraphQL call, with any error GitHub reported turned into the
     /// refusal it names.
@@ -94,19 +91,10 @@ pub(super) fn reported(errors: &[GraphQlError], kind: &str) -> bool {
         .any(|error| error.kind.as_deref() == Some(kind))
 }
 
-/// Every message in a set of GraphQL errors, joined, with no control
-/// characters, and cut at 1 kB on a character boundary.
+/// Every message in a set of GraphQL errors, sanitised and joined on one
+/// line, and cut at 1 kB on a character boundary.
 pub(super) fn graphql_messages(errors: &[GraphQlError]) -> String {
-    let messages: String = errors
-        .iter()
-        .map(|error| error.message.as_str())
-        .filter(|message| !message.is_empty())
-        .collect::<Vec<&str>>()
-        .join(SEPARATOR)
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect();
-    bounded(&messages).to_string()
+    summarised(errors.iter().map(|error| error.message.as_str()))
 }
 
 #[cfg(test)]
@@ -351,13 +339,37 @@ mod tests {
         assert!(!failure.contains("after"));
     }
 
+    fn failed(message: &str) -> GraphQlError {
+        GraphQlError {
+            message: message.to_string(),
+            kind: None,
+        }
+    }
+
     #[test]
     fn a_graphql_error_message_cannot_forge_a_log_line() {
-        let errors = [GraphQlError {
-            message: "denied\nINFO forged\r\u{1b}[0m".to_string(),
-            kind: None,
-        }];
+        let errors = [
+            failed("denied\nINFO forged\r\u{1b}[0m"),
+            failed("one\u{2028}two\u{2029}three"),
+            failed("a\u{202E}b\u{200B}c\u{2066}d"),
+            failed(concat!("rejected ghp_", "0123456789abcdefghij")),
+        ];
 
-        assert_eq!(graphql_messages(&errors), "deniedINFO forged[0m");
+        assert_eq!(
+            graphql_messages(&errors),
+            "deniedINFO forged; onetwothree; abcd; rejected [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn a_graphql_error_message_with_nothing_left_to_say_is_left_out() {
+        let errors = [
+            failed("\u{1}\u{7}"),
+            failed("  padded\t "),
+            failed("\t"),
+            failed(""),
+        ];
+
+        assert_eq!(graphql_messages(&errors), "padded");
     }
 }
