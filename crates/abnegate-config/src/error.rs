@@ -11,63 +11,114 @@ use crate::application::ApplicationError;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// [`Loader::load`](crate::Loader::load) found no file to read.
     #[error("Configuration file '{path}' does not exist")]
-    Missing { path: PathBuf },
+    Missing {
+        /// The file that was looked for.
+        path: PathBuf,
+    },
+    /// A configuration or `.env` file exists but could not be read.
     #[error("Failed to read '{path}'")]
     Read {
+        /// The file that could not be read.
         path: PathBuf,
+        /// Why reading it failed.
         #[source]
         source: io::Error,
     },
+    /// A file, or the owner-only directory that holds it, could not be
+    /// written.
     #[error("Failed to write '{path}'")]
     Write {
+        /// The file that could not be replaced.
         path: PathBuf,
+        /// Why writing it failed.
         #[source]
         source: io::Error,
     },
+    /// The file is not TOML, or its TOML does not fit the settings type.
     #[error("Failed to parse '{path}'")]
     Parse {
+        /// The file that could not be parsed.
         path: PathBuf,
+        /// Where and why the TOML was rejected, reported against the text as
+        /// written so that no decrypted value reaches the message.
         #[source]
         source: toml::de::Error,
     },
+    /// The settings could not be encoded as TOML.
     #[error("Failed to serialize configuration")]
     Serialize(#[from] toml::ser::Error),
+    /// The platform reports no home directory to hold the configuration.
     #[error("Home directory not found")]
     NoHomeDirectory,
     /// A name given as an [`Application`](crate::Application) is not one.
     #[error(transparent)]
     Application(#[from] ApplicationError),
+    /// A key given to [`EnvironmentFile`](crate::EnvironmentFile) is not a
+    /// valid environment variable name.
     #[error("'{key}' is not an environment variable name")]
-    InvalidKey { key: String },
+    InvalidKey {
+        /// The key that was refused.
+        key: String,
+    },
+    /// A sealed value could not be opened with the loader's master key.
     #[error("Failed to decrypt '{field}'")]
     Decrypt {
+        /// Where the value sits in the file, such as `database.password` or
+        /// `hosts[1]`.
         field: String,
+        /// Why it could not be opened:
+        /// [`UnsupportedVersion`](abnegate_secret::Error::UnsupportedVersion)
+        /// for an envelope this release cannot read.
         #[source]
         source: abnegate_secret::Error,
     },
+    /// A value that arrived sealed could not be sealed again on save.
     #[error("Failed to encrypt '{field}'")]
     Encrypt {
+        /// Where the value sits in the settings being saved.
         field: String,
+        /// Why sealing it failed.
         #[source]
         source: abnegate_secret::Error,
     },
+    /// A save would write a value that arrived sealed, and there is no master
+    /// key to seal it again.
     #[error("'{field}' arrived sealed and there is no master key to seal it again")]
-    SealedWithoutKey { field: String },
+    SealedWithoutKey {
+        /// Where the value sits in the settings being saved.
+        field: String,
+    },
+    /// A value that arrived sealed can no longer be followed, because it has
+    /// gone from where it was or its place now holds something other than a
+    /// string, so a save refuses rather than risk writing it in the clear.
     #[error("'{field}' arrived sealed and is no longer a string that can be sealed again")]
-    SealedShapeChanged { field: String },
+    SealedShapeChanged {
+        /// The location that lost its sealed value.
+        field: String,
+    },
+    /// The keyring holds no credential under the name asked for.
     #[cfg(feature = "keyring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
     #[error("No credential stored for '{name}'")]
-    NoCredential { name: String },
+    NoCredential {
+        /// The credential's name within the application's keyring service.
+        name: String,
+    },
+    /// The keyring holds a credential that is not valid UTF-8 or not in the
+    /// platform's format. Its bytes are zeroized and never reported.
     #[cfg(feature = "keyring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
     #[error("Stored credential is unreadable")]
     CredentialUnreadable,
+    /// The platform credential store refused or failed the request.
     #[cfg(feature = "keyring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
     #[error("Credential store is unavailable")]
     Keyring(#[source] keyring::Error),
+    /// Token metadata could not be encoded to, or decoded from, the JSON it is
+    /// stored as.
     #[cfg(feature = "keyring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
     #[error("Failed to encode token metadata")]
