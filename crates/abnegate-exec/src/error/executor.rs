@@ -14,10 +14,6 @@ pub enum ExecutorError {
     #[error("Failed to spawn process")]
     SpawnFailed(#[source] io::Error),
 
-    /// The executor was handed a message other than `RunStart`
-    #[error("Expected a RunStart message")]
-    NotRunStart,
-
     /// Command timed out after running for the given time
     #[error("Command timed out after {}ms", .0.as_millis())]
     Timeout(Duration),
@@ -66,7 +62,6 @@ impl ExecutorError {
     pub fn to_error_code(&self) -> ErrorCode {
         match self {
             ExecutorError::SpawnFailed(_) => ErrorCode::SpawnFailed,
-            ExecutorError::NotRunStart => ErrorCode::InvalidMessage,
             ExecutorError::Timeout(_) => ErrorCode::Timeout,
             ExecutorError::Cancelled => ErrorCode::Cancelled,
             ExecutorError::OutputLimitExceeded { .. } => ErrorCode::OutputLimitExceeded,

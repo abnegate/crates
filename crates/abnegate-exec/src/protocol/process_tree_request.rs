@@ -11,7 +11,7 @@ use serde::Serialize;
 /// it unless the caller named that directory here. A runner whose sandbox
 /// cannot hold that bound does not advertise `confinement_process_tree` and
 /// refuses the job with `confinement_unavailable`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct ProcessTreeRequest {
     /// Directories whose executables the tree may run

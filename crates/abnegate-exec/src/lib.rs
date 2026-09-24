@@ -30,7 +30,6 @@
 //! use std::time::Duration;
 //!
 //! use abnegate_exec::CommandExecutor;
-//! use abnegate_exec::InboundMessage;
 //! use abnegate_exec::OutboundMessage;
 //! use abnegate_exec::RunStart;
 //! use tokio::sync::mpsc;
@@ -39,11 +38,9 @@
 //! let (sender, mut receiver) = mpsc::channel(64);
 //! CommandExecutor::new()
 //!     .spawn(
-//!         &InboundMessage::RunStart(
-//!             RunStart::new("greet", std::env::temp_dir(), "echo")
-//!                 .with_arguments(["hello"])
-//!                 .with_timeout(Duration::from_secs(5)),
-//!         ),
+//!         &RunStart::new("greet", std::env::temp_dir(), "echo")
+//!             .with_arguments(["hello"])
+//!             .with_timeout(Duration::from_secs(5)),
 //!         sender,
 //!     )
 //!     .await?;

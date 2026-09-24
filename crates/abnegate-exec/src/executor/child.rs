@@ -2,6 +2,8 @@
 //! own, so a test can shape the executor's environment without touching
 //! this process's.
 
+use std::ffi::OsStr;
+
 use tokio::process::Command;
 
 use super::sandbox::REQUIRE_CONFINEMENT;
@@ -14,6 +16,15 @@ const CHILD: &str = "ABNEGATE_EXEC_TEST_CHILD";
 /// with no sandbox verdict cached. Returns whether this call was the parent,
 /// which has nothing left to do once the child passes.
 pub(crate) async fn delegated(name: &str, environment: &[(&str, &str)]) -> bool {
+    let environment: Vec<(&str, &OsStr)> = environment
+        .iter()
+        .map(|&(variable, value)| (variable, OsStr::new(value)))
+        .collect();
+    delegated_os(name, &environment).await
+}
+
+/// [`delegated`], with values that need not be UTF-8.
+pub(crate) async fn delegated_os(name: &str, environment: &[(&str, &OsStr)]) -> bool {
     if std::env::var(CHILD).as_deref() == Ok(name) {
         return false;
     }

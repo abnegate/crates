@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 
 use abnegate_secret::SecretValue;
@@ -31,8 +32,8 @@ pub const DEFAULT_ENVIRONMENT: &[&str] = &[
 ///
 /// Three layers, each over the one before:
 ///
-/// - the executor's whole environment, only when the policy
-///   [inherits](Self::inherits);
+/// - the executor's whole environment, less the [removed](Self::remove)
+///   names, only when the policy [inherits](Self::inherits);
 /// - the [allowed](Self::allow) names, each with the executor's own value,
 ///   passed only when the executor has it set;
 /// - the variables [set](Self::set) here.
@@ -55,6 +56,7 @@ pub const DEFAULT_ENVIRONMENT: &[&str] = &[
 pub struct EnvironmentPolicy {
     allowed: BTreeSet<String>,
     variables: BTreeMap<String, SecretValue>,
+    removed: BTreeSet<String>,
     inherit: bool,
 }
 
@@ -64,6 +66,7 @@ impl EnvironmentPolicy {
         Self {
             allowed: BTreeSet::new(),
             variables: BTreeMap::new(),
+            removed: BTreeSet::new(),
             inherit: false,
         }
     }
@@ -80,7 +83,11 @@ impl EnvironmentPolicy {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.allowed.extend(names.into_iter().map(Into::into));
+        for name in names {
+            let name = name.into();
+            self.removed.remove(&name);
+            self.allowed.insert(name);
+        }
         self
     }
 
@@ -89,7 +96,8 @@ impl EnvironmentPolicy {
         Self::empty().inheriting()
     }
 
-    /// The same policy, laid over the executor's whole environment.
+    /// The same policy, laid over the executor's whole environment less the
+    /// [removed](Self::remove) names.
     pub fn inheriting(mut self) -> Self {
         self.inherit = true;
         self
@@ -108,16 +116,20 @@ impl EnvironmentPolicy {
 
     /// Set `name` to `value` over everything else.
     pub fn set(&mut self, name: impl Into<String>, value: impl Into<SecretValue>) {
-        self.variables.insert(name.into(), value.into());
+        let name = name.into();
+        self.removed.remove(&name);
+        self.variables.insert(name, value.into());
     }
 
-    /// Stop passing `name`: forget the value set here and stop allowing the
-    /// executor's own. Returns the value that was set here, if any.
+    /// Stop passing `name` at all: forget the value set here, stop allowing
+    /// the executor's own, and withhold it from an inherited environment.
+    /// Returns the value that was set here, if any.
     ///
-    /// A policy that [inherits](Self::inherits) still passes the executor's
-    /// whole environment, `name` included when the executor has it.
+    /// A later [`allow`](Self::allow) or [`set`](Self::set) of `name` passes
+    /// it again.
     pub fn remove(&mut self, name: &str) -> Option<SecretValue> {
         self.allowed.remove(name);
+        self.removed.insert(name.to_string());
         self.variables.remove(name)
     }
 
@@ -127,22 +139,22 @@ impl EnvironmentPolicy {
     /// A name the policy passes only because it inherits is never read, nor
     /// is a value that is not UTF-8.
     pub fn get(&self, name: &str) -> Option<SecretValue> {
-        match self.variables.get(name) {
-            Some(value) => Some(value.clone()),
-            None if self.allowed.contains(name) => env::var(name).ok().map(SecretValue::new),
-            None => None,
-        }
+        self.variables
+            .get(name)
+            .cloned()
+            .or_else(|| self.read(name).map(SecretValue::new))
     }
 
-    /// Whether `name` is set here, or is allowed and set in the executor now.
+    /// Whether `name` is set here, or is allowed and set in the executor now
+    /// to UTF-8: exactly when [`get`](Self::get) returns a value.
     ///
     /// Never true of a name only because the policy inherits.
     pub fn contains(&self, name: &str) -> bool {
-        self.variables.contains_key(name) || self.passes_on(name)
+        self.variables.contains_key(name) || self.read(name).is_some()
     }
 
-    /// The names set here and the allowed names the executor has set now,
-    /// in order, each once.
+    /// The names set here and the allowed names the executor has set now to
+    /// UTF-8, in order, each once: every name [`get`](Self::get) reads.
     ///
     /// Never the rest of an inherited environment.
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -153,18 +165,24 @@ impl EnvironmentPolicy {
                 self.allowed
                     .iter()
                     .map(String::as_str)
-                    .filter(|name| self.passes_on(name)),
+                    .filter(|name| self.read(name).is_some()),
             )
             .collect::<BTreeSet<&str>>()
             .into_iter()
     }
 
     /// Every variable this policy gives a command, read now: the executor's
-    /// whole environment when it inherits, then the allowed names the
-    /// executor has set, then the variables set here.
+    /// whole environment less the removed names when it inherits, then the
+    /// allowed names the executor has set, then the variables set here.
+    ///
+    /// Every value comes back in the clear, those set here included: they
+    /// are exposed as plain [`OsString`]s rather than [`SecretValue`]s, so
+    /// never log the map.
     pub fn inherited(&self) -> BTreeMap<OsString, OsString> {
         let mut inherited: BTreeMap<OsString, OsString> = if self.inherit {
-            env::vars_os().collect()
+            env::vars_os()
+                .filter(|(name, _)| !self.withholds(name))
+                .collect()
         } else {
             BTreeMap::new()
         };
@@ -177,11 +195,16 @@ impl EnvironmentPolicy {
         inherited
     }
 
-    /// Give `command` exactly this policy's environment: cleared unless the
-    /// policy inherits, then the allowed names the executor has set, then the
-    /// variables set here.
+    /// Give `command` exactly this policy's environment: cleared when the
+    /// policy does not inherit and stripped of the removed names when it
+    /// does, then the allowed names the executor has set, then the variables
+    /// set here.
     pub fn apply(&self, command: &mut Command) {
-        if !self.inherit {
+        if self.inherit {
+            for name in &self.removed {
+                command.env_remove(name);
+            }
+        } else {
             command.env_clear();
         }
         command.envs(self.allowed_values());
@@ -190,8 +213,13 @@ impl EnvironmentPolicy {
         }
     }
 
-    fn passes_on(&self, name: &str) -> bool {
-        self.allowed.contains(name) && env::var_os(name).is_some()
+    fn withholds(&self, name: &OsStr) -> bool {
+        name.to_str()
+            .is_some_and(|name| self.removed.contains(name))
+    }
+
+    fn read(&self, name: &str) -> Option<String> {
+        self.allowed.get(name).and_then(|name| env::var(name).ok())
     }
 
     fn allowed_values(&self) -> impl Iterator<Item = (OsString, OsString)> + '_ {
@@ -223,6 +251,9 @@ impl<Name: Into<String>, Value: Into<SecretValue>> FromIterator<(Name, Value)>
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
     use crate::executor::child;
 
     use super::*;
@@ -417,5 +448,59 @@ mod tests {
         assert_eq!(names(&policy), ["EXTRA"]);
         assert_eq!(environment_of(&policy).await, ["EXTRA=1"]);
         assert!(policy.remove(ALLOWED).is_none());
+    }
+
+    /// A name `contains` or `names` reports is one `get` can read.
+    #[tokio::test]
+    async fn an_allowed_value_that_is_not_utf8_is_never_reported() {
+        const NAME: &str = "executor::environment_policy::tests::an_allowed_value_that_is_not_utf8_is_never_reported";
+        if child::delegated_os(NAME, &[(ALLOWED, OsStr::from_bytes(b"not-\xFF-utf8"))]).await {
+            return;
+        }
+        assert!(
+            env::var_os(ALLOWED).is_some(),
+            "{ALLOWED} is not set here, so this test proves nothing"
+        );
+        let policy = EnvironmentPolicy::empty().allow([ALLOWED]);
+
+        assert!(policy.get(ALLOWED).is_none());
+        assert!(!policy.contains(ALLOWED), "{policy:?}");
+        assert!(names(&policy).is_empty(), "{:?}", names(&policy));
+    }
+
+    #[tokio::test]
+    async fn remove_withholds_a_name_from_an_inherited_environment() {
+        const NAME: &str = "executor::environment_policy::tests::remove_withholds_a_name_from_an_inherited_environment";
+        if child::delegated(NAME, &[(ALLOWED, "allowed-value")]).await {
+            return;
+        }
+        let line = format!("{ALLOWED}=allowed-value");
+        let mut policy = EnvironmentPolicy::inherit();
+
+        policy.remove(ALLOWED);
+
+        let withheld = environment_of(&policy).await;
+        assert!(
+            !withheld
+                .iter()
+                .any(|entry| entry.starts_with(&format!("{ALLOWED}="))),
+            "{withheld:?}"
+        );
+        assert!(
+            withheld.iter().any(|entry| entry.starts_with("PATH=")),
+            "the rest of the environment is still inherited: {withheld:?}"
+        );
+        assert!(!policy.inherited().contains_key(OsStr::new(ALLOWED)));
+
+        let allowed = policy.clone().allow([ALLOWED]);
+        assert!(environment_of(&allowed).await.contains(&line));
+        assert!(allowed.inherited().contains_key(OsStr::new(ALLOWED)));
+
+        let set = policy.with(ALLOWED, "overlay-value");
+        assert!(
+            environment_of(&set)
+                .await
+                .contains(&format!("{ALLOWED}=overlay-value"))
+        );
     }
 }

@@ -17,7 +17,7 @@ use super::milliseconds;
 ///
 /// `Debug` prints the names in [`environment`](Self::environment) and never
 /// their values, which can carry a credential.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct RunStart {
     /// Names the job in every message about it
@@ -123,8 +123,8 @@ impl RunStart {
     }
 
     /// Run the command under `confinement`.
-    pub fn with_confinement(mut self, confinement: ConfinementRequest) -> Self {
-        self.confinement = Some(Box::new(confinement));
+    pub fn with_confinement(mut self, confinement: impl Into<ConfinementRequest>) -> Self {
+        self.confinement = Some(Box::new(confinement.into()));
         self
     }
 }

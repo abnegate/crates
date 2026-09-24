@@ -15,7 +15,7 @@ use super::run_stdin::RunStdin;
 /// `Debug` prints the names in a `RunStart` environment and the length of a
 /// `RunStdin` payload, never the values themselves: either can carry a
 /// credential.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum InboundMessage {
@@ -67,7 +67,6 @@ impl From<Ping> for InboundMessage {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::time::Duration;
 
     use crate::protocol::ConfinementRequest;
@@ -204,10 +203,11 @@ mod tests {
                 .with_timeout(Duration::from_secs(300))
                 .with_output_limit(10_485_760)
                 .with_working_directory("/home/user/project/packages/app")
-                .with_confinement(ConfinementRequest::new(
-                    vec![PathBuf::from("/home/user/project")],
-                    vec![PathBuf::from("/home/user/project/target")],
-                ))
+                .with_confinement(
+                    ConfinementRequest::default()
+                        .with_read_roots(["/home/user/project"])
+                        .with_write_roots(["/home/user/project/target"])
+                )
         );
     }
 

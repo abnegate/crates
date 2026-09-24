@@ -9,7 +9,11 @@ use super::process_tree_request::ProcessTreeRequest;
 ///
 /// Everything outside these roots is denied, as is the network. Roots must be
 /// absolute paths that exist when the job starts.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// The [`Default`] grants no root at all and asks for the single-command
+/// confinement; [`with_read_roots`](Self::with_read_roots) and
+/// [`with_write_roots`](Self::with_write_roots) name what the job may see.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct ConfinementRequest {
     /// Directories the job may read
@@ -29,14 +33,24 @@ pub struct ConfinementRequest {
 }
 
 impl ConfinementRequest {
-    /// Read `read_roots`, read and write `write_roots`, and run as a single
-    /// command.
-    pub fn new(read_roots: Vec<PathBuf>, write_roots: Vec<PathBuf>) -> Self {
-        Self {
-            read_roots,
-            write_roots,
-            process_tree: None,
-        }
+    /// Let the job read `roots`, in place of any named before.
+    pub fn with_read_roots<I, P>(mut self, roots: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.read_roots = roots.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Let the job read and write `roots`, in place of any named before.
+    pub fn with_write_roots<I, P>(mut self, roots: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.write_roots = roots.into_iter().map(Into::into).collect();
+        self
     }
 
     /// Run as a process tree bounded by `process_tree` instead of as a single
@@ -44,5 +58,50 @@ impl ConfinementRequest {
     pub fn with_process_tree(mut self, process_tree: ProcessTreeRequest) -> Self {
         self.process_tree = Some(process_tree);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_request_built_from_its_roots_round_trips() {
+        let request = ConfinementRequest::default()
+            .with_read_roots(["/source", "/shared"])
+            .with_write_roots([PathBuf::from("/source/target")])
+            .with_process_tree(ProcessTreeRequest::new(vec![PathBuf::from("/usr/bin")]));
+
+        let line = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            line,
+            r#"{"read_roots":["/source","/shared"],"write_roots":["/source/target"],"process_tree":{"execute_roots":["/usr/bin"]}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ConfinementRequest>(&line).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn the_default_grants_no_root_to_a_single_command() {
+        let request = ConfinementRequest::default();
+
+        assert!(request.read_roots.is_empty());
+        assert!(request.write_roots.is_empty());
+        assert!(request.process_tree.is_none());
+    }
+
+    #[test]
+    fn naming_roots_again_replaces_them() {
+        let request = ConfinementRequest::default()
+            .with_read_roots(["/first"])
+            .with_write_roots(["/first"])
+            .with_read_roots(["/second"])
+            .with_write_roots(Vec::<PathBuf>::new());
+
+        assert_eq!(request.read_roots, [PathBuf::from("/second")]);
+        assert!(request.write_roots.is_empty());
     }
 }
