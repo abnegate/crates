@@ -86,7 +86,7 @@ mod tests {
             call: tool_call,
             result: "file contents".to_string(),
             success: true,
-            duration_milliseconds: 150,
+            duration: std::time::Duration::from_millis(150),
         };
 
         let mut step = AgentStep::new(AgentPhase::Acting);

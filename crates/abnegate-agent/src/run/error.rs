@@ -12,7 +12,7 @@ pub enum RunError {
     #[error("Context error: {0}")]
     Context(#[from] ContextError),
     /// The turn spent
-    /// [`AgentConfig::max_iterations`](super::AgentConfig::max_iterations)
+    /// [`AgentConfig::maximum_iterations`](super::AgentConfig::maximum_iterations)
     /// model rounds without an answer.
     #[error("Maximum iterations exceeded")]
     IterationLimit,

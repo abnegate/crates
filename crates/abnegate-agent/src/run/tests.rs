@@ -664,7 +664,7 @@ async fn a_model_that_keeps_answering_with_nothing_fails_the_turn_soon() {
         assert!(matches!(error, RunError::Empty), "{reply}: {error}");
         assert_eq!(
             provider.received.lock().unwrap().len(),
-            super::r#loop::MAX_EMPTY_RESPONSES,
+            super::r#loop::MAXIMUM_EMPTY_RESPONSES,
             "{reply}"
         );
     }

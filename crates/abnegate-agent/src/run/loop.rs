@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use abnegate_llm::LlmClient;
@@ -43,7 +44,7 @@ const UNFINISHED_REASONS: &[&str] = &["tool_calls", "function_call", "content_fi
 
 /// Rounds in a row the model may answer with nothing usable before the turn
 /// fails, since asking again sends the same request.
-pub(super) const MAX_EMPTY_RESPONSES: usize = 3;
+pub(super) const MAXIMUM_EMPTY_RESPONSES: usize = 3;
 
 /// A ReAct loop: think, call tools, observe their results, until the model
 /// answers or the iteration budget runs out.
@@ -72,7 +73,7 @@ impl Agent {
             tools,
             policy: Policy {
                 limit: None,
-                reserved: config.max_tokens,
+                reserved: config.maximum_tokens,
                 source: ContextSource::Unknown,
             },
             config,
@@ -139,7 +140,7 @@ impl Agent {
         let mut empty = 0;
 
         loop {
-            if state.iteration >= self.config.max_iterations {
+            if state.iteration >= self.config.maximum_iterations {
                 state.fail(RunError::IterationLimit.to_string());
                 return Err(RunError::IterationLimit);
             }
@@ -266,7 +267,7 @@ impl Agent {
     }
 
     /// Count a round that brought neither an answer nor a call, and fail the
-    /// turn once there have been [`MAX_EMPTY_RESPONSES`] in a row.
+    /// turn once there have been [`MAXIMUM_EMPTY_RESPONSES`] in a row.
     ///
     /// The reply is kept on the step but not in the conversation: an empty
     /// assistant message is not something a provider accepts back.
@@ -277,7 +278,7 @@ impl Agent {
     ) -> Result<(), RunError> {
         state.add_step(step.complete());
         *empty += 1;
-        if *empty < MAX_EMPTY_RESPONSES {
+        if *empty < MAXIMUM_EMPTY_RESPONSES {
             return Ok(());
         }
         state.fail(RunError::Empty.to_string());
@@ -320,7 +321,7 @@ impl Agent {
                 let executed = join_all(parallel.iter().map(|call| async move {
                     let start = Instant::now();
                     let result = self.execute_tool(call, callback).await;
-                    (call, result, elapsed(start))
+                    (call, result, start.elapsed())
                 }))
                 .await;
                 for (call, result, duration) in executed {
@@ -335,7 +336,14 @@ impl Agent {
             let result = self.execute_tool(first, callback).await;
             let ends = result.success && self.tools.ends_turn(&first.function.name) == Some(true);
             let response = result.to_message();
-            self.record_tool(state, callback, &mut results, first, result, elapsed(start));
+            self.record_tool(
+                state,
+                callback,
+                &mut results,
+                first,
+                result,
+                start.elapsed(),
+            );
             rest = &rest[1..];
 
             if ends {
@@ -349,7 +357,7 @@ impl Agent {
                         call: skipped.clone(),
                         result: output.clone(),
                         success: false,
-                        duration_milliseconds: 0,
+                        duration: Duration::ZERO,
                     });
                     state.add_message(Message::tool_result(&skipped.id, output));
                 }
@@ -372,7 +380,7 @@ impl Agent {
         tool_results: &mut Vec<ToolCallResult>,
         tool_call: &ToolCall,
         result: ToolResult,
-        duration_milliseconds: u64,
+        duration: Duration,
     ) {
         callback.on_tool_result(&tool_call.function.name, &result);
         let output = result.to_message();
@@ -380,7 +388,7 @@ impl Agent {
             call: tool_call.clone(),
             result: output.clone(),
             success: result.success,
-            duration_milliseconds,
+            duration,
         });
         state.add_message(Message::tool_result(&tool_call.id, output));
     }
@@ -427,10 +435,6 @@ impl Agent {
             )),
         }
     }
-}
-
-fn elapsed(start: Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The text a panic carried, when it carried any.

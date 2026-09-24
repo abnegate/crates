@@ -27,7 +27,7 @@ pub struct AgentState {
     pub consumed: usize,
     pub steps: Vec<AgentStep>,
     /// Model rounds spent in the current turn, counted against
-    /// [`AgentConfig::max_iterations`](super::AgentConfig::max_iterations).
+    /// [`AgentConfig::maximum_iterations`](super::AgentConfig::maximum_iterations).
     pub iteration: usize,
     /// Tokens the provider reported spending, across every turn.
     pub tokens_used: u32,
@@ -95,16 +95,16 @@ impl AgentState {
         self.finished_at = Some(Utc::now());
     }
 
-    /// How far through `max_iterations` the turn is, as a percentage that
+    /// How far through `maximum_iterations` the turn is, as a percentage that
     /// only reaches 100 once the turn has finished.
-    pub fn progress_percent(&self, max_iterations: usize) -> u8 {
+    pub fn progress_percent(&self, maximum_iterations: usize) -> u8 {
         if self.finished {
             return 100;
         }
-        if max_iterations == 0 {
+        if maximum_iterations == 0 {
             return 0;
         }
-        ((self.iteration as f32 / max_iterations as f32) * 100.0).min(99.0) as u8
+        ((self.iteration as f32 / maximum_iterations as f32) * 100.0).min(99.0) as u8
     }
 }
 
@@ -198,7 +198,6 @@ mod tests {
     #[test]
     fn test_agent_state_empty_system_prompt() {
         let state = AgentState::new("Hello", Some("".to_string()));
-        // Empty string is still a Some, so we have 2 messages
         assert_eq!(state.messages.len(), 2);
         assert_eq!(state.messages[0].content, Some("".to_string()));
     }
@@ -355,7 +354,7 @@ mod tests {
             call: tool_call,
             result: "success".to_string(),
             success: true,
-            duration_milliseconds: 100,
+            duration: std::time::Duration::from_millis(100),
         }]);
         state.add_step(step);
 
