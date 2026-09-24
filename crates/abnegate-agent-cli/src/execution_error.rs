@@ -49,6 +49,8 @@ impl From<ExecutionError> for ProviderError {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use abnegate_llm::ProviderError;
 
     use super::ExecutionError;
@@ -62,21 +64,18 @@ mod tests {
             "/tmp/run.events.jsonl",
         );
         let error = ExecutionError::new(
-            ProviderError::Timeout {
-                provider: "claude".to_string(),
-                seconds: 5,
-            },
+            ProviderError::timeout("claude", Duration::from_secs(5)),
             Some(log.clone()),
         );
 
         assert_eq!(
             error.to_string(),
-            "claude: agent command timed out after 5 seconds"
+            "claude: agent command timed out after 5s"
         );
         assert_eq!(error.log.as_ref(), Some(&log));
         assert!(matches!(
             ProviderError::from(error),
-            ProviderError::Timeout { seconds: 5, .. }
+            ProviderError::Timeout { timeout, .. } if timeout == Duration::from_secs(5)
         ));
     }
 }

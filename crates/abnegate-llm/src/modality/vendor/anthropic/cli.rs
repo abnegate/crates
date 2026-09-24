@@ -119,10 +119,7 @@ impl Cli {
 
         tokio::time::timeout(self.timeout, exchange)
             .await
-            .map_err(|_| ProviderError::Timeout {
-                provider: provider.to_string(),
-                seconds: self.timeout.as_secs(),
-            })?
+            .map_err(|_| ProviderError::timeout(provider, self.timeout))?
     }
 }
 

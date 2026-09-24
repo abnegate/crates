@@ -1,6 +1,7 @@
 //! Failures raised by a completion provider.
 
 use std::fmt;
+use std::time::Duration;
 
 use abnegate_secret::redact;
 use thiserror::Error;
@@ -39,8 +40,11 @@ pub enum ProviderError {
         message: String,
     },
 
-    #[error("{provider}: agent command timed out after {seconds} seconds")]
-    Timeout { provider: String, seconds: u64 },
+    /// The agent command ran past its deadline and was stopped. The deadline
+    /// renders in [`Duration`]'s `Debug` form, so 1,500 ms reads `1.5s` and
+    /// 500 ms reads `500ms`.
+    #[error("{provider}: agent command timed out after {timeout:?}")]
+    Timeout { provider: String, timeout: Duration },
 
     #[error("{provider}: agent output could not be parsed: {message}")]
     Malformed { provider: String, message: String },
@@ -170,6 +174,14 @@ impl ProviderError {
         }
     }
 
+    /// `provider`'s agent command ran past `timeout` and was stopped.
+    pub fn timeout(provider: &str, timeout: Duration) -> Self {
+        Self::Timeout {
+            provider: provider.to_string(),
+            timeout,
+        }
+    }
+
     pub fn exit(provider: &str, status: ExitStatus, message: &str) -> Self {
         Self::Exit {
             provider: provider.to_string(),
@@ -247,6 +259,8 @@ impl ProviderError {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::ProviderError;
     use crate::error::Error;
     use crate::provider::exit_status::ExitStatus;
@@ -416,6 +430,32 @@ mod tests {
             ProviderError::io("file not found").to_string(),
             "IO error: file not found"
         );
+    }
+
+    #[test]
+    fn a_timeout_keeps_the_fraction_of_a_second_it_waited() {
+        for (timeout, rendered) in [
+            (
+                Duration::from_millis(1_500),
+                "claude: agent command timed out after 1.5s",
+            ),
+            (
+                Duration::from_millis(500),
+                "claude: agent command timed out after 500ms",
+            ),
+            (
+                Duration::from_secs(600),
+                "claude: agent command timed out after 600s",
+            ),
+        ] {
+            let error = ProviderError::timeout("claude", timeout);
+
+            assert_eq!(error.to_string(), rendered);
+            assert!(
+                matches!(&error, ProviderError::Timeout { timeout: kept, .. } if *kept == timeout),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]

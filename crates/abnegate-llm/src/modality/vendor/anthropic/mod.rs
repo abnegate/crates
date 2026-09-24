@@ -964,7 +964,14 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, ProviderError::Timeout { .. }), "{error:?}");
+        assert!(
+            matches!(&error, ProviderError::Timeout { timeout, .. } if *timeout == Duration::from_millis(300)),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().ends_with("timed out after 300ms"),
+            "{error}"
+        );
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 

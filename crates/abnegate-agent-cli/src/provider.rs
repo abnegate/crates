@@ -360,10 +360,7 @@ impl CliProvider {
                     .await;
                 tracing::warn!(provider = %self.name, label, "agent timed out; stopping its process group");
                 stop_agent(child, group).await;
-                return Err(ProviderError::Timeout {
-                    provider: self.name.clone(),
-                    seconds: self.settings.timeout.as_secs(),
-                });
+                return Err(ProviderError::timeout(&self.name, self.settings.timeout));
             }
             Outcome::Settled(verdict) => verdict,
         };
