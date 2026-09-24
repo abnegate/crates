@@ -9,9 +9,10 @@ const CLOSING: char = '}';
 const DEFAULT: &str = ":-";
 
 /// What a rendered MCP configuration leaves to the child's environment: the
-/// literal values moved out of the file and the values mixing references
-/// with literal text, each under a generated variable, and the host
-/// variables the file's own `${VAR}` references name.
+/// literal text moved out of the file and a stdio server's values mixing
+/// references with literal text, each under a generated variable, and the
+/// host variables a stdio server's `${VAR}` references name. Nothing a
+/// remote server refers to is ever among them.
 #[derive(Debug, Default)]
 pub(crate) struct Placeholders {
     pub(crate) environment: BTreeMap<String, SecretValue>,
@@ -20,10 +21,11 @@ pub(crate) struct Placeholders {
 }
 
 impl Placeholders {
-    /// What to write in place of `value`: `value` itself when it is empty
-    /// or a single whole reference the CLI expands, and otherwise a
-    /// reference to a generated variable, which holds the literal as it is
-    /// or, for one mixing references with literal text, the text to expand.
+    /// What to write in place of a stdio server's `value`: `value` itself
+    /// when it is empty or a single whole reference the CLI expands, and
+    /// otherwise a reference to a generated variable, which holds the literal
+    /// as it is or, for one mixing references with literal text, the text to
+    /// expand.
     pub(crate) fn substitute(&mut self, value: &SecretValue) -> String {
         let text = value.expose();
         if text.is_empty() {
@@ -33,17 +35,53 @@ impl Placeholders {
         if referring && whole_reference(text) {
             return text.to_string();
         }
-        let variable = format!(
+        if !referring {
+            return self.hold(text.to_string());
+        }
+        let variable = self.generated();
+        self.templates.insert(variable.clone(), value.clone());
+        reference(&variable)
+    }
+
+    /// What to write in place of a remote server's `value`, whose references
+    /// the CLI expands under rules of its own: each reference as written, for
+    /// the CLI alone to expand, and each run of literal text around them as a
+    /// reference to a generated variable holding it. No reference is noted,
+    /// so nothing it names is ever read from this process's environment.
+    pub(crate) fn separate(&mut self, value: &SecretValue) -> String {
+        let mut rendered = String::new();
+        let mut literal = String::new();
+        for segment in segments(value.expose()) {
+            match segment {
+                Segment::Literal(text) => literal.push_str(text),
+                Segment::Reference { written, .. } => {
+                    rendered.push_str(&self.hold(std::mem::take(&mut literal)));
+                    rendered.push_str(written);
+                }
+            }
+        }
+        rendered.push_str(&self.hold(literal));
+        rendered
+    }
+
+    /// A reference to a new generated variable holding `literal` as it is,
+    /// or nothing when there is no text to hold.
+    fn hold(&mut self, literal: String) -> String {
+        if literal.is_empty() {
+            return String::new();
+        }
+        let variable = self.generated();
+        self.environment
+            .insert(variable.clone(), SecretValue::new(literal));
+        reference(&variable)
+    }
+
+    /// The name of the next generated variable.
+    fn generated(&self) -> String {
+        format!(
             "{VARIABLE_PREFIX}{}",
             self.environment.len() + self.templates.len()
-        );
-        let placeholder = format!("{OPENING}{variable}{CLOSING}");
-        if referring {
-            self.templates.insert(variable, value.clone());
-        } else {
-            self.environment.insert(variable, value.clone());
-        }
-        placeholder
+        )
     }
 
     /// Note every variable `text` refers to, and say whether it referred to
@@ -148,6 +186,11 @@ fn segments(text: &str) -> Vec<Segment<'_>> {
         segments.push(Segment::Literal(rest));
     }
     segments
+}
+
+/// `${variable}`.
+fn reference(variable: &str) -> String {
+    format!("{OPENING}{variable}{CLOSING}")
 }
 
 fn variable(name: &str) -> bool {

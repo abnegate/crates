@@ -4,9 +4,13 @@
 //! through `--mcp-config`, and only that file is loaded: `--strict-mcp-config`
 //! keeps a repository's own `.mcp.json` from adding servers the caller never
 //! chose. Values may hold `${VAR}` references, which the CLI expands itself
-//! from the child's environment; the child is given each variable they name
-//! from the host, and every literal value moves out of the file into a
-//! variable of its own, so the file never holds a secret.
+//! from the child's environment, and every literal value moves out of the
+//! file into a variable of its own, so the file never holds a secret. The
+//! child is given each variable a stdio server's values name from the host.
+//! A remote server's URL and headers keep their references for the CLI
+//! alone, which expands them under rules of its own that keep a credential
+//! from a server a configuration names, so nothing they name is ever read
+//! from the host.
 //!
 //! [`McpConfig`] is the one configuration for every way a server reaches a
 //! model: [`McpConfig::from_environment`] reads it under an application's own

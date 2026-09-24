@@ -403,13 +403,16 @@ fn command_on_path(name: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::HashMap;
+    use std::ffi::OsString;
     use std::io::Read;
     use std::path::Path;
     use std::path::PathBuf;
 
+    use abnegate_llm::Credential;
     use abnegate_secret::SecretValue;
     use serde_json::Value;
     use tempfile::NamedTempFile;
+    use tokio::process::Command;
 
     use super::AUTO_CONNECT_VARIABLE;
     use super::CONFIG_VARIABLE;
@@ -420,11 +423,13 @@ mod tests {
     use super::default_path;
     use super::parse_flag;
     use super::variable;
+    use crate::environment::Environment;
     use crate::kind::AgentKind;
     use crate::mcp::attachment::McpAttachment;
     use crate::mcp::config_error::McpConfigError;
     use crate::mcp::server::McpServer;
     use crate::mcp::transport::McpTransport;
+    use crate::settings::CliSettings;
 
     fn rendered(config: &McpConfig) -> McpAttachment {
         config
@@ -547,6 +552,47 @@ mod tests {
 
         assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
         assert!(config.redacted()["mcpServers"].get("broken").is_none());
+    }
+
+    /// A CLI's own rule for a remote server's references is all that keeps a
+    /// credential from a server a configuration names, so nothing a remote
+    /// server refers to may reach the child by any other road: neither
+    /// expanded into a generated variable nor handed over from the host
+    /// under its own name.
+    #[test]
+    fn the_child_is_never_handed_a_credential_a_remote_server_refers_to() {
+        let settings = CliSettings::default()
+            .with_credential(Credential::key("ANTHROPIC_API_KEY", "sk-ant-explicit"))
+            .with_mcp_server(
+                "remote",
+                McpServer::remote("https://mcp.example.com/${NPM_TOKEN}")
+                    .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}")
+                    .with_header("X-Npm", "token ${NPM_TOKEN}"),
+            );
+        let attachment = settings
+            .mcp
+            .render(AgentKind::Claude)
+            .expect("rendered")
+            .expect("an attachment");
+        let host = |variable: &str| match variable {
+            "PATH" => Some(OsString::from("/usr/bin:/bin")),
+            "ANTHROPIC_API_KEY" => Some(OsString::from("sk-ant-host-key")),
+            "NPM_TOKEN" => Some(OsString::from("npm-host-secret")),
+            _ => None,
+        };
+
+        let environment = Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host);
+        let mut command = Command::new("true");
+        environment.apply(&mut command);
+
+        for (variable, value) in command.as_std().get_envs() {
+            let value = value.map(|value| value.to_string_lossy().into_owned());
+            let value = value.unwrap_or_default();
+            assert!(
+                !value.contains("sk-ant-host-key") && !value.contains("npm-host-secret"),
+                "the child was handed a credential as {variable:?}={value}"
+            );
+        }
     }
 
     #[test]

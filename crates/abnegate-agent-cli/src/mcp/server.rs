@@ -34,8 +34,10 @@ const NAME_PUNCTUATION: [char; 2] = ['_', '-'];
 /// Environment and header values are held as secrets, so a literal key never
 /// reaches a log line through `Debug`, and never reaches the rendered
 /// configuration file either: see [`McpAttachment`](crate::mcp::McpAttachment).
-/// A `${VAR}` reference anywhere the CLI expands one is resolved from the
-/// host's environment, which the child is given only the named variables of.
+/// A `${VAR}` reference in a stdio server's command, arguments or
+/// environment is resolved from the host's environment, which the child is
+/// given only the named variables of. One in a remote server's
+/// [`url`](McpServer::url) or [`headers`](McpServer::headers) never is.
 ///
 /// Reads and writes the `mcpServers` entry shape: `args`, `env` and `cwd` on
 /// the wire, each also read under its full name here.
@@ -52,11 +54,27 @@ pub struct McpServer {
     #[serde(rename = "env", alias = "environment")]
     pub environment: BTreeMap<String, SecretValue>,
     /// Where an HTTP or SSE server listens.
+    ///
+    /// Written to the rendered file as it is, `${VAR}` references included,
+    /// for the CLI to expand from its own environment under its own rules:
+    /// Claude Code reads its own and cloud credentials as empty here. A
+    /// variable a reference names is never read from this process's
+    /// environment, so it reaches the CLI only if the caller hands it to the
+    /// child, such as through
+    /// [`CliSettings::environment`](crate::CliSettings::environment).
     pub url: Option<String>,
     /// How the server is reached; implied by `command` or `url` when unset.
     #[serde(rename = "type")]
     pub transport: Option<McpTransport>,
     /// Headers sent to an HTTP or SSE server.
+    ///
+    /// Each `${VAR}` reference in a value is written to the rendered file as
+    /// it is, for the CLI alone to expand under the same rules as a
+    /// reference in [`McpServer::url`], and is never read from this process's
+    /// environment. The literal text around a reference moves into a
+    /// generated variable, so no literal secret reaches the file:
+    /// `Bearer ${TOKEN}` is written `${ABNEGATE_MCP_0}${TOKEN}`, with
+    /// `ABNEGATE_MCP_0` holding `Bearer `.
     pub headers: BTreeMap<String, SecretValue>,
     /// The tools to allow without prompting, by the names the server gives
     /// them. Empty allows every tool the server offers. A launcher that
@@ -301,14 +319,13 @@ impl McpServer {
                 entry.insert("type".to_string(), json!(transport));
             }
         } else if let Some(url) = &self.url {
-            placeholders.note(url);
             let transport = self.transport.unwrap_or(McpTransport::Http);
             entry.insert("type".to_string(), json!(transport));
             entry.insert("url".to_string(), json!(url));
             if !self.headers.is_empty() {
                 entry.insert(
                     "headers".to_string(),
-                    substituted(&self.headers, placeholders),
+                    separated(&self.headers, placeholders),
                 );
             }
         }
@@ -369,6 +386,14 @@ fn substituted(values: &BTreeMap<String, SecretValue>, placeholders: &mut Placeh
     values
         .iter()
         .map(|(key, value)| (key.clone(), json!(placeholders.substitute(value))))
+        .collect::<Map<String, Value>>()
+        .into()
+}
+
+fn separated(values: &BTreeMap<String, SecretValue>, placeholders: &mut Placeholders) -> Value {
+    values
+        .iter()
+        .map(|(key, value)| (key.clone(), json!(placeholders.separate(value))))
         .collect::<Map<String, Value>>()
         .into()
 }
@@ -593,17 +618,93 @@ mod tests {
         let entry = server.entry(&mut placeholders, AgentKind::Claude);
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], "https://example.com/mcp");
-        assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_0}");
         assert_eq!(
-            placeholders
-                .templates
-                .get("ABNEGATE_MCP_0")
-                .map(SecretValue::expose),
-            Some("Bearer ${TOKEN}")
+            entry["headers"]["Authorization"],
+            "${ABNEGATE_MCP_0}${TOKEN}"
         );
         assert!(entry.get("command").is_none());
         assert!(entry.get("args").is_none());
         assert!(entry.get("env").is_none());
+    }
+
+    /// Claude Code reads its own and cloud credentials as empty in a remote
+    /// server's url and headers. A reference expanded here would get around
+    /// that, so each is left for the CLI alone to expand, and only the literal
+    /// text around it moves out of the file.
+    #[test]
+    fn a_remote_header_leaves_its_references_to_the_cli_and_moves_only_its_literal_text() {
+        let server = http()
+            .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}")
+            .with_header("X-Client", "id=${CF_ID:-anonymous};v=1");
+        let mut placeholders = Placeholders::default();
+
+        let entry = server.entry(&mut placeholders, AgentKind::Claude);
+
+        assert_eq!(
+            entry["headers"]["Authorization"],
+            "${ABNEGATE_MCP_0}${ANTHROPIC_API_KEY}"
+        );
+        assert_eq!(
+            entry["headers"]["X-Client"],
+            "${ABNEGATE_MCP_1}${CF_ID:-anonymous}${ABNEGATE_MCP_2}"
+        );
+        assert_eq!(
+            placeholders
+                .environment
+                .iter()
+                .map(|(variable, value)| (variable.as_str(), value.expose()))
+                .collect::<Vec<_>>(),
+            [
+                ("ABNEGATE_MCP_0", "Bearer "),
+                ("ABNEGATE_MCP_1", "id="),
+                ("ABNEGATE_MCP_2", ";v=1")
+            ]
+        );
+        assert!(placeholders.templates.is_empty());
+        assert!(placeholders.references.is_empty());
+    }
+
+    #[test]
+    fn a_whole_reference_header_passes_through_unchanged_and_nothing_is_read_from_the_host() {
+        let server =
+            McpServer::remote("https://${MCP_HOST}/mcp").with_header("X-Token", "${TOKEN}");
+        let mut placeholders = Placeholders::default();
+
+        let entry = server.entry(&mut placeholders, AgentKind::Claude);
+
+        assert_eq!(entry["headers"]["X-Token"], "${TOKEN}");
+        assert_eq!(entry["url"], "https://${MCP_HOST}/mcp");
+        assert!(placeholders.environment.is_empty());
+        assert!(
+            placeholders.references.is_empty(),
+            "a remote server's reference is read from the host: {:?}",
+            placeholders.references
+        );
+    }
+
+    #[test]
+    fn a_literal_secret_in_a_remote_header_reaches_the_child_only_through_a_placeholder() {
+        let server = http()
+            .with_header("Authorization", "Bearer sk-live-secret")
+            .with_header("X-Session", "secret=sk-live-secret;user=${USER_NAME}");
+        let mut placeholders = Placeholders::default();
+
+        let entry = server.entry(&mut placeholders, AgentKind::Claude);
+
+        assert!(!entry.to_string().contains("sk-live-secret"), "{entry}");
+        assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_0}");
+        assert_eq!(
+            entry["headers"]["X-Session"],
+            "${ABNEGATE_MCP_1}${USER_NAME}"
+        );
+        assert_eq!(
+            placeholders
+                .environment
+                .values()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            ["Bearer sk-live-secret", "secret=sk-live-secret;user="]
+        );
     }
 
     #[test]
@@ -658,7 +759,8 @@ mod tests {
         );
         assert_eq!(
             placeholders.references.iter().collect::<Vec<_>>(),
-            ["GRAFANA_URL", "MCP_HOST"]
+            ["GRAFANA_URL"],
+            "a remote server's reference is read from the host"
         );
     }
 
