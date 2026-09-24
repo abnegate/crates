@@ -24,7 +24,13 @@ pub const VISION_MODEL_VARIABLE: &str = "ABNEGATE_VISION_MODEL";
 pub(crate) const MINIMUM_TIMEOUT: Duration = Duration::from_secs(1);
 /// Floor on the poll interval, since a zero interval polls ComfyUI in a busy loop.
 const MINIMUM_POLL_INTERVAL: Duration = Duration::from_millis(1);
-const MAXIMUM_REQUEST_TIMEOUT_SECONDS: u64 = 600;
+const MAXIMUM_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const MAXIMUM_CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(30);
+const MAXIMUM_CAPTION_TIMEOUT: Duration = Duration::from_secs(600);
+const MAXIMUM_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+/// Ceiling on every generation deadline: image, video, audio and upscale.
+const MAXIMUM_GENERATION_TIMEOUT: Duration = Duration::from_secs(3600);
+const MAXIMUM_TRAIN_TIMEOUT: Duration = Duration::from_secs(14_400);
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8188";
 const DEFAULT_ARTIFACT_ROOT: &str = "./artifacts";
 const DEFAULT_MODELS_DIRECTORY: &str = "./comfyui/models";
@@ -61,13 +67,36 @@ fn bounded(value: Option<String>, default: u64, minimum: u64, maximum: u64) -> u
         .clamp(minimum, maximum)
 }
 
-fn seconds(value: Option<String>, default: Duration, minimum: u64, maximum: u64) -> Duration {
-    Duration::from_secs(bounded(value, default.as_secs(), minimum, maximum))
+fn seconds(
+    value: Option<String>,
+    default: Duration,
+    minimum: Duration,
+    maximum: Duration,
+) -> Duration {
+    Duration::from_secs(bounded(
+        value,
+        default.as_secs(),
+        minimum.as_secs(),
+        maximum.as_secs(),
+    ))
 }
 
-fn milliseconds(value: Option<String>, default: Duration, minimum: u64, maximum: u64) -> Duration {
-    let default = u64::try_from(default.as_millis()).unwrap_or(maximum);
-    Duration::from_millis(bounded(value, default, minimum, maximum))
+fn milliseconds(
+    value: Option<String>,
+    default: Duration,
+    minimum: Duration,
+    maximum: Duration,
+) -> Duration {
+    Duration::from_millis(bounded(
+        value,
+        whole_milliseconds(default),
+        whole_milliseconds(minimum),
+        whole_milliseconds(maximum),
+    ))
+}
+
+fn whole_milliseconds(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn frames(value: Option<String>, default: u32, minimum: u32, maximum: u32) -> u32 {
@@ -82,11 +111,11 @@ fn frames(value: Option<String>, default: u32, minimum: u32, maximum: u32) -> u3
 
 /// The graph at `value`, or the packaged graph `name` in the default workflow
 /// directory.
-fn workflow(value: Option<String>, name: &str) -> Option<PathBuf> {
-    Some(value.map_or_else(
+fn workflow(value: Option<String>, name: &str) -> PathBuf {
+    text(value).map_or_else(
         || PathBuf::from(DEFAULT_WORKFLOW_DIRECTORY).join(name),
         PathBuf::from,
-    ))
+    )
 }
 
 /// Direct image generation settings loaded from `COMFYUI_*` environment variables.
@@ -126,36 +155,47 @@ pub struct Config {
     pub artifact_root: PathBuf,
     /// Model a host classifies prompts with; `auto` leaves the choice to it.
     pub classifier_model: String,
-    /// Ceiling on one prompt classification.
+    /// Ceiling on one prompt classification, at most 30 seconds.
     pub classifier_timeout: Duration,
     /// Vision model that captions LoRA training images. Empty disables captioning.
     pub caption_model: String,
-    /// Ceiling on one caption request.
+    /// Ceiling on one caption request, at most ten minutes.
     pub caption_timeout: Duration,
-    /// Ceiling on any one HTTP request. Generation and training are bounded by
-    /// their own deadlines, not by this.
+    /// Ceiling on any one HTTP request, at most ten minutes. Generation and
+    /// training are bounded by their own deadlines, not by this.
     pub request_timeout: Duration,
-    /// Deadline for one image generation, from submission to the last byte.
+    /// Deadline for one image generation, from submission to the last byte, at
+    /// most an hour.
     pub generation_timeout: Duration,
-    /// Deadline for one video generation.
+    /// Deadline for one video generation, at most an hour.
     pub video_generation_timeout: Duration,
-    /// Deadline for one audio generation.
+    /// Deadline for one audio generation, at most an hour.
     pub audio_generation_timeout: Duration,
-    /// Deadline for one image or video upscale.
+    /// Deadline for one image or video upscale, at most an hour.
     pub upscale_generation_timeout: Duration,
-    /// Wait between two polls of a submitted graph's history.
+    /// Wait between two polls of a submitted graph's history, at most five
+    /// seconds.
     pub poll_interval: Duration,
     /// ComfyUI models root (`checkpoints/`, `loras/`, `diffusion_models/`, ...).
     pub models_directory: PathBuf,
-    /// Optional command used to train a LoRA. Empty runs the packaged training
-    /// graph on ComfyUI.
+    /// Optional command used to train a LoRA, run with `sh -c`. Empty runs the
+    /// packaged training graph on ComfyUI.
+    ///
+    /// The command never sees this process's whole environment. It gets the
+    /// names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT),
+    /// every variable this process has under
+    /// [`Contract::environment_prefix`], and the variables that prefix
+    /// documents; anything else it needs, it sets itself.
     pub train_command: Option<String>,
-    /// Wall clock budget for a training run, graph or command.
+    /// Wall clock budget for a training run, graph or command, at most four
+    /// hours.
     pub train_timeout: Duration,
-    /// Decoder that turns a submitted clip into training frames.
+    /// Decoder that turns a submitted clip into training frames. It sees only
+    /// the names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT)
+    /// of this process's environment.
     pub ffmpeg: String,
     /// Reads a clip's duration, so a long one lowers its sampling rate instead
-    /// of being cut short.
+    /// of being cut short. Its environment is the one [`Config::ffmpeg`] gets.
     pub ffprobe: String,
     /// Frames kept per second of submitted video.
     pub frame_rate: u32,
@@ -225,50 +265,59 @@ impl Config {
     }
 
     /// Refuses settings that would fail every request, poll ComfyUI in a busy
-    /// loop, or send a token no proxy could read. [`Client::new`](crate::Client::new),
+    /// loop, wait past the ceiling each timeout's documentation names, or send
+    /// a token no proxy could read. [`Client::new`](crate::Client::new),
     /// [`lora::train`](crate::lora::train) and [`train::run`](crate::train::run)
     /// call it first.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.poll_interval < MINIMUM_POLL_INTERVAL {
+        if !(MINIMUM_POLL_INTERVAL..=MAXIMUM_POLL_INTERVAL).contains(&self.poll_interval) {
             return Err(ConfigError::new(
-                "COMFYUI_POLL_INTERVAL_MILLISECONDS must be at least one millisecond",
+                "COMFYUI_POLL_INTERVAL_MILLISECONDS must be between one millisecond and five seconds",
             ));
         }
-        for (timeout, message) in [
+        for (timeout, maximum, message) in [
             (
                 self.request_timeout,
-                "COMFYUI_REQUEST_TIMEOUT_SECONDS must be at least one second",
+                MAXIMUM_REQUEST_TIMEOUT,
+                "COMFYUI_REQUEST_TIMEOUT_SECONDS must be between one second and ten minutes",
             ),
             (
                 self.generation_timeout,
-                "COMFYUI_GENERATION_TIMEOUT_SECONDS must be at least one second",
+                MAXIMUM_GENERATION_TIMEOUT,
+                "COMFYUI_GENERATION_TIMEOUT_SECONDS must be between one second and an hour",
             ),
             (
                 self.video_generation_timeout,
-                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS must be at least one second",
+                MAXIMUM_GENERATION_TIMEOUT,
+                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS must be between one second and an hour",
             ),
             (
                 self.audio_generation_timeout,
-                "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS must be at least one second",
+                MAXIMUM_GENERATION_TIMEOUT,
+                "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS must be between one second and an hour",
             ),
             (
                 self.upscale_generation_timeout,
-                "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECONDS must be at least one second",
+                MAXIMUM_GENERATION_TIMEOUT,
+                "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECONDS must be between one second and an hour",
             ),
             (
                 self.caption_timeout,
-                "COMFYUI_CAPTION_TIMEOUT_SECONDS must be at least one second",
+                MAXIMUM_CAPTION_TIMEOUT,
+                "COMFYUI_CAPTION_TIMEOUT_SECONDS must be between one second and ten minutes",
             ),
             (
                 self.classifier_timeout,
-                "COMFYUI_CLASSIFIER_TIMEOUT_SECONDS must be at least one second",
+                MAXIMUM_CLASSIFIER_TIMEOUT,
+                "COMFYUI_CLASSIFIER_TIMEOUT_SECONDS must be between one and 30 seconds",
             ),
             (
                 self.train_timeout,
-                "COMFYUI_TRAIN_TIMEOUT_SECONDS must be at least one second",
+                MAXIMUM_TRAIN_TIMEOUT,
+                "COMFYUI_TRAIN_TIMEOUT_SECONDS must be between one second and four hours",
             ),
         ] {
-            if timeout < MINIMUM_TIMEOUT {
+            if !(MINIMUM_TIMEOUT..=maximum).contains(&timeout) {
                 return Err(ConfigError::new(message));
             }
         }
@@ -291,92 +340,94 @@ impl Config {
     /// names are testable without touching the process environment.
     fn from_variables(environment: impl Fn(&str) -> Option<String>, vision_model: &str) -> Self {
         let defaults = Self::default();
-        let models_directory = environment("COMFYUI_MODELS_DIRECTORY")
+        let models_directory = text(environment("COMFYUI_MODELS_DIRECTORY"))
             .map_or(defaults.models_directory, PathBuf::from);
         Self {
             enabled: truthy(environment("COMFYUI_ENABLED"), defaults.enabled),
-            base_url: environment("COMFYUI_BASE_URL")
-                .unwrap_or(defaults.base_url)
-                .trim_end_matches('/')
-                .to_string(),
+            base_url: text(
+                environment("COMFYUI_BASE_URL")
+                    .map(|url| url.trim().trim_end_matches('/').to_string()),
+            )
+            .unwrap_or(defaults.base_url),
             api_token: token(environment("COMFYUI_API_TOKEN")),
             token_header: text(environment("COMFYUI_TOKEN_HEADER"))
                 .unwrap_or(defaults.token_header),
-            workflow_path: workflow(
+            workflow_path: Some(workflow(
                 environment("COMFYUI_WORKFLOW_PATH"),
                 "flux1-schnell-fp8-api.json",
-            ),
-            checkpoint: environment("COMFYUI_CHECKPOINT").unwrap_or(defaults.checkpoint),
-            video_workflow_path: workflow(
+            )),
+            checkpoint: text(environment("COMFYUI_CHECKPOINT")).unwrap_or(defaults.checkpoint),
+            video_workflow_path: Some(workflow(
                 environment("COMFYUI_VIDEO_WORKFLOW_PATH"),
                 "wan2.2-ti2v-5b-api.json",
-            ),
-            video_unet: environment("COMFYUI_VIDEO_UNET").unwrap_or(defaults.video_unet),
-            video_clip: environment("COMFYUI_VIDEO_CLIP").unwrap_or(defaults.video_clip),
-            video_vae: environment("COMFYUI_VIDEO_VAE").unwrap_or(defaults.video_vae),
-            audio_workflow_path: workflow(
+            )),
+            video_unet: text(environment("COMFYUI_VIDEO_UNET")).unwrap_or(defaults.video_unet),
+            video_clip: text(environment("COMFYUI_VIDEO_CLIP")).unwrap_or(defaults.video_clip),
+            video_vae: text(environment("COMFYUI_VIDEO_VAE")).unwrap_or(defaults.video_vae),
+            audio_workflow_path: Some(workflow(
                 environment("COMFYUI_AUDIO_WORKFLOW_PATH"),
                 "ace-step-v1-3.5b-api.json",
-            ),
-            audio_checkpoint: environment("COMFYUI_AUDIO_CHECKPOINT")
+            )),
+            audio_checkpoint: text(environment("COMFYUI_AUDIO_CHECKPOINT"))
                 .unwrap_or(defaults.audio_checkpoint),
-            upscale_workflow_path: workflow(
+            upscale_workflow_path: Some(workflow(
                 environment("COMFYUI_UPSCALE_WORKFLOW_PATH"),
                 "upscale-image-api.json",
-            ),
-            upscale_model: environment("COMFYUI_UPSCALE_MODEL").unwrap_or(defaults.upscale_model),
-            artifact_root: environment("COMFYUI_ARTIFACT_ROOT")
+            )),
+            upscale_model: text(environment("COMFYUI_UPSCALE_MODEL"))
+                .unwrap_or(defaults.upscale_model),
+            artifact_root: text(environment("COMFYUI_ARTIFACT_ROOT"))
                 .map_or(defaults.artifact_root, PathBuf::from),
             classifier_model: text(environment("COMFYUI_CLASSIFIER_MODEL"))
                 .unwrap_or(defaults.classifier_model),
             classifier_timeout: seconds(
                 environment("COMFYUI_CLASSIFIER_TIMEOUT_SECONDS"),
                 defaults.classifier_timeout,
-                1,
-                30,
+                MINIMUM_TIMEOUT,
+                MAXIMUM_CLASSIFIER_TIMEOUT,
             ),
             caption_model: text(environment("COMFYUI_CAPTION_MODEL")).unwrap_or_default(),
             caption_timeout: seconds(
                 environment("COMFYUI_CAPTION_TIMEOUT_SECONDS"),
                 defaults.caption_timeout,
-                5,
-                600,
+                Duration::from_secs(5),
+                MAXIMUM_CAPTION_TIMEOUT,
             ),
             request_timeout: seconds(
                 environment("COMFYUI_REQUEST_TIMEOUT_SECONDS"),
                 defaults.request_timeout,
-                MINIMUM_TIMEOUT.as_secs(),
-                MAXIMUM_REQUEST_TIMEOUT_SECONDS,
+                MINIMUM_TIMEOUT,
+                MAXIMUM_REQUEST_TIMEOUT,
             ),
             generation_timeout: seconds(
                 environment("COMFYUI_GENERATION_TIMEOUT_SECONDS"),
                 defaults.generation_timeout,
-                10,
-                3600,
+                Duration::from_secs(10),
+                MAXIMUM_GENERATION_TIMEOUT,
             ),
             video_generation_timeout: seconds(
                 environment("COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS"),
                 defaults.video_generation_timeout,
-                10,
-                3600,
+                Duration::from_secs(10),
+                MAXIMUM_GENERATION_TIMEOUT,
             ),
             audio_generation_timeout: seconds(
                 environment("COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS"),
                 defaults.audio_generation_timeout,
-                10,
-                3600,
+                Duration::from_secs(10),
+                MAXIMUM_GENERATION_TIMEOUT,
             ),
             upscale_generation_timeout: seconds(
                 environment("COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECONDS"),
                 defaults.upscale_generation_timeout,
-                10,
-                3600,
+                Duration::from_secs(10),
+                MAXIMUM_GENERATION_TIMEOUT,
             ),
             poll_interval: milliseconds(
                 environment("COMFYUI_POLL_INTERVAL_MILLISECONDS"),
                 defaults.poll_interval,
-                50,
-                5000,
+                Duration::from_millis(50),
+                MAXIMUM_POLL_INTERVAL,
             ),
             vision_model: text(environment(vision_model))
                 .map(PathBuf::from)
@@ -387,8 +438,8 @@ impl Config {
             train_timeout: seconds(
                 environment("COMFYUI_TRAIN_TIMEOUT_SECONDS"),
                 defaults.train_timeout,
-                60,
-                14400,
+                Duration::from_secs(60),
+                MAXIMUM_TRAIN_TIMEOUT,
             ),
             ffmpeg: text(environment("COMFYUI_FFMPEG")).unwrap_or(defaults.ffmpeg),
             ffprobe: text(environment("COMFYUI_FFPROBE")).unwrap_or(defaults.ffprobe),
@@ -601,6 +652,27 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_variable_reads_as_an_unset_one() {
+        let unset = configured(&[]);
+        for blank in ["", "  ", "\t\n"] {
+            let read = Config::from_variables(|_| Some(blank.to_string()), VISION_MODEL_VARIABLE);
+            assert_eq!(read, unset, "every variable set to {blank:?}");
+        }
+        assert_eq!(
+            configured(&[("COMFYUI_MODELS_DIRECTORY", " ")]).models_directory,
+            PathBuf::from(DEFAULT_MODELS_DIRECTORY)
+        );
+        assert_eq!(
+            configured(&[("COMFYUI_BASE_URL", "/")]).base_url,
+            DEFAULT_BASE_URL
+        );
+        assert_eq!(
+            configured(&[("COMFYUI_BASE_URL", " http://comfyui:8188/ ")]).base_url,
+            "http://comfyui:8188"
+        );
+    }
+
+    #[test]
     fn a_setting_outside_its_range_is_clamped_rather_than_taken() {
         assert_eq!(bounded(Some("7".into()), 1, 0, 10), 7);
         assert_eq!(bounded(Some("99".into()), 1, 0, 10), 10, "over the ceiling");
@@ -700,6 +772,92 @@ mod tests {
             let mut config = Config::default();
             zero(&mut config);
             assert!(config.validate().is_err(), "{config:?} was accepted");
+        }
+    }
+
+    type Setter = fn(&mut Config, Duration);
+
+    fn ceilings() -> [(Setter, Duration); 9] {
+        [
+            (
+                |config, value| config.request_timeout = value,
+                MAXIMUM_REQUEST_TIMEOUT,
+            ),
+            (
+                |config, value| config.generation_timeout = value,
+                MAXIMUM_GENERATION_TIMEOUT,
+            ),
+            (
+                |config, value| config.video_generation_timeout = value,
+                MAXIMUM_GENERATION_TIMEOUT,
+            ),
+            (
+                |config, value| config.audio_generation_timeout = value,
+                MAXIMUM_GENERATION_TIMEOUT,
+            ),
+            (
+                |config, value| config.upscale_generation_timeout = value,
+                MAXIMUM_GENERATION_TIMEOUT,
+            ),
+            (
+                |config, value| config.caption_timeout = value,
+                MAXIMUM_CAPTION_TIMEOUT,
+            ),
+            (
+                |config, value| config.classifier_timeout = value,
+                MAXIMUM_CLASSIFIER_TIMEOUT,
+            ),
+            (
+                |config, value| config.train_timeout = value,
+                MAXIMUM_TRAIN_TIMEOUT,
+            ),
+            (
+                |config, value| config.poll_interval = value,
+                MAXIMUM_POLL_INTERVAL,
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_timeout_past_its_ceiling_is_refused_rather_than_overflowing_a_deadline() {
+        for (set, maximum) in ceilings() {
+            let mut config = Config::default();
+            set(&mut config, maximum);
+            assert_eq!(config.validate(), Ok(()), "{config:?}");
+            for longer in [maximum + Duration::from_millis(1), Duration::MAX] {
+                set(&mut config, longer);
+                assert!(config.validate().is_err(), "{config:?} was accepted");
+            }
+        }
+    }
+
+    #[test]
+    fn the_environment_asks_for_no_more_than_validation_allows() {
+        let read = configured(&[
+            ("COMFYUI_REQUEST_TIMEOUT_SECONDS", "18446744073709551615"),
+            ("COMFYUI_GENERATION_TIMEOUT_SECONDS", "18446744073709551615"),
+            (
+                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS",
+                "18446744073709551615",
+            ),
+            (
+                "COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS",
+                "18446744073709551615",
+            ),
+            (
+                "COMFYUI_UPSCALE_GENERATION_TIMEOUT_SECONDS",
+                "18446744073709551615",
+            ),
+            ("COMFYUI_CAPTION_TIMEOUT_SECONDS", "18446744073709551615"),
+            ("COMFYUI_CLASSIFIER_TIMEOUT_SECONDS", "18446744073709551615"),
+            ("COMFYUI_TRAIN_TIMEOUT_SECONDS", "18446744073709551615"),
+            ("COMFYUI_POLL_INTERVAL_MILLISECONDS", "18446744073709551615"),
+        ]);
+        assert_eq!(read.validate(), Ok(()));
+        for (set, maximum) in ceilings() {
+            let mut expected = read.clone();
+            set(&mut expected, maximum);
+            assert_eq!(read, expected, "a variable was not clamped to {maximum:?}");
         }
     }
 

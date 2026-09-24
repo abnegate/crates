@@ -30,6 +30,7 @@ use crate::inventory::{WeightDocument, WeightSidecar, publication_marker, sideca
 use crate::recipe::{RecipeCatalog, TrainingModel, sanitize_weight_filename};
 use crate::subject::{CENTRE, Subject};
 use crate::train::{Contract, Run};
+use abnegate_exec::EnvironmentPolicy;
 use abnegate_secret::SecretValue;
 use abnegate_vision::gravity::Point;
 use abnegate_vision::{Raster, Rendered, decode};
@@ -360,6 +361,7 @@ async fn train_with_pipeline(
         let run = Run::new(contract);
         attempt.register(&run, contract)?;
         let mut process = Command::new("sh");
+        trainer_environment(config).apply(&mut process);
         process
             .arg("-c")
             .arg(command)
@@ -381,7 +383,6 @@ async fn train_with_pipeline(
             .env(contract.variable("FOLDER"), &run.folder)
             .env(contract.variable("ARTIFACT"), &run.artifact)
             .env(contract.variable("DEFER_CLEANUP"), "1")
-            .env("COMFYUI_BASE_URL", &config.base_url)
             .env(
                 contract.variable("TIMEOUT"),
                 config.train_timeout.as_secs().to_string(),
@@ -476,6 +477,28 @@ async fn train_with_pipeline(
             attempted,
         },
     })
+}
+
+/// What the external trainer is given besides its run's own variables: the
+/// names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT), every
+/// variable this process has under the contract's environment prefix, and the
+/// ComfyUI server with the token and header that reach it. Nothing else of
+/// this process's environment, which holds credentials the trainer has no use
+/// for.
+fn trainer_environment(config: &Config) -> EnvironmentPolicy {
+    let prefix = format!("{}_", config.contract.environment_prefix);
+    let settings = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| name.starts_with(&prefix));
+    let environment = EnvironmentPolicy::allowlist()
+        .allow(settings)
+        .with("COMFYUI_BASE_URL", config.base_url.as_str());
+    match &config.api_token {
+        Some(token) => environment
+            .with("COMFYUI_API_TOKEN", token.clone())
+            .with("COMFYUI_TOKEN_HEADER", config.token_header.as_str()),
+        None => environment,
+    }
 }
 
 /// Runs the external trainer to completion within `budget`.
@@ -1305,16 +1328,10 @@ fn sync_file(path: &Path) -> Result<(), TrainError> {
         .map_err(failed)
 }
 
-#[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), TrainError> {
     fs::File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(failed)
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> Result<(), TrainError> {
-    Ok(())
 }
 
 fn remove_entry(path: &Path) {
@@ -1755,6 +1772,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_dataset_directory_is_handed_over_under_its_spelled_out_name() {
+        const NAME: &str =
+            "lora::tests::the_dataset_directory_is_handed_over_under_its_spelled_out_name";
+        if crate::child::delegated(NAME, &[]).await {
+            return;
+        }
         let command = r#"
             test -d "$TRAIN_DIRECTORY/targets" || exit 41
             test "$(env | grep "^TRAIN_DI" | cut -d= -f1)" = TRAIN_DIRECTORY || exit 42
@@ -1773,6 +1795,94 @@ mod tests {
         .expect("the trainer finds its dataset under <prefix>_DIRECTORY alone");
 
         assert_eq!(fs::read(outcome.path).unwrap(), b"lora");
+    }
+
+    async fn trained_by(config: &Config) {
+        let outcome = train_with_screening(
+            config,
+            String::new(),
+            SecretValue::new(""),
+            identity("environment"),
+            keep_all,
+        )
+        .await
+        .expect("the trainer saw the environment it expected");
+        assert_eq!(fs::read(outcome.path).unwrap(), b"lora");
+    }
+
+    #[tokio::test]
+    async fn a_variable_only_the_host_has_never_reaches_the_trainer() {
+        const NAME: &str = "lora::tests::a_variable_only_the_host_has_never_reaches_the_trainer";
+        if crate::child::delegated(
+            NAME,
+            &[
+                ("ABNEGATE_COMFY_TEST_HOST_ONLY", "host-value"),
+                ("COMFYUI_API_TOKEN", "host-token"),
+                ("ABNEGATE_TRAIN_STEPS", "9"),
+            ],
+        )
+        .await
+        {
+            return;
+        }
+        let command = r#"
+            test -z "${ABNEGATE_COMFY_TEST_HOST_ONLY+set}" || exit 71
+            test -z "${COMFYUI_API_TOKEN+set}" || exit 72
+            test -z "${COMFYUI_TOKEN_HEADER+set}" || exit 73
+            test -z "${ABNEGATE_TRAIN_STEPS+set}" || exit 74
+            test -n "$PATH" || exit 75
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+
+        trained_by(&config).await;
+    }
+
+    #[tokio::test]
+    async fn the_trainer_keeps_the_hosts_own_settings_under_its_prefix() {
+        const NAME: &str = "lora::tests::the_trainer_keeps_the_hosts_own_settings_under_its_prefix";
+        if crate::child::delegated(
+            NAME,
+            &[("TRAIN_STEPS", "2000"), ("TRAIN_OUTPUT", "/host/elsewhere")],
+        )
+        .await
+        {
+            return;
+        }
+        let command = r#"
+            test "$TRAIN_STEPS" = 2000 || exit 81
+            test "$TRAIN_OUTPUT" != /host/elsewhere || exit 82
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+
+        trained_by(&config).await;
+    }
+
+    #[tokio::test]
+    async fn the_trainer_is_handed_the_comfyui_token_and_the_header_it_travels_in() {
+        const NAME: &str =
+            "lora::tests::the_trainer_is_handed_the_comfyui_token_and_the_header_it_travels_in";
+        if crate::child::delegated(NAME, &[]).await {
+            return;
+        }
+        assert!(
+            std::env::var_os("COMFYUI_API_TOKEN").is_none(),
+            "the host must not hold the token, or inheriting it would pass"
+        );
+        let command = r#"
+            test "$COMFYUI_API_TOKEN" = t || exit 91
+            test "$COMFYUI_TOKEN_HEADER" = X-Proxy-Token || exit 92
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+        let config = Config {
+            api_token: Some(SecretValue::new("t")),
+            token_header: "X-Proxy-Token".into(),
+            ..config
+        };
+
+        trained_by(&config).await;
     }
 
     /// A models root with the output directory the writer needs.

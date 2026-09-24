@@ -27,6 +27,7 @@ pub use options::Options;
 use crate::config::Config;
 use crate::lora::{TrainError, png};
 use crate::subject::Subject;
+use abnegate_exec::EnvironmentPolicy;
 use abnegate_vision::crop::{self, CropError, Region, Rendered, Target};
 use abnegate_vision::gravity::{self, Point};
 use abnegate_vision::{Raster, decode};
@@ -256,13 +257,15 @@ async fn sample(
 }
 
 /// Runs a decoder to completion, or kills it once `budget` runs out and
-/// answers `None`.
+/// answers `None`. Of this process's environment it sees only the names in
+/// [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT).
 async fn execute(
     program: &str,
     arguments: &[OsString],
     budget: Duration,
 ) -> io::Result<Option<Output>> {
     let mut command = Command::new(program);
+    EnvironmentPolicy::allowlist().apply(&mut command);
     command
         .args(arguments)
         .stdin(Stdio::null())
@@ -1020,21 +1023,60 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn neither_decoder_sees_a_variable_only_the_host_has() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const NAME: &str = "video::tests::neither_decoder_sees_a_variable_only_the_host_has";
+        if crate::child::delegated(NAME, &[("ABNEGATE_COMFY_TEST_HOST_ONLY", "host-value")]).await {
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let stub = |tool: &str| {
+            let path = work.path().join(tool);
+            let environment = work.path().join(format!("{tool}.environment"));
+            std::fs::write(
+                &path,
+                format!("#!/bin/sh\nenv > \"{}\"\n", environment.display()),
+            )
+            .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            (path.display().to_string(), environment)
+        };
+        let (ffprobe, probed) = stub("ffprobe");
+        let (ffmpeg, decoded) = stub("ffmpeg");
+        let config = Config {
+            ffprobe,
+            ffmpeg,
+            ..Default::default()
+        };
+        let clip = work.path().join("clip.mp4");
+
+        duration(&config, MP4, &clip, PROBE_TIMEOUT).await;
+        sample(&config, MP4, &clip, work.path(), 8.0, DECODE_TIMEOUT)
+            .await
+            .unwrap();
+
+        for environment in [probed, decoded] {
+            let seen = std::fs::read_to_string(&environment).unwrap();
+            assert!(
+                !seen.contains("ABNEGATE_COMFY_TEST_HOST_ONLY"),
+                "{}: {seen}",
+                environment.display()
+            );
+            assert!(
+                seen.lines().any(|line| line.starts_with("PATH=")),
+                "{}: {seen}",
+                environment.display()
+            );
+        }
+    }
+
     #[test]
     fn a_clip_ffmpeg_read_nothing_out_of_is_not_a_training_set() {
         let stills = tempfile::tempdir().unwrap();
-        let error = build(
-            stills.path(),
-            8.0,
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
-            &Subject::none(),
-        )
-        .unwrap_err();
+        let error = build(stills.path(), 8.0, Options::new(4, 512), &Subject::none()).unwrap_err();
         assert!(matches!(error, TrainError::Invalid(_)), "{error}");
     }
 
@@ -1055,12 +1097,7 @@ mod tests {
             },
             b"clip",
             "clip.mp4",
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
+            Options::new(4, 512),
         )
         .await
         .unwrap_err();
@@ -1072,19 +1109,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_upload_is_rejected_before_ffmpeg_runs() {
-        let error = extract(
-            &Config::default(),
-            &[],
-            "clip.mp4",
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
-        )
-        .await
-        .unwrap_err();
+        let error = extract(&Config::default(), &[], "clip.mp4", Options::new(4, 512))
+            .await
+            .unwrap_err();
         assert!(matches!(error, TrainError::Invalid(_)), "{error}");
     }
 
@@ -1226,12 +1253,7 @@ mod tests {
             },
             b"clip",
             "clip.mp4",
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
+            Options::new(4, 512),
         )
         .await
         .unwrap_err();
@@ -1248,12 +1270,7 @@ mod tests {
             &Config::default(),
             b"this is not a video",
             "notes.txt",
-            Options {
-                fps: 4,
-                resolution: 512,
-                mirror: true,
-                limit: 48,
-            },
+            Options::new(4, 512),
         )
         .await
         .unwrap_err();
@@ -1274,12 +1291,7 @@ mod tests {
             &Config::default(),
             &std::fs::read(&clip).unwrap(),
             "clip.mp4",
-            Options {
-                fps: 3,
-                resolution: 256,
-                mirror: true,
-                limit: 48,
-            },
+            Options::new(3, 256),
         )
         .await
         .unwrap();
@@ -1338,12 +1350,7 @@ mod tests {
         let clip = work.path().join("clip.webm");
         synthesize(&clip, MOVING_SUBJECT, "1").await;
         let bytes = std::fs::read(&clip).unwrap();
-        let options = Options {
-            fps: 2,
-            resolution: 64,
-            mirror: false,
-            limit: 4,
-        };
+        let options = Options::new(2, 64).with_mirror(false).with_limit(4);
 
         extract(&Config::default(), &bytes, "clip.webm", options)
             .await
@@ -1368,12 +1375,7 @@ mod tests {
             &Config::default(),
             &std::fs::read(&clip).unwrap(),
             "clip.mp4",
-            Options {
-                fps: 3,
-                resolution: 128,
-                mirror: false,
-                limit: 48,
-            },
+            Options::new(3, 128).with_mirror(false),
         )
         .await
         .unwrap();
@@ -1403,12 +1405,7 @@ mod tests {
             &Config::default(),
             &std::fs::read(&clip).unwrap(),
             "still.mp4",
-            Options {
-                fps: 4,
-                resolution: 128,
-                mirror: false,
-                limit: 48,
-            },
+            Options::new(4, 128).with_mirror(false),
         )
         .await
         .unwrap();

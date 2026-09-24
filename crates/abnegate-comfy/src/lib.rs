@@ -53,7 +53,7 @@
 //!     &Config::from_environment(),
 //!     &std::fs::read("subject.mp4")?,
 //!     "subject.mp4",
-//!     video::Options::new(4, 512, true, 48),
+//!     video::Options::new(4, 512),
 //! )
 //! .await?;
 //! # let _ = clip;
@@ -77,8 +77,16 @@
 //!   `abnegate-vision` on ONNX Runtime, when [`Config::vision_model`] points at
 //!   the weights. Without it a photo is cropped on its centre and a video frame
 //!   on whatever moved. Off by default.
+//!
+//! # Platform support
+//!
+//! The crate builds on Linux, Android, FreeBSD and Apple platforms only, the
+//! ones `abnegate-exec` supports, because the training command, ffmpeg and
+//! ffprobe run under its environment policy.
 
 mod caption;
+#[cfg(test)]
+mod child;
 mod client;
 mod config;
 mod dataset;

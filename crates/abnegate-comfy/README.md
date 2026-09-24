@@ -18,6 +18,12 @@ it the crate records nothing.
 
 - `saliency`: frames training crops on the subject U2-Net finds, through `abnegate-vision` on ONNX Runtime, when `Config::vision_model` points at the weights; without it a photo is cropped on its centre and a video frame on whatever moved.
 
+## Platform support
+
+The crate builds on Linux, Android, FreeBSD and Apple platforms only, the ones
+`abnegate-exec` supports, because the training command, ffmpeg and ffprobe run
+under its environment policy.
+
 ## Usage
 
 ```sh
@@ -117,6 +123,15 @@ deployment that relied on the old defaults sets them itself.
   `COMFYUI_*_WORKFLOW_PATH` to its file under `/app/comfyui/workflows`.
 - **Training command.** The dataset directory arrives as `<prefix>_DIRECTORY`
   (for the contract above, `ACME_TRAIN_DIRECTORY`) in place of `<prefix>_DIR`.
+  The command no longer inherits the whole environment. It gets the names in
+  `abnegate_exec::DEFAULT_ENVIRONMENT`, every variable already under its
+  `<prefix>_`, its run's own `<prefix>_*` variables and `COMFYUI_BASE_URL`,
+  and, when a token is configured, `COMFYUI_API_TOKEN` with
+  `COMFYUI_TOKEN_HEADER`. Anything else it needs, it sets itself.
+- **ffmpeg and ffprobe.** They get only the names in
+  `abnegate_exec::DEFAULT_ENVIRONMENT`. A decoder that needs more, such as a
+  library path, is pointed at through `COMFYUI_FFMPEG` or `COMFYUI_FFPROBE` as a
+  wrapper script that sets it.
 
 These environment variables are renamed, and the old names are no longer read:
 
@@ -147,4 +162,6 @@ spell out what they build: `build_flux_schnell_image_to_image_workflow`,
 Structs with public fields are `#[non_exhaustive]`, so the ones a caller passes
 in are built with `video::Options::new`, `recipe::Fill::new`,
 `inventory::WeightSidecar::new`, `lora::TrainRequest::new` and
-`lora::TrainImage::new`.
+`lora::TrainImage::new`. `video::Options::new` takes the frame rate and
+resolution; mirroring and the frame limit default to on and 48, and
+`with_mirror` and `with_limit` change them.

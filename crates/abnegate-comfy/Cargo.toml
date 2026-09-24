@@ -28,6 +28,7 @@ default = []
 saliency = ["abnegate-vision/saliency"]
 
 [dependencies]
+abnegate-exec = { path = "../abnegate-exec", version = "0.1.0" }
 abnegate-llm = { path = "../abnegate-llm", version = "0.1.0" }
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
 abnegate-vision = { path = "../abnegate-vision", version = "0.1.0" }

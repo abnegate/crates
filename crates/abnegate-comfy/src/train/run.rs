@@ -27,12 +27,6 @@ impl Run {
     }
 }
 
-impl Default for Run {
-    fn default() -> Self {
-        Self::new(&Contract::default())
-    }
-}
-
 fn validate_run_name(name: &str, prefix: &str) -> Result<(), TrainError> {
     let Some(id) = name.strip_prefix(prefix) else {
         return Err(TrainError::Invalid("invalid training run namespace"));

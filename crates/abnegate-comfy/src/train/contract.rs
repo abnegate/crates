@@ -45,7 +45,13 @@ pub struct Contract {
     /// Prefix of the variables handed to
     /// [`Config::train_command`](crate::Config::train_command): the command
     /// reads the dataset from `<prefix>_DIRECTORY` and writes the adapter to
-    /// `<prefix>_OUTPUT`.
+    /// `<prefix>_OUTPUT`. Beside them it gets `COMFYUI_BASE_URL`, the server
+    /// in [`Config::base_url`](crate::Config::base_url), and, when
+    /// [`Config::api_token`](crate::Config::api_token) is set,
+    /// `COMFYUI_API_TOKEN` with `COMFYUI_TOKEN_HEADER`, the token and the
+    /// header in [`Config::token_header`](crate::Config::token_header) it
+    /// travels in. Any variable this process has under the prefix reaches the
+    /// command too, so a deployment keeps its trainer's own settings there.
     pub environment_prefix: String,
     /// Prefix of `<prefix>_INPUT`, the ComfyUI input directory handed to
     /// [`Config::train_command`](crate::Config::train_command).
@@ -130,6 +136,7 @@ impl Contract {
         }
         if !is_name(&self.sidecar_suffix, is_file_character)
             || self.sidecar_suffix.ends_with(WEIGHT_EXTENSION)
+            || WEIGHT_EXTENSION.ends_with(self.sidecar_suffix.as_str())
         {
             return Err(ConfigError::new(
                 "the contract sidecar suffix must be one plain name that no weight ends in",
@@ -292,5 +299,21 @@ mod tests {
             ..Contract::default()
         };
         assert!(contract.validate().is_err());
+    }
+
+    #[test]
+    fn a_sidecar_suffix_every_weight_ends_in_is_refused() {
+        for suffix in ["s", "tensors", ".safetensors"] {
+            let contract = Contract {
+                sidecar_suffix: suffix.into(),
+                ..Contract::default()
+            };
+            assert!(contract.validate().is_err(), "{suffix:?} was accepted");
+        }
+        let contract = Contract {
+            sidecar_suffix: ".safetensors.json".into(),
+            ..Contract::default()
+        };
+        assert_eq!(contract.validate(), Ok(()));
     }
 }

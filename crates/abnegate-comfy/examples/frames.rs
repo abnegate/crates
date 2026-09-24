@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &config,
         &std::fs::read(&clip)?,
         &clip,
-        video::Options::new(4, 512, true, 48),
+        video::Options::new(4, 512),
     )
     .await?;
 

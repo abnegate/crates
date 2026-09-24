@@ -1882,7 +1882,7 @@ mod tests {
             run.validate(&Contract::default()).is_err(),
             "the default node pack refuses a namespace it did not issue"
         );
-        assert!(Run::default().validate(&contract).is_err());
+        assert!(Run::new(&Contract::default()).validate(&contract).is_err());
     }
 
     #[test]

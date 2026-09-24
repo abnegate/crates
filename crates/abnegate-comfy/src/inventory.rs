@@ -29,6 +29,11 @@ const SCAN_DIRECTORIES: &[(&str, &str)] = &[
 /// its sidecar, named with `contract`'s suffix, binds it to an adapter recipe
 /// for its base, and never while a publication in `contract`'s publication
 /// directory is replacing it.
+///
+/// `contract` is expected to pass [`Contract::validate`], as it does in any
+/// [`Config`](crate::Config) that passes [`Config::validate`](crate::Config::validate):
+/// an unchecked suffix or publication directory can point the scan's reads
+/// outside `models_directory`.
 pub fn scan(
     models_directory: &Path,
     catalog: &RecipeCatalog,
@@ -116,11 +121,18 @@ pub fn find<'a>(items: &'a [InventoryItem], filename: &str) -> Option<&'a Invent
 
 /// Binds the weight at `path` to a recipe, in the sidecar beside it named with
 /// `contract`'s suffix.
+///
+/// A contract that fails [`Contract::validate`] is refused with
+/// [`InvalidInput`](std::io::ErrorKind::InvalidInput) before anything is
+/// written, since its suffix could name a file outside the weight's directory.
 pub fn write_sidecar(
     path: &Path,
     sidecar: &WeightSidecar,
     contract: &Contract,
 ) -> std::io::Result<()> {
+    contract
+        .validate()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
     let encoded = serde_json::to_vec_pretty(sidecar)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     fs::write(sidecar_path(path, contract), encoded)
@@ -442,6 +454,32 @@ mod tests {
             publication_directory: ".binding-publish".into(),
             ..Contract::default()
         }
+    }
+
+    #[test]
+    fn a_sidecar_is_never_written_under_a_contract_that_fails_validation() {
+        let root = temp_models();
+        let lora = root.join("loras/style.safetensors");
+        fs::write(&lora, b"lora").unwrap();
+        let escaping = Contract {
+            sidecar_suffix: "/../x".into(),
+            ..Contract::default()
+        };
+        let sidecar = WeightSidecar::new("flux-schnell-adapter");
+
+        for weight in [lora, root.join("loras")] {
+            let error = write_sidecar(&weight, &sidecar, &escaping).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::InvalidInput,
+                "{}: {error}",
+                weight.display()
+            );
+        }
+
+        assert!(!root.join("x").exists(), "a sidecar landed outside loras/");
+        assert!(!root.join("loras/x").exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
