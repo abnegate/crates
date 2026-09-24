@@ -64,9 +64,10 @@
 //!
 //! The training graphs call custom nodes that ComfyUI does not ship, and those
 //! nodes only accept run folders named under the namespaces they know.
-//! [`Config::contract`] names both; its defaults, [`train::Contract`], match
-//! the node pack this crate was written against, and a deployment with its own
-//! pack overrides them there.
+//! [`Config::contract`] names both, together with the sidecar and publication
+//! names the inventory reads. Its defaults, [`train::Contract`], sit under a
+//! neutral `Abnegate` namespace, and a deployment whose node pack registers
+//! other names overrides them there.
 //!
 //! A host that collects metrics installs [`observe_requests`] once at startup;
 //! without it the crate records nothing and pulls in no metrics stack.

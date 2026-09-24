@@ -36,32 +36,32 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const TRAIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Default `class_type` of the node that trains the adapter.
-pub const TRAIN_LORA_NODE: &str = "ZoneTrainLoRA";
+pub const TRAIN_LORA_NODE: &str = "AbnegateTrainLoRA";
 /// Default `class_type` of the node that deletes a run's dataset and weights.
-pub const CLEANUP_TRAINING_RUN_NODE: &str = "ZoneCleanupTrainingRun";
+pub const CLEANUP_TRAINING_RUN_NODE: &str = "AbnegateCleanupTrainingRun";
 /// Default `class_type` of the node that loads a staged dataset and its manifest.
-pub const LOAD_TRAIN_DATASET_NODE: &str = "ZoneLoadTrainDataset";
+pub const LOAD_TRAIN_DATASET_NODE: &str = "AbnegateLoadTrainDataset";
 /// Default `class_type` of the node that measures a model's loss on a dataset.
-pub const PROBE_LOSS_NODE: &str = "ZoneProbeLoss";
+pub const PROBE_LOSS_NODE: &str = "AbnegateProbeLoss";
 /// Default `class_type` of the node that moves a trained checkpoint to where a
 /// LoRA loader finds it.
-pub const STAGE_TRAINING_ARTIFACT_NODE: &str = "ZoneStageTrainingArtifact";
+pub const STAGE_TRAINING_ARTIFACT_NODE: &str = "AbnegateStageTrainingArtifact";
 /// Default prefix of the variables handed to an external training command.
-pub const ENVIRONMENT_PREFIX: &str = "ZONE_TRAIN";
+pub const ENVIRONMENT_PREFIX: &str = "ABNEGATE_TRAIN";
 /// Default prefix of the variable naming ComfyUI's input directory for an
 /// external training command.
-pub const INPUT_ENVIRONMENT_PREFIX: &str = "ZONE_COMFY";
+pub const INPUT_ENVIRONMENT_PREFIX: &str = "ABNEGATE_COMFY";
 /// Default namespace of the input folder a run stages its dataset in.
-pub const FOLDER_PREFIX: &str = "zone-train-";
+pub const FOLDER_PREFIX: &str = "abnegate-train-";
 /// Default namespace of the weights a run writes.
-pub const ARTIFACT_PREFIX: &str = "zone-lora-";
+pub const ARTIFACT_PREFIX: &str = "abnegate-lora-";
 /// Default namespace of the input folder a quality probe stages its sample in.
-pub const PROBE_PREFIX: &str = "zone-probe-";
+pub const PROBE_PREFIX: &str = "abnegate-probe-";
 /// Default suffix of the recipe binding written beside every weight.
-pub const SIDECAR_SUFFIX: &str = ".zone.json";
+pub const SIDECAR_SUFFIX: &str = ".abnegate.json";
 /// Default directory under `loras/` whose markers hide a weight while it is
 /// replaced.
-pub const PUBLICATION_DIRECTORY: &str = ".zone-publish";
+pub const PUBLICATION_DIRECTORY: &str = ".abnegate-publish";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1643,7 +1643,7 @@ mod tests {
 
     #[test]
     fn only_a_plain_name_is_a_single_component() {
-        assert!(is_single_component("zone-run"));
+        assert!(is_single_component("abnegate-run"));
         for name in [
             "",
             ".",
@@ -1886,22 +1886,27 @@ mod tests {
     }
 
     #[test]
-    fn the_default_contract_is_the_wire_contract_of_the_out_of_tree_node_pack() {
+    fn the_default_contract_names_everything_under_the_neutral_abnegate_namespace() {
         let contract = Contract::default();
-        assert_eq!(contract.train_lora_node, "ZoneTrainLoRA");
-        assert_eq!(contract.cleanup_training_run_node, "ZoneCleanupTrainingRun");
-        assert_eq!(contract.load_train_dataset_node, "ZoneLoadTrainDataset");
-        assert_eq!(contract.probe_loss_node, "ZoneProbeLoss");
+        assert_eq!(contract.train_lora_node, "AbnegateTrainLoRA");
+        assert_eq!(
+            contract.cleanup_training_run_node,
+            "AbnegateCleanupTrainingRun"
+        );
+        assert_eq!(contract.load_train_dataset_node, "AbnegateLoadTrainDataset");
+        assert_eq!(contract.probe_loss_node, "AbnegateProbeLoss");
         assert_eq!(
             contract.stage_training_artifact_node,
-            "ZoneStageTrainingArtifact"
+            "AbnegateStageTrainingArtifact"
         );
-        assert_eq!(contract.folder_prefix, "zone-train-");
-        assert_eq!(contract.artifact_prefix, "zone-lora-");
-        assert_eq!(contract.probe_prefix, "zone-probe-");
-        assert_eq!(contract.variable("OUTPUT"), "ZONE_TRAIN_OUTPUT");
-        assert_eq!(contract.variable("DIRECTORY"), "ZONE_TRAIN_DIRECTORY");
-        assert_eq!(contract.input_variable(), "ZONE_COMFY_INPUT");
+        assert_eq!(contract.folder_prefix, "abnegate-train-");
+        assert_eq!(contract.artifact_prefix, "abnegate-lora-");
+        assert_eq!(contract.probe_prefix, "abnegate-probe-");
+        assert_eq!(contract.variable("OUTPUT"), "ABNEGATE_TRAIN_OUTPUT");
+        assert_eq!(contract.variable("DIRECTORY"), "ABNEGATE_TRAIN_DIRECTORY");
+        assert_eq!(contract.input_variable(), "ABNEGATE_COMFY_INPUT");
+        assert_eq!(contract.sidecar_suffix, ".abnegate.json");
+        assert_eq!(contract.publication_directory, ".abnegate-publish");
     }
 
     #[tokio::test]

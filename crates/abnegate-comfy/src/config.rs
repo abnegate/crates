@@ -14,7 +14,7 @@ use std::time::Duration;
 
 /// Default header that carries [`Config::api_token`], the one the proxy in
 /// front of a token-protected ComfyUI checks.
-pub const TOKEN_HEADER: &str = "X-Zone-ComfyUI-Token";
+pub const TOKEN_HEADER: &str = "X-ComfyUI-Token";
 
 /// Variable [`Config::from_environment`] reads the U2-Net weights path from, the same
 /// one `abnegate-vision` documents.
@@ -25,10 +25,10 @@ pub(crate) const MINIMUM_TIMEOUT: Duration = Duration::from_secs(1);
 /// Floor on the poll interval, since a zero interval polls ComfyUI in a busy loop.
 const MINIMUM_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const MAXIMUM_REQUEST_TIMEOUT_SECONDS: u64 = 600;
-const DEFAULT_BASE_URL: &str = "http://comfyui:8188";
-const DEFAULT_ARTIFACT_ROOT: &str = "/app/artifacts";
-const DEFAULT_MODELS_DIRECTORY: &str = "/app/comfyui/models";
-const DEFAULT_WORKFLOW_DIRECTORY: &str = "/app/comfyui/workflows";
+const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8188";
+const DEFAULT_ARTIFACT_ROOT: &str = "./artifacts";
+const DEFAULT_MODELS_DIRECTORY: &str = "./comfyui/models";
+const DEFAULT_WORKFLOW_DIRECTORY: &str = "./comfyui/workflows";
 
 /// Reading the value is the operating system's job; deciding what it means is
 /// this crate's, so the two are separable and only one of them needs a process
@@ -443,11 +443,34 @@ mod tests {
     }
 
     #[test]
-    fn the_environment_defaults_to_the_container_graphs() {
-        assert_eq!(
-            configured(&[]).audio_workflow_path,
-            Some(PathBuf::from(DEFAULT_WORKFLOW_DIRECTORY).join("ace-step-v1-3.5b-api.json"))
-        );
+    fn an_unset_workflow_path_names_the_packaged_graph_under_the_working_directory() {
+        let read = configured(&[]);
+        for (path, graph) in [
+            (&read.workflow_path, "flux1-schnell-fp8-api.json"),
+            (&read.video_workflow_path, "wan2.2-ti2v-5b-api.json"),
+            (&read.audio_workflow_path, "ace-step-v1-3.5b-api.json"),
+            (&read.upscale_workflow_path, "upscale-image-api.json"),
+        ] {
+            assert_eq!(
+                path,
+                &Some(PathBuf::from("./comfyui/workflows").join(graph))
+            );
+        }
+    }
+
+    #[test]
+    fn the_defaults_reach_a_local_comfyui_and_name_no_absolute_path() {
+        let defaults = Config::default();
+        assert_eq!(defaults.base_url, "http://127.0.0.1:8188");
+        assert_eq!(defaults.token_header, "X-ComfyUI-Token");
+        assert_eq!(defaults.artifact_root, PathBuf::from("./artifacts"));
+        assert_eq!(defaults.models_directory, PathBuf::from("./comfyui/models"));
+        let read = configured(&[]);
+        assert_eq!(read.base_url, defaults.base_url);
+        assert_eq!(read.token_header, defaults.token_header);
+        for path in [&read.artifact_root, &read.models_directory] {
+            assert!(path.is_relative(), "{} is absolute", path.display());
+        }
     }
 
     #[test]

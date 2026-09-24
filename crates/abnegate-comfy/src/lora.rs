@@ -1458,7 +1458,7 @@ mod tests {
     use crate::screening::{Rejection, Verdict};
     use crate::train::{
         ARTIFACT_PREFIX, ENVIRONMENT_PREFIX, FOLDER_PREFIX, INPUT_ENVIRONMENT_PREFIX,
-        PROBE_LOSS_NODE, TRAIN_LORA_NODE,
+        PROBE_LOSS_NODE, PUBLICATION_DIRECTORY, SIDECAR_SUFFIX, TRAIN_LORA_NODE,
     };
     use base64::Engine;
     use serde_json::{Value, json};
@@ -2347,6 +2347,181 @@ mod tests {
             "the dataset has to reach the graph before it is queued"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// A deployment's own node pack, overridden field by field the only way a
+    /// caller outside the crate can: every node, namespace, variable prefix,
+    /// sidecar and publication directory under a brand of its own.
+    fn acme() -> Contract {
+        let mut contract = Contract::default();
+        contract.train_lora_node = "AcmeTrainLoRA".into();
+        contract.cleanup_training_run_node = "AcmeCleanupTrainingRun".into();
+        contract.load_train_dataset_node = "AcmeLoadTrainDataset".into();
+        contract.probe_loss_node = "AcmeProbeLoss".into();
+        contract.stage_training_artifact_node = "AcmeStageTrainingArtifact".into();
+        contract.folder_prefix = "acme-train-".into();
+        contract.artifact_prefix = "acme-lora-".into();
+        contract.probe_prefix = "acme-probe-".into();
+        contract.environment_prefix = "ACME_TRAIN".into();
+        contract.input_environment_prefix = "ACME_COMFY".into();
+        contract.sidecar_suffix = ".acme.json".into();
+        contract.publication_directory = ".acme-publish".into();
+        contract
+    }
+
+    /// Checks the adapter was published under `acme()`'s names alone, and that
+    /// the inventory lists it under that contract and no other.
+    fn published_under_acme(models: &Path, adapter: &Path) {
+        let loras = models.join("loras");
+        let name = adapter.file_name().unwrap().to_str().unwrap();
+        assert!(loras.join(format!("{name}.acme.json")).is_file());
+        assert!(!loras.join(format!("{name}{SIDECAR_SUFFIX}")).exists());
+        assert!(loras.join(".acme-publish").is_dir());
+        assert!(!loras.join(PUBLICATION_DIRECTORY).exists());
+        let catalog = RecipeCatalog::packaged().unwrap();
+        assert!(
+            crate::inventory::find(&crate::inventory::scan(models, &catalog, &acme()), name)
+                .is_some(),
+            "the adapter is listed under the contract it was published with"
+        );
+        assert!(
+            crate::inventory::find(
+                &crate::inventory::scan(models, &catalog, &Contract::default()),
+                name
+            )
+            .is_none(),
+            "the default contract does not read another deployment's sidecars"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_overriding_contract_trains_through_its_own_nodes_and_publishes_under_its_own_names()
+    {
+        let server = MockServer::start().await;
+        let prompt = uuid::Uuid::new_v4();
+        Mock::given(method("POST"))
+            .and(path("/upload/image"))
+            .respond_with(Stage)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"prompt_id": prompt, "number": 1})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/history/{prompt}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                prompt.to_string(): {"status": {"completed": true, "status_str": "success"}}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(ServeArtifact(vec![9u8; 20_000]))
+            .mount(&server)
+            .await;
+        let root = tempfile::tempdir().unwrap();
+        let models = root.path().join("models");
+        fs::create_dir_all(models.join("loras")).unwrap();
+        let config = Config {
+            models_directory: models.clone(),
+            enabled: true,
+            base_url: server.uri(),
+            poll_interval: Duration::from_millis(50),
+            contract: acme(),
+            ..Default::default()
+        };
+
+        let outcome = train(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            request("acme-style", "flux-schnell", Some("ohwx")),
+        )
+        .await
+        .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let graphs: Vec<Value> = requests
+            .iter()
+            .filter(|request| request.url.path() == "/prompt")
+            .map(|request| {
+                serde_json::from_slice::<Value>(&request.body).unwrap()["prompt"].clone()
+            })
+            .collect();
+        let classes: Vec<&str> = graphs
+            .iter()
+            .filter_map(Value::as_object)
+            .flat_map(|graph| graph.values())
+            .filter_map(|node| node["class_type"].as_str())
+            .collect();
+        assert!(classes.contains(&"AcmeTrainLoRA"), "{classes:?}");
+        assert!(classes.contains(&"AcmeLoadTrainDataset"), "{classes:?}");
+        assert!(
+            !classes.iter().any(|class| class.starts_with("Abnegate")),
+            "a default node reached the overriding pack: {classes:?}"
+        );
+        let trained = graphs
+            .iter()
+            .flat_map(|graph| {
+                graph
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|graph| graph.values())
+            })
+            .find(|node| node["class_type"] == "AcmeTrainLoRA")
+            .unwrap();
+        assert!(
+            trained["inputs"]["save_name"]
+                .as_str()
+                .unwrap()
+                .starts_with("acme-lora-")
+        );
+        let uploads: Vec<String> = requests
+            .iter()
+            .filter(|request| request.url.path() == "/upload/image")
+            .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+            .collect();
+        assert!(
+            uploads.iter().any(|body| body.contains("acme-train-")),
+            "the dataset is staged under the overriding folder namespace"
+        );
+        assert!(
+            !uploads.iter().any(|body| body.contains("abnegate-")),
+            "an upload was staged under a default namespace"
+        );
+        published_under_acme(&models, &outcome.path);
+    }
+
+    #[tokio::test]
+    async fn an_overriding_contract_hands_the_training_command_its_own_variables() {
+        let command = r#"
+            test -d "$ACME_TRAIN_DIRECTORY/targets" || exit 61
+            test -n "$ACME_COMFY_INPUT" || exit 62
+            case "$ACME_TRAIN_FOLDER" in acme-train-*) ;; *) exit 63 ;; esac
+            case "$ACME_TRAIN_ARTIFACT" in acme-lora-*) ;; *) exit 64 ;; esac
+            test -z "$(env | grep -E "^ABNEGATE_(TRAIN|COMFY)_")" || exit 65
+            printf lora > "$ACME_TRAIN_OUTPUT"
+        "#;
+        let (_root, mut config) = harness(command);
+        config.contract = acme();
+
+        let outcome = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("acme-command"),
+            keep_all,
+        )
+        .await
+        .expect("the command is told only the overriding contract's names");
+
+        assert_eq!(fs::read(&outcome.path).unwrap(), b"lora");
+        published_under_acme(&config.models_directory, &outcome.path);
     }
 
     #[test]

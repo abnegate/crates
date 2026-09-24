@@ -20,8 +20,8 @@ use crate::train::TRAIN_LORA_NODE;
 /// The prefixes, the sidecar suffix and the publication directory become
 /// directory and file names under ComfyUI's directories, so
 /// [`Contract::validate`] holds each to one plain path component. The
-/// defaults match the node pack and training script this crate was built
-/// against.
+/// defaults name everything under a neutral `Abnegate` namespace; a deployment
+/// whose node pack and training script register other names sets them here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Contract {
