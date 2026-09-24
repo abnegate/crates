@@ -8,6 +8,8 @@ mod capability;
 mod codec;
 mod confinement_request;
 mod error_code;
+#[cfg(test)]
+mod golden;
 mod inbound_message;
 mod log_level;
 mod outbound_message;
