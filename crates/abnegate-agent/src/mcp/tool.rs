@@ -19,7 +19,7 @@ use crate::tool::ToolError;
 use crate::tool::ToolResult;
 use crate::tool::trim_middle;
 
-const MAX_MCP_OUTPUT_CHARACTERS: usize = MAXIMUM_TOOL_OUTPUT_CHARACTERS;
+const MAXIMUM_MCP_OUTPUT_CHARACTERS: usize = MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 
 /// One tool advertised by a connected MCP server.
 pub struct McpTool {
@@ -107,7 +107,7 @@ impl Tool for McpTool {
 /// The call's result as the model reads it, keeping the start and the end of
 /// a long one: an error a server reports last is the part worth reading.
 fn tool_result_from_call(result: &CallToolResult) -> ToolResult {
-    let output = trim_middle(&format_call_result(result), MAX_MCP_OUTPUT_CHARACTERS);
+    let output = trim_middle(&format_call_result(result), MAXIMUM_MCP_OUTPUT_CHARACTERS);
     if result.is_error.unwrap_or(false) {
         ToolResult::error(output)
     } else {
@@ -156,7 +156,7 @@ mod tests {
         assert!(output.contains("HEAD_MCP"), "{output}");
         assert!(output.ends_with("TAIL_MCP"), "{output}");
         assert!(output.contains("characters trimmed"), "{output}");
-        assert!(output.chars().count() <= MAX_MCP_OUTPUT_CHARACTERS);
+        assert!(output.chars().count() <= MAXIMUM_MCP_OUTPUT_CHARACTERS);
     }
 
     #[test]
@@ -169,6 +169,6 @@ mod tests {
         assert!(error.starts_with(UNTRUSTED_MARKER), "{error}");
         assert!(error.ends_with("the actual failure"), "{error}");
         assert!(error.contains("characters trimmed"));
-        assert!(error.chars().count() <= MAX_MCP_OUTPUT_CHARACTERS);
+        assert!(error.chars().count() <= MAXIMUM_MCP_OUTPUT_CHARACTERS);
     }
 }

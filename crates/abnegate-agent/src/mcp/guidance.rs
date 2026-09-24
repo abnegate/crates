@@ -10,12 +10,16 @@ const PREFIXED: &str = "You also have tools from MCP servers. Names are prefixed
 /// System-prompt text the caller supplies for one server's tools, added only
 /// when that server attached at least one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Guidance {
+    /// The server, as configured, whose tools this text is about.
     pub server: String,
+    /// What the model is told about them.
     pub text: String,
 }
 
 impl Guidance {
+    /// `text` for the tools `server` attaches.
     pub fn new(server: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             server: server.into(),

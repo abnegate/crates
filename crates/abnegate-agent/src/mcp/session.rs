@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +20,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use super::McpError;
-use super::McpServerSpec;
+use super::McpServer;
 use super::name::unique_qualified_tool_name;
 use super::tool::McpTool;
 use crate::tool::Tool;
@@ -27,7 +28,7 @@ use crate::tool::process::Group;
 
 /// Most of a server's stderr logged, after which the rest is read and
 /// dropped so the server never blocks writing to it.
-const MAX_LOGGED_STDERR_BYTES: usize = 64 * 1024;
+const MAXIMUM_LOGGED_STDERR_BYTES: usize = 64 * 1024;
 
 const STDERR_BUFFER_BYTES: usize = 4 * 1024;
 
@@ -57,61 +58,88 @@ impl McpSession {
         }
     }
 
+    /// Start the command server `server` under `name`, and complete its
+    /// handshake within `limit`.
     pub(super) async fn connect_with_timeout(
-        spec: &McpServerSpec,
+        name: &str,
+        server: &McpServer,
         limit: Duration,
     ) -> Result<Self, McpError> {
-        match tokio::time::timeout(limit, Self::handshake(spec)).await {
+        match tokio::time::timeout(limit, Self::handshake(name, server)).await {
             Ok(result) => result,
             Err(_) => Err(McpError::Handshake {
-                server: spec.name.clone(),
+                server: name.to_string(),
                 message: "handshake timed out".to_string(),
             }),
         }
     }
 
-    /// The child is given the spec's environment policy, and then the
-    /// process-level proxy policy on top of it. Its stderr is logged, up to a
-    /// bound, rather than written over this process's own.
-    async fn handshake(spec: &McpServerSpec) -> Result<Self, McpError> {
-        let mut command = Command::new(&spec.command);
+    /// The server's references are expanded from this process's environment,
+    /// as a CLI expands them. The child is given the server's environment
+    /// policy, and then the process-level proxy policy on top of it. Its
+    /// stderr is logged, up to a bound, rather than written over this
+    /// process's own.
+    async fn handshake(name: &str, server: &McpServer) -> Result<Self, McpError> {
+        let server = server.expanded(&|variable| std::env::var(variable).ok());
+        let Some(program) = &server.command else {
+            return Err(McpError::Spawn {
+                server: name.to_string(),
+                source: io::Error::new(io::ErrorKind::InvalidInput, "no command to launch"),
+            });
+        };
+        let mut command = Command::new(program);
         command.kill_on_drop(true).process_group(0);
         let (transport, stderr) = TokioChildProcess::builder(command.configure(|process| {
-            process.args(&spec.arguments);
-            spec.environment_policy().apply(process);
+            process.args(&server.arguments);
+            server.environment_policy().apply(process);
             Proxy::from_environment().apply(process);
-            if let Some(directory) = &spec.working_directory {
+            if let Some(directory) = &server.working_directory {
                 process.current_dir(directory);
             }
         }))
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|source| McpError::Spawn {
-            server: spec.name.clone(),
+            server: name.to_string(),
             source,
         })?;
         let group = Group::led_by(transport.id());
         if let Some(stderr) = stderr {
-            tokio::spawn(log_stderr(spec.name.clone(), stderr));
+            tokio::spawn(log_stderr(name.to_string(), stderr));
         }
 
         let client =
             ().serve(transport)
                 .await
                 .map_err(|error| McpError::Handshake {
-                    server: spec.name.clone(),
+                    server: name.to_string(),
                     message: error.to_string(),
                 })?;
 
+        Self::listed(name, &server, client, group).await
+    }
+
+    /// The session for `server`, whose handshake `client` has completed, with
+    /// the tools its server lists that `server` [allows](McpServer::allows),
+    /// as a CLI allows them.
+    pub(super) async fn listed(
+        name: &str,
+        server: &McpServer,
+        client: RunningService<RoleClient, ()>,
+        group: Group,
+    ) -> Result<Self, McpError> {
         let remote_tools = client
             .list_all_tools()
             .await
             .map_err(|error| McpError::Handshake {
-                server: spec.name.clone(),
+                server: name.to_string(),
                 message: error.to_string(),
-            })?;
+            })?
+            .into_iter()
+            .filter(|tool| server.allows(&tool.name))
+            .collect();
 
-        let mut session = Self::new(spec.name.clone(), remote_tools, client);
+        let mut session = Self::new(name.to_string(), remote_tools, client);
         session.group = group;
         Ok(session)
     }
@@ -163,7 +191,7 @@ impl Drop for McpSession {
     }
 }
 
-/// Log what a server writes to stderr, up to [`MAX_LOGGED_STDERR_BYTES`],
+/// Log what a server writes to stderr, up to [`MAXIMUM_LOGGED_STDERR_BYTES`],
 /// and keep reading past that so it never fills the pipe.
 async fn log_stderr(server: String, mut stderr: ChildStderr) {
     let mut buffer = vec![0; STDERR_BUFFER_BYTES];
@@ -173,17 +201,17 @@ async fn log_stderr(server: String, mut stderr: ChildStderr) {
             Ok(0) | Err(_) => return,
             Ok(read) => read,
         };
-        if logged >= MAX_LOGGED_STDERR_BYTES {
+        if logged >= MAXIMUM_LOGGED_STDERR_BYTES {
             continue;
         }
-        let kept = read.min(MAX_LOGGED_STDERR_BYTES - logged);
+        let kept = read.min(MAXIMUM_LOGGED_STDERR_BYTES - logged);
         logged += kept;
         tracing::debug!(
             server = %server,
             stderr = %String::from_utf8_lossy(&buffer[..kept]).trim_end(),
             "MCP server wrote to stderr"
         );
-        if logged >= MAX_LOGGED_STDERR_BYTES {
+        if logged >= MAXIMUM_LOGGED_STDERR_BYTES {
             tracing::debug!(server = %server, "MCP server stderr past its limit; dropping the rest");
         }
     }
@@ -191,10 +219,7 @@ async fn log_stderr(server: String, mut stderr: ChildStderr) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use abnegate_exec::PROXY_URL_VARIABLE;
-    use abnegate_secret::SecretValue;
 
     use super::*;
     use crate::test_support::CHILD_TEST;
@@ -202,6 +227,20 @@ mod tests {
     /// Set on this test's own child process, where the server under test
     /// would inherit it if nothing stopped it.
     const LEAKED: &str = "ABNEGATE_MCP_ENVIRONMENT_MARKER";
+
+    /// A server that writes what `script` prints to `path` and then never
+    /// answers the handshake.
+    fn recorder(script: &str, path: &std::path::Path) -> McpServer {
+        McpServer::command(
+            "sh",
+            [
+                "-c".to_string(),
+                format!("{script} > \"$1\"; exec cat > /dev/null"),
+                "sh".to_string(),
+                path.to_string_lossy().into_owned(),
+            ],
+        )
+    }
 
     #[tokio::test]
     async fn proxy_overrides_mcp_environment_before_handshake() {
@@ -217,43 +256,29 @@ mod tests {
                 .output()
                 .await
                 .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success(),
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
+                "{stdout}\n{}",
                 String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                stdout.contains("1 passed"),
+                "the child ran no test, so it proved nothing\n{stdout}"
             );
             return;
         }
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("environment");
-        let spec = McpServerSpec {
-            name: "environment".to_string(),
-            command: "sh".to_string(),
-            arguments: vec![
-                "-c".to_string(),
-                "env > \"$1\"; exec cat > /dev/null".to_string(),
-                "sh".to_string(),
-                path.to_string_lossy().into_owned(),
-            ],
-            environment: BTreeMap::from([
-                (
-                    "HTTPS_PROXY".to_string(),
-                    SecretValue::new("http://wrong:8888"),
-                ),
-                (
-                    "http_proxy".to_string(),
-                    SecretValue::new("http://wrong:8888"),
-                ),
-                ("NO_PROXY".to_string(), SecretValue::new("*")),
-                ("no_proxy".to_string(), SecretValue::new("*")),
-                (PROXY_URL_VARIABLE.to_string(), SecretValue::new("")),
-            ]),
-            inherit_environment: false,
-            working_directory: None,
-            disabled: false,
-        };
-        let result = McpSession::connect_with_timeout(&spec, Duration::from_millis(500)).await;
+        let server = recorder("env", &path)
+            .with_environment("HTTPS_PROXY", "http://wrong:8888")
+            .with_environment("http_proxy", "http://wrong:8888")
+            .with_environment("NO_PROXY", "*")
+            .with_environment("no_proxy", "*")
+            .with_environment(PROXY_URL_VARIABLE, "");
+        let result =
+            McpSession::connect_with_timeout("environment", &server, Duration::from_millis(500))
+                .await;
         assert!(matches!(result, Err(McpError::Handshake { .. })));
         let output = std::fs::read_to_string(path).unwrap();
         for key in [
@@ -283,23 +308,56 @@ mod tests {
         );
     }
 
+    /// A CLI is never told a Claude server's working directory, so this is
+    /// the one launcher that must honour it.
+    #[tokio::test]
+    async fn a_server_starts_in_its_working_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let start = tempfile::tempdir().unwrap();
+        let path = directory.path().join("directory");
+        let server = recorder("pwd -P", &path).with_working_directory(start.path());
+
+        let result =
+            McpSession::connect_with_timeout("directory", &server, Duration::from_millis(500))
+                .await;
+
+        assert!(matches!(result, Err(McpError::Handshake { .. })));
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap().trim_end(),
+            start.path().canonicalize().unwrap().to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_with_no_command_is_never_spawned() {
+        let result = McpSession::connect_with_timeout(
+            "remote",
+            &McpServer::remote("https://example.com/mcp"),
+            Duration::from_millis(500),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                &result,
+                Err(McpError::Spawn { server, source })
+                    if server == "remote" && source.kind() == io::ErrorKind::InvalidInput
+            ),
+            "{:?}",
+            result.err()
+        );
+    }
+
     /// A server that starts a helper and then fails its handshake used to
     /// leave the helper running: only the server itself was killed.
     #[tokio::test]
     async fn a_server_that_goes_away_takes_what_it_started_with_it() {
         let directory = tempfile::tempdir().unwrap();
         let pid_file = directory.path().join("helper");
-        let spec = McpServerSpec {
-            arguments: vec![
-                "-c".to_string(),
-                "sleep 30 & echo $! > \"$1\"; exec cat > /dev/null".to_string(),
-                "sh".to_string(),
-                pid_file.to_string_lossy().into_owned(),
-            ],
-            ..McpServerSpec::new("helper", "sh", Vec::<String>::new())
-        };
+        let server = recorder("sleep 30 & echo $!", &pid_file);
 
-        let result = McpSession::connect_with_timeout(&spec, Duration::from_millis(500)).await;
+        let result =
+            McpSession::connect_with_timeout("helper", &server, Duration::from_millis(500)).await;
         assert!(matches!(result, Err(McpError::Handshake { .. })));
 
         let pid: i32 = std::fs::read_to_string(&pid_file)

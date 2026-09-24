@@ -110,7 +110,7 @@ pub use crate::mcp::McpConfig;
 pub use crate::mcp::McpHub;
 #[cfg(feature = "mcp")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
-pub use crate::mcp::McpServerSpec;
+pub use crate::mcp::McpServer;
 pub use crate::run::Agent;
 pub use crate::run::AgentCallback;
 pub use crate::run::AgentConfig;

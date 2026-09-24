@@ -9,9 +9,10 @@ const CLOSING: char = '}';
 const DEFAULT: &str = ":-";
 
 /// What a rendered MCP configuration leaves to the child's environment: the
-/// literal values moved out of the file and the values mixing references
-/// with literal text, each under a generated variable, and the host
-/// variables the file's own `${VAR}` references name.
+/// literal text moved out of the file and a stdio server's values mixing
+/// references with literal text, each under a generated variable, and the
+/// host variables a stdio server's `${VAR}` references name. Nothing a
+/// remote server refers to is ever among them.
 #[derive(Debug, Default)]
 pub(crate) struct Placeholders {
     pub(crate) environment: BTreeMap<String, SecretValue>,
@@ -20,10 +21,11 @@ pub(crate) struct Placeholders {
 }
 
 impl Placeholders {
-    /// What to write in place of `value`: `value` itself when it is empty
-    /// or a single whole reference the CLI expands, and otherwise a
-    /// reference to a generated variable, which holds the literal as it is
-    /// or, for one mixing references with literal text, the text to expand.
+    /// What to write in place of a stdio server's `value`: `value` itself
+    /// when it is empty or a single whole reference the CLI expands, and
+    /// otherwise a reference to a generated variable, which holds the literal
+    /// as it is or, for one mixing references with literal text, the text to
+    /// expand.
     pub(crate) fn substitute(&mut self, value: &SecretValue) -> String {
         let text = value.expose();
         if text.is_empty() {
@@ -33,38 +35,64 @@ impl Placeholders {
         if referring && whole_reference(text) {
             return text.to_string();
         }
-        let variable = format!(
+        if !referring {
+            return self.hold(text.to_string());
+        }
+        let variable = self.generated();
+        self.templates.insert(variable.clone(), value.clone());
+        reference(&variable)
+    }
+
+    /// What to write in place of a remote server's `value`, whose references
+    /// the CLI expands under rules of its own: each reference as written, for
+    /// the CLI alone to expand, and each run of literal text around them as a
+    /// reference to a generated variable holding it. No reference is noted,
+    /// so nothing it names is ever read from this process's environment.
+    pub(crate) fn separate(&mut self, value: &SecretValue) -> String {
+        let mut rendered = String::new();
+        let mut literal = String::new();
+        for segment in segments(value.expose()) {
+            match segment {
+                Segment::Literal(text) => literal.push_str(text),
+                Segment::Reference { written, .. } => {
+                    rendered.push_str(&self.hold(std::mem::take(&mut literal)));
+                    rendered.push_str(written);
+                }
+            }
+        }
+        rendered.push_str(&self.hold(literal));
+        rendered
+    }
+
+    /// A reference to a new generated variable holding `literal` as it is,
+    /// or nothing when there is no text to hold.
+    fn hold(&mut self, literal: String) -> String {
+        if literal.is_empty() {
+            return String::new();
+        }
+        let variable = self.generated();
+        self.environment
+            .insert(variable.clone(), SecretValue::new(literal));
+        reference(&variable)
+    }
+
+    /// The name of the next generated variable.
+    fn generated(&self) -> String {
+        format!(
             "{VARIABLE_PREFIX}{}",
             self.environment.len() + self.templates.len()
-        );
-        let placeholder = format!("{OPENING}{variable}{CLOSING}");
-        if referring {
-            self.templates.insert(variable, value.clone());
-        } else {
-            self.environment.insert(variable, value.clone());
-        }
-        placeholder
+        )
     }
 
     /// Note every variable `text` refers to, and say whether it referred to
     /// any.
     pub(crate) fn note(&mut self, text: &str) -> bool {
         let mut found = false;
-        let mut rest = text;
-        while let Some(start) = rest.find(OPENING) {
-            rest = &rest[start + OPENING.len()..];
-            let Some(end) = rest.find(CLOSING) else {
-                break;
-            };
-            let expression = &rest[..end];
-            let name = expression
-                .split_once(DEFAULT)
-                .map_or(expression, |(name, _)| name);
-            if variable(name) {
+        for segment in segments(text) {
+            if let Segment::Reference { name, .. } = segment {
                 self.references.insert(name.to_string());
                 found = true;
             }
-            rest = &rest[end + 1..];
         }
         found
     }
@@ -82,41 +110,87 @@ pub(crate) fn whole_reference(value: &str) -> bool {
 
 /// `template` with each `${VAR}` replaced by what `lookup` gives for it, and
 /// each `${VAR:-default}` by its default when that is unset or empty, as
-/// the CLI would expand them. A variable nothing gives expands to nothing.
+/// the CLI expands them. A reference to a variable nothing gives, with no
+/// default, is left as written, as the CLI leaves it.
 pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
     let mut expanded = String::with_capacity(template.len());
-    let mut rest = template;
+    for segment in segments(template) {
+        match segment {
+            Segment::Literal(text) => expanded.push_str(text),
+            Segment::Reference {
+                written,
+                name,
+                default,
+            } => {
+                let value = lookup(name).filter(|value| !value.is_empty() || default.is_none());
+                match (value, default) {
+                    (Some(value), _) => expanded.push_str(&value),
+                    (None, Some(default)) => expanded.push_str(default),
+                    (None, None) => {
+                        tracing::warn!(
+                            variable = name,
+                            "an MCP value refers to a variable nothing sets; leaving it as written"
+                        );
+                        expanded.push_str(written);
+                    }
+                }
+            }
+        }
+    }
+    expanded
+}
+
+/// A run of literal text, or one `${VAR}` or `${VAR:-default}` reference as
+/// `written`.
+enum Segment<'text> {
+    Literal(&'text str),
+    Reference {
+        written: &'text str,
+        name: &'text str,
+        default: Option<&'text str>,
+    },
+}
+
+/// `text` as literal runs and references, in order. Anything shaped like a
+/// reference that does not name a variable, or is never closed, is literal
+/// text.
+fn segments(text: &str) -> Vec<Segment<'_>> {
+    let mut segments = Vec::new();
+    let mut rest = text;
     while let Some(start) = rest.find(OPENING) {
-        expanded.push_str(&rest[..start]);
         let after = &rest[start + OPENING.len()..];
         let Some(end) = after.find(CLOSING) else {
-            expanded.push_str(&rest[start..]);
-            return expanded;
+            break;
         };
+        let written = &rest[start..start + OPENING.len() + end + 1];
         let expression = &after[..end];
         let (name, default) = match expression.split_once(DEFAULT) {
             Some((name, default)) => (name, Some(default)),
             None => (expression, None),
         };
         if variable(name) {
-            let value = lookup(name).filter(|value| !value.is_empty() || default.is_none());
-            match (value, default) {
-                (Some(value), _) => expanded.push_str(&value),
-                (None, Some(default)) => expanded.push_str(default),
-                (None, None) => {
-                    tracing::warn!(
-                        variable = name,
-                        "an MCP value refers to a variable nothing sets"
-                    );
-                }
+            if start > 0 {
+                segments.push(Segment::Literal(&rest[..start]));
             }
+            segments.push(Segment::Reference {
+                written,
+                name,
+                default,
+            });
         } else {
-            expanded.push_str(&rest[start..start + OPENING.len() + end + 1]);
+            segments.push(Segment::Literal(&rest[..start + written.len()]));
         }
         rest = &after[end + 1..];
     }
-    expanded.push_str(rest);
-    expanded
+    if !rest.is_empty() {
+        segments.push(Segment::Literal(rest));
+    }
+    segments
+}
+
+/// `${variable}`.
+fn reference(variable: &str) -> String {
+    format!("{OPENING}{variable}{CLOSING}")
 }
 
 fn variable(name: &str) -> bool {
@@ -214,9 +288,22 @@ mod tests {
             expand("${MISSING:-anonymous}/${EMPTY:-fallback}", &lookup),
             "anonymous/fallback"
         );
-        assert_eq!(expand("[${MISSING}][${EMPTY}]", &lookup), "[][]");
+        assert_eq!(expand("[${MISSING}][${EMPTY}]", &lookup), "[${MISSING}][]");
         assert_eq!(expand("${1BAD} and ${", &lookup), "${1BAD} and ${");
         assert_eq!(expand("no references", &lookup), "no references");
+    }
+
+    /// Claude Code starts a server with a reference to a variable nothing
+    /// sets left as written, so every value expanded here on its behalf
+    /// does the same, or one configuration would start a server with one
+    /// value through the CLI and another through any other launcher.
+    #[test]
+    fn a_reference_to_a_variable_nothing_sets_is_left_as_written() {
+        let unset = |_: &str| None;
+
+        assert_eq!(expand("${TOKEN}", &unset), "${TOKEN}");
+        assert_eq!(expand("Bearer ${TOKEN}", &unset), "Bearer ${TOKEN}");
+        assert_eq!(expand("${TOKEN:-anonymous}", &unset), "anonymous");
     }
 
     #[test]

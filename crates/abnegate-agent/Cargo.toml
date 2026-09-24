@@ -19,9 +19,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-mcp = ["dep:rmcp"]
+mcp = ["dep:rmcp", "dep:abnegate-agent-cli"]
 
 [dependencies]
+abnegate-agent-cli = { path = "../abnegate-agent-cli", version = "0.1.0", optional = true }
 abnegate-config = { path = "../abnegate-config", version = "0.1.0" }
 abnegate-exec = { path = "../abnegate-exec", version = "0.1.0" }
 abnegate-llm = { path = "../abnegate-llm", version = "0.1.0" }

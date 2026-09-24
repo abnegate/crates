@@ -6,6 +6,7 @@ version = 4
 name = "abnegate-agent"
 version = "0.1.0"
 dependencies = [
+ "abnegate-agent-cli",
  "abnegate-config",
  "abnegate-exec",
  "abnegate-llm",
@@ -44,6 +45,7 @@ dependencies = [
  "abnegate-secret",
  "async-trait",
  "chrono",
+ "dirs",
  "serde",
  "serde_json",
  "tempfile",
