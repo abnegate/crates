@@ -342,16 +342,17 @@ fn ollama_thinking(shown: &Value) -> bool {
         })
 }
 
-fn provider_reasoning(info: &Value) -> bool {
-    if info.get("supports_reasoning").and_then(Value::as_bool) == Some(true) {
+fn provider_reasoning(model: &Value) -> bool {
+    if model.get("supports_reasoning").and_then(Value::as_bool) == Some(true) {
         return true;
     }
-    info.get("supported_openai_params")
+    model
+        .get("supported_openai_params")
         .and_then(Value::as_array)
         .is_some_and(|parameters| {
-            parameters.iter().any(|param| {
+            parameters.iter().any(|parameter| {
                 matches!(
-                    param.as_str(),
+                    parameter.as_str(),
                     Some("reasoning_effort" | "thinking" | "reasoning")
                 )
             })
