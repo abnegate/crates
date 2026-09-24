@@ -21,12 +21,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 async-trait = { workspace = true }
 dashmap = { workspace = true }
 rand = { workspace = true }
-reqwest = { workspace = true, features = ["query"] }
+reqwest = { workspace = true, features = ["form", "json", "multipart", "query"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
-uuid = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt"] }
+uuid = { workspace = true, features = ["v4"] }
 wiremock = { workspace = true }

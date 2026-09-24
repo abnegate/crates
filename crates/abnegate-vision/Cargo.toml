@@ -23,9 +23,9 @@ saliency = ["dep:ort"]
 
 [dependencies]
 fast_image_resize = { workspace = true }
-image = { workspace = true }
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
 ort = { workspace = true, optional = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
 # An example cannot gate itself with `#![cfg(...)]` -- that leaves it with no

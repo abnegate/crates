@@ -26,29 +26,29 @@ abnegate-exec = { path = "../abnegate-exec", version = "0.1.0" }
 abnegate-llm = { path = "../abnegate-llm", version = "0.1.0" }
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
 async-trait = { workspace = true }
-chrono = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
 dashmap = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
-nix = { workspace = true }
+nix = { workspace = true, features = ["fs", "process", "signal"] }
 regex = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 rmcp = { workspace = true, optional = true, features = ["client", "transport-child-process"] }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 tracing = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-normalization = { workspace = true }
 urlencoding = { workspace = true }
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client", "macros", "schemars", "server", "transport-async-rw", "transport-child-process"] }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "test-util"] }
 tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }
