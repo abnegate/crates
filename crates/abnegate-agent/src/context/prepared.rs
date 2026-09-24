@@ -6,6 +6,7 @@ use super::Summary;
 /// What [`prepare`](super::prepare) hands back: the messages to send, their
 /// usage, and the checkpoint they were projected through.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Prepared {
     pub messages: Vec<Message>,
     pub usage: ContextUsage,

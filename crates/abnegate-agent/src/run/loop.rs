@@ -1,9 +1,11 @@
 use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
-use abnegate_llm::LlmClient;
+use abnegate_llm::CompletionProvider;
+use abnegate_llm::CompletionRequest;
 use abnegate_llm::Message;
 use abnegate_llm::RequestOptions;
 use abnegate_llm::Role;
@@ -14,10 +16,10 @@ use uuid::Uuid;
 
 use super::AgentCallback;
 use super::AgentConfig;
-use super::AgentError;
 use super::AgentPhase;
 use super::AgentState;
 use super::AgentStep;
+use super::RunError;
 use super::ToolCallResult;
 use super::task::Task;
 use crate::context;
@@ -43,12 +45,14 @@ const UNFINISHED_REASONS: &[&str] = &["tool_calls", "function_call", "content_fi
 
 /// Rounds in a row the model may answer with nothing usable before the turn
 /// fails, since asking again sends the same request.
-pub(super) const MAX_EMPTY_RESPONSES: usize = 3;
+pub(super) const MAXIMUM_EMPTY_RESPONSES: usize = 3;
 
 /// A ReAct loop: think, call tools, observe their results, until the model
 /// answers or the iteration budget runs out.
 pub struct Agent {
-    llm: LlmClient,
+    provider: Arc<dyn CompletionProvider>,
+    summarizer: Arc<dyn CompletionProvider>,
+    model: String,
     tools: ToolRegistry,
     config: AgentConfig,
     context: Arc<ToolContext>,
@@ -57,28 +61,42 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// An agent that asks `model` through `provider` and acts with `tools`,
+    /// each call running under `context`.
+    ///
+    /// The provider answers every round, and writes the summaries compaction
+    /// asks for unless [`with_summarizer`](Self::with_summarizer) names
+    /// another. [`AgentConfig::temperature`], when set, is asked for on every
+    /// round in place of the provider's own.
     pub fn new(
-        llm: LlmClient,
+        provider: Arc<dyn CompletionProvider>,
+        model: impl Into<String>,
         tools: ToolRegistry,
         config: AgentConfig,
         context: ToolContext,
     ) -> Self {
-        let llm = match config.temperature {
-            Some(temperature) => llm.with_temperature(temperature),
-            None => llm,
-        };
         Self {
-            llm,
+            summarizer: Arc::clone(&provider),
+            provider,
+            model: model.into(),
             tools,
-            policy: Policy {
-                limit: None,
-                reserved: config.max_tokens,
-                source: ContextSource::Unknown,
-            },
+            policy: Policy::new(None, config.maximum_tokens, ContextSource::Unknown),
             config,
             context: Arc::new(context),
             guidance: None,
         }
+    }
+
+    /// Write compaction's summaries through `summarizer` rather than the
+    /// agent's own provider.
+    ///
+    /// A summary is a structured rewrite, asked for at temperature 0 of the
+    /// same model. A request cannot take back what a provider adds to every
+    /// request it sends, so when the agent's provider stops on custom
+    /// sequences or asks for reasoning, give compaction one that does neither.
+    pub fn with_summarizer(mut self, summarizer: Arc<dyn CompletionProvider>) -> Self {
+        self.summarizer = summarizer;
+        self
     }
 
     /// Use a verified/configured effective capacity without guessing from the model name.
@@ -99,7 +117,7 @@ impl Agent {
         &self,
         prompt: impl Into<String>,
         callback: &dyn AgentCallback,
-    ) -> Result<AgentState, AgentError> {
+    ) -> Result<AgentState, RunError> {
         let system_prompt = self
             .config
             .system_prompt
@@ -119,7 +137,7 @@ impl Agent {
         state: &mut AgentState,
         user_message: impl Into<String>,
         callback: &dyn AgentCallback,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), RunError> {
         state.add_message(Message::user(user_message));
         state.phase = AgentPhase::Thinking;
         state.iteration = 0;
@@ -134,14 +152,14 @@ impl Agent {
         &self,
         state: &mut AgentState,
         callback: &dyn AgentCallback,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), RunError> {
         let tool_definitions = self.tools.definitions();
         let mut empty = 0;
 
         loop {
-            if state.iteration >= self.config.max_iterations {
-                state.fail("Maximum iterations exceeded");
-                return Err(AgentError::MaxIterations);
+            if state.iteration >= self.config.maximum_iterations {
+                state.fail(RunError::IterationLimit.to_string());
+                return Err(RunError::IterationLimit);
             }
 
             state.iteration += 1;
@@ -159,44 +177,40 @@ impl Agent {
                 .messages
                 .iter()
                 .enumerate()
-                .map(|(index, message)| Entry {
-                    id: format!("{}:{index}", state.id),
-                    message: message.clone(),
-                    preserve: message.role == Role::System || Some(index) == latest,
-                    consumed: index < state.consumed,
+                .map(|(index, message)| {
+                    Entry::new(format!("{}:{index}", state.id), message.clone())
+                        .with_preserve(message.role == Role::System || Some(index) == latest)
+                        .with_consumed(index < state.consumed)
                 })
                 .collect();
             let prepared = context::prepare(
-                &self.llm,
-                &self.llm.config().default_model,
+                self.summarizer.as_ref(),
+                &self.model,
                 &entries,
                 Some(&tool_definitions),
                 &self.policy,
                 state.summary.as_ref(),
             )
             .await?;
-            let response = self
-                .llm
-                .chat_with_options(
-                    &self.llm.config().default_model,
-                    &prepared.messages,
-                    Some(&tool_definitions),
-                    RequestOptions::new(self.policy.reserved),
-                )
-                .await?;
+            let request = CompletionRequest::new(
+                &self.model,
+                &prepared.messages,
+                RequestOptions::new(self.policy.reserved),
+            )
+            .with_tools(&tool_definitions);
+            let request = match self.config.temperature {
+                Some(temperature) => request.with_temperature(temperature),
+                None => request,
+            };
+            let completion = self.provider.complete(request).await?;
             state.summary = prepared.summary;
             state.consumed = state.messages.len();
 
-            if let Some(usage) = &response.usage {
+            if let Some(usage) = &completion.usage {
                 state.tokens_used = state.tokens_used.saturating_add(usage.total_tokens);
             }
 
-            let Some(choice) = response.choices.first() else {
-                Self::unanswered(state, &mut empty, step)?;
-                continue;
-            };
-
-            let mut message = choice.message.clone();
+            let mut message = completion.message;
             let mut identifiers: HashSet<_> = state
                 .messages
                 .iter()
@@ -243,7 +257,7 @@ impl Agent {
                 continue;
             }
 
-            let finished = choice
+            let finished = completion
                 .finish_reason
                 .as_deref()
                 .is_none_or(|reason| !UNFINISHED_REASONS.contains(&reason));
@@ -266,7 +280,7 @@ impl Agent {
     }
 
     /// Count a round that brought neither an answer nor a call, and fail the
-    /// turn once there have been [`MAX_EMPTY_RESPONSES`] in a row.
+    /// turn once there have been [`MAXIMUM_EMPTY_RESPONSES`] in a row.
     ///
     /// The reply is kept on the step but not in the conversation: an empty
     /// assistant message is not something a provider accepts back.
@@ -274,14 +288,14 @@ impl Agent {
         state: &mut AgentState,
         empty: &mut usize,
         step: AgentStep,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), RunError> {
         state.add_step(step.complete());
         *empty += 1;
-        if *empty < MAX_EMPTY_RESPONSES {
+        if *empty < MAXIMUM_EMPTY_RESPONSES {
             return Ok(());
         }
-        state.fail(AgentError::Empty.to_string());
-        Err(AgentError::Empty)
+        state.fail(RunError::Empty.to_string());
+        Err(RunError::Empty)
     }
 
     fn respond(state: &mut AgentState, callback: &dyn AgentCallback, response: &str) {
@@ -320,7 +334,7 @@ impl Agent {
                 let executed = join_all(parallel.iter().map(|call| async move {
                     let start = Instant::now();
                     let result = self.execute_tool(call, callback).await;
-                    (call, result, elapsed(start))
+                    (call, result, start.elapsed())
                 }))
                 .await;
                 for (call, result, duration) in executed {
@@ -335,7 +349,14 @@ impl Agent {
             let result = self.execute_tool(first, callback).await;
             let ends = result.success && self.tools.ends_turn(&first.function.name) == Some(true);
             let response = result.to_message();
-            self.record_tool(state, callback, &mut results, first, result, elapsed(start));
+            self.record_tool(
+                state,
+                callback,
+                &mut results,
+                first,
+                result,
+                start.elapsed(),
+            );
             rest = &rest[1..];
 
             if ends {
@@ -345,12 +366,12 @@ impl Agent {
                         first.function.name
                     ));
                     let output = result.to_message();
-                    results.push(ToolCallResult {
-                        call: skipped.clone(),
-                        result: output.clone(),
-                        success: false,
-                        duration_milliseconds: 0,
-                    });
+                    results.push(ToolCallResult::new(
+                        skipped.clone(),
+                        output.clone(),
+                        false,
+                        Duration::ZERO,
+                    ));
                     state.add_message(Message::tool_result(&skipped.id, output));
                 }
                 return (results, Some(response));
@@ -372,16 +393,16 @@ impl Agent {
         tool_results: &mut Vec<ToolCallResult>,
         tool_call: &ToolCall,
         result: ToolResult,
-        duration_milliseconds: u64,
+        duration: Duration,
     ) {
         callback.on_tool_result(&tool_call.function.name, &result);
         let output = result.to_message();
-        tool_results.push(ToolCallResult {
-            call: tool_call.clone(),
-            result: output.clone(),
-            success: result.success,
-            duration_milliseconds,
-        });
+        tool_results.push(ToolCallResult::new(
+            tool_call.clone(),
+            output.clone(),
+            result.success,
+            duration,
+        ));
         state.add_message(Message::tool_result(&tool_call.id, output));
     }
 
@@ -427,10 +448,6 @@ impl Agent {
             )),
         }
     }
-}
-
-fn elapsed(start: Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The text a panic carried, when it carried any.

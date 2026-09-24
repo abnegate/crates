@@ -7,6 +7,7 @@ use super::ContextStatus;
 
 /// How much of a model's context a request spends, and what that leaves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ContextUsage {
     pub model: String,
     pub used: u64,

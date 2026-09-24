@@ -13,28 +13,45 @@
 //! whole when they finish or overrun, and see only the allowlisted
 //! environment the [`ToolContext`] names.
 //!
-//! [`Agent`] runs the loop: ask the model, run the tools it calls, feed their
-//! results back, until it answers. A call whose tier needs confirming runs
-//! only once [`AgentCallback::approve`] allows it, which by default it does
-//! not; the approver is handed a [`tool::Preview`] of what the call will do,
-//! verbatim but for its escapes and flagged whenever part of it had to be
-//! left out. Every call is held to its tool's own timeout, and stopped with
-//! the run if the run is dropped. Each request goes through
-//! [`context::prepare`], which folds consumed history into a checkpoint when
-//! the model's context would overflow, without ever editing the history.
+//! [`Agent`] runs the loop over any
+//! [`CompletionProvider`](abnegate_llm::CompletionProvider): ask the model, run
+//! the tools it calls, feed their results back, until it answers. The model is
+//! named when the agent is built, so one provider can serve several agents,
+//! each asking its own. A call whose tier needs confirming runs only once
+//! [`AgentCallback::approve`] allows it, which by default it does not; the
+//! approver is handed a [`tool::Preview`] of what the call will do, verbatim
+//! but for its escapes and flagged whenever part of it had to be left out.
+//! Every call is held to its tool's own timeout, and stopped with the run if
+//! the run is dropped. Each request goes through [`context::prepare`], which
+//! folds consumed history into a checkpoint when the model's context would
+//! overflow, without ever editing the history.
 //!
 //! [`chat`] is the storage boundary a multi-turn chat session needs, leased so
 //! only one response is ever live per chat; [`session`] saves and reloads agent
 //! runs; [`template`] renders `{{key}}` prompt templates.
 //!
 //! ```no_run
-//! use abnegate_agent::{Agent, AgentConfig, NoOpCallback, ToolContext, ToolRegistry};
-//! use abnegate_llm::{LlmClient, LlmConfig};
+//! use std::sync::Arc;
 //!
-//! # async fn example() -> Result<(), abnegate_agent::AgentError> {
-//! let llm = LlmClient::new(LlmConfig::new("http://127.0.0.1:4000/v1", "qwen3", ""));
+//! use abnegate_agent::Agent;
+//! use abnegate_agent::AgentConfig;
+//! use abnegate_agent::NoOpCallback;
+//! use abnegate_agent::RunError;
+//! use abnegate_agent::ToolContext;
+//! use abnegate_agent::ToolRegistry;
+//! use abnegate_llm::Credential;
+//! use abnegate_llm::HttpProvider;
+//!
+//! # async fn example() -> Result<(), RunError> {
+//! let provider = HttpProvider::connect(
+//!     "gateway",
+//!     "http://127.0.0.1:4000/v1",
+//!     &Credential::Inherited,
+//!     "qwen3",
+//! );
 //! let agent = Agent::new(
-//!     llm,
+//!     Arc::new(provider),
+//!     "qwen3",
 //!     ToolRegistry::with_defaults(),
 //!     AgentConfig::default(),
 //!     ToolContext::default(),
@@ -48,16 +65,15 @@
 //! # }
 //! ```
 //!
-//! # Coming from claudear
+//! # Estimation and templating rules
 //!
-//! The prompt helpers here replace claudear's, and differ from them on
-//! purpose:
+//! The prompt helpers make a few choices on purpose:
 //!
-//! - [`context::estimate`] counts four bytes a token rounded up, not down,
-//!   and charges each message 8 tokens of framing rather than 20.
+//! - [`context::estimate`] counts four bytes a token, rounding a partial
+//!   token up, and charges each message 8 tokens of framing.
 //! - [`TemplateRenderer::render`] renders a key the context does not hold as
-//!   nothing, where claudear left `{{key}}` in the prompt;
-//!   [`TemplateRenderer::render_strict`] refuses such a template instead.
+//!   nothing; [`TemplateRenderer::render_strict`] refuses such a template
+//!   instead.
 //! - `{{#if key}}` is false for an empty string as well as a missing key, and
 //!   keys may contain `-`.
 //!
@@ -98,11 +114,11 @@ pub use crate::mcp::McpServerSpec;
 pub use crate::run::Agent;
 pub use crate::run::AgentCallback;
 pub use crate::run::AgentConfig;
-pub use crate::run::AgentError;
 pub use crate::run::AgentPhase;
 pub use crate::run::AgentState;
 pub use crate::run::AgentStep;
 pub use crate::run::NoOpCallback;
+pub use crate::run::RunError;
 pub use crate::run::ToolCallResult;
 pub use crate::session::FileSessionStore;
 pub use crate::session::Session;
@@ -116,3 +132,7 @@ pub use crate::tool::ToolContext;
 pub use crate::tool::ToolError;
 pub use crate::tool::ToolRegistry;
 pub use crate::tool::ToolResult;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

@@ -11,6 +11,7 @@ use super::ToolCallResult;
 /// One model round of a run: what the model said, or the tools it called and
 /// what they returned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AgentStep {
     pub id: Uuid,
     /// The phase the round was in when it was recorded.
@@ -82,12 +83,12 @@ mod tests {
     fn test_agent_step_with_tool_calls() {
         let tool_call = ToolCall::function("call_123", "read_file", r#"{"path": "/tmp/test"}"#);
 
-        let tool_result = ToolCallResult {
-            call: tool_call,
-            result: "file contents".to_string(),
-            success: true,
-            duration_milliseconds: 150,
-        };
+        let tool_result = ToolCallResult::new(
+            tool_call,
+            "file contents",
+            true,
+            std::time::Duration::from_millis(150),
+        );
 
         let mut step = AgentStep::new(AgentPhase::Acting);
         step.tool_calls = Some(vec![tool_result]);
