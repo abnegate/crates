@@ -9,8 +9,8 @@ const PATH_VARIABLE: &str = "CONFIG_PATH";
 const FILE_NAME: &str = "config.toml";
 
 /// Where `application` keeps its configuration: `<APPLICATION>_CONFIG_DIRECTORY`
-/// if it is set, otherwise a dot directory named for the application under the
-/// home directory.
+/// if it is set, otherwise the application's
+/// [`directory`](Application::directory) under the home directory.
 ///
 /// `<APPLICATION>` is the application's name in upper case with every `-`
 /// replaced by `_`, so `example-cli` reads `EXAMPLE_CLI_CONFIG_DIRECTORY`.
@@ -20,7 +20,7 @@ pub fn directory(application: &Application) -> Result<PathBuf, Error> {
     }
 
     let home = dirs::home_dir().ok_or(Error::NoHomeDirectory)?;
-    Ok(home.join(format!(".{application}")))
+    Ok(home.join(application.directory()))
 }
 
 /// The configuration file `application` loads: `<APPLICATION>_CONFIG_PATH` if

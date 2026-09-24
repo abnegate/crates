@@ -115,6 +115,7 @@ mod token;
 
 pub use crate::application::Application;
 pub use crate::application::ApplicationError;
+pub use crate::application::DEFAULT_APPLICATION;
 pub use crate::config::Config;
 pub use crate::environment::EnvironmentFile;
 pub use crate::error::Error;

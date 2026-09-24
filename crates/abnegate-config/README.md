@@ -15,8 +15,9 @@ writes is replaced atomically and is readable only by its owner.
 
 An `Application` keeps its files in the hidden directory `.{name}` under the
 home directory, and its configuration in `config.toml` inside it.
-Two environment variables override the location, where `<APPLICATION>` is the
-name in upper case with every `-` replaced by `_`:
+`Application::default()` is named `abnegate` (`DEFAULT_APPLICATION`). Two
+environment variables override the location, where `<APPLICATION>` is the name
+in upper case with every `-` replaced by `_`:
 
 - `<APPLICATION>_CONFIG_DIRECTORY` moves the directory, and the file with it.
 - `<APPLICATION>_CONFIG_PATH` names the file outright.
