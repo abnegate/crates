@@ -15,8 +15,8 @@ use crate::text::truncate;
 
 const USER_AGENT: &str = concat!("abnegate-notify/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_ERROR_BODY_BYTES: usize = 2_048;
-const MAX_ERROR_BODY_CHARS: usize = 512;
+const MAXIMUM_ERROR_BODY_BYTES: usize = 2_048;
+const MAXIMUM_ERROR_BODY_CHARACTERS: usize = 512;
 const RETRY_AFTER: &str = "retry-after";
 
 /// A JSON POST to one validated endpoint.
@@ -116,16 +116,16 @@ impl Webhook {
         let mut stream = response.bytes_stream();
         let mut collected: Vec<u8> = Vec::new();
 
-        while collected.len() < MAX_ERROR_BODY_BYTES {
+        while collected.len() < MAXIMUM_ERROR_BODY_BYTES {
             match stream.next().await {
                 Some(Ok(chunk)) => collected.extend_from_slice(&chunk),
                 Some(Err(_)) | None => break,
             }
         }
-        collected.truncate(MAX_ERROR_BODY_BYTES);
+        collected.truncate(MAXIMUM_ERROR_BODY_BYTES);
 
         let text = String::from_utf8_lossy(&collected);
-        let cleaned = truncate(sanitize(text.trim()).trim(), MAX_ERROR_BODY_CHARS);
+        let cleaned = truncate(sanitize(text.trim()).trim(), MAXIMUM_ERROR_BODY_CHARACTERS);
         if cleaned.is_empty() {
             "no response body".to_string()
         } else {
@@ -217,8 +217,8 @@ mod tests {
         match error {
             Error::Rejected { body, .. } => {
                 assert!(
-                    body.chars().count() <= MAX_ERROR_BODY_CHARS,
-                    "body was {} chars",
+                    body.chars().count() <= MAXIMUM_ERROR_BODY_CHARACTERS,
+                    "body was {} characters",
                     body.chars().count()
                 );
             }

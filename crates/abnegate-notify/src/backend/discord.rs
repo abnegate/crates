@@ -21,14 +21,14 @@ const HOSTS: &[&str] = &[
     "canary.discord.com",
     "ptb.discord.com",
 ];
-const MAX_TITLE_CHARS: usize = 256;
-const MAX_DESCRIPTION_CHARS: usize = 4_096;
-const MAX_FIELD_NAME_CHARS: usize = 256;
-const MAX_FIELD_VALUE_CHARS: usize = 1_024;
-const MAX_FOOTER_CHARS: usize = 2_048;
-const MAX_FIELDS: usize = 25;
-const MAX_EMBED_CHARS: usize = 6_000;
-const MIN_FIELD_CHARS: usize = 2;
+const MAXIMUM_TITLE_CHARACTERS: usize = 256;
+const MAXIMUM_DESCRIPTION_CHARACTERS: usize = 4_096;
+const MAXIMUM_FIELD_NAME_CHARACTERS: usize = 256;
+const MAXIMUM_FIELD_VALUE_CHARACTERS: usize = 1_024;
+const MAXIMUM_FOOTER_CHARACTERS: usize = 2_048;
+const MAXIMUM_FIELDS: usize = 25;
+const MAXIMUM_EMBED_CHARACTERS: usize = 6_000;
+const MINIMUM_FIELD_CHARACTERS: usize = 2;
 
 /// Delivers to one Discord channel webhook.
 #[derive(Debug)]
@@ -92,7 +92,7 @@ impl Discord {
     /// The title, footer, description and fields draw on that ceiling in that
     /// order, so it is the fields that give way first.
     fn payload(&self, notification: &Notification) -> Value {
-        let mut remaining = MAX_EMBED_CHARS;
+        let mut remaining = MAXIMUM_EMBED_CHARACTERS;
         let mut embed = json!({
             "color": colour(notification.kind()),
             "timestamp": notification
@@ -100,19 +100,26 @@ impl Discord {
                 .to_rfc3339_opts(SecondsFormat::Secs, true),
         });
 
-        if let Some(title) = spend(notification.title(), MAX_TITLE_CHARS, &mut remaining) {
+        if let Some(title) = spend(
+            notification.title(),
+            MAXIMUM_TITLE_CHARACTERS,
+            &mut remaining,
+        ) {
             embed["title"] = json!(title);
         }
 
         if let Some(footer) = &self.footer
-            && let Some(text) = spend(footer, MAX_FOOTER_CHARS, &mut remaining)
+            && let Some(text) = spend(footer, MAXIMUM_FOOTER_CHARACTERS, &mut remaining)
         {
             embed["footer"] = json!({ "text": text });
         }
 
         if !notification.body().is_empty()
-            && let Some(description) =
-                spend(notification.body(), MAX_DESCRIPTION_CHARS, &mut remaining)
+            && let Some(description) = spend(
+                notification.body(),
+                MAXIMUM_DESCRIPTION_CHARACTERS,
+                &mut remaining,
+            )
         {
             embed["description"] = json!(description);
         }
@@ -122,14 +129,18 @@ impl Discord {
         }
 
         let mut fields: Vec<Value> = Vec::new();
-        for field in notification.fields().iter().take(MAX_FIELDS) {
-            if remaining < MIN_FIELD_CHARS {
+        for field in notification.fields().iter().take(MAXIMUM_FIELDS) {
+            if remaining < MINIMUM_FIELD_CHARACTERS {
                 break;
             }
-            let name_limit = MAX_FIELD_NAME_CHARS.min(remaining - 1);
+            let name_limit = MAXIMUM_FIELD_NAME_CHARACTERS.min(remaining - 1);
             let (Some(name), Some(value)) = (
                 spend(field.name(), name_limit, &mut remaining),
-                spend(field.value(), MAX_FIELD_VALUE_CHARS, &mut remaining),
+                spend(
+                    field.value(),
+                    MAXIMUM_FIELD_VALUE_CHARACTERS,
+                    &mut remaining,
+                ),
             ) else {
                 break;
             };
@@ -307,7 +318,7 @@ mod tests {
                 .as_array()
                 .expect("fields")
                 .len(),
-            MAX_FIELDS
+            MAXIMUM_FIELDS
         );
     }
 
@@ -315,21 +326,21 @@ mod tests {
         discord.payload(notification)["embeds"][0].clone()
     }
 
-    fn chars(value: &Value) -> usize {
+    fn characters(value: &Value) -> usize {
         value.as_str().map_or(0, |text| text.chars().count())
     }
 
     /// Every part of an embed that counts towards Discord's 6000-character total.
-    fn embed_chars(embed: &Value) -> usize {
+    fn embed_characters(embed: &Value) -> usize {
         let fields: usize = embed["fields"].as_array().map_or(0, |fields| {
             fields
                 .iter()
-                .map(|field| chars(&field["name"]) + chars(&field["value"]))
+                .map(|field| characters(&field["name"]) + characters(&field["value"]))
                 .sum()
         });
-        chars(&embed["title"])
-            + chars(&embed["description"])
-            + chars(&embed["footer"]["text"])
+        characters(&embed["title"])
+            + characters(&embed["description"])
+            + characters(&embed["footer"]["text"])
             + fields
     }
 
@@ -338,26 +349,38 @@ mod tests {
         let discord = Discord::new("https://discord.com/api/webhooks/1/token").expect("valid");
 
         let title = embed(&discord, &pinned(&"T".repeat(500), ""));
-        assert_eq!(chars(&title["title"]), MAX_TITLE_CHARS);
+        assert_eq!(characters(&title["title"]), MAXIMUM_TITLE_CHARACTERS);
 
         let description = embed(&discord, &pinned("Title", &"B".repeat(9_000)));
-        assert_eq!(chars(&description["description"]), MAX_DESCRIPTION_CHARS);
+        assert_eq!(
+            characters(&description["description"]),
+            MAXIMUM_DESCRIPTION_CHARACTERS
+        );
 
         let field = embed(
             &discord,
             &pinned("Title", "").field("N".repeat(400), "V".repeat(2_000)),
         );
-        assert_eq!(chars(&field["fields"][0]["name"]), MAX_FIELD_NAME_CHARS);
-        assert_eq!(chars(&field["fields"][0]["value"]), MAX_FIELD_VALUE_CHARS);
+        assert_eq!(
+            characters(&field["fields"][0]["name"]),
+            MAXIMUM_FIELD_NAME_CHARACTERS
+        );
+        assert_eq!(
+            characters(&field["fields"][0]["value"]),
+            MAXIMUM_FIELD_VALUE_CHARACTERS
+        );
 
         let footer = embed(&discord.footer("F".repeat(3_000)), &pinned("Title", ""));
-        assert_eq!(chars(&footer["footer"]["text"]), MAX_FOOTER_CHARS);
+        assert_eq!(
+            characters(&footer["footer"]["text"]),
+            MAXIMUM_FOOTER_CHARACTERS
+        );
     }
 
     #[test]
     fn the_whole_embed_stays_within_discords_total() {
         let mut notification = pinned(&"T".repeat(500), &"B".repeat(9_000));
-        for index in 0..MAX_FIELDS {
+        for index in 0..MAXIMUM_FIELDS {
             notification = notification.field(format!("{index}").repeat(400), "V".repeat(2_000));
         }
         let discord = Discord::new("https://discord.com/api/webhooks/1/token")
@@ -366,29 +389,32 @@ mod tests {
 
         let embed = embed(&discord, &notification);
         assert!(
-            embed_chars(&embed) <= MAX_EMBED_CHARS,
+            embed_characters(&embed) <= MAXIMUM_EMBED_CHARACTERS,
             "the embed carries {} characters",
-            embed_chars(&embed)
+            embed_characters(&embed)
         );
-        assert_eq!(chars(&embed["title"]), MAX_TITLE_CHARS);
-        assert_eq!(chars(&embed["footer"]["text"]), MAX_FOOTER_CHARS);
+        assert_eq!(characters(&embed["title"]), MAXIMUM_TITLE_CHARACTERS);
+        assert_eq!(
+            characters(&embed["footer"]["text"]),
+            MAXIMUM_FOOTER_CHARACTERS
+        );
     }
 
     #[test]
     fn fields_fill_whatever_the_total_leaves() {
         let mut notification = pinned("Title", &"B".repeat(4_000));
-        for index in 0..MAX_FIELDS {
+        for index in 0..MAXIMUM_FIELDS {
             notification = notification.field(format!("Key {index}"), "V".repeat(1_000));
         }
         let discord = Discord::new("https://discord.com/api/webhooks/1/token").expect("valid");
 
         let embed = embed(&discord, &notification);
         let fields = embed["fields"].as_array().expect("fields");
-        assert!(!fields.is_empty() && fields.len() < MAX_FIELDS);
+        assert!(!fields.is_empty() && fields.len() < MAXIMUM_FIELDS);
         for field in fields {
-            assert!(chars(&field["name"]) >= 1 && chars(&field["value"]) >= 1);
+            assert!(characters(&field["name"]) >= 1 && characters(&field["value"]) >= 1);
         }
-        assert!(embed_chars(&embed) <= MAX_EMBED_CHARS);
+        assert!(embed_characters(&embed) <= MAXIMUM_EMBED_CHARACTERS);
     }
 
     #[test]

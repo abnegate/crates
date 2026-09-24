@@ -17,11 +17,11 @@ use crate::text::truncate;
 
 const HOSTS: &[&str] = &["hooks.slack.com"];
 const LINK_LABEL: &str = "Open";
-const MAX_HEADER_CHARS: usize = 150;
-const MAX_SECTION_CHARS: usize = 3_000;
-const MAX_FIELD_CHARS: usize = 2_000;
-const MAX_FIELDS_PER_SECTION: usize = 10;
-const MAX_BLOCKS: usize = 50;
+const MAXIMUM_HEADER_CHARACTERS: usize = 150;
+const MAXIMUM_SECTION_CHARACTERS: usize = 3_000;
+const MAXIMUM_FIELD_CHARACTERS: usize = 2_000;
+const MAXIMUM_FIELDS_PER_SECTION: usize = 10;
+const MAXIMUM_BLOCKS: usize = 50;
 
 /// Delivers to one Slack incoming webhook.
 #[derive(Debug)]
@@ -80,7 +80,7 @@ impl Slack {
                 "type": "plain_text",
                 "text": truncate(
                     &format!("{} {}", icon(notification.kind()), escape(notification.title())),
-                    MAX_HEADER_CHARS,
+                    MAXIMUM_HEADER_CHARACTERS,
                 ),
                 "emoji": true,
             }
@@ -91,7 +91,7 @@ impl Slack {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": truncate(&escape(notification.body()), MAX_SECTION_CHARS),
+                    "text": truncate(&escape(notification.body()), MAXIMUM_SECTION_CHARACTERS),
                 }
             })
         });
@@ -107,20 +107,20 @@ impl Slack {
         });
 
         let fixed = 1 + usize::from(body.is_some()) + usize::from(link.is_some());
-        let mut blocks = Vec::with_capacity(MAX_BLOCKS);
+        let mut blocks = Vec::with_capacity(MAXIMUM_BLOCKS);
         blocks.push(header);
         blocks.extend(body);
         blocks.extend(
             notification
                 .fields()
-                .chunks(MAX_FIELDS_PER_SECTION)
-                .take(MAX_BLOCKS - fixed)
+                .chunks(MAXIMUM_FIELDS_PER_SECTION)
+                .take(MAXIMUM_BLOCKS - fixed)
                 .map(section),
         );
         blocks.extend(link);
 
         json!({
-            "text": truncate(&escape(&notification.to_plain_text()), MAX_SECTION_CHARS),
+            "text": truncate(&escape(&notification.to_plain_text()), MAXIMUM_SECTION_CHARACTERS),
             "blocks": blocks,
         })
     }
@@ -154,7 +154,7 @@ fn section(fields: &[Field]) -> Value {
                 "type": "mrkdwn",
                 "text": truncate(
                     &format!("*{}*\n{}", escape(field.name()), escape(field.value())),
-                    MAX_FIELD_CHARS,
+                    MAXIMUM_FIELD_CHARACTERS,
                 ),
             })
         })
@@ -353,7 +353,7 @@ mod tests {
             .expect("header")
             .chars()
             .count();
-        assert_eq!(header, MAX_HEADER_CHARS);
+        assert_eq!(header, MAXIMUM_HEADER_CHARACTERS);
     }
 
     #[tokio::test]
@@ -385,11 +385,11 @@ mod tests {
         let payload = slack.payload(&notification);
         let blocks = payload["blocks"].as_array().expect("blocks");
 
-        assert_eq!(blocks.len(), MAX_BLOCKS);
+        assert_eq!(blocks.len(), MAXIMUM_BLOCKS);
         assert_eq!(blocks[0]["type"], "header");
         assert_eq!(blocks[1]["text"]["text"], "Body");
         assert_eq!(
-            blocks[MAX_BLOCKS - 1]["type"],
+            blocks[MAXIMUM_BLOCKS - 1]["type"],
             "context",
             "the link survives the cut"
         );
