@@ -2,17 +2,21 @@
 
 mod error;
 mod point;
-mod rect;
+mod rectangle;
 
-pub use crate::gravity::error::Error;
+pub use crate::gravity::error::GravityError;
 pub use crate::gravity::point::Point;
-pub use crate::gravity::rect::Rect;
+pub use crate::gravity::rectangle::Rectangle;
 
 /// Returns the saliency-weighted centroid and the peak saliency value as
 /// confidence. Values that are negative, NaN, or infinite contribute no weight.
 /// A map with no usable saliency falls back to the image center.
-pub fn from_saliency(saliency: &[f32], width: i32, height: i32) -> Result<(Point, f64), Error> {
-    from_saliency_region(saliency, width, height, Rect::new(0, 0, width, height))
+pub fn from_saliency(
+    saliency: &[f32],
+    width: i32,
+    height: i32,
+) -> Result<(Point, f64), GravityError> {
+    from_saliency_region(saliency, width, height, Rectangle::new(0, 0, width, height))
 }
 
 /// Calculates a focal point from a rectangular image region within a larger
@@ -21,13 +25,13 @@ pub fn from_saliency_region(
     saliency: &[f32],
     width: i32,
     height: i32,
-    region: Rect,
-) -> Result<(Point, f64), Error> {
+    region: Rectangle,
+) -> Result<(Point, f64), GravityError> {
     if width <= 0 || height <= 0 || saliency.len() as i64 != i64::from(width) * i64::from(height) {
-        return Err(Error::Dimensions);
+        return Err(GravityError::Dimensions);
     }
-    if region.is_empty() || !region.contained_by(&Rect::new(0, 0, width, height)) {
-        return Err(Error::Region);
+    if region.is_empty() || !region.contained_by(&Rectangle::new(0, 0, width, height)) {
+        return Err(GravityError::Region);
     }
 
     let (total, weighted_x, weighted_y, peak) = accumulate(saliency, width as usize, region);
@@ -59,14 +63,14 @@ pub fn from_saliency_region(
 ///
 /// Row sums are folded once per row rather than once per pixel, which keeps the
 /// inner loop free of loop-carried multiplies so it vectorizes.
-fn accumulate(saliency: &[f32], width: usize, region: Rect) -> (f64, f64, f64, f32) {
+fn accumulate(saliency: &[f32], width: usize, region: Rectangle) -> (f64, f64, f64, f32) {
     let mut total = 0.0f64;
     let mut weighted_x = 0.0f64;
     let mut weighted_y = 0.0f64;
     let mut peak = 0.0f32;
 
-    for y in region.min_y..region.max_y {
-        let start = y as usize * width + region.min_x as usize;
+    for y in region.top..region.bottom {
+        let start = y as usize * width + region.left as usize;
         let row = &saliency[start..start + region.width() as usize];
 
         let mut row_total = 0.0f64;
@@ -85,7 +89,7 @@ fn accumulate(saliency: &[f32], width: usize, region: Rect) -> (f64, f64, f64, f
 
         total += row_total;
         weighted_x += row_weighted_x;
-        weighted_y += f64::from(y - region.min_y) * row_total;
+        weighted_y += f64::from(y - region.top) * row_total;
         peak = peak.max(row_peak);
     }
 
@@ -124,7 +128,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_dimensions() {
-        assert_eq!(from_saliency(&[1.0], 2, 2), Err(Error::Dimensions));
+        assert_eq!(from_saliency(&[1.0], 2, 2), Err(GravityError::Dimensions));
     }
 
     #[test]
@@ -134,15 +138,16 @@ mod tests {
         map[0] = 10.0;
         map[WIDTH + 3] = 0.5;
 
-        let (point, confidence) = from_saliency_region(&map, 4, 4, Rect::new(0, 1, 4, 3)).unwrap();
+        let (point, confidence) =
+            from_saliency_region(&map, 4, 4, Rectangle::new(0, 1, 4, 3)).unwrap();
         assert_eq!(point, Point { x: 1.0, y: 0.0 });
         assert_eq!(confidence, 0.5);
     }
 
     #[test]
     fn rejects_invalid_region() {
-        let error = from_saliency_region(&[0.0; 4], 2, 2, Rect::new(-1, 0, 1, 1));
-        assert_eq!(error, Err(Error::Region));
+        let error = from_saliency_region(&[0.0; 4], 2, 2, Rectangle::new(-1, 0, 1, 1));
+        assert_eq!(error, Err(GravityError::Region));
     }
 
     #[test]

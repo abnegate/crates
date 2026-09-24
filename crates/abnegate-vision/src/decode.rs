@@ -15,34 +15,34 @@ mod layout;
 mod orientation;
 mod raster;
 
-pub use crate::decode::error::Error;
+pub use crate::decode::error::DecodeError;
 pub use crate::decode::layout::Layout;
 pub use crate::decode::orientation::Orientation;
 pub use crate::decode::raster::Raster;
 
 /// The decoded-image ceiling, shared with the Go reference implementation.
 /// Anything larger is rejected before a pixel buffer is allocated for it.
-pub const MAX_PIXELS: u64 = 20_000_000;
+pub const MAXIMUM_PIXELS: u64 = 20_000_000;
 
 /// The widest pixel a supported format decodes to: four 16-bit channels.
-const MAX_BYTES_PER_PIXEL: u64 = 8;
+const MAXIMUM_BYTES_PER_PIXEL: u64 = 8;
 
 /// What a decoder may allocate for one image, its own pixels included.
-const MAX_ALLOCATION: u64 = MAX_PIXELS * MAX_BYTES_PER_PIXEL;
+const MAXIMUM_ALLOCATION: u64 = MAXIMUM_PIXELS * MAXIMUM_BYTES_PER_PIXEL;
 
 /// Decodes JPEG, PNG, or WebP data. EXIF orientation is recorded rather than
 /// applied, so the caller can fold it into a later, much smaller resize.
 ///
 /// Each decoder is held to an allocation budget sized for the largest image
-/// [`MAX_PIXELS`] admits, so a small file cannot talk one into allocating
+/// [`MAXIMUM_PIXELS`] admits, so a small file cannot talk one into allocating
 /// far more than the image it describes.
-pub fn decode(data: &[u8]) -> Result<Raster, Error> {
-    decode_within(data, MAX_ALLOCATION)
+pub fn decode(data: &[u8]) -> Result<Raster, DecodeError> {
+    decode_within(data, MAXIMUM_ALLOCATION)
 }
 
-fn decode_within(data: &[u8], budget: u64) -> Result<Raster, Error> {
+fn decode_within(data: &[u8], budget: u64) -> Result<Raster, DecodeError> {
     let limits = limits(budget);
-    match Format::sniff(data).ok_or(Error::UnknownFormat)? {
+    match Format::sniff(data).ok_or(DecodeError::UnknownFormat)? {
         Format::Jpeg => {
             let mut decoder = JpegDecoder::new(Cursor::new(data))?;
             decoder.set_limits(limits)?;
@@ -66,10 +66,10 @@ fn limits(budget: u64) -> Limits {
     limits
 }
 
-fn read<D: ImageDecoder>(decoder: D, orientation: Orientation) -> Result<Raster, Error> {
+fn read<D: ImageDecoder>(decoder: D, orientation: Orientation) -> Result<Raster, DecodeError> {
     let (width, height) = decoder.dimensions();
-    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(Error::TooLarge);
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAXIMUM_PIXELS {
+        return Err(DecodeError::TooLarge);
     }
 
     let color = decoder.color_type();
@@ -86,13 +86,7 @@ fn read<D: ImageDecoder>(decoder: D, orientation: Orientation) -> Result<Raster,
         _ => widen(&raw, color),
     };
 
-    Ok(Raster {
-        width,
-        height,
-        layout,
-        orientation,
-        pixels,
-    })
+    Ok(Raster::new(width, height, layout, pixels).with_orientation(orientation))
 }
 
 /// Expands grayscale and 16-bit samples to the 8-bit RGB or RGBA layout used by
@@ -262,7 +256,10 @@ mod tests {
 
     #[test]
     fn rejects_unknown_format() {
-        assert!(matches!(decode(b"not an image"), Err(Error::UnknownFormat)));
+        assert!(matches!(
+            decode(b"not an image"),
+            Err(DecodeError::UnknownFormat)
+        ));
     }
 
     fn crc32(bytes: &[u8]) -> u32 {
@@ -313,13 +310,16 @@ mod tests {
             .err()
             .expect("the decoder has to stop at the budget");
         assert!(
-            matches!(error, Error::Decode(image::ImageError::Limits(_))),
+            matches!(error, DecodeError::Decode(image::ImageError::Limits(_))),
             "{error:?}"
         );
     }
 
     #[test]
     fn the_budget_covers_the_widest_image_admitted() {
-        assert_eq!(limits(MAX_ALLOCATION).max_alloc, Some(MAX_PIXELS * 8));
+        assert_eq!(
+            limits(MAXIMUM_ALLOCATION).max_alloc,
+            Some(MAXIMUM_PIXELS * 8)
+        );
     }
 }

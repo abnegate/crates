@@ -27,7 +27,7 @@ pub use options::Options;
 use crate::config::Config;
 use crate::lora::{TrainError, png};
 use crate::subject::Subject;
-use abnegate_vision::crop::{self, Region, Rendered, Target};
+use abnegate_vision::crop::{self, CropError, Region, Rendered, Target};
 use abnegate_vision::gravity::{self, Point};
 use abnegate_vision::{Raster, decode};
 use base64::Engine;
@@ -595,21 +595,12 @@ fn mirror(rendered: &mut Rendered) {
 }
 
 /// The whole frame, oriented and resized to `target`.
-fn frame(raster: &Raster, target: Target) -> Result<Rendered, crop::Error> {
+fn frame(raster: &Raster, target: Target) -> Result<Rendered, CropError> {
     let (width, height) = raster.oriented_size();
-    crop::render(
-        raster,
-        Region {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        },
-        target,
-    )
+    crop::render(raster, Region::new(0, 0, width, height), target)
 }
 
-fn square(raster: &Raster, side: u32) -> Result<Rendered, crop::Error> {
+fn square(raster: &Raster, side: u32) -> Result<Rendered, CropError> {
     frame(raster, Target::square(side))
 }
 
@@ -886,13 +877,13 @@ mod tests {
 
     #[test]
     fn mirroring_reverses_every_row() {
-        let mut rendered = Rendered {
-            width: 3,
-            height: 2,
-            pixels: vec![
+        let mut rendered = Rendered::new(
+            3,
+            2,
+            vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
             ],
-        };
+        );
         mirror(&mut rendered);
         assert_eq!(
             rendered.pixels,
@@ -1154,21 +1145,15 @@ mod tests {
     fn a_still_that_cannot_be_read_is_skipped_rather_than_failing_the_clip() {
         let stills = tempfile::tempdir().unwrap();
         let good = crop::render(
-            &Raster {
-                width: 8,
-                height: 8,
-                layout: decode::Layout::Rgb,
-                orientation: decode::Orientation::Normal,
-                pixels: (0..8 * 8)
+            &Raster::new(
+                8,
+                8,
+                decode::Layout::Rgb,
+                (0..8 * 8)
                     .flat_map(|index| [index as u8, 30, 200])
                     .collect(),
-            },
-            Region {
-                x: 0,
-                y: 0,
-                width: 8,
-                height: 8,
-            },
+            ),
+            Region::new(0, 0, 8, 8),
             Target::square(8),
         )
         .unwrap();

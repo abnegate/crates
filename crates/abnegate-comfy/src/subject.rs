@@ -127,7 +127,11 @@ const FLOOR: f32 = 0.55;
 /// The centre of mass of the saliency map inside `content`, with `bias`
 /// stretched over it. `None` when the model found nothing to weigh.
 #[cfg(feature = "saliency")]
-fn centre(map: &[f32], content: abnegate_vision::gravity::Rect, bias: &[f32]) -> Option<Point> {
+fn centre(
+    map: &[f32],
+    content: abnegate_vision::gravity::Rectangle,
+    bias: &[f32],
+) -> Option<Point> {
     use abnegate_vision::saliency::{INPUT_HEIGHT, INPUT_WIDTH};
 
     let peak = bias.iter().copied().fold(0.0f32, f32::max);
@@ -140,16 +144,12 @@ fn centre(map: &[f32], content: abnegate_vision::gravity::Rect, bias: &[f32]) ->
             .map(|index| {
                 let x = (index % INPUT_WIDTH as usize) as i32;
                 let y = (index / INPUT_WIDTH as usize) as i32;
-                if x < content.min_x
-                    || x >= content.max_x
-                    || y < content.min_y
-                    || y >= content.max_y
+                if x < content.left || x >= content.right || y < content.top || y >= content.bottom
                 {
                     return 0.0;
                 }
-                let column =
-                    ((x - content.min_x) as usize * side) / content.width().max(1) as usize;
-                let row = ((y - content.min_y) as usize * side) / content.height().max(1) as usize;
+                let column = ((x - content.left) as usize * side) / content.width().max(1) as usize;
+                let row = ((y - content.top) as usize * side) / content.height().max(1) as usize;
                 let moved = bias[row.min(side - 1) * side + column.min(side - 1)];
                 map[index] * (1.0 + if moved >= floor { moved / peak } else { 0.0 })
             })
@@ -168,18 +168,13 @@ fn centre(map: &[f32], content: abnegate_vision::gravity::Rect, bias: &[f32]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use abnegate_vision::decode::Layout;
 
     #[test]
     fn without_a_model_every_image_keeps_its_fallback() {
         let subject = Subject::none();
         assert!(!subject.available());
-        let raster = Raster {
-            width: 4,
-            height: 4,
-            layout: abnegate_vision::decode::Layout::Rgb,
-            orientation: abnegate_vision::decode::Orientation::Normal,
-            pixels: vec![128; 4 * 4 * 3],
-        };
+        let raster = Raster::new(4, 4, Layout::Rgb, vec![128; 4 * 4 * 3]);
         let elsewhere = Point { x: 0.2, y: 0.8 };
         assert_eq!(subject.focus(&raster, elsewhere), elsewhere);
         assert_eq!(subject.weighted(&raster, &[1.0; 16], elsewhere), elsewhere);
@@ -213,26 +208,14 @@ mod tests {
 
     #[test]
     fn a_zero_sided_crop_is_refused_rather_than_rendered() {
-        let raster = Raster {
-            width: 4,
-            height: 4,
-            layout: abnegate_vision::decode::Layout::Rgb,
-            orientation: abnegate_vision::decode::Orientation::Normal,
-            pixels: vec![128; 4 * 4 * 3],
-        };
+        let raster = Raster::new(4, 4, Layout::Rgb, vec![128; 4 * 4 * 3]);
         let error = Subject::none().render(&raster, 0, CENTRE).unwrap_err();
         assert!(matches!(error, Error::Crop(_)), "{error}");
     }
 
     #[test]
     fn a_crop_is_the_square_the_trainer_asked_for() {
-        let raster = Raster {
-            width: 8,
-            height: 4,
-            layout: abnegate_vision::decode::Layout::Rgb,
-            orientation: abnegate_vision::decode::Orientation::Normal,
-            pixels: vec![64; 8 * 4 * 3],
-        };
+        let raster = Raster::new(8, 4, Layout::Rgb, vec![64; 8 * 4 * 3]);
         let rendered = Subject::none().render(&raster, 4, CENTRE).unwrap();
         assert_eq!((rendered.width, rendered.height), (4, 4));
         assert_eq!(rendered.pixels.len(), 4 * 4 * 3);

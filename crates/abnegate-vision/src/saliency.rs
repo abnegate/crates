@@ -12,11 +12,15 @@ use crate::saliency::runner::Runner;
 mod error;
 mod runner;
 
-pub use crate::saliency::error::Error;
+pub use crate::saliency::error::SaliencyError;
 
+/// The width of the model's input, and of the saliency map it returns.
 pub const INPUT_WIDTH: i32 = 320;
+/// The height of the model's input, and of the saliency map it returns.
 pub const INPUT_HEIGHT: i32 = 320;
-pub const INPUT_LEN: usize = 3 * INPUT_WIDTH as usize * INPUT_HEIGHT as usize;
+/// The number of values in the model's input: three planes of
+/// [`INPUT_WIDTH`] x [`INPUT_HEIGHT`].
+pub const INPUT_LENGTH: usize = 3 * INPUT_WIDTH as usize * INPUT_HEIGHT as usize;
 
 const INPUT_NAME: &str = "input.1";
 
@@ -36,14 +40,14 @@ pub struct Model {
 
 impl Model {
     /// Loads the U2-Net model at `path`, using `threads` intra-op threads.
-    pub fn open(path: &Path, threads: usize) -> Result<Self, Error> {
+    pub fn open(path: &Path, threads: usize) -> Result<Self, SaliencyError> {
         if !path.is_file() {
-            return Err(Error::Missing(path.display().to_string()));
+            return Err(SaliencyError::Missing(path.display().to_string()));
         }
 
-        let session = build(path, threads).map_err(Error::Load)?;
+        let session = build(path, threads).map_err(SaliencyError::Load)?;
         let options = RunOptions::new()
-            .map_err(|error| Error::Load(error.to_string()))?
+            .map_err(|error| SaliencyError::Load(error.to_string()))?
             .with_outputs(OutputSelector::no_default().with(OUTPUT_NAME));
 
         Ok(Self {
@@ -57,38 +61,44 @@ impl Model {
     /// copy of it is ever made. A model whose output is any other shape is an
     /// error rather than a map `read` would index out of bounds. A panic in
     /// `read` leaves the model usable by the next caller.
-    pub fn infer<R>(&self, input: &[f32], read: impl FnOnce(&[f32]) -> R) -> Result<R, Error> {
-        if input.len() != INPUT_LEN {
-            return Err(Error::InputLength(input.len()));
+    pub fn infer<R>(
+        &self,
+        input: &[f32],
+        read: impl FnOnce(&[f32]) -> R,
+    ) -> Result<R, SaliencyError> {
+        if input.len() != INPUT_LENGTH {
+            return Err(SaliencyError::InputLength(input.len()));
         }
 
         let shape = [1, 3, INPUT_HEIGHT as usize, INPUT_WIDTH as usize];
         let tensor = TensorRef::from_array_view((shape, input))
-            .map_err(|error| Error::Run(error.to_string()))?;
+            .map_err(|error| SaliencyError::Run(error.to_string()))?;
 
         let mut runner = self.runner.lock();
         let Runner { session, options } = &mut *runner;
         let outputs = session
             .run_with_options(ort::inputs![INPUT_NAME => tensor], options)
-            .map_err(|error| Error::Run(error.to_string()))?;
+            .map_err(|error| SaliencyError::Run(error.to_string()))?;
 
-        let value = outputs.get(OUTPUT_NAME).ok_or(Error::MissingOutput)?;
+        let value = outputs
+            .get(OUTPUT_NAME)
+            .ok_or(SaliencyError::MissingOutput)?;
         let (shape, map) = value
             .try_extract_tensor::<f32>()
-            .map_err(|error| Error::Run(error.to_string()))?;
+            .map_err(|error| SaliencyError::Run(error.to_string()))?;
         check_shape(shape)?;
         Ok(read(map))
     }
 }
 
 /// Accepts one 320x320 map, with any number of leading unit dimensions.
-fn check_shape(shape: &[i64]) -> Result<(), Error> {
+fn check_shape(shape: &[i64]) -> Result<(), SaliencyError> {
     let expected = [i64::from(INPUT_HEIGHT), i64::from(INPUT_WIDTH)];
     let (leading, map) = shape.split_at(shape.len().saturating_sub(expected.len()));
     if map == expected && leading.iter().all(|&dimension| dimension == 1) {
         Ok(())
     } else {
-        Err(Error::OutputShape(shape.to_vec()))
+        Err(SaliencyError::OutputShape(shape.to_vec()))
     }
 }
 
@@ -127,7 +137,7 @@ mod tests {
     #[test]
     fn rejects_a_wrong_sized_tensor() {
         assert_eq!(
-            Error::InputLength(7).to_string(),
+            SaliencyError::InputLength(7).to_string(),
             "invalid input tensor length: got 7"
         );
     }
@@ -149,7 +159,7 @@ mod tests {
             &[1, 1, 320, 321],
         ] {
             assert!(
-                matches!(check_shape(shape), Err(Error::OutputShape(ref got)) if got == shape),
+                matches!(check_shape(shape), Err(SaliencyError::OutputShape(ref got)) if got == shape),
                 "{shape:?}"
             );
         }
