@@ -101,6 +101,11 @@ const UNREADABLE: &str = "GitHub answered in a form this crate cannot read";
 /// What an answer longer than [`MAXIMUM_ANSWER_BYTES`] is reported as.
 const OVERSIZED: &str = "GitHub's answer was larger than this crate reads";
 
+/// What the answer to a request that is not a read is reported as when a
+/// redirect carried the request somewhere else.
+const REDIRECTED: &str =
+    "GitHub redirected a request that is not a read, so its answer is not to that request";
+
 /// What GitHub says when a pull request for the branch is already open.
 const ALREADY_EXISTS: &str = "A pull request already exists";
 
@@ -271,11 +276,11 @@ impl PullRequestService {
             draft,
         };
 
-        let response = self
-            .request(Method::POST, url, token, ACCEPT)
-            .json(&request)
-            .send()
-            .await?;
+        let response = sent(
+            self.request(Method::POST, url, token, ACCEPT)
+                .json(&request),
+        )
+        .await?;
 
         let status = response.status();
         if status.is_success() {
@@ -502,9 +507,28 @@ fn client(https_only: bool, timeout: Duration) -> PullRequestResult<Client> {
         .build()?)
 }
 
-/// The successful answer to `request`, or the refusal it is.
+/// The answer to `request`, whatever its status, from where it was sent.
+///
+/// Following a redirect turns any request but a read into a GET of wherever
+/// the redirect points, or sends it on somewhere it was not addressed, so the
+/// answer to one that is not a GET, from an address other than the one it was
+/// sent to, is refused whatever it says.
+async fn sent(request: RequestBuilder) -> PullRequestResult<Response> {
+    let (client, request) = request.build_split();
+    let request = request?;
+    let read = request.method() == Method::GET;
+    let url = request.url().clone();
+    let response = client.execute(request).await?;
+    if !read && response.url() != &url {
+        return Err(PullRequestError::GitHubApi(REDIRECTED.to_string()));
+    }
+    Ok(response)
+}
+
+/// The successful answer to `request`, from where it was sent, or the refusal
+/// it is.
 async fn answered(request: RequestBuilder) -> PullRequestResult<Response> {
-    let response = request.send().await?;
+    let response = sent(request).await?;
     match response.status().is_success() {
         true => Ok(response),
         false => Err(refusal(response).await),
@@ -698,6 +722,60 @@ mod tests {
             .send()
             .await
             .unwrap()
+    }
+
+    /// Following a 301, 302 or 303 turns any other method into a GET and drops
+    /// its body; a 307 or 308 re-sends it somewhere it was not addressed.
+    /// Either way the answer is not to the request that was sent.
+    #[tokio::test]
+    async fn an_answer_a_request_that_is_not_a_read_was_redirected_to_is_refused() {
+        let server = MockServer::start().await;
+        for (target, status) in [("found", 200), ("missing", 404)] {
+            Mock::given(path(format!("/{target}")))
+                .respond_with(ResponseTemplate::new(status).set_body_json(serde_json::json!({})))
+                .mount(&server)
+                .await;
+        }
+        for redirect in [301, 302, 303, 307, 308] {
+            for target in ["found", "missing"] {
+                Mock::given(path(format!("/{redirect}/{target}")))
+                    .respond_with(
+                        ResponseTemplate::new(redirect)
+                            .insert_header("location", format!("{}/{target}", server.uri())),
+                    )
+                    .mount(&server)
+                    .await;
+            }
+        }
+        let client = client(false, REQUEST_TIMEOUT).unwrap();
+
+        for redirect in [301, 302, 303, 307, 308] {
+            for target in ["found", "missing"] {
+                let url = format!("{}/{redirect}/{target}", server.uri());
+                for changing in [Method::POST, Method::PUT, Method::DELETE] {
+                    let answer = answered(
+                        client
+                            .request(changing.clone(), &url)
+                            .json(&serde_json::json!({ "body": "sent once" })),
+                    )
+                    .await;
+
+                    assert!(
+                        matches!(answer, Err(PullRequestError::GitHubApi(ref text)) if text == REDIRECTED),
+                        "{changing} {redirect} to {target}: {answer:?}"
+                    );
+                }
+            }
+
+            let read = answered(client.get(format!("{}/{redirect}/found", server.uri()))).await;
+            assert!(read.is_ok(), "GET {redirect}: {read:?}");
+        }
+
+        for changing in [Method::POST, Method::PUT, Method::DELETE] {
+            let answer =
+                answered(client.request(changing.clone(), format!("{}/found", server.uri()))).await;
+            assert!(answer.is_ok(), "{changing} unredirected: {answer:?}");
+        }
     }
 
     #[test]

@@ -74,11 +74,7 @@ impl PullRequestService {
             merge_method: method,
         };
 
-        let response = self
-            .request(Method::PUT, url, token, ACCEPT)
-            .json(&request)
-            .send()
-            .await?;
+        let response = sent(self.request(Method::PUT, url, token, ACCEPT).json(&request)).await?;
 
         let status = response.status();
         if status.is_success() {
@@ -260,6 +256,40 @@ mod tests {
                 administrator,
             )
             .await
+    }
+
+    #[tokio::test]
+    async fn a_merge_answered_by_a_redirect_elsewhere_is_not_a_merge() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path(MERGE_PATH))
+            .respond_with(
+                ResponseTemplate::new(303)
+                    .insert_header("location", format!("{}/elsewhere", server.uri())),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/elsewhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(GRAPHQL_PATH))
+            .respond_with(merged_as(commit('d').as_str()))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let failure = attempt(&server, Some(NODE), true)
+            .await
+            .expect_err("a GET answered after the merge was redirected merged nothing");
+
+        assert!(
+            matches!(failure, PullRequestError::GitHubApi(ref text) if text == REDIRECTED),
+            "{failure:?}"
+        );
     }
 
     #[tokio::test]

@@ -62,11 +62,11 @@ impl PullRequestService {
             auto_init: true,
         };
 
-        let response = self
-            .request(Method::POST, url, token, ACCEPT)
-            .json(&request)
-            .send()
-            .await?;
+        let response = sent(
+            self.request(Method::POST, url, token, ACCEPT)
+                .json(&request),
+        )
+        .await?;
 
         let status = response.status();
         if status.is_success() {
