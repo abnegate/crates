@@ -163,6 +163,7 @@ fn concluded(run: &GitHubCheckRun, conclusions: &[GitHubCheckConclusion]) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::stand_in;
@@ -580,6 +581,51 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(fold(&[], &unknown, true), ChecksOutcome::Pending);
+    }
+
+    #[tokio::test]
+    async fn a_check_read_github_refuses_is_an_error_and_never_absent() {
+        let refusals: [(ResponseTemplate, Expected); 4] = [
+            (ResponseTemplate::new(401), |failure| {
+                matches!(failure, PullRequestError::AuthenticationFailed)
+            }),
+            (ResponseTemplate::new(403), |failure| {
+                matches!(failure, PullRequestError::Forbidden)
+            }),
+            (
+                ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
+                |failure| matches!(failure, PullRequestError::RateLimited),
+            ),
+            (ResponseTemplate::new(404), |failure| {
+                matches!(failure, PullRequestError::NotFound)
+            }),
+        ];
+
+        let sha = commit('a');
+        for (refused, other) in [(runs(&sha), statuses(&sha)), (statuses(&sha), runs(&sha))] {
+            for (refusal, expected) in &refusals {
+                let server = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path(refused.as_str()))
+                    .respond_with(refusal.clone())
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                answering(
+                    &server,
+                    other.clone(),
+                    json!({ "total_count": 0, "check_runs": [], "statuses": [] }),
+                )
+                .await;
+                let service = stand_in(&server).await;
+
+                let read = service
+                    .fetch_checks(&project(&service), &token(), &sha)
+                    .await;
+
+                assert!(read.as_ref().is_err_and(expected), "{refused}: {read:?}");
+            }
+        }
     }
 
     /// A check-runs page with no runs, padded to exactly `length` bytes with a

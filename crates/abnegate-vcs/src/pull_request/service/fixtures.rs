@@ -2,6 +2,9 @@ use super::*;
 use crate::commit_sha::CommitSha;
 use wiremock::MockServer;
 
+/// Whether an error is the one a refusal has to be reported as.
+pub(super) type Expected = fn(&PullRequestError) -> bool;
+
 pub(super) fn token() -> SecretValue {
     SecretValue::new("token")
 }

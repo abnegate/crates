@@ -374,6 +374,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_reply_to_a_comment_github_cannot_find_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/project/pulls/7/comments/42/replies"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "message": "Not Found",
+                "documentation_url": SENTINEL,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .reply_to_review_comment(&seven(&service), &token(), 42, "Addressed.")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::NotFound), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_comment_carries_github_s_words_and_not_its_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/project/issues/7/comments"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "message": "Validation Failed",
+                "errors": [{
+                    "resource": "IssueComment",
+                    "code": "custom",
+                    "field": "body",
+                    "message": "Body is too long (maximum is 65536 characters)",
+                }],
+                "documentation_url": SENTINEL,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .post_issue_comment(&seven(&service), &token(), "@review-bot review")
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                failure,
+                PullRequestError::GitHubApi(ref text)
+                    if text == "GitHub API returned 422 Unprocessable Entity: \
+                                Validation Failed; Body is too long (maximum is 65536 characters)"
+            ),
+            "{failure:?}"
+        );
+        assert!(
+            !format!("{failure} {failure:?}").contains(SENTINEL),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_refused_review_is_reported_as_what_it_is() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
