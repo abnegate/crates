@@ -144,3 +144,7 @@ pub use crate::stream::ApiMessageDelta;
 pub use crate::stream::ApiStreamEvent;
 pub use crate::structured_result::StructuredResult;
 pub use crate::tripwire::Tripwire;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
