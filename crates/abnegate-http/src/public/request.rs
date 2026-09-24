@@ -23,6 +23,11 @@ use std::time::Duration;
 /// way out, and the [`Request`] that [`PublicRequest::build`] returns goes
 /// through the guard only when [`PublicClient::execute`] sends it.
 ///
+/// Where reqwest's builder abbreviates, this one spells out:
+/// [`bearer_authentication`](PublicRequest::bearer_authentication) for
+/// `bearer_auth` and [`basic_authentication`](PublicRequest::basic_authentication)
+/// for `basic_auth`.
+///
 /// ```
 /// use abnegate_http::{Error, public_client};
 /// use std::time::Duration;
@@ -30,7 +35,7 @@ use std::time::Duration;
 /// let client = public_client(Duration::from_secs(10))?;
 /// let request = client
 ///     .post("https://example.com/submit")?
-///     .bearer_auth("token")
+///     .bearer_authentication("token")
 ///     .json(&["payload"])
 ///     .build()?;
 ///
@@ -107,12 +112,18 @@ impl PublicRequest {
     }
 
     /// Authenticate with a bearer `token`, marked sensitive.
-    pub fn bearer_auth<T: Display>(self, token: T) -> Self {
+    #[doc(alias = "bearer_auth")]
+    pub fn bearer_authentication<T: Display>(self, token: T) -> Self {
         self.map(|builder| builder.bearer_auth(token))
     }
 
     /// Authenticate with HTTP basic authentication, marked sensitive.
-    pub fn basic_auth<U: Display, P: Display>(self, username: U, password: Option<P>) -> Self {
+    #[doc(alias = "basic_auth")]
+    pub fn basic_authentication<U: Display, P: Display>(
+        self,
+        username: U,
+        password: Option<P>,
+    ) -> Self {
         self.map(|builder| builder.basic_auth(username, password))
     }
 
@@ -194,10 +205,13 @@ mod tests {
                 start(client).multipart(Form::new().text("probe", "1")),
             ),
             ("body", start(client).body("probe")),
-            ("bearer_auth", start(client).bearer_auth("token")),
             (
-                "basic_auth",
-                start(client).basic_auth("user", Some("secret")),
+                "bearer_authentication",
+                start(client).bearer_authentication("token"),
+            ),
+            (
+                "basic_authentication",
+                start(client).basic_authentication("user", Some("secret")),
             ),
             ("timeout", start(client).timeout(TIMEOUT)),
             ("version", start(client).version(Version::HTTP_11)),
@@ -273,7 +287,7 @@ mod tests {
             .header("x-probe", "1")
             .headers(merged)
             .query(&[("page", "2")])
-            .bearer_auth("token")
+            .bearer_authentication("token")
             .timeout(TIMEOUT)
             .version(Version::HTTP_11)
             .json(&["probe"])
@@ -331,7 +345,7 @@ mod tests {
     #[test]
     fn basic_authentication_is_encoded_and_marked_sensitive() {
         let request = start(&client())
-            .basic_auth("user", Some("secret"))
+            .basic_authentication("user", Some("secret"))
             .build()
             .expect("the request builds");
 
