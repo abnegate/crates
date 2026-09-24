@@ -28,6 +28,9 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 use url::Url;
 
+mod graphql;
+mod threads;
+
 /// What this crate calls itself to the GitHub API.
 const USER_AGENT: &str = "abnegate-vcs";
 
