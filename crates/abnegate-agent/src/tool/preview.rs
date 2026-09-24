@@ -87,6 +87,7 @@ static LEGIBLE: LazyLock<Regex> =
 /// [`ToolCall`](abnegate_llm::ToolCall) it was rendered from always holds
 /// every argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Preview {
     /// The call on one line, a line break in it shown as
     /// [`LINE_BREAK`](super::LINE_BREAK).

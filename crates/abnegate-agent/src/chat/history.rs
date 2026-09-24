@@ -10,11 +10,45 @@ use super::Summary;
 
 /// A conversation as loaded from the store.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct History {
+    /// Every stored entry, in conversation order.
     pub entries: Vec<Entry>,
+    /// The checkpoint standing in for the entries it covers, if any.
     pub summary: Option<Summary>,
+    /// The id of the entry holding the latest user request.
     pub latest_user: Option<String>,
+    /// Whether some of the history is known to be missing, such as tool
+    /// output from before the store kept it whole.
     pub incomplete: bool,
+}
+
+impl History {
+    /// `entries`, whole, with no checkpoint and no user request marked.
+    pub fn new(entries: Vec<Entry>) -> Self {
+        Self {
+            entries,
+            ..Self::default()
+        }
+    }
+
+    /// The same history, behind `summary`.
+    pub fn with_summary(mut self, summary: Summary) -> Self {
+        self.summary = Some(summary);
+        self
+    }
+
+    /// The same history, with entry `id` holding the latest user request.
+    pub fn with_latest_user(mut self, id: impl Into<String>) -> Self {
+        self.latest_user = Some(id.into());
+        self
+    }
+
+    /// The same history, known to be missing some of itself or not.
+    pub fn with_incomplete(mut self, incomplete: bool) -> Self {
+        self.incomplete = incomplete;
+        self
+    }
 }
 
 /// Same v1 tuple encoding as [`coverage`](crate::context::coverage), excluding mutable flags.

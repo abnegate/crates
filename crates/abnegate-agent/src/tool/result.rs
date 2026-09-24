@@ -7,8 +7,12 @@ use super::text::MAXIMUM_TOOL_MESSAGE_CHARACTERS;
 use super::text::trim_middle;
 
 /// What a tool call produced, success or failure, as the model will read it.
+///
+/// Built with [`success`](Self::success) or [`error`](Self::error).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolResult {
+    /// Whether the call succeeded.
     pub success: bool,
     /// The output of a successful call.
     pub output: Option<String>,

@@ -3,7 +3,9 @@ use std::path::Path;
 use abnegate_agent::AgentPhase;
 use abnegate_agent::FileSessionStore;
 use abnegate_agent::SessionStore;
+use abnegate_agent::SessionSummary;
 use abnegate_llm::Role;
+use chrono::Utc;
 use serde_json::Value;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -135,4 +137,23 @@ async fn a_session_saved_before_the_renames_is_listed() {
         Some("/work/project")
     );
     assert!(listed[0].finished);
+}
+
+/// A store that indexes its sessions lists them without loading each one.
+#[test]
+fn a_store_builds_the_summaries_it_lists() {
+    let id = Uuid::new_v4();
+    let created = Utc::now();
+
+    let summary = SessionSummary::new(id, "Listed", created, created);
+    assert_eq!((summary.id, summary.title.as_str()), (id, "Listed"));
+    assert_eq!((summary.created_at, summary.updated_at), (created, created));
+    assert!(summary.project_directory.is_none());
+    assert!(!summary.finished);
+
+    let summary = summary
+        .with_project_directory("/work/project")
+        .with_finished(true);
+    assert_eq!(summary.project_directory.as_deref(), Some("/work/project"));
+    assert!(summary.finished);
 }

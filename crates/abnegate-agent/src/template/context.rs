@@ -8,7 +8,9 @@ use serde_json::Value;
 /// A key holds any JSON value. A string, number or boolean renders as its
 /// text and `null` renders as nothing; an array is what `{{#each}}` iterates.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct TemplateContext {
+    /// The value each key renders as.
     pub values: HashMap<String, Value>,
 }
 

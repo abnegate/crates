@@ -10,7 +10,10 @@ pub const VERSION: u16 = 1;
 
 /// A message as the conversation store keeps it: independent of the
 /// provider's asymmetric wire format, and able to round-trip images.
+///
+/// Built from the [`Message`] it stores with [`From`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ReplayMessage {
     pub version: u16,
     pub role: Role,
