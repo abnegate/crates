@@ -8,20 +8,44 @@ const KIND: &str = "cost strategy";
 const BUDGET_PREFIX: &str = "budget:";
 
 /// How to choose between the models that can do a task.
+///
+/// [`CostStrategy::Budget`] may gain a field in a minor release, so it is
+/// built with [`CostStrategy::budget`] and a pattern outside this crate ends
+/// in `..`:
+///
+/// ```compile_fail,E0639
+/// let strategy = abnegate_llm::CostStrategy::Budget { maximum_usd: 5.0 };
+/// # let _ = strategy;
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum CostStrategy {
+    /// The model with the lowest price per unit.
     CheapestPossible,
+    /// The model with the highest quality score, whatever it costs.
     BestQuality,
+    /// The model with the most quality per dollar, where a free model counts
+    /// as a hundred times its quality.
     BestValue,
     /// Best value while the whole batch costs at most `maximum_usd` dollars;
     /// past that, each task gets the best model the rest of the budget
-    /// affords, or else the cheapest local one. Serialised as `max_usd`.
+    /// affords, or else the cheapest local one.
+    #[non_exhaustive]
     Budget {
+        /// The most the whole batch may cost, in US dollars. Serialised as
+        /// `max_usd`.
         #[serde(rename = "max_usd")]
         maximum_usd: f64,
     },
+    /// The best local model, or the best value when none runs locally.
     LocalFirst,
+}
+
+impl CostStrategy {
+    /// [`Self::Budget`], spending at most `maximum_usd` dollars on the batch.
+    pub fn budget(maximum_usd: f64) -> Self {
+        Self::Budget { maximum_usd }
+    }
 }
 
 /// Reads `cheapest`, `best-quality`, `best-value`, `local-first` (or their
@@ -44,9 +68,7 @@ impl FromStr for CostStrategy {
             .and_then(|amount| amount.trim().parse::<f64>().ok())
             .filter(|amount| amount.is_finite() && *amount >= 0.0)
             .ok_or_else(|| ParseError::new(KIND, value))?;
-        Ok(Self::Budget {
-            maximum_usd: budget,
-        })
+        Ok(Self::budget(budget))
     }
 }
 
@@ -60,7 +82,7 @@ mod tests {
             CostStrategy::CheapestPossible,
             CostStrategy::BestQuality,
             CostStrategy::BestValue,
-            CostStrategy::Budget { maximum_usd: 5.0 },
+            CostStrategy::budget(5.0),
             CostStrategy::LocalFirst,
         ];
 
@@ -73,7 +95,7 @@ mod tests {
 
     #[test]
     fn a_budget_keeps_its_serialised_name() {
-        let budget = CostStrategy::Budget { maximum_usd: 5.0 };
+        let budget = CostStrategy::budget(5.0);
 
         assert_eq!(
             serde_json::to_value(&budget).unwrap(),
@@ -96,8 +118,8 @@ mod tests {
             ("value", CostStrategy::BestValue),
             ("local-first", CostStrategy::LocalFirst),
             ("local", CostStrategy::LocalFirst),
-            ("budget:25.50", CostStrategy::Budget { maximum_usd: 25.5 }),
-            ("budget:0", CostStrategy::Budget { maximum_usd: 0.0 }),
+            ("budget:25.50", CostStrategy::budget(25.5)),
+            ("budget:0", CostStrategy::budget(0.0)),
         ] {
             assert_eq!(name.parse::<CostStrategy>(), Ok(expected), "{name}");
         }

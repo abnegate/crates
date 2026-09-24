@@ -49,6 +49,10 @@ pub use crate::wire::tool_definition::ToolDefinition;
 pub use crate::wire::tool_mode::ToolMode;
 pub use crate::wire::usage::Usage;
 
+/// The `type` a tool call, a tool definition and a forced tool choice carry
+/// on the wire.
+pub(crate) const FUNCTION_TYPE: &str = "function";
+
 /// Reads an explicit `null` as the default rather than failing.
 ///
 /// Providers send `"images": null` and `"thinking_blocks": null` for a turn

@@ -141,7 +141,8 @@ async fn model_specific_streaming_route_preserves_provider_errors() {
         error,
         Error::Api {
             status: 429,
-            ref message
+            ref message,
+            ..
         } if message == "capacity exhausted"
     ));
 }

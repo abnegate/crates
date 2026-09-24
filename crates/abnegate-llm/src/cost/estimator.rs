@@ -4,12 +4,11 @@ use crate::cost::{
     CostEstimate, CostLineItem, CostStrategy, ModelPricing, PricingUnit, TaskCategory,
     TaskSpecification, default_pricing,
 };
-use crate::hardware::MachineProfile;
+use crate::hardware::{MachineProfile, NO_LOCAL_MODEL};
 
 const LOCAL_PROVIDER: &str = "local";
 const LOCAL_SPEED_SCORE: f64 = 0.3;
 const FREE_MODEL_VALUE_MULTIPLIER: f64 = 100.0;
-const NO_LOCAL_MODEL: &str = "none";
 
 /// Chooses models for tasks and says what the choice costs.
 pub struct CostEstimator;
@@ -269,7 +268,7 @@ fn matching_models(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hardware::ModelRecommendation;
+    use crate::hardware::{GpuType, ModelRecommendation, RecommendedModels};
 
     fn task(label: &str, category: TaskCategory, quantity: u32) -> TaskSpecification {
         TaskSpecification {
@@ -637,11 +636,8 @@ mod tests {
         let pricing = default_pricing();
         let tasks = [task("Image", TaskCategory::Image, 1)];
 
-        let estimate = CostEstimator::estimate_batch_cost(
-            &tasks,
-            &pricing,
-            CostStrategy::Budget { maximum_usd: 100.0 },
-        );
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::budget(100.0));
 
         assert!(estimate.total_usd <= 100.0);
         assert_eq!(estimate.breakdown.len(), 1);
@@ -656,11 +652,8 @@ mod tests {
             task("Images", TaskCategory::Image, 5),
         ];
 
-        let estimate = CostEstimator::estimate_batch_cost(
-            &tasks,
-            &pricing,
-            CostStrategy::Budget { maximum_usd: 3.0 },
-        );
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::budget(3.0));
 
         assert!(estimate.total_usd <= 3.0 + f64::EPSILON);
         assert!(!estimate.breakdown.is_empty());
@@ -675,11 +668,8 @@ mod tests {
             task("C", TaskCategory::Music, 50),
         ];
 
-        let estimate = CostEstimator::estimate_batch_cost(
-            &tasks,
-            &pricing,
-            CostStrategy::Budget { maximum_usd: 0.01 },
-        );
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::budget(0.01));
 
         assert!(estimate.total_usd <= 0.01 + f64::EPSILON);
         assert!(estimate.breakdown.iter().all(|item| item.is_local));
@@ -715,11 +705,8 @@ mod tests {
             task("Video", TaskCategory::Video, 10),
         ];
 
-        let estimate = CostEstimator::estimate_batch_cost(
-            &tasks,
-            &pricing,
-            CostStrategy::Budget { maximum_usd: 3.0 },
-        );
+        let estimate =
+            CostEstimator::estimate_batch_cost(&tasks, &pricing, CostStrategy::budget(3.0));
 
         assert_eq!(estimate.total_usd, 2.0);
         assert_eq!(estimate.unassigned, vec!["Video".to_string()]);
@@ -792,5 +779,25 @@ mod tests {
             !pricing.iter().any(|entry| entry.model == NO_LOCAL_MODEL),
             "a machine's unavailable modality must not become a free model"
         );
+    }
+
+    #[test]
+    fn a_described_machine_offers_only_the_models_it_names() {
+        let profile = MachineProfile::new(
+            "Laptop",
+            GpuType::CpuOnly,
+            RecommendedModels::default()
+                .with_llm(ModelRecommendation::new("qwen2.5:3b").with_quality_score(0.45)),
+        );
+
+        let pricing = CostEstimator::with_hardware(&profile);
+
+        let local: Vec<(&str, TaskCategory)> = pricing
+            .iter()
+            .filter(|entry| entry.local_available)
+            .map(|entry| (entry.model.as_str(), entry.category))
+            .collect();
+
+        assert_eq!(local, [("qwen2.5:3b", TaskCategory::Text)]);
     }
 }

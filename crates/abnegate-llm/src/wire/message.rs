@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::wire::content_part::ContentPart;
 use crate::wire::generated_image::GeneratedImage;
-use crate::wire::image_url::ImageUrl;
 use crate::wire::null_to_default;
 use crate::wire::role::Role;
 use crate::wire::tool_call::ToolCall;
@@ -48,14 +47,10 @@ impl Serialize for Message {
             if let Some(content) = &self.content
                 && !content.is_empty()
             {
-                parts.push(ContentPart::Text {
-                    text: content.clone(),
-                });
+                parts.push(ContentPart::text(content.clone()));
             }
             for url in &self.images {
-                parts.push(ContentPart::ImageUrl {
-                    image_url: ImageUrl::new(url.clone()),
-                });
+                parts.push(ContentPart::image_url(url.clone()));
             }
             map.serialize_entry("content", &parts)?;
         }

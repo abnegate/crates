@@ -8,9 +8,13 @@ pub struct Voice {
     /// names as its `voice_id`. Serialised as `voice_id`.
     #[serde(rename = "voice_id")]
     pub id: String,
+    /// The name the provider shows for the voice.
     pub name: String,
+    /// The provider's description of how the voice sounds, if it gives one.
     pub description: Option<String>,
+    /// Where a sample of the voice can be heard, if the provider offers one.
     pub preview_url: Option<String>,
+    /// The provider's tags for the voice, such as `female` or `warm`.
     pub labels: Vec<String>,
 }
 

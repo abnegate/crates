@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::wire::FUNCTION_TYPE;
 use crate::wire::function_definition::FunctionDefinition;
-
-const FUNCTION_TYPE: &str = "function";
 
 /// A tool offered to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]

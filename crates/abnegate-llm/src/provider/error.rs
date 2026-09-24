@@ -1,6 +1,7 @@
 //! Failures raised by a completion provider.
 
 use std::fmt;
+use std::time::Duration;
 
 use abnegate_secret::redact;
 use thiserror::Error;
@@ -15,61 +16,108 @@ use crate::provider::exit_status::ExitStatus;
 /// classifies a run by matching that text, so a throttled request must still
 /// read as a throttled request and a rejected key must still read as a
 /// rejected key by the time it reaches the retry policy.
+///
+/// A variant may gain a field in a minor release, so a value is built with
+/// its constructor ([`ProviderError::timeout`], [`ProviderError::agent`] and
+/// the rest) and a pattern outside this crate ends in `..`:
+///
+/// ```compile_fail,E0639
+/// use std::time::Duration;
+///
+/// use abnegate_llm::ProviderError;
+///
+/// let error = ProviderError::Timeout {
+///     provider: "claude".to_string(),
+///     timeout: Duration::from_secs(5),
+/// };
+/// # let _ = error;
+/// ```
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ProviderError {
+    /// An OpenAI-compatible endpoint failed, as `source` says.
     #[error("{provider}: {source}")]
+    #[non_exhaustive]
     Http {
         provider: String,
         #[source]
         source: Error,
     },
 
+    /// The agent command `executable` could not be started.
     #[error("{provider}: agent command {executable} could not be started: {reason}")]
+    #[non_exhaustive]
     Unavailable {
         provider: String,
         executable: String,
         reason: String,
     },
 
+    /// The agent command exited unsuccessfully.
     #[error("{provider}: agent command exited with status {status}: {message}")]
+    #[non_exhaustive]
     Exit {
         provider: String,
         status: ExitStatus,
         message: String,
     },
 
-    #[error("{provider}: agent command timed out after {seconds} seconds")]
-    Timeout { provider: String, seconds: u64 },
+    /// The agent command ran past its deadline and was stopped. The deadline
+    /// renders in [`Duration`]'s `Debug` form, so 1,500 ms reads `1.5s` and
+    /// 500 ms reads `500ms`.
+    #[error("{provider}: agent command timed out after {timeout:?}")]
+    #[non_exhaustive]
+    Timeout { provider: String, timeout: Duration },
 
+    /// The agent's output could not be read as an answer.
     #[error("{provider}: agent output could not be parsed: {message}")]
+    #[non_exhaustive]
     Malformed { provider: String, message: String },
 
+    /// The agent ran and reported a failure of its own.
     #[error("{provider}: {message}")]
+    #[non_exhaustive]
     Agent { provider: String, message: String },
 
+    /// The request never reached the provider, or its answer never arrived.
     #[error("network error: {detail}")]
+    #[non_exhaustive]
     Network { detail: String },
 
+    /// The provider answered with a failing HTTP `status`.
     #[error("API error (status {status}): {message}")]
+    #[non_exhaustive]
     Api { status: u16, message: String },
 
+    /// The provider's answer did not parse.
     #[error("parse error: {detail}")]
+    #[non_exhaustive]
     Parse { detail: String },
 
+    /// Reading or writing a local file failed.
     #[error("IO error: {detail}")]
+    #[non_exhaustive]
     Io { detail: String },
 
+    /// The provider is configured wrongly, such as with a missing key.
     #[error("configuration error: {detail}")]
+    #[non_exhaustive]
     Config { detail: String },
 
+    /// No provider is configured.
     #[error("no provider is configured")]
     Unconfigured,
 
+    /// The provider does not offer the operation asked of it.
     #[error("unsupported operation: {detail}")]
+    #[non_exhaustive]
     Unsupported { detail: String },
 
+    /// Every one of `attempted` providers failed. `last` is the final
+    /// failure, and it decides [`Self::provider`], [`Self::recoverable`] and
+    /// [`Self::transient`].
     #[error("all {attempted} providers failed, last was {last}")]
+    #[non_exhaustive]
     Exhausted {
         attempted: usize,
         last: Box<ProviderError>,
@@ -170,6 +218,16 @@ impl ProviderError {
         }
     }
 
+    /// `provider`'s agent command ran past `timeout` and was stopped.
+    pub fn timeout(provider: &str, timeout: Duration) -> Self {
+        Self::Timeout {
+            provider: provider.to_string(),
+            timeout,
+        }
+    }
+
+    /// `provider`'s agent command exited with `status`, saying `message`,
+    /// which is redacted.
     pub fn exit(provider: &str, status: ExitStatus, message: &str) -> Self {
         Self::Exit {
             provider: provider.to_string(),
@@ -178,6 +236,7 @@ impl ProviderError {
         }
     }
 
+    /// `provider`'s output could not be read, for the redacted `message`.
     pub fn malformed(provider: &str, message: impl fmt::Display) -> Self {
         Self::Malformed {
             provider: provider.to_string(),
@@ -185,6 +244,7 @@ impl ProviderError {
         }
     }
 
+    /// `provider` reported the failure `message`, which is redacted.
     pub fn agent(provider: &str, message: &str) -> Self {
         Self::Agent {
             provider: provider.to_string(),
@@ -192,6 +252,8 @@ impl ProviderError {
         }
     }
 
+    /// `provider`'s agent command `executable` could not be started, for the
+    /// redacted `reason`.
     pub fn unavailable(provider: &str, executable: &str, reason: impl fmt::Display) -> Self {
         Self::Unavailable {
             provider: provider.to_string(),
@@ -200,12 +262,15 @@ impl ProviderError {
         }
     }
 
+    /// A [`Self::Network`] failure, with `detail` redacted.
     pub fn network(detail: impl fmt::Display) -> Self {
         Self::Network {
             detail: redact(&detail.to_string()).into_owned(),
         }
     }
 
+    /// An HTTP `status` the provider answered with, and its redacted
+    /// `message`.
     pub fn api(status: u16, message: impl fmt::Display) -> Self {
         Self::Api {
             status,
@@ -213,27 +278,40 @@ impl ProviderError {
         }
     }
 
+    /// A [`Self::Parse`] failure, with `detail` redacted.
     pub fn parse(detail: impl fmt::Display) -> Self {
         Self::Parse {
             detail: redact(&detail.to_string()).into_owned(),
         }
     }
 
+    /// A [`Self::Io`] failure, with `detail` redacted.
     pub fn io(detail: impl fmt::Display) -> Self {
         Self::Io {
             detail: redact(&detail.to_string()).into_owned(),
         }
     }
 
+    /// A [`Self::Config`] failure, with `detail` redacted.
     pub fn config(detail: impl fmt::Display) -> Self {
         Self::Config {
             detail: redact(&detail.to_string()).into_owned(),
         }
     }
 
+    /// A [`Self::Unsupported`] failure, with `detail` redacted.
     pub fn unsupported(detail: impl fmt::Display) -> Self {
         Self::Unsupported {
             detail: redact(&detail.to_string()).into_owned(),
+        }
+    }
+
+    /// Every one of `attempted` providers failed, the last of them with
+    /// `last`.
+    pub fn exhausted(attempted: usize, last: ProviderError) -> Self {
+        Self::Exhausted {
+            attempted,
+            last: Box::new(last),
         }
     }
 
@@ -247,6 +325,8 @@ impl ProviderError {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::ProviderError;
     use crate::error::Error;
     use crate::provider::exit_status::ExitStatus;
@@ -291,10 +371,8 @@ mod tests {
 
     #[test]
     fn an_exhausted_chain_renders_the_last_failure_not_a_generic_one() {
-        let error = ProviderError::Exhausted {
-            attempted: 3,
-            last: Box::new(ProviderError::agent("codex", "429 rate limit reached")),
-        };
+        let error =
+            ProviderError::exhausted(3, ProviderError::agent("codex", "429 rate limit reached"));
 
         let rendered = error.to_string();
         assert!(
@@ -302,6 +380,7 @@ mod tests {
             "lost the cause: {rendered}"
         );
         assert!(rendered.contains("codex"), "lost the provider: {rendered}");
+        assert!(rendered.starts_with("all 3 providers failed"), "{rendered}");
         assert_eq!(error.provider(), Some("codex"));
     }
 
@@ -416,6 +495,32 @@ mod tests {
             ProviderError::io("file not found").to_string(),
             "IO error: file not found"
         );
+    }
+
+    #[test]
+    fn a_timeout_keeps_the_fraction_of_a_second_it_waited() {
+        for (timeout, rendered) in [
+            (
+                Duration::from_millis(1_500),
+                "claude: agent command timed out after 1.5s",
+            ),
+            (
+                Duration::from_millis(500),
+                "claude: agent command timed out after 500ms",
+            ),
+            (
+                Duration::from_secs(600),
+                "claude: agent command timed out after 600s",
+            ),
+        ] {
+            let error = ProviderError::timeout("claude", timeout);
+
+            assert_eq!(error.to_string(), rendered);
+            assert!(
+                matches!(&error, ProviderError::Timeout { timeout: kept, .. } if *kept == timeout),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]

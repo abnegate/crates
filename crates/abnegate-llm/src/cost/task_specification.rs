@@ -4,8 +4,13 @@ use crate::cost::TaskCategory;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TaskSpecification {
+    /// The name the estimate lists this task under, in its breakdown or among
+    /// the tasks it left unassigned.
     pub label: String,
+    /// The kind of work, which decides the models that can do it.
     pub category: TaskCategory,
+    /// How much of the work there is, in the unit the chosen model's price is
+    /// quoted in: tokens, images, characters, or seconds of audio or video.
     pub quantity: u32,
 }
 

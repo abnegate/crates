@@ -8,6 +8,19 @@ use abnegate_secret::SecretValue;
 /// a key it did not ask for is worse than handing it nothing: the key ends up
 /// in a child environment that the agent may echo into its own logs. So
 /// [`Credential::Inherited`] is a first-class choice rather than an empty key.
+///
+/// [`Credential::Key`] may gain a field in a minor release, so it is built
+/// with [`Credential::key`] and a pattern outside this crate ends in `..`:
+///
+/// ```compile_fail,E0639
+/// use abnegate_llm::Credential;
+///
+/// let credential = Credential::Key {
+///     variable: "ANTHROPIC_API_KEY".to_string(),
+///     value: "key".into(),
+/// };
+/// # let _ = credential;
+/// ```
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub enum Credential {
@@ -16,6 +29,7 @@ pub enum Credential {
     Inherited,
     /// A key placed in the named environment variable of the child process, or
     /// sent as a bearer token by an HTTP provider.
+    #[non_exhaustive]
     Key {
         variable: String,
         value: SecretValue,
@@ -23,6 +37,7 @@ pub enum Credential {
 }
 
 impl Credential {
+    /// The key `value`, placed in the environment variable `variable`.
     pub fn key(variable: impl Into<String>, value: impl Into<SecretValue>) -> Self {
         Self::Key {
             variable: variable.into(),

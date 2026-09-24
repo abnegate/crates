@@ -848,7 +848,7 @@ mod tests {
                 .expect_err("a refusal");
             let flag = arguments[0].split('=').next().unwrap_or_default();
             assert!(
-                matches!(&error, ProviderError::Config { detail } if detail.contains(flag)),
+                matches!(&error, ProviderError::Config { detail, .. } if detail.contains(flag)),
                 "{arguments:?}: {error:?}"
             );
             assert!(
@@ -875,7 +875,7 @@ mod tests {
                 .options(&settings, &Attachments::default())
                 .expect_err("a refusal");
             assert!(
-                matches!(&error, ProviderError::Config { detail } if detail.contains(wording)),
+                matches!(&error, ProviderError::Config { detail, .. } if detail.contains(wording)),
                 "{arguments:?}: {error:?}"
             );
             assert!(!error.to_string().contains("Delete every file"), "{error}");
@@ -930,7 +930,7 @@ mod tests {
                 .options(&settings, &Attachments::default())
                 .expect_err("a refusal");
             assert!(
-                matches!(&error, ProviderError::Config { detail } if detail.contains(permission)),
+                matches!(&error, ProviderError::Config { detail, .. } if detail.contains(permission)),
                 "{permission}: {error:?}"
             );
         }
@@ -1017,7 +1017,7 @@ mod tests {
                 .options(&settings, &Attachments::default())
                 .expect_err("a refusal");
             assert!(
-                matches!(error, ProviderError::Unsupported { ref detail } if detail.contains(flag)),
+                matches!(error, ProviderError::Unsupported { ref detail, .. } if detail.contains(flag)),
                 "{flag}: {error:?}"
             );
             assert!(!error.recoverable());

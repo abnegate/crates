@@ -48,6 +48,7 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
+    /// The default model over the messages API, authenticated with `api_key`.
     pub fn new(api_key: impl Into<SecretValue>) -> Self {
         Self::with_model(
             AnthropicAuthentication::ApiKey(api_key.into()),
@@ -55,6 +56,8 @@ impl AnthropicProvider {
         )
     }
 
+    /// The default model through the `claude` CLI, authenticated with the
+    /// CLI's OAuth `token`.
     pub fn with_oauth(token: impl Into<SecretValue>) -> Self {
         Self::with_model(
             AnthropicAuthentication::OAuthToken(token.into()),
@@ -62,6 +65,9 @@ impl AnthropicProvider {
         )
     }
 
+    /// `model`, reached the way `authentication` allows: over the messages
+    /// API with an API key, or through the `claude` CLI with an OAuth token or
+    /// the CLI's own sign-in.
     pub fn with_model(authentication: AnthropicAuthentication, model: &str) -> Self {
         Self::with_base_url(authentication, model, BASE_URL)
     }
@@ -964,7 +970,14 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, ProviderError::Timeout { .. }), "{error:?}");
+        assert!(
+            matches!(&error, ProviderError::Timeout { timeout, .. } if *timeout == Duration::from_millis(300)),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().ends_with("timed out after 300ms"),
+            "{error}"
+        );
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 

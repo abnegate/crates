@@ -1,3 +1,4 @@
+use std::fmt;
 use std::time::Duration;
 
 use abnegate_secret::redact;
@@ -9,19 +10,37 @@ use thiserror::Error;
 /// applied before it lands here, and a transport failure carries no URL, so a
 /// key echoed in a rejection body or carried in a query string never reaches
 /// a log line through this type.
+///
+/// [`Error::Api`] may gain a field in a minor release, so a value is built
+/// with [`Error::api`] and a pattern outside this crate ends in `..`:
+///
+/// ```compile_fail,E0639
+/// let error = abnegate_llm::Error::Api {
+///     status: 429,
+///     message: "slow down".to_string(),
+/// };
+/// # let _ = error;
+/// ```
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// The request could not be sent, or its answer could not be read.
     #[error("HTTP error: {0}")]
     Http(reqwest::Error),
+    /// The endpoint answered with a failing HTTP `status`.
     #[error("API error: {status} - {message}")]
+    #[non_exhaustive]
     Api { status: u16, message: String },
+    /// A body did not serialise, or did not parse.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    /// A streamed answer broke off or could not be read.
     #[error("Stream error: {0}")]
     Stream(String),
+    /// The client is configured wrongly.
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+    /// The endpoint sent nothing for as long as the client waits.
     #[error("the endpoint sent nothing for {0:?}")]
     Timeout(Duration),
 }
@@ -33,6 +52,15 @@ impl From<reqwest::Error> for Error {
 }
 
 impl Error {
+    /// The endpoint answered with `status`, saying `message`, which is
+    /// redacted.
+    pub fn api(status: u16, message: impl fmt::Display) -> Self {
+        Self::Api {
+            status,
+            message: redact(&message.to_string()).into_owned(),
+        }
+    }
+
     /// The same failure with [`redact`] applied to every message it carries,
     /// for a value that did not come through [`crate::LlmClient`].
     pub fn redacted(self) -> Self {
@@ -126,6 +154,24 @@ mod tests {
         assert!(display.contains("401"));
         assert!(display.contains("Unauthorized"));
         assert!(display.contains("API error"));
+    }
+
+    #[test]
+    fn an_api_failure_a_caller_builds_is_redacted() {
+        let leaked = concat!(
+            "rejected key sk-ant-",
+            "api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        );
+
+        let error = Error::api(401, leaked);
+
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(concat!("sk-ant-", "api03-AAAA")),
+            "credential survived in {rendered}"
+        );
+        assert!(rendered.contains("[REDACTED]"), "{rendered}");
+        assert!(matches!(error, Error::Api { status: 401, .. }));
     }
 
     #[test]
