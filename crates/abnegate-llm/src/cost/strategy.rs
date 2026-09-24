@@ -20,17 +20,24 @@ const BUDGET_PREFIX: &str = "budget:";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum CostStrategy {
+    /// The model with the lowest price per unit.
     CheapestPossible,
+    /// The model with the highest quality score, whatever it costs.
     BestQuality,
+    /// The model with the most quality per dollar, where a free model counts
+    /// as a hundred times its quality.
     BestValue,
     /// Best value while the whole batch costs at most `maximum_usd` dollars;
     /// past that, each task gets the best model the rest of the budget
-    /// affords, or else the cheapest local one. Serialised as `max_usd`.
+    /// affords, or else the cheapest local one.
     #[non_exhaustive]
     Budget {
+        /// The most the whole batch may cost, in US dollars. Serialised as
+        /// `max_usd`.
         #[serde(rename = "max_usd")]
         maximum_usd: f64,
     },
+    /// The best local model, or the best value when none runs locally.
     LocalFirst,
 }
 
