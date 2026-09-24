@@ -1403,23 +1403,18 @@ mod managed_tests {
         let service = GitService::new();
         let worktree = temporary.path().join("run-worktrees").join("one");
 
-        service
+        let checkout = service
             .create_worktree(temporary.path(), &worktree, &branch("main"))
             .await
             .unwrap();
+        assert_eq!(checkout, Checkout::linked(&worktree, temporary.path()));
         assert!(worktree.join("README.md").exists());
         assert!(
             worktree.join(".git").is_file(),
             "a worktree is marked by a .git file"
         );
         assert!(service.is_repository_root(&worktree));
-        assert_eq!(
-            service
-                .current_branch(&Checkout::linked(&worktree, temporary.path()))
-                .await
-                .unwrap(),
-            "HEAD"
-        );
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "HEAD");
 
         service
             .create_worktree(temporary.path(), &worktree, &branch("main"))
@@ -1463,7 +1458,7 @@ mod managed_tests {
         let service = GitService::new();
 
         let named = temporary.path().join("named-worktrees").join("one");
-        service
+        let checkout = service
             .create_worktree_on_branch(
                 temporary.path(),
                 &named,
@@ -1472,11 +1467,9 @@ mod managed_tests {
             )
             .await
             .unwrap();
+        assert_eq!(checkout, Checkout::linked(&named, temporary.path()));
         assert_eq!(
-            service
-                .current_branch(&Checkout::linked(&named, temporary.path()))
-                .await
-                .unwrap(),
+            service.current_branch(&checkout).await.unwrap(),
             "my-feature"
         );
 
@@ -1530,7 +1523,7 @@ mod managed_tests {
             .join("deep-worktrees")
             .join("nested")
             .join("two");
-        service
+        let checkout = service
             .create_worktree_on_branch(
                 temporary.path(),
                 &named,
@@ -1540,10 +1533,7 @@ mod managed_tests {
             .await
             .unwrap();
         assert_eq!(
-            service
-                .current_branch(&Checkout::linked(&named, temporary.path()))
-                .await
-                .unwrap(),
+            service.current_branch(&checkout).await.unwrap(),
             "new-branch"
         );
     }
@@ -1556,7 +1546,7 @@ mod managed_tests {
         let service = GitService::new();
         let area = temporary.path().join("multi-worktrees");
 
-        service
+        let one = service
             .create_worktree_on_branch(
                 temporary.path(),
                 &area.join("one"),
@@ -1565,7 +1555,7 @@ mod managed_tests {
             )
             .await
             .unwrap();
-        service
+        let two = service
             .create_worktree_on_branch(
                 temporary.path(),
                 &area.join("two"),
@@ -1575,20 +1565,8 @@ mod managed_tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            service
-                .current_branch(&Checkout::linked(area.join("one"), temporary.path()))
-                .await
-                .unwrap(),
-            "branch-1"
-        );
-        assert_eq!(
-            service
-                .current_branch(&Checkout::linked(area.join("two"), temporary.path()))
-                .await
-                .unwrap(),
-            "branch-2"
-        );
+        assert_eq!(service.current_branch(&one).await.unwrap(), "branch-1");
+        assert_eq!(service.current_branch(&two).await.unwrap(), "branch-2");
         assert_eq!(
             service
                 .current_branch(&Checkout::base(temporary.path()))
@@ -1697,7 +1675,7 @@ mod managed_tests {
         );
 
         let worktree = workspace.path().join("test-worktrees").join("fix-123");
-        service
+        let checkout = service
             .create_worktree_on_branch(
                 &repository_path,
                 &worktree,
@@ -1708,10 +1686,7 @@ mod managed_tests {
             .unwrap();
 
         assert_eq!(
-            service
-                .current_branch(&Checkout::linked(&worktree, &repository_path))
-                .await
-                .unwrap(),
+            service.current_branch(&checkout).await.unwrap(),
             "fix/issue-123"
         );
         assert!(service.is_repository_root(&worktree));
@@ -2418,8 +2393,7 @@ mod managed_tests {
         let main = branch("main");
         clone_as_files(&origin(source.path()), &target);
         let worktree = workspace.path().join("cloned-worktrees").join("one");
-        let checkout = Checkout::linked(&worktree, &target);
-        service
+        let checkout = service
             .create_worktree(&target, &worktree, &main)
             .await
             .unwrap();

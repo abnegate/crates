@@ -22,8 +22,9 @@ fn refuse(worktree_path: &Path) -> GitError {
 
 impl GitService {
     /// Add a worktree of a managed clone at `worktree_path`, in detached HEAD
-    /// state at `checkout_ref`. The worktree is named from then on by
-    /// [`Checkout::linked`]`(worktree_path, path)`.
+    /// state at `checkout_ref`, and return it bound to the clone at `path`:
+    /// the [`Checkout`] every other operation takes it by, with both paths
+    /// made absolute against the current directory.
     ///
     /// A worktree of the same repository already standing there is replaced
     /// when it holds nothing that would be lost -- no uncommitted change and a
@@ -41,8 +42,9 @@ impl GitService {
         path: &Path,
         worktree_path: &Path,
         checkout_ref: &BranchName,
-    ) -> GitResult<()> {
+    ) -> GitResult<Checkout> {
         Self::verify_base(path).await?;
+        let repository = Self::make_absolute(path)?;
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
 
@@ -75,11 +77,12 @@ impl GitService {
         }
 
         tracing::info!(worktree = ?worktree_path, "Worktree created");
-        Ok(())
+        Ok(Checkout::linked(worktree_path, repository))
     }
 
-    /// Add a worktree of a managed clone checked out on a local branch, named
-    /// from then on by [`Checkout::linked`]`(worktree_path, path)`.
+    /// Add a worktree of a managed clone checked out on a local branch, and
+    /// return it bound to the clone at `path` as [`Self::create_worktree`]
+    /// returns its own.
     ///
     /// Unlike [`Self::create_worktree`], which detaches, this creates or resets
     /// `branch` at `start_point`, so a later push from the worktree targets the
@@ -95,11 +98,12 @@ impl GitService {
         worktree_path: &Path,
         branch: &BranchName,
         start_point: &BranchName,
-    ) -> GitResult<()> {
+    ) -> GitResult<Checkout> {
         Self::verify_base(path).await?;
         if Self::is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
+        let repository = Self::make_absolute(path)?;
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
 
@@ -132,7 +136,7 @@ impl GitService {
         }
 
         tracing::info!(worktree = ?worktree_path, %branch, "Worktree created on branch");
-        Ok(())
+        Ok(Checkout::linked(worktree_path, repository))
     }
 
     /// Remove a worktree of a managed clone and prune the record of it.
@@ -389,7 +393,8 @@ mod tests {
         ))
         .await;
 
-        created.unwrap();
+        let checkout = created.unwrap();
+        assert_eq!(checkout, Checkout::linked(&worktree, &clone));
         assert!(
             recorded.iter().any(|command| command.ends_with(
                 &[
@@ -406,13 +411,7 @@ mod tests {
             )),
             "{recorded:?}"
         );
-        assert_eq!(
-            service
-                .current_branch(&Checkout::linked(&worktree, &clone))
-                .await
-                .unwrap(),
-            "task/one"
-        );
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "task/one");
         assert!(
             !git(&clone, &["config", "--local", "--list"]).contains("branch.task/one."),
             "the worktree's branch recorded an upstream"
@@ -698,7 +697,11 @@ mod tests {
         ))
         .await;
 
-        created.unwrap();
+        assert_eq!(
+            created.unwrap(),
+            Checkout::linked(&worktree, &fixture.repository),
+            "the replacement is returned bound to the clone"
+        );
         let running = |verb: &str| {
             recorded.iter().position(|command| {
                 command

@@ -232,13 +232,13 @@ pub fn path(workspace: &Path, repository_name: &str, identifier: &str) -> Option
     )
 }
 
-/// Add a detached worktree of `repository` at `path`, checked out at `start`.
-/// Detached, because the run's own branch is made afterwards by the same
-/// step that makes it in a clone, and a worktree that started on a named
-/// branch would pin that branch to itself. `repository` is the top of the
-/// base clone, and the worktree is named from then on by
-/// [`Checkout::linked`]`(path, repository)`.
-pub fn add(repository: &Path, path: &Path, start: &str) -> std::io::Result<()> {
+/// Add a detached worktree of `repository` at `path`, checked out at `start`,
+/// and return it bound to `repository`, the name every other operation here
+/// takes it by. Detached, because the run's own branch is made afterwards by
+/// the same step that makes it in a clone, and a worktree that started on a
+/// named branch would pin that branch to itself. `repository` is the top of
+/// the base clone, and a relative `path` is read from there, as git reads it.
+pub fn add(repository: &Path, path: &Path, start: &str) -> std::io::Result<Checkout> {
     verify(&Checkout::base(repository))?;
     run(
         local(repository)
@@ -246,8 +246,8 @@ pub fn add(repository: &Path, path: &Path, start: &str) -> std::io::Result<()> {
             .arg(path)
             .arg(start),
         "add a worktree",
-    )
-    .map(drop)
+    )?;
+    Ok(Checkout::linked(repository.join(path), repository))
 }
 
 /// Whether `path` is a worktree rather than a clone of its own: git marks
@@ -608,30 +608,27 @@ mod tests {
     fn a_worktree_starts_detached_at_the_remote_head_and_clean() {
         let repositories = repositories();
         let path = repositories.worktrees.join("run");
-        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
+        assert_eq!(
+            checkout,
+            repositories.checkout(&path),
+            "the worktree is returned bound to the clone it was added to"
+        );
         assert!(is_worktree(&path), "a worktree is marked by a .git file");
         assert!(!is_worktree(&repositories.base), "the base is a clone");
         assert_eq!(
             std::fs::read_to_string(path.join("README")).unwrap(),
             "fixture\n"
         );
-        assert_eq!(
-            branch(&repositories.checkout(&path)),
-            None,
-            "detached, so no branch is pinned"
-        );
+        assert_eq!(branch(&checkout), None, "detached, so no branch is pinned");
         let start = git(&repositories.remote, &["rev-parse", "main"]);
         assert_eq!(
-            unfinished(&repositories.checkout(&path), &[&start]).unwrap(),
+            unfinished(&checkout, &[&start]).unwrap(),
             Unfinished::default()
         );
-        assert!(
-            !unfinished(&repositories.checkout(&path), &[&start])
-                .unwrap()
-                .any()
-        );
+        assert!(!unfinished(&checkout, &[&start]).unwrap().any());
         assert_eq!(
-            unfinished(&repositories.checkout(&path), &[]).unwrap(),
+            unfinished(&checkout, &[]).unwrap(),
             Unfinished {
                 uncommitted: false,
                 unpublished: true
@@ -641,8 +638,38 @@ mod tests {
         // Git names the repository by its real path, which on macOS is not
         // the path the temporary directory was handed out under.
         assert_eq!(
-            repository_of(&repositories.checkout(&path)).unwrap(),
+            repository_of(&checkout).unwrap(),
             repositories.base.canonicalize().unwrap()
+        );
+    }
+
+    /// Git reads a relative path from the clone it runs in, so the worktree
+    /// is returned where git put it, not below the current directory.
+    #[test]
+    fn a_worktree_added_at_a_relative_path_is_returned_where_git_put_it() {
+        let repositories = repositories();
+        let start = git(&repositories.remote, &["rev-parse", "main"]);
+
+        let checkout = add(
+            &repositories.base,
+            Path::new("../worktrees/relative"),
+            "origin/HEAD",
+        )
+        .unwrap();
+
+        assert_eq!(checkout.repository(), repositories.base);
+        assert!(is_worktree(checkout.top()), "{checkout:?}");
+        assert_eq!(
+            checkout.top().canonicalize().unwrap(),
+            repositories
+                .worktrees
+                .join("relative")
+                .canonicalize()
+                .unwrap()
+        );
+        assert_eq!(
+            unfinished(&checkout, &[&start]).unwrap(),
+            Unfinished::default()
         );
     }
 
@@ -650,12 +677,12 @@ mod tests {
     fn work_nobody_else_has_is_seen_at_each_stage_and_cleared_by_publication() {
         let repositories = repositories();
         let path = repositories.worktrees.join("run");
-        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
         let start = git(&path, &["rev-parse", "HEAD"]);
         git(&path, &["checkout", "-q", "-b", "task/one"]);
         std::fs::write(path.join("work.txt"), "in progress\n").unwrap();
         assert_eq!(
-            unfinished(&repositories.checkout(&path), &[&start]).unwrap(),
+            unfinished(&checkout, &[&start]).unwrap(),
             Unfinished {
                 uncommitted: true,
                 unpublished: false
@@ -664,7 +691,7 @@ mod tests {
         git(&path, &["add", "work.txt"]);
         git(&path, &["commit", "-q", "-m", "work"]);
         assert_eq!(
-            unfinished(&repositories.checkout(&path), &[&start]).unwrap(),
+            unfinished(&checkout, &[&start]).unwrap(),
             Unfinished {
                 uncommitted: false,
                 unpublished: true
@@ -678,9 +705,7 @@ mod tests {
             &["update-ref", "refs/remotes/origin/task/one", "HEAD"],
         );
         assert!(
-            unfinished(&repositories.checkout(&path), &[&start])
-                .unwrap()
-                .unpublished,
+            unfinished(&checkout, &[&start]).unwrap().unpublished,
             "a planted remote-tracking ref is not a publication"
         );
         // Publication as the service performs it: a push, and the service
@@ -688,13 +713,11 @@ mod tests {
         git(&path, &["push", "-q", "origin", "HEAD:refs/heads/task/one"]);
         let pushed = git(&path, &["rev-parse", "HEAD"]);
         assert_eq!(
-            unfinished(&repositories.checkout(&path), &[&start, &pushed]).unwrap(),
+            unfinished(&checkout, &[&start, &pushed]).unwrap(),
             Unfinished::default()
         );
         assert_eq!(
-            branch(&repositories.checkout(&path))
-                .as_ref()
-                .map(BranchName::as_str),
+            branch(&checkout).as_ref().map(BranchName::as_str),
             Some("task/one")
         );
         assert_eq!(
@@ -712,25 +735,18 @@ mod tests {
     fn a_clone_told_to_hide_untracked_files_is_refused_and_committed_ignores_hold() {
         let repositories = repositories();
         let path = repositories.worktrees.join("run");
-        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
         let start = git(&path, &["rev-parse", "HEAD"]);
         for (key, value) in [
             ("status.showUntrackedFiles", "no"),
             ("core.excludesFile", "/dev/null"),
         ] {
             git(&path, &["config", key, value]);
-            assert!(
-                unfinished(&repositories.checkout(&path), &[&start]).is_err(),
-                "{key}"
-            );
+            assert!(unfinished(&checkout, &[&start]).is_err(), "{key}");
             git(&path, &["config", "--unset", key]);
         }
         std::fs::write(path.join("notes.txt"), "not yet added\n").unwrap();
-        assert!(
-            unfinished(&repositories.checkout(&path), &[&start])
-                .unwrap()
-                .uncommitted
-        );
+        assert!(unfinished(&checkout, &[&start]).unwrap().uncommitted);
         std::fs::remove_file(path.join("notes.txt")).unwrap();
         std::fs::write(path.join(".gitignore"), "*.log\n").unwrap();
         git(&path, &["add", ".gitignore"]);
@@ -738,9 +754,7 @@ mod tests {
         std::fs::write(path.join("build.log"), "output\n").unwrap();
         let head = git(&path, &["rev-parse", "HEAD"]);
         assert!(
-            !unfinished(&repositories.checkout(&path), &[&start, &head])
-                .unwrap()
-                .uncommitted,
+            !unfinished(&checkout, &[&start, &head]).unwrap().uncommitted,
             "a file the repository's own rules ignore is not work"
         );
     }
@@ -749,10 +763,10 @@ mod tests {
     fn removing_a_worktree_takes_its_branch_and_leaves_the_base_usable() {
         let repositories = repositories();
         let first = repositories.worktrees.join("first");
-        add(&repositories.base, &first, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &first, "origin/HEAD").unwrap();
         git(&first, &["checkout", "-q", "-b", "task/one"]);
         std::fs::write(first.join("work.txt"), "x\n").unwrap();
-        remove(&repositories.checkout(&first)).unwrap();
+        remove(&checkout).unwrap();
         assert!(
             !first.exists(),
             "removed even with an uncommitted file: the caller decided"
@@ -763,12 +777,10 @@ mod tests {
         assert_eq!(branches, "", "the branch went with the worktree");
         // The next run of the same task can take the branch name again.
         let second = repositories.worktrees.join("second");
-        add(&repositories.base, &second, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &second, "origin/HEAD").unwrap();
         git(&second, &["checkout", "-q", "-b", "task/one"]);
         assert_eq!(
-            branch(&repositories.checkout(&second))
-                .as_ref()
-                .map(BranchName::as_str),
+            branch(&checkout).as_ref().map(BranchName::as_str),
             Some("task/one")
         );
     }
@@ -782,14 +794,14 @@ mod tests {
     fn removing_a_worktree_writes_nothing_through_a_linked_configuration() {
         let repositories = repositories();
         let path = repositories.worktrees.join("run");
-        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
         git(&path, &["checkout", "-q", "-b", "task/one"]);
         let linked = fixtures::LinkedConfig::new(
             &repositories.base,
             &repositories.base.with_file_name("copy"),
         );
 
-        let refusal = remove(&repositories.checkout(&path)).unwrap_err();
+        let refusal = remove(&checkout).unwrap_err();
 
         assert!(
             matches!(
@@ -824,7 +836,7 @@ mod tests {
     fn removing_a_worktree_keeps_a_branch_another_worktree_has_checked_out() {
         let repositories = repositories();
         let first = repositories.worktrees.join("first");
-        add(&repositories.base, &first, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &first, "origin/HEAD").unwrap();
         git(&first, &["checkout", "-q", "-b", "task/one"]);
         let second = repositories.worktrees.join("second");
         git(
@@ -839,7 +851,7 @@ mod tests {
             ],
         );
 
-        remove(&repositories.checkout(&first)).unwrap();
+        remove(&checkout).unwrap();
 
         assert!(!first.exists(), "the worktree was removed");
         assert_eq!(
@@ -863,7 +875,7 @@ mod tests {
     fn deleting_a_branch_that_is_a_link_leaves_the_branch_it_names() {
         let repositories = repositories();
         let other = repositories.worktrees.join("other");
-        add(&repositories.base, &other, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &other, "origin/HEAD").unwrap();
         git(&other, &["checkout", "-q", "-b", "task/other"]);
         git(&other, &["commit", "-q", "--allow-empty", "-m", "work"]);
         let held = git(&other, &["rev-parse", "HEAD"]);
@@ -892,9 +904,7 @@ mod tests {
         );
         assert_eq!(git(&other, &["rev-parse", "HEAD"]), held);
         assert_eq!(
-            branch(&repositories.checkout(&other))
-                .as_ref()
-                .map(BranchName::as_str),
+            branch(&checkout).as_ref().map(BranchName::as_str),
             Some("task/other")
         );
     }
@@ -922,11 +932,11 @@ mod tests {
             ],
         );
         let path = repositories.worktrees.join("run");
-        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
         git(&path, &["symbolic-ref", "HEAD", "refs/heads/task/one"]);
-        let on = branch(&repositories.checkout(&path));
+        let on = branch(&checkout);
 
-        remove(&repositories.checkout(&path)).unwrap();
+        remove(&checkout).unwrap();
 
         assert_eq!(
             git(
@@ -1078,7 +1088,7 @@ mod tests {
     fn a_file_hidden_only_by_the_clone_s_own_exclude_file_still_counts() {
         let repositories = repositories();
         let path = repositories.worktrees.join("run");
-        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
         let start = git(&path, &["rev-parse", "HEAD"]);
         let exclude = git(&path, &["rev-parse", "--git-path", "info/exclude"]);
         let exclude = path.join(exclude);
@@ -1086,11 +1096,7 @@ mod tests {
         std::fs::write(&exclude, "notes.txt\n").unwrap();
         std::fs::write(path.join("notes.txt"), "not yet added\n").unwrap();
 
-        assert!(
-            unfinished(&repositories.checkout(&path), &[&start])
-                .unwrap()
-                .uncommitted
-        );
+        assert!(unfinished(&checkout, &[&start]).unwrap().uncommitted);
     }
 
     /// An entry marked assume-unchanged or skip-worktree hides its changes
@@ -1100,7 +1106,7 @@ mod tests {
         for mark in ["--assume-unchanged", "--skip-worktree"] {
             let repositories = repositories();
             let path = repositories.worktrees.join("run");
-            add(&repositories.base, &path, "origin/HEAD").unwrap();
+            let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
             let start = git(&path, &["rev-parse", "HEAD"]);
             git(&path, &["update-index", mark, "README"]);
             std::fs::write(path.join("README"), "changed and hidden\n").unwrap();
@@ -1111,9 +1117,7 @@ mod tests {
             );
 
             assert!(
-                unfinished(&repositories.checkout(&path), &[&start])
-                    .unwrap()
-                    .uncommitted,
+                unfinished(&checkout, &[&start]).unwrap().uncommitted,
                 "{mark}"
             );
         }
@@ -1125,13 +1129,13 @@ mod tests {
     fn a_change_hidden_by_trusted_stat_information_still_counts() {
         let repositories = repositories();
         let path = repositories.worktrees.join("run");
-        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
         let start = git(&path, &["rev-parse", "HEAD"]);
         git(&repositories.base, &["config", "core.ignoreStat", "true"]);
         git(&path, &["update-index", "--really-refresh"]);
         std::fs::write(path.join("README"), "changed\n").unwrap();
         assert!(
-            unfinished(&repositories.checkout(&path), &[&start]).is_err(),
+            unfinished(&checkout, &[&start]).is_err(),
             "the setting itself is refused"
         );
         git(
@@ -1139,7 +1143,7 @@ mod tests {
             &["config", "--unset", "core.ignoreStat"],
         );
 
-        let held = unfinished(&repositories.checkout(&path), &[&start]).unwrap();
+        let held = unfinished(&checkout, &[&start]).unwrap();
 
         assert!(
             held.uncommitted,
@@ -1218,16 +1222,14 @@ mod tests {
         for directory in ["", "nested/"] {
             let repositories = repositories();
             let path = repositories.worktrees.join("run");
-            add(&repositories.base, &path, "origin/HEAD").unwrap();
+            let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
             let start = git(&path, &["rev-parse", "HEAD"]);
             std::fs::create_dir_all(path.join(directory)).unwrap();
             std::fs::write(path.join(format!("{directory}.gitignore")), "*\n").unwrap();
             std::fs::write(path.join(format!("{directory}work.txt")), "unsaved\n").unwrap();
 
             assert!(
-                unfinished(&repositories.checkout(&path), &[&start])
-                    .unwrap()
-                    .uncommitted,
+                unfinished(&checkout, &[&start]).unwrap().uncommitted,
                 "{directory:?}"
             );
         }
@@ -1253,16 +1255,14 @@ mod tests {
     fn a_nested_repository_is_reported_as_work_and_never_entered() {
         let repositories = repositories();
         let path = repositories.worktrees.join("run");
-        add(&repositories.base, &path, "origin/HEAD").unwrap();
+        let checkout = add(&repositories.base, &path, "origin/HEAD").unwrap();
         let start = git(&path, &["rev-parse", "HEAD"]);
 
         let nested = path.join("nested");
         std::fs::create_dir(&nested).unwrap();
         git(&nested, &["init", "-q", "-b", "main"]);
         assert!(
-            unfinished(&repositories.checkout(&path), &[&start])
-                .unwrap()
-                .uncommitted,
+            unfinished(&checkout, &[&start]).unwrap().uncommitted,
             "an untracked nested repository is work"
         );
 
@@ -1278,7 +1278,7 @@ mod tests {
         )
         .unwrap();
 
-        let held = unfinished(&repositories.checkout(&path), &[&start, &head]).unwrap();
+        let held = unfinished(&checkout, &[&start, &head]).unwrap();
         assert!(
             held.uncommitted,
             "a recorded gitlink is read from the index, not by entering it: {held:?}"
