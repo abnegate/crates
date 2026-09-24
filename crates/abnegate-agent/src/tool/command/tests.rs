@@ -11,6 +11,7 @@ use super::shell::RunShellParameters;
 use super::shell::total_sleep;
 use super::*;
 use crate::test_support::CHILD_TEST;
+use crate::test_support::assert_passed;
 use crate::test_support::captured_logs;
 use crate::tool::MAX_TOOL_MESSAGE_CHARACTERS;
 use crate::tool::Session;
@@ -79,12 +80,7 @@ async fn shelling_tools_give_the_child_only_the_context_environment() {
             .output()
             .await
             .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert_passed(&output);
         return;
     }
     assert_eq!(
@@ -141,12 +137,7 @@ async fn proxy_overrides_command_and_shell_environment() {
             .output()
             .await
             .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert_passed(&output);
         return;
     }
     let mut context = create_test_context();
