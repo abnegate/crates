@@ -136,6 +136,7 @@ impl Contract {
         }
         if !is_name(&self.sidecar_suffix, is_file_character)
             || self.sidecar_suffix.ends_with(WEIGHT_EXTENSION)
+            || WEIGHT_EXTENSION.ends_with(self.sidecar_suffix.as_str())
         {
             return Err(ConfigError::new(
                 "the contract sidecar suffix must be one plain name that no weight ends in",
@@ -298,5 +299,21 @@ mod tests {
             ..Contract::default()
         };
         assert!(contract.validate().is_err());
+    }
+
+    #[test]
+    fn a_sidecar_suffix_every_weight_ends_in_is_refused() {
+        for suffix in ["s", "tensors", ".safetensors"] {
+            let contract = Contract {
+                sidecar_suffix: suffix.into(),
+                ..Contract::default()
+            };
+            assert!(contract.validate().is_err(), "{suffix:?} was accepted");
+        }
+        let contract = Contract {
+            sidecar_suffix: ".safetensors.json".into(),
+            ..Contract::default()
+        };
+        assert_eq!(contract.validate(), Ok(()));
     }
 }
