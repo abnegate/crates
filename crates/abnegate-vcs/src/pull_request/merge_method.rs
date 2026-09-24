@@ -12,3 +12,14 @@ pub enum MergeMethod {
     /// Each replayed onto the base, with no merge commit.
     Rebase,
 }
+
+impl MergeMethod {
+    /// The name GitHub's GraphQL API gives the method.
+    pub(super) fn graphql(self) -> &'static str {
+        match self {
+            Self::Squash => "SQUASH",
+            Self::Merge => "MERGE",
+            Self::Rebase => "REBASE",
+        }
+    }
+}
