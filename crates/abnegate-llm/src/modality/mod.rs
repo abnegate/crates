@@ -290,9 +290,9 @@ mod tests {
     #[cfg(feature = "openai")]
     #[test]
     fn the_openai_client_satisfies_the_traits_it_claims() {
-        use crate::modality::vendor::OpenAIProvider;
+        use crate::modality::vendor::OpenAiProvider;
 
-        let provider = OpenAIProvider::new("key");
+        let provider = OpenAiProvider::new("key");
         let _text: &dyn TextProvider = &provider;
         let _image: &dyn ImageProvider = &provider;
         let _embedding: &dyn EmbeddingProvider = &provider;

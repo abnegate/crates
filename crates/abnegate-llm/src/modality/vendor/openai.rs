@@ -49,14 +49,14 @@ const STRUCTURED_SCHEMA_NAME: &str = "response";
 /// Every call has a deadline, ten minutes unless [`Self::with_timeout`] says
 /// otherwise, and the client never follows a redirect with the key.
 #[derive(Debug, Clone)]
-pub struct OpenAIProvider {
+pub struct OpenAiProvider {
     api_key: SecretValue,
     model: String,
     base_url: String,
     transport: Transport,
 }
 
-impl OpenAIProvider {
+impl OpenAiProvider {
     pub fn new(api_key: impl Into<SecretValue>) -> Self {
         Self::with_model(api_key, DEFAULT_MODEL)
     }
@@ -229,7 +229,7 @@ fn usage(body: &serde_json::Value, field: &str) -> u32 {
 }
 
 #[async_trait]
-impl TextProvider for OpenAIProvider {
+impl TextProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
     }
@@ -267,7 +267,7 @@ impl TextProvider for OpenAIProvider {
 }
 
 #[async_trait]
-impl ImageProvider for OpenAIProvider {
+impl ImageProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
     }
@@ -327,7 +327,7 @@ impl ImageProvider for OpenAIProvider {
 }
 
 #[async_trait]
-impl EmbeddingProvider for OpenAIProvider {
+impl EmbeddingProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
     }
@@ -369,7 +369,7 @@ impl EmbeddingProvider for OpenAIProvider {
 }
 
 #[async_trait]
-impl TranscriptionProvider for OpenAIProvider {
+impl TranscriptionProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
     }
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn a_chat_body_carries_the_model_the_settings_and_both_messages() {
-        let provider = OpenAIProvider::with_model("test-key", "gpt-4o");
+        let provider = OpenAiProvider::with_model("test-key", "gpt-4o");
 
         let body = provider.build_chat_request_body(&request());
 
@@ -485,14 +485,14 @@ mod tests {
 
     #[test]
     fn a_custom_model_reaches_the_body() {
-        let provider = OpenAIProvider::with_model("key", "gpt-4-turbo");
+        let provider = OpenAiProvider::with_model("key", "gpt-4-turbo");
         let body = provider.build_chat_request_body(&TextRequest::new("sys", "usr"));
         assert_eq!(body["model"], "gpt-4-turbo");
     }
 
     #[test]
     fn the_default_reasoning_model_gets_only_the_fields_it_accepts() {
-        let body = OpenAIProvider::new("key").build_chat_request_body(&request());
+        let body = OpenAiProvider::new("key").build_chat_request_body(&request());
 
         assert_eq!(body["model"], DEFAULT_MODEL);
         assert_eq!(body["max_completion_tokens"], 2048);
@@ -508,7 +508,7 @@ mod tests {
             strict: false,
         });
 
-        let body = OpenAIProvider::with_model("key", "o3-mini").build_chat_request_body(&request);
+        let body = OpenAiProvider::with_model("key", "o3-mini").build_chat_request_body(&request);
 
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(
@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn a_schema_is_not_sent_strict_unless_the_caller_asks() {
         let body =
-            OpenAIProvider::with_model("key", "gpt-4o").build_chat_request_body(&structured(false));
+            OpenAiProvider::with_model("key", "gpt-4o").build_chat_request_body(&structured(false));
 
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(
@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn a_strict_schema_is_sent_strict() {
         let body =
-            OpenAIProvider::with_model("key", "gpt-4o").build_chat_request_body(&structured(true));
+            OpenAiProvider::with_model("key", "gpt-4o").build_chat_request_body(&structured(true));
 
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
@@ -566,7 +566,7 @@ mod tests {
             "gpt-4o-2024-05-13",
         ] {
             for strict in [false, true] {
-                let body = OpenAIProvider::with_model("key", model)
+                let body = OpenAiProvider::with_model("key", model)
                     .build_chat_request_body(&structured(strict));
                 assert_eq!(
                     body["response_format"],
@@ -583,7 +583,7 @@ mod tests {
             "o3-mini",
             "llama3",
         ] {
-            let body = OpenAIProvider::with_model("key", model)
+            let body = OpenAiProvider::with_model("key", model)
                 .build_chat_request_body(&structured(false));
             assert_eq!(body["response_format"]["type"], "json_schema", "{model}");
         }
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn asking_for_json_sets_the_response_format() {
-        let provider = OpenAIProvider::new("key");
+        let provider = OpenAiProvider::new("key");
         let mut request = request();
         request.response_format = Some(ResponseFormat::Json {
             schema: None,
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn asking_for_text_sets_no_response_format() {
-        let provider = OpenAIProvider::new("key");
+        let provider = OpenAiProvider::new("key");
         let mut request = request();
         request.response_format = Some(ResponseFormat::Text);
 
@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn an_image_body_carries_the_size_the_count_and_the_style() {
-        let provider = OpenAIProvider::new("test-key");
+        let provider = OpenAiProvider::new("test-key");
         let request = ImageRequest {
             prompt: "A sunset over mountains".into(),
             negative_prompt: None,
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn an_image_body_without_a_style_omits_the_field() {
-        let provider = OpenAIProvider::new("key");
+        let provider = OpenAiProvider::new("key");
         let request = ImageRequest::new("A cat", 512, 512);
 
         let body = provider.build_image_request_body(&request);
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn an_embedding_body_carries_every_text() {
-        let provider = OpenAIProvider::new("test-key");
+        let provider = OpenAiProvider::new("test-key");
 
         let body =
             provider.build_embedding_request_body(&["Hello world".into(), "Goodbye world".into()]);
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn an_embedding_body_for_no_texts_is_an_empty_list() {
-        let provider = OpenAIProvider::new("key");
+        let provider = OpenAiProvider::new("key");
         let body = provider.build_embedding_request_body(&[]);
         assert_eq!(body["input"].as_array().unwrap().len(), 0);
     }
@@ -708,7 +708,7 @@ mod tests {
             "usage": { "prompt_tokens": 30, "completion_tokens": 20, "total_tokens": 50 }
         });
 
-        let response = OpenAIProvider::parse_chat_response(&body).unwrap();
+        let response = OpenAiProvider::parse_chat_response(&body).unwrap();
 
         assert_eq!(response.content, "fn main() {}");
         assert_eq!(response.model, "gpt-4o-2024-05-13");
@@ -719,9 +719,9 @@ mod tests {
 
     #[test]
     fn a_response_without_content_is_an_error_not_an_empty_answer() {
-        assert!(OpenAIProvider::parse_chat_response(&serde_json::json!({ "id": "x" })).is_err());
+        assert!(OpenAiProvider::parse_chat_response(&serde_json::json!({ "id": "x" })).is_err());
         assert!(
-            OpenAIProvider::parse_chat_response(&serde_json::json!({ "choices": [] })).is_err()
+            OpenAiProvider::parse_chat_response(&serde_json::json!({ "choices": [] })).is_err()
         );
     }
 
@@ -731,7 +731,7 @@ mod tests {
             "choices": [{ "message": { "role": "assistant", "content": "hello" } }]
         });
 
-        let response = OpenAIProvider::parse_chat_response(&body).unwrap();
+        let response = OpenAiProvider::parse_chat_response(&body).unwrap();
 
         assert_eq!(response.model, "unknown");
         assert_eq!(response.input_tokens, 0);
@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn the_provider_reports_what_it_can_do() {
-        let provider = OpenAIProvider::new("key");
+        let provider = OpenAiProvider::new("key");
 
         assert_eq!(TextProvider::name(&provider), "openai");
         assert_eq!(ImageProvider::name(&provider), "openai");
@@ -773,7 +773,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAIProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
+        let provider = OpenAiProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
         let response = provider
             .complete(&TextRequest::new("sys", "usr"))
             .await
@@ -799,7 +799,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let provider = OpenAIProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
+        let provider = OpenAiProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
         let mut request = TextRequest::new("sys", "usr");
         request.response_format = Some(ResponseFormat::Json {
             schema: Some(serde_json::json!({ "type": "object" })),
@@ -827,7 +827,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let error = OpenAIProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri())
+        let error = OpenAiProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri())
             .complete(&TextRequest::new("sys", "usr"))
             .await
             .unwrap_err();
@@ -848,7 +848,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAIProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
+        let provider = OpenAiProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
         let error = provider
             .complete(&TextRequest::new("sys", "usr"))
             .await
@@ -877,7 +877,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAIProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
+        let provider = OpenAiProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
         let response = provider
             .generate(&ImageRequest::new("A cat", 512, 512))
             .await
@@ -903,7 +903,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAIProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
+        let provider = OpenAiProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
         let embeddings = provider
             .embed(&["one".to_string(), "two".to_string()])
             .await
@@ -936,7 +936,7 @@ mod tests {
         let audio = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(audio.path(), [0u8, 1, 2]).unwrap();
 
-        let provider = OpenAIProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
+        let provider = OpenAiProvider::with_base_url("sk-test", DEFAULT_MODEL, server.uri());
         let response = provider.transcribe(audio.path()).await.unwrap();
 
         assert_eq!(response.text, "Hello world");
@@ -947,7 +947,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_audio_file_is_an_io_error() {
-        let provider = OpenAIProvider::new("key");
+        let provider = OpenAiProvider::new("key");
         let error = provider
             .transcribe(Path::new("/nonexistent/audio.mp3"))
             .await
@@ -957,7 +957,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_unimplemented_paths_say_so_rather_than_failing_obscurely() {
-        let provider = OpenAIProvider::new("key");
+        let provider = OpenAiProvider::new("key");
 
         let streaming = provider
             .stream_complete(&TextRequest::new("sys", "usr"))

@@ -21,4 +21,4 @@ pub use crate::modality::vendor::google::GeminiProvider;
 #[cfg(test)]
 pub(crate) use crate::modality::vendor::mock::MockProvider;
 #[cfg(feature = "openai")]
-pub use crate::modality::vendor::openai::OpenAIProvider;
+pub use crate::modality::vendor::openai::OpenAiProvider;
