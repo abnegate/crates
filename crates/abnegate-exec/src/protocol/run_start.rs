@@ -123,8 +123,8 @@ impl RunStart {
     }
 
     /// Run the command under `confinement`.
-    pub fn with_confinement(mut self, confinement: ConfinementRequest) -> Self {
-        self.confinement = Some(Box::new(confinement));
+    pub fn with_confinement(mut self, confinement: impl Into<ConfinementRequest>) -> Self {
+        self.confinement = Some(Box::new(confinement.into()));
         self
     }
 }

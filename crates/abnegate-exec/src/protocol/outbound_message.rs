@@ -10,7 +10,10 @@ use super::milliseconds;
 /// Messages a runner sends to its client
 ///
 /// Each variant is `#[non_exhaustive]`: match it with `..`, since a field
-/// can be added to any of them.
+/// can be added to any of them. Outside this crate a variant is built only
+/// by deserializing a runner's line through serde, or by
+/// [`error`](Self::error), [`log`](Self::log) and
+/// [`hello_acknowledged`](Self::hello_acknowledged).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 #[non_exhaustive]
