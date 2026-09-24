@@ -20,10 +20,6 @@ const REFUSED: &str = "GitHub's GraphQL API refused";
 /// What an answer that carried neither data nor errors is reported as.
 const NO_DATA: &str = "GitHub's GraphQL API answered with no data";
 
-/// What an answer that is not the JSON asked for is reported as. Serde's own
-/// message would quote the values it could not read.
-const UNREADABLE: &str = "GitHub's GraphQL API answered in a form this crate cannot read";
-
 /// What joins the messages of several GraphQL errors.
 const SEPARATOR: &str = "; ";
 
@@ -52,16 +48,12 @@ impl PullRequestService {
         query: &'static str,
         variables: &V,
     ) -> PullRequestResult<Result<T, Vec<GraphQlError>>> {
-        let response = authorised(self.client.post(self.origin.graphql()), token)
-            .json(&GraphQlRequest { query, variables })
-            .send()
+        let answer: GraphQlResponse = self
+            .exchange(
+                self.request(Method::POST, self.origin.graphql(), token, ACCEPT)
+                    .json(&GraphQlRequest { query, variables }),
+            )
             .await?;
-        if !response.status().is_success() {
-            return Err(refusal(response).await);
-        }
-
-        let body = response.bytes().await?;
-        let answer: GraphQlResponse = serde_json::from_slice(&body).map_err(|_| unreadable())?;
         if !answer.errors.is_empty() {
             return Ok(Err(answer.errors));
         }
@@ -70,7 +62,7 @@ impl PullRequestService {
             .ok_or_else(|| PullRequestError::GitHubApi(NO_DATA.to_string()))?;
         serde_json::from_value(data)
             .map(Ok)
-            .map_err(|_| unreadable())
+            .map_err(|_| PullRequestError::GitHubApi(UNREADABLE.to_string()))
     }
 }
 
@@ -103,7 +95,7 @@ pub(super) fn graphql_refusal(errors: &[GraphQlError]) -> PullRequestError {
 /// Every message in a set of GraphQL errors, joined, with no control
 /// characters, and cut at 1 kB on a character boundary.
 pub(super) fn graphql_messages(errors: &[GraphQlError]) -> String {
-    let mut messages: String = errors
+    let messages: String = errors
         .iter()
         .map(|error| error.message.as_str())
         .filter(|message| !message.is_empty())
@@ -112,21 +104,14 @@ pub(super) fn graphql_messages(errors: &[GraphQlError]) -> String {
         .chars()
         .filter(|character| !character.is_control())
         .collect();
-    let mut end = messages.len().min(MAXIMUM_ERROR_BYTES);
-    while !messages.is_char_boundary(end) {
-        end -= 1;
-    }
-    messages.truncate(end);
-    messages
-}
-
-fn unreadable() -> PullRequestError {
-    PullRequestError::GitHubApi(UNREADABLE.to_string())
+    bounded(&messages).to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::service::fixtures::stand_in;
+    use crate::pull_request::service::fixtures::token;
     use serde_json::Value;
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -141,14 +126,6 @@ mod tests {
 
     /// A query whose one value a caller chooses.
     const USER: &str = "query($login:String!){user(login:$login){name}}";
-
-    fn token() -> SecretValue {
-        SecretValue::new("token")
-    }
-
-    async fn stand_in(server: &MockServer) -> PullRequestService {
-        PullRequestService::standing_in_for("github.com", &server.uri()).unwrap()
-    }
 
     async fn answering(response: ResponseTemplate) -> MockServer {
         let server = MockServer::start().await;

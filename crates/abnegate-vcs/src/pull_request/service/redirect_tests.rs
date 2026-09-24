@@ -1,4 +1,7 @@
 use super::*;
+use crate::pull_request::service::fixtures::project;
+use crate::pull_request::service::fixtures::stand_in;
+use crate::pull_request::service::fixtures::token;
 use reqwest::header::AUTHORIZATION;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -9,20 +12,6 @@ use wiremock::matchers::path;
 
 /// The path GitHub reads a repository's details from.
 const REPOSITORY: &str = "/repos/acme/project";
-
-async fn stand_in(server: &MockServer) -> PullRequestService {
-    PullRequestService::standing_in_for("github.com", &server.uri()).unwrap()
-}
-
-fn acme(service: &PullRequestService) -> Repository {
-    service
-        .parse_github_url("https://github.com/acme/project")
-        .unwrap()
-}
-
-fn token() -> SecretValue {
-    SecretValue::new("token")
-}
 
 fn moved(location: String) -> ResponseTemplate {
     ResponseTemplate::new(301).insert_header("location", location)
@@ -47,7 +36,9 @@ async fn a_redirect_to_another_origin_is_returned_rather_than_followed() {
         .await;
     let service = stand_in(&origin).await;
 
-    let result = service.get_default_branch(&acme(&service), &token()).await;
+    let result = service
+        .get_default_branch(&project(&service), &token())
+        .await;
 
     let received = elsewhere.received_requests().await.unwrap();
     assert!(
@@ -86,7 +77,7 @@ async fn a_redirect_within_the_origin_is_followed() {
 
     assert_eq!(
         service
-            .get_default_branch(&acme(&service), &token())
+            .get_default_branch(&project(&service), &token())
             .await
             .unwrap()
             .as_str(),
@@ -104,7 +95,9 @@ async fn a_redirect_loop_within_the_origin_stops_after_ten_hops() {
         .await;
     let service = stand_in(&server).await;
 
-    let result = service.get_default_branch(&acme(&service), &token()).await;
+    let result = service
+        .get_default_branch(&project(&service), &token())
+        .await;
 
     assert!(
         matches!(result, Err(PullRequestError::GitHubApi(_))),

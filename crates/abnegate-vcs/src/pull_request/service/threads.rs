@@ -24,6 +24,8 @@ impl PullRequestService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::service::fixtures::stand_in;
+    use crate::pull_request::service::fixtures::token;
     use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
@@ -49,10 +51,10 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let service = PullRequestService::standing_in_for("github.com", &server.uri()).unwrap();
+        let service = stand_in(&server).await;
 
         service
-            .resolve_review_thread("PRRT_1", &SecretValue::new("token"))
+            .resolve_review_thread("PRRT_1", &token())
             .await
             .unwrap();
     }
