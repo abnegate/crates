@@ -39,11 +39,13 @@ mod contents;
 mod conversation;
 #[cfg(test)]
 mod fixtures;
+mod graphql;
 mod merging;
 mod pulls;
 #[cfg(test)]
 mod redirect_tests;
 mod repositories;
+mod threads;
 
 /// What this crate calls itself to the GitHub API.
 const USER_AGENT: &str = "abnegate-vcs";
