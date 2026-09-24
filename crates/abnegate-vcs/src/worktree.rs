@@ -236,12 +236,19 @@ pub fn path(workspace: &Path, repository_name: &str, identifier: &str) -> Option
 /// and return it bound to `repository`, the name every other operation here
 /// takes it by. Detached, because the run's own branch is made afterwards by
 /// the same step that makes it in a clone, and a worktree that started on a
-/// named branch would pin that branch to itself. `repository` is the top of
-/// the base clone, and a relative `path` is read from there, as git reads it.
+/// named branch would pin that branch to itself.
+///
+/// `repository` is the top of the base clone, and a relative one is read
+/// against the current directory and returned absolute, with no link on the
+/// way resolved, so the checkout names the same worktree wherever it is used
+/// from. A relative `path` is read against the clone, as git reads it, unlike
+/// the worktree path [`crate::git::GitService::create_worktree`] takes, which
+/// it reads against the current directory.
 pub fn add(repository: &Path, path: &Path, start: &str) -> std::io::Result<Checkout> {
-    verify(&Checkout::base(repository))?;
+    let repository = std::path::absolute(repository)?;
+    verify(&Checkout::base(&repository))?;
     run(
-        local(repository)
+        local(&repository)
             .args(["worktree", "add", "--detach", "--"])
             .arg(path)
             .arg(start),
@@ -573,8 +580,11 @@ mod tests {
     use super::*;
     use crate::git::GitError;
 
+    /// What a test run again in a child process finds set, naming the test.
+    const CHILD: &str = "ABNEGATE_VCS_TEST_CHILD";
+
     struct Repositories {
-        _root: tempfile::TempDir,
+        root: tempfile::TempDir,
         remote: PathBuf,
         base: PathBuf,
         worktrees: PathBuf,
@@ -597,7 +607,7 @@ mod tests {
         let worktrees = root.path().join("worktrees");
         std::fs::create_dir(&worktrees).unwrap();
         Repositories {
-            _root: root,
+            root,
             remote: remote_path,
             base,
             worktrees,
@@ -671,6 +681,55 @@ mod tests {
             unfinished(&checkout, &[&start]).unwrap(),
             Unfinished::default()
         );
+    }
+
+    /// A clone named by a path relative to the current directory is made
+    /// absolute before the worktree is joined to it, so the checkout names
+    /// the worktree git added wherever it is used from, and removing it
+    /// removes that worktree. Every test shares its process's current
+    /// directory, so this one runs again in a child whose current directory
+    /// holds the clone.
+    #[test]
+    fn a_worktree_of_a_clone_named_relative_to_the_current_directory_is_removed() {
+        const NAME: &str = "worktree::tests::a_worktree_of_a_clone_named_relative_to_the_current_directory_is_removed";
+        if std::env::var(CHILD).as_deref() == Ok(NAME) {
+            let checkout = add(
+                Path::new("base"),
+                Path::new("../worktrees/one"),
+                "origin/HEAD",
+            )
+            .unwrap();
+            assert!(is_worktree(checkout.top()), "{checkout:?}");
+
+            remove(&checkout).unwrap();
+
+            assert!(!checkout.top().exists(), "{checkout:?}");
+            assert!(checkout.top().is_absolute(), "{checkout:?}");
+            assert!(checkout.repository().is_absolute(), "{checkout:?}");
+            return;
+        }
+        let repositories = repositories();
+
+        let output = Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD, NAME)
+            .current_dir(repositories.root.path())
+            .output()
+            .expect("the child runs");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test, so it proved nothing\n{stdout}"
+        );
+        assert!(!repositories.worktrees.join("one").exists());
+        let listed = git(&repositories.base, &["worktree", "list", "--porcelain"]);
+        assert!(!listed.contains("worktrees/one"), "{listed}");
     }
 
     #[test]
