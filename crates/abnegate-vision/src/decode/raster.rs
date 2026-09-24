@@ -1,9 +1,14 @@
 //! A decoded image.
 
+use std::fmt;
+
 use crate::decode::layout::Layout;
 use crate::decode::orientation::Orientation;
 
 /// A decoded image and the orientation that still has to be applied to it.
+///
+/// `Debug` reports the pixel buffer by its length, not its samples.
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct Raster {
     /// The stored width, before orientation, in pixels.
@@ -46,9 +51,43 @@ impl Raster {
     }
 }
 
+impl fmt::Debug for Raster {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Raster")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("layout", &self.layout)
+            .field("orientation", &self.orientation)
+            .field("pixels", &format_args!("{} bytes", self.pixels.len()))
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_reports_the_pixels_by_length() {
+        let raster = Raster::new(4, 2, Layout::Rgb, vec![7; 4 * 2 * 3]);
+        assert_eq!(
+            format!("{raster:?}"),
+            "Raster { width: 4, height: 2, layout: Rgb, orientation: Normal, pixels: 24 bytes }"
+        );
+    }
+
+    #[test]
+    fn a_clone_is_the_same_image() {
+        let raster = Raster::new(2, 1, Layout::Rgb, vec![1, 2, 3, 4, 5, 6])
+            .with_orientation(Orientation::Rotate90);
+        let copy = raster.clone();
+        assert_eq!(copy.width, raster.width);
+        assert_eq!(copy.height, raster.height);
+        assert_eq!(copy.layout, raster.layout);
+        assert_eq!(copy.orientation, raster.orientation);
+        assert_eq!(copy.pixels, raster.pixels);
+    }
 
     #[test]
     fn a_new_raster_is_upright_until_given_an_orientation() {
