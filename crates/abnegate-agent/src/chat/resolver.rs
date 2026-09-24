@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde_json::Value;
 
 use super::Capacity;
-use super::Error;
+use super::ChatError;
 use super::Source;
 use super::route::Route;
 use super::routes::Routes;
@@ -44,7 +44,7 @@ pub struct Resolver {
 impl Resolver {
     /// A resolver falling back to [`DEFAULT_CONTEXT`] when a deployment
     /// reports no capacity.
-    pub fn new(host: &str, key: &str, ollama: &str) -> Result<Self, Error> {
+    pub fn new(host: &str, key: &str, ollama: &str) -> Result<Self, ChatError> {
         Self::with_context(host, key, ollama, Some(DEFAULT_CONTEXT))
     }
 
@@ -58,7 +58,7 @@ impl Resolver {
         key: &str,
         ollama: &str,
         configured: Option<u64>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ChatError> {
         let client = Client::builder()
             .connect_timeout(METADATA_TIMEOUT)
             .timeout(METADATA_TIMEOUT)

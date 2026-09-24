@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::Error;
+use super::ChatError;
 use super::Evidence;
 use super::History;
 use super::Lease;
@@ -17,22 +17,22 @@ use super::Summary;
 ///
 /// Writes are gated on a [`Lease`], so a chat can only ever have one live
 /// response: whoever holds the lease owns the turn, and a stale holder is told
-/// [`Error::LeaseLost`] rather than being allowed to append. The one exception
+/// [`ChatError::LeaseLost`] rather than being allowed to append. The one exception
 /// is [`ContextStore::settle`], which closes a turn whose lease is already
 /// gone: it can reach nothing but the one turn it names.
 #[async_trait]
 pub trait ContextStore: Send + Sync {
-    /// Take the right to respond in this chat, or fail with [`Error::Busy`].
-    async fn acquire(&self, owner: Uuid, lifetime: Duration) -> Result<Lease, Error>;
+    /// Take the right to respond in this chat, or fail with [`ChatError::Busy`].
+    async fn acquire(&self, owner: Uuid, lifetime: Duration) -> Result<Lease, ChatError>;
 
     /// Extend a lease that is still ours.
-    async fn renew(&self, lease: &Lease, lifetime: Duration) -> Result<Lease, Error>;
+    async fn renew(&self, lease: &Lease, lifetime: Duration) -> Result<Lease, ChatError>;
 
     /// Fail unless this lease is still the current one.
-    async fn assert_current(&self, lease: &Lease) -> Result<(), Error>;
+    async fn assert_current(&self, lease: &Lease) -> Result<(), ChatError>;
 
     /// Give the lease up. False when it had already been taken over.
-    async fn release(&self, lease: &Lease) -> Result<bool, Error>;
+    async fn release(&self, lease: &Lease) -> Result<bool, ChatError>;
 
     /// Record the user message that opens a turn.
     async fn begin(
@@ -43,11 +43,15 @@ pub trait ContextStore: Send + Sync {
         content: &str,
         metadata: Option<Value>,
         message: ReplayMessage,
-    ) -> Result<StoredMessage, Error>;
+    ) -> Result<StoredMessage, ChatError>;
 
     /// Append entries produced while the turn runs.
-    async fn append(&self, lease: &Lease, turn_id: Uuid, entries: &[NewEntry])
-    -> Result<(), Error>;
+    async fn append(
+        &self,
+        lease: &Lease,
+        turn_id: Uuid,
+        entries: &[NewEntry],
+    ) -> Result<(), ChatError>;
 
     async fn create_message(
         &self,
@@ -55,12 +59,12 @@ pub trait ContextStore: Send + Sync {
         role: &str,
         content: &str,
         metadata: Option<Value>,
-    ) -> Result<StoredMessage, Error>;
+    ) -> Result<StoredMessage, ChatError>;
 
-    async fn delete_message(&self, lease: &Lease, id: Uuid) -> Result<bool, Error>;
+    async fn delete_message(&self, lease: &Lease, id: Uuid) -> Result<bool, ChatError>;
 
     /// Mark evidence as folded into the visible history.
-    async fn consumed(&self, lease: &Lease, ids: &[String]) -> Result<(), Error>;
+    async fn consumed(&self, lease: &Lease, ids: &[String]) -> Result<(), ChatError>;
 
     async fn complete(
         &self,
@@ -68,7 +72,7 @@ pub trait ContextStore: Send + Sync {
         turn_id: Uuid,
         content: &str,
         metadata: Option<Value>,
-    ) -> Result<StoredMessage, Error>;
+    ) -> Result<StoredMessage, ChatError>;
 
     async fn publish(
         &self,
@@ -76,7 +80,7 @@ pub trait ContextStore: Send + Sync {
         turn_id: Uuid,
         content: &str,
         metadata: Option<Value>,
-    ) -> Result<StoredMessage, Error>;
+    ) -> Result<StoredMessage, ChatError>;
 
     /// Close a turn, durably, whether it ran to the end or was interrupted.
     async fn finish(
@@ -87,9 +91,9 @@ pub trait ContextStore: Send + Sync {
         metadata: Option<Value>,
         interrupted: bool,
         partial: Option<&ReplayMessage>,
-    ) -> Result<StoredMessage, Error>;
+    ) -> Result<StoredMessage, ChatError>;
 
-    async fn interrupt(&self, lease: &Lease, turn_id: Uuid) -> Result<(), Error>;
+    async fn interrupt(&self, lease: &Lease, turn_id: Uuid) -> Result<(), ChatError>;
 
     /// Close a turn whose lease is already gone, so a lost lease cannot leave a
     /// row running for ever. A turn id belongs to one generation, so no other
@@ -102,12 +106,12 @@ pub trait ContextStore: Send + Sync {
         content: Option<&str>,
         metadata: Option<Value>,
         partial: Option<&ReplayMessage>,
-    ) -> Result<bool, Error>;
+    ) -> Result<bool, ChatError>;
 
     /// Settle turns a previous process left open. Returns how many.
-    async fn recover(&self, lease: &Lease) -> Result<usize, Error>;
+    async fn recover(&self, lease: &Lease) -> Result<usize, ChatError>;
 
-    async fn load(&self) -> Result<History, Error>;
+    async fn load(&self) -> Result<History, ChatError>;
 
     /// Replace the summary, refusing when someone else moved it first.
     async fn checkpoint(
@@ -115,9 +119,9 @@ pub trait ContextStore: Send + Sync {
         lease: &Lease,
         expected: Option<&Summary>,
         proposed: &Summary,
-    ) -> Result<(), Error>;
+    ) -> Result<(), ChatError>;
 
-    async fn evidence(&self, id: &str, offset: u64, limit: u64) -> Result<Evidence, Error>;
+    async fn evidence(&self, id: &str, offset: u64, limit: u64) -> Result<Evidence, ChatError>;
 
-    async fn catalog(&self, offset: u64, limit: u64) -> Result<Evidence, Error>;
+    async fn catalog(&self, offset: u64, limit: u64) -> Result<Evidence, ChatError>;
 }

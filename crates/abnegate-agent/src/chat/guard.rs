@@ -6,8 +6,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
+use super::ChatError;
 use super::ContextStore;
-use super::Error;
 use super::Lease;
 
 /// An independently scheduled renewal, unaffected by blocked websocket sends or tools.
@@ -61,7 +61,7 @@ fn remaining(lease: &Lease) -> Duration {
 
 /// Renew until it succeeds or the lease is provably gone.
 ///
-/// Anything other than [`Error::LeaseLost`] leaves the row untouched, so the
+/// Anything other than [`ChatError::LeaseLost`] leaves the row untouched, so the
 /// `expires_at` already granted still stands and retrying inside it reclaims a
 /// lease nobody else can hold; each attempt is cut short at that instant so a
 /// renewal cannot outlive the lease it is renewing.
@@ -69,11 +69,11 @@ async fn renew(
     store: &dyn ContextStore,
     lease: &Lease,
     lifetime: Duration,
-) -> Result<Lease, Error> {
+) -> Result<Lease, ChatError> {
     loop {
         let left = remaining(lease);
         if left.is_zero() {
-            let error = Error::LeaseLost;
+            let error = ChatError::LeaseLost;
             warn!(chat = %lease.chat_id, owner = %lease.owner, fence = lease.fence, %error,
                 "Chat lease expired before a renewal succeeded");
             return Err(error);
@@ -81,9 +81,9 @@ async fn renew(
         let error = match tokio::time::timeout(left, store.renew(lease, lifetime)).await {
             Ok(Ok(renewed)) => return Ok(renewed),
             Ok(Err(error)) => error,
-            Err(elapsed) => Error::Backend(elapsed.to_string()),
+            Err(elapsed) => ChatError::Backend(elapsed.to_string()),
         };
-        if matches!(error, Error::LeaseLost) {
+        if matches!(error, ChatError::LeaseLost) {
             warn!(chat = %lease.chat_id, owner = %lease.owner, fence = lease.fence, %error,
                 "Chat lease was taken over or expired; the response will stop");
             return Err(error);
@@ -105,9 +105,11 @@ pub fn keep_alive(
     store: Arc<dyn ContextStore>,
     lease: Lease,
     lifetime: Duration,
-) -> Result<Guard, Error> {
+) -> Result<Guard, ChatError> {
     if lifetime.is_zero() {
-        return Err(Error::Integrity("lease lifetime must be non-zero".into()));
+        return Err(ChatError::Integrity(
+            "lease lifetime must be non-zero".into(),
+        ));
     }
     let (tx, lost) = watch::channel(false);
     let mut current = lease.clone();
@@ -186,7 +188,7 @@ mod tests {
 
     #[async_trait]
     impl ContextStore for Fake {
-        async fn renew(&self, lease: &Lease, lifetime: Duration) -> Result<Lease, Error> {
+        async fn renew(&self, lease: &Lease, lifetime: Duration) -> Result<Lease, ChatError> {
             let scripted = self.script.lock().expect("renewal script").pop_front();
             self.calls.send_modify(|calls| *calls += 1);
             match scripted {
@@ -194,19 +196,19 @@ mod tests {
                     expires_at: Utc::now() + TimeDelta::from_std(lifetime).expect("a lifetime"),
                     ..lease.clone()
                 }),
-                Some(Renewal::Transient) => Err(Error::Backend(POOL_TIMED_OUT.into())),
-                Some(Renewal::Lost) => Err(Error::LeaseLost),
+                Some(Renewal::Transient) => Err(ChatError::Backend(POOL_TIMED_OUT.into())),
+                Some(Renewal::Lost) => Err(ChatError::LeaseLost),
                 Some(Renewal::Hang) => pending().await,
             }
         }
 
-        async fn acquire(&self, _owner: Uuid, _lifetime: Duration) -> Result<Lease, Error> {
+        async fn acquire(&self, _owner: Uuid, _lifetime: Duration) -> Result<Lease, ChatError> {
             unimplemented!()
         }
-        async fn assert_current(&self, _lease: &Lease) -> Result<(), Error> {
+        async fn assert_current(&self, _lease: &Lease) -> Result<(), ChatError> {
             unimplemented!()
         }
-        async fn release(&self, _lease: &Lease) -> Result<bool, Error> {
+        async fn release(&self, _lease: &Lease) -> Result<bool, ChatError> {
             unimplemented!()
         }
         async fn begin(
@@ -217,7 +219,7 @@ mod tests {
             _content: &str,
             _metadata: Option<Value>,
             _message: ReplayMessage,
-        ) -> Result<StoredMessage, Error> {
+        ) -> Result<StoredMessage, ChatError> {
             unimplemented!()
         }
         async fn append(
@@ -225,7 +227,7 @@ mod tests {
             _lease: &Lease,
             _turn_id: Uuid,
             _entries: &[NewEntry],
-        ) -> Result<(), Error> {
+        ) -> Result<(), ChatError> {
             unimplemented!()
         }
         async fn create_message(
@@ -234,13 +236,13 @@ mod tests {
             _role: &str,
             _content: &str,
             _metadata: Option<Value>,
-        ) -> Result<StoredMessage, Error> {
+        ) -> Result<StoredMessage, ChatError> {
             unimplemented!()
         }
-        async fn delete_message(&self, _lease: &Lease, _id: Uuid) -> Result<bool, Error> {
+        async fn delete_message(&self, _lease: &Lease, _id: Uuid) -> Result<bool, ChatError> {
             unimplemented!()
         }
-        async fn consumed(&self, _lease: &Lease, _ids: &[String]) -> Result<(), Error> {
+        async fn consumed(&self, _lease: &Lease, _ids: &[String]) -> Result<(), ChatError> {
             unimplemented!()
         }
         async fn complete(
@@ -249,7 +251,7 @@ mod tests {
             _turn_id: Uuid,
             _content: &str,
             _metadata: Option<Value>,
-        ) -> Result<StoredMessage, Error> {
+        ) -> Result<StoredMessage, ChatError> {
             unimplemented!()
         }
         async fn publish(
@@ -258,7 +260,7 @@ mod tests {
             _turn_id: Uuid,
             _content: &str,
             _metadata: Option<Value>,
-        ) -> Result<StoredMessage, Error> {
+        ) -> Result<StoredMessage, ChatError> {
             unimplemented!()
         }
         async fn finish(
@@ -269,10 +271,10 @@ mod tests {
             _metadata: Option<Value>,
             _interrupted: bool,
             _partial: Option<&ReplayMessage>,
-        ) -> Result<StoredMessage, Error> {
+        ) -> Result<StoredMessage, ChatError> {
             unimplemented!()
         }
-        async fn interrupt(&self, _lease: &Lease, _turn_id: Uuid) -> Result<(), Error> {
+        async fn interrupt(&self, _lease: &Lease, _turn_id: Uuid) -> Result<(), ChatError> {
             unimplemented!()
         }
         async fn settle(
@@ -281,13 +283,13 @@ mod tests {
             _content: Option<&str>,
             _metadata: Option<Value>,
             _partial: Option<&ReplayMessage>,
-        ) -> Result<bool, Error> {
+        ) -> Result<bool, ChatError> {
             unimplemented!()
         }
-        async fn recover(&self, _lease: &Lease) -> Result<usize, Error> {
+        async fn recover(&self, _lease: &Lease) -> Result<usize, ChatError> {
             unimplemented!()
         }
-        async fn load(&self) -> Result<History, Error> {
+        async fn load(&self) -> Result<History, ChatError> {
             unimplemented!()
         }
         async fn checkpoint(
@@ -295,13 +297,18 @@ mod tests {
             _lease: &Lease,
             _expected: Option<&Summary>,
             _proposed: &Summary,
-        ) -> Result<(), Error> {
+        ) -> Result<(), ChatError> {
             unimplemented!()
         }
-        async fn evidence(&self, _id: &str, _offset: u64, _limit: u64) -> Result<Evidence, Error> {
+        async fn evidence(
+            &self,
+            _id: &str,
+            _offset: u64,
+            _limit: u64,
+        ) -> Result<Evidence, ChatError> {
             unimplemented!()
         }
-        async fn catalog(&self, _offset: u64, _limit: u64) -> Result<Evidence, Error> {
+        async fn catalog(&self, _offset: u64, _limit: u64) -> Result<Evidence, ChatError> {
             unimplemented!()
         }
     }

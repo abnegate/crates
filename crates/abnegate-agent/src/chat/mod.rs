@@ -31,7 +31,7 @@ mod summary;
 
 pub use capacity::Capacity;
 pub use entry::Entry;
-pub use error::Error;
+pub use error::ChatError;
 pub use evidence::Evidence;
 pub use guard::Guard;
 pub use guard::keep_alive;
