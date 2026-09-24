@@ -203,7 +203,7 @@ impl Reader {
                 }
                 AgentEvent::Finished { finish_reason } => {
                     self.settle(Verdict::Finished);
-                    AgentEvent::Finished { finish_reason }
+                    AgentEvent::finished(finish_reason)
                 }
                 event => event,
             };

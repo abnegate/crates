@@ -16,11 +16,13 @@ use crate::stream::api_message_delta::ApiMessageDelta;
 #[non_exhaustive]
 pub enum ApiStreamEvent {
     #[serde(rename = "message_start")]
+    #[non_exhaustive]
     MessageStart {
         #[serde(default)]
         message: Option<ApiMessage>,
     },
     #[serde(rename = "content_block_start")]
+    #[non_exhaustive]
     ContentBlockStart {
         #[serde(default)]
         index: Option<usize>,
@@ -28,6 +30,7 @@ pub enum ApiStreamEvent {
         content_block: Option<ApiContentBlock>,
     },
     #[serde(rename = "content_block_delta")]
+    #[non_exhaustive]
     ContentBlockDelta {
         #[serde(default)]
         index: Option<usize>,
@@ -35,12 +38,14 @@ pub enum ApiStreamEvent {
         delta: Option<ApiDelta>,
     },
     #[serde(rename = "content_block_stop")]
+    #[non_exhaustive]
     ContentBlockStop {
         #[serde(default)]
         index: Option<usize>,
     },
     /// How the message ended, and its output token count.
     #[serde(rename = "message_delta")]
+    #[non_exhaustive]
     MessageDelta {
         #[serde(default)]
         delta: Option<ApiMessageDelta>,
@@ -48,9 +53,11 @@ pub enum ApiStreamEvent {
         usage: Option<CliUsage>,
     },
     #[serde(rename = "message_stop")]
+    #[non_exhaustive]
     MessageStop {},
     /// A failure mid-stream, after which no more of the message comes.
     #[serde(rename = "error")]
+    #[non_exhaustive]
     Error {
         #[serde(default)]
         error: Option<ApiError>,

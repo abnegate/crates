@@ -26,6 +26,7 @@ const NO_ARGUMENTS: &str = "{}";
 #[non_exhaustive]
 pub enum StreamEvent {
     #[serde(rename = "system")]
+    #[non_exhaustive]
     System {
         #[serde(default)]
         subtype: Option<String>,
@@ -33,13 +34,16 @@ pub enum StreamEvent {
         session_id: Option<String>,
     },
     #[serde(rename = "assistant")]
+    #[non_exhaustive]
     Assistant {
         #[serde(default)]
         message: Option<CliMessage>,
     },
     #[serde(rename = "user")]
+    #[non_exhaustive]
     User {},
     #[serde(rename = "result")]
+    #[non_exhaustive]
     Result {
         #[serde(default)]
         subtype: Option<String>,
@@ -67,6 +71,7 @@ pub enum StreamEvent {
     /// announce a limit being hit, and waiting out a refused run costs far
     /// more than stopping one.
     #[serde(rename = "rate_limit_event")]
+    #[non_exhaustive]
     RateLimit {
         /// The report itself, read from `rate_limit_info`.
         #[serde(default, rename = "rate_limit_info")]
@@ -156,9 +161,7 @@ fn conclusion(subtype: Option<String>, is_error: bool, result: Option<String>) -
             .as_deref()
             .is_some_and(|subtype| subtype.starts_with("error"));
     if !failed {
-        return AgentEvent::Finished {
-            finish_reason: subtype,
-        };
+        return AgentEvent::finished(subtype);
     }
     AgentEvent::Failed(
         result

@@ -6,6 +6,7 @@ use serde::Deserialize;
 #[non_exhaustive]
 pub enum ApiDelta {
     #[serde(rename = "text_delta")]
+    #[non_exhaustive]
     TextDelta {
         #[serde(default)]
         text: String,
@@ -13,6 +14,7 @@ pub enum ApiDelta {
     /// A fragment of a tool call's input, which is JSON only once every
     /// fragment has been joined.
     #[serde(rename = "input_json_delta")]
+    #[non_exhaustive]
     InputJsonDelta {
         #[serde(default)]
         partial_json: String,

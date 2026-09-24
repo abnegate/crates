@@ -3,8 +3,7 @@ use serde::Deserialize;
 /// The part of a completed item this crate reads.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
-#[non_exhaustive]
-pub enum Item {
+pub(crate) enum Item {
     #[serde(rename = "agent_message")]
     Message { text: String },
     #[serde(rename = "command_execution")]
