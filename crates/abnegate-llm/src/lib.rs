@@ -40,7 +40,7 @@
 //! ```no_run
 //! use abnegate_llm::{LlmClient, LlmConfig, Message};
 //!
-//! # async fn example() -> Result<(), abnegate_llm::LlmError> {
+//! # async fn example() -> Result<(), abnegate_llm::Error> {
 //! let client = LlmClient::new(LlmConfig::new("http://127.0.0.1:4000/v1", "qwen3", ""));
 //!
 //! let response = client.chat(&[Message::user("Say hello.")], None).await?;
@@ -79,12 +79,16 @@ pub mod provider;
 pub mod reasoning;
 mod wire;
 
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 pub use crate::client::{LlmClient, LlmConfig, RequestOptions};
 pub use crate::cost::{
     CostEstimate, CostEstimator, CostLineItem, CostStrategy, ModelPricing, PricingUnit,
-    TaskCategory, TaskSpec, default_pricing,
+    TaskCategory, TaskSpecification, default_pricing,
 };
-pub use crate::error::LlmError;
+pub use crate::error::Error;
 pub use crate::hardware::{GpuType, MachineProfile, ModelRecommendation, RecommendedModels};
 pub use crate::modality::{
     AiClient, AiError, AudioProvider, AudioProviderConfig, AudioResponse, CompletionBridge,
@@ -94,7 +98,7 @@ pub use crate::modality::{
     ResponseFormat, SoundEffectRequest, StructuredResponse, TextProvider, TextProviderConfig,
     TextRequest, TextResponse, TranscriptionProvider, TranscriptionProviderConfig,
     TranscriptionResponse, TranscriptionSegment, VideoProvider, VideoProviderConfig, VideoRequest,
-    VideoResponse, VoiceInfo, VoiceProvider, VoiceProviderConfig, VoiceRequest,
+    VideoResponse, Voice, VoiceProvider, VoiceProviderConfig, VoiceRequest,
 };
 pub use crate::parse_error::ParseError;
 pub use crate::provider::{

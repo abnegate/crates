@@ -112,7 +112,6 @@ pub fn validate(history: &History, summary: &Summary) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use abnegate_llm::GeneratedImage;
-    use abnegate_llm::ImageUrl;
     use abnegate_llm::Message;
 
     use super::*;
@@ -122,11 +121,9 @@ mod tests {
     fn storage_roundtrip_preserves_multimodal_messages() {
         let mut message = Message::user("Inspect this exact image");
         message.images.push("/api/artifacts/source.png".into());
-        message.generated_images.push(GeneratedImage {
-            image_url: ImageUrl {
-                url: "data:image/png;base64,AA==".into(),
-            },
-        });
+        message
+            .generated_images
+            .push(GeneratedImage::new("data:image/png;base64,AA=="));
         let replay = ReplayMessage::from(&message);
         let restored: ReplayMessage =
             serde_json::from_slice(&serde_json::to_vec(&replay).unwrap()).unwrap();

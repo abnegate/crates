@@ -42,7 +42,7 @@ mod transcription_segment;
 mod video_provider;
 mod video_request;
 mod video_response;
-mod voice_info;
+mod voice;
 mod voice_provider;
 mod voice_request;
 
@@ -79,7 +79,7 @@ pub use crate::modality::transcription_segment::TranscriptionSegment;
 pub use crate::modality::video_provider::VideoProvider;
 pub use crate::modality::video_request::VideoRequest;
 pub use crate::modality::video_response::VideoResponse;
-pub use crate::modality::voice_info::VoiceInfo;
+pub use crate::modality::voice::Voice;
 pub use crate::modality::voice_provider::VoiceProvider;
 pub use crate::modality::voice_request::VoiceRequest;
 
@@ -105,7 +105,7 @@ mod tests {
             false
         }
 
-        fn max_context_tokens(&self) -> u32 {
+        fn maximum_context_tokens(&self) -> u32 {
             0
         }
 
@@ -141,7 +141,7 @@ mod tests {
             Vec::new()
         }
 
-        fn max_resolution(&self) -> (u32, u32) {
+        fn maximum_resolution(&self) -> (u32, u32) {
             (0, 0)
         }
 
@@ -172,7 +172,7 @@ mod tests {
             Vec::new()
         }
 
-        fn max_duration_seconds(&self) -> f64 {
+        fn maximum_duration_seconds(&self) -> f64 {
             0.0
         }
 
@@ -212,7 +212,7 @@ mod tests {
             Err(ProviderError::unsupported("clone_voice"))
         }
 
-        async fn list_voices(&self) -> Result<Vec<VoiceInfo>, ProviderError> {
+        async fn list_voices(&self) -> Result<Vec<Voice>, ProviderError> {
             Err(ProviderError::unsupported("list_voices"))
         }
     }
@@ -290,9 +290,9 @@ mod tests {
     #[cfg(feature = "openai")]
     #[test]
     fn the_openai_client_satisfies_the_traits_it_claims() {
-        use crate::modality::vendor::OpenAIProvider;
+        use crate::modality::vendor::OpenAiProvider;
 
-        let provider = OpenAIProvider::new("key");
+        let provider = OpenAiProvider::new("key");
         let _text: &dyn TextProvider = &provider;
         let _image: &dyn ImageProvider = &provider;
         let _embedding: &dyn EmbeddingProvider = &provider;

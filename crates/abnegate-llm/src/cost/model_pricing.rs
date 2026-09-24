@@ -4,6 +4,7 @@ use crate::cost::{PricingUnit, TaskCategory};
 
 /// What one model costs, and how good and how fast it is.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ModelPricing {
     pub provider: String,
     pub model: String,
@@ -18,6 +19,45 @@ pub struct ModelPricing {
 }
 
 impl ModelPricing {
+    /// `model` from `provider`, doing `category` work at `cost_per_unit` per
+    /// `unit`, with no quality or speed score and no local copy.
+    pub fn new(
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        category: TaskCategory,
+        cost_per_unit: f64,
+        unit: PricingUnit,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+            category,
+            cost_per_unit,
+            unit,
+            quality_score: 0.0,
+            speed_score: 0.0,
+            local_available: false,
+        }
+    }
+
+    /// Set how good the model's work is, from 0 to 1.
+    pub fn with_quality_score(mut self, quality_score: f64) -> Self {
+        self.quality_score = quality_score;
+        self
+    }
+
+    /// Set how fast the model works, from 0 to 1.
+    pub fn with_speed_score(mut self, speed_score: f64) -> Self {
+        self.speed_score = speed_score;
+        self
+    }
+
+    /// Set whether the model runs on this machine.
+    pub fn with_local_available(mut self, local_available: bool) -> Self {
+        self.local_available = local_available;
+        self
+    }
+
     /// What one unit of task quantity costs: one token under a per-million
     /// token price, one image under a per-image price.
     pub fn unit_cost(&self) -> f64 {
@@ -41,24 +81,48 @@ mod tests {
     use super::*;
 
     fn pricing(cost_per_unit: f64, unit: PricingUnit) -> ModelPricing {
-        ModelPricing {
-            provider: "test".into(),
-            model: "test-model".into(),
-            category: TaskCategory::Text,
+        ModelPricing::new(
+            "test",
+            "test-model",
+            TaskCategory::Text,
             cost_per_unit,
             unit,
-            quality_score: 0.9,
-            speed_score: 0.8,
-            local_available: false,
-        }
+        )
+        .with_quality_score(0.9)
+        .with_speed_score(0.8)
+    }
+
+    #[test]
+    fn new_scores_nothing_and_runs_remotely() {
+        let pricing = ModelPricing::new(
+            "openai",
+            "gpt-image-1",
+            TaskCategory::Image,
+            0.04,
+            PricingUnit::PerImage,
+        );
+
+        assert_eq!(pricing.provider, "openai");
+        assert_eq!(pricing.model, "gpt-image-1");
+        assert_eq!(pricing.category, TaskCategory::Image);
+        assert_eq!(pricing.cost_per_unit, 0.04);
+        assert_eq!(pricing.unit, PricingUnit::PerImage);
+        assert_eq!((pricing.quality_score, pricing.speed_score), (0.0, 0.0));
+        assert!(!pricing.local_available);
+        assert!(pricing.with_local_available(true).local_available);
     }
 
     #[test]
     fn round_trips_through_json() {
-        let pricing = ModelPricing {
-            category: TaskCategory::Image,
-            ..pricing(0.5, PricingUnit::PerImage)
-        };
+        let pricing = ModelPricing::new(
+            "test",
+            "test-model",
+            TaskCategory::Image,
+            0.5,
+            PricingUnit::PerImage,
+        )
+        .with_quality_score(0.9)
+        .with_speed_score(0.8);
 
         let json = serde_json::to_string(&pricing).unwrap();
         let roundtrip: ModelPricing = serde_json::from_str(&json).unwrap();

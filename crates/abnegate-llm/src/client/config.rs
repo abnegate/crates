@@ -5,7 +5,7 @@ use abnegate_secret::SecretValue;
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_MODEL: &str = "gpt-4";
 const DEFAULT_TEMPERATURE: f32 = 0.7;
-const DEFAULT_MAX_TOKENS: u32 = 4096;
+const DEFAULT_MAXIMUM_TOKENS: u32 = 4096;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -22,7 +22,10 @@ pub struct LlmConfig {
     pub api_key: SecretValue,
     pub default_model: String,
     pub temperature: f32,
-    pub max_tokens: u32,
+    /// The most tokens an answer may use, for a request that does not reserve
+    /// its own through [`RequestOptions`](crate::RequestOptions). Sent as
+    /// `max_tokens`.
+    pub maximum_tokens: u32,
     /// The deadline for a whole non-streaming completion, from sending the
     /// request to reading the last byte of its body.
     pub timeout: Duration,
@@ -52,8 +55,9 @@ impl LlmConfig {
         self
     }
 
-    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
-        self.max_tokens = max_tokens;
+    /// Set [`Self::maximum_tokens`].
+    pub fn with_maximum_tokens(mut self, maximum_tokens: u32) -> Self {
+        self.maximum_tokens = maximum_tokens;
         self
     }
 
@@ -75,7 +79,7 @@ impl Default for LlmConfig {
             api_key: SecretValue::new(""),
             default_model: DEFAULT_MODEL.to_string(),
             temperature: DEFAULT_TEMPERATURE,
-            max_tokens: DEFAULT_MAX_TOKENS,
+            maximum_tokens: DEFAULT_MAXIMUM_TOKENS,
             timeout: DEFAULT_TIMEOUT,
             read_timeout: DEFAULT_READ_TIMEOUT,
         }
@@ -96,7 +100,7 @@ mod tests {
         assert!(config.api_key.is_empty());
         assert_eq!(config.default_model, "gpt-4");
         assert!((config.temperature - 0.7).abs() < f32::EPSILON);
-        assert_eq!(config.max_tokens, 4096);
+        assert_eq!(config.maximum_tokens, 4096);
         assert_eq!(config.timeout, Duration::from_secs(600));
         assert_eq!(config.read_timeout, Duration::from_secs(300));
     }
@@ -109,7 +113,7 @@ mod tests {
             "sk-test-key-123",
         )
         .with_temperature(0.5)
-        .with_max_tokens(2048)
+        .with_maximum_tokens(2048)
         .with_timeout(Duration::from_secs(30))
         .with_read_timeout(Duration::from_secs(5));
 
@@ -117,7 +121,7 @@ mod tests {
         assert_eq!(config.api_key.expose(), "sk-test-key-123");
         assert_eq!(config.default_model, "gpt-3.5-turbo");
         assert!((config.temperature - 0.5).abs() < f32::EPSILON);
-        assert_eq!(config.max_tokens, 2048);
+        assert_eq!(config.maximum_tokens, 2048);
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.read_timeout, Duration::from_secs(5));
     }

@@ -11,7 +11,7 @@ use crate::provider::ProviderError;
 
 const STRUCTURED_TEMPERATURE: f64 = 0.0;
 const DEFAULT_TEMPERATURE: f64 = 0.7;
-const MAX_DETAIL_CHARACTERS: usize = 300;
+const MAXIMUM_DETAIL_CHARACTERS: usize = 300;
 const DEFAULT_RETRIES: u32 = 1;
 const BACKOFF_BASE: Duration = Duration::from_secs(1);
 const BACKOFF_MAXIMUM: Duration = Duration::from_secs(30);
@@ -103,10 +103,10 @@ impl AiClient {
     }
 
     /// How much context this provider can take, for chunking decisions.
-    pub fn max_context_tokens(&self) -> u32 {
+    pub fn maximum_context_tokens(&self) -> u32 {
         self.provider
             .as_ref()
-            .map_or(0, |provider| provider.max_context_tokens())
+            .map_or(0, |provider| provider.maximum_context_tokens())
     }
 
     /// Every exchange so far.
@@ -135,7 +135,7 @@ impl AiClient {
         wanted: &str,
         system_prompt: &str,
         user_prompt: &str,
-        max_tokens: u32,
+        maximum_tokens: u32,
     ) -> Result<String, AiError> {
         let provider = self.provider(wanted)?;
 
@@ -143,7 +143,7 @@ impl AiClient {
             system_prompt: system_prompt.to_string(),
             user_prompt: user_prompt.to_string(),
             temperature: DEFAULT_TEMPERATURE,
-            max_tokens,
+            maximum_tokens,
             response_format: None,
             context: None,
         };
@@ -178,7 +178,7 @@ impl AiClient {
         schema: &serde_json::Value,
         system_prompt: &str,
         user_prompt: &str,
-        max_tokens: u32,
+        maximum_tokens: u32,
     ) -> Result<T, AiError> {
         let provider = self.provider(schema_name)?;
 
@@ -186,7 +186,7 @@ impl AiClient {
             system_prompt: system_prompt.to_string(),
             user_prompt: user_prompt.to_string(),
             temperature: STRUCTURED_TEMPERATURE,
-            max_tokens,
+            maximum_tokens,
             response_format: Some(ResponseFormat::Json {
                 schema: Some(schema.clone()),
                 strict: false,
@@ -231,7 +231,7 @@ impl AiClient {
                         "{error}; answer was {}",
                         rendered
                             .chars()
-                            .take(MAX_DETAIL_CHARACTERS)
+                            .take(MAXIMUM_DETAIL_CHARACTERS)
                             .collect::<String>()
                     ));
                 }
@@ -303,7 +303,7 @@ mod tests {
             true
         }
 
-        fn max_context_tokens(&self) -> u32 {
+        fn maximum_context_tokens(&self) -> u32 {
             0
         }
 
@@ -370,7 +370,7 @@ mod tests {
         assert!(message.len() < 120, "too wordy to repeat: {message}");
         assert!(!client.is_enabled());
         assert_eq!(client.provider_name(), "none");
-        assert_eq!(client.max_context_tokens(), 0);
+        assert_eq!(client.maximum_context_tokens(), 0);
         assert!(client.text_provider().is_none());
     }
 
@@ -459,7 +459,7 @@ mod tests {
         assert_eq!(client.provider_name(), "mock");
         assert!(client.is_enabled());
         assert!(client.text_provider().is_some());
-        assert_eq!(client.max_context_tokens(), 100_000);
+        assert_eq!(client.maximum_context_tokens(), 100_000);
     }
 
     #[tokio::test]

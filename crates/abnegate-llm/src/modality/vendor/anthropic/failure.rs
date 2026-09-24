@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::error::LlmError;
+use crate::error::Error;
 use crate::provider::ExitStatus;
 use crate::provider::ProviderError;
 
@@ -55,7 +55,7 @@ impl Failure {
         match (self.status, exit) {
             (Some(status), _) => ProviderError::http(
                 provider,
-                LlmError::Api {
+                Error::Api {
                     status,
                     message: self.message,
                 },

@@ -7,7 +7,8 @@ use crate::provider::ProviderError;
 pub trait ImageProvider: Send + Sync {
     fn name(&self) -> &str;
     fn supported_styles(&self) -> Vec<String>;
-    fn max_resolution(&self) -> (u32, u32);
+    /// The largest width and height, in pixels, this provider generates.
+    fn maximum_resolution(&self) -> (u32, u32);
 
     async fn generate(&self, request: &ImageRequest) -> Result<ImageResponse, ProviderError>;
     async fn edit(&self, request: &ImageEditRequest) -> Result<ImageResponse, ProviderError>;

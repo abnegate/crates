@@ -14,6 +14,7 @@ const SCHEMA_NAME: &str = "response";
 /// definitions, and a request that took them by value would clone the whole
 /// history once per turn.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct ChatRequest<'a> {
     pub model: &'a str,
     pub messages: &'a [Message],
@@ -23,8 +24,9 @@ pub struct ChatRequest<'a> {
     pub tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
+    /// The most tokens the answer may use. Sent as `max_tokens`.
+    #[serde(rename = "max_tokens", skip_serializing_if = "Option::is_none")]
+    pub maximum_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,6 +39,65 @@ pub struct ChatRequest<'a> {
         serialize_with = "response_format"
     )]
     pub response_format: Option<&'a ResponseFormat>,
+}
+
+impl<'a> ChatRequest<'a> {
+    /// Send `messages` to `model` with every option left to the endpoint.
+    pub fn new(model: &'a str, messages: &'a [Message]) -> Self {
+        Self {
+            model,
+            messages,
+            tools: None,
+            tool_choice: None,
+            temperature: None,
+            maximum_tokens: None,
+            stream: None,
+            stop: None,
+            response_format: None,
+        }
+    }
+
+    /// Offer the model `tools`.
+    pub fn with_tools(mut self, tools: &'a [ToolDefinition]) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    /// Set whether, and which, tool the model must call.
+    pub fn with_tool_choice(mut self, tool_choice: ToolChoice) -> Self {
+        self.tool_choice = Some(tool_choice);
+        self
+    }
+
+    /// Set the sampling temperature.
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    /// Set [`Self::maximum_tokens`].
+    pub fn with_maximum_tokens(mut self, maximum_tokens: u32) -> Self {
+        self.maximum_tokens = Some(maximum_tokens);
+        self
+    }
+
+    /// Ask for the answer as a stream of chunks, or as one body.
+    pub fn with_stream(mut self, stream: bool) -> Self {
+        self.stream = Some(stream);
+        self
+    }
+
+    /// Halt the answer at any of `stop`.
+    pub fn with_stop(mut self, stop: &'a [String]) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    /// Ask for the answer in `response_format`.
+    pub fn with_response_format(mut self, response_format: &'a ResponseFormat) -> Self {
+        self.response_format = Some(response_format);
+        self
+    }
 }
 
 fn response_format<S: Serializer>(
@@ -81,19 +142,10 @@ mod tests {
             schema: None,
             strict: false,
         };
-        let body = |format| {
-            serde_json::to_value(ChatRequest {
-                model: "gpt-4",
-                messages: &messages,
-                tools: None,
-                tool_choice: None,
-                temperature: None,
-                max_tokens: None,
-                stream: None,
-                stop: None,
-                response_format: format,
-            })
-            .unwrap()
+        let body = |format: Option<&ResponseFormat>| {
+            let mut request = ChatRequest::new("gpt-4", &messages);
+            request.response_format = format;
+            serde_json::to_value(request).unwrap()
         };
 
         let strict = ResponseFormat::Json {
@@ -129,17 +181,10 @@ mod tests {
     #[test]
     fn a_request_carries_its_model_body_and_sampling() {
         let messages = [Message::user("Hello")];
-        let request = ChatRequest {
-            model: "gpt-4",
-            messages: &messages,
-            tools: None,
-            tool_choice: None,
-            temperature: Some(0.7),
-            max_tokens: Some(1000),
-            stream: Some(false),
-            stop: None,
-            response_format: None,
-        };
+        let request = ChatRequest::new("gpt-4", &messages)
+            .with_temperature(0.7)
+            .with_maximum_tokens(1000)
+            .with_stream(false);
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("gpt-4"));
@@ -148,19 +193,20 @@ mod tests {
     }
 
     #[test]
+    fn the_answer_limit_is_sent_as_max_tokens() {
+        let messages = [Message::user("Hello")];
+        let request = ChatRequest::new("gpt-4", &messages).with_maximum_tokens(1000);
+
+        let body = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(body["max_tokens"], 1000);
+        assert!(body.get("maximum_tokens").is_none(), "{body}");
+    }
+
+    #[test]
     fn unset_options_are_omitted_rather_than_sent_as_null() {
         let messages = [Message::user("Hello")];
-        let request = ChatRequest {
-            model: "gpt-4",
-            messages: &messages,
-            tools: None,
-            tool_choice: None,
-            temperature: None,
-            max_tokens: None,
-            stream: None,
-            stop: None,
-            response_format: None,
-        };
+        let request = ChatRequest::new("gpt-4", &messages);
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("gpt-4"));
@@ -178,17 +224,12 @@ mod tests {
             serde_json::json!({"type": "object"}),
         )];
         let messages = [Message::user("Use the tool")];
-        let request = ChatRequest {
-            model: "gpt-4",
-            messages: &messages,
-            tools: Some(&tools),
-            tool_choice: Some(ToolChoice::auto()),
-            temperature: Some(0.5),
-            max_tokens: Some(2048),
-            stream: Some(false),
-            stop: None,
-            response_format: None,
-        };
+        let request = ChatRequest::new("gpt-4", &messages)
+            .with_tools(&tools)
+            .with_tool_choice(ToolChoice::auto())
+            .with_temperature(0.5)
+            .with_maximum_tokens(2048)
+            .with_stream(false);
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("test_tool"));
@@ -204,17 +245,7 @@ mod tests {
             Message::assistant("Hi there!"),
             Message::user("How are you?"),
         ];
-        let request = ChatRequest {
-            model: "gpt-4",
-            messages: &messages,
-            tools: None,
-            tool_choice: None,
-            temperature: None,
-            max_tokens: None,
-            stream: None,
-            stop: None,
-            response_format: None,
-        };
+        let request = ChatRequest::new("gpt-4", &messages);
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("system"));

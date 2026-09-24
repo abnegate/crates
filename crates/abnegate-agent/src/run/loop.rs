@@ -181,9 +181,7 @@ impl Agent {
                     &self.llm.config().default_model,
                     &prepared.messages,
                     Some(&tool_definitions),
-                    RequestOptions {
-                        reserved: self.policy.reserved,
-                    },
+                    RequestOptions::new(self.policy.reserved),
                 )
                 .await?;
             state.summary = prepared.summary;

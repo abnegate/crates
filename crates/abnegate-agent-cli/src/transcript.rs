@@ -70,7 +70,6 @@ fn labelled(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use abnegate_llm::FunctionCall;
     use abnegate_llm::Message;
     use abnegate_llm::ToolCall;
 
@@ -96,14 +95,7 @@ mod tests {
     fn a_message_carrying_only_tool_calls_contributes_nothing() {
         let prompt = render(&[
             Message::user("Read it."),
-            Message::assistant_with_tools(vec![ToolCall {
-                id: "toolu_01".to_string(),
-                call_type: "function".to_string(),
-                function: FunctionCall {
-                    name: "read".to_string(),
-                    arguments: "{}".to_string(),
-                },
-            }]),
+            Message::assistant_with_tools(vec![ToolCall::function("toolu_01", "read", "{}")]),
         ]);
 
         assert_eq!(prompt, "User:\nRead it.");

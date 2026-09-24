@@ -110,7 +110,6 @@ impl AgentState {
 
 #[cfg(test)]
 mod tests {
-    use abnegate_llm::FunctionCall;
     use abnegate_llm::Role;
     use abnegate_llm::ToolCall;
 
@@ -349,14 +348,7 @@ mod tests {
         state.iteration = 5;
         state.tokens_used = 1000;
 
-        let tool_call = ToolCall {
-            id: "call_1".to_string(),
-            call_type: "function".to_string(),
-            function: FunctionCall {
-                name: "test".to_string(),
-                arguments: "{}".to_string(),
-            },
-        };
+        let tool_call = ToolCall::function("call_1", "test", "{}");
 
         let mut step = AgentStep::new(AgentPhase::Acting);
         step.tool_calls = Some(vec![ToolCallResult {

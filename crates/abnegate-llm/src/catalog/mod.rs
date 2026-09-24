@@ -6,10 +6,7 @@
 //! use abnegate_llm::catalog::browse;
 //!
 //! # async fn example() -> Result<(), abnegate_llm::catalog::CatalogError> {
-//! let request = BrowseRequest {
-//!     search: Some("qwen".into()),
-//!     ..Default::default()
-//! };
+//! let request = BrowseRequest::default().with_search("qwen");
 //! let page = browse("huggingface")?
 //!     .search(request.to_browse_query())
 //!     .await?;
@@ -56,8 +53,8 @@ pub use gpt4all::Gpt4AllProvider;
 pub use huggingface::DEFAULT_HUGGINGFACE_MODELS_URL;
 pub use huggingface::HuggingFaceProvider;
 pub use huggingface::huggingface_hub_origin;
-pub use huggingface::huggingface_repo_downloads;
-pub use huggingface::huggingface_repo_id;
+pub use huggingface::huggingface_repository_downloads;
+pub use huggingface::huggingface_repository_id;
 pub use medium_filter::ModelMediumFilter;
 pub use ollama::DEFAULT_OLLAMA_REGISTRY_URL;
 pub use ollama::DEFAULT_OLLAMA_SEARCH_URL;
@@ -65,7 +62,7 @@ pub use ollama::OllamaProvider;
 pub use openrouter::DEFAULT_OPENROUTER_MODELS_URL;
 pub use openrouter::OpenRouterProvider;
 pub use page::DEFAULT_PAGE_SIZE;
-pub use page::MAX_PAGE_SIZE;
+pub use page::MAXIMUM_PAGE_SIZE;
 pub use page::ModelPage;
 pub use parse::extract_model_family;
 pub use parse::extract_parameter_size;

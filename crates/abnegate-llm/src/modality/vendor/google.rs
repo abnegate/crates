@@ -16,7 +16,7 @@ use crate::provider::ProviderError;
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const DEFAULT_MODEL: &str = "gemini-2.5-pro";
 const KEY_HEADER: &str = "x-goog-api-key";
-const MAX_CONTEXT_TOKENS: u32 = 1_000_000;
+const MAXIMUM_CONTEXT_TOKENS: u32 = 1_000_000;
 
 /// Gemini over its REST API.
 ///
@@ -69,7 +69,7 @@ impl GeminiProvider {
             ],
             "generationConfig": {
                 "temperature": request.temperature,
-                "maxOutputTokens": request.max_tokens
+                "maxOutputTokens": request.maximum_tokens
             }
         });
 
@@ -157,8 +157,8 @@ impl TextProvider for GeminiProvider {
         true
     }
 
-    fn max_context_tokens(&self) -> u32 {
-        MAX_CONTEXT_TOKENS
+    fn maximum_context_tokens(&self) -> u32 {
+        MAXIMUM_CONTEXT_TOKENS
     }
 
     async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
@@ -219,7 +219,7 @@ mod tests {
             system_prompt: "You are a designer.".into(),
             user_prompt: "Design a puzzle mechanic.".into(),
             temperature: 0.8,
-            max_tokens: 4096,
+            maximum_tokens: 4096,
             response_format: None,
             context: None,
         };
@@ -347,7 +347,7 @@ mod tests {
         let provider = GeminiProvider::new("key");
         assert_eq!(provider.name(), "google");
         assert!(provider.supports_structured_output());
-        assert_eq!(provider.max_context_tokens(), MAX_CONTEXT_TOKENS);
+        assert_eq!(provider.maximum_context_tokens(), MAXIMUM_CONTEXT_TOKENS);
     }
 
     #[tokio::test]

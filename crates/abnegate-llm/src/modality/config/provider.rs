@@ -21,6 +21,7 @@ const DEFAULT_BUDGET_USD: f64 = 10.0;
 /// [`CompletionBridge`](crate::modality::CompletionBridge). A name outside
 /// that set describes a provider the caller supplies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ProviderConfig {
     pub text_provider: TextProviderConfig,
     pub image_provider: Option<ImageProviderConfig>,
@@ -50,6 +51,58 @@ impl ProviderConfig {
         }
     }
 
+    /// Set [`Self::image_provider`].
+    pub fn with_image_provider(mut self, image_provider: ImageProviderConfig) -> Self {
+        self.image_provider = Some(image_provider);
+        self
+    }
+
+    /// Set [`Self::audio_provider`].
+    pub fn with_audio_provider(mut self, audio_provider: AudioProviderConfig) -> Self {
+        self.audio_provider = Some(audio_provider);
+        self
+    }
+
+    /// Set [`Self::voice_provider`].
+    pub fn with_voice_provider(mut self, voice_provider: VoiceProviderConfig) -> Self {
+        self.voice_provider = Some(voice_provider);
+        self
+    }
+
+    /// Set [`Self::video_provider`].
+    pub fn with_video_provider(mut self, video_provider: VideoProviderConfig) -> Self {
+        self.video_provider = Some(video_provider);
+        self
+    }
+
+    /// Set [`Self::model3d_provider`].
+    pub fn with_model3d_provider(mut self, model3d_provider: Model3DProviderConfig) -> Self {
+        self.model3d_provider = Some(model3d_provider);
+        self
+    }
+
+    /// Set [`Self::embedding_provider`].
+    pub fn with_embedding_provider(mut self, embedding_provider: EmbeddingProviderConfig) -> Self {
+        self.embedding_provider = Some(embedding_provider);
+        self
+    }
+
+    /// Set [`Self::transcription_provider`].
+    pub fn with_transcription_provider(
+        mut self,
+        transcription_provider: TranscriptionProviderConfig,
+    ) -> Self {
+        self.transcription_provider = Some(transcription_provider);
+        self
+    }
+
+    /// Name the [`CostStrategy`] as a config file spells it, such as
+    /// `best-value` or `budget:10`; [`Self::parse_cost_strategy`] reads it.
+    pub fn with_cost_strategy(mut self, cost_strategy: impl Into<String>) -> Self {
+        self.cost_strategy = Some(cost_strategy.into());
+        self
+    }
+
     /// A minimal config naming Anthropic as the text provider.
     #[cfg(feature = "anthropic")]
     #[cfg_attr(docsrs, doc(cfg(feature = "anthropic")))]
@@ -75,7 +128,7 @@ impl ProviderConfig {
             strategy.parse().unwrap_or_else(|_| {
                 if strategy.starts_with(BUDGET_PREFIX) {
                     CostStrategy::Budget {
-                        max_usd: DEFAULT_BUDGET_USD,
+                        maximum_usd: DEFAULT_BUDGET_USD,
                     }
                 } else {
                     CostStrategy::BestValue
@@ -179,6 +232,50 @@ mod tests {
     }
 
     #[test]
+    fn every_modality_it_names_survives_a_round_trip_without_its_key() {
+        let config = keyed("openai", "sk-text")
+            .with_image_provider(
+                ImageProviderConfig::new("openai")
+                    .with_api_key("sk-image")
+                    .with_model("gpt-image-1"),
+            )
+            .with_audio_provider(AudioProviderConfig::new("elevenlabs").with_api_key("sk-audio"))
+            .with_voice_provider(VoiceProviderConfig::new("elevenlabs").with_api_key("sk-voice"))
+            .with_video_provider(
+                VideoProviderConfig::new("runway").with_base_url("http://127.0.0.1:9000"),
+            )
+            .with_model3d_provider(Model3DProviderConfig::new("meshy"))
+            .with_embedding_provider(EmbeddingProviderConfig::new("openai").with_model("small"))
+            .with_transcription_provider(TranscriptionProviderConfig::new("openai"))
+            .with_cost_strategy("budget:10");
+
+        let json = serde_json::to_string(&config).unwrap();
+        let roundtrip: ProviderConfig = serde_json::from_str(&json).unwrap();
+
+        assert!(!json.contains("sk-"), "{json}");
+        assert_eq!(
+            roundtrip.parse_cost_strategy(),
+            Some(CostStrategy::Budget { maximum_usd: 10.0 })
+        );
+        let image = roundtrip.image_provider.unwrap();
+        assert_eq!(image.provider, "openai");
+        assert_eq!(image.model.as_deref(), Some("gpt-image-1"));
+        assert!(image.api_key.is_none());
+        assert_eq!(roundtrip.audio_provider.unwrap().provider, "elevenlabs");
+        assert_eq!(roundtrip.voice_provider.unwrap().provider, "elevenlabs");
+        assert_eq!(
+            roundtrip.video_provider.unwrap().base_url.as_deref(),
+            Some("http://127.0.0.1:9000")
+        );
+        assert_eq!(roundtrip.model3d_provider.unwrap().provider, "meshy");
+        assert_eq!(
+            roundtrip.embedding_provider.unwrap().model.as_deref(),
+            Some("small")
+        );
+        assert_eq!(roundtrip.transcription_provider.unwrap().provider, "openai");
+    }
+
+    #[test]
     fn a_key_never_reaches_a_debug_line() {
         let config = keyed("anthropic", "sk-test-key");
         let rendered = format!("{config:?}");
@@ -220,8 +317,8 @@ mod tests {
         config.cost_strategy = Some("budget:25.50".into());
 
         match config.parse_cost_strategy().unwrap() {
-            CostStrategy::Budget { max_usd } => {
-                assert!((max_usd - 25.50).abs() < f64::EPSILON);
+            CostStrategy::Budget { maximum_usd } => {
+                assert!((maximum_usd - 25.50).abs() < f64::EPSILON);
             }
             other => panic!("expected Budget, got {other:?}"),
         }
@@ -236,7 +333,7 @@ mod tests {
             assert_eq!(
                 config.parse_cost_strategy(),
                 Some(CostStrategy::Budget {
-                    max_usd: DEFAULT_BUDGET_USD
+                    maximum_usd: DEFAULT_BUDGET_USD
                 }),
                 "{budget}"
             );
@@ -249,8 +346,8 @@ mod tests {
         config.cost_strategy = Some("budget:lots".into());
 
         match config.parse_cost_strategy().unwrap() {
-            CostStrategy::Budget { max_usd } => {
-                assert!((max_usd - DEFAULT_BUDGET_USD).abs() < f64::EPSILON);
+            CostStrategy::Budget { maximum_usd } => {
+                assert!((maximum_usd - DEFAULT_BUDGET_USD).abs() < f64::EPSILON);
             }
             other => panic!("expected Budget, got {other:?}"),
         }

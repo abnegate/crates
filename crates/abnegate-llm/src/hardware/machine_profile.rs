@@ -9,6 +9,7 @@ const MEGABYTES_PER_GIGABYTE: f64 = 1024.0;
 
 /// What a machine can run locally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct MachineProfile {
     pub name: String,
     pub gpu_vram_gb: f64,
@@ -19,6 +20,27 @@ pub struct MachineProfile {
 }
 
 impl MachineProfile {
+    /// A machine called `name` with `gpu_vram_gb` of VRAM, `system_ram_gb` of
+    /// RAM, shared between the two when `unified_memory` is set, and the
+    /// models `recommended_models` names as the best it runs.
+    pub fn new(
+        name: impl Into<String>,
+        gpu_vram_gb: f64,
+        system_ram_gb: f64,
+        unified_memory: bool,
+        gpu_type: GpuType,
+        recommended_models: RecommendedModels,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            gpu_vram_gb,
+            system_ram_gb,
+            unified_memory,
+            gpu_type,
+            recommended_models,
+        }
+    }
+
     /// This machine's profile, or a CPU-only one when it cannot be detected.
     ///
     /// Detection runs `sysctl` or `nvidia-smi` and reads `/proc`, so it runs
@@ -154,7 +176,7 @@ impl MachineProfile {
     /// Maximum VRAM available for concurrent model loading.
     /// For discrete GPUs only VRAM counts. For unified memory the
     /// full pool is available but we reserve 20% for the OS.
-    pub fn max_concurrent_vram(&self) -> f64 {
+    pub fn maximum_concurrent_vram(&self) -> f64 {
         if self.unified_memory {
             self.gpu_vram_gb * 0.80
         } else {
@@ -1402,21 +1424,60 @@ mod tests {
     fn every_listed_preset_resolves() {
         let presets = MachineProfile::available_presets();
         assert_eq!(presets.len(), 15);
-        let slugs: Vec<&str> = presets.iter().map(|(s, _)| *s).collect();
+        let slugs: Vec<&str> = presets.iter().map(|(slug, _)| *slug).collect();
         assert!(slugs.contains(&"m4-max-64"));
         assert!(slugs.contains(&"m1-pro-32"));
         assert!(slugs.contains(&"5900x-3080ti"));
         assert!(slugs.contains(&"cpu-only"));
         assert!(slugs.contains(&"laptop-4060"));
-        for (slug, desc) in &presets {
+        for (slug, description) in &presets {
             assert!(!slug.is_empty());
-            assert!(!desc.is_empty());
+            assert!(!description.is_empty());
             assert!(
                 MachineProfile::from_preset(slug).is_some(),
                 "preset '{}' not found",
                 slug
             );
         }
+    }
+
+    #[test]
+    fn a_machine_that_is_no_preset_can_be_described() {
+        let model = |name: &str| ModelRecommendation::new(name, 4.0, 0.5);
+        let profile = MachineProfile::new(
+            "Workstation",
+            16.0,
+            64.0,
+            false,
+            GpuType::CpuOnly,
+            RecommendedModels::new(
+                model("llm")
+                    .with_quantization("Q4_K_M")
+                    .with_estimated_speed("~20 tok/s")
+                    .with_can_run_with_others(vec!["embedding".into()])
+                    .with_notes("fits beside the embedder"),
+                model("image"),
+                model("voice"),
+                model("music"),
+                model("model3d"),
+                model("embedding"),
+                model("transcription"),
+            ),
+        );
+
+        assert_eq!(profile.name, "Workstation");
+        assert_eq!((profile.gpu_vram_gb, profile.system_ram_gb), (16.0, 64.0));
+        assert!(!profile.unified_memory);
+        let llm = &profile.recommended_models.llm;
+        assert_eq!(llm.model_name, "llm");
+        assert_eq!(llm.quantization.as_deref(), Some("Q4_K_M"));
+        assert_eq!(llm.estimated_speed, "~20 tok/s");
+        assert_eq!(llm.can_run_with_others, vec!["embedding".to_string()]);
+        assert_eq!(llm.notes, "fits beside the embedder");
+        assert_eq!(
+            profile.recommended_models.transcription.model_name,
+            "transcription"
+        );
     }
 
     #[test]
@@ -1437,10 +1498,10 @@ mod tests {
     #[test]
     fn unified_memory_reserves_a_fifth_for_the_operating_system() {
         let unified = MachineProfile::from_preset("m4-max-64").unwrap();
-        assert!((unified.max_concurrent_vram() - 64.0 * 0.80).abs() < f64::EPSILON);
+        assert!((unified.maximum_concurrent_vram() - 64.0 * 0.80).abs() < f64::EPSILON);
 
         let discrete = MachineProfile::from_preset("5900x-3080ti").unwrap();
-        assert!((discrete.max_concurrent_vram() - 12.0).abs() < f64::EPSILON);
+        assert!((discrete.maximum_concurrent_vram() - 12.0).abs() < f64::EPSILON);
     }
 
     #[test]

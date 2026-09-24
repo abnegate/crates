@@ -14,7 +14,7 @@ use tokio::runtime;
 
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const POOL_MAX_IDLE_PER_HOST: usize = 16;
+const POOL_MAXIMUM_IDLE_PER_HOST: usize = 16;
 /// The fewest runtimes that keep a pool. A process holds a handful of
 /// long-lived runtimes, or one per core; one that builds a runtime per task
 /// would otherwise add a pool, and every connection it holds, per task for
@@ -136,7 +136,7 @@ fn capacity() -> usize {
 
 fn build() -> Client {
     Client::builder()
-        .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
+        .pool_max_idle_per_host(POOL_MAXIMUM_IDLE_PER_HOST)
         .pool_idle_timeout(POOL_IDLE_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .redirect(Policy::none())

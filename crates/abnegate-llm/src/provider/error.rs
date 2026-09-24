@@ -5,7 +5,7 @@ use std::fmt;
 use abnegate_secret::redact;
 use thiserror::Error;
 
-use crate::error::LlmError;
+use crate::error::Error;
 use crate::provider::exit_status::ExitStatus;
 
 /// A provider failure.
@@ -22,7 +22,7 @@ pub enum ProviderError {
     Http {
         provider: String,
         #[source]
-        source: LlmError,
+        source: Error,
     },
 
     #[error("{provider}: agent command {executable} could not be started: {reason}")]
@@ -116,7 +116,7 @@ impl ProviderError {
     pub fn recoverable(&self) -> bool {
         match self {
             Self::Http { source, .. } => {
-                !matches!(source, LlmError::Api { status, .. } if REJECTED.contains(status))
+                !matches!(source, Error::Api { status, .. } if REJECTED.contains(status))
             }
             Self::Api { status, .. } => !REJECTED.contains(status),
             Self::Unavailable { .. }
@@ -133,7 +133,7 @@ impl ProviderError {
     }
 
     /// An endpoint failure, with every message it carries redacted.
-    pub fn http(provider: &str, source: LlmError) -> Self {
+    pub fn http(provider: &str, source: Error) -> Self {
         Self::Http {
             provider: provider.to_string(),
             source: source.redacted(),
@@ -150,8 +150,8 @@ impl ProviderError {
     pub fn transient(&self) -> bool {
         match self {
             Self::Http { source, .. } => match source {
-                LlmError::Api { status, .. } => transient_status(*status),
-                LlmError::Http(_) | LlmError::Stream(_) | LlmError::Timeout(_) => true,
+                Error::Api { status, .. } => transient_status(*status),
+                Error::Http(_) | Error::Stream(_) | Error::Timeout(_) => true,
                 _ => false,
             },
             Self::Api { status, .. } => transient_status(*status),
@@ -248,7 +248,7 @@ impl ProviderError {
 #[cfg(test)]
 mod tests {
     use super::ProviderError;
-    use crate::error::LlmError;
+    use crate::error::Error;
     use crate::provider::exit_status::ExitStatus;
 
     #[test]
@@ -270,12 +270,12 @@ mod tests {
             ProviderError::unsupported(leaked),
             ProviderError::http(
                 "gateway",
-                LlmError::Api {
+                Error::Api {
                     status: 401,
                     message: leaked.to_string(),
                 },
             ),
-            ProviderError::http("gateway", LlmError::Stream(leaked.to_string())),
+            ProviderError::http("gateway", Error::Stream(leaked.to_string())),
         ] {
             let rendered = format!("{error} {error:?}");
             assert!(
@@ -310,7 +310,7 @@ mod tests {
         for status in [400, 404, 413, 422] {
             let error = ProviderError::Http {
                 provider: "gateway".to_string(),
-                source: LlmError::Api {
+                source: Error::Api {
                     status,
                     message: "invalid request".to_string(),
                 },
@@ -325,7 +325,7 @@ mod tests {
         for status in [429, 500, 502, 503] {
             let error = ProviderError::Http {
                 provider: "gateway".to_string(),
-                source: LlmError::Api {
+                source: Error::Api {
                     status,
                     message: "upstream".to_string(),
                 },
@@ -345,7 +345,7 @@ mod tests {
             assert!(
                 ProviderError::http(
                     "gateway",
-                    LlmError::Api {
+                    Error::Api {
                         status,
                         message: "busy".into()
                     }
@@ -359,11 +359,8 @@ mod tests {
         }
         assert!(ProviderError::network("reset").transient());
         assert!(
-            ProviderError::http(
-                "gateway",
-                LlmError::Timeout(std::time::Duration::from_secs(1))
-            )
-            .transient()
+            ProviderError::http("gateway", Error::Timeout(std::time::Duration::from_secs(1)))
+                .transient()
         );
         assert!(!ProviderError::config("missing key").transient());
         assert!(!ProviderError::unavailable("claude", "claude", "not found").transient());

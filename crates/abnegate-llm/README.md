@@ -28,9 +28,9 @@ cargo add abnegate-llm
 ```
 
 ```rust,no_run
-use abnegate_llm::{LlmClient, LlmConfig, LlmError, Message};
+use abnegate_llm::{Error, LlmClient, LlmConfig, Message};
 
-async fn greet() -> Result<(), LlmError> {
+async fn greet() -> Result<(), Error> {
     let client = LlmClient::new(LlmConfig::new("http://127.0.0.1:4000/v1", "qwen3", ""));
 
     let response = client.chat(&[Message::user("Say hello.")], None).await?;

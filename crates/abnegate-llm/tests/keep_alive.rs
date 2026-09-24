@@ -1,4 +1,4 @@
-use abnegate_llm::{LlmClient, LlmConfig, LlmError, Message};
+use abnegate_llm::{Error, LlmClient, LlmConfig, Message};
 use futures::StreamExt;
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path};
@@ -139,7 +139,7 @@ async fn model_specific_streaming_route_preserves_provider_errors() {
 
     assert!(matches!(
         error,
-        LlmError::Api {
+        Error::Api {
             status: 429,
             ref message
         } if message == "capacity exhausted"

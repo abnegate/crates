@@ -17,7 +17,8 @@ use crate::provider::ProviderError;
 pub trait TextProvider: Send + Sync {
     fn name(&self) -> &str;
     fn supports_structured_output(&self) -> bool;
-    fn max_context_tokens(&self) -> u32;
+    /// How many tokens of context the model behind this provider takes.
+    fn maximum_context_tokens(&self) -> u32;
 
     async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError>;
     /// Ask for a value of the shape `request.response_format` describes.

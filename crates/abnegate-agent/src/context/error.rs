@@ -1,4 +1,3 @@
-use abnegate_llm::LlmError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -15,5 +14,5 @@ pub enum ContextError {
     #[error("Conversation summary failed: {0}")]
     Summary(String),
     #[error("Conversation summary transport failed: {0}")]
-    Transport(#[from] LlmError),
+    Transport(#[from] abnegate_llm::Error),
 }

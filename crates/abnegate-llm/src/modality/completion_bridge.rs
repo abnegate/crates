@@ -6,8 +6,7 @@ use crate::modality::{StructuredResponse, TextProvider, TextRequest, TextRespons
 use crate::provider::{CompletionProvider, CompletionRequest, ProviderError};
 use crate::wire::Message;
 
-const DEFAULT_MAX_CONTEXT_TOKENS: u32 = 128_000;
-const DEFAULT_FINISH_REASON: &str = "stop";
+const DEFAULT_MAXIMUM_CONTEXT_TOKENS: u32 = 128_000;
 
 /// Any [`CompletionProvider`] as a [`TextProvider`].
 ///
@@ -29,15 +28,15 @@ const DEFAULT_FINISH_REASON: &str = "stop";
 ///     &Credential::Inherited,
 ///     "qwen3",
 /// );
-/// let text = CompletionBridge::new(gateway, "qwen3").with_max_context_tokens(32_768);
+/// let text = CompletionBridge::new(gateway, "qwen3").with_maximum_context_tokens(32_768);
 /// assert_eq!(text.name(), "gateway");
-/// assert_eq!(text.max_context_tokens(), 32_768);
+/// assert_eq!(text.maximum_context_tokens(), 32_768);
 /// ```
 #[derive(Debug, Clone)]
 pub struct CompletionBridge<P> {
     provider: P,
     model: String,
-    max_context_tokens: u32,
+    maximum_context_tokens: u32,
 }
 
 impl<P: CompletionProvider> CompletionBridge<P> {
@@ -45,14 +44,14 @@ impl<P: CompletionProvider> CompletionBridge<P> {
         Self {
             provider,
             model: model.into(),
-            max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
+            maximum_context_tokens: DEFAULT_MAXIMUM_CONTEXT_TOKENS,
         }
     }
 
     /// How much context the model behind the provider takes. 128,000 unless
     /// set, because the provider has no way to say.
-    pub fn with_max_context_tokens(mut self, max_context_tokens: u32) -> Self {
-        self.max_context_tokens = max_context_tokens;
+    pub fn with_maximum_context_tokens(mut self, maximum_context_tokens: u32) -> Self {
+        self.maximum_context_tokens = maximum_context_tokens;
         self
     }
 
@@ -71,8 +70,8 @@ impl<P: CompletionProvider> TextProvider for CompletionBridge<P> {
         self.provider.capabilities().structured_output
     }
 
-    fn max_context_tokens(&self) -> u32 {
-        self.max_context_tokens
+    fn maximum_context_tokens(&self) -> u32 {
+        self.maximum_context_tokens
     }
 
     async fn complete(&self, request: &TextRequest) -> Result<TextResponse, ProviderError> {
@@ -85,9 +84,7 @@ impl<P: CompletionProvider> TextProvider for CompletionBridge<P> {
         let mut completion_request = CompletionRequest::new(
             &self.model,
             &messages,
-            RequestOptions {
-                reserved: request.max_tokens,
-            },
+            RequestOptions::new(request.maximum_tokens),
         )
         .with_temperature(request.temperature as f32);
         if let Some(format) = &request.response_format {
@@ -96,14 +93,14 @@ impl<P: CompletionProvider> TextProvider for CompletionBridge<P> {
 
         let completion = self.provider.complete(completion_request).await?;
         let usage = completion.usage.unwrap_or_default();
-        Ok(TextResponse {
-            content: completion.message.content.unwrap_or_default(),
-            model: self.model.clone(),
-            input_tokens: usage.prompt_tokens,
-            output_tokens: usage.completion_tokens,
-            finish_reason: completion
-                .finish_reason
-                .unwrap_or_else(|| DEFAULT_FINISH_REASON.to_string()),
+        let response = TextResponse::new(
+            completion.message.content.unwrap_or_default(),
+            self.model.clone(),
+        )
+        .with_tokens(usage.prompt_tokens, usage.completion_tokens);
+        Ok(match completion.finish_reason {
+            Some(finish_reason) => response.with_finish_reason(finish_reason),
+            None => response,
         })
     }
 
@@ -150,7 +147,7 @@ mod tests {
         let bridge = CompletionBridge::new(stub.clone(), "qwen3");
         let mut request = TextRequest::new("be brief", "say hello");
         request.temperature = 0.25;
-        request.max_tokens = 64;
+        request.maximum_tokens = 64;
 
         let response = bridge.complete(&request).await.unwrap();
 

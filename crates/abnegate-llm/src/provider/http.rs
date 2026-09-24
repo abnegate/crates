@@ -163,7 +163,7 @@ mod tests {
 
         let completion = provider
             .complete(
-                CompletionRequest::new("qwen3", &messages, RequestOptions { reserved: 32 })
+                CompletionRequest::new("qwen3", &messages, RequestOptions::new(32))
                     .with_response_format(&format)
                     .with_temperature(0.0),
             )
@@ -195,7 +195,7 @@ mod tests {
             .complete(CompletionRequest::new(
                 "gpt-4",
                 &messages,
-                RequestOptions { reserved: 16 },
+                RequestOptions::new(16),
             ))
             .await
             .expect_err("a 401 is a failure");

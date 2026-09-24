@@ -36,7 +36,7 @@ async fn explain() -> Result<(), ProviderError> {
     let provider = CliProvider::agent(AgentKind::Claude, settings);
 
     let messages = [Message::user("What does main.rs do?")];
-    let request = CompletionRequest::new("sonnet", &messages, RequestOptions { reserved: 1024 });
+    let request = CompletionRequest::new("sonnet", &messages, RequestOptions::new(1024));
     let completion = provider.complete(request).await?;
     println!("{:?}", completion.message.content);
     Ok(())

@@ -6,9 +6,20 @@ use serde::Deserialize;
 /// single JSON value: an Ollama adapter `json.loads`s the whole string and
 /// returns 500 on concatenated documents (`{...}{...}`).
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct FunctionCall {
     pub name: String,
     pub arguments: String,
+}
+
+impl FunctionCall {
+    /// A call to `name` with `arguments`, a JSON object as a string.
+    pub fn new(name: impl Into<String>, arguments: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            arguments: arguments.into(),
+        }
+    }
 }
 
 impl serde::Serialize for FunctionCall {

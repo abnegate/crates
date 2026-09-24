@@ -7,6 +7,7 @@ const PERCENT: f64 = 100.0;
 
 /// Live counters for one in-flight download.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct DownloadProgress {
     pub downloaded_bytes: AtomicU64,
     pub total_bytes: AtomicU64,

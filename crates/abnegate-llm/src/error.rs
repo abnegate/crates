@@ -11,7 +11,7 @@ use thiserror::Error;
 /// a log line through this type.
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum LlmError {
+pub enum Error {
     #[error("HTTP error: {0}")]
     Http(reqwest::Error),
     #[error("API error: {status} - {message}")]
@@ -26,13 +26,13 @@ pub enum LlmError {
     Timeout(Duration),
 }
 
-impl From<reqwest::Error> for LlmError {
+impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
         Self::Http(error.without_url())
     }
 }
 
-impl LlmError {
+impl Error {
     /// The same failure with [`redact`] applied to every message it carries,
     /// for a value that did not come through [`crate::LlmClient`].
     pub fn redacted(self) -> Self {
@@ -73,7 +73,7 @@ impl LlmError {
 
 #[cfg(test)]
 mod tests {
-    use super::LlmError;
+    use super::Error;
 
     #[test]
     fn classifies_explicit_tool_capability_rejections() {
@@ -85,7 +85,7 @@ mod tests {
             ),
         ] {
             assert!(
-                LlmError::Api {
+                Error::Api {
                     status,
                     message: message.into()
                 }
@@ -105,19 +105,19 @@ mod tests {
             (500, "does not support tools"),
         ] {
             assert!(
-                !LlmError::Api {
+                !Error::Api {
                     status,
                     message: message.into()
                 }
                 .unsupported_tools()
             );
         }
-        assert!(!LlmError::Stream("does not support tools".into()).unsupported_tools());
+        assert!(!Error::Stream("does not support tools".into()).unsupported_tools());
     }
 
     #[test]
     fn an_api_failure_renders_its_status_and_body() {
-        let error = LlmError::Api {
+        let error = Error::Api {
             status: 401,
             message: "Unauthorized".to_string(),
         };
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn a_stream_failure_renders_its_cause() {
-        let error = LlmError::Stream("Connection reset".to_string());
+        let error = Error::Stream("Connection reset".to_string());
         let display = error.to_string();
 
         assert!(display.contains("Stream error"));
@@ -141,7 +141,7 @@ mod tests {
     fn a_serde_failure_converts_into_a_json_error() {
         let failure = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
 
-        let error: LlmError = failure.into();
+        let error: Error = failure.into();
         assert!(error.to_string().contains("JSON error"));
     }
 
@@ -156,7 +156,7 @@ mod tests {
             (500, "Internal Server Error"),
             (503, "Service Unavailable"),
         ] {
-            let error = LlmError::Api {
+            let error = Error::Api {
                 status,
                 message: message.to_string(),
             };
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn debug_names_the_variant_and_the_status() {
-        let error = LlmError::Api {
+        let error = Error::Api {
             status: 500,
             message: "Server error".to_string(),
         };
@@ -180,13 +180,13 @@ mod tests {
 
     #[test]
     fn an_empty_stream_message_still_names_the_kind() {
-        let error = LlmError::Stream(String::new());
+        let error = Error::Stream(String::new());
         assert!(error.to_string().contains("Stream error"));
     }
 
     #[test]
     fn an_empty_api_body_still_names_the_status() {
-        let error = LlmError::Api {
+        let error = Error::Api {
             status: 500,
             message: String::new(),
         };

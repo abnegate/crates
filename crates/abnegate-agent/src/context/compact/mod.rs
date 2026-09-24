@@ -277,14 +277,7 @@ async fn summarize(
         }
         let messages = summary_request(&previous, &sources)?;
         let response = summarizer
-            .chat_with_options(
-                model,
-                &messages,
-                None,
-                RequestOptions {
-                    reserved: policy.reserved,
-                },
-            )
+            .chat_with_options(model, &messages, None, RequestOptions::new(policy.reserved))
             .await?;
         let choice = response
             .choices

@@ -2,13 +2,10 @@
 
 use std::time::Duration;
 
-use abnegate_llm::FunctionCall;
 use abnegate_llm::ToolCall;
 use abnegate_llm::Usage;
 
 use crate::parser::claude::CliUsage;
-
-const FUNCTION: &str = "function";
 
 /// A normalised event, whichever agent produced it.
 ///
@@ -49,11 +46,7 @@ pub enum AgentEvent {
 impl AgentEvent {
     /// A tool the agent ran, as the function call it amounts to.
     pub fn tool(id: String, name: String, arguments: String) -> Self {
-        Self::Tool(ToolCall {
-            id,
-            call_type: FUNCTION.to_string(),
-            function: FunctionCall { name, arguments },
-        })
+        Self::Tool(ToolCall::function(id, name, arguments))
     }
 
     /// Whether this event ends the run, successfully or not.

@@ -7,7 +7,8 @@ use crate::provider::ProviderError;
 pub trait AudioProvider: Send + Sync {
     fn name(&self) -> &str;
     fn supported_formats(&self) -> Vec<String>;
-    fn max_duration_seconds(&self) -> f64;
+    /// The longest clip, in seconds, this provider generates.
+    fn maximum_duration_seconds(&self) -> f64;
 
     async fn generate_music(&self, request: &MusicRequest) -> Result<AudioResponse, ProviderError>;
     async fn generate_sound_effect(
