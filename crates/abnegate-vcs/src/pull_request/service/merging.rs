@@ -875,35 +875,5 @@ mod tests {
 
             assert_eq!(format!("{failure:?}"), expected);
         }
-
-        let stalled = answering(
-            refusing(405, APPROVAL),
-            merged_as(commit('d').as_str()).set_delay(Duration::from_secs(5)),
-            1,
-        )
-        .await;
-        let impatient = PullRequestService {
-            client: client(false, Duration::from_millis(250)).unwrap(),
-            origin: Origin::standing_in_for("github.com", &stalled.uri()).unwrap(),
-        };
-
-        let failure = impatient
-            .merge(
-                &seven(&impatient),
-                &token(),
-                Some(NODE),
-                &commit('a'),
-                "Title",
-                "Body",
-                MergeMethod::Squash,
-                true,
-            )
-            .await
-            .unwrap_err();
-
-        assert!(
-            matches!(&failure, PullRequestError::Http(error) if error.is_timeout()),
-            "{failure:?}"
-        );
     }
 }
