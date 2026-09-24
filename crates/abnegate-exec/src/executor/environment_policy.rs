@@ -7,24 +7,24 @@ use abnegate_secret::SecretValue;
 use tokio::process::Command;
 
 /// The names [`EnvironmentPolicy::allowlist`] passes from the executor to
-/// every command: where to find programs, the user's home and scratch space,
-/// locale, terminal and time zone, the trusted certificates, and the proxy a
-/// deployment routes through.
+/// every command: where to find programs, the user's home, name and scratch
+/// space, locale and terminal, the timezone (`TZ`), and the trusted
+/// certificates.
+///
+/// No proxy variable is among them. A proxy URL can carry credentials, so a
+/// command reaches a proxy only through [`Proxy`](crate::Proxy) or a name
+/// passed to [`EnvironmentPolicy::allow`].
 pub const DEFAULT_ENVIRONMENT: &[&str] = &[
     "PATH",
     "HOME",
+    "USER",
+    "LOGNAME",
     "TMPDIR",
     "LANG",
     "LC_ALL",
     "TERM",
     "TZ",
     "SSL_CERT_FILE",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
 ];
 
 /// The environment a spawned command is given.
@@ -259,6 +259,27 @@ mod tests {
                 .copied()
                 .collect::<BTreeSet<&str>>())
         );
+    }
+
+    /// Without `USER` a keychain-backed tool cannot tell whose keychain to
+    /// open, without `TZ` a command reads the clock as UTC, and without
+    /// `SSL_CERT_FILE` it cannot verify a server behind a private certificate
+    /// authority.
+    #[test]
+    fn the_allowlist_covers_the_user_the_timezone_and_the_certificates() {
+        let policy = EnvironmentPolicy::allowlist();
+
+        for name in ["USER", "LOGNAME", "TZ", "SSL_CERT_FILE"] {
+            assert!(DEFAULT_ENVIRONMENT.contains(&name), "{name}");
+            assert!(policy.allowed.contains(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn no_proxy_variable_is_allowed_by_default() {
+        for name in DEFAULT_ENVIRONMENT {
+            assert!(!name.to_ascii_uppercase().ends_with("_PROXY"), "{name}");
+        }
     }
 
     #[test]

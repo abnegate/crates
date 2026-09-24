@@ -438,6 +438,53 @@ mod tests {
         );
     }
 
+    /// A proxy URL can carry the proxy's credentials, and a command reaches
+    /// the proxy through [`Proxy`] without them. The executor's variables are
+    /// set on the child test process, not on this one.
+    #[tokio::test]
+    async fn the_default_policy_passes_on_no_proxy_variable() {
+        const NAME: &str =
+            "executor::command::tests::the_default_policy_passes_on_no_proxy_variable";
+        const PROXIES: [&str; 8] = [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ];
+        if child::delegated(
+            NAME,
+            &PROXIES.map(|name| (name, "http://user:hunter2@proxy:3128")),
+        )
+        .await
+        {
+            return;
+        }
+        for name in PROXIES {
+            assert!(std::env::var_os(name).is_some(), "{name} is not set here");
+        }
+
+        let output =
+            environment_of(&CommandExecutor::new(), environment_listing(HashMap::new())).await;
+
+        let leaked: Vec<&str> = output
+            .lines()
+            .filter(|line| {
+                line.split_once('=')
+                    .is_some_and(|(name, _)| name.to_ascii_uppercase().ends_with("_PROXY"))
+            })
+            .collect();
+        assert!(leaked.is_empty(), "{leaked:?}");
+        assert!(!output.contains("hunter2"), "{output}");
+        assert!(
+            output.lines().any(|line| line.starts_with("PATH=")),
+            "{output}"
+        );
+    }
+
     #[tokio::test]
     async fn a_policy_variable_reaches_the_command_beneath_the_request() {
         let executor = CommandExecutor::with_config(

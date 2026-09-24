@@ -62,7 +62,9 @@
 //!
 //! A command never inherits the executor's whole environment by default: it
 //! sees only the names in [`DEFAULT_ENVIRONMENT`], with the executor's values,
-//! and [`RunStart::environment`] on top. [`ExecutorConfig::environment`] takes
+//! and [`RunStart::environment`] on top. No proxy variable is among them; a
+//! command reaches a proxy through [`Proxy`], or through a name the executor
+//! [allows](EnvironmentPolicy::allow). [`ExecutorConfig::environment`] takes
 //! any [`EnvironmentPolicy`]: more names, variables of its own, or, for an
 //! executor that holds nothing a command must not read,
 //! [`EnvironmentPolicy::inherit`].
