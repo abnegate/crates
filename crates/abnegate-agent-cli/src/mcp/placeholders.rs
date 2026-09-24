@@ -50,21 +50,11 @@ impl Placeholders {
     /// any.
     pub(crate) fn note(&mut self, text: &str) -> bool {
         let mut found = false;
-        let mut rest = text;
-        while let Some(start) = rest.find(OPENING) {
-            rest = &rest[start + OPENING.len()..];
-            let Some(end) = rest.find(CLOSING) else {
-                break;
-            };
-            let expression = &rest[..end];
-            let name = expression
-                .split_once(DEFAULT)
-                .map_or(expression, |(name, _)| name);
-            if variable(name) {
+        for segment in segments(text) {
+            if let Segment::Reference { name, .. } = segment {
                 self.references.insert(name.to_string());
                 found = true;
             }
-            rest = &rest[end + 1..];
         }
         found
     }
@@ -86,40 +76,78 @@ pub(crate) fn whole_reference(value: &str) -> bool {
 /// default, is left as written, as the CLI leaves it.
 pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
     let mut expanded = String::with_capacity(template.len());
-    let mut rest = template;
+    for segment in segments(template) {
+        match segment {
+            Segment::Literal(text) => expanded.push_str(text),
+            Segment::Reference {
+                written,
+                name,
+                default,
+            } => {
+                let value = lookup(name).filter(|value| !value.is_empty() || default.is_none());
+                match (value, default) {
+                    (Some(value), _) => expanded.push_str(&value),
+                    (None, Some(default)) => expanded.push_str(default),
+                    (None, None) => {
+                        tracing::warn!(
+                            variable = name,
+                            "an MCP value refers to a variable nothing sets; leaving it as written"
+                        );
+                        expanded.push_str(written);
+                    }
+                }
+            }
+        }
+    }
+    expanded
+}
+
+/// A run of literal text, or one `${VAR}` or `${VAR:-default}` reference as
+/// `written`.
+enum Segment<'text> {
+    Literal(&'text str),
+    Reference {
+        written: &'text str,
+        name: &'text str,
+        default: Option<&'text str>,
+    },
+}
+
+/// `text` as literal runs and references, in order. Anything shaped like a
+/// reference that does not name a variable, or is never closed, is literal
+/// text.
+fn segments(text: &str) -> Vec<Segment<'_>> {
+    let mut segments = Vec::new();
+    let mut rest = text;
     while let Some(start) = rest.find(OPENING) {
-        expanded.push_str(&rest[..start]);
         let after = &rest[start + OPENING.len()..];
         let Some(end) = after.find(CLOSING) else {
-            expanded.push_str(&rest[start..]);
-            return expanded;
+            break;
         };
-        let reference = &rest[start..start + OPENING.len() + end + 1];
+        let written = &rest[start..start + OPENING.len() + end + 1];
         let expression = &after[..end];
         let (name, default) = match expression.split_once(DEFAULT) {
             Some((name, default)) => (name, Some(default)),
             None => (expression, None),
         };
         if variable(name) {
-            let value = lookup(name).filter(|value| !value.is_empty() || default.is_none());
-            match (value, default) {
-                (Some(value), _) => expanded.push_str(&value),
-                (None, Some(default)) => expanded.push_str(default),
-                (None, None) => {
-                    tracing::warn!(
-                        variable = name,
-                        "an MCP value refers to a variable nothing sets; leaving it as written"
-                    );
-                    expanded.push_str(reference);
-                }
+            if start > 0 {
+                segments.push(Segment::Literal(&rest[..start]));
             }
+            segments.push(Segment::Reference {
+                written,
+                name,
+                default,
+            });
         } else {
-            expanded.push_str(reference);
+            segments.push(Segment::Literal(&rest[..start + written.len()]));
         }
         rest = &after[end + 1..];
     }
-    expanded.push_str(rest);
-    expanded
+    if !rest.is_empty() {
+        segments.push(Segment::Literal(rest));
+    }
+    segments
 }
 
 fn variable(name: &str) -> bool {
