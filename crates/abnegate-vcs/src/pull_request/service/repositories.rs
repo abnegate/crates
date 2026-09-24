@@ -105,6 +105,7 @@ fn created(answer: GitHubCreatedRepository) -> PullRequestResult<CreatedReposito
 mod tests {
     use super::*;
     use crate::parse_error::ParseError;
+    use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::Value;
@@ -382,27 +383,36 @@ mod tests {
     /// those words and nothing else from the answer.
     #[tokio::test]
     async fn a_refused_creation_is_reported_as_what_it_is() {
-        for (response, expected) in [
-            (ResponseTemplate::new(401), "AuthenticationFailed"),
-            (ResponseTemplate::new(403), "Forbidden"),
+        let refusals: [(ResponseTemplate, Expected); 7] = [
+            (ResponseTemplate::new(401), |refused| {
+                matches!(refused, PullRequestError::AuthenticationFailed)
+            }),
+            (ResponseTemplate::new(403), |refused| {
+                matches!(refused, PullRequestError::Forbidden)
+            }),
             (
                 ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
-                "RateLimited",
+                |refused| matches!(refused, PullRequestError::RateLimited),
             ),
-            (ResponseTemplate::new(429), "RateLimited"),
-            (ResponseTemplate::new(404), "NotFound"),
+            (ResponseTemplate::new(429), |refused| {
+                matches!(refused, PullRequestError::RateLimited)
+            }),
+            (ResponseTemplate::new(404), |refused| {
+                matches!(refused, PullRequestError::NotFound)
+            }),
             (
                 ResponseTemplate::new(422).set_body_json(json!({
                     "message": "Validation Failed",
                     "documentation_url": "https://docs.github.com/already exists",
                 })),
-                "GitHubApi",
+                |refused| matches!(refused, PullRequestError::GitHubApi(_)),
             ),
             (
                 ResponseTemplate::new(500).set_body_string("name already exists"),
-                "GitHubApi",
+                |refused| matches!(refused, PullRequestError::GitHubApi(_)),
             ),
-        ] {
+        ];
+        for (response, expected) in refusals {
             let server = MockServer::start().await;
             signed_in_as(&server, json!({ "login": "ada" }), 1).await;
             Mock::given(method("POST"))
@@ -418,10 +428,7 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            assert!(
-                format!("{refused:?}").starts_with(expected),
-                "{expected}: {refused:?}"
-            );
+            assert!(expected(&refused), "{refused:?}");
         }
 
         let server = MockServer::start().await;

@@ -703,6 +703,7 @@ mod tests {
     use super::*;
     use crate::pull_request::PullRequestState;
     use crate::pull_request::ReviewTally;
+    use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::seven;
@@ -1220,27 +1221,38 @@ mod tests {
     /// token GitHub refused, and a 404 on opening is not a missing branch.
     #[tokio::test]
     async fn every_refusal_is_reported_as_what_it_is() {
-        for (response, expected) in [
-            (ResponseTemplate::new(401), "AuthenticationFailed"),
-            (ResponseTemplate::new(403), "Forbidden"),
+        let refusals: [(ResponseTemplate, Expected); 8] = [
+            (ResponseTemplate::new(401), |failure| {
+                matches!(failure, PullRequestError::AuthenticationFailed)
+            }),
+            (ResponseTemplate::new(403), |failure| {
+                matches!(failure, PullRequestError::Forbidden)
+            }),
             (
                 ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
-                "RateLimited",
+                |failure| matches!(failure, PullRequestError::RateLimited),
             ),
-            (ResponseTemplate::new(429), "RateLimited"),
+            (ResponseTemplate::new(429), |failure| {
+                matches!(failure, PullRequestError::RateLimited)
+            }),
             (
                 ResponseTemplate::new(403).insert_header("retry-after", "60"),
-                "RateLimited",
+                |failure| matches!(failure, PullRequestError::RateLimited),
             ),
-            (ResponseTemplate::new(404), "NotFound"),
+            (ResponseTemplate::new(404), |failure| {
+                matches!(failure, PullRequestError::NotFound)
+            }),
             (
                 ResponseTemplate::new(422).set_body_string(
                     "{\"message\":\"A pull request already exists for acme:feature.\"}",
                 ),
-                "PullRequestAlreadyExists",
+                |failure| matches!(failure, PullRequestError::PullRequestAlreadyExists(_)),
             ),
-            (ResponseTemplate::new(500), "GitHubApi"),
-        ] {
+            (ResponseTemplate::new(500), |failure| {
+                matches!(failure, PullRequestError::GitHubApi(_))
+            }),
+        ];
+        for (response, expected) in refusals {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/repos/acme/project/pulls"))
@@ -1263,10 +1275,7 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            assert!(
-                format!("{failure:?}").starts_with(expected),
-                "{expected}: {failure:?}"
-            );
+            assert!(expected(&failure), "{failure:?}");
         }
     }
 
