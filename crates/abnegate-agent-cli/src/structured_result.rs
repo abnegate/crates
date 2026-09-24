@@ -15,8 +15,11 @@ pub struct StructuredResult {
     #[serde(default)]
     pub summary: String,
     pub success: bool,
-    #[serde(default)]
-    pub pr_url: Option<String>,
+    /// The pull request the agent says it opened, exactly as it gave it,
+    /// for the caller to vet before following. Read from and written as
+    /// `pr_url`, the name [`StructuredResult::SCHEMA`] asks for.
+    #[serde(default, rename = "pr_url")]
+    pub pull_request_url: Option<String>,
     #[serde(default)]
     pub changelog: Option<String>,
     #[serde(default)]
@@ -123,7 +126,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.summary, "Fixed the bug and created PR");
         assert_eq!(
-            result.pr_url.as_deref(),
+            result.pull_request_url.as_deref(),
             Some("https://github.com/org/repo/pull/42")
         );
         assert!(result.blocking_question.is_none());
@@ -135,7 +138,7 @@ mod tests {
             r#"{"summary":"Need clarification","success":false,"pr_url":null,"blocking_question":{"question":"Which branch?","context":"Multiple candidates","options":["main","develop"],"why":"Ambiguous target"}}"#,
         );
         assert!(!result.success);
-        assert!(result.pr_url.is_none());
+        assert!(result.pull_request_url.is_none());
         let question = result.blocking_question.expect("a question");
         assert_eq!(question.question, "Which branch?");
         assert_eq!(question.context.as_deref(), Some("Multiple candidates"));
@@ -148,7 +151,7 @@ mod tests {
         let result = parse(r#"{"summary":"Done","success":true}"#);
         assert!(result.success);
         assert_eq!(result.summary, "Done");
-        assert!(result.pr_url.is_none());
+        assert!(result.pull_request_url.is_none());
         assert!(result.changelog.is_none());
         assert!(result.blocking_question.is_none());
         assert_eq!(result.confidence, 0);
@@ -168,7 +171,7 @@ mod tests {
         for link in ["http://github.com/org/repo/pull/1", "", "not-a-url"] {
             let json = json!({"summary": "done", "success": true, "pr_url": link});
             let result = StructuredResult::from_output(&json).expect("a report");
-            assert_eq!(result.pr_url.as_deref(), Some(link));
+            assert_eq!(result.pull_request_url.as_deref(), Some(link));
         }
     }
 
@@ -334,6 +337,22 @@ mod tests {
     }
 
     #[test]
+    fn a_report_serializes_its_link_as_pr_url() {
+        let link = "https://github.com/org/repo/pull/42";
+        let result = parse(&format!(
+            r#"{{"summary":"Opened a pull request","success":true,"pr_url":"{link}"}}"#
+        ));
+
+        let json = serde_json::to_value(&result).expect("serialisable");
+        assert_eq!(json["pr_url"], link);
+        assert!(json.get("pull_request_url").is_none(), "{json}");
+        assert_eq!(
+            StructuredResult::from_output(&json).expect("a report"),
+            result
+        );
+    }
+
+    #[test]
     fn every_field_together_is_read_with_the_question() {
         let result = parse(
             r#"{
@@ -348,7 +367,7 @@ mod tests {
         );
         assert!(!result.success);
         assert_eq!(result.confidence, 0);
-        assert!(result.pr_url.is_some());
+        assert!(result.pull_request_url.is_some());
         assert!(result.changelog.is_some());
         assert!(result.blocking_question.is_some());
         assert_eq!(
