@@ -19,6 +19,14 @@ pub enum Error {
     /// and a tag.
     #[error("Encrypted value is truncated")]
     Truncated,
+    /// The value is sealed in an envelope version this release cannot open.
+    ///
+    /// It is still sealed, never plaintext: store it back as it was read.
+    #[error("Encrypted value uses envelope version {version}, which this release cannot open")]
+    UnsupportedVersion {
+        /// The digits after `ENC[v`, as written.
+        version: String,
+    },
     /// The envelope opened, but what it held is not UTF-8 text.
     #[error("Decrypted value is not valid UTF-8")]
     InvalidUtf8,

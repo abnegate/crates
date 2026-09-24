@@ -1,3 +1,5 @@
+mod envelope;
+
 use aes_gcm::Aes256Gcm;
 use aes_gcm::Nonce;
 use aes_gcm::aead::Aead;
@@ -7,19 +9,23 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use zeroize::Zeroize;
 
+use crate::encryption::envelope::Envelope;
 use crate::error::Error;
 use crate::key::MasterKey;
 use crate::random;
 use crate::value::SecretValue;
 
-const ENVELOPE_PREFIX: &str = "ENC[v1:";
-const ENVELOPE_SUFFIX: &str = "]";
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
 
-/// Whether a stored value is already wrapped in an envelope.
+/// Whether a stored value is already wrapped in an envelope: `ENC[v`, a
+/// version number, `:`, and the sealed value up to a closing `]`.
+///
+/// An envelope of any version counts, including one this release cannot
+/// open, so a value sealed by a later release is never taken for plaintext.
+/// [`decrypt_value`] refuses those with [`Error::UnsupportedVersion`].
 pub fn is_encrypted(value: &str) -> bool {
-    value.starts_with(ENVELOPE_PREFIX) && value.ends_with(ENVELOPE_SUFFIX)
+    Envelope::open(value).is_some_and(|envelope| envelope.encoded().is_some())
 }
 
 /// Wrap a credential in an envelope sealed with `key`, under a nonce drawn
@@ -49,26 +55,31 @@ pub fn encrypt_value(value: &SecretValue, key: &MasterKey) -> Result<String, Err
     sealed.extend_from_slice(&nonce_bytes);
     sealed.extend_from_slice(&ciphertext);
 
-    Ok(format!(
-        "{ENVELOPE_PREFIX}{}{ENVELOPE_SUFFIX}",
-        BASE64.encode(&sealed)
-    ))
+    Ok(Envelope::seal(&BASE64.encode(&sealed)))
 }
 
 /// Unwrap a stored value, passing plaintext straight through.
 ///
 /// Values written before the envelope existed keep working; each one is
 /// reported through `tracing::debug!` as it is read. A value that opens an
-/// envelope without closing it is [`Error::Truncated`], never plaintext.
+/// envelope is never plaintext: an envelope of any version but v1 is
+/// [`Error::UnsupportedVersion`], and one that is never closed is
+/// [`Error::Truncated`].
 pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error> {
-    let Some(body) = value.strip_prefix(ENVELOPE_PREFIX) else {
+    let Some(envelope) = Envelope::open(value) else {
         tracing::debug!(
             "Plaintext secret read from storage; re-save it to seal it in an ENC[v1:...] envelope"
         );
         return Ok(SecretValue::new(value));
     };
 
-    let encoded = body.strip_suffix(ENVELOPE_SUFFIX).ok_or(Error::Truncated)?;
+    if envelope.version() != Envelope::VERSION {
+        return Err(Error::UnsupportedVersion {
+            version: envelope.version().to_owned(),
+        });
+    }
+
+    let encoded = envelope.encoded().ok_or(Error::Truncated)?;
     let sealed = BASE64.decode(encoded).map_err(|_| Error::InvalidBase64)?;
 
     if sealed.len() < NONCE_BYTES + TAG_BYTES {
@@ -139,8 +150,8 @@ mod tests {
 
         let sealed = encrypt_value(&secret, &key).unwrap();
         assert!(is_encrypted(&sealed));
-        assert!(sealed.starts_with(ENVELOPE_PREFIX));
-        assert!(sealed.ends_with(ENVELOPE_SUFFIX));
+        assert!(sealed.starts_with("ENC[v1:"));
+        assert!(sealed.ends_with(']'));
         assert!(!sealed.contains(secret.expose()));
 
         assert_eq!(decrypt_value(&sealed, &key).unwrap(), secret);
@@ -215,10 +226,7 @@ mod tests {
     #[test]
     fn rejects_a_truncated_envelope() {
         let key = MasterKey::generate().unwrap();
-        let short = format!(
-            "{ENVELOPE_PREFIX}{}{ENVELOPE_SUFFIX}",
-            BASE64.encode(b"short")
-        );
+        let short = Envelope::seal(&BASE64.encode(b"short"));
         assert!(matches!(decrypt_value(&short, &key), Err(Error::Truncated)));
     }
 
@@ -230,7 +238,7 @@ mod tests {
         for truncated in [
             &sealed[..sealed.len() - 1],
             &sealed[..sealed.len() / 2],
-            ENVELOPE_PREFIX,
+            "ENC[v1:",
         ] {
             assert!(
                 matches!(decrypt_value(truncated, &key), Err(Error::Truncated)),
@@ -263,6 +271,66 @@ mod tests {
         assert!(!is_encrypted("plaintext"));
         assert!(!is_encrypted("ENC[v1:missing-suffix"));
         assert!(!is_encrypted("WRONG[v1:YWJj]"));
+    }
+
+    #[test]
+    fn recognises_an_envelope_of_any_version() {
+        for sealed in [
+            "ENC[v1:YWJj]",
+            "ENC[v2:YWJj]",
+            "ENC[v10:YWJj]",
+            "ENC[v01:YWJj]",
+            "ENC[v18446744073709551616:YWJj]",
+        ] {
+            assert!(is_encrypted(sealed), "{sealed} was taken for plaintext");
+        }
+        assert!(!is_encrypted("ENC[v2:missing-suffix"));
+    }
+
+    #[test]
+    fn a_version_that_is_not_a_number_opens_no_envelope() {
+        let key = MasterKey::generate().unwrap();
+
+        for plaintext in [
+            "ENC[v:YWJj]",
+            "ENC[vx:YWJj]",
+            "ENC[v1x:YWJj]",
+            "ENC[v-1:YWJj]",
+            "ENC[v1YWJj]",
+            "enc[v1:YWJj]",
+        ] {
+            assert!(!is_encrypted(plaintext), "{plaintext}");
+            assert_eq!(
+                decrypt_value(plaintext, &key).unwrap().expose(),
+                plaintext,
+                "{plaintext}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_version_but_v1_is_refused_whatever_it_holds() {
+        let key = MasterKey::generate().unwrap();
+        let sealed = encrypt_value(&SecretValue::new("secret"), &key).unwrap();
+        let body = sealed.strip_prefix("ENC[v1:").unwrap();
+
+        for (expected, value) in [
+            ("2", format!("ENC[v2:{body}")),
+            ("0", format!("ENC[v0:{body}")),
+            ("01", format!("ENC[v01:{body}")),
+            (
+                "18446744073709551616",
+                format!("ENC[v18446744073709551616:{body}"),
+            ),
+            ("2", "ENC[v2:not-closed".to_owned()),
+            ("2", "ENC[v2:".to_owned()),
+        ] {
+            let opened = decrypt_value(&value, &key);
+            assert!(
+                matches!(&opened, Err(Error::UnsupportedVersion { version }) if version == expected),
+                "{value}: {opened:?}"
+            );
+        }
     }
 
     #[test]
