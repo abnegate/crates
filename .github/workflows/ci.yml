@@ -118,6 +118,11 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      - name: Time the secret scanners in a release build
+        run: cargo test -p abnegate-secret --release -- --ignored
+        env:
+          RUST_BACKTRACE: 1
+
   seatbelt:
     name: Seatbelt Confinement
     runs-on: macos-latest
