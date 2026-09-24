@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 
 use abnegate_secret::SecretValue;
@@ -31,8 +32,8 @@ pub const DEFAULT_ENVIRONMENT: &[&str] = &[
 ///
 /// Three layers, each over the one before:
 ///
-/// - the executor's whole environment, only when the policy
-///   [inherits](Self::inherits);
+/// - the executor's whole environment, less the [removed](Self::remove)
+///   names, only when the policy [inherits](Self::inherits);
 /// - the [allowed](Self::allow) names, each with the executor's own value,
 ///   passed only when the executor has it set;
 /// - the variables [set](Self::set) here.
@@ -55,6 +56,7 @@ pub const DEFAULT_ENVIRONMENT: &[&str] = &[
 pub struct EnvironmentPolicy {
     allowed: BTreeSet<String>,
     variables: BTreeMap<String, SecretValue>,
+    removed: BTreeSet<String>,
     inherit: bool,
 }
 
@@ -64,6 +66,7 @@ impl EnvironmentPolicy {
         Self {
             allowed: BTreeSet::new(),
             variables: BTreeMap::new(),
+            removed: BTreeSet::new(),
             inherit: false,
         }
     }
@@ -80,7 +83,11 @@ impl EnvironmentPolicy {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.allowed.extend(names.into_iter().map(Into::into));
+        for name in names {
+            let name = name.into();
+            self.removed.remove(&name);
+            self.allowed.insert(name);
+        }
         self
     }
 
@@ -89,7 +96,8 @@ impl EnvironmentPolicy {
         Self::empty().inheriting()
     }
 
-    /// The same policy, laid over the executor's whole environment.
+    /// The same policy, laid over the executor's whole environment less the
+    /// [removed](Self::remove) names.
     pub fn inheriting(mut self) -> Self {
         self.inherit = true;
         self
@@ -108,16 +116,20 @@ impl EnvironmentPolicy {
 
     /// Set `name` to `value` over everything else.
     pub fn set(&mut self, name: impl Into<String>, value: impl Into<SecretValue>) {
-        self.variables.insert(name.into(), value.into());
+        let name = name.into();
+        self.removed.remove(&name);
+        self.variables.insert(name, value.into());
     }
 
-    /// Stop passing `name`: forget the value set here and stop allowing the
-    /// executor's own. Returns the value that was set here, if any.
+    /// Stop passing `name` at all: forget the value set here, stop allowing
+    /// the executor's own, and withhold it from an inherited environment.
+    /// Returns the value that was set here, if any.
     ///
-    /// A policy that [inherits](Self::inherits) still passes the executor's
-    /// whole environment, `name` included when the executor has it.
+    /// A later [`allow`](Self::allow) or [`set`](Self::set) of `name` passes
+    /// it again.
     pub fn remove(&mut self, name: &str) -> Option<SecretValue> {
         self.allowed.remove(name);
+        self.removed.insert(name.to_string());
         self.variables.remove(name)
     }
 
@@ -160,11 +172,13 @@ impl EnvironmentPolicy {
     }
 
     /// Every variable this policy gives a command, read now: the executor's
-    /// whole environment when it inherits, then the allowed names the
-    /// executor has set, then the variables set here.
+    /// whole environment less the removed names when it inherits, then the
+    /// allowed names the executor has set, then the variables set here.
     pub fn inherited(&self) -> BTreeMap<OsString, OsString> {
         let mut inherited: BTreeMap<OsString, OsString> = if self.inherit {
-            env::vars_os().collect()
+            env::vars_os()
+                .filter(|(name, _)| !self.withholds(name))
+                .collect()
         } else {
             BTreeMap::new()
         };
@@ -178,16 +192,25 @@ impl EnvironmentPolicy {
     }
 
     /// Give `command` exactly this policy's environment: cleared unless the
-    /// policy inherits, then the allowed names the executor has set, then the
-    /// variables set here.
+    /// policy inherits, and otherwise without the removed names, then the
+    /// allowed names the executor has set, then the variables set here.
     pub fn apply(&self, command: &mut Command) {
-        if !self.inherit {
+        if self.inherit {
+            for name in &self.removed {
+                command.env_remove(name);
+            }
+        } else {
             command.env_clear();
         }
         command.envs(self.allowed_values());
         for (name, value) in &self.variables {
             command.env(name, value.expose());
         }
+    }
+
+    fn withholds(&self, name: &OsStr) -> bool {
+        name.to_str()
+            .is_some_and(|name| self.removed.contains(name))
     }
 
     fn passes_on(&self, name: &str) -> bool {
@@ -417,5 +440,41 @@ mod tests {
         assert_eq!(names(&policy), ["EXTRA"]);
         assert_eq!(environment_of(&policy).await, ["EXTRA=1"]);
         assert!(policy.remove(ALLOWED).is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_withholds_a_name_from_an_inherited_environment() {
+        const NAME: &str = "executor::environment_policy::tests::remove_withholds_a_name_from_an_inherited_environment";
+        if child::delegated(NAME, &[(ALLOWED, "allowed-value")]).await {
+            return;
+        }
+        let line = format!("{ALLOWED}=allowed-value");
+        let mut policy = EnvironmentPolicy::inherit();
+
+        policy.remove(ALLOWED);
+
+        let withheld = environment_of(&policy).await;
+        assert!(
+            !withheld
+                .iter()
+                .any(|entry| entry.starts_with(&format!("{ALLOWED}="))),
+            "{withheld:?}"
+        );
+        assert!(
+            withheld.iter().any(|entry| entry.starts_with("PATH=")),
+            "the rest of the environment is still inherited: {withheld:?}"
+        );
+        assert!(!policy.inherited().contains_key(OsStr::new(ALLOWED)));
+
+        let allowed = policy.clone().allow([ALLOWED]);
+        assert!(environment_of(&allowed).await.contains(&line));
+        assert!(allowed.inherited().contains_key(OsStr::new(ALLOWED)));
+
+        let set = policy.with(ALLOWED, "overlay-value");
+        assert!(
+            environment_of(&set)
+                .await
+                .contains(&format!("{ALLOWED}=overlay-value"))
+        );
     }
 }
