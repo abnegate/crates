@@ -181,6 +181,12 @@ jobs:
       - name: Check every feature combination
         run: cargo hack check --workspace --feature-powerset --depth 2 --all-targets
 
+      # With --all-targets a dev-dependency's features reach the library too, so
+      # a crate that only builds because a test enabled a feature passes the
+      # step above and fails for a consumer.
+      - name: Check every feature combination without dev-dependencies
+        run: cargo hack check --workspace --feature-powerset --depth 2 --no-dev-deps
+
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
@@ -224,6 +230,30 @@ jobs:
 
       - name: Run cargo-deny
         run: cargo deny check
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: package
+          cache-on-failure: true
+
+      - name: Package every crate
+        run: cargo package --workspace
+
+      - name: Package every crate with every feature
+        run: cargo package --workspace --all-features
 
   semver:
     name: Semver
