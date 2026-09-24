@@ -1,5 +1,6 @@
 /// What removing a worktree would lose.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Unfinished {
     /// Changes in the working tree or the index that no commit holds.
     pub uncommitted: bool,

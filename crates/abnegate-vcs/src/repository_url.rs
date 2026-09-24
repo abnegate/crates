@@ -10,7 +10,7 @@ const GITHUB_HOST: &str = "github.com";
 const HTTPS: &str = "https";
 
 /// The transport a test fixture's local repository is reached over.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 const FILE: &str = "file";
 
 /// The suffix git's own URLs carry on a repository name.
@@ -57,7 +57,7 @@ impl RepositoryUrl {
 
     /// A repository on the local disk, reached over `file://`. Only test
     /// builds can make one: nothing a caller configures reaches it.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn local(path: &std::path::Path) -> Result<Self, ParseError> {
         let url = Url::from_file_path(path).map_err(|()| ParseError::RepositoryUrl)?;
         Ok(Self {

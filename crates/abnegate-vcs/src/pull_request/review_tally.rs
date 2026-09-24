@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 /// What the submitted reviews add up to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ReviewTally {
     /// Reviews that requested changes.
     pub cycles: u32,
@@ -60,10 +61,7 @@ mod tests {
     use super::*;
 
     fn review(state: &str, reviewer: Option<&str>) -> SubmittedReview {
-        SubmittedReview {
-            state: ReviewState::parse(state),
-            reviewer: reviewer.map(str::to_string),
-        }
+        SubmittedReview::new(ReviewState::parse(state), reviewer.map(str::to_string))
     }
 
     #[test]

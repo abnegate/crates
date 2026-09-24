@@ -6,6 +6,7 @@ use std::num::NonZeroU64;
 
 /// A pull request as the GitHub REST API returns it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct GitHubPullRequest {
     /// GitHub's own identifier.
     pub id: u64,

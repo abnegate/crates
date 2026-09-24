@@ -14,6 +14,7 @@ pub fn minutes_between(opened: &str, merged: &str) -> Option<i64> {
 /// Timestamps stay RFC 3339 and tallies stay plain counts, because this is read
 /// back out of a run's artifacts by the learning loop rather than by a person.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct PullRequestReception {
     /// When it was opened.
     pub opened_at: Option<String>,

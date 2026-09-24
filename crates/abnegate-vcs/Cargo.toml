@@ -20,7 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 github = ["dep:chrono", "dep:reqwest"]
-test-support = []
+testing = []
 
 [dependencies]
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
@@ -40,7 +40,7 @@ uuid = { workspace = true, features = ["v4"] }
 nix = { workspace = true, features = ["fs", "process", "signal"] }
 
 [dev-dependencies]
-abnegate-vcs = { path = ".", features = ["test-support"] }
+abnegate-vcs = { path = ".", features = ["testing"] }
 tokio = { workspace = true, features = ["net", "test-util"] }
 wiremock = { workspace = true }
 

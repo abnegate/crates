@@ -625,14 +625,12 @@ mod tests {
 
     #[test]
     fn a_request_never_prints_its_token() {
-        let request = ConflictRequest {
-            remote: remote(),
-            token: Some(SecretValue::new(concat!("ghp_", "sensitive"))),
-            head: BranchName::parse("feature").unwrap(),
-            base: BranchName::parse("main").unwrap(),
-            expected_head: None,
-            expected_base: None,
-        };
+        let request = ConflictRequest::new(
+            remote(),
+            BranchName::parse("feature").unwrap(),
+            BranchName::parse("main").unwrap(),
+        )
+        .with_token(SecretValue::new(concat!("ghp_", "sensitive")));
 
         assert!(!format!("{request:?}").contains(concat!("ghp_", "sensitive")));
     }

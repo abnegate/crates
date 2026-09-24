@@ -181,7 +181,7 @@ mod tests {
     /// whole budget ran the line past it by the length of its prefix.
     #[test]
     fn a_subject_past_the_line_it_is_read_on_is_cut_to_it() {
-        for kind in Kind::ALL {
+        for &kind in Kind::ALL {
             let long = Subject::new(kind, &"a".repeat(200));
 
             assert_eq!(
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn every_kind_round_trips_through_its_label() {
-        for kind in Kind::ALL {
+        for &kind in Kind::ALL {
             assert_eq!(Kind::parse(kind.label()), Some(kind), "{kind}");
             assert_eq!(
                 Kind::parse(&kind.label().to_uppercase()),

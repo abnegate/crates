@@ -7,6 +7,7 @@ use std::num::NonZeroU64;
 
 /// A pull request as GitHub describes it now.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PullRequestDetail {
     /// GitHub's global node identifier, which its GraphQL API addresses the
     /// pull request by.

@@ -41,7 +41,7 @@
 //!   pull requests on GitHub or a GitHub Enterprise install, reads back how
 //!   each one was received, and creates repositories there, over the REST and
 //!   GraphQL APIs.
-//! - `test-support`: `RepositoryUrl::local` and
+//! - `testing`: `RepositoryUrl::local` and
 //!   `pull_request::PullRequestService::standing_in_for`, which reach a
 //!   repository on the local disk or a mock API server. Nothing a caller
 //!   configures produces either, so only a test should enable it.
@@ -175,3 +175,7 @@ pub use crate::resolution::judge;
 pub use crate::subject::Kind;
 pub use crate::subject::Subject;
 pub use crate::worktree::Unfinished;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

@@ -1485,8 +1485,7 @@ mod publication_tests {
         let base = root.path().join("base");
         crate::worktree::fixtures::clone(&remote, &base);
         let first = root.path().join("first");
-        crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
-        let checkout = Checkout::linked(&first, &base);
+        let checkout = crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
         let service = GitService::new();
         service
             .prepare_branch(&checkout, &branch("task/one"), false)
@@ -1501,13 +1500,9 @@ mod publication_tests {
             "the worktree already on the branch is prepared again without complaint"
         );
         let second = root.path().join("second");
-        crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
+        let checkout = crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
         let refused = service
-            .prepare_branch(
-                &Checkout::linked(&second, &base),
-                &branch("task/one"),
-                false,
-            )
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await
             .unwrap_err()
             .to_string();
@@ -1676,9 +1671,9 @@ mod publication_tests {
         let service = GitService::new();
 
         let first = root.path().join("first");
-        crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
+        let checkout = crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
         service
-            .prepare_branch(&Checkout::linked(&first, &base), &branch("task/one"), false)
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await
             .unwrap();
         std::fs::write(first.join("work.txt"), "never pushed\n").unwrap();
@@ -1694,22 +1689,12 @@ mod publication_tests {
             "the branch outlived its worktree"
         );
         let second = root.path().join("second");
-        crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
+        let checkout = crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
         service
-            .prepare_branch(
-                &Checkout::linked(&second, &base),
-                &branch("task/one"),
-                false,
-            )
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await
             .unwrap();
-        assert_eq!(
-            service
-                .current_branch(&Checkout::linked(&second, &base))
-                .await
-                .unwrap(),
-            "task/one"
-        );
+        assert_eq!(service.current_branch(&checkout).await.unwrap(), "task/one");
         assert_ne!(
             git(&second, &["rev-parse", "HEAD"]),
             orphaned,
@@ -1729,31 +1714,20 @@ mod publication_tests {
         );
 
         let third = root.path().join("third");
-        crate::worktree::add(&base, &third, "origin/HEAD").unwrap();
+        let checkout = crate::worktree::add(&base, &third, "origin/HEAD").unwrap();
         service
-            .prepare_branch(
-                &Checkout::linked(&third, &base),
-                &branch("task/other"),
-                false,
-            )
+            .prepare_branch(&checkout, &branch("task/other"), false)
             .await
             .unwrap();
         std::fs::remove_dir_all(&third).unwrap();
         let fourth = root.path().join("fourth");
-        crate::worktree::add(&base, &fourth, "origin/HEAD").unwrap();
+        let checkout = crate::worktree::add(&base, &fourth, "origin/HEAD").unwrap();
         service
-            .prepare_branch(
-                &Checkout::linked(&fourth, &base),
-                &branch("task/other"),
-                false,
-            )
+            .prepare_branch(&checkout, &branch("task/other"), false)
             .await
             .unwrap();
         assert_eq!(
-            service
-                .current_branch(&Checkout::linked(&fourth, &base))
-                .await
-                .unwrap(),
+            service.current_branch(&checkout).await.unwrap(),
             "task/other"
         );
     }
@@ -1773,9 +1747,9 @@ mod publication_tests {
         crate::worktree::fixtures::clone(&remote, &base);
         let service = GitService::new();
         let first = root.path().join("first");
-        crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
+        let checkout = crate::worktree::add(&base, &first, "origin/HEAD").unwrap();
         service
-            .prepare_branch(&Checkout::linked(&first, &base), &branch("task/one"), false)
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await
             .unwrap();
         git(&first, &["commit", "-q", "--allow-empty", "-m", "work"]);
@@ -1785,15 +1759,11 @@ mod publication_tests {
             &["worktree", "remove", "--force", first.to_str().unwrap()],
         );
         let second = root.path().join("second");
-        crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
+        let checkout = crate::worktree::add(&base, &second, "origin/HEAD").unwrap();
         let linked = crate::worktree::fixtures::LinkedConfig::new(&base, &root.path().join("copy"));
 
         let prepared = service
-            .prepare_branch(
-                &Checkout::linked(&second, &base),
-                &branch("task/one"),
-                false,
-            )
+            .prepare_branch(&checkout, &branch("task/one"), false)
             .await;
 
         assert!(
@@ -1842,13 +1812,9 @@ mod publication_tests {
             let base = root.join("base");
             crate::worktree::fixtures::clone(&remote, &base);
             let worktree = root.join("other");
-            crate::worktree::add(&base, &worktree, "origin/HEAD").unwrap();
+            let checkout = crate::worktree::add(&base, &worktree, "origin/HEAD").unwrap();
             GitService::new()
-                .prepare_branch(
-                    &Checkout::linked(&worktree, &base),
-                    &branch("task/other"),
-                    false,
-                )
+                .prepare_branch(&checkout, &branch("task/other"), false)
                 .await
                 .unwrap();
             git(&worktree, &["commit", "-q", "--allow-empty", "-m", "work"]);
@@ -1901,9 +1867,8 @@ mod publication_tests {
         let held = Held::new(root.path()).await;
         held.link("refs/heads/task/other");
         let second = root.path().join("second");
-        crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
+        let checkout = crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
         let service = GitService::new();
-        let checkout = Checkout::linked(&second, &held.base);
 
         let prepared = service
             .prepare_branch(&checkout, &branch("task/one"), false)
@@ -1936,9 +1901,8 @@ mod publication_tests {
         let held = Held::new(root.path()).await;
         held.link("refs/heads/task/elsewhere");
         let second = root.path().join("second");
-        crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
+        let checkout = crate::worktree::add(&held.base, &second, "origin/HEAD").unwrap();
         let service = GitService::new();
-        let checkout = Checkout::linked(&second, &held.base);
 
         let prepared = service
             .prepare_branch(&checkout, &branch("task/one"), false)

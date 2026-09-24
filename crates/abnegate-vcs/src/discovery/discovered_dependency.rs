@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 /// One dependency one repository declares on another.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DiscoveredDependency {
     /// The repository that has the dependency.
     pub repository: String,

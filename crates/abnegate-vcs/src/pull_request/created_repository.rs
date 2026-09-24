@@ -3,6 +3,7 @@ use crate::pull_request::Repository;
 
 /// A repository GitHub just created.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CreatedRepository {
     /// Its owner and name, as GitHub recorded them.
     pub repository: Repository,

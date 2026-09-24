@@ -3,6 +3,7 @@ use serde::Deserialize;
 
 /// One file a pull request changes, and by how much.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
 pub struct ChangedFile {
     /// Its path in the repository, after any rename.
     pub filename: String,

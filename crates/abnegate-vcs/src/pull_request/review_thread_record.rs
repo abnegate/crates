@@ -2,6 +2,7 @@ use crate::pull_request::ThreadComment;
 
 /// One review thread on a pull request's diff, with every comment in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ReviewThreadRecord {
     /// GitHub's node identifier for the thread, which resolving it takes.
     pub id: String,

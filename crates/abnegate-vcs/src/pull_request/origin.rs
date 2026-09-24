@@ -50,7 +50,7 @@ impl Origin {
     }
 
     /// `url`, over whatever scheme it names, standing in for `host`.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn standing_in_for(host: &str, url: &str) -> PullRequestResult<Self> {
         Ok(Self {
             url: Self::parse(url)?,

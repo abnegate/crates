@@ -68,10 +68,11 @@ mod pull_requests {
     use abnegate_vcs::MergeMethod;
     use abnegate_vcs::Mergeability;
     use abnegate_vcs::MergeableState;
-    use abnegate_vcs::MergedPullRequest;
-    use abnegate_vcs::PullRequestDetail;
     use abnegate_vcs::PullRequestService;
     use abnegate_vcs::PullRequestState;
+    use abnegate_vcs::ReviewState;
+    use abnegate_vcs::SubmittedReview;
+    use abnegate_vcs::tally;
     use serde_json::json;
     use std::num::NonZeroU64;
     use wiremock::Mock;
@@ -128,14 +129,11 @@ mod pull_requests {
 
     #[test]
     fn a_description_carries_the_problem_the_report_and_the_files() {
-        let body = Description {
-            problem: "The login form was not validating emails correctly",
-            report: Some("Validated the address before submit, and covered it with a test."),
-            changes: Some("- Modified `auth.rs`\n- Updated `login.html`"),
-            task: task(),
-            url: Some("https://tasks.example.com/tasks/12345678"),
-        }
-        .render();
+        let body = Description::new("The login form was not validating emails correctly", task())
+            .with_report("Validated the address before submit, and covered it with a test.")
+            .with_changes("- Modified `auth.rs`\n- Updated `login.html`")
+            .with_url("https://tasks.example.com/tasks/12345678")
+            .render();
 
         assert!(body.contains("## Problem"), "{body}");
         assert!(body.contains("not validating emails"), "{body}");
@@ -148,14 +146,7 @@ mod pull_requests {
 
     #[test]
     fn a_description_without_a_console_link_names_the_task() {
-        let body = Description {
-            problem: "Task description",
-            report: None,
-            changes: None,
-            task: task(),
-            url: None,
-        }
-        .render();
+        let body = Description::new("Task description", task()).render();
 
         assert!(body.contains("12345678"), "{body}");
         assert!(!body.contains("this task]("), "{body}");
@@ -163,16 +154,26 @@ mod pull_requests {
 
     #[test]
     fn a_description_without_changes_heads_no_files_section() {
-        let body = Description {
-            problem: "Task description",
-            report: Some("Nothing needed changing."),
-            changes: None,
-            task: task(),
-            url: Some("https://tasks.example.com/tasks/123"),
-        }
-        .render();
+        let body = Description::new("Task description", task())
+            .with_report("Nothing needed changing.")
+            .with_url("https://tasks.example.com/tasks/123")
+            .render();
 
         assert!(!body.contains("## Files"), "{body}");
+    }
+
+    /// Reviews a caller read somewhere else are tallied the same way as the
+    /// ones this crate reads.
+    #[test]
+    fn reviews_a_caller_builds_are_tallied() {
+        let tallied = tally(&[
+            SubmittedReview::new(ReviewState::ChangesRequested, Some("ada".to_string())),
+            SubmittedReview::new(ReviewState::Approved, Some("ada".to_string())),
+            SubmittedReview::new(ReviewState::Approved, None),
+        ]);
+
+        assert_eq!(tallied.cycles, 1);
+        assert_eq!(tallied.approvals, 2);
     }
 
     /// Each step takes what the one before it returned: the head the pull
@@ -254,29 +255,24 @@ mod pull_requests {
 
         let pull = service.fetch_pull(&reference, &token).await.unwrap();
 
-        assert_eq!(
-            pull,
-            PullRequestDetail {
-                node_id: "PR_kwDOAcme7".to_string(),
-                number: NonZeroU64::new(7).unwrap(),
-                title: "(feat): basket totals".to_string(),
-                body: Some("Adds totals to the basket.".to_string()),
-                state: PullRequestState::Open,
-                draft: false,
-                merged: false,
-                merge_commit_sha: None,
-                head: BranchName::parse("task/one").unwrap(),
-                head_sha: CommitSha::parse(&head).unwrap(),
-                base: BranchName::parse("main").unwrap(),
-                mergeable: Mergeability::Clean,
-                mergeable_state: MergeableState::Clean,
-                changed_files: 3,
-                additions: 120,
-                deletions: 14,
-                commits: 2,
-                url: "https://github.com/acme/project/pull/7".to_string(),
-            }
-        );
+        assert_eq!(pull.node_id, "PR_kwDOAcme7");
+        assert_eq!(pull.number, NonZeroU64::new(7).unwrap());
+        assert_eq!(pull.title, "(feat): basket totals");
+        assert_eq!(pull.body.as_deref(), Some("Adds totals to the basket."));
+        assert_eq!(pull.state, PullRequestState::Open);
+        assert!(!pull.draft);
+        assert!(!pull.merged);
+        assert_eq!(pull.merge_commit_sha, None);
+        assert_eq!(pull.head, BranchName::parse("task/one").unwrap());
+        assert_eq!(pull.head_sha, CommitSha::parse(&head).unwrap());
+        assert_eq!(pull.base, BranchName::parse("main").unwrap());
+        assert_eq!(pull.mergeable, Mergeability::Clean);
+        assert_eq!(pull.mergeable_state, MergeableState::Clean);
+        assert_eq!(pull.changed_files, 3);
+        assert_eq!(pull.additions, 120);
+        assert_eq!(pull.deletions, 14);
+        assert_eq!(pull.commits, 2);
+        assert_eq!(pull.url, "https://github.com/acme/project/pull/7");
 
         let checks = service
             .fetch_checks(reference.repository(), &token, &pull.head_sha)
@@ -300,12 +296,7 @@ mod pull_requests {
             .await
             .unwrap();
 
-        assert_eq!(
-            merge,
-            MergedPullRequest {
-                sha: Some(CommitSha::parse(&merged).unwrap()),
-                administrator: false,
-            }
-        );
+        assert_eq!(merge.sha, Some(CommitSha::parse(&merged).unwrap()));
+        assert!(!merge.administrator);
     }
 }

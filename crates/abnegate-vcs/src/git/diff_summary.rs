@@ -1,5 +1,6 @@
 /// What a working tree currently differs from its last commit by.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DiffSummary {
     /// Every path with a change, tracked or not.
     pub files_changed: Vec<String>,

@@ -3,6 +3,7 @@ use serde::Serialize;
 
 /// One side of a pull request as the GitHub REST API returns it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct GitHubBranch {
     /// The branch name.
     #[serde(rename = "ref")]

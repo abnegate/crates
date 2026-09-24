@@ -6,6 +6,8 @@ use uuid::Uuid;
 /// against, then the run's own report of what it did about it, then the files
 /// it touched. A run that reported nothing leaves its section out rather than
 /// heading an empty one.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Description<'a> {
     /// What was wrong, as the task described it.
     pub problem: &'a str,
@@ -19,7 +21,40 @@ pub struct Description<'a> {
     pub url: Option<&'a str>,
 }
 
-impl Description<'_> {
+impl<'a> Description<'a> {
+    /// A description of the change `task` made to fix `problem`, with no
+    /// report, no list of files and no link to the task.
+    pub fn new(problem: &'a str, task: Uuid) -> Self {
+        Self {
+            problem,
+            report: None,
+            changes: None,
+            task,
+            url: None,
+        }
+    }
+
+    /// The run's own account of what it did.
+    #[must_use]
+    pub fn with_report(mut self, report: &'a str) -> Self {
+        self.report = Some(report);
+        self
+    }
+
+    /// The files the change touched, already formatted as Markdown.
+    #[must_use]
+    pub fn with_changes(mut self, changes: &'a str) -> Self {
+        self.changes = Some(changes);
+        self
+    }
+
+    /// Where the task can be read, linked in place of its identifier.
+    #[must_use]
+    pub fn with_url(mut self, url: &'a str) -> Self {
+        self.url = Some(url);
+        self
+    }
+
     /// The pull request body, in Markdown.
     pub fn render(&self) -> String {
         let mut body = format!("## Problem\n\n{}\n\n", self.problem.trim());
@@ -54,14 +89,11 @@ mod tests {
     /// the second.
     #[test]
     fn a_description_leads_with_the_problem_and_then_the_run_s_own_report() {
-        let body = Description {
-            problem: "The login form accepts an invalid email.",
-            report: Some("Validated the address before submit. Added a regression test."),
-            changes: Some("- `auth.rs`"),
-            task: task(),
-            url: Some("https://tasks.example.com/tasks/123"),
-        }
-        .render();
+        let body = Description::new("The login form accepts an invalid email.", task())
+            .with_report("Validated the address before submit. Added a regression test.")
+            .with_changes("- `auth.rs`")
+            .with_url("https://tasks.example.com/tasks/123")
+            .render();
 
         let problem = body.find("## Problem").expect("{body}");
         let changed = body.find("## What changed").expect("{body}");
@@ -80,15 +112,13 @@ mod tests {
     /// A heading over nothing reads as a section the reviewer has missed.
     #[test]
     fn a_run_that_reported_nothing_heads_no_empty_section() {
-        for report in [None, Some(""), Some("   \n ")] {
-            let body = Description {
-                problem: "Something was wrong.",
-                report,
-                changes: None,
-                task: task(),
-                url: None,
-            }
-            .render();
+        let problem = "Something was wrong.";
+        for description in [
+            Description::new(problem, task()),
+            Description::new(problem, task()).with_report(""),
+            Description::new(problem, task()).with_report("   \n "),
+        ] {
+            let body = description.render();
 
             assert!(!body.contains("## What changed"), "{body}");
             assert!(!body.contains("## Files"), "{body}");
@@ -100,14 +130,7 @@ mod tests {
     /// the run that opened this.
     #[test]
     fn a_description_without_a_console_link_names_the_task_it_came_from() {
-        let body = Description {
-            problem: "Something was wrong.",
-            report: None,
-            changes: None,
-            task: task(),
-            url: None,
-        }
-        .render();
+        let body = Description::new("Something was wrong.", task()).render();
 
         assert!(body.contains(&task().to_string()), "{body}");
         assert!(!body.contains("this task]("), "{body}");
