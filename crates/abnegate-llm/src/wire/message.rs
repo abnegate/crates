@@ -13,6 +13,7 @@ use crate::wire::tool_call::ToolCall;
 /// widening the body into OpenAI content parts, the only shape vision models
 /// accept; a message with no images serialises exactly as it would without.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct Message {
     pub role: Role,
     pub content: Option<String>,
@@ -53,7 +54,7 @@ impl Serialize for Message {
             }
             for url in &self.images {
                 parts.push(ContentPart::ImageUrl {
-                    image_url: ImageUrl { url: url.clone() },
+                    image_url: ImageUrl::new(url.clone()),
                 });
             }
             map.serialize_entry("content", &parts)?;
@@ -79,6 +80,22 @@ impl Serialize for Message {
 }
 
 impl Message {
+    /// A message from `role` with nothing in it yet, for a caller that fills
+    /// in the fields itself.
+    pub fn new(role: Role) -> Self {
+        Self {
+            role,
+            content: None,
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: Vec::new(),
+            generated_images: Vec::new(),
+            reasoning_content: None,
+            thinking_blocks: Vec::new(),
+        }
+    }
+
     pub fn system(content: impl Into<String>) -> Self {
         Self::text(Role::System, content)
     }
@@ -94,7 +111,7 @@ impl Message {
     pub fn assistant_with_tools(tool_calls: Vec<ToolCall>) -> Self {
         Self {
             tool_calls: Some(tool_calls),
-            ..Self::empty(Role::Assistant)
+            ..Self::new(Role::Assistant)
         }
     }
 
@@ -108,21 +125,7 @@ impl Message {
     fn text(role: Role, content: impl Into<String>) -> Self {
         Self {
             content: Some(content.into()),
-            ..Self::empty(role)
-        }
-    }
-
-    fn empty(role: Role) -> Self {
-        Self {
-            role,
-            content: None,
-            name: None,
-            tool_calls: None,
-            tool_call_id: None,
-            images: Vec::new(),
-            generated_images: Vec::new(),
-            reasoning_content: None,
-            thinking_blocks: Vec::new(),
+            ..Self::new(role)
         }
     }
 }
@@ -130,9 +133,22 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::Message;
-    use crate::wire::function_call::FunctionCall;
     use crate::wire::role::Role;
     use crate::wire::tool_call::ToolCall;
+
+    #[test]
+    fn a_new_message_holds_only_its_role() {
+        let message = Message::new(Role::Assistant);
+
+        assert_eq!(message.role, Role::Assistant);
+        assert!(message.content.is_none());
+        assert!(message.tool_calls.is_none());
+        assert!(message.images.is_empty());
+        assert_eq!(
+            serde_json::to_value(&message).unwrap(),
+            serde_json::json!({ "role": "assistant" })
+        );
+    }
 
     #[test]
     fn a_system_message_carries_its_content() {
@@ -161,14 +177,7 @@ mod tests {
 
     #[test]
     fn an_assistant_message_with_tools_has_no_content() {
-        let tool_call = ToolCall {
-            id: "call_123".to_string(),
-            call_type: "function".to_string(),
-            function: FunctionCall {
-                name: "read_file".to_string(),
-                arguments: r#"{"path": "/tmp/test.txt"}"#.to_string(),
-            },
-        };
+        let tool_call = ToolCall::function("call_123", "read_file", r#"{"path": "/tmp/test.txt"}"#);
         let message = Message::assistant_with_tools(vec![tool_call]);
         assert_eq!(message.role, Role::Assistant);
         assert!(message.content.is_none());
@@ -240,14 +249,11 @@ mod tests {
 
     #[test]
     fn tool_calls_round_trip() {
-        let tool_call = ToolCall {
-            id: "call_xyz789".to_string(),
-            call_type: "function".to_string(),
-            function: FunctionCall {
-                name: "write_file".to_string(),
-                arguments: r#"{"path": "/tmp/file.txt", "content": "Hello"}"#.to_string(),
-            },
-        };
+        let tool_call = ToolCall::function(
+            "call_xyz789",
+            "write_file",
+            r#"{"path": "/tmp/file.txt", "content": "Hello"}"#,
+        );
         let message = Message::assistant_with_tools(vec![tool_call]);
         let json = serde_json::to_string(&message).unwrap();
         let deserialized: Message = serde_json::from_str(&json).unwrap();
@@ -263,22 +269,8 @@ mod tests {
     #[test]
     fn several_tool_calls_round_trip_in_order() {
         let tool_calls = vec![
-            ToolCall {
-                id: "call_1".to_string(),
-                call_type: "function".to_string(),
-                function: FunctionCall {
-                    name: "first".to_string(),
-                    arguments: "{}".to_string(),
-                },
-            },
-            ToolCall {
-                id: "call_2".to_string(),
-                call_type: "function".to_string(),
-                function: FunctionCall {
-                    name: "second".to_string(),
-                    arguments: r#"{"param": "value"}"#.to_string(),
-                },
-            },
+            ToolCall::function("call_1", "first", "{}"),
+            ToolCall::function("call_2", "second", r#"{"param": "value"}"#),
         ];
 
         let message = Message::assistant_with_tools(tool_calls);

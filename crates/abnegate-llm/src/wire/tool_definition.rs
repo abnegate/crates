@@ -2,8 +2,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::wire::function_definition::FunctionDefinition;
 
+const FUNCTION_TYPE: &str = "function";
+
 /// A tool offered to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolDefinition {
     #[serde(rename = "type")]
     pub tool_type: String,
@@ -11,18 +14,16 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
+    /// The function `name`, described to the model as `description`, taking
+    /// arguments that match the JSON schema `parameters`.
     pub fn function(
         name: impl Into<String>,
         description: impl Into<String>,
         parameters: serde_json::Value,
     ) -> Self {
         Self {
-            tool_type: "function".to_string(),
-            function: FunctionDefinition {
-                name: name.into(),
-                description: description.into(),
-                parameters,
-            },
+            tool_type: FUNCTION_TYPE.to_string(),
+            function: FunctionDefinition::new(name, description, parameters),
         }
     }
 }

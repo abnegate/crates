@@ -289,11 +289,7 @@ mod tests {
     const RESERVED: u32 = 512;
 
     fn request(messages: &[Message]) -> CompletionRequest<'_> {
-        CompletionRequest::new(
-            "test-model",
-            messages,
-            RequestOptions { reserved: RESERVED },
-        )
+        CompletionRequest::new("test-model", messages, RequestOptions::new(RESERVED))
     }
 
     async fn answer(router: &Router, sample: f64) -> Result<Completion, ProviderError> {
@@ -587,7 +583,7 @@ mod tests {
 
         router
             .complete_with_sample(
-                CompletionRequest::new("qwen3", &messages, RequestOptions { reserved: 4096 })
+                CompletionRequest::new("qwen3", &messages, RequestOptions::new(4096))
                     .with_tools(&tools),
                 0.0,
             )

@@ -9,7 +9,11 @@ use serde::Serialize;
 
 /// A browse as it arrives over the wire, before it is borrowed as a
 /// [`BrowseQuery`].
+///
+/// Every field is optional on the wire; start from the default and set the
+/// ones a browse needs.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[non_exhaustive]
 pub struct BrowseRequest {
     /// Catalogue to browse: `ollama`, `huggingface`, `gpt4all` or `openrouter`.
     #[serde(default)]
@@ -31,6 +35,55 @@ pub struct BrowseRequest {
 }
 
 impl BrowseRequest {
+    /// Browse the catalogue named `source`: `ollama`, `huggingface`,
+    /// `gpt4all` or `openrouter`.
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    /// Search for models matching `search`.
+    pub fn with_search(mut self, search: impl Into<String>) -> Self {
+        self.search = Some(search.into());
+        self
+    }
+
+    /// Continue from the page `cursor` names.
+    pub fn with_cursor(mut self, cursor: impl Into<String>) -> Self {
+        self.cursor = Some(cursor.into());
+        self
+    }
+
+    /// Ask for pages of `limit` models, held to `1..=MAXIMUM_PAGE_SIZE`.
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Set [`Self::sort`].
+    pub fn with_sort(mut self, sort: ModelSort) -> Self {
+        self.sort = Some(sort);
+        self
+    }
+
+    /// Keep only models of `family`, such as `llama`; `all` keeps every one.
+    pub fn with_family(mut self, family: impl Into<String>) -> Self {
+        self.family = Some(family.into());
+        self
+    }
+
+    /// Set [`Self::size`].
+    pub fn with_size(mut self, size: ModelSizeFilter) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    /// Set [`Self::medium`].
+    pub fn with_medium(mut self, medium: ModelMediumFilter) -> Self {
+        self.medium = Some(medium);
+        self
+    }
+
     /// The page size asked for, held to `1..=MAXIMUM_PAGE_SIZE`.
     pub fn limit(&self) -> usize {
         self.limit
@@ -38,6 +91,8 @@ impl BrowseRequest {
             .clamp(1, MAXIMUM_PAGE_SIZE)
     }
 
+    /// This request as the query a [`ModelProvider`](crate::catalog::ModelProvider)
+    /// takes, with a blank or `all` family read as no family.
     pub fn to_browse_query(&self) -> BrowseQuery<'_> {
         let family = self
             .family
@@ -63,16 +118,12 @@ mod tests {
 
     #[test]
     fn browse_query_defaults_blank_filters() {
-        let request = BrowseRequest {
-            source: Some("ollama".into()),
-            search: Some("qwen".into()),
-            cursor: None,
-            limit: Some(20),
-            sort: Some(ModelSort::NameAscending),
-            family: Some("all".into()),
-            size: None,
-            medium: None,
-        };
+        let request = BrowseRequest::default()
+            .with_source("ollama")
+            .with_search("qwen")
+            .with_limit(20)
+            .with_sort(ModelSort::NameAscending)
+            .with_family("all");
         let browse = request.to_browse_query();
         assert_eq!(browse.query, Some("qwen"));
         assert_eq!(browse.family, None);
@@ -82,17 +133,14 @@ mod tests {
 
     #[test]
     fn browse_query_passes_medium() {
-        let request = BrowseRequest {
-            source: Some("huggingface".into()),
-            search: None,
-            cursor: None,
-            limit: None,
-            sort: None,
-            family: Some("llama".into()),
-            size: Some(ModelSizeFilter::Small),
-            medium: Some(ModelMediumFilter::Image),
-        };
+        let request = BrowseRequest::default()
+            .with_source("huggingface")
+            .with_cursor("offset:20")
+            .with_family("llama")
+            .with_size(ModelSizeFilter::Small)
+            .with_medium(ModelMediumFilter::Image);
         let browse = request.to_browse_query();
+        assert_eq!(browse.cursor, Some("offset:20"));
         assert_eq!(browse.family, Some("llama"));
         assert_eq!(browse.size, ModelSizeFilter::Small);
         assert_eq!(browse.medium, ModelMediumFilter::Image);
@@ -101,20 +149,9 @@ mod tests {
     #[test]
     fn limit_defaults_and_clamps() {
         assert_eq!(BrowseRequest::default().limit(), DEFAULT_PAGE_SIZE);
+        assert_eq!(BrowseRequest::default().with_limit(0).limit(), 1);
         assert_eq!(
-            BrowseRequest {
-                limit: Some(0),
-                ..Default::default()
-            }
-            .limit(),
-            1
-        );
-        assert_eq!(
-            BrowseRequest {
-                limit: Some(5_000),
-                ..Default::default()
-            }
-            .limit(),
+            BrowseRequest::default().with_limit(5_000).limit(),
             MAXIMUM_PAGE_SIZE
         );
     }

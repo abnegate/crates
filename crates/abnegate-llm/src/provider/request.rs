@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn a_request_asks_for_nothing_beyond_what_it_is_given() {
         let messages = [Message::user("hi")];
-        let request = CompletionRequest::new("qwen3", &messages, RequestOptions { reserved: 64 });
+        let request = CompletionRequest::new("qwen3", &messages, RequestOptions::new(64));
 
         assert_eq!(request.model, "qwen3");
         assert!(request.tools.is_none());
@@ -81,7 +81,7 @@ mod tests {
             strict: false,
         };
 
-        let request = CompletionRequest::new("qwen3", &messages, RequestOptions { reserved: 64 })
+        let request = CompletionRequest::new("qwen3", &messages, RequestOptions::new(64))
             .with_tools(&tools)
             .with_response_format(&format)
             .with_temperature(0.0);

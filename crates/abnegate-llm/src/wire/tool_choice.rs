@@ -39,7 +39,7 @@ impl ToolChoice {
     pub fn specific(name: impl Into<String>) -> Self {
         Self::Specific {
             r#type: FUNCTION_TYPE.to_string(),
-            function: SpecificFunction { name: name.into() },
+            function: SpecificFunction::new(name),
         }
     }
 }

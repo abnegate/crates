@@ -16,20 +16,11 @@ pub struct ToolCallResult {
 
 #[cfg(test)]
 mod tests {
-    use abnegate_llm::FunctionCall;
-
     use super::*;
 
     #[test]
     fn test_tool_call_result_failed() {
-        let tool_call = ToolCall {
-            id: "call_fail".to_string(),
-            call_type: "function".to_string(),
-            function: FunctionCall {
-                name: "execute_command".to_string(),
-                arguments: r#"{"cmd": "invalid"}"#.to_string(),
-            },
-        };
+        let tool_call = ToolCall::function("call_fail", "execute_command", r#"{"cmd": "invalid"}"#);
 
         let result = ToolCallResult {
             call: tool_call,
@@ -44,14 +35,7 @@ mod tests {
 
     #[test]
     fn test_tool_call_result_serialization() {
-        let tool_call = ToolCall {
-            id: "call_test".to_string(),
-            call_type: "function".to_string(),
-            function: FunctionCall {
-                name: "test".to_string(),
-                arguments: "{}".to_string(),
-            },
-        };
+        let tool_call = ToolCall::function("call_test", "test", "{}");
 
         let result = ToolCallResult {
             call: tool_call,

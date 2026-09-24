@@ -698,7 +698,7 @@ mod tests {
     }
 
     fn request(messages: &[Message]) -> CompletionRequest<'_> {
-        CompletionRequest::new("sonnet", messages, RequestOptions { reserved: 512 })
+        CompletionRequest::new("sonnet", messages, RequestOptions::new(512))
     }
 
     async fn run(

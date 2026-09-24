@@ -189,9 +189,7 @@ impl LlmClient {
     }
 
     fn reserved(&self) -> RequestOptions {
-        RequestOptions {
-            reserved: self.config.maximum_tokens,
-        }
+        RequestOptions::new(self.config.maximum_tokens)
     }
 
     /// Make a chat completion request against the configured model.

@@ -4,6 +4,7 @@ use crate::provider::completion_provider::CompletionProvider;
 
 /// A provider and its share of a weighted split.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Weighted {
     pub provider: Arc<dyn CompletionProvider>,
     pub weight: f64,

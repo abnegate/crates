@@ -1,5 +1,4 @@
 use abnegate_llm::GeneratedImage;
-use abnegate_llm::ImageUrl;
 use abnegate_llm::Message;
 use abnegate_llm::Role;
 use abnegate_llm::ToolCall;
@@ -50,22 +49,19 @@ impl From<&Message> for ReplayMessage {
 
 impl ReplayMessage {
     pub fn into_message(self) -> Message {
-        Message {
-            role: self.role,
-            content: self.content,
-            name: self.name,
-            tool_calls: self.tool_calls,
-            tool_call_id: self.tool_call_id,
-            images: self.images,
-            generated_images: self
-                .generated_images
-                .into_iter()
-                .map(|url| GeneratedImage {
-                    image_url: ImageUrl { url },
-                })
-                .collect(),
-            reasoning_content: self.reasoning_content,
-            thinking_blocks: self.thinking_blocks,
-        }
+        let mut message = Message::new(self.role);
+        message.content = self.content;
+        message.name = self.name;
+        message.tool_calls = self.tool_calls;
+        message.tool_call_id = self.tool_call_id;
+        message.images = self.images;
+        message.generated_images = self
+            .generated_images
+            .into_iter()
+            .map(GeneratedImage::new)
+            .collect();
+        message.reasoning_content = self.reasoning_content;
+        message.thinking_blocks = self.thinking_blocks;
+        message
     }
 }

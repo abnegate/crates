@@ -7,7 +7,6 @@ use crate::provider::{CompletionProvider, CompletionRequest, ProviderError};
 use crate::wire::Message;
 
 const DEFAULT_MAXIMUM_CONTEXT_TOKENS: u32 = 128_000;
-const DEFAULT_FINISH_REASON: &str = "stop";
 
 /// Any [`CompletionProvider`] as a [`TextProvider`].
 ///
@@ -85,9 +84,7 @@ impl<P: CompletionProvider> TextProvider for CompletionBridge<P> {
         let mut completion_request = CompletionRequest::new(
             &self.model,
             &messages,
-            RequestOptions {
-                reserved: request.maximum_tokens,
-            },
+            RequestOptions::new(request.maximum_tokens),
         )
         .with_temperature(request.temperature as f32);
         if let Some(format) = &request.response_format {
@@ -96,14 +93,14 @@ impl<P: CompletionProvider> TextProvider for CompletionBridge<P> {
 
         let completion = self.provider.complete(completion_request).await?;
         let usage = completion.usage.unwrap_or_default();
-        Ok(TextResponse {
-            content: completion.message.content.unwrap_or_default(),
-            model: self.model.clone(),
-            input_tokens: usage.prompt_tokens,
-            output_tokens: usage.completion_tokens,
-            finish_reason: completion
-                .finish_reason
-                .unwrap_or_else(|| DEFAULT_FINISH_REASON.to_string()),
+        let response = TextResponse::new(
+            completion.message.content.unwrap_or_default(),
+            self.model.clone(),
+        )
+        .with_tokens(usage.prompt_tokens, usage.completion_tokens);
+        Ok(match completion.finish_reason {
+            Some(finish_reason) => response.with_finish_reason(finish_reason),
+            None => response,
         })
     }
 

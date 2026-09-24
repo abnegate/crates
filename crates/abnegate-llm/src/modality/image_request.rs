@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// An image for an [`ImageProvider`](crate::ImageProvider) to generate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ImageRequest {
     pub prompt: String,
     pub negative_prompt: Option<String>,
@@ -14,6 +16,7 @@ pub struct ImageRequest {
 }
 
 impl ImageRequest {
+    /// One `width` by `height` image of `prompt`, with no style or references.
     pub fn new(prompt: impl Into<String>, width: u32, height: u32) -> Self {
         Self {
             prompt: prompt.into(),
@@ -24,6 +27,30 @@ impl ImageRequest {
             reference_images: Vec::new(),
             image_count: 1,
         }
+    }
+
+    /// Describe what the image must not show.
+    pub fn with_negative_prompt(mut self, negative_prompt: impl Into<String>) -> Self {
+        self.negative_prompt = Some(negative_prompt.into());
+        self
+    }
+
+    /// Name a style the provider knows.
+    pub fn with_style(mut self, style: impl Into<String>) -> Self {
+        self.style = Some(style.into());
+        self
+    }
+
+    /// Set the images the result should resemble.
+    pub fn with_reference_images(mut self, reference_images: Vec<String>) -> Self {
+        self.reference_images = reference_images;
+        self
+    }
+
+    /// Set [`Self::image_count`].
+    pub fn with_image_count(mut self, image_count: u32) -> Self {
+        self.image_count = image_count;
+        self
     }
 }
 
@@ -45,15 +72,11 @@ mod tests {
 
     #[test]
     fn round_trips_with_every_option_set() {
-        let request = ImageRequest {
-            prompt: "A beautiful landscape".into(),
-            negative_prompt: Some("blurry".into()),
-            width: 1024,
-            height: 768,
-            style: Some("photographic".into()),
-            reference_images: vec!["ref1.png".into(), "ref2.png".into()],
-            image_count: 4,
-        };
+        let request = ImageRequest::new("A beautiful landscape", 1024, 768)
+            .with_negative_prompt("blurry")
+            .with_style("photographic")
+            .with_reference_images(vec!["ref1.png".into(), "ref2.png".into()])
+            .with_image_count(4);
 
         let json = serde_json::to_string(&request).unwrap();
         let roundtrip: ImageRequest = serde_json::from_str(&json).unwrap();

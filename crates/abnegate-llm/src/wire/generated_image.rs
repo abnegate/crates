@@ -8,6 +8,16 @@ use crate::wire::image_url::ImageUrl;
 /// `delta.images`. Extra provider fields such as `index`, `type`, and
 /// `image_url.detail` are intentionally ignored during deserialisation.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct GeneratedImage {
     pub image_url: ImageUrl,
+}
+
+impl GeneratedImage {
+    /// The image at `url`, which may be a data URL.
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            image_url: ImageUrl::new(url),
+        }
+    }
 }

@@ -2,7 +2,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::modality::ResponseFormat;
 
+const DEFAULT_TEMPERATURE: f64 = 0.7;
+const DEFAULT_MAXIMUM_TOKENS: u32 = 4096;
+
+/// One prompt for a [`TextProvider`](crate::TextProvider): a system prompt, a
+/// user prompt, and how the answer should come back.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TextRequest {
     pub system_prompt: String,
     pub user_prompt: String,
@@ -15,15 +21,41 @@ pub struct TextRequest {
 }
 
 impl TextRequest {
+    /// Ask `user_prompt` under `system_prompt` for up to 4,096 tokens of prose
+    /// at temperature 0.7.
     pub fn new(system_prompt: impl Into<String>, user_prompt: impl Into<String>) -> Self {
         Self {
             system_prompt: system_prompt.into(),
             user_prompt: user_prompt.into(),
-            temperature: 0.7,
-            maximum_tokens: 4096,
+            temperature: DEFAULT_TEMPERATURE,
+            maximum_tokens: DEFAULT_MAXIMUM_TOKENS,
             response_format: None,
             context: None,
         }
+    }
+
+    /// Set [`Self::temperature`].
+    pub fn with_temperature(mut self, temperature: f64) -> Self {
+        self.temperature = temperature;
+        self
+    }
+
+    /// Set [`Self::maximum_tokens`].
+    pub fn with_maximum_tokens(mut self, maximum_tokens: u32) -> Self {
+        self.maximum_tokens = maximum_tokens;
+        self
+    }
+
+    /// Ask for the answer in `response_format` rather than as prose.
+    pub fn with_response_format(mut self, response_format: ResponseFormat) -> Self {
+        self.response_format = Some(response_format);
+        self
+    }
+
+    /// Carry `context` alongside the prompts.
+    pub fn with_context(mut self, context: serde_json::Value) -> Self {
+        self.context = Some(context);
+        self
     }
 }
 
@@ -55,17 +87,14 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-        let request = TextRequest {
-            system_prompt: "System prompt here".into(),
-            user_prompt: "User prompt here".into(),
-            temperature: 0.3,
-            maximum_tokens: 2000,
-            response_format: Some(ResponseFormat::Json {
+        let request = TextRequest::new("System prompt here", "User prompt here")
+            .with_temperature(0.3)
+            .with_maximum_tokens(2000)
+            .with_response_format(ResponseFormat::Json {
                 schema: None,
                 strict: false,
-            }),
-            context: Some(serde_json::json!({ "key": "value" })),
-        };
+            })
+            .with_context(serde_json::json!({ "key": "value" }));
 
         let json = serde_json::to_string(&request).unwrap();
         let roundtrip: TextRequest = serde_json::from_str(&json).unwrap();
@@ -75,6 +104,9 @@ mod tests {
         assert!((roundtrip.temperature - 0.3).abs() < f64::EPSILON);
         assert_eq!(roundtrip.maximum_tokens, 2000);
         assert!(roundtrip.response_format.is_some());
-        assert!(roundtrip.context.is_some());
+        assert_eq!(
+            roundtrip.context,
+            Some(serde_json::json!({ "key": "value" }))
+        );
     }
 }

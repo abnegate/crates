@@ -52,7 +52,6 @@ impl AgentStep {
 
 #[cfg(test)]
 mod tests {
-    use abnegate_llm::FunctionCall;
     use abnegate_llm::ToolCall;
 
     use super::*;
@@ -81,14 +80,7 @@ mod tests {
 
     #[test]
     fn test_agent_step_with_tool_calls() {
-        let tool_call = ToolCall {
-            id: "call_123".to_string(),
-            call_type: "function".to_string(),
-            function: FunctionCall {
-                name: "read_file".to_string(),
-                arguments: r#"{"path": "/tmp/test"}"#.to_string(),
-            },
-        };
+        let tool_call = ToolCall::function("call_123", "read_file", r#"{"path": "/tmp/test"}"#);
 
         let tool_result = ToolCallResult {
             call: tool_call,

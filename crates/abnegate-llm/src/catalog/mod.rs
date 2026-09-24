@@ -6,10 +6,7 @@
 //! use abnegate_llm::catalog::browse;
 //!
 //! # async fn example() -> Result<(), abnegate_llm::catalog::CatalogError> {
-//! let request = BrowseRequest {
-//!     search: Some("qwen".into()),
-//!     ..Default::default()
-//! };
+//! let request = BrowseRequest::default().with_search("qwen");
 //! let page = browse("huggingface")?
 //!     .search(request.to_browse_query())
 //!     .await?;

@@ -9,6 +9,7 @@ const MEGABYTES_PER_GIGABYTE: f64 = 1024.0;
 
 /// What a machine can run locally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct MachineProfile {
     pub name: String,
     pub gpu_vram_gb: f64,
@@ -19,6 +20,27 @@ pub struct MachineProfile {
 }
 
 impl MachineProfile {
+    /// A machine called `name` with `gpu_vram_gb` of VRAM, `system_ram_gb` of
+    /// RAM, shared between the two when `unified_memory` is set, and the
+    /// models `recommended_models` names as the best it runs.
+    pub fn new(
+        name: impl Into<String>,
+        gpu_vram_gb: f64,
+        system_ram_gb: f64,
+        unified_memory: bool,
+        gpu_type: GpuType,
+        recommended_models: RecommendedModels,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            gpu_vram_gb,
+            system_ram_gb,
+            unified_memory,
+            gpu_type,
+            recommended_models,
+        }
+    }
+
     /// This machine's profile, or a CPU-only one when it cannot be detected.
     ///
     /// Detection runs `sysctl` or `nvidia-smi` and reads `/proc`, so it runs
@@ -1417,6 +1439,45 @@ mod tests {
                 slug
             );
         }
+    }
+
+    #[test]
+    fn a_machine_that_is_no_preset_can_be_described() {
+        let model = |name: &str| ModelRecommendation::new(name, 4.0, 0.5);
+        let profile = MachineProfile::new(
+            "Workstation",
+            16.0,
+            64.0,
+            false,
+            GpuType::CpuOnly,
+            RecommendedModels::new(
+                model("llm")
+                    .with_quantization("Q4_K_M")
+                    .with_estimated_speed("~20 tok/s")
+                    .with_can_run_with_others(vec!["embedding".into()])
+                    .with_notes("fits beside the embedder"),
+                model("image"),
+                model("voice"),
+                model("music"),
+                model("model3d"),
+                model("embedding"),
+                model("transcription"),
+            ),
+        );
+
+        assert_eq!(profile.name, "Workstation");
+        assert_eq!((profile.gpu_vram_gb, profile.system_ram_gb), (16.0, 64.0));
+        assert!(!profile.unified_memory);
+        let llm = &profile.recommended_models.llm;
+        assert_eq!(llm.model_name, "llm");
+        assert_eq!(llm.quantization.as_deref(), Some("Q4_K_M"));
+        assert_eq!(llm.estimated_speed, "~20 tok/s");
+        assert_eq!(llm.can_run_with_others, vec!["embedding".to_string()]);
+        assert_eq!(llm.notes, "fits beside the embedder");
+        assert_eq!(
+            profile.recommended_models.transcription.model_name,
+            "transcription"
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ use crate::wire::ToolDefinition;
 
 /// The request a [`StubProvider`](super::StubProvider) was last handed.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Seen {
     pub model: String,
     pub messages: Vec<Message>,

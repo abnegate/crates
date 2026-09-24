@@ -103,7 +103,6 @@ pub fn trim_history(history: &[Message], budget: u64) -> &[Message] {
 
 #[cfg(test)]
 mod tests {
-    use abnegate_llm::FunctionCall;
     use abnegate_llm::ToolCall;
 
     use super::*;
@@ -189,14 +188,7 @@ Format code references as `file_path:line_number`.";
     /// answering nothing, so the cut moves forward past them instead.
     #[test]
     fn a_trimmed_history_never_opens_on_an_orphaned_tool_result() {
-        let call = ToolCall {
-            id: "call".to_string(),
-            call_type: "function".to_string(),
-            function: FunctionCall {
-                name: "read_file".to_string(),
-                arguments: "x".repeat(4000),
-            },
-        };
+        let call = ToolCall::function("call", "read_file", "x".repeat(4000));
         let history = vec![
             Message::user("Read it"),
             Message::assistant_with_tools(vec![call]),
