@@ -72,11 +72,7 @@ impl PullRequestService {
         if status.is_success() {
             return created(decode(response).await?);
         }
-        if let Some(failure) = classified(status, response.headers()) {
-            return Err(failure);
-        }
-
-        let refusal = refusal_of(response).await;
+        let refusal = explained(response).await?;
         if status == StatusCode::UNPROCESSABLE_ENTITY && refusal.mentions(EXISTS) {
             return Err(PullRequestError::RepositoryExists(name.to_string()));
         }

@@ -79,6 +79,10 @@ const RATE_LIMIT_REMAINING: &str = "x-ratelimit-remaining";
 /// The header GitHub's secondary rate limit says how long to wait in.
 const RETRY_AFTER: &str = "retry-after";
 
+/// What GitHub says of a spent rate limit on a 403 that carries no header
+/// saying so.
+const RATE_LIMIT: &str = "rate limit";
+
 /// Most of GitHub's own words carried into [`PullRequestError::GitHubApi`].
 const MAXIMUM_ERROR_BYTES: usize = 1024;
 
@@ -291,11 +295,7 @@ impl PullRequestService {
                 state: created.state,
             });
         }
-        if let Some(failure) = classified(status, response.headers()) {
-            return Err(failure);
-        }
-
-        let refusal = refusal_of(response).await;
+        let refusal = explained(response).await?;
         if status == StatusCode::UNPROCESSABLE_ENTITY && refusal.mentions(ALREADY_EXISTS) {
             return Err(PullRequestError::PullRequestAlreadyExists(head.clone()));
         }
@@ -622,13 +622,35 @@ async fn refusal_of(response: Response) -> GitHubRefusal {
         .unwrap_or_default()
 }
 
-/// What an unsuccessful answer means: what its status says on its own, or
-/// else its status and GitHub's own words.
+/// What GitHub said in refusing, for a caller to read more into, unless the
+/// refusal means something on its own, which is then the error.
+///
+/// A 403 that carries no rate-limit header is read before it is called
+/// forbidden, because GitHub's secondary rate limit can say so only in words.
+async fn explained(response: Response) -> PullRequestResult<GitHubRefusal> {
+    match classified(response.status(), response.headers()) {
+        Some(PullRequestError::Forbidden) => Err(forbidden(&refusal_of(response).await)),
+        Some(failure) => Err(failure),
+        None => Ok(refusal_of(response).await),
+    }
+}
+
+/// What a 403 without a rate-limit header means: a spent rate limit when
+/// GitHub's words say so, and otherwise a token that may not do this.
+fn forbidden(refusal: &GitHubRefusal) -> PullRequestError {
+    match refusal.mentions(RATE_LIMIT) {
+        true => PullRequestError::RateLimited,
+        false => PullRequestError::Forbidden,
+    }
+}
+
+/// What an unsuccessful answer means: what it says on its own, or else its
+/// status and GitHub's own words.
 async fn refusal(response: Response) -> PullRequestError {
     let status = response.status();
-    match classified(status, response.headers()) {
-        Some(failure) => failure,
-        None => unexpected(status, &refusal_of(response).await),
+    match explained(response).await {
+        Ok(refusal) => unexpected(status, &refusal),
+        Err(failure) => failure,
     }
 }
 
@@ -1192,6 +1214,42 @@ mod tests {
                 format!("{failure:?}").starts_with(expected),
                 "{expected}: {failure:?}"
             );
+        }
+    }
+
+    /// GitHub's secondary rate limit can answer with a bare 403 that says so
+    /// only in words.
+    #[tokio::test]
+    async fn a_forbidden_answer_that_says_it_is_a_rate_limit_is_one() {
+        for (message, expected) in [
+            (
+                "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+                "RateLimited",
+            ),
+            (
+                "API rate limit exceeded for installation ID 1.",
+                "RateLimited",
+            ),
+            ("Resource not accessible by integration", "Forbidden"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/acme/project/pulls/7"))
+                .respond_with(
+                    ResponseTemplate::new(403)
+                        .set_body_json(serde_json::json!({ "message": message })),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .fetch_mergeability(&seven(&service), &token())
+                .await
+                .unwrap_err();
+
+            assert_eq!(format!("{failure:?}"), expected, "{message}");
         }
     }
 

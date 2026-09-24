@@ -34,11 +34,7 @@ impl PullRequestService {
         if status.is_success() || status == StatusCode::NOT_FOUND {
             return Ok(());
         }
-        if let Some(failure) = classified(status, response.headers()) {
-            return Err(failure);
-        }
-
-        let refusal = refusal_of(response).await;
+        let refusal = explained(response).await?;
         if status == StatusCode::UNPROCESSABLE_ENTITY && refusal.mentions(ABSENT) {
             return Ok(());
         }

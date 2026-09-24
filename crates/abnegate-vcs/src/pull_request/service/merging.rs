@@ -102,16 +102,10 @@ impl PullRequestService {
                 administrator: false,
             });
         }
-        if let Some(failure) = classified(status, response.headers()) {
-            return Err(failure);
-        }
-        if status == StatusCode::CONFLICT {
-            return Err(PullRequestError::HeadMoved);
-        }
-
-        let refusal = refusal_of(response).await;
+        let refusal = explained(response).await?;
         let reason = reason(status, &refusal);
         match status {
+            StatusCode::CONFLICT => Err(PullRequestError::HeadMoved),
             StatusCode::UNPROCESSABLE_ENTITY => Err(PullRequestError::NotMergeable(reason)),
             StatusCode::METHOD_NOT_ALLOWED if refusal.mentions(MODIFIED) => {
                 Err(PullRequestError::HeadMoved)
@@ -582,6 +576,10 @@ mod tests {
             (
                 refusing(403, "You have exceeded a secondary rate limit")
                     .insert_header("retry-after", "60"),
+                "RateLimited",
+            ),
+            (
+                refusing(403, "You have exceeded a secondary rate limit"),
                 "RateLimited",
             ),
             (refusing(429, "Too many requests"), "RateLimited"),
