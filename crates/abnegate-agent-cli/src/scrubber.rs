@@ -14,7 +14,7 @@ const MINIMUM: usize = 8;
 const QUOTE: char = '"';
 const BACKSLASH: u8 = b'\\';
 const ESCAPED_LETTERS: &[u8] = b"ntrbf";
-const HEX_DIGITS: usize = 4;
+const HEXADECIMAL_DIGITS: usize = 4;
 const UNICODE_ESCAPE: usize = 6;
 const UNRESERVED: [char; 4] = ['-', '.', '_', '~'];
 const ENCODED_SPACE: &str = "%20";
@@ -176,7 +176,7 @@ fn escaped(before: &str) -> bool {
     let length = bytes.len();
     let opening = if length >= UNICODE_ESCAPE
         && bytes[length - UNICODE_ESCAPE + 1] == b'u'
-        && bytes[length - HEX_DIGITS..]
+        && bytes[length - HEXADECIMAL_DIGITS..]
             .iter()
             .all(u8::is_ascii_hexdigit)
     {
