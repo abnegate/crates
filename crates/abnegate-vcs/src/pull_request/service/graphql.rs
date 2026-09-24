@@ -31,7 +31,7 @@ impl PullRequestService {
     ) -> PullRequestResult<T> {
         let answer = self.answer(token, query, variables).await?;
         if !answer.errors.is_empty() {
-            return Err(refusal(&answer.errors));
+            return Err(rejection(&answer.errors));
         }
         let data = answer
             .data
@@ -62,7 +62,7 @@ impl PullRequestService {
 /// The refusal a set of GraphQL errors names: a spent rate limit ahead of
 /// anything missing, anything missing ahead of anything forbidden, and
 /// GitHub's own words for the rest.
-fn refusal(errors: &[GraphQlError]) -> PullRequestError {
+fn rejection(errors: &[GraphQlError]) -> PullRequestError {
     if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
     }
