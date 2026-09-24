@@ -358,10 +358,11 @@ mod tests {
     fn confined(job_id: &str, root: &Path, command: &str) -> RunStart {
         RunStart::new(job_id, root, command)
             .with_timeout(Duration::from_secs(15))
-            .with_confinement(ConfinementRequest::new(
-                vec![root.to_path_buf()],
-                vec![root.to_path_buf()],
-            ))
+            .with_confinement(
+                ConfinementRequest::default()
+                    .with_read_roots([root])
+                    .with_write_roots([root]),
+            )
     }
 
     fn environment_listing(environment: HashMap<String, String>) -> RunStart {

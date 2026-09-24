@@ -59,11 +59,10 @@ fn full_run() -> InboundMessage {
             .with_output_limit(1_048_576)
             .with_working_directory("/tmp/work/crate")
             .with_confinement(
-                ConfinementRequest::new(
-                    vec![PathBuf::from("/tmp/work")],
-                    vec![PathBuf::from("/tmp/work/target")],
-                )
-                .with_process_tree(ProcessTreeRequest::new(vec![PathBuf::from("/usr/bin")])),
+                ConfinementRequest::default()
+                    .with_read_roots(["/tmp/work"])
+                    .with_write_roots(["/tmp/work/target"])
+                    .with_process_tree(ProcessTreeRequest::new(vec![PathBuf::from("/usr/bin")])),
             ),
     )
 }
@@ -77,7 +76,7 @@ fn single_command_run() -> InboundMessage {
         RunStart::new("job-3", "/tmp", "/bin/cat")
             .with_arguments(["granted"])
             .with_timeout(Duration::from_millis(15_000))
-            .with_confinement(ConfinementRequest::new(vec![PathBuf::from("/tmp")], vec![])),
+            .with_confinement(ConfinementRequest::default().with_read_roots(["/tmp"])),
     )
 }
 
