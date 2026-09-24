@@ -28,13 +28,61 @@ const SUBMISSIONS_PORT: u16 = 465;
 /// when the config is dropped, and readable only at the point it is handed to
 /// the transport.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct SmtpConfig {
+    /// The relay's host name, which is safe to log.
     pub host: String,
+    /// 465 for implicit TLS; any other port, usually 587, must upgrade with
+    /// STARTTLS before the credentials are sent.
     pub port: u16,
+    /// The name the relay signs in with.
     pub user: String,
+    /// The relay password.
     pub password: SecretValue,
+    /// The address every message is sent from.
     pub from_address: String,
+    /// The display name shown beside `from_address`.
     pub from_name: String,
+}
+
+impl SmtpConfig {
+    /// The relay at `host` and `port`, signed in to as `user` with `password`,
+    /// sending as `from_name <from_address>`.
+    ///
+    /// Nothing is checked or connected here: the addresses are parsed when a
+    /// `Mailer` or an `Email` channel is built from this, and the relay is
+    /// reached only when a message is sent.
+    ///
+    /// ```
+    /// use abnegate_notify::SmtpConfig;
+    ///
+    /// let relay = SmtpConfig::new(
+    ///     "smtp.example.test",
+    ///     587,
+    ///     "postmaster",
+    ///     "relay-password",
+    ///     "noreply@example.test",
+    ///     "Notifications",
+    /// );
+    /// assert_eq!(relay.host, "smtp.example.test");
+    /// ```
+    pub fn new(
+        host: impl Into<String>,
+        port: u16,
+        user: impl Into<String>,
+        password: impl Into<SecretValue>,
+        from_address: impl Into<String>,
+        from_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            user: user.into(),
+            password: password.into(),
+            from_address: from_address.into(),
+            from_name: from_name.into(),
+        }
+    }
 }
 
 #[cfg(feature = "smtp")]
@@ -108,14 +156,24 @@ mod tests {
     use super::*;
 
     fn config() -> SmtpConfig {
-        SmtpConfig {
-            host: "smtp.example.test".to_string(),
-            port: 587,
-            user: "postmaster".to_string(),
-            password: SecretValue::new("hunter2-not-a-real-password"),
-            from_address: "noreply@example.test".to_string(),
-            from_name: "Notifications".to_string(),
-        }
+        SmtpConfig::new(
+            "smtp.example.test",
+            587,
+            "postmaster",
+            "hunter2-not-a-real-password",
+            "noreply@example.test",
+            "Notifications",
+        )
+    }
+
+    #[test]
+    fn each_part_is_kept_where_it_was_given() {
+        let config = config();
+        assert_eq!(config.host, "smtp.example.test");
+        assert_eq!(config.port, 587);
+        assert_eq!(config.user, "postmaster");
+        assert_eq!(config.from_address, "noreply@example.test");
+        assert_eq!(config.from_name, "Notifications");
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub struct MockMailer {
 }
 
 impl MockMailer {
+    /// A mailer that has recorded nothing yet.
     pub fn new() -> Self {
         Self::default()
     }
@@ -30,6 +31,7 @@ impl MockMailer {
         self.sent.lock().await.clone()
     }
 
+    /// Forget everything sent so far.
     pub async fn clear(&self) {
         self.sent.lock().await.clear();
     }
@@ -38,11 +40,10 @@ impl MockMailer {
 #[async_trait]
 impl Mail for MockMailer {
     async fn send(&self, recipient: &str, subject: &str, body: &str) -> Result<(), Error> {
-        self.sent.lock().await.push(SentMail {
-            recipient: recipient.to_string(),
-            subject: subject.to_string(),
-            body: body.to_string(),
-        });
+        self.sent
+            .lock()
+            .await
+            .push(SentMail::new(recipient, subject, body));
         Ok(())
     }
 }
@@ -72,11 +73,21 @@ mod tests {
             .await
             .expect("recorded");
 
-        let sent = mailer.sent().await;
-        assert_eq!(sent.len(), 2);
-        assert_eq!(sent[0].recipient, "person@example.test");
-        assert_eq!(sent[0].subject, "Verify your email address");
-        assert_eq!(sent[1].subject, "Reset your password");
+        assert_eq!(
+            mailer.sent().await,
+            vec![
+                SentMail::new(
+                    "person@example.test",
+                    "Verify your email address",
+                    "Open https://example.test/verify?t=abc",
+                ),
+                SentMail::new(
+                    "person@example.test",
+                    "Reset your password",
+                    "Open https://example.test/reset?t=abc",
+                ),
+            ]
+        );
     }
 
     #[tokio::test]

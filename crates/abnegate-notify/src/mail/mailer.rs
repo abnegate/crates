@@ -83,17 +83,16 @@ impl fmt::Debug for Mailer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use abnegate_secret::SecretValue;
 
     fn config() -> SmtpConfig {
-        SmtpConfig {
-            host: "smtp.example.test".to_string(),
-            port: 587,
-            user: "postmaster".to_string(),
-            password: SecretValue::new("hunter2-not-a-real-password"),
-            from_address: "noreply@example.test".to_string(),
-            from_name: "Notifications".to_string(),
-        }
+        SmtpConfig::new(
+            "smtp.example.test",
+            587,
+            "postmaster",
+            "hunter2-not-a-real-password",
+            "noreply@example.test",
+            "Notifications",
+        )
     }
 
     fn mailer() -> Mailer {
