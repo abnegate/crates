@@ -766,29 +766,43 @@ mod tests {
 
     /// The response to a request sent to a server that answers once with
     /// `answer`, byte for byte.
+    ///
+    /// wiremock frames every body itself, so it can send neither a chunked
+    /// body nor one shorter than the length it declares; these tests write
+    /// the answer by hand instead.
     async fn served(answer: String) -> Response {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port to listen on");
+        let address = listener
+            .local_addr()
+            .expect("the address the listener is bound to");
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
+            let (mut stream, _) = listener.accept().await.expect("the client to connect");
             let mut request = Vec::new();
             let mut buffer = [0; 1024];
             while !request.ends_with(b"\r\n\r\n") {
-                let read = stream.read(&mut buffer).await.unwrap();
+                let read = stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("the request to be readable");
                 if read == 0 {
                     break;
                 }
                 request.extend_from_slice(&buffer[..read]);
             }
-            stream.write_all(answer.as_bytes()).await.unwrap();
+            stream
+                .write_all(answer.as_bytes())
+                .await
+                .expect("the answer to be writable");
         });
 
         client(false, REQUEST_TIMEOUT)
-            .unwrap()
+            .expect("a client")
             .get(format!("http://{address}"))
             .send()
             .await
-            .unwrap()
+            .expect("an answer from the stand-in server")
     }
 
     /// Following a 301, 302 or 303 turns any other method into a GET and drops
