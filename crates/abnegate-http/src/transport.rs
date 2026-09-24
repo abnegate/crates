@@ -132,7 +132,7 @@ impl HttpClient for ReqwestHttpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::HttpError;
+    use crate::error::Error;
     use crate::public::public_client;
     use crate::test_support::LOOPBACK_SPELLINGS;
     use crate::test_support::assert_untouched;
@@ -229,7 +229,7 @@ mod tests {
             .await
             .expect_err("nothing listens there");
 
-        assert!(matches!(error, HttpError::Request(_)), "{error}");
+        assert!(matches!(error, Error::Request(_)), "{error}");
     }
 
     #[tokio::test]
@@ -261,7 +261,7 @@ mod tests {
                 client.delete(&url, Vec::new()).await,
             ] {
                 let error = response.expect_err("loopback must not be fetched");
-                assert!(matches!(error, HttpError::PrivateAddress), "{url}: {error}");
+                assert!(matches!(error, Error::PrivateAddress), "{url}: {error}");
             }
             assert_untouched(&listener);
         }
@@ -276,7 +276,7 @@ mod tests {
             .await
             .expect_err("the body ended 95 bytes early");
 
-        assert!(matches!(error, HttpError::UnreadableBody(_)), "{error}");
+        assert!(matches!(error, Error::UnreadableBody(_)), "{error}");
         assert!(!format!("{error:?}").contains("hunter2"), "{error:?}");
     }
 
@@ -294,7 +294,7 @@ mod tests {
             .await
             .expect_err("the body ended four bytes in");
 
-        assert!(matches!(error, HttpError::UnreadableBody(_)), "{error}");
+        assert!(matches!(error, Error::UnreadableBody(_)), "{error}");
     }
 
     #[tokio::test]
@@ -312,7 +312,7 @@ mod tests {
             .expect_err("64 bytes do not fit under 16");
 
         assert!(
-            matches!(error, HttpError::OversizedBody { limit: 16 }),
+            matches!(error, Error::OversizedBody { limit: 16 }),
             "{error}"
         );
     }

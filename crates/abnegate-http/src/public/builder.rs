@@ -1,4 +1,4 @@
-use crate::error::HttpError;
+use crate::error::Error;
 use crate::error::Result;
 use crate::public::client::PublicClient;
 use crate::public::resolver::PublicResolver;
@@ -47,7 +47,7 @@ impl PublicClientBuilder {
             .dns_resolver(PublicResolver)
             .redirect(Policy::custom(|attempt| {
                 if attempt.previous().len() > MAX_REDIRECTS {
-                    return attempt.error(HttpError::TooManyRedirects);
+                    return attempt.error(Error::TooManyRedirects);
                 }
                 match validate_public_url(attempt.url().as_str()) {
                     Ok(_) => attempt.follow(),
@@ -61,7 +61,7 @@ impl PublicClientBuilder {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::HttpError;
+    use crate::error::Error;
     use crate::public::public_client;
     use crate::public::public_client_builder;
     use crate::test_support::LOOPBACK_SPELLINGS;
@@ -70,7 +70,7 @@ mod tests {
     use crate::test_support::serve_once;
     use reqwest::Proxy;
     use reqwest::redirect::Policy;
-    use std::error::Error;
+    use std::error::Error as _;
     use std::time::Duration;
     use tokio::process::Command;
 
@@ -139,7 +139,7 @@ mod tests {
             let error = client
                 .get(&format!("http://{spelling}:9/"))
                 .expect_err("loopback must not be fetched through a proxy either");
-            assert!(matches!(error, HttpError::PrivateAddress), "{error}");
+            assert!(matches!(error, Error::PrivateAddress), "{error}");
         }
         assert_untouched(&proxy_listener);
     }
@@ -171,7 +171,7 @@ mod tests {
             .expect_err("the redirect leads into loopback");
 
         assert_untouched(&target);
-        let HttpError::Request(ref inner) = error else {
+        let Error::Request(ref inner) = error else {
             panic!("expected a transport error, got {error}");
         };
         assert!(inner.is_redirect(), "{error}");
@@ -179,8 +179,8 @@ mod tests {
             matches!(
                 inner
                     .source()
-                    .and_then(|source| source.downcast_ref::<HttpError>()),
-                Some(HttpError::PrivateAddress)
+                    .and_then(|source| source.downcast_ref::<Error>()),
+                Some(Error::PrivateAddress)
             ),
             "{error:?}"
         );
@@ -194,6 +194,6 @@ mod tests {
             .build()
             .expect_err("a header value cannot hold a line break");
 
-        assert!(matches!(error, HttpError::Request(_)), "{error}");
+        assert!(matches!(error, Error::Request(_)), "{error}");
     }
 }

@@ -1,4 +1,4 @@
-use crate::error::HttpError;
+use crate::error::Error;
 use crate::error::Result;
 use crate::response::HttpResponse;
 use async_trait::async_trait;
@@ -8,7 +8,7 @@ use reqwest::Method;
 /// for the network.
 ///
 /// Only [`HttpClient::get`] has to be implemented; every other method reports
-/// [`HttpError::Unsupported`] until an implementation overrides it.
+/// [`Error::Unsupported`] until an implementation overrides it.
 #[async_trait]
 pub trait HttpClient: Send + Sync {
     /// Perform a GET request with headers.
@@ -22,7 +22,7 @@ pub trait HttpClient: Send + Sync {
         body: &str,
     ) -> Result<HttpResponse> {
         let _ = (url, headers, body);
-        Err(HttpError::Unsupported(Method::POST))
+        Err(Error::Unsupported(Method::POST))
     }
 
     /// Perform a PUT request with headers and a body.
@@ -33,7 +33,7 @@ pub trait HttpClient: Send + Sync {
         body: &str,
     ) -> Result<HttpResponse> {
         let _ = (url, headers, body);
-        Err(HttpError::Unsupported(Method::PUT))
+        Err(Error::Unsupported(Method::PUT))
     }
 
     /// Perform a PATCH request with headers and a body.
@@ -44,13 +44,13 @@ pub trait HttpClient: Send + Sync {
         body: &str,
     ) -> Result<HttpResponse> {
         let _ = (url, headers, body);
-        Err(HttpError::Unsupported(Method::PATCH))
+        Err(Error::Unsupported(Method::PATCH))
     }
 
     /// Perform a DELETE request with headers.
     async fn delete(&self, url: &str, headers: Vec<(&str, String)>) -> Result<HttpResponse> {
         let _ = (url, headers);
-        Err(HttpError::Unsupported(Method::DELETE))
+        Err(Error::Unsupported(Method::DELETE))
     }
 }
 

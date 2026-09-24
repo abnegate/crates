@@ -1,12 +1,10 @@
-use thiserror::Error;
-
 /// The result of every fallible operation in this crate.
-pub type Result<T> = std::result::Result<T, HttpError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Everything that can go wrong issuing or validating an HTTP request.
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum HttpError {
+pub enum Error {
     /// The underlying transport refused or failed the request.
     ///
     /// Converting a [`reqwest::Error`] strips the URL it carries, whose query
@@ -77,7 +75,7 @@ pub enum HttpError {
     UnreadableBody(#[source] reqwest::Error),
 }
 
-impl From<reqwest::Error> for HttpError {
+impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
         Self::Request(error.without_url())
     }
@@ -86,9 +84,8 @@ impl From<reqwest::Error> for HttpError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::error::Error;
 
-    fn chain(error: &dyn Error) -> String {
+    fn chain(error: &dyn std::error::Error) -> String {
         let mut rendered = format!("{error} {error:?}");
         let mut source = error.source();
         while let Some(cause) = source {
@@ -113,7 +110,7 @@ mod tests {
             "the probe carries no URL"
         );
 
-        let error = HttpError::from(error);
+        let error = Error::from(error);
 
         assert!(!chain(&error).contains("hunter2"), "{}", chain(&error));
     }

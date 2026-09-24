@@ -23,9 +23,9 @@ cargo add abnegate-http
 ```rust,no_run
 use std::time::Duration;
 
-use abnegate_http::{Backoff, HttpError, is_rate_limit_error, public_client, validate_public_url};
+use abnegate_http::{Backoff, Error, is_rate_limit_error, public_client, validate_public_url};
 
-async fn fetch() -> Result<(), HttpError> {
+async fn fetch() -> Result<(), Error> {
     assert!(validate_public_url("http://169.254.169.254/latest").is_err());
 
     let client = public_client(Duration::from_secs(10))?;

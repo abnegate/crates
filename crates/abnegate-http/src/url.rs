@@ -1,6 +1,6 @@
 use crate::address::literal;
 use crate::address::must_not_be_fetched;
-use crate::error::HttpError;
+use crate::error::Error;
 use crate::error::Result;
 use reqwest::Url;
 
@@ -15,18 +15,18 @@ const INTERNAL_SUFFIXES: [&str; 3] = [".localhost", ".local", ".internal"];
 /// fetch also needs [`PublicClient`](crate::PublicClient), which refuses the
 /// resolved addresses as well.
 pub fn validate_public_url(raw: &str) -> Result<Url> {
-    let url = Url::parse(raw).map_err(|_| HttpError::InvalidUrl)?;
+    let url = Url::parse(raw).map_err(|_| Error::InvalidUrl)?;
     if !SCHEMES.contains(&url.scheme()) {
-        return Err(HttpError::UnsupportedScheme);
+        return Err(Error::UnsupportedScheme);
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(HttpError::EmbeddedCredentials);
+        return Err(Error::EmbeddedCredentials);
     }
-    let host = url.host_str().ok_or(HttpError::MissingHost)?;
+    let host = url.host_str().ok_or(Error::MissingHost)?;
 
     if let Some(ip) = literal(host) {
         if must_not_be_fetched(ip) {
-            return Err(HttpError::PrivateAddress);
+            return Err(Error::PrivateAddress);
         }
         return Ok(url);
     }
@@ -37,7 +37,7 @@ pub fn validate_public_url(raw: &str) -> Result<Url> {
             .iter()
             .any(|suffix| name.ends_with(suffix))
     {
-        return Err(HttpError::InternalHost);
+        return Err(Error::InternalHost);
     }
     Ok(url)
 }
@@ -60,7 +60,7 @@ mod tests {
             assert!(
                 matches!(
                     validate_public_url(&format!("http://{raw}/")),
-                    Err(HttpError::PrivateAddress)
+                    Err(Error::PrivateAddress)
                 ),
                 "{raw} passed the URL check"
             );

@@ -1,4 +1,4 @@
-use crate::error::HttpError;
+use crate::error::Error;
 use crate::error::Result;
 use crate::public::client::PublicClient;
 use reqwest::Body;
@@ -24,7 +24,7 @@ use std::time::Duration;
 /// through the guard only when [`PublicClient::execute`] sends it.
 ///
 /// ```
-/// use abnegate_http::{HttpError, public_client};
+/// use abnegate_http::{Error, public_client};
 /// use std::time::Duration;
 ///
 /// let client = public_client(Duration::from_secs(10))?;
@@ -35,7 +35,7 @@ use std::time::Duration;
 ///     .build()?;
 ///
 /// assert_eq!(request.url().as_str(), "https://example.com/submit");
-/// # Ok::<(), HttpError>(())
+/// # Ok::<(), Error>(())
 /// ```
 ///
 /// There is no way back to the client underneath:
@@ -47,7 +47,7 @@ use std::time::Duration;
 /// let client = public_client(Duration::from_secs(10))?;
 /// let (unguarded, _) = client.get("https://example.com/")?.build_split();
 /// # let _: reqwest::Client = unguarded;
-/// # Ok::<(), abnegate_http::HttpError>(())
+/// # Ok::<(), abnegate_http::Error>(())
 /// ```
 #[derive(Debug)]
 #[must_use = "a request does nothing until it is sent"]
@@ -69,8 +69,8 @@ impl PublicRequest {
         HeaderValue: TryFrom<V>,
     {
         self.and_then(|builder| {
-            let name = HeaderName::try_from(name).map_err(|_| HttpError::InvalidHeaderName)?;
-            let value = HeaderValue::try_from(value).map_err(|_| HttpError::InvalidHeaderValue)?;
+            let name = HeaderName::try_from(name).map_err(|_| Error::InvalidHeaderName)?;
+            let value = HeaderValue::try_from(value).map_err(|_| Error::InvalidHeaderValue)?;
             Ok(builder.header::<HeaderName, HeaderValue>(name, value))
         })
     }
@@ -234,7 +234,7 @@ mod tests {
                     .await
                     .expect_err("loopback must not be fetched");
                 assert!(
-                    matches!(error, HttpError::PrivateAddress),
+                    matches!(error, Error::PrivateAddress),
                     "{shape} {url}: {error}"
                 );
             }
@@ -256,7 +256,7 @@ mod tests {
                     .await
                     .expect_err("loopback must not be fetched");
                 assert!(
-                    matches!(error, HttpError::PrivateAddress),
+                    matches!(error, Error::PrivateAddress),
                     "{shape} {url}: {error}"
                 );
             }
@@ -353,13 +353,13 @@ mod tests {
             .send()
             .await
             .expect_err("the name does not parse");
-        assert!(matches!(error, HttpError::InvalidHeaderName), "{error}");
+        assert!(matches!(error, Error::InvalidHeaderName), "{error}");
 
         let error = start(&client)
             .header("x-probe", "line\nbreak")
             .build()
             .expect_err("the value does not parse");
-        assert!(matches!(error, HttpError::InvalidHeaderValue), "{error}");
+        assert!(matches!(error, Error::InvalidHeaderValue), "{error}");
     }
 
     #[test]

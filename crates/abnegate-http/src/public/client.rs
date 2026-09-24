@@ -22,17 +22,17 @@ use reqwest::Response;
 /// [`public_client_builder`](crate::public_client_builder).
 ///
 /// ```
-/// use abnegate_http::{HttpError, public_client};
+/// use abnegate_http::{Error, public_client};
 /// use std::time::Duration;
 ///
 /// let client = public_client(Duration::from_secs(10))?;
 ///
 /// assert!(matches!(
 ///     client.get("http://127.0.0.1:8080/admin"),
-///     Err(HttpError::PrivateAddress)
+///     Err(Error::PrivateAddress)
 /// ));
 /// assert!(client.get("https://example.com/").is_ok());
-/// # Ok::<(), HttpError>(())
+/// # Ok::<(), Error>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct PublicClient {
@@ -96,7 +96,7 @@ impl PublicClient {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::HttpError;
+    use crate::error::Error;
     use crate::public::public_client;
     use crate::test_support::LOOPBACK_SPELLINGS;
     use crate::test_support::assert_untouched;
@@ -128,7 +128,7 @@ mod tests {
                     .request(method.clone(), &url)
                     .expect_err("loopback must not be fetched");
                 assert!(
-                    matches!(error, HttpError::PrivateAddress),
+                    matches!(error, Error::PrivateAddress),
                     "{method} {url}: {error}"
                 );
             }
@@ -149,7 +149,7 @@ mod tests {
                 .await
                 .expect_err("loopback must not be fetched");
 
-            assert!(matches!(error, HttpError::PrivateAddress), "{error}");
+            assert!(matches!(error, Error::PrivateAddress), "{error}");
             assert_untouched(&listener);
         }
     }
@@ -163,7 +163,7 @@ mod tests {
             .get(&format!("http://localhost.:{port}/"))
             .expect_err("localhost is an internal name");
 
-        assert!(matches!(error, HttpError::InternalHost), "{error}");
+        assert!(matches!(error, Error::InternalHost), "{error}");
         assert_untouched(&listener);
     }
 
