@@ -681,11 +681,15 @@ fn returned(status: StatusCode) -> String {
 
 /// The first `limit` bytes of an answer's body, read no further, and whether
 /// any of it remained unread.
+///
+/// Room is set aside up front for the length the answer declares, but never
+/// for more than `limit` or [`MAXIMUM_ANSWER_BYTES`]; past that the prefix
+/// grows only as bytes arrive.
 async fn read_prefix(mut response: Response, limit: usize) -> PullRequestResult<(Vec<u8>, bool)> {
     let declared = response
         .content_length()
         .map_or(0, |length| usize::try_from(length).unwrap_or(usize::MAX));
-    let mut prefix = Vec::with_capacity(declared.min(limit));
+    let mut prefix = Vec::with_capacity(declared.min(limit).min(MAXIMUM_ANSWER_BYTES));
     while let Some(chunk) = response.chunk().await? {
         let room = limit - prefix.len();
         if chunk.len() > room {
@@ -798,6 +802,10 @@ mod tests {
     use wiremock::matchers::method;
     use wiremock::matchers::path;
     use wiremock::matchers::query_param;
+
+    /// The longest length hyper lets an answer declare; it refuses the two
+    /// above it, which it keeps for itself.
+    const LONGEST_DECLARED: u64 = u64::MAX - 2;
 
     fn github() -> PullRequestService {
         PullRequestService::new().unwrap()
@@ -1408,6 +1416,21 @@ mod tests {
 
         assert_eq!(prefix, filling.into_bytes());
         assert!(more, "a byte followed the chunk that filled the prefix");
+    }
+
+    /// The room set aside for an answer is bounded whatever length it
+    /// declares and whatever limit a caller passes, so an answer cannot make
+    /// this crate ask for more memory than there is.
+    #[tokio::test]
+    async fn a_prefix_sets_aside_bounded_room_whatever_length_is_declared() {
+        let response = served(format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {LONGEST_DECLARED}\r\n\r\n{{}}"
+        ))
+        .await;
+
+        let read = read_prefix(response, usize::MAX).await;
+
+        assert!(matches!(read, Err(PullRequestError::Http(_))), "{read:?}");
     }
 
     /// However an answer is framed, it is read to its last byte while it fits,
