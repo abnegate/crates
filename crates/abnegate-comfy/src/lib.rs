@@ -41,7 +41,6 @@
 //! ```
 //!
 //! A clip can stand in for that image set. [`video::extract`] samples it above the
-
 //! rate the caller asked for, keeps the sharpest frame of each moment, drops
 //! the ones that repeat a shot already taken, and crops what is left around
 //! whatever moved:
@@ -108,3 +107,7 @@ pub use dataset::{Concern, Finding, inspect};
 pub use media::MediaType;
 pub use observe::{RequestObserver, observe_requests};
 pub use screening::{Rejection, Verdict, screen};
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
