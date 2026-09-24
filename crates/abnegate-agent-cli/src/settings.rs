@@ -30,7 +30,7 @@ pub const DEFAULT_JOURNAL_LIMIT: u64 = 64 * 1024 * 1024;
 /// to find programs, whose home and account it runs as, where temporary
 /// files go, and how to render text. The account matters on macOS, where the
 /// agent finds its sign-in in the Keychain under `USER`.
-pub const INHERITED_VARIABLES: [&str; 8] = [
+pub const INHERITED_VARIABLES: &[&str] = &[
     "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM",
 ];
 
@@ -38,15 +38,15 @@ pub const INHERITED_VARIABLES: [&str; 8] = [
 /// only built-in tools a read-only run makes available unless it
 /// [reaches the web](CliSettings::web). A read-only run allows them only
 /// inside its working directory.
-pub const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
+pub const READ_ONLY_TOOLS: &[&str] = &["Read", "Grep", "Glob"];
 
 /// Claude Code's tools that reach the network: a fetch of any URL, and a web
 /// search. Only [`CliSettings::web`] allows them.
-pub const WEB_TOOLS: [&str; 2] = ["WebFetch", "WebSearch"];
+pub const WEB_TOOLS: &[&str] = &["WebFetch", "WebSearch"];
 
 /// Caller [arguments](CliSettings::arguments) a read-only run passes through
 /// that take no value. Only the long form is recognised.
-pub const READ_ONLY_SWITCHES: [&str; 4] = [
+pub const READ_ONLY_SWITCHES: &[&str] = &[
     "--exclude-dynamic-system-prompt-sections",
     "--fork-session",
     "--include-partial-messages",
@@ -55,7 +55,7 @@ pub const READ_ONLY_SWITCHES: [&str; 4] = [
 
 /// Caller [arguments](CliSettings::arguments) a read-only run passes through
 /// that take one value, given either as the next argument or after `=`.
-pub const READ_ONLY_OPTIONS: [&str; 6] = [
+pub const READ_ONLY_OPTIONS: &[&str] = &[
     "--effort",
     "--fallback-model",
     "--max-budget-usd",
@@ -279,7 +279,7 @@ impl CliSettings {
     /// may be allowed afterwards with [`CliSettings::with_permissions`], and
     /// the web, before or after, with [`CliSettings::allow_web`].
     pub fn read_only(mut self) -> Self {
-        self.permissions = READ_ONLY_TOOLS.map(str::to_string).to_vec();
+        self.permissions = READ_ONLY_TOOLS.iter().copied().map(String::from).collect();
         self.read_only = true;
         self
     }

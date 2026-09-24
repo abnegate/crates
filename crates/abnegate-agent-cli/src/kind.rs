@@ -299,7 +299,8 @@ fn allowed_tools(settings: &CliSettings, attached: bool) -> Result<Vec<String>, 
         (true, true) => settings.mcp.scoped_tools(),
     };
     let web = WEB_TOOLS
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|_| settings.web)
         .map(str::to_string);
     let mut rules: Vec<String> = Vec::new();
@@ -348,9 +349,10 @@ fn confined(tool: String, web: bool) -> Result<String, ProviderError> {
 /// it allows neither.
 fn available_tools(settings: &CliSettings) -> String {
     READ_ONLY_TOOLS
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|tool| settings.permissions.iter().any(|allowed| allowed == tool))
-        .chain(WEB_TOOLS.into_iter().filter(|_| settings.web))
+        .chain(WEB_TOOLS.iter().copied().filter(|_| settings.web))
         .collect::<Vec<_>>()
         .join(TOOL_SEPARATOR)
 }
