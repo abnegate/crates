@@ -148,6 +148,7 @@ mod tests {
     use super::*;
     use crate::mcp::register;
     use crate::test_support::CHILD_TEST;
+    use crate::test_support::assert_passed;
     use crate::tool::Tier;
     use crate::tool::ToolContext;
     use crate::tool::ToolRegistry;
@@ -605,16 +606,7 @@ mod tests {
                 .output()
                 .await
                 .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                output.status.success(),
-                "{stdout}\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(
-                stdout.contains("1 passed"),
-                "the child ran no test, so it proved nothing\n{stdout}"
-            );
+            assert_passed(&output);
             return;
         }
         let directory = tempfile::tempdir().unwrap();
