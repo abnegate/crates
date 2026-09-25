@@ -14,6 +14,22 @@ use crate::parser::claude::CliUsage;
 /// that vocabulary out of the failure text. A second classifier here would be
 /// a second place to keep in step with it, so a throttled agent simply becomes
 /// a [`AgentEvent::Failed`] carrying the agent's own wording.
+///
+/// A variant may gain a field in a minor release, so a value is built with
+/// its constructor, such as [`AgentEvent::finished`], and a pattern outside
+/// this crate ends in `..`:
+///
+/// ```compile_fail,E0638
+/// use abnegate_agent_cli::AgentEvent;
+///
+/// fn reason(event: &AgentEvent) -> Option<&str> {
+///     match event {
+///         AgentEvent::Finished { finish_reason } => finish_reason.as_deref(),
+///         _ => None,
+///     }
+/// }
+/// # let _ = reason;
+/// ```
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum AgentEvent {

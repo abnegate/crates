@@ -5,6 +5,21 @@ use thiserror::Error;
 use crate::mcp::mismatch::Mismatch;
 
 /// Why an MCP configuration could not be read.
+///
+/// A variant may gain a field in a minor release, so a pattern outside this
+/// crate ends in `..`:
+///
+/// ```compile_fail,E0638
+/// use abnegate_agent_cli::McpConfigError;
+///
+/// fn unreadable(error: &McpConfigError) -> Option<&std::path::Path> {
+///     match error {
+///         McpConfigError::Io { path, source: _ } => Some(path),
+///         _ => None,
+///     }
+/// }
+/// # let _ = unreadable;
+/// ```
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum McpConfigError {
@@ -18,6 +33,7 @@ pub enum McpConfigError {
     /// but the server's name, since a value in the wrong place may still be a
     /// secret.
     #[error("invalid MCP server '{name}': {}", Mismatch::new(*.field, .expected))]
+    #[non_exhaustive]
     Server {
         /// The server's name in the document.
         name: String,
@@ -29,8 +45,11 @@ pub enum McpConfigError {
     },
     /// The file at `path` could not be read.
     #[error("failed to read MCP config {path}: {source}")]
+    #[non_exhaustive]
     Io {
+        /// The file, as the caller named it.
         path: PathBuf,
+        /// Why reading it failed.
         #[source]
         source: std::io::Error,
     },

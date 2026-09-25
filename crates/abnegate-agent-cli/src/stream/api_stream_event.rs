@@ -11,6 +11,21 @@ use crate::stream::api_message_delta::ApiMessageDelta;
 ///
 /// Each block event carries the `index` of the block it belongs to, since a
 /// message's blocks, a text block and a tool call say, can interleave.
+///
+/// A variant may gain a field in a minor release, so a pattern outside this
+/// crate ends in `..`:
+///
+/// ```compile_fail,E0638
+/// use abnegate_agent_cli::ApiStreamEvent;
+///
+/// fn closed(event: &ApiStreamEvent) -> Option<usize> {
+///     match event {
+///         ApiStreamEvent::ContentBlockStop { index } => *index,
+///         _ => None,
+///     }
+/// }
+/// # let _ = closed;
+/// ```
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]

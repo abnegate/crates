@@ -1,6 +1,21 @@
 use serde::Deserialize;
 
 /// One block of an `assistant` event's `message.content`.
+///
+/// A variant may gain a field in a minor release, so a pattern outside this
+/// crate ends in `..`:
+///
+/// ```compile_fail,E0638
+/// use abnegate_agent_cli::CliContentBlock;
+///
+/// fn text(block: &CliContentBlock) -> Option<&str> {
+///     match block {
+///         CliContentBlock::Text { text } => Some(text),
+///         _ => None,
+///     }
+/// }
+/// # let _ = text;
+/// ```
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]
