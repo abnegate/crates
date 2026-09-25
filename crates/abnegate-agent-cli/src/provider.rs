@@ -604,10 +604,13 @@ async fn drain<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::pin::Pin;
+    use std::pin::pin;
     use std::process::Stdio;
     use std::time::Duration;
     use std::time::Instant;
@@ -720,6 +723,33 @@ mod tests {
             .execute(request(messages), "test-run")
             .await
             .expect("an execution")
+    }
+
+    /// Drive `run` until the fake agent creates `marker`.
+    async fn reach<T: Debug>(run: Pin<&mut impl Future<Output = T>>, marker: &Path) {
+        let created = async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::select! {
+            ended = run => panic!("the run ended before the agent reached {}: {ended:?}", marker.display()),
+            () = created => {}
+            () = tokio::time::sleep(PATIENCE) => panic!("the agent never reached {} in {PATIENCE:?}", marker.display()),
+        }
+    }
+
+    /// Drive `run` until the fake agent creates `marker`, then move the clock
+    /// past its deadline. The clock runs on at once, so the run stops its
+    /// agent and drains its output in real time rather than skipping each
+    /// grace period.
+    async fn expired<T: Debug>(run: impl Future<Output = T>, marker: &Path) -> T {
+        let mut run = pin!(run);
+        reach(run.as_mut(), marker).await;
+        tokio::time::pause();
+        tokio::time::advance(TIMEOUT).await;
+        tokio::time::resume();
+        run.await
     }
 
     const CLAUDE_SESSION: &str = r#"
@@ -961,18 +991,21 @@ sleep 120
     async fn a_timed_out_run_still_says_where_its_logs_are_and_closes_them() {
         let directory = TempDir::new().expect("a temporary directory");
         let root = directory.path().join("logs");
-        let script = r#"
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Partial."}]}}'
+        let spoken = directory.path().join("spoken");
+        let script = format!(
+            r#"
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Partial."}}]}}}}'
 echo 'still thinking' >&2
+touch '{}'
 sleep 120
-"#;
-        let settings = settings(&directory, script)
-            .with_timeout(Duration::from_secs(10))
-            .with_log(&root);
+"#,
+            spoken.display()
+        );
+        let settings = settings(&directory, &script).with_log(&root);
         let provider = CliProvider::agent(AgentKind::Claude, settings);
+        let messages = [Message::user("hi")];
 
-        let failure = provider
-            .execute(request(&[Message::user("hi")]), "test-run")
+        let failure = expired(provider.execute(request(&messages), "test-run"), &spoken)
             .await
             .expect_err("a timeout");
 
@@ -1035,17 +1068,18 @@ sleep 120
     async fn a_timed_out_agent_that_ignores_termination_is_killed_with_its_group() {
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("straggler");
+        let ready = directory.path().join("ready");
         let script = format!(
             r#"trap '' TERM
-sh -c 'trap "" TERM; sleep 60' &
-echo $! > '{}'
-sleep 60"#,
-            marker.display()
+sh -c 'trap "" TERM; echo $$ > "{marker}"; touch "{ready}"; sleep 60' &
+sleep 120"#,
+            marker = marker.display(),
+            ready = ready.display(),
         );
-        let settings = settings(&directory, &script).with_timeout(Duration::from_secs(10));
-        let provider = CliProvider::agent(AgentKind::Claude, settings);
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+        let messages = [Message::user("hi")];
 
-        let error = run(&provider, &[Message::user("hi")])
+        let error = expired(run(&provider, &messages), &ready)
             .await
             .expect_err("a timeout");
 
