@@ -41,7 +41,9 @@ const CONFIG_FILE: &str = "mcp.json";
 /// It reads a `{"mcpServers": {...}}` document, the shape Claude Code and
 /// Cursor use, a `{"servers": {...}}` one, or a bare map of servers, and
 /// writes the first. [`McpConfig::from_environment`] finds one through an
-/// application's own variables.
+/// application's own variables. No document holds a remote server's
+/// [secrets](McpServer::secrets): they are bound in code, to a server read
+/// from one by its name with [`McpConfig::with_secret`].
 ///
 /// A [disabled](McpServer::disabled) server stays here, as configured, and
 /// every method that attaches, renders, launches or allows servers leaves it

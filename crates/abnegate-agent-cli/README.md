@@ -19,6 +19,16 @@ variables, the proxy bypass list and what it inherits is scrubbed from what the
 run writes down, as written, JSON-escaped or percent-encoded; a secret the agent
 re-encodes any other way is not recognised. Unix only.
 
+The agent's own tools, and every stdio MCP server it starts, can read
+everything it is given. A remote MCP server is sent nothing the agent is given
+by name: each `${VAR}` in its URL and headers resolves only to a secret bound to
+that server with `McpServer::with_secret`, or by name with
+`McpConfig::with_secret`, or else to its default, and a server that refers to a
+variable with neither is left out. The file the CLI reads holds no environment
+or header value and no bound secret: each reaches the agent in a generated
+variable of its environment, which its tools and stdio servers can read too, so
+binding keeps a secret from every other remote server, not from them.
+
 ## Features
 
 None.

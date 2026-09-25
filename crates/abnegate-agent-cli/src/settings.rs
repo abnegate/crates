@@ -99,10 +99,21 @@ pub struct CliSettings {
     /// JSON-escaped or percent-encoded; one the agent re-encodes any other
     /// way, such as in base64, is not recognised. A setting that is not
     /// secret belongs in `variables`.
+    ///
+    /// A value the child is handed under its own name, here, in
+    /// [`variables`](CliSettings::variables), through
+    /// [`allowed`](CliSettings::allowed) or by
+    /// [`inherit_environment`](CliSettings::inherit_environment), is visible
+    /// to the agent's own tools and to every stdio MCP server the agent
+    /// starts: Claude Code starts them all with its own environment, less
+    /// the sign-in variables it withholds. It is never sent to a remote MCP
+    /// server, whose references resolve only to the
+    /// [secrets](crate::McpServer::secrets) bound to it, or their defaults.
     pub environment: BTreeMap<String, SecretValue>,
     /// Set in the child's environment like `environment`, which wins over
     /// them, but never scrubbed: flags such as `DISABLE_AUTOUPDATER=1`,
-    /// whose values would otherwise be redacted wherever they appear.
+    /// whose values would otherwise be redacted wherever they appear. Who
+    /// can read them is as for [`environment`](CliSettings::environment).
     pub variables: BTreeMap<String, String>,
     /// Host variables the child is given on top of
     /// [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT), each with
@@ -254,6 +265,13 @@ impl CliSettings {
     /// Set `variable` to `value` in the child's environment, as a secret
     /// the run scrubs from whatever it writes down. See
     /// [`CliSettings::environment`].
+    ///
+    /// The agent's own tools and every stdio MCP server it starts can read
+    /// it, and a stdio server's `${VAR}` reference to it resolves to it. A
+    /// remote MCP server is never sent it: a token for one is bound to that
+    /// server as one of its [secrets](crate::McpServer::secrets) instead,
+    /// which keeps it from every other remote server, though not from the
+    /// agent's own tools or its stdio servers.
     pub fn with_environment(
         mut self,
         variable: impl Into<String>,
@@ -263,6 +281,12 @@ impl CliSettings {
         self
     }
 
+    /// Set `variable` to `value` in the child's environment, never
+    /// scrubbed. See [`CliSettings::variables`].
+    ///
+    /// The agent's own tools and every stdio MCP server it starts can read
+    /// it, and a remote MCP server is never sent it, as with
+    /// [`CliSettings::with_environment`].
     pub fn with_variable(mut self, variable: impl Into<String>, value: impl Into<String>) -> Self {
         self.variables.insert(variable.into(), value.into());
         self
@@ -277,6 +301,11 @@ impl CliSettings {
     /// value is ordinary text, such as a URL a log would name, hides that
     /// text from every log of the run. A setting that is not secret and must
     /// stay legible belongs in [`CliSettings::with_variable`].
+    ///
+    /// The agent's own tools and every stdio MCP server it starts can read
+    /// an allowed value, and a remote MCP server is never sent it, as with
+    /// [`CliSettings::with_environment`]: allowing `GITHUB_TOKEN` for the
+    /// agent's `gh` sends it to no remote server that names it.
     pub fn allow<I>(mut self, names: I) -> Self
     where
         I: IntoIterator,
