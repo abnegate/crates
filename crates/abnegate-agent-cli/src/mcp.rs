@@ -12,12 +12,12 @@
 //! [`McpAttachment`]. A stdio server's `${VAR}` references are resolved here,
 //! as the CLI would resolve them, and the child is given only the resolved
 //! values, never the variables they name. A remote server's URL and the
-//! references in its headers are written as they are, for the CLI alone to
-//! expand under rules of its own that keep a credential from a server a
-//! configuration names, and a remote server that refers to a generated
-//! variable never attaches. A stdio command or argument that refers to
-//! nothing is written as it is too, so a secret belongs in a reference
-//! there, as in a URL.
+//! references in its headers, defaults included, are written as they are,
+//! for the CLI alone to expand under rules of its own that keep a credential
+//! from a server a configuration names, and a remote server that refers to
+//! a generated variable or to one the agent signs in with never attaches. A
+//! stdio command or argument that refers to nothing is written as it is
+//! too, so a secret belongs in a reference there, as in a URL.
 //!
 //! [`McpConfig`] is the one configuration for every way a server reaches a
 //! model: [`McpConfig::from_environment`] reads it under an application's own
