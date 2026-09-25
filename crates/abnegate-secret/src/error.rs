@@ -23,6 +23,7 @@ pub enum Error {
     ///
     /// It is still sealed, never plaintext: store it back as it was read.
     #[error("Encrypted value uses envelope version {version}, which this release cannot open")]
+    #[non_exhaustive]
     UnsupportedVersion {
         /// The digits after `ENC[v`, as written.
         version: String,
@@ -33,6 +34,7 @@ pub enum Error {
     /// The operating system could not supply random bytes for a key, a nonce
     /// or a temporary file name.
     #[error("The operating system could not supply random bytes")]
+    #[non_exhaustive]
     Entropy {
         /// Why the random source failed.
         #[source]
@@ -43,6 +45,7 @@ pub enum Error {
     InvalidHexadecimal,
     /// A master key decoded to the wrong number of bytes.
     #[error("Master key must be {expected} bytes, got {actual}")]
+    #[non_exhaustive]
     KeyLength {
         /// The bytes an AES-256 key takes.
         expected: usize,
@@ -51,6 +54,7 @@ pub enum Error {
     },
     /// A master key variable holds something other than UTF-8.
     #[error("Environment variable '{variable}' is not valid UTF-8")]
+    #[non_exhaustive]
     InvalidEnvironment {
         /// The variable's name.
         variable: String,
@@ -60,6 +64,7 @@ pub enum Error {
     NoHomeDirectory,
     /// A master key file could not be read.
     #[error("Failed to read master key file '{path}'")]
+    #[non_exhaustive]
     ReadKeyFile {
         /// The file.
         path: PathBuf,
@@ -69,6 +74,7 @@ pub enum Error {
     },
     /// A master key file could not be written.
     #[error("Failed to write master key file '{path}'")]
+    #[non_exhaustive]
     WriteKeyFile {
         /// The file.
         path: PathBuf,
