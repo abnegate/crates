@@ -33,6 +33,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Refuse public types that cannot gain a field
+        run: python3 scripts/audit_public_api.py
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
