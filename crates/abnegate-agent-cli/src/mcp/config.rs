@@ -1469,6 +1469,28 @@ mod tests {
         assert!(parse_flag("on", false));
     }
 
+    /// Claude Code rejects `"type": null` for a stdio server, so a
+    /// configuration written back must leave an unset type out.
+    #[test]
+    fn a_written_server_leaves_an_unset_type_out() {
+        let written = serde_json::to_value(
+            McpConfig::default()
+                .with_server("notes", McpServer::command("notes-server", ["mcp"]))
+                .with_server(
+                    "docs",
+                    McpServer::remote("https://docs.example.com/mcp")
+                        .with_transport(McpTransport::Sse),
+                ),
+        )
+        .expect("serialisable");
+
+        assert!(
+            written["mcpServers"]["notes"].get("type").is_none(),
+            "{written}"
+        );
+        assert_eq!(written["mcpServers"]["docs"]["type"], "sse");
+    }
+
     #[test]
     fn auto_connect_is_on_by_default_and_never_written() {
         assert!(McpConfig::default().auto_connect);

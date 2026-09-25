@@ -79,8 +79,10 @@ pub struct McpServer {
     /// [`CliSettings::inherit_environment`](crate::CliSettings::inherit_environment)
     /// has every variable a reference could name, none of them scrubbed.
     pub url: Option<String>,
-    /// How the server is reached; implied by `command` or `url` when unset.
-    #[serde(rename = "type")]
+    /// How the server is reached; implied by `command` or `url` when unset,
+    /// and then left out of what this writes, since Claude Code refuses a
+    /// `null` type.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub transport: Option<McpTransport>,
     /// Headers sent to an HTTP or SSE server.
     ///
@@ -1119,10 +1121,7 @@ mod tests {
         let written = serde_json::to_value(stdio()).expect("serialisable");
 
         let keys: Vec<&String> = written.as_object().expect("an object").keys().collect();
-        assert_eq!(
-            keys,
-            ["args", "command", "env", "headers", "tools", "type", "url"]
-        );
+        assert_eq!(keys, ["args", "command", "env", "headers", "tools", "url"]);
 
         let written = serde_json::to_value(
             stdio()
