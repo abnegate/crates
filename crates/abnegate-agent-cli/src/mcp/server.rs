@@ -262,15 +262,19 @@ impl McpServer {
             })
     }
 
-    /// Whether exactly one of `command` and `url` is set, and any explicit
-    /// transport agrees with it and is one this crate attaches a server
-    /// over: [`McpTransport::Unsupported`] never is.
+    /// Whether exactly one of `command` and `url` is set, and to something
+    /// other than blank text, and any explicit transport agrees with it and
+    /// is one this crate attaches a server over:
+    /// [`McpTransport::Unsupported`] never is.
     pub fn valid(&self) -> bool {
         match (&self.command, &self.url, self.transport) {
-            (Some(_), None, transport) => {
-                transport.is_none_or(|transport| transport == McpTransport::Stdio)
+            (Some(command), None, transport) => {
+                !command.trim().is_empty()
+                    && transport.is_none_or(|transport| transport == McpTransport::Stdio)
             }
-            (None, Some(_), transport) => transport.is_none_or(McpTransport::remote),
+            (None, Some(url), transport) => {
+                !url.trim().is_empty() && transport.is_none_or(McpTransport::remote)
+            }
             _ => false,
         }
     }
@@ -515,6 +519,20 @@ mod tests {
                 }
                 .valid()
             );
+        }
+    }
+
+    /// A blank command starts nothing and a blank URL reaches nothing, and a
+    /// strict CLI rejects every other server along with one.
+    #[test]
+    fn a_blank_command_or_url_is_never_valid() {
+        for server in [
+            McpServer::command("", Vec::<String>::new()),
+            McpServer::command("   ", ["mcp"]),
+            McpServer::remote(""),
+            McpServer::remote(" \t"),
+        ] {
+            assert!(!server.valid(), "{server:?}");
         }
     }
 
