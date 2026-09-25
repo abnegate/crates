@@ -19,6 +19,7 @@ use super::JobStatus;
 use super::JobTail;
 use super::KILL_TIMEOUT;
 use super::MAXIMUM_CHARACTER_BYTES;
+use super::REPOSITORY_ENVIRONMENT;
 use super::UNAVAILABLE;
 use super::entry::Job;
 use super::excluded;
@@ -285,14 +286,18 @@ async fn ended(mut state: watch::Receiver<JobStatus>) -> JobStatus {
 /// all of them. It is also why the directory asked about is the session's own
 /// tree and never one the command named — a run naming somebody else's
 /// checkout would otherwise write into a repository it does not own — and
-/// why git is asked with the context's environment and nothing else, so a
-/// `GIT_DIR` in this process's environment does not name the repository for
-/// it. Every failure — not a checkout, no git, an unwritable file — is a
-/// silent skip, because a background job is worth more to the caller than a
-/// tidy diff.
+/// why git is asked without any [`REPOSITORY_ENVIRONMENT`] variable, whatever
+/// the context passes on: a `GIT_DIR` the context inherits from this process
+/// or sets itself would otherwise name the repository for it. Every failure
+/// — not a checkout, no git, an unwritable file — is a silent skip, because
+/// a background job is worth more to the caller than a tidy diff.
 async fn exclude(context: &ToolContext) {
     let checkout = context.working_directory.as_path();
-    let Ok(resolved) = process::command(GIT, context)
+    let mut lookup = process::command(GIT, context);
+    for name in REPOSITORY_ENVIRONMENT {
+        lookup.env_remove(name);
+    }
+    let Ok(resolved) = lookup
         .arg("rev-parse")
         .arg("--git-path")
         .arg(EXCLUDE_PATH)

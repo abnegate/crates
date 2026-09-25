@@ -104,10 +104,20 @@ fn alive(pid: u32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// `git` run in `cwd` on the repository found from there, whatever
+/// repository this process's environment names.
+fn git_in(cwd: &Path) -> Process {
+    let mut command = Process::new("git");
+    command.current_dir(cwd);
+    for name in REPOSITORY_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    command
+}
+
 fn git(cwd: &Path, arguments: &[&str]) {
-    let status = Process::new("git")
+    let status = git_in(cwd)
         .args(arguments)
-        .current_dir(cwd)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_AUTHOR_NAME", "Agent")
@@ -139,9 +149,8 @@ fn untemplated_repository(root: &Path) {
 }
 
 fn exclude_path(cwd: &Path) -> PathBuf {
-    let resolved = Process::new("git")
+    let resolved = git_in(cwd)
         .args(["rev-parse", "--git-path", EXCLUDE_PATH])
-        .current_dir(cwd)
         .output()
         .expect("git is installed");
     assert!(resolved.status.success(), "the fixture is a checkout");
@@ -804,61 +813,87 @@ async fn the_exclude_path_comes_from_git_not_from_a_joined_git_directory() {
     Jobs::kill_session(session).await;
 }
 
-/// The lookup that finds the exclude file started with this process's whole
-/// environment, so a host `GIT_DIR`, which every git hook runs with, sent a
-/// task run's exclude line to whichever repository it named. The lookup now
-/// sees the context's environment, which passes no such variable.
+/// A host `GIT_DIR`, which every git hook runs with, sent a task run's
+/// exclude line to whichever repository it named: first through a lookup
+/// that started with this process's whole environment, then through a
+/// context that inherits that environment or sets the variable itself. The
+/// lookup now runs without any variable that names a repository, whatever
+/// the context passes on.
 #[tokio::test]
 async fn a_host_git_directory_never_redirects_the_exclude_write() {
     const NAME: &str = "tool::job::tests::a_host_git_directory_never_redirects_the_exclude_write";
-    const CHECKOUT: &str = "ABNEGATE_AGENT_TEST_CHECKOUT";
     if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
-        let root = directory();
-        let checkout = root.path().join("checkout");
-        let stranger = root.path().join("stranger");
-        for tree in [&checkout, &stranger] {
-            std::fs::create_dir(tree).expect("the repository directory is created");
-            repository(tree);
-        }
+        let stranger = directory();
+        repository(stranger.path());
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", NAME, "--nocapture"])
             .env(CHILD_TEST, NAME)
-            .env(CHECKOUT, &checkout)
-            .env(GIT_DIRECTORY, stranger.join(".git"))
+            .env(GIT_DIRECTORY, stranger.path().join(".git"))
             .output()
             .await
             .unwrap();
         assert_passed(&output);
         return;
     }
-    let checkout =
-        PathBuf::from(std::env::var_os(CHECKOUT).expect("the parent names the checkout"));
     let elsewhere =
         PathBuf::from(std::env::var_os(GIT_DIRECTORY).expect("the host names another repository"));
+    let assigned = crate::tool::EnvironmentPolicy::allowlist()
+        .with(GIT_DIRECTORY, elsewhere.to_str().expect("a utf-8 path"));
 
-    let session = task();
-    let started = Jobs::spawn(
-        &JobCommand::shell("exit 0"),
-        &ToolContext::default()
-            .within(&checkout)
-            .with_session(session),
-    )
-    .await
-    .expect("the job starts");
-    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
+    for (pass, context) in [
+        ("the allowlist", ToolContext::default()),
+        (
+            "an inherited environment",
+            ToolContext::default().inherit_environment(),
+        ),
+        (
+            "a policy that sets GIT_DIR",
+            ToolContext::default().with_environment(assigned),
+        ),
+    ] {
+        let checkout = directory();
+        repository(checkout.path());
+        let session = task();
+        let started = Jobs::spawn(
+            &JobCommand::shell("exit 0"),
+            &context.within(checkout.path()).with_session(session),
+        )
+        .await
+        .expect("the job starts");
+        assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
 
-    assert_eq!(
-        excluded_lines(&elsewhere.join(EXCLUDE_PATH)),
-        0,
-        "the host's GIT_DIR took the run's exclude line"
-    );
-    assert_eq!(
-        excluded_lines(&checkout.join(".git").join(EXCLUDE_PATH)),
-        1,
-        "the run's own checkout keeps its job logs out of its diff"
-    );
+        assert_eq!(
+            excluded_lines(&elsewhere.join(EXCLUDE_PATH)),
+            0,
+            "{pass}: another repository took the run's exclude line"
+        );
+        assert_eq!(
+            excluded_lines(&checkout.path().join(".git").join(EXCLUDE_PATH)),
+            1,
+            "{pass}: the run's own checkout keeps its job logs out of its diff"
+        );
 
-    Jobs::kill_session(session).await;
+        Jobs::kill_session(session).await;
+    }
+}
+
+/// The exclude lookup drops every variable git itself keeps local to one
+/// repository, so a git that grows the list fails here first.
+#[test]
+fn the_exclude_lookup_drops_every_variable_git_keeps_local_to_a_repository() {
+    let listed = Process::new("git")
+        .args(["rev-parse", "--local-env-vars"])
+        .output()
+        .expect("git is installed");
+    assert!(listed.status.success(), "git lists its local variables");
+    let listed = String::from_utf8(listed.stdout).expect("the names are utf-8");
+    assert!(!listed.trim().is_empty(), "git listed no variables");
+    for name in listed.lines() {
+        assert!(
+            REPOSITORY_ENVIRONMENT.contains(&name),
+            "the exclude lookup keeps {name}"
+        );
+    }
 }
 
 #[test]
