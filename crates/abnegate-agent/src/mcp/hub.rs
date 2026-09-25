@@ -231,8 +231,6 @@ mod tests {
             "{result:?}"
         );
 
-        // Tools hold the session; drop them so the client tears down and the
-        // server `waiting()` future can finish.
         drop(registry);
         drop(hub);
         server_task.abort();
