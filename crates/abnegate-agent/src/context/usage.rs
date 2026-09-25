@@ -56,7 +56,8 @@ pub struct ContextUsage {
     pub revision: u64,
     /// How many history entries the checkpoint stands in for.
     pub compacted_messages: usize,
-    /// When the usage was reported, as RFC 3339.
+    /// When the usage was reported, as RFC 3339, or empty when nothing has
+    /// been measured yet, as in the default.
     pub updated_at: String,
     /// Why the status is what it is, when that needs saying.
     pub reason: Option<String>,
@@ -64,8 +65,9 @@ pub struct ContextUsage {
 
 /// Nothing spent against no known limit, read the way
 /// [`estimate`](super::estimate) reads a request with none: every count
-/// zero, nothing named, the limit's [source](ContextSource::Unknown) unknown
-/// and compaction [`Unavailable`](ContextStatus::Unavailable).
+/// zero, nothing named, no report time, the limit's
+/// [source](ContextSource::Unknown) unknown and compaction
+/// [`Unavailable`](ContextStatus::Unavailable).
 impl Default for ContextUsage {
     fn default() -> Self {
         Self {
