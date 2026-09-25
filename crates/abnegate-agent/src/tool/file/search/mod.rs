@@ -2,6 +2,7 @@ mod parameters;
 
 use std::ffi::OsString;
 use std::path::Path;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use tokio::time::timeout_at;
 use super::confine;
 use super::read_text;
 use super::resolve;
+use super::walk::OUT_OF_TIME;
 use super::walk::Visit;
 use super::walk::WALK_TIME_LIMIT;
 use super::walk::Walk;
@@ -37,6 +39,11 @@ const RIPGREP_NO_MATCHES: i32 = 1;
 /// Widest matching line ripgrep prints whole; a wider one is cut to a
 /// preview, so one minified file cannot fill a result.
 const RIPGREP_MAXIMUM_COLUMNS: &str = "400";
+
+/// Why a search reports only part of the tree when ripgrep fails after
+/// printing matches: a file or directory it could not read makes it exit 2
+/// once it has searched the rest.
+const UNREADABLE: &str = "some files could not be read";
 
 /// Build output and dependency trees a search walks past.
 const SKIPPED_DIRECTORIES: &[&str] = &[
@@ -67,8 +74,10 @@ const CODE_EXTENSIONS: &[&str] = &[
 /// global excludes, the exclude file a linked worktree shares with its
 /// repository, or whether a repository encloses it.
 ///
-/// When `rg` cannot be started, or does not finish, the tree is walked
-/// instead, passing over hidden entries, build trees and links.
+/// When `rg` cannot be started, or fails having printed nothing, the tree is
+/// walked instead, passing over hidden entries, build trees and links. A
+/// search that runs out of time, or that `rg` could not read all of, returns
+/// the matches `rg` printed, marked as stopped early.
 pub struct SearchCodeTool;
 
 #[async_trait]
@@ -264,7 +273,8 @@ fn search_file(
 }
 
 /// Search with `rg` started through `process::command`. `None`, when it
-/// cannot be started or does not finish, hands the search to the walk.
+/// cannot be started or fails having printed nothing, hands the search to
+/// the walk.
 async fn search_ripgrep(
     parameters: &SearchCodeParameters,
     search_path: &Path,
@@ -327,7 +337,9 @@ fn ripgrep_arguments(
 ///
 /// Nothing is buffered beyond the lines kept: a search that matches every
 /// line of a large tree costs `maximum_results` lines, not the whole of its
-/// output. `None` hands the search to the walk instead.
+/// output. Whatever it printed is reported, marked when it ran out of time or
+/// failed; only a failure that printed nothing returns `None`, handing the
+/// search to the walk.
 async fn ripgrep(
     mut command: Command,
     search_path: &Path,
@@ -345,15 +357,20 @@ async fn ripgrep(
     let deadline = Instant::now() + limit;
 
     let mut results = Vec::new();
-    let mut stopped = None;
     let mut line = Vec::new();
-    let finished = loop {
+    let stopped = loop {
         if results.len() >= maximum_results {
-            break false;
+            break None;
         }
         line.clear();
         match timeout_at(deadline, stdout.read_until(b'\n', &mut line)).await {
-            Ok(Ok(0)) => break true,
+            Ok(Ok(0)) => {
+                break match timeout_at(deadline, child.wait()).await {
+                    Ok(Ok(status)) if searched_everything(status) => None,
+                    Ok(_) => Some(UNREADABLE),
+                    Err(_) => Some(OUT_OF_TIME),
+                };
+            }
             Ok(Ok(_)) => {
                 let text = String::from_utf8_lossy(&line);
                 let text = text.trim_end_matches(['\n', '\r']);
@@ -361,24 +378,22 @@ async fn ripgrep(
                     results.push(normalize_ripgrep_line(text, search_path));
                 }
             }
-            Ok(Err(_)) => return None,
-            Err(_) => {
-                stopped = Some("out of time");
-                break false;
-            }
+            Ok(Err(_)) => break Some(UNREADABLE),
+            Err(_) => break Some(OUT_OF_TIME),
         }
     };
 
-    if !finished {
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-        return Some(format_search_results(results, maximum_results, stopped));
-    }
-    let status = timeout_at(deadline, child.wait()).await.ok()?.ok()?;
-    if !status.success() && status.code() != Some(RIPGREP_NO_MATCHES) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    if results.is_empty() && stopped == Some(UNREADABLE) {
         return None;
     }
-    Some(format_search_results(results, maximum_results, None))
+    Some(format_search_results(results, maximum_results, stopped))
+}
+
+/// Whether ripgrep exited having searched all it was given, matching or not.
+fn searched_everything(status: ExitStatus) -> bool {
+    status.success() || status.code() == Some(RIPGREP_NO_MATCHES)
 }
 
 /// A line ripgrep printed as `path:line:text`, with the path made relative
@@ -703,6 +718,53 @@ mod tests {
             "{output}"
         );
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// A `rg` that closed its output but had not exited by the deadline
+    /// handed the search to the walk, throwing away every match it printed.
+    #[tokio::test]
+    async fn a_search_whose_rg_outlives_its_output_reports_what_it_found() {
+        let started = std::time::Instant::now();
+        let result = ripgrep(
+            shell("echo 'a.rs:3:first'; exec >&-; exec sleep 30"),
+            Path::new("."),
+            MAXIMUM_SEARCH_RESULTS,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("a search out of time still answers");
+
+        let output = result.output.unwrap();
+        assert!(output.contains("a.rs:3: first"), "{output}");
+        assert!(
+            output.contains("search stopped early: out of time"),
+            "{output}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// `rg` exits 2 when it could not read part of the tree, having still
+    /// printed the matches it found in the rest. Those were thrown away for
+    /// the walk, which reads fewer kinds of file and passes over what it
+    /// cannot read without a word, so the model heard of no matches at all.
+    #[tokio::test]
+    async fn a_search_that_could_not_read_everything_keeps_what_it_found() {
+        let result = ripgrep(
+            shell("echo 'a.rs:3:first'; exit 2"),
+            Path::new("."),
+            MAXIMUM_SEARCH_RESULTS,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("the matches rg printed are kept");
+
+        let output = result.output.unwrap();
+        assert!(output.starts_with("Found 1 matches"), "{output}");
+        assert!(output.contains("a.rs:3: first"), "{output}");
+        assert!(
+            output.contains("search stopped early: some files could not be read"),
+            "{output}"
+        );
     }
 
     #[tokio::test]
