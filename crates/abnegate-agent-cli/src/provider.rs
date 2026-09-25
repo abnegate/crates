@@ -439,7 +439,7 @@ impl CliProvider {
     /// own if it truly needed them.
     fn attach(&self) -> Option<McpAttachment> {
         let mcp = &self.settings.mcp;
-        if mcp.is_empty() || self.agent != AgentKind::Claude {
+        if mcp.is_empty() {
             return None;
         }
         match mcp.render(self.agent) {

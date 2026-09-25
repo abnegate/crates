@@ -272,15 +272,20 @@ impl McpConfig {
     }
 
     /// Write the attachable servers to a private temporary file for
-    /// `agent`'s `--mcp-config`, or `None` when there are none, with what
-    /// the child needs in its environment for the file to resolve.
+    /// `agent`'s `--mcp-config`, with what the child needs in its environment
+    /// for the file to resolve, or `None` when there are none or `agent`
+    /// reads no such file: Codex takes its servers from its own
+    /// `config.toml` alone.
     ///
-    /// The file carries a server's
-    /// [working directory](McpServer::working_directory) only for an agent
-    /// whose own MCP configuration documents one (Codex's `cwd`; Claude
-    /// Code's has none), and never
-    /// [`inherit_environment`](McpServer::inherit_environment).
+    /// The file never carries a server's
+    /// [working directory](McpServer::working_directory), which Claude Code's
+    /// MCP configuration has no field for, nor
+    /// [`inherit_environment`](McpServer::inherit_environment): only a
+    /// launcher that starts a server itself honours either.
     pub fn render(&self, agent: AgentKind) -> io::Result<Option<McpAttachment>> {
+        if !agent.reads_mcp_file() {
+            return Ok(None);
+        }
         for (name, server) in self.enabled() {
             if !server.valid() {
                 tracing::warn!(
@@ -303,7 +308,7 @@ impl McpConfig {
         let mut placeholders = Placeholders::new()?;
         let servers: Map<String, Value> = self
             .attachable()
-            .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders, agent)))
+            .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders)))
             .collect();
         if servers.is_empty() {
             return Ok(None);
@@ -914,38 +919,44 @@ mod tests {
     fn the_rendered_file_never_carries_inherit_environment() {
         let config = McpConfig::default().with_server("appwrite", appwrite().inherit_environment());
 
-        for agent in [AgentKind::Claude, AgentKind::Codex] {
-            let attachment = config
-                .render(agent)
-                .expect("rendered")
-                .expect("an attachment");
-            let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
-            assert!(!contents.contains("inherit_environment"), "{contents}");
-            assert!(!contents.contains("disabled"), "{contents}");
-        }
+        let attachment = rendered(&config);
+
+        let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        assert!(!contents.contains("inherit_environment"), "{contents}");
+        assert!(!contents.contains("disabled"), "{contents}");
     }
 
+    /// Codex has no flag that reads an MCP file, so a file rendered for it
+    /// would attach nothing.
     #[test]
-    fn the_rendered_file_carries_a_working_directory_only_for_an_agent_that_documents_it() {
+    fn nothing_is_rendered_for_an_agent_without_an_mcp_file_flag() {
+        let config = McpConfig::default().with_server("appwrite", appwrite());
+
+        assert!(config.render(AgentKind::Codex).expect("rendered").is_none());
+        assert!(
+            config
+                .render(AgentKind::Claude)
+                .expect("rendered")
+                .is_some()
+        );
+    }
+
+    /// Claude Code's MCP configuration has no working directory, and only a
+    /// launcher that starts a server itself honours one.
+    #[test]
+    fn no_rendered_file_carries_a_working_directory() {
         let config = McpConfig::default().with_server(
             "appwrite",
             appwrite().with_working_directory("/srv/appwrite"),
         );
 
-        let claude = read(&rendered(&config).file);
-        let codex = read(
-            &config
-                .render(AgentKind::Codex)
-                .expect("rendered")
-                .expect("an attachment")
-                .file,
-        );
-
-        assert!(
-            claude["mcpServers"]["appwrite"].get("cwd").is_none(),
-            "{claude}"
-        );
-        assert_eq!(codex["mcpServers"]["appwrite"]["cwd"], "/srv/appwrite");
+        for agent in [AgentKind::Claude, AgentKind::Codex] {
+            if let Some(attachment) = config.render(agent).expect("rendered") {
+                let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+                assert!(!contents.contains("cwd"), "{agent}: {contents}");
+                assert!(!contents.contains("/srv/appwrite"), "{agent}: {contents}");
+            }
+        }
     }
 
     #[test]

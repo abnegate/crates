@@ -111,6 +111,16 @@ impl AgentKind {
         }
     }
 
+    /// Whether this agent reads MCP servers from a file named on its command
+    /// line, the file [`McpConfig::render`](crate::McpConfig::render)
+    /// writes. Codex reads its servers from its own `config.toml` only.
+    pub(crate) fn reads_mcp_file(self) -> bool {
+        match self {
+            Self::Claude => true,
+            Self::Codex => false,
+        }
+    }
+
     /// Variables the agent sets for the commands it runs, which make a copy
     /// of it started from inside one of those commands refuse to run or
     /// behave as a nested session. They are removed from what the child
