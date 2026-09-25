@@ -6,19 +6,33 @@
 //! chose.
 //!
 //! The file holds no literal environment or header value. Each environment
-//! value, each run of literal text in a header, and each stdio command or
-//! argument that refers to a variable moves into a generated variable of the
-//! child's, named under a token drawn at random for every rendering, so a
-//! file left behind by a run killed before it could clean up exposes no
-//! secret. A stdio server's `${VAR}` references are resolved here,
-//! as the CLI would resolve them, and the child is given only the resolved
-//! values, never the variables they name. A remote server's URL and the
-//! references in its headers, defaults included, are written as they are,
-//! for the CLI alone to expand under rules of its own that keep a credential
-//! from a server a configuration names, and a remote server that refers to
-//! a generated variable or to one the agent signs in with never attaches. A
-//! stdio command or argument that refers to nothing is written as it is
-//! too, so a secret belongs in a reference there, as in a URL.
+//! and header value, and each URL, stdio command or argument that refers to
+//! a variable, moves into a generated variable of the child's, named under a
+//! token drawn at random for every rendering, so a file left behind by a run
+//! killed before it could clean up exposes no secret. A URL, command or
+//! argument that refers to nothing is written as it is, so a secret belongs
+//! in a reference there.
+//!
+//! A stdio server's `${VAR}` references are resolved here, as the CLI would
+//! resolve them, against what the child is given and then this process's
+//! environment, with the agent's sign-in variables, the credential's own and
+//! Claude Code's OAuth refresh token read as set but empty. The child is
+//! given each resolved value under its
+//! generated name: resolving hands it nothing under the name of the variable
+//! a reference names. Claude Code starts every stdio server, as it does the
+//! agent's own tools, with its whole environment, so each of them can read
+//! every generated variable and everything else the child holds.
+//!
+//! A remote server's references are resolved here too, against the server's
+//! own [`secrets`](McpServer::secrets) alone, so a remote server is sent a
+//! secret bound to it, or a default, and never a variable of this process's
+//! or one the child is handed by name. The resolved value reaches the CLI in
+//! a generated variable like any other, so a bound secret is kept from every
+//! other remote server, not from the agent's tools or its stdio servers. A
+//! remote server whose reference has neither a secret nor a default, whose
+//! value still holds `${` once resolved, or whose header name holds `${`
+//! never attaches, with a warning that names only the server: see
+//! [`McpConfig::attachable`].
 //!
 //! [`McpConfig`] is the one configuration for every way a server reaches a
 //! model: [`McpConfig::from_environment`] reads it under an application's own
@@ -33,6 +47,7 @@ mod config_error;
 mod entry;
 mod mismatch;
 mod placeholders;
+mod refusal;
 mod segment;
 mod server;
 mod transport;

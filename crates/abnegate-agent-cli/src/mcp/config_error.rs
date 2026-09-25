@@ -4,7 +4,8 @@ use thiserror::Error;
 
 use crate::mcp::mismatch::Mismatch;
 
-/// Why an MCP configuration could not be read.
+/// Why an MCP configuration could not be read, or a secret could not be
+/// bound to one of its servers.
 ///
 /// A variant may gain a field in a minor release, so a pattern outside this
 /// crate ends in `..`:
@@ -56,6 +57,15 @@ pub enum McpConfigError {
     /// The text is not JSON.
     #[error("failed to parse MCP config: {0}")]
     Json(#[from] serde_json::Error),
+    /// No server is configured under `name`, so a
+    /// [secret](crate::mcp::McpServer::secrets) bound to it would be bound to
+    /// nothing: see [`McpConfig::with_secret`](crate::mcp::McpConfig::with_secret).
+    #[error("no MCP server named '{name}'")]
+    #[non_exhaustive]
+    Unconfigured {
+        /// The name no server is configured under.
+        name: String,
+    },
 }
 
 impl McpConfigError {

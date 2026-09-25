@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use abnegate_secret::SecretValue;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -91,6 +92,45 @@ impl McpConfig {
     pub fn with_server(mut self, name: impl Into<String>, server: McpServer) -> Self {
         self.servers.insert(name.into(), server);
         self
+    }
+
+    /// The same configuration with `value` bound, for the server configured
+    /// under `server`, to its URL's and headers' references to `variable`:
+    /// see [`McpServer::secrets`]. For a server read from a document, the
+    /// environment or a file, whose secret a document never holds:
+    ///
+    /// ```
+    /// use abnegate_agent_cli::McpConfig;
+    ///
+    /// # let token = String::new();
+    /// let config = McpConfig::from_json_str(
+    ///     r#"{"mcpServers": {"linear": {
+    ///         "type": "http",
+    ///         "url": "https://mcp.linear.app/mcp",
+    ///         "headers": {"Authorization": "Bearer ${LINEAR_TOKEN}"}
+    ///     }}}"#,
+    /// )?
+    /// .with_secret("linear", "LINEAR_TOKEN", token)?;
+    /// # Ok::<(), abnegate_agent_cli::McpConfigError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`McpConfigError::Unconfigured`] when no server is configured under
+    /// `server`, disabled or not, rather than binding a secret nothing reads.
+    pub fn with_secret(
+        mut self,
+        server: &str,
+        variable: impl Into<String>,
+        value: impl Into<SecretValue>,
+    ) -> Result<Self, McpConfigError> {
+        let Some(configured) = self.servers.get_mut(server) else {
+            return Err(McpConfigError::Unconfigured {
+                name: server.to_string(),
+            });
+        };
+        configured.secrets.insert(variable.into(), value.into());
+        Ok(self)
     }
 
     /// Whether no server is enabled.
@@ -268,20 +308,26 @@ impl McpConfig {
 
     /// The servers that will actually attach to `agent`: none for an agent
     /// whose CLI reads no MCP file, as Codex, which takes its servers from
-    /// its own `config.toml` alone, and otherwise
-    /// those enabled, with a [valid](McpServer::valid) transport, which a
-    /// strict CLI would otherwise reject along with every other server, a
-    /// name and tool names safe to place in `--allowedTools`, which the CLI
-    /// splits on commas and whitespace, so a name holding either could allow
-    /// a tool nobody named, and no reference in the URL or headers to a
-    /// variable the rendered file generates, which holds another server's
-    /// value, or to one of `agent`'s
-    /// [sign-in variables](AgentKind::credentials).
+    /// its own `config.toml` alone, and otherwise those enabled
+    ///
+    /// - with a [valid](McpServer::valid) transport, which a strict CLI would
+    ///   otherwise reject along with every other server;
+    /// - with a name and tool names safe to place in `--allowedTools`, which
+    ///   the CLI splits on commas and whitespace, so a name holding either
+    ///   could allow a tool nobody named;
+    /// - and, for a remote server, with every reference in its URL and header
+    ///   values to a variable it has a [secret](McpServer::secrets) for or
+    ///   with a default, nothing holding `${` once resolved, which the CLI
+    ///   could read as a reference of its own, since it expands a header
+    ///   value again when it connects, and no header name holding `${`,
+    ///   which it would send as it is.
+    ///
+    /// A run's log names every other enabled server, and why it was left
+    /// out, and nothing it holds.
     pub fn attachable(&self, agent: AgentKind) -> impl Iterator<Item = (&str, &McpServer)> {
         let reads = agent.reads_mcp_file();
-        self.enabled().filter(move |(name, server)| {
-            reads && server.valid() && server.nameable(name) && !server.overreaches(agent)
-        })
+        self.enabled()
+            .filter(move |(name, server)| reads && server.refusal(name).is_none())
     }
 
     /// Write the attachable servers to a private temporary file for
@@ -300,21 +346,8 @@ impl McpConfig {
             return Ok(None);
         }
         for (name, server) in self.enabled() {
-            if !server.valid() {
-                tracing::warn!(
-                    server = %name,
-                    "skipping an MCP server: set exactly one of `command` and `url`, and a `type`, if any, of `stdio`, `http` or `sse` that matches it"
-                );
-            } else if !server.nameable(name) {
-                tracing::warn!(
-                    server = %name,
-                    "skipping an MCP server: its name and tool names may hold only letters, digits, `_` and `-`"
-                );
-            } else if server.overreaches(agent) {
-                tracing::warn!(
-                    server = %name,
-                    "skipping an MCP server: its URL or headers refer to a variable generated for another server or one the agent signs in with"
-                );
+            if let Some(refusal) = server.refusal(name) {
+                tracing::warn!(server = %name, "skipping an MCP server: {refusal}");
             }
         }
 
@@ -593,24 +626,40 @@ mod tests {
         );
     }
 
-    /// A CLI's own rule for a remote server's references is all that keeps a
-    /// credential from a server a configuration names, so nothing a remote
-    /// server refers to may reach the child by any other road: neither
-    /// expanded into a generated variable nor handed over from the host
-    /// under its own name.
+    /// The value of the generated variable `reference` names in a rendered
+    /// file, as the child is given it.
+    fn generated<'attachment>(
+        attachment: &'attachment McpAttachment,
+        reference: &Value,
+    ) -> &'attachment str {
+        let variable = reference
+            .as_str()
+            .and_then(|value| value.strip_prefix("${"))
+            .and_then(|value| value.strip_suffix('}'))
+            .expect("a reference to a generated variable");
+        attachment
+            .environment
+            .get(variable)
+            .map(SecretValue::expose)
+            .expect("a generated variable")
+    }
+
+    /// A remote server's references resolve against its own secrets alone,
+    /// so neither a credential the host holds nor one the child is handed
+    /// reaches it, and the child is never handed one on its behalf.
     #[test]
-    fn the_child_is_never_handed_a_credential_a_remote_server_refers_to() {
+    fn a_remote_server_is_never_sent_a_credential_the_host_or_the_child_holds() {
         let settings = CliSettings::default()
             .with_credential(Credential::key("ANTHROPIC_API_KEY", "sk-ant-explicit"))
             .with_mcp_server(
                 "remote",
-                McpServer::remote("https://mcp.example.com/${NPM_TOKEN}")
-                    .with_header("X-Npm", "token ${NPM_TOKEN}"),
+                McpServer::remote("https://mcp.example.com/${NPM_TOKEN:-public}")
+                    .with_header("X-Npm", "token ${NPM_TOKEN:-none}"),
             )
             .with_mcp_server(
                 "anthropic",
                 McpServer::remote("https://mcp.example.com/mcp")
-                    .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}"),
+                    .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY:-none}"),
             );
         let attachment = settings
             .mcp
@@ -636,13 +685,29 @@ mod tests {
                 "the child was handed a credential as {variable:?}={value}"
             );
         }
+        let servers = &read(&attachment.file)["mcpServers"];
+        assert_eq!(
+            generated(&attachment, &servers["remote"]["url"]),
+            "https://mcp.example.com/public"
+        );
+        assert_eq!(
+            generated(&attachment, &servers["remote"]["headers"]["X-Npm"]),
+            "token none"
+        );
+        assert_eq!(
+            generated(
+                &attachment,
+                &servers["anthropic"]["headers"]["Authorization"]
+            ),
+            "Bearer none"
+        );
     }
 
-    /// Claude Code reads its own credentials as empty in a remote server's
-    /// URL and headers. A server that names one is refused outright here, so
-    /// keeping the agent's key from a server does not rest on the CLI alone.
+    /// A remote server that names one of the agent's sign-in variables is
+    /// sent what any other reference is: a secret bound to it or its default,
+    /// never the variable; with neither it never attaches.
     #[test]
-    fn a_remote_server_that_refers_to_the_agents_credential_never_attaches() {
+    fn a_remote_server_naming_the_agents_credential_is_sent_only_its_own_values() {
         let config = McpConfig::default()
             .with_server("appwrite", appwrite())
             .with_server(
@@ -655,17 +720,118 @@ mod tests {
                 McpServer::remote("https://${ANTHROPIC_BASE_URL:-relay.example}/mcp"),
             );
 
-        let document = read(&rendered(&config).file);
+        let attachment = rendered(&config);
+        let document = read(&attachment.file);
 
+        let servers = document["mcpServers"].as_object().expect("servers");
+        assert_eq!(servers.keys().collect::<Vec<_>>(), ["appwrite", "relay"]);
         assert_eq!(
-            document["mcpServers"]
-                .as_object()
-                .expect("servers")
-                .keys()
-                .collect::<Vec<_>>(),
-            ["appwrite"]
+            generated(&attachment, &servers["relay"]["url"]),
+            "https://relay.example/mcp"
         );
+        assert_eq!(
+            config.allowed_tools(AgentKind::Claude),
+            ["mcp__appwrite", "mcp__relay"]
+        );
+    }
+
+    /// A remote server is sent a value only through a secret bound to it or
+    /// a default. One whose reference has neither is left out, and the
+    /// warning names the server and nothing it holds.
+    #[test]
+    fn a_remote_server_with_a_reference_to_no_secret_and_no_default_never_attaches() {
+        let config = McpConfig::default()
+            .with_server("appwrite", appwrite())
+            .with_server(
+                "linear",
+                McpServer::remote("https://mcp.linear.app/mcp")
+                    .with_header("Authorization", "Bearer ${LINEAR_TOKEN}"),
+            );
+
+        let (attachment, logs) = captured_logs(|| rendered(&config));
+
+        let document = read(&attachment.file);
+        assert!(document["mcpServers"].get("linear").is_none(), "{document}");
         assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
+        assert!(
+            config.redacted(AgentKind::Claude)["mcpServers"]
+                .get("linear")
+                .is_none()
+        );
+        let warning = logs
+            .lines()
+            .find(|line| line.contains("linear"))
+            .expect("a warning naming the server");
+        assert!(warning.contains("no secret bound"), "{warning}");
+        assert!(!warning.contains("LINEAR_TOKEN"), "{warning}");
+        assert!(!warning.contains("Bearer"), "{warning}");
+    }
+
+    /// A configuration read from a document never holds a secret, so one is
+    /// bound to its server by name, without building the server again.
+    #[test]
+    fn a_secret_bound_by_name_reaches_a_server_read_from_a_document() {
+        let config = McpConfig::from_json_str(
+            r#"{"mcpServers": {
+                "linear": {
+                    "type": "http",
+                    "url": "https://mcp.linear.app/mcp",
+                    "headers": {"Authorization": "Bearer ${LINEAR_TOKEN}"}
+                },
+                "notes": {"command": "notes-server", "disabled": true}
+            }}"#,
+        )
+        .expect("a configuration")
+        .with_secret("linear", "LINEAR_TOKEN", "lin-bound-marker")
+        .expect("a configured server")
+        .with_secret("notes", "NOTES_TOKEN", "notes-marker")
+        .expect("a configured server, disabled or not");
+
+        let attachment = rendered(&config);
+
+        let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        assert!(!contents.contains("lin-bound-marker"), "{contents}");
+        let document: Value = serde_json::from_str(&contents).expect("JSON");
+        assert_eq!(
+            generated(
+                &attachment,
+                &document["mcpServers"]["linear"]["headers"]["Authorization"]
+            ),
+            "Bearer lin-bound-marker"
+        );
+        assert_eq!(
+            attachment
+                .secrets
+                .iter()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            ["lin-bound-marker"]
+        );
+        assert!(
+            !serde_json::to_string(&config)
+                .expect("serialisable")
+                .contains("marker")
+        );
+    }
+
+    #[test]
+    fn binding_a_secret_to_a_server_that_is_not_configured_is_an_error() {
+        let config = McpConfig::default().with_server(
+            "linear",
+            McpServer::remote("https://mcp.linear.app/mcp")
+                .with_header("Authorization", "Bearer ${LINEAR_TOKEN}"),
+        );
+
+        let error = config
+            .with_secret("lineaar", "LINEAR_TOKEN", "lin-misbound-marker")
+            .expect_err("no server named lineaar");
+
+        assert!(
+            matches!(&error, McpConfigError::Unconfigured { name } if name == "lineaar"),
+            "{error:?}"
+        );
+        assert_eq!(error.to_string(), "no MCP server named 'lineaar'");
+        assert!(!format!("{error:?}").contains("marker"));
     }
 
     /// Nothing attaches to an agent that reads no MCP file, so it is allowed

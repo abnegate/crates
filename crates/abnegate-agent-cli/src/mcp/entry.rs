@@ -56,6 +56,7 @@ impl<'document> Entry<'document> {
             url: self.text(URL)?,
             transport: self.transport()?,
             headers: self.secrets(HEADERS)?,
+            secrets: BTreeMap::new(),
             tools: self.tools()?,
             working_directory: self.text(WORKING_DIRECTORY)?.map(PathBuf::from),
             inherit_environment: self.flag(INHERIT_ENVIRONMENT)?,
