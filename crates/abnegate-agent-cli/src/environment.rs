@@ -15,10 +15,16 @@ use crate::mcp::references;
 use crate::mcp::whole_reference;
 use crate::settings::CliSettings;
 
+/// The proxy bypass list, which names hosts rather than holding a
+/// credential, and whose hosts scrubbing would redact wherever a log
+/// mentions them.
+const BYPASS: &[&str] = &["NO_PROXY", "no_proxy"];
+
 /// The child's environment: an allowlist of host variables, the caller's
 /// allowed names and the agent's own configuration variables, or the whole
 /// host environment when the caller opts in, with every explicit value set
-/// on top.
+/// on top. Each allowed value but the proxy bypass list is a secret, since a
+/// proxy URL, say, can carry a password.
 ///
 /// Explicit values go on in rising precedence: the agent's sign-in
 /// variables from the host when its credential is inherited, the caller's
@@ -52,16 +58,13 @@ impl Environment {
             secrets: Vec::new(),
         };
         if !environment.inherit {
-            let allowed = settings.allowed.iter().map(String::as_str);
-            for variable in DEFAULT_ENVIRONMENT
-                .iter()
-                .copied()
-                .chain(allowed)
-                .chain(agent.configuration().iter().copied())
-            {
+            for variable in DEFAULT_ENVIRONMENT.iter().chain(agent.configuration()) {
                 if let Some(value) = host(variable) {
                     environment.inherited.insert(variable.to_string(), value);
                 }
+            }
+            for variable in &settings.allowed {
+                environment.allow(variable, host);
             }
         }
         if matches!(settings.credential, Credential::Inherited) {
@@ -164,6 +167,19 @@ impl Environment {
             .cloned()
             .or_else(|| host(variable))
             .and_then(|value| value.into_string().ok())
+    }
+
+    /// Give the child `variable` from the host, when the host has it set, as
+    /// a secret unless it is on the allowlist or is the proxy bypass list.
+    fn allow(&mut self, variable: &str, host: &dyn Fn(&str) -> Option<OsString>) {
+        let Some(value) = host(variable) else {
+            return;
+        };
+        if !DEFAULT_ENVIRONMENT.contains(&variable) && !BYPASS.contains(&variable) {
+            self.secrets
+                .push(SecretValue::new(value.to_string_lossy().into_owned()));
+        }
+        self.inherited.insert(variable.to_string(), value);
     }
 
     /// Give the child a sign-in variable from the host, as a secret, unless
@@ -452,10 +468,28 @@ mod tests {
             Some("localhost,127.0.0.1")
         );
         assert!(!variables.contains_key("HTTP_PROXY"), "unset on the host");
+    }
+
+    /// A proxy URL can carry a password, so every allowed value is scrubbed;
+    /// the bypass list names hosts, which scrubbing would hide wherever a log
+    /// mentions them.
+    #[test]
+    fn every_allowed_value_but_the_bypass_list_is_a_secret() {
+        let settings = CliSettings::default()
+            .with_proxy_variables()
+            .allow(["LINEAR_API_URL", "PATH"]);
+        let environment = Environment::new(AgentKind::Codex, &settings, None, &host());
+
+        let secrets = exposed(&environment);
+        assert!(secrets.contains(&"http://proxy.internal:3128".to_string()));
+        assert!(secrets.contains(&"https://linear.internal".to_string()));
         assert!(
-            exposed(&proxied)
-                .iter()
-                .all(|secret| !secret.contains("proxy.internal"))
+            !secrets.contains(&"localhost,127.0.0.1".to_string()),
+            "{secrets:?}"
+        );
+        assert!(
+            !secrets.contains(&"/usr/bin:/bin".to_string()),
+            "{secrets:?}"
         );
     }
 
@@ -471,6 +505,7 @@ mod tests {
         );
         assert!(!variables.contains_key("NEVER_SET_ON_THE_HOST"));
         assert!(!variables.contains_key("GITHUB_TOKEN"));
+        assert_eq!(exposed(&environment), ["https://linear.internal"]);
 
         let inheriting = Environment::new(
             AgentKind::Codex,

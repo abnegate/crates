@@ -63,11 +63,14 @@ pub struct McpServer {
     /// Claude Code reads its own and cloud credentials as empty here. A
     /// variable a reference names is never read from this process's
     /// environment, so the reference expands only if the caller hands the
-    /// variable to the child. Hand a token with
+    /// variable to the child: a token through
     /// [`CliSettings::with_environment`](crate::CliSettings::with_environment),
-    /// whose values the run scrubs from what it writes down, not with
-    /// [`CliSettings::allow`](crate::CliSettings::allow), whose values it
-    /// does not.
+    /// or from this process's environment through
+    /// [`CliSettings::allow`](crate::CliSettings::allow), either of which the
+    /// run scrubs from what it writes down. A child given this process's
+    /// whole environment by
+    /// [`CliSettings::inherit_environment`](crate::CliSettings::inherit_environment)
+    /// has every variable a reference could name, none of them scrubbed.
     pub url: Option<String>,
     /// How the server is reached; implied by `command` or `url` when unset.
     #[serde(rename = "type")]
@@ -78,8 +81,7 @@ pub struct McpServer {
     /// it is, for the CLI alone to expand under the same rules as a
     /// reference in [`McpServer::url`], and is never read from this process's
     /// environment: it expands only if the caller hands the variable to the
-    /// child, a token through
-    /// [`CliSettings::with_environment`](crate::CliSettings::with_environment).
+    /// child, as for the URL.
     /// The literal text around a reference moves into a
     /// generated variable, so no literal secret reaches the file:
     /// `Bearer ${TOKEN}` is written `${ABNEGATE_MCP_<token>_0}${TOKEN}`, with

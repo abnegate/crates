@@ -632,6 +632,7 @@ mod tests {
     use crate::mcp::McpServer;
     use crate::settings::CliSettings;
     use crate::structured_result::StructuredResult;
+    use crate::test_support::delegated;
 
     const ETXTBSY: i32 = 26;
     const PROBE: &str = "FAKE_AGENT_PROBE";
@@ -2323,6 +2324,58 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
         let rendered = error.to_string();
         assert!(!rendered.contains("word-123"), "{rendered}");
         assert!(!rendered.contains("zq7x"), "{rendered}");
+    }
+
+    /// A proxy URL can carry a password or a token, and the agent can print
+    /// anything its environment holds.
+    #[tokio::test]
+    async fn a_proxy_credential_never_reaches_a_log() {
+        const NAME: &str = "provider::tests::a_proxy_credential_never_reaches_a_log";
+        let proxies = [
+            (
+                "HTTPS_PROXY",
+                "http://user:hunter2seventeen@proxy.internal:3128",
+            ),
+            ("HTTP_PROXY", "http://TOKENVALUE12345@proxy"),
+        ];
+        if delegated(NAME, &proxies).await {
+            return;
+        }
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let script = r#"
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"via %s and %s"}]}}\n' "$HTTPS_PROXY" "$HTTP_PROXY"
+echo "proxies $HTTPS_PROXY $HTTP_PROXY" >&2
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let settings = settings(&directory, script)
+            .with_log(&root)
+            .with_proxy_variables();
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        let files = execution.log.clone().expect("log files");
+        for path in [&files.stdout, &files.stderr, &files.events] {
+            let contents = std::fs::read_to_string(path).expect("a log file");
+            for secret in ["hunter2seventeen", "TOKENVALUE12345"] {
+                assert!(
+                    !contents.contains(secret),
+                    "{} leaked {secret}: {contents}",
+                    path.display()
+                );
+            }
+        }
+        assert!(
+            !execution.stderr.contains("TOKENVALUE12345"),
+            "{}",
+            execution.stderr
+        );
+        assert_eq!(
+            std::fs::read_to_string(&files.stdout).expect("the prose log"),
+            "via [REDACTED] and [REDACTED]",
+            "the agent was not handed both proxies"
+        );
     }
 
     #[tokio::test]
