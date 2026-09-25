@@ -439,20 +439,20 @@ impl CliProvider {
     /// own if it truly needed them.
     fn attach(&self) -> Option<McpAttachment> {
         let mcp = &self.settings.mcp;
-        if mcp.is_empty() || self.agent != AgentKind::Claude {
+        if mcp.is_empty() {
             return None;
         }
         match mcp.render(self.agent) {
             Ok(Some(attachment)) => {
                 tracing::info!(
                     provider = %self.name,
-                    servers = mcp.attachable().count(),
+                    servers = mcp.attachable(self.agent).count(),
                     "attaching MCP servers"
                 );
                 tracing::debug!(
                     provider = %self.name,
                     path = %attachment.file.path().display(),
-                    config = %mcp.redacted(),
+                    config = %mcp.redacted(self.agent),
                     "rendered MCP config, secret values redacted"
                 );
                 Some(attachment)
@@ -630,8 +630,10 @@ mod tests {
     use crate::execution::Execution;
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
+    use crate::mcp::expand;
     use crate::settings::CliSettings;
     use crate::structured_result::StructuredResult;
+    use crate::test_support::delegated;
 
     const ETXTBSY: i32 = 26;
     const PROBE: &str = "FAKE_AGENT_PROBE";
@@ -1312,15 +1314,92 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         let file = std::fs::read_to_string(&copied).expect("the MCP config");
         assert!(!file.contains("glsa_realsecret"), "{file}");
         let document: Value = serde_json::from_str(&file).expect("JSON");
-        assert_eq!(
-            document["mcpServers"]["grafana"]["env"]["GRAFANA_TOKEN"],
-            "${ABNEGATE_MCP_0}"
-        );
+        let generated = |variable: &str| {
+            document["mcpServers"]["grafana"]["env"][variable]
+                .as_str()
+                .and_then(|value| value.strip_prefix("${ABNEGATE_MCP_"))
+                .and_then(|value| value.strip_suffix('}'))
+                .map(|name| format!("ABNEGATE_MCP_{name}"))
+                .expect("a generated variable")
+        };
         let environment = std::fs::read_to_string(&recorded).expect("the child's environment");
-        assert!(environment.contains("ABNEGATE_MCP_0=glsa_realsecret"));
+        assert!(
+            environment.contains(&format!("{}=glsa_realsecret", generated("GRAFANA_TOKEN"))),
+            "{environment}"
+        );
         if let Ok(package) = std::env::var("CARGO_PKG_NAME") {
-            assert!(environment.contains(&format!("CARGO_PKG_NAME={package}")));
+            assert!(
+                environment.contains(&format!("{}={package}", generated("GRAFANA_PACKAGE"))),
+                "{environment}"
+            );
+            assert!(!variables(&recorded).contains(&"CARGO_PKG_NAME".to_string()));
         }
+    }
+
+    /// A remote server's reference is the CLI's to expand, from the child's
+    /// environment alone, so the caller hands the token over itself: the
+    /// scrubbed setter makes it resolve, and keeps it out of every log.
+    #[tokio::test]
+    async fn a_remote_reference_resolves_to_a_token_handed_over_and_never_reaches_a_log() {
+        const TOKEN: &str = "lin-api-marker-9f3e27";
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let copied = directory.path().join("mcp.json");
+        let recorded = directory.path().join("environment");
+        let script = format!(
+            r#"env > '{recorded}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then cp "$2" '{copied}'; fi
+  shift
+done
+printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"sent %s"}}]}}}}\n' "$LINEAR_TOKEN"
+echo "sent $LINEAR_TOKEN" >&2
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            recorded = recorded.display(),
+            copied = copied.display(),
+        );
+        let settings = settings(&directory, &script)
+            .with_log(&root)
+            .with_environment("LINEAR_TOKEN", TOKEN)
+            .with_mcp_server(
+                "linear",
+                McpServer::remote("https://mcp.linear.app/mcp")
+                    .with_header("Authorization", "Bearer ${LINEAR_TOKEN}"),
+            );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&copied).expect("the MCP config"))
+                .expect("JSON");
+        let environment = std::fs::read_to_string(&recorded).expect("the child's environment");
+        let child: std::collections::BTreeMap<&str, &str> = environment
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .collect();
+        let header = document["mcpServers"]["linear"]["headers"]["Authorization"]
+            .as_str()
+            .expect("a header");
+        assert_eq!(
+            expand(header, &|name| child
+                .get(name)
+                .map(|value| value.to_string())),
+            format!("Bearer {TOKEN}")
+        );
+        let files = execution.log.clone().expect("log files");
+        for path in [&files.stdout, &files.stderr, &files.events] {
+            let contents = std::fs::read_to_string(path).expect("a log file");
+            assert!(
+                !contents.contains(TOKEN),
+                "{} leaked the token: {contents}",
+                path.display()
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&files.stdout).expect("the prose log"),
+            "sent [REDACTED]"
+        );
     }
 
     #[tokio::test]
@@ -2004,9 +2083,11 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             serde_json::from_str(&std::fs::read_to_string(&copied).expect("the MCP config"))
                 .expect("JSON");
         assert_eq!(document["mcpServers"]["appwrite"]["command"], "uvx");
-        assert_eq!(
-            document["mcpServers"]["appwrite"]["env"]["APPWRITE_API_KEY"],
-            "${APPWRITE_API_KEY}"
+        assert!(
+            document["mcpServers"]["appwrite"]["env"]["APPWRITE_API_KEY"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("${ABNEGATE_MCP_")),
+            "{document}"
         );
         assert!(!path.exists(), "the MCP config outlived the run");
     }
@@ -2310,6 +2391,58 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
         let rendered = error.to_string();
         assert!(!rendered.contains("word-123"), "{rendered}");
         assert!(!rendered.contains("zq7x"), "{rendered}");
+    }
+
+    /// A proxy URL can carry a password or a token, and the agent can print
+    /// anything its environment holds.
+    #[tokio::test]
+    async fn a_proxy_credential_never_reaches_a_log() {
+        const NAME: &str = "provider::tests::a_proxy_credential_never_reaches_a_log";
+        let proxies = [
+            (
+                "HTTPS_PROXY",
+                "http://user:hunter2seventeen@proxy.internal:3128",
+            ),
+            ("HTTP_PROXY", "http://TOKENVALUE12345@proxy"),
+        ];
+        if delegated(NAME, &proxies).await {
+            return;
+        }
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let script = r#"
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"via %s and %s"}]}}\n' "$HTTPS_PROXY" "$HTTP_PROXY"
+echo "proxies $HTTPS_PROXY $HTTP_PROXY" >&2
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let settings = settings(&directory, script)
+            .with_log(&root)
+            .with_proxy_variables();
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        let files = execution.log.clone().expect("log files");
+        for path in [&files.stdout, &files.stderr, &files.events] {
+            let contents = std::fs::read_to_string(path).expect("a log file");
+            for secret in ["hunter2seventeen", "TOKENVALUE12345"] {
+                assert!(
+                    !contents.contains(secret),
+                    "{} leaked {secret}: {contents}",
+                    path.display()
+                );
+            }
+        }
+        assert!(
+            !execution.stderr.contains("TOKENVALUE12345"),
+            "{}",
+            execution.stderr
+        );
+        assert_eq!(
+            std::fs::read_to_string(&files.stdout).expect("the prose log"),
+            "via [REDACTED] and [REDACTED]",
+            "the agent was not handed both proxies"
+        );
     }
 
     #[tokio::test]

@@ -118,7 +118,8 @@ impl McpConfig {
     ///
     /// [`DEFAULT_PREFIX`] is the prefix for an application with none of its
     /// own. This never fails: a document that cannot be read is logged and
-    /// skipped, leaving no server configured.
+    /// skipped, leaving no server configured, and so is any one server whose
+    /// entry cannot be read, leaving the rest.
     pub fn from_environment(prefix: &str) -> Self {
         Self::load(
             prefix,
@@ -205,26 +206,35 @@ impl McpConfig {
     /// servers, with [`McpConfig::auto_connect`] on.
     ///
     /// `servers` is taken as the wrapper only when every value under it is
-    /// an object, so a bare map may still name a server `servers`. A server
-    /// that is neither a command nor a URL, or is both, is kept here and left
-    /// out wherever servers attach.
+    /// an object, so a bare map may still name a server `servers`. Each
+    /// server is read on its own: one whose entry cannot be read is left out
+    /// with a warning carrying its [`McpConfigError::Server`], and the rest
+    /// load. A server that is neither a command nor a URL, is both, or names
+    /// a transport this crate does not attach over is kept here and left out
+    /// wherever servers attach. Only a document of none of these shapes is
+    /// an error.
     pub fn from_value(value: &Value) -> Result<Self, McpConfigError> {
-        server_map(value)?
+        let servers = server_map(value)?
             .iter()
-            .map(|(name, server)| {
-                McpServer::deserialize(server)
-                    .map(|server| (name.clone(), server))
-                    .map_err(|source| McpConfigError::Server {
-                        name: name.clone(),
-                        source,
-                    })
+            .filter_map(|(name, entry)| match Self::server(name, entry) {
+                Ok(server) => Some((name.clone(), server)),
+                Err(error) => {
+                    tracing::warn!(%error, "skipping an MCP server that could not be read");
+                    None
+                }
             })
-            .collect::<Result<BTreeMap<_, _>, _>>()
-            .map(Self::new)
+            .collect();
+        Ok(Self::new(servers))
     }
 
-    /// Attach `server` under `name` when no server is enabled,
-    /// [`McpConfig::auto_connect`] is on, the server is
+    /// The server `entry` describes under `name`, or why it describes none.
+    fn server(name: &str, entry: &Value) -> Result<McpServer, McpConfigError> {
+        McpServer::read(entry).map_err(|mismatch| McpConfigError::server(name, mismatch))
+    }
+
+    /// Attach `server` under `name` when no server is enabled, none is
+    /// configured under `name` at all, [disabled](McpServer::disabled) or
+    /// not, [`McpConfig::auto_connect`] is on, the server is
     /// [valid](McpServer::valid), and its command, if it has one, is on
     /// `PATH`.
     ///
@@ -243,52 +253,74 @@ impl McpConfig {
     /// }
     /// ```
     pub fn fallback(mut self, name: impl Into<String>, server: McpServer) -> Self {
+        let name = name.into();
         let available = server.command.as_deref().is_none_or(command_on_path);
-        if self.auto_connect && self.is_empty() && server.valid() && available {
-            self.servers.insert(name.into(), server);
+        if self.auto_connect
+            && self.is_empty()
+            && !self.servers.contains_key(&name)
+            && server.valid()
+            && available
+        {
+            self.servers.insert(name, server);
         }
         self
     }
 
-    /// The servers that will actually attach: those enabled, with a
-    /// [valid](McpServer::valid) transport, which a strict CLI would
-    /// otherwise reject along with every other server, and a name and tool
-    /// names safe to place in `--allowedTools`, which the CLI splits on
-    /// commas and whitespace, so a name holding either could allow a tool
-    /// nobody named.
-    pub fn attachable(&self) -> impl Iterator<Item = (&str, &McpServer)> {
-        self.enabled()
-            .filter(|(name, server)| server.valid() && server.nameable(name))
+    /// The servers that will actually attach to `agent`: none for an agent
+    /// that reads no MCP file (see [`McpConfig::render`]), and otherwise
+    /// those enabled, with a [valid](McpServer::valid) transport, which a
+    /// strict CLI would otherwise reject along with every other server, a
+    /// name and tool names safe to place in `--allowedTools`, which the CLI
+    /// splits on commas and whitespace, so a name holding either could allow
+    /// a tool nobody named, and no reference in the URL or headers to a
+    /// variable the rendered file generates, which holds another server's
+    /// value, or to one of `agent`'s
+    /// [sign-in variables](AgentKind::credentials).
+    pub fn attachable(&self, agent: AgentKind) -> impl Iterator<Item = (&str, &McpServer)> {
+        let reads = agent.reads_mcp_file();
+        self.enabled().filter(move |(name, server)| {
+            reads && server.valid() && server.nameable(name) && !server.overreaches(agent)
+        })
     }
 
     /// Write the attachable servers to a private temporary file for
-    /// `agent`'s `--mcp-config`, or `None` when there are none, with what
-    /// the child needs in its environment for the file to resolve.
+    /// `agent`'s `--mcp-config`, with what the child needs in its environment
+    /// for the file to resolve, or `None` when there are none or `agent`
+    /// reads no such file: Codex takes its servers from its own
+    /// `config.toml` alone.
     ///
-    /// The file carries a server's
-    /// [working directory](McpServer::working_directory) only for an agent
-    /// whose own MCP configuration documents one (Codex's `cwd`; Claude
-    /// Code's has none), and never
-    /// [`inherit_environment`](McpServer::inherit_environment).
+    /// The file never carries a server's
+    /// [working directory](McpServer::working_directory), which Claude Code's
+    /// MCP configuration has no field for, nor
+    /// [`inherit_environment`](McpServer::inherit_environment): only a
+    /// launcher that starts a server itself honours either.
     pub fn render(&self, agent: AgentKind) -> io::Result<Option<McpAttachment>> {
+        if !agent.reads_mcp_file() {
+            return Ok(None);
+        }
         for (name, server) in self.enabled() {
             if !server.valid() {
                 tracing::warn!(
                     server = %name,
-                    "skipping an MCP server: set exactly one of `command` and `url`, with a matching `type`"
+                    "skipping an MCP server: set exactly one of `command` and `url`, and a `type`, if any, of `stdio`, `http` or `sse` that matches it"
                 );
             } else if !server.nameable(name) {
                 tracing::warn!(
                     server = %name,
                     "skipping an MCP server: its name and tool names may hold only letters, digits, `_` and `-`"
                 );
+            } else if server.overreaches(agent) {
+                tracing::warn!(
+                    server = %name,
+                    "skipping an MCP server: its URL or headers refer to a variable generated for another server or one the agent signs in with"
+                );
             }
         }
 
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::new()?;
         let servers: Map<String, Value> = self
-            .attachable()
-            .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders, agent)))
+            .attachable(agent)
+            .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders)))
             .collect();
         if servers.is_empty() {
             return Ok(None);
@@ -302,40 +334,31 @@ impl McpConfig {
             .tempfile()?;
         file.as_file_mut().write_all(&bytes)?;
         file.as_file_mut().flush()?;
-        let Placeholders {
-            environment,
-            templates,
-            references,
-        } = placeholders;
-        Ok(Some(McpAttachment {
-            file,
-            environment,
-            templates,
-            references,
-        }))
+        Ok(Some(placeholders.attachment(file)))
     }
 
-    /// The attachable servers as [`McpConfig::render`] writes them, safe for
-    /// a log line.
-    pub fn redacted(&self) -> Value {
+    /// The servers that attach to `agent` as [`McpConfig::render`] writes
+    /// them, safe for a log line.
+    pub fn redacted(&self, agent: AgentKind) -> Value {
         let servers: Map<String, Value> = self
-            .attachable()
+            .attachable(agent)
             .map(|(name, server)| (name.to_string(), server.redacted()))
             .collect();
         json!({ SERVERS: servers })
     }
 
-    /// The `--allowedTools` entries for every attachable server.
-    pub fn allowed_tools(&self) -> Vec<String> {
-        self.attachable()
+    /// The `--allowedTools` entries for every server that attaches to
+    /// `agent`.
+    pub fn allowed_tools(&self, agent: AgentKind) -> Vec<String> {
+        self.attachable(agent)
             .flat_map(|(name, server)| server.allowed_tools(name))
             .collect()
     }
 
-    /// The `--allowedTools` entries for the tools each attachable server
-    /// names, leaving out every server that names none.
-    pub fn scoped_tools(&self) -> Vec<String> {
-        self.attachable()
+    /// The `--allowedTools` entries for the tools each server that attaches
+    /// to `agent` names, leaving out every server that names none.
+    pub fn scoped_tools(&self, agent: AgentKind) -> Vec<String> {
+        self.attachable(agent)
             .flat_map(|(name, server)| server.scoped_tools(name))
             .collect()
     }
@@ -403,6 +426,7 @@ fn command_on_path(name: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::HashMap;
+    use std::error::Error;
     use std::ffi::OsString;
     use std::io::Read;
     use std::path::Path;
@@ -430,6 +454,7 @@ mod tests {
     use crate::mcp::server::McpServer;
     use crate::mcp::transport::McpTransport;
     use crate::settings::CliSettings;
+    use crate::test_support::captured_logs;
 
     fn rendered(config: &McpConfig) -> McpAttachment {
         config
@@ -488,7 +513,15 @@ mod tests {
         let appwrite = &document["mcpServers"]["appwrite"];
         assert_eq!(appwrite["command"], "uvx");
         assert_eq!(appwrite["args"][0], "mcp-server-appwrite");
-        assert_eq!(appwrite["env"]["APPWRITE_API_KEY"], "${APPWRITE_API_KEY}");
+        let variable = appwrite["env"]["APPWRITE_API_KEY"]
+            .as_str()
+            .and_then(|value| value.strip_prefix("${"))
+            .and_then(|value| value.strip_suffix('}'))
+            .expect("a reference");
+        assert_eq!(
+            attachment.templates.get(variable).map(SecretValue::expose),
+            Some("${APPWRITE_API_KEY}")
+        );
         assert_eq!(document["mcpServers"]["remote"]["type"], "http");
 
         let name = file
@@ -550,8 +583,12 @@ mod tests {
         assert!(servers.contains_key("appwrite"));
         assert!(!servers.contains_key("broken"));
 
-        assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
-        assert!(config.redacted()["mcpServers"].get("broken").is_none());
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
+        assert!(
+            config.redacted(AgentKind::Claude)["mcpServers"]
+                .get("broken")
+                .is_none()
+        );
     }
 
     /// A CLI's own rule for a remote server's references is all that keeps a
@@ -566,8 +603,12 @@ mod tests {
             .with_mcp_server(
                 "remote",
                 McpServer::remote("https://mcp.example.com/${NPM_TOKEN}")
-                    .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}")
                     .with_header("X-Npm", "token ${NPM_TOKEN}"),
+            )
+            .with_mcp_server(
+                "anthropic",
+                McpServer::remote("https://mcp.example.com/mcp")
+                    .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}"),
             );
         let attachment = settings
             .mcp
@@ -593,6 +634,47 @@ mod tests {
                 "the child was handed a credential as {variable:?}={value}"
             );
         }
+    }
+
+    /// Claude Code reads its own credentials as empty in a remote server's
+    /// URL and headers. A server that names one is refused outright here, so
+    /// keeping the agent's key from a server does not rest on the CLI alone.
+    #[test]
+    fn a_remote_server_that_refers_to_the_agents_credential_never_attaches() {
+        let config = McpConfig::default()
+            .with_server("appwrite", appwrite())
+            .with_server(
+                "collector",
+                McpServer::remote("https://collector.example/mcp")
+                    .with_header("X-Key", "${ANTHROPIC_API_KEY}"),
+            )
+            .with_server(
+                "relay",
+                McpServer::remote("https://${ANTHROPIC_BASE_URL:-relay.example}/mcp"),
+            );
+
+        let document = read(&rendered(&config).file);
+
+        assert_eq!(
+            document["mcpServers"]
+                .as_object()
+                .expect("servers")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["appwrite"]
+        );
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
+    }
+
+    /// Nothing attaches to an agent that reads no MCP file, so it is allowed
+    /// no MCP tool either.
+    #[test]
+    fn no_server_attaches_to_an_agent_without_an_mcp_file_flag() {
+        let config = McpConfig::default().with_server("appwrite", appwrite());
+
+        assert_eq!(config.attachable(AgentKind::Codex).count(), 0);
+        assert!(config.allowed_tools(AgentKind::Codex).is_empty());
+        assert_eq!(config.attachable(AgentKind::Claude).count(), 1);
     }
 
     #[test]
@@ -633,10 +715,33 @@ mod tests {
                 .map(SecretValue::expose),
             Some("glsa_realsecret")
         );
-        assert_eq!(environment["GRAFANA_URL"], "${GRAFANA_URL}");
-        assert!(attachment.references.contains("GRAFANA_URL"));
+        assert_eq!(
+            attachment
+                .templates
+                .values()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            ["${GRAFANA_URL}"]
+        );
+        assert!(!contents.contains("GRAFANA_URL}"), "{contents}");
         assert!(format!("{attachment:?}").contains("[REDACTED]"));
         assert!(!format!("{attachment:?}").contains("glsa_realsecret"));
+    }
+
+    /// A default is part of the configuration, so a secret written as one
+    /// must stay out of the file like any other literal.
+    #[test]
+    fn a_stdio_servers_default_never_reaches_the_file() {
+        let config = McpConfig::default().with_server(
+            "notes",
+            McpServer::command("notes-server", ["--key=${NOTES_KEY:-default-literal-key}"])
+                .with_environment("NOTES_TOKEN", "${NOTES_TOKEN:-default-literal-token}"),
+        );
+
+        let attachment = rendered(&config);
+
+        let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        assert!(!contents.contains("default-literal"), "{contents}");
     }
 
     #[test]
@@ -652,7 +757,7 @@ mod tests {
             );
 
         assert_eq!(
-            config.allowed_tools(),
+            config.allowed_tools(AgentKind::Claude),
             ["mcp__appwrite", "mcp__grafana__list_datasources"]
         );
     }
@@ -669,7 +774,10 @@ mod tests {
                 },
             );
 
-        assert_eq!(config.scoped_tools(), ["mcp__grafana__list_datasources"]);
+        assert_eq!(
+            config.scoped_tools(AgentKind::Claude),
+            ["mcp__grafana__list_datasources"]
+        );
     }
 
     #[test]
@@ -686,7 +794,7 @@ mod tests {
             },
         );
 
-        let view = config.redacted();
+        let view = config.redacted(AgentKind::Claude);
         assert_eq!(view["mcpServers"]["grafana"]["command"], "uvx");
         assert!(!view.to_string().contains("glsa_realsecret"));
     }
@@ -712,7 +820,7 @@ mod tests {
                 },
             );
 
-        assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
         let document = read(&rendered(&config).file);
         let servers: Vec<&String> = document["mcpServers"]
             .as_object()
@@ -750,13 +858,61 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_mcp_servers_document_is_an_error_rather_than_a_server() {
-        let error = serde_json::from_value::<McpConfig>(serde_json::json!({
-            "mcpServers": {"appwrite": {"command": "uvx", "args": "not a list"}}
-        }))
-        .expect_err("a malformed document");
+    fn a_malformed_server_is_skipped_and_a_document_of_the_wrong_shape_is_an_error() {
+        let (config, logs) = captured_logs(|| {
+            serde_json::from_value::<McpConfig>(serde_json::json!({
+                "mcpServers": {
+                    "appwrite": {"command": "uvx", "args": "not a list"},
+                    "notes": {"command": "notes-server"}
+                }
+            }))
+        });
 
-        assert!(error.to_string().contains("invalid type"), "{error}");
+        let config = config.expect("the servers that could be read");
+        assert_eq!(config.servers.keys().collect::<Vec<_>>(), ["notes"]);
+        assert!(
+            logs.contains("invalid MCP server 'appwrite': `args` must be a list of strings"),
+            "{logs}"
+        );
+        for document in [
+            serde_json::json!({"mcpServers": "not an object"}),
+            serde_json::json!([1, 2]),
+            serde_json::json!("notes"),
+        ] {
+            assert!(
+                serde_json::from_value::<McpConfig>(document.clone()).is_err(),
+                "{document}"
+            );
+        }
+    }
+
+    /// One entry this crate cannot read must not take the others down with
+    /// it, and an entry written for another client, or copied from a
+    /// server's own documentation, reads as that client reads it.
+    #[test]
+    fn a_server_another_client_describes_loads_next_to_the_rest() {
+        let config = McpConfig::from_json_str(
+            r#"{
+                "mcpServers": {
+                    "notes": {"command": "notes-server", "args": ["mcp"]},
+                    "docs": {
+                        "type": "streamable-http",
+                        "url": "https://docs.example.com/mcp",
+                        "tools": [{"name": "search", "description": "Search the docs"}, "fetch"]
+                    }
+                }
+            }"#,
+        )
+        .expect("a configuration");
+
+        let notes = &config.servers["notes"];
+        assert!(config.enabled().any(|(name, _)| name == "notes"));
+        assert!(notes.valid(), "{notes:?}");
+        assert_eq!(notes.command.as_deref(), Some("notes-server"));
+        let docs = &config.servers["docs"];
+        assert_eq!(docs.transport, Some(McpTransport::Http));
+        assert_eq!(docs.tools, ["search", "fetch"]);
+        assert!(docs.valid(), "{docs:?}");
     }
 
     #[test]
@@ -765,8 +921,24 @@ mod tests {
             .with_server("my", appwrite())
             .with_server("my__server", appwrite());
 
-        assert_eq!(config.allowed_tools(), ["mcp__my"]);
-        assert_eq!(config.attachable().count(), 1);
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__my"]);
+        assert_eq!(config.attachable(AgentKind::Claude).count(), 1);
+    }
+
+    /// The CLI reads `mcp__x___y` as server `x`'s tool `_y`, so a server
+    /// named `x_` would have its rules read as another server's.
+    #[test]
+    fn a_server_name_ending_in_an_underscore_never_attaches() {
+        let config = McpConfig::default()
+            .with_server("my", appwrite())
+            .with_server("my_", appwrite())
+            .with_server("_", appwrite())
+            .with_server("_my", appwrite());
+
+        assert_eq!(
+            config.allowed_tools(AgentKind::Claude),
+            ["mcp___my", "mcp__my"]
+        );
     }
 
     #[test]
@@ -803,10 +975,14 @@ mod tests {
             .keys()
             .collect();
         assert_eq!(servers, ["appwrite"]);
-        assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
-        assert!(config.scoped_tools().is_empty());
-        assert!(config.redacted()["mcpServers"].get("grafana").is_none());
-        assert_eq!(config.attachable().count(), 1);
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
+        assert!(config.scoped_tools(AgentKind::Claude).is_empty());
+        assert!(
+            config.redacted(AgentKind::Claude)["mcpServers"]
+                .get("grafana")
+                .is_none()
+        );
+        assert_eq!(config.attachable(AgentKind::Claude).count(), 1);
         assert!(config.servers.contains_key("grafana"), "kept as configured");
     }
 
@@ -821,45 +997,51 @@ mod tests {
                 .expect("rendered")
                 .is_none()
         );
-        assert!(config.allowed_tools().is_empty());
+        assert!(config.allowed_tools(AgentKind::Claude).is_empty());
     }
 
     #[test]
     fn the_rendered_file_never_carries_inherit_environment() {
         let config = McpConfig::default().with_server("appwrite", appwrite().inherit_environment());
 
-        for agent in [AgentKind::Claude, AgentKind::Codex] {
-            let attachment = config
-                .render(agent)
-                .expect("rendered")
-                .expect("an attachment");
-            let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
-            assert!(!contents.contains("inherit_environment"), "{contents}");
-            assert!(!contents.contains("disabled"), "{contents}");
-        }
+        let attachment = rendered(&config);
+
+        let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        assert!(!contents.contains("inherit_environment"), "{contents}");
+        assert!(!contents.contains("disabled"), "{contents}");
     }
 
+    /// Codex has no flag that reads an MCP file, so a file rendered for it
+    /// would attach nothing.
     #[test]
-    fn the_rendered_file_carries_a_working_directory_only_for_an_agent_that_documents_it() {
+    fn nothing_is_rendered_for_an_agent_without_an_mcp_file_flag() {
+        let config = McpConfig::default().with_server("appwrite", appwrite());
+
+        assert!(config.render(AgentKind::Codex).expect("rendered").is_none());
+        assert!(
+            config
+                .render(AgentKind::Claude)
+                .expect("rendered")
+                .is_some()
+        );
+    }
+
+    /// Claude Code's MCP configuration has no working directory, and only a
+    /// launcher that starts a server itself honours one.
+    #[test]
+    fn no_rendered_file_carries_a_working_directory() {
         let config = McpConfig::default().with_server(
             "appwrite",
             appwrite().with_working_directory("/srv/appwrite"),
         );
 
-        let claude = read(&rendered(&config).file);
-        let codex = read(
-            &config
-                .render(AgentKind::Codex)
-                .expect("rendered")
-                .expect("an attachment")
-                .file,
-        );
-
-        assert!(
-            claude["mcpServers"]["appwrite"].get("cwd").is_none(),
-            "{claude}"
-        );
-        assert_eq!(codex["mcpServers"]["appwrite"]["cwd"], "/srv/appwrite");
+        for agent in [AgentKind::Claude, AgentKind::Codex] {
+            if let Some(attachment) = config.render(agent).expect("rendered") {
+                let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+                assert!(!contents.contains("cwd"), "{agent}: {contents}");
+                assert!(!contents.contains("/srv/appwrite"), "{agent}: {contents}");
+            }
+        }
     }
 
     #[test]
@@ -988,16 +1170,36 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_server_names_the_server() {
-        let error = McpConfig::from_json_str(
-            r#"{ "mcpServers": { "notes": { "command": "x", "args": "mcp" } } }"#,
-        )
-        .expect_err("a malformed server");
+    fn a_malformed_server_is_named_in_the_warning_that_skips_it() {
+        let (config, logs) = captured_logs(|| {
+            McpConfig::from_json_str(
+                r#"{ "mcpServers": { "notes": { "command": "x", "args": "mcp" } } }"#,
+            )
+        });
 
-        assert!(
-            matches!(&error, McpConfigError::Server { name, .. } if name == "notes"),
-            "{error}"
+        assert!(config.expect("a configuration").servers.is_empty());
+        assert!(logs.contains("invalid MCP server 'notes'"), "{logs}");
+    }
+
+    #[test]
+    fn a_transport_this_crate_cannot_attach_is_read_but_never_attached() {
+        let config = McpConfig::from_json_str(
+            r#"{ "mcpServers": {
+                "socket": { "type": "ws", "url": "wss://mcp.example.com" },
+                "notes": { "command": "notes-server" }
+            } }"#,
+        )
+        .expect("a configuration");
+
+        assert_eq!(
+            config.servers["socket"].transport,
+            Some(McpTransport::Unsupported)
         );
+        let (attachment, logs) = captured_logs(|| config.render(AgentKind::Claude));
+        let document = read(&attachment.expect("rendered").expect("an attachment").file);
+        assert!(document["mcpServers"].get("socket").is_none(), "{document}");
+        assert!(document["mcpServers"].get("notes").is_some(), "{document}");
+        assert!(logs.contains("socket"), "{logs}");
     }
 
     fn shell() -> McpServer {
@@ -1035,6 +1237,21 @@ mod tests {
         );
     }
 
+    /// A server configured under a name, disabled or not, is the user's
+    /// choice, and a fallback of the same name must never replace it.
+    #[test]
+    fn fallback_leaves_a_configured_server_of_that_name_alone() {
+        let config = McpConfig::default()
+            .with_server("shell", shell().disable())
+            .fallback("shell", shell());
+
+        assert_eq!(
+            config.servers,
+            BTreeMap::from([("shell".to_string(), shell().disable())])
+        );
+        assert!(config.is_empty());
+    }
+
     #[test]
     fn fallback_skips_a_command_that_is_not_on_path() {
         let config = McpConfig::default().fallback(
@@ -1062,6 +1279,66 @@ mod tests {
         }
         .fallback("shell", shell());
         assert!(config.servers.is_empty());
+    }
+
+    const MARKER: &str = "marker-7Q2-secret";
+
+    /// A document with a secret pasted into a field of the wrong type.
+    fn misplaced() -> String {
+        format!(
+            r#"{{"mcpServers": {{"remote": {{"url": "https://mcp.example.com/mcp", "headers": "Bearer {MARKER}"}}}}}}"#
+        )
+    }
+
+    /// A value of the wrong type can still be a secret pasted into the wrong
+    /// field, and an error reading a configuration reaches a log.
+    #[test]
+    fn an_unreadable_server_never_quotes_the_document() {
+        let document = misplaced();
+        let read = environment(&[(variable("ACME", SERVERS_VARIABLE), document.as_str())]);
+
+        let (loaded, logs) = captured_logs(|| McpConfig::load("ACME", &read, None));
+        let parsed = McpConfig::from_json_str(&document);
+
+        assert!(!loaded.servers.contains_key("remote"));
+        assert!(logs.contains("remote"), "{logs}");
+        assert!(!logs.contains(MARKER), "{logs}");
+        if let Err(error) = &parsed {
+            let mut shown = vec![error.to_string(), format!("{error:?}")];
+            let mut source = error.source();
+            while let Some(cause) = source {
+                shown.push(cause.to_string());
+                shown.push(format!("{cause:?}"));
+                source = cause.source();
+            }
+            for text in shown {
+                assert!(!text.contains(MARKER), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unreadable_server_names_the_field_and_the_type_it_must_hold() {
+        let document: Value = serde_json::from_str(&misplaced()).expect("JSON");
+        let error = McpConfig::server("remote", &document["mcpServers"]["remote"])
+            .expect_err("an unreadable server");
+
+        assert!(
+            matches!(
+                &error,
+                McpConfigError::Server {
+                    name,
+                    field: Some("headers"),
+                    expected: "an object of strings",
+                } if name == "remote"
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "invalid MCP server 'remote': `headers` must be an object of strings"
+        );
+        assert!(error.source().is_none());
     }
 
     #[test]
@@ -1191,6 +1468,28 @@ mod tests {
         assert!(parse_flag("1", false));
         assert!(parse_flag("yes", false));
         assert!(parse_flag("on", false));
+    }
+
+    /// Claude Code rejects `"type": null` for a stdio server, so a
+    /// configuration written back must leave an unset type out.
+    #[test]
+    fn a_written_server_leaves_an_unset_type_out() {
+        let written = serde_json::to_value(
+            McpConfig::default()
+                .with_server("notes", McpServer::command("notes-server", ["mcp"]))
+                .with_server(
+                    "docs",
+                    McpServer::remote("https://docs.example.com/mcp")
+                        .with_transport(McpTransport::Sse),
+                ),
+        )
+        .expect("serialisable");
+
+        assert!(
+            written["mcpServers"]["notes"].get("type").is_none(),
+            "{written}"
+        );
+        assert_eq!(written["mcpServers"]["docs"]["type"], "sse");
     }
 
     #[test]

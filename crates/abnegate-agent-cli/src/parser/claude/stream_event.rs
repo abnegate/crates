@@ -21,6 +21,24 @@ const FAILED: &str = "the agent reported a failed run";
 const NO_ARGUMENTS: &str = "{}";
 
 /// One line of `claude --output-format stream-json`.
+///
+/// A variant may gain a field in a minor release, so a pattern outside this
+/// crate ends in `..`:
+///
+/// ```compile_fail,E0638
+/// use abnegate_agent_cli::StreamEvent;
+///
+/// fn session(event: &StreamEvent) -> Option<&str> {
+///     match event {
+///         StreamEvent::System {
+///             subtype: _,
+///             session_id,
+///         } => session_id.as_deref(),
+///         _ => None,
+///     }
+/// }
+/// # let _ = session;
+/// ```
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]

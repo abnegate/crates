@@ -7,8 +7,9 @@
 //! each remote tool to a registry as `server__tool`, so one server cannot
 //! answer for another's tools or for a built-in. A server that fails to start
 //! or to answer in time is logged and skipped, and so is a
-//! [disabled](McpServer::disabled) one or one reached by URL, which only a
-//! CLI can attach.
+//! [disabled](McpServer::disabled) one, one that is not
+//! [valid](McpServer::valid), or one reached by URL, which only a CLI can
+//! attach.
 //!
 //! The configuration is `abnegate-agent-cli`'s, re-exported here, so one
 //! `mcp.json` drives both this client and a coding agent CLI.
@@ -24,6 +25,23 @@
 //!   the caller's fallback server when nothing is configured, default on.
 //!
 //! [`DEFAULT_PREFIX`] is the prefix for an application with none of its own.
+//!
+//! The same configuration attaches its servers to a coding agent CLI through
+//! [`McpConfig::render`], which takes the [`AgentKind`] and returns the
+//! [`McpAttachment`] the CLI's child needs, both re-exported here:
+//!
+//! ```
+//! use abnegate_agent::mcp::AgentKind;
+//! use abnegate_agent::mcp::McpAttachment;
+//! use abnegate_agent::mcp::McpConfig;
+//! use abnegate_agent::mcp::McpServer;
+//!
+//! let config = McpConfig::default()
+//!     .with_server("notes", McpServer::command("notes-server", ["mcp"]));
+//! let attachment: Option<McpAttachment> = config.render(AgentKind::Claude)?;
+//! assert!(attachment.is_some());
+//! # Ok::<(), std::io::Error>(())
+//! ```
 //!
 //! ```no_run
 //! use abnegate_agent::McpConfig;
@@ -56,11 +74,15 @@ mod format;
 mod guidance;
 mod hub;
 mod name;
+#[cfg(test)]
+mod recorder;
 mod register;
 mod session;
 mod tool;
 
+pub use abnegate_agent_cli::AgentKind;
 pub use abnegate_agent_cli::mcp::DEFAULT_PREFIX;
+pub use abnegate_agent_cli::mcp::McpAttachment;
 pub use abnegate_agent_cli::mcp::McpConfig;
 pub use abnegate_agent_cli::mcp::McpConfigError;
 pub use abnegate_agent_cli::mcp::McpServer;

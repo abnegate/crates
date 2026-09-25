@@ -1,6 +1,21 @@
 use serde::Deserialize;
 
 /// The increment a `content_block_delta` event carries.
+///
+/// A variant may gain a field in a minor release, so a pattern outside this
+/// crate ends in `..`:
+///
+/// ```compile_fail,E0638
+/// use abnegate_agent_cli::ApiDelta;
+///
+/// fn text(delta: &ApiDelta) -> Option<&str> {
+///     match delta {
+///         ApiDelta::TextDelta { text } => Some(text),
+///         _ => None,
+///     }
+/// }
+/// # let _ = text;
+/// ```
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]

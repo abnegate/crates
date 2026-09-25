@@ -6,20 +6,27 @@ use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
 use abnegate_secret::redact;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::de::Error;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
 use crate::kind::AgentKind;
+use crate::mcp::entry::Entry;
+use crate::mcp::mismatch::Mismatch;
+use crate::mcp::placeholders::NAMESPACE;
 use crate::mcp::placeholders::Placeholders;
 use crate::mcp::placeholders::expand;
+use crate::mcp::placeholders::references;
 use crate::mcp::placeholders::whole_reference;
 use crate::mcp::transport::McpTransport;
 
 const PREFIX: &str = "mcp__";
 const SEPARATOR: &str = "__";
-const NAME_PUNCTUATION: [char; 2] = ['_', '-'];
+const UNDERSCORE: char = '_';
+const NAME_PUNCTUATION: [char; 2] = [UNDERSCORE, '-'];
 
 /// One MCP server, as an MCP configuration document describes it.
 ///
@@ -35,68 +42,73 @@ const NAME_PUNCTUATION: [char; 2] = ['_', '-'];
 /// reaches a log line through `Debug`, and never reaches the rendered
 /// configuration file either: see [`McpAttachment`](crate::mcp::McpAttachment).
 /// A `${VAR}` reference in a stdio server's command, arguments or
-/// environment is resolved from the host's environment, which the child is
-/// given only the named variables of. One in a remote server's
-/// [`url`](McpServer::url) or [`headers`](McpServer::headers) never is.
+/// environment is resolved here, as the CLI would resolve it, and the child
+/// is given the resolved value under a generated name, never the variable
+/// itself. One in a remote server's [`url`](McpServer::url) or
+/// [`headers`](McpServer::headers) is left to the CLI.
 ///
 /// Reads and writes the `mcpServers` entry shape: `args`, `env` and `cwd` on
-/// the wire, each also read under its full name here.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+/// the wire, each also read under its full name here. A value of the wrong
+/// type is reported by the field holding it and never quoted, since it may
+/// still be a secret.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct McpServer {
     /// The command that starts a stdio server, such as `uvx` or `npx`.
     pub command: Option<String>,
     /// What follows the command.
-    #[serde(rename = "args", alias = "arguments")]
+    #[serde(rename = "args")]
     pub arguments: Vec<String>,
     /// Variables a stdio server is given.
-    #[serde(rename = "env", alias = "environment")]
+    #[serde(rename = "env")]
     pub environment: BTreeMap<String, SecretValue>,
     /// Where an HTTP or SSE server listens.
     ///
     /// Written to the rendered file as it is, `${VAR}` references included,
-    /// for the CLI to expand from its own environment under its own rules:
-    /// Claude Code reads its own and cloud credentials as empty here. A
-    /// variable a reference names is never read from this process's
-    /// environment, so the reference expands only if the caller hands the
-    /// variable to the child. Hand a token with
+    /// for the CLI to expand from the child's environment under its own
+    /// rules: Claude Code reads its own and cloud credentials as empty here.
+    /// A reference's `:-default` is written as it is too, so a default must
+    /// not be a secret. A variable a reference names is never read from this
+    /// process's environment, so the reference expands only if the caller
+    /// hands the variable to the child: a token through
     /// [`CliSettings::with_environment`](crate::CliSettings::with_environment),
-    /// whose values the run scrubs from what it writes down, not with
-    /// [`CliSettings::allow`](crate::CliSettings::allow), whose values it
-    /// does not.
+    /// or from this process's environment through
+    /// [`CliSettings::allow`](crate::CliSettings::allow), either of which the
+    /// run scrubs from what it writes down. A child given this process's
+    /// whole environment by
+    /// [`CliSettings::inherit_environment`](crate::CliSettings::inherit_environment)
+    /// has every variable a reference could name, none of them scrubbed. A
+    /// server whose URL or headers refer to a generated variable, or to one
+    /// the agent signs in with, never attaches: see
+    /// [`McpConfig::attachable`](crate::mcp::McpConfig::attachable).
     pub url: Option<String>,
-    /// How the server is reached; implied by `command` or `url` when unset.
-    #[serde(rename = "type")]
+    /// How the server is reached; implied by `command` or `url` when unset,
+    /// and then left out of what this writes, since Claude Code refuses a
+    /// `null` type.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub transport: Option<McpTransport>,
     /// Headers sent to an HTTP or SSE server.
     ///
     /// Each `${VAR}` reference in a value is written to the rendered file as
-    /// it is, for the CLI alone to expand under the same rules as a
-    /// reference in [`McpServer::url`], and is never read from this process's
-    /// environment: it expands only if the caller hands the variable to the
-    /// child, a token through
-    /// [`CliSettings::with_environment`](crate::CliSettings::with_environment).
-    /// The literal text around a reference moves into a
+    /// it is, for the CLI alone to expand, under the same rules as one in
+    /// [`McpServer::url`]. The literal text around a reference moves into a
     /// generated variable, so no literal secret reaches the file:
-    /// `Bearer ${TOKEN}` is written `${ABNEGATE_MCP_0}${TOKEN}`, with
-    /// `ABNEGATE_MCP_0` holding `Bearer `.
+    /// `Bearer ${TOKEN}` is written `${ABNEGATE_MCP_<token>_0}${TOKEN}`, with
+    /// the generated variable holding `Bearer `.
     pub headers: BTreeMap<String, SecretValue>,
-    /// The tools to allow without prompting, by the names the server gives
-    /// them. Empty allows every tool the server offers. A launcher that
-    /// starts the server itself offers a model only the tools this allows:
-    /// see [`McpServer::allows`].
+    /// The tools to allow without prompting, by the names the CLI gives
+    /// them: the server's own name for each, with every character but
+    /// letters, digits, `_` and `-` replaced by `_`. Empty allows every tool
+    /// the server offers. A launcher that starts the server itself offers a
+    /// model only the tools this allows: see [`McpServer::allows`].
     pub tools: Vec<String>,
     /// The directory a stdio server starts in, or wherever its launcher
     /// chooses when unset.
     ///
-    /// A rendered file carries it only for a CLI whose MCP configuration
-    /// documents it: see [`McpConfig::render`](crate::mcp::McpConfig::render).
-    #[serde(
-        rename = "cwd",
-        alias = "working_directory",
-        skip_serializing_if = "Option::is_none"
-    )]
+    /// A rendered file never carries it, since Claude Code's MCP
+    /// configuration has no such field: only a launcher that starts the
+    /// server itself, such as the MCP hub in `abnegate-agent`, honours it.
+    #[serde(rename = "cwd", skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<PathBuf>,
     /// Give a stdio server its launcher's whole environment rather than
     /// [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) and
@@ -113,7 +125,20 @@ pub struct McpServer {
     pub disabled: bool,
 }
 
+impl<'de> Deserialize<'de> for McpServer {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let entry = Value::deserialize(deserializer)?;
+        Self::read(&entry).map_err(D::Error::custom)
+    }
+}
+
 impl McpServer {
+    /// The server a configuration document's `entry` describes, or why it
+    /// does not describe one.
+    pub(crate) fn read(entry: &Value) -> Result<Self, Mismatch> {
+        Entry::new(entry)?.server()
+    }
+
     /// A stdio server started as `command arguments…`.
     pub fn command(
         command: impl Into<String>,
@@ -188,9 +213,10 @@ impl McpServer {
 
     /// The same server with every `${VAR}` and `${VAR:-default}` in its
     /// command, arguments and environment values expanded through `lookup`,
-    /// as a CLI expands the file [`McpConfig::render`](crate::mcp::McpConfig::render)
-    /// writes, for a launcher that starts the server itself. A reference to a
-    /// variable `lookup` does not give, with no default, is left as written,
+    /// as Claude Code expands them and as a child given the file
+    /// [`McpConfig::render`](crate::mcp::McpConfig::render) writes has them
+    /// resolved, for a launcher that starts the server itself. A reference to
+    /// a variable `lookup` does not give, with no default, is left as written,
     /// as the CLI leaves it.
     ///
     /// The URL and headers are left alone, since only a CLI attaches a remote
@@ -238,32 +264,43 @@ impl McpServer {
             })
     }
 
-    /// Whether exactly one of `command` and `url` is set, and any explicit
-    /// transport agrees with it.
+    /// Whether exactly one of `command` and `url` is set, and to something
+    /// other than blank text, and any explicit transport agrees with it and
+    /// is one this crate attaches a server over:
+    /// [`McpTransport::Unsupported`] never is.
     pub fn valid(&self) -> bool {
         match (&self.command, &self.url, self.transport) {
-            (Some(_), None, transport) => transport.is_none_or(|transport| !transport.remote()),
-            (None, Some(_), transport) => transport.is_none_or(McpTransport::remote),
+            (Some(command), None, transport) => {
+                !command.trim().is_empty()
+                    && transport.is_none_or(|transport| transport == McpTransport::Stdio)
+            }
+            (None, Some(url), transport) => {
+                !url.trim().is_empty() && transport.is_none_or(McpTransport::remote)
+            }
             _ => false,
         }
     }
 
     /// Whether `name`, and every tool this server names, holds only
     /// letters, digits, `_` and `-`, and so is safe in `--allowedTools`, and
-    /// `name` holds no `__`, which the CLI reads as the end of a server's
-    /// name, so that one server's rule can never cover another's tools.
+    /// `name` neither holds `__`, which the CLI reads as the end of a
+    /// server's name, nor ends in `_`, whose `mcp__x___tool` the CLI reads as
+    /// server `x`'s tool `_tool`, so that one server's rule can never cover
+    /// another's tools.
     pub fn nameable(&self, name: &str) -> bool {
         valid_name(name)
             && !name.contains(SEPARATOR)
+            && !name.ends_with(UNDERSCORE)
             && self.tools.iter().all(|tool| valid_name(tool))
     }
 
     /// Whether this server allows `tool`, as the server itself names it:
-    /// every tool when [`McpServer::tools`] is empty, and otherwise only the
-    /// tools it names, the same ones [`McpServer::allowed_tools`] allows on a
-    /// CLI.
+    /// every tool when [`McpServer::tools`] is empty, and otherwise only one
+    /// whose name, as the CLI gives it, the list holds: the same tools
+    /// [`McpServer::allowed_tools`] allows on a CLI.
     pub fn allows(&self, tool: &str) -> bool {
-        self.tools.is_empty() || self.tools.iter().any(|named| named == tool)
+        let named = cli_name(tool);
+        self.tools.is_empty() || self.tools.contains(&named)
     }
 
     /// The `--allowedTools` entries for this server under `name`.
@@ -292,33 +329,38 @@ impl McpServer {
             .is_some_and(|(server, tool)| valid_name(server) && valid_name(tool))
     }
 
-    /// This server as `agent`'s configuration file holds it, with every
-    /// literal environment or header value replaced by a reference to a
-    /// variable in `placeholders`, and every variable it refers to noted
-    /// there.
-    pub(crate) fn entry(&self, placeholders: &mut Placeholders, agent: AgentKind) -> Value {
+    /// Whether this server's URL or headers refer to a variable no server
+    /// may be sent: one named in the namespace the rendered file's
+    /// generated variables are, which hold other servers' values, or one
+    /// `agent` signs in with.
+    pub(crate) fn overreaches(&self, agent: AgentKind) -> bool {
+        self.url
+            .iter()
+            .map(String::as_str)
+            .chain(self.headers.values().map(SecretValue::expose))
+            .flat_map(references)
+            .any(|name| name.starts_with(NAMESPACE) || agent.credentials().contains(&name))
+    }
+
+    /// This server as a rendered configuration file holds it, with every
+    /// environment or header value, and every command or argument that
+    /// refers to a variable, replaced by a reference to a variable in
+    /// `placeholders`.
+    pub(crate) fn entry(&self, placeholders: &mut Placeholders) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
-            placeholders.note(command);
-            for argument in &self.arguments {
-                placeholders.note(argument);
-            }
+            let command = placeholders.resolved(command);
+            let arguments: Vec<String> = self
+                .arguments
+                .iter()
+                .map(|argument| placeholders.resolved(argument))
+                .collect();
             entry.insert("command".to_string(), json!(command));
-            entry.insert("args".to_string(), json!(self.arguments));
+            entry.insert("args".to_string(), json!(arguments));
             if !self.environment.is_empty() {
                 entry.insert(
                     "env".to_string(),
                     substituted(&self.environment, placeholders),
-                );
-            }
-            if let Some(directory) = self
-                .working_directory
-                .as_ref()
-                .filter(|_| documents_working_directory(agent))
-            {
-                entry.insert(
-                    "cwd".to_string(),
-                    json!(directory.to_string_lossy().into_owned()),
                 );
             }
             if let Some(transport) = self.transport {
@@ -339,9 +381,9 @@ impl McpServer {
     }
 
     /// This server for a log line: structure intact, every environment or
-    /// header value masked unless it is nothing but a `${VAR}` reference,
-    /// which names a secret without holding one, and anything credential
-    /// shaped in the arguments or the URL redacted.
+    /// header value masked unless it is nothing but a `${VAR}` reference with
+    /// no default, which names a secret without holding one, and anything
+    /// credential shaped in the arguments or the URL redacted.
     pub(crate) fn redacted(&self) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
@@ -369,14 +411,18 @@ impl McpServer {
     }
 }
 
-/// Whether `agent`'s own MCP configuration schema documents a stdio
-/// server's working directory: Codex's `cwd` does, and Claude Code's has no
-/// such field.
-fn documents_working_directory(agent: AgentKind) -> bool {
-    match agent {
-        AgentKind::Codex => true,
-        AgentKind::Claude => false,
-    }
+/// `name` as the CLI names a server's tool: every character but a letter, a
+/// digit, `_` or `-` replaced by `_`.
+fn cli_name(name: &str) -> String {
+    name.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || NAME_PUNCTUATION.contains(&character) {
+                character
+            } else {
+                UNDERSCORE
+            }
+        })
+        .collect()
 }
 
 /// Whether `name` is safe to place in an `--allowedTools` entry, which the
@@ -478,6 +524,27 @@ mod tests {
         }
     }
 
+    /// A blank command starts nothing and a blank URL reaches nothing, and a
+    /// strict CLI rejects every other server along with one.
+    #[test]
+    fn a_blank_command_or_url_is_never_valid() {
+        for server in [
+            McpServer::command("", Vec::<String>::new()),
+            McpServer::command("   ", ["mcp"]),
+            McpServer::remote(""),
+            McpServer::remote(" \t"),
+        ] {
+            assert!(!server.valid(), "{server:?}");
+        }
+    }
+
+    #[test]
+    fn a_transport_this_crate_does_not_attach_over_is_never_valid() {
+        for server in [stdio(), http()] {
+            assert!(!server.with_transport(McpTransport::Unsupported).valid());
+        }
+    }
+
     #[test]
     fn neither_both_or_a_contradicting_type_is_invalid() {
         assert!(!McpServer::default().valid());
@@ -547,6 +614,22 @@ mod tests {
         assert_eq!(scoped.allowed_tools("docs"), ["mcp__docs__search"]);
     }
 
+    /// The CLI names a server's tool with every character but letters,
+    /// digits, `_` and `-` replaced by `_`, and `tools` names tools the way
+    /// the CLI does, so a launcher of its own must compare them the same way
+    /// or allow a different set of tools than the CLI.
+    #[test]
+    fn a_tool_is_allowed_by_the_name_the_cli_gives_it() {
+        let scoped = stdio().with_tools(["get_item", "list-items"]);
+
+        assert!(scoped.allows("get.item"));
+        assert!(scoped.allows("get item"));
+        assert!(scoped.allows("get_item"));
+        assert!(scoped.allows("list-items"));
+        assert!(!scoped.allows("get-item"));
+        assert!(!scoped.allows("delete"));
+    }
+
     #[test]
     fn a_server_without_a_tool_list_has_no_scoped_tools() {
         assert!(stdio().scoped_tools("appwrite").is_empty());
@@ -561,21 +644,27 @@ mod tests {
     }
 
     #[test]
-    fn a_stdio_entry_exposes_its_environment_for_the_cli_to_expand() {
+    fn a_stdio_entry_moves_a_reference_out_to_be_resolved() {
         let server = McpServer {
             environment: secrets(&[("APPWRITE_API_KEY", "${APPWRITE_API_KEY}")]),
             ..stdio()
         };
 
-        let mut placeholders = Placeholders::default();
-        let entry = server.entry(&mut placeholders, AgentKind::Claude);
+        let mut placeholders = Placeholders::under("TEST");
+        let entry = server.entry(&mut placeholders);
         assert_eq!(entry["command"], "uvx");
         assert_eq!(entry["args"][0], "mcp-server-appwrite");
-        assert_eq!(entry["env"]["APPWRITE_API_KEY"], "${APPWRITE_API_KEY}");
+        assert_eq!(entry["env"]["APPWRITE_API_KEY"], "${ABNEGATE_MCP_TEST_0}");
         assert!(entry.get("type").is_none());
         assert!(entry.get("url").is_none());
         assert!(placeholders.environment.is_empty());
-        assert!(placeholders.references.contains("APPWRITE_API_KEY"));
+        assert_eq!(
+            placeholders
+                .templates
+                .get("ABNEGATE_MCP_TEST_0")
+                .map(SecretValue::expose),
+            Some("${APPWRITE_API_KEY}")
+        );
     }
 
     #[test]
@@ -593,23 +682,27 @@ mod tests {
             ]),
             ..McpServer::default()
         };
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
-        let entry = server.entry(&mut placeholders, AgentKind::Claude);
+        let entry = server.entry(&mut placeholders);
 
         assert_eq!(
-            entry["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN"],
-            "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"
+            entry["env"]["GRAFANA_EXTRA_HEADERS"],
+            "${ABNEGATE_MCP_TEST_0}"
         );
-        assert_eq!(entry["env"]["GRAFANA_EXTRA_HEADERS"], "${ABNEGATE_MCP_0}");
+        assert_eq!(
+            entry["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN"],
+            "${ABNEGATE_MCP_TEST_1}"
+        );
         assert_eq!(
             placeholders
                 .templates
-                .get("ABNEGATE_MCP_0")
-                .map(SecretValue::expose),
-            Some(headers)
+                .values()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            [headers, "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"]
         );
-        assert!(placeholders.references.contains("CF_ACCESS_CLIENT_SECRET"));
+        assert!(placeholders.environment.is_empty());
     }
 
     #[test]
@@ -620,13 +713,13 @@ mod tests {
             ..http()
         };
 
-        let mut placeholders = Placeholders::default();
-        let entry = server.entry(&mut placeholders, AgentKind::Claude);
+        let mut placeholders = Placeholders::under("TEST");
+        let entry = server.entry(&mut placeholders);
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], "https://example.com/mcp");
         assert_eq!(
             entry["headers"]["Authorization"],
-            "${ABNEGATE_MCP_0}${TOKEN}"
+            "${ABNEGATE_MCP_TEST_0}${TOKEN}"
         );
         assert!(entry.get("command").is_none());
         assert!(entry.get("args").is_none());
@@ -642,17 +735,17 @@ mod tests {
         let server = http()
             .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}")
             .with_header("X-Client", "id=${CF_ID:-anonymous};v=1");
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
-        let entry = server.entry(&mut placeholders, AgentKind::Claude);
+        let entry = server.entry(&mut placeholders);
 
         assert_eq!(
             entry["headers"]["Authorization"],
-            "${ABNEGATE_MCP_0}${ANTHROPIC_API_KEY}"
+            "${ABNEGATE_MCP_TEST_0}${ANTHROPIC_API_KEY}"
         );
         assert_eq!(
             entry["headers"]["X-Client"],
-            "${ABNEGATE_MCP_1}${CF_ID:-anonymous}${ABNEGATE_MCP_2}"
+            "${ABNEGATE_MCP_TEST_1}${CF_ID:-anonymous}${ABNEGATE_MCP_TEST_2}"
         );
         assert_eq!(
             placeholders
@@ -661,30 +754,29 @@ mod tests {
                 .map(|(variable, value)| (variable.as_str(), value.expose()))
                 .collect::<Vec<_>>(),
             [
-                ("ABNEGATE_MCP_0", "Bearer "),
-                ("ABNEGATE_MCP_1", "id="),
-                ("ABNEGATE_MCP_2", ";v=1")
+                ("ABNEGATE_MCP_TEST_0", "Bearer "),
+                ("ABNEGATE_MCP_TEST_1", "id="),
+                ("ABNEGATE_MCP_TEST_2", ";v=1")
             ]
         );
         assert!(placeholders.templates.is_empty());
-        assert!(placeholders.references.is_empty());
     }
 
     #[test]
     fn a_whole_reference_header_passes_through_unchanged_and_nothing_is_read_from_the_host() {
         let server =
             McpServer::remote("https://${MCP_HOST}/mcp").with_header("X-Token", "${TOKEN}");
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
-        let entry = server.entry(&mut placeholders, AgentKind::Claude);
+        let entry = server.entry(&mut placeholders);
 
         assert_eq!(entry["headers"]["X-Token"], "${TOKEN}");
         assert_eq!(entry["url"], "https://${MCP_HOST}/mcp");
         assert!(placeholders.environment.is_empty());
         assert!(
-            placeholders.references.is_empty(),
-            "a remote server's reference is read from the host: {:?}",
-            placeholders.references
+            placeholders.templates.is_empty(),
+            "a remote server's reference is resolved here: {:?}",
+            placeholders.templates
         );
     }
 
@@ -693,15 +785,15 @@ mod tests {
         let server = http()
             .with_header("Authorization", "Bearer sk-live-secret")
             .with_header("X-Session", "secret=sk-live-secret;user=${USER_NAME}");
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
-        let entry = server.entry(&mut placeholders, AgentKind::Claude);
+        let entry = server.entry(&mut placeholders);
 
         assert!(!entry.to_string().contains("sk-live-secret"), "{entry}");
-        assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_0}");
+        assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_TEST_0}");
         assert_eq!(
             entry["headers"]["X-Session"],
-            "${ABNEGATE_MCP_1}${USER_NAME}"
+            "${ABNEGATE_MCP_TEST_1}${USER_NAME}"
         );
         assert_eq!(
             placeholders
@@ -716,7 +808,7 @@ mod tests {
     #[test]
     fn a_url_without_a_type_defaults_to_http_and_sse_is_kept() {
         assert_eq!(
-            http().entry(&mut Placeholders::default(), AgentKind::Claude)["type"],
+            http().entry(&mut Placeholders::under("TEST"))["type"],
             "http"
         );
         assert_eq!(
@@ -724,7 +816,7 @@ mod tests {
                 transport: Some(McpTransport::Sse),
                 ..http()
             }
-            .entry(&mut Placeholders::default(), AgentKind::Claude)["type"],
+            .entry(&mut Placeholders::under("TEST"))["type"],
             "sse"
         );
     }
@@ -741,11 +833,11 @@ mod tests {
             url: Some("https://${MCP_HOST}/mcp".to_string()),
             ..McpServer::default()
         };
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
         let entries = [
-            server.entry(&mut placeholders, AgentKind::Claude),
-            remote.entry(&mut placeholders, AgentKind::Claude),
+            server.entry(&mut placeholders),
+            remote.entry(&mut placeholders),
         ];
 
         for entry in &entries {
@@ -753,8 +845,12 @@ mod tests {
             assert!(!rendered.contains("glsa_realsecret"), "{rendered}");
             assert!(!rendered.contains("sk-live-secret"), "{rendered}");
         }
-        assert_eq!(entries[0]["env"]["GRAFANA_TOKEN"], "${ABNEGATE_MCP_0}");
-        assert_eq!(entries[1]["headers"]["Authorization"], "${ABNEGATE_MCP_1}");
+        assert_eq!(entries[0]["args"][1], "${ABNEGATE_MCP_TEST_0}");
+        assert_eq!(entries[0]["env"]["GRAFANA_TOKEN"], "${ABNEGATE_MCP_TEST_1}");
+        assert_eq!(
+            entries[1]["headers"]["Authorization"],
+            "${ABNEGATE_MCP_TEST_2}"
+        );
         assert_eq!(
             placeholders
                 .environment
@@ -764,9 +860,13 @@ mod tests {
             ["glsa_realsecret", "Bearer sk-live-secret"]
         );
         assert_eq!(
-            placeholders.references.iter().collect::<Vec<_>>(),
-            ["GRAFANA_URL"],
-            "a remote server's reference is read from the host"
+            placeholders
+                .templates
+                .values()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            ["${GRAFANA_URL}"],
+            "a remote server's reference is resolved here"
         );
     }
 
@@ -804,6 +904,23 @@ mod tests {
         assert_eq!(view["args"][0], "mcp-grafana");
         assert_eq!(view["tools"][0], "list_datasources");
         assert!(!view.to_string().contains("glsa_realsecret"));
+    }
+
+    /// A default is literal text from the configuration, so it may be a
+    /// secret, and so may a `${...}` that names no variable.
+    #[test]
+    fn a_log_view_masks_a_default_and_anything_that_names_no_variable() {
+        let server = stdio()
+            .with_environment("DEFAULTED", "${T:-marker-default-secret}")
+            .with_environment("UNNAMED", "${hunter2-password}")
+            .with_environment("NAMED", "${TOKEN}");
+        let remote = http().with_header("Authorization", "${T:-marker-default-secret}");
+
+        let view = server.redacted();
+        assert_eq!(view["env"]["DEFAULTED"], "[REDACTED]");
+        assert_eq!(view["env"]["UNNAMED"], "[REDACTED]");
+        assert_eq!(view["env"]["NAMED"], "${TOKEN}");
+        assert_eq!(remote.redacted()["headers"]["Authorization"], "[REDACTED]");
     }
 
     #[test]
@@ -907,7 +1024,7 @@ mod tests {
         assert_eq!(
             server
                 .with_transport(McpTransport::Sse)
-                .entry(&mut Placeholders::default(), AgentKind::Claude)["type"],
+                .entry(&mut Placeholders::under("TEST"))["type"],
             "sse"
         );
     }
@@ -1004,10 +1121,7 @@ mod tests {
         let written = serde_json::to_value(stdio()).expect("serialisable");
 
         let keys: Vec<&String> = written.as_object().expect("an object").keys().collect();
-        assert_eq!(
-            keys,
-            ["args", "command", "env", "headers", "tools", "type", "url"]
-        );
+        assert_eq!(keys, ["args", "command", "env", "headers", "tools", "url"]);
 
         let written = serde_json::to_value(
             stdio()
@@ -1022,30 +1136,14 @@ mod tests {
     }
 
     #[test]
-    fn a_working_directory_is_rendered_only_for_an_agent_that_documents_it() {
-        let server = stdio().with_working_directory("/srv/notes");
-
-        let claude = server.entry(&mut Placeholders::default(), AgentKind::Claude);
-        let codex = server.entry(&mut Placeholders::default(), AgentKind::Codex);
-
-        assert!(claude.get("cwd").is_none(), "{claude}");
-        assert_eq!(codex["cwd"], "/srv/notes");
-        assert!(
-            stdio()
-                .entry(&mut Placeholders::default(), AgentKind::Codex)
-                .get("cwd")
-                .is_none()
-        );
-        assert!(
-            McpServer {
-                working_directory: Some(PathBuf::from("/srv/notes")),
-                ..http()
-            }
-            .entry(&mut Placeholders::default(), AgentKind::Codex)
-            .get("cwd")
-            .is_none(),
-            "a remote server has no directory to start in"
-        );
+    fn an_entry_never_carries_a_working_directory() {
+        for server in [
+            stdio().with_working_directory("/srv/notes"),
+            http().with_working_directory("/srv/notes"),
+        ] {
+            let entry = server.entry(&mut Placeholders::under("TEST"));
+            assert!(entry.get("cwd").is_none(), "{entry}");
+        }
     }
 
     #[test]
@@ -1084,14 +1182,44 @@ mod tests {
         assert_eq!(server.expanded(&lookup), server);
     }
 
+    /// A server that could name a generated variable in its URL or headers
+    /// would be sent whatever the file moved out of another server, and one
+    /// that names the agent's credential, the agent's key.
+    #[test]
+    fn a_server_overreaches_only_through_its_url_or_headers() {
+        for server in [
+            http().with_header("X-Stolen", "${ABNEGATE_MCP_0}"),
+            http().with_header("X-Stolen", "prefix ${ABNEGATE_MCP_AB12_3} suffix"),
+            McpServer::remote("https://collector.example/${ABNEGATE_MCP_1:-none}"),
+            http().with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}"),
+            McpServer::remote("https://${ANTHROPIC_BASE_URL}/mcp"),
+        ] {
+            assert!(server.overreaches(AgentKind::Claude), "{server:?}");
+        }
+        for server in [
+            http().with_header("Authorization", "Bearer ${TOKEN}"),
+            http().with_header("X-Literal", "ABNEGATE_MCP_0"),
+            http().with_header("Authorization", "Bearer ${OPENAI_API_KEY}"),
+            stdio().with_environment("TOKEN", "${ABNEGATE_MCP_0}"),
+            stdio().with_environment("KEY", "${ANTHROPIC_API_KEY}"),
+        ] {
+            assert!(!server.overreaches(AgentKind::Claude), "{server:?}");
+        }
+        assert!(
+            http()
+                .with_header("Authorization", "Bearer ${OPENAI_API_KEY}")
+                .overreaches(AgentKind::Codex)
+        );
+    }
+
     #[test]
     fn an_entry_never_carries_inherit_environment_or_disabled() {
-        let server = stdio().inherit_environment().disable();
+        let entry = stdio()
+            .inherit_environment()
+            .disable()
+            .entry(&mut Placeholders::under("TEST"));
 
-        for agent in [AgentKind::Claude, AgentKind::Codex] {
-            let entry = server.entry(&mut Placeholders::default(), agent);
-            assert!(entry.get("inherit_environment").is_none(), "{entry}");
-            assert!(entry.get("disabled").is_none(), "{entry}");
-        }
+        assert!(entry.get("inherit_environment").is_none(), "{entry}");
+        assert!(entry.get("disabled").is_none(), "{entry}");
     }
 }

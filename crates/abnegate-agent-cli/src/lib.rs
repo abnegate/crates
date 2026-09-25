@@ -24,14 +24,22 @@
 //! [`BlockingQuestion`] recovers a question the agent stopped to ask.
 //! [`stream`] reads the raw Messages API stream the CLI is built on.
 //!
-//! The agent is given only the
-//! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names and
-//! those [`CliSettings::allow`] adds from this process's environment, plus
-//! what the settings hand it; a proxy reaches it only through
-//! [`CliSettings::with_proxy_variables`]. Every secret it is handed is
-//! scrubbed from what the run writes down, as written, JSON-escaped or
-//! percent-encoded. A secret the agent re-encodes any other way, such as in
-//! base64, is not recognised.
+//! The agent is given the
+//! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names, the
+//! names [`CliSettings::allow`] adds, a proxy among them with
+//! [`CliSettings::with_proxy_variables`], and its own configuration
+//! variables, each from this process's environment; its sign-in variables
+//! when its credential is inherited; and what the settings hand it: public
+//! [variables](CliSettings::variables), secret
+//! [environment](CliSettings::environment) values, the credential, and what
+//! an [`mcp`] configuration moves out of its file.
+//! [`CliSettings::inherit_environment`] gives it this process's whole
+//! environment in place of the names. Every value it is handed is scrubbed
+//! from what the run writes down, as written, JSON-escaped or
+//! percent-encoded, except the allowlisted names, its configuration
+//! variables, the public variables, the proxy bypass list and whatever it
+//! inherits; credential-shaped text is redacted wherever it appears. A secret
+//! the agent re-encodes any other way, such as in base64, is not recognised.
 //!
 //! ```no_run
 //! use abnegate_agent_cli::AgentKind;
@@ -97,6 +105,8 @@ mod settings;
 mod stdout_parse_result;
 pub mod stream;
 mod structured_result;
+#[cfg(test)]
+mod test_support;
 pub mod transcript;
 mod tripwire;
 mod verdict;

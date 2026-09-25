@@ -1,6 +1,21 @@
 use serde::Deserialize;
 
 /// The block a `content_block_start` event opens.
+///
+/// A variant may gain a field in a minor release, so a pattern outside this
+/// crate ends in `..`:
+///
+/// ```compile_fail,E0638
+/// use abnegate_agent_cli::ApiContentBlock;
+///
+/// fn text(block: &ApiContentBlock) -> Option<&str> {
+///     match block {
+///         ApiContentBlock::Text { text } => Some(text),
+///         _ => None,
+///     }
+/// }
+/// # let _ = text;
+/// ```
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]

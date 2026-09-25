@@ -109,11 +109,14 @@ pub struct CliSettings {
     /// this process's own value and only when this process has it set.
     ///
     /// Empty by default: a proxy URL can carry credentials, so a proxy
-    /// reaches the child only through [`CliSettings::with_proxy_variables`]
-    /// or a name [allowed](CliSettings::allow) here. A value passed this way
-    /// is not one of the secrets the run scrubs by value; a password in a
-    /// URL is still redacted like any other credential-shaped text. A token
-    /// belongs in [`environment`](CliSettings::environment) instead.
+    /// reaches the child only through [`CliSettings::with_proxy_variables`],
+    /// a name [allowed](CliSettings::allow) here, or
+    /// [`CliSettings::inherit_environment`]. Every value passed this way but
+    /// the proxy bypass list, `NO_PROXY` and `no_proxy`, is scrubbed from
+    /// what the run writes down, like one set in
+    /// [`environment`](CliSettings::environment). The agent's
+    /// [nested-session marker](crate::AgentKind::scrubbed) is never passed
+    /// this way: a run that must see it sets it explicitly.
     pub allowed: BTreeSet<String>,
     /// Give the child the host's whole environment, less the agent's
     /// [scrubbed](crate::AgentKind::scrubbed) variables, instead of
@@ -123,10 +126,11 @@ pub struct CliSettings {
     /// Off by default: the agent runs tools the model chooses, and anything
     /// in its environment is theirs to read. Without it the child is also
     /// given the agent's own [configuration](crate::AgentKind::configuration)
-    /// variables, its [sign-in](crate::AgentKind::credentials) variables when
-    /// the credential is [inherited](Credential::Inherited), and each host
-    /// variable an attached MCP server refers to. Anything else it needs,
-    /// such as a proxy, is [allowed](CliSettings::allow) or set explicitly.
+    /// variables and its [sign-in](crate::AgentKind::credentials) variables
+    /// when the credential is [inherited](Credential::Inherited). An attached
+    /// MCP server's values reach it under generated names either way: see
+    /// [`McpAttachment`](crate::McpAttachment). Anything else it needs, such
+    /// as a proxy, is [allowed](CliSettings::allow) or set explicitly.
     pub inherit_environment: bool,
     /// Extra flags passed through verbatim, after the streaming flags and
     /// before the model. Nothing here is checked against the agent, except
@@ -263,9 +267,12 @@ impl CliSettings {
     /// Also give the child each of `names` from this process's environment,
     /// when this process has it set. See [`CliSettings::allowed`].
     ///
-    /// For host variables that are not secret: an allowed value is not
-    /// scrubbed from what the run writes down. Give the child a token with
-    /// [`CliSettings::with_environment`], whose values are.
+    /// Each allowed value but the proxy bypass list is scrubbed from what the
+    /// run writes down wherever it appears, as a secret set with
+    /// [`CliSettings::with_environment`] is, so allowing a variable whose
+    /// value is ordinary text, such as a URL a log would name, hides that
+    /// text from every log of the run. A setting that is not secret and must
+    /// stay legible belongs in [`CliSettings::with_variable`].
     pub fn allow<I>(mut self, names: I) -> Self
     where
         I: IntoIterator,
@@ -280,7 +287,9 @@ impl CliSettings {
     /// each when this process has it set.
     ///
     /// For an agent that reaches its API through a proxy. Off by default,
-    /// because a proxy URL can carry credentials.
+    /// because a proxy URL can carry credentials; each proxy URL is scrubbed
+    /// from what the run writes down, as every [allowed](CliSettings::allow)
+    /// value but the bypass list is.
     pub fn with_proxy_variables(self) -> Self {
         self.allow(PROXY_VARIABLES.iter().copied())
     }
