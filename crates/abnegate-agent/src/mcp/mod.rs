@@ -28,7 +28,11 @@
 //!
 //! The same configuration attaches its servers to a coding agent CLI run by
 //! `abnegate-agent-cli`'s `CliProvider`, which writes the file its CLI reads.
-//! Which of them attach, and the tools each allows there, depend on the
+//! A remote server attaches only there, and each `${VAR}` in its URL and
+//! headers resolves only to a [secret](McpServer::secrets) bound to it with
+//! [`McpConfig::with_secret`] or [`McpServer::with_secret`], or to its
+//! default, and never against the environment the CLI is given. Which
+//! servers attach, and the tools each allows there, depend on the
 //! [`AgentKind`], re-exported here:
 //!
 //! ```
