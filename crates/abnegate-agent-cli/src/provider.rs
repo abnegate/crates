@@ -638,6 +638,13 @@ mod tests {
     const ETXTBSY: i32 = 26;
     const PROBE: &str = "FAKE_AGENT_PROBE";
 
+    /// Beyond the two minutes a lingering fake agent sleeps, so a run that
+    /// waits on one instead of stopping it sees it exit by itself first.
+    const TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// How long a test waits in real time on a fake agent.
+    const PATIENCE: Duration = Duration::from_secs(60);
+
     /// A stand-in agent, so no test needs a real CLI installed.
     ///
     /// It reads its prompt from stdin exactly as the real agents do, which is
@@ -694,7 +701,7 @@ mod tests {
     fn settings(directory: &TempDir, script: &str) -> CliSettings {
         CliSettings::default()
             .with_executable(fake(directory, script))
-            .with_timeout(Duration::from_secs(20))
+            .with_timeout(TIMEOUT)
     }
 
     fn request(messages: &[Message]) -> CompletionRequest<'_> {
@@ -862,21 +869,15 @@ echo '{"type":"result","subtype":"success","is_error":false}'
 echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1772096400}}'
 sleep 120
 "#;
-        let provider = CliProvider::agent(
-            AgentKind::Claude,
-            settings(&directory, script).with_timeout(Duration::from_secs(60)),
-        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
 
-        let started = Instant::now();
-        let error = run(&provider, &[Message::user("hi")])
-            .await
-            .expect_err("a failure");
+        let execution = execute(&provider, &[Message::user("hi")]).await;
 
         assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "waited {:?} on a throttled agent",
-            started.elapsed()
+            execution.stopped.is_some(),
+            "the throttled agent was waited on until it exited"
         );
+        let error = provider.assemble(execution).expect_err("a failure");
         let ProviderError::Agent { message, .. } = &error else {
             panic!("expected the agent's own failure, got {error:?}");
         };
@@ -1689,17 +1690,12 @@ sleep 120
 "#;
         let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
 
-        let started = Instant::now();
         let execution = execute(&provider, &[Message::user("hi")]).await;
 
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "waited {:?} on a finished agent",
-            started.elapsed()
-        );
         assert_eq!(
             execution.stopped.as_deref(),
-            Some("the agent finished its turn but did not exit")
+            Some("the agent finished its turn but did not exit"),
+            "the finished agent was waited on until it exited"
         );
         assert_eq!(execution.stdout.text, "Done.");
 
@@ -1827,17 +1823,16 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         let directory = TempDir::new().expect("a temporary directory");
         let script = "echo 'API Error: 429 Too Many Requests, retrying in 60s' >&2
 sleep 120";
-        let settings = settings(&directory, script)
-            .with_timeout(Duration::from_secs(90))
-            .with_tripwire(|line| line.contains("429"));
+        let settings = settings(&directory, script).with_tripwire(|line| line.contains("429"));
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
-        let started = Instant::now();
-        let error = run(&provider, &[Message::user("hi")])
-            .await
-            .expect_err("a failure");
+        let execution = execute(&provider, &[Message::user("hi")]).await;
 
-        assert!(started.elapsed() < Duration::from_secs(60));
+        assert!(
+            execution.stopped.is_some(),
+            "the agent retrying against a limit was waited on until it exited"
+        );
+        let error = provider.assemble(execution).expect_err("a failure");
         let ProviderError::Agent { message, .. } = &error else {
             panic!("expected the tripped line as the failure, got {error:?}");
         };
@@ -1990,7 +1985,7 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         };
         let leader = tokio::select! {
             result = run(&provider, &messages) => panic!("the run finished before it was cancelled: {result:?}"),
-            () = tokio::time::sleep(Duration::from_secs(15)) => panic!("the agent never started"),
+            () = tokio::time::sleep(PATIENCE) => panic!("the agent never started"),
             pid = started => pid,
         };
 
