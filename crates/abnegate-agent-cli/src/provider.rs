@@ -1312,14 +1312,25 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         let file = std::fs::read_to_string(&copied).expect("the MCP config");
         assert!(!file.contains("glsa_realsecret"), "{file}");
         let document: Value = serde_json::from_str(&file).expect("JSON");
-        assert_eq!(
-            document["mcpServers"]["grafana"]["env"]["GRAFANA_TOKEN"],
-            "${ABNEGATE_MCP_0}"
-        );
+        let generated = |variable: &str| {
+            document["mcpServers"]["grafana"]["env"][variable]
+                .as_str()
+                .and_then(|value| value.strip_prefix("${ABNEGATE_MCP_"))
+                .and_then(|value| value.strip_suffix('}'))
+                .map(|name| format!("ABNEGATE_MCP_{name}"))
+                .expect("a generated variable")
+        };
         let environment = std::fs::read_to_string(&recorded).expect("the child's environment");
-        assert!(environment.contains("ABNEGATE_MCP_0=glsa_realsecret"));
+        assert!(
+            environment.contains(&format!("{}=glsa_realsecret", generated("GRAFANA_TOKEN"))),
+            "{environment}"
+        );
         if let Ok(package) = std::env::var("CARGO_PKG_NAME") {
-            assert!(environment.contains(&format!("CARGO_PKG_NAME={package}")));
+            assert!(
+                environment.contains(&format!("{}={package}", generated("GRAFANA_PACKAGE"))),
+                "{environment}"
+            );
+            assert!(!variables(&recorded).contains(&"CARGO_PKG_NAME".to_string()));
         }
     }
 
@@ -2004,9 +2015,11 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             serde_json::from_str(&std::fs::read_to_string(&copied).expect("the MCP config"))
                 .expect("JSON");
         assert_eq!(document["mcpServers"]["appwrite"]["command"], "uvx");
-        assert_eq!(
-            document["mcpServers"]["appwrite"]["env"]["APPWRITE_API_KEY"],
-            "${APPWRITE_API_KEY}"
+        assert!(
+            document["mcpServers"]["appwrite"]["env"]["APPWRITE_API_KEY"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("${ABNEGATE_MCP_")),
+            "{document}"
         );
         assert!(!path.exists(), "the MCP config outlived the run");
     }

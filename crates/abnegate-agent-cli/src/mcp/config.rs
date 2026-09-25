@@ -252,13 +252,15 @@ impl McpConfig {
 
     /// The servers that will actually attach: those enabled, with a
     /// [valid](McpServer::valid) transport, which a strict CLI would
-    /// otherwise reject along with every other server, and a name and tool
+    /// otherwise reject along with every other server, a name and tool
     /// names safe to place in `--allowedTools`, which the CLI splits on
     /// commas and whitespace, so a name holding either could allow a tool
-    /// nobody named.
+    /// nobody named, and no reference in the URL or headers to a variable
+    /// [`McpConfig::render`] generates, which holds another server's value.
     pub fn attachable(&self) -> impl Iterator<Item = (&str, &McpServer)> {
-        self.enabled()
-            .filter(|(name, server)| server.valid() && server.nameable(name))
+        self.enabled().filter(|(name, server)| {
+            server.valid() && server.nameable(name) && !server.refers_to_generated()
+        })
     }
 
     /// Write the attachable servers to a private temporary file for
@@ -282,10 +284,15 @@ impl McpConfig {
                     server = %name,
                     "skipping an MCP server: its name and tool names may hold only letters, digits, `_` and `-`"
                 );
+            } else if server.refers_to_generated() {
+                tracing::warn!(
+                    server = %name,
+                    "skipping an MCP server: its URL or headers refer to a variable generated for another server"
+                );
             }
         }
 
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::new()?;
         let servers: Map<String, Value> = self
             .attachable()
             .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders, agent)))
@@ -302,17 +309,7 @@ impl McpConfig {
             .tempfile()?;
         file.as_file_mut().write_all(&bytes)?;
         file.as_file_mut().flush()?;
-        let Placeholders {
-            environment,
-            templates,
-            references,
-        } = placeholders;
-        Ok(Some(McpAttachment {
-            file,
-            environment,
-            templates,
-            references,
-        }))
+        Ok(Some(placeholders.attachment(file)))
     }
 
     /// The attachable servers as [`McpConfig::render`] writes them, safe for
@@ -488,7 +485,15 @@ mod tests {
         let appwrite = &document["mcpServers"]["appwrite"];
         assert_eq!(appwrite["command"], "uvx");
         assert_eq!(appwrite["args"][0], "mcp-server-appwrite");
-        assert_eq!(appwrite["env"]["APPWRITE_API_KEY"], "${APPWRITE_API_KEY}");
+        let variable = appwrite["env"]["APPWRITE_API_KEY"]
+            .as_str()
+            .and_then(|value| value.strip_prefix("${"))
+            .and_then(|value| value.strip_suffix('}'))
+            .expect("a reference");
+        assert_eq!(
+            attachment.templates.get(variable).map(SecretValue::expose),
+            Some("${APPWRITE_API_KEY}")
+        );
         assert_eq!(document["mcpServers"]["remote"]["type"], "http");
 
         let name = file
@@ -633,10 +638,33 @@ mod tests {
                 .map(SecretValue::expose),
             Some("glsa_realsecret")
         );
-        assert_eq!(environment["GRAFANA_URL"], "${GRAFANA_URL}");
-        assert!(attachment.references.contains("GRAFANA_URL"));
+        assert_eq!(
+            attachment
+                .templates
+                .values()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            ["${GRAFANA_URL}"]
+        );
+        assert!(!contents.contains("GRAFANA_URL}"), "{contents}");
         assert!(format!("{attachment:?}").contains("[REDACTED]"));
         assert!(!format!("{attachment:?}").contains("glsa_realsecret"));
+    }
+
+    /// A default is part of the configuration, so a secret written as one
+    /// must stay out of the file like any other literal.
+    #[test]
+    fn a_stdio_servers_default_never_reaches_the_file() {
+        let config = McpConfig::default().with_server(
+            "notes",
+            McpServer::command("notes-server", ["--key=${NOTES_KEY:-default-literal-key}"])
+                .with_environment("NOTES_TOKEN", "${NOTES_TOKEN:-default-literal-token}"),
+        );
+
+        let attachment = rendered(&config);
+
+        let contents = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        assert!(!contents.contains("default-literal"), "{contents}");
     }
 
     #[test]

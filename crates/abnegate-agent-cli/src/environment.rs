@@ -11,6 +11,8 @@ use tokio::process::Command;
 use crate::kind::AgentKind;
 use crate::mcp::McpAttachment;
 use crate::mcp::expand;
+use crate::mcp::references;
+use crate::mcp::whole_reference;
 use crate::settings::CliSettings;
 
 /// The child's environment: an allowlist of host variables, the caller's
@@ -19,11 +21,12 @@ use crate::settings::CliSettings;
 /// on top.
 ///
 /// Explicit values go on in rising precedence: the agent's sign-in
-/// variables from the host when its credential is inherited, host variables
-/// an attached MCP server refers to, the caller's public variables and then
-/// its secret ones, the values the MCP configuration moved out of its file,
-/// whose generated names no caller value can shadow, and the credential
-/// last.
+/// variables from the host when its credential is inherited, the caller's
+/// public variables and then its secret ones, the credential, and last the
+/// values an MCP configuration moved out of its file, under generated names
+/// no caller can know. A stdio server's references are resolved against
+/// what the child is given before those, falling back to the host, and only
+/// the resolved values are handed over: never the variables they name.
 #[derive(Debug)]
 pub(crate) struct Environment {
     inherit: bool,
@@ -66,11 +69,6 @@ impl Environment {
                 environment.pass(variable, host);
             }
         }
-        if let Some(mcp) = mcp {
-            for variable in &mcp.references {
-                environment.pass(variable, host);
-            }
-        }
         for (variable, value) in &settings.variables {
             environment
                 .variables
@@ -79,31 +77,61 @@ impl Environment {
         for (variable, value) in &settings.environment {
             environment.set(variable, value.clone());
         }
-        if let Some(mcp) = mcp {
-            for (variable, value) in &mcp.environment {
-                environment.set(variable, value.clone());
-            }
-            let expanded: Vec<(&String, String)> = mcp
-                .templates
-                .iter()
-                .map(|(variable, template)| {
-                    (
-                        variable,
-                        expand(template.expose(), &|name| environment.lookup(name, host)),
-                    )
-                })
-                .collect();
-            environment.secrets.extend(mcp.templates.values().cloned());
-            for (variable, value) in expanded {
-                environment.set(variable, SecretValue::new(value));
-            }
-        }
         if let (Some(variable), Some(value)) =
             (settings.credential.variable(), settings.credential.expose())
         {
             environment.set(variable, SecretValue::new(value));
         }
+        if let Some(mcp) = mcp {
+            environment.attach(mcp, settings, host);
+        }
         environment
+    }
+
+    /// Give the child every value `mcp` moved out of its file: literal text
+    /// as it is, and each template resolved against what the child is given
+    /// so far, falling back to the host. Each is a secret, and so is every
+    /// value a template's references resolved to, unless all it holds is
+    /// public: the value of an allowlisted name or of one of the caller's
+    /// public variables.
+    fn attach(
+        &mut self,
+        mcp: &McpAttachment,
+        settings: &CliSettings,
+        host: &dyn Fn(&str) -> Option<OsString>,
+    ) {
+        let public = |name: &str| {
+            DEFAULT_ENVIRONMENT.contains(&name) || settings.variables.contains_key(name)
+        };
+        let resolved: Vec<(&String, &SecretValue, SecretValue)> = mcp
+            .templates
+            .iter()
+            .map(|(variable, template)| {
+                let value = expand(template.expose(), &|name| self.lookup(name, host));
+                (variable, template, SecretValue::new(value))
+            })
+            .collect();
+        let referenced: Vec<SecretValue> = mcp
+            .templates
+            .values()
+            .flat_map(|template| references(template.expose()))
+            .filter(|name| !public(name))
+            .filter_map(|name| self.lookup(name, host))
+            .map(SecretValue::new)
+            .collect();
+        self.secrets.extend(referenced);
+        for (variable, value) in &mcp.environment {
+            self.set(variable, value.clone());
+        }
+        for (variable, template, value) in resolved {
+            let text = template.expose();
+            if whole_reference(text) && references(text).all(public) {
+                self.variables.insert(variable.clone(), value);
+            } else {
+                self.secrets.push(template.clone());
+                self.set(variable, value);
+            }
+        }
     }
 
     /// Every value this environment holds that must never be written down.
@@ -138,8 +166,8 @@ impl Environment {
             .and_then(|value| value.into_string().ok())
     }
 
-    /// Give the child a host variable that is not on the allowlist, which
-    /// makes its value a secret.
+    /// Give the child a sign-in variable from the host, as a secret, unless
+    /// the allowlist already gives it.
     fn pass(&mut self, variable: &str, host: &dyn Fn(&str) -> Option<OsString>) {
         if DEFAULT_ENVIRONMENT.contains(&variable) {
             return;
@@ -162,12 +190,16 @@ mod tests {
 
     use abnegate_llm::Credential;
     use abnegate_secret::SecretValue;
+    use serde_json::Map;
+    use serde_json::Value;
     use tokio::process::Command;
 
     use super::Environment;
     use crate::kind::AgentKind;
+    use crate::mcp::McpAttachment;
     use crate::mcp::McpConfig;
     use crate::mcp::McpServer;
+    use crate::mcp::expand;
     use crate::settings::CliSettings;
 
     fn host() -> impl Fn(&str) -> Option<OsString> {
@@ -217,6 +249,138 @@ mod tests {
             .secrets()
             .map(|secret| secret.expose().to_string())
             .collect()
+    }
+
+    fn attached(settings: &CliSettings) -> McpAttachment {
+        settings
+            .mcp
+            .render(AgentKind::Claude)
+            .expect("rendered")
+            .expect("an attachment")
+    }
+
+    fn document(attachment: &McpAttachment) -> Value {
+        let file = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        serde_json::from_str(&file).expect("JSON")
+    }
+
+    /// `value` as the CLI expands it against the child's `variables`.
+    fn expanded(value: &Value, variables: &BTreeMap<String, Option<String>>) -> String {
+        expand(value.as_str().expect("text"), &|name| {
+            variables.get(name).cloned().flatten()
+        })
+    }
+
+    /// The CLI expands a remote server's URL and headers against the
+    /// child's environment, so a remote server that could name the variable
+    /// holding another server's literal would be sent that literal.
+    #[test]
+    fn a_remote_server_is_never_sent_what_the_file_moved_out_of_another_server() {
+        let settings = CliSettings::default()
+            .with_mcp_server(
+                "grafana",
+                McpServer::command("uvx", ["mcp-grafana"])
+                    .with_environment("GRAFANA_TOKEN", "glsa-literal-secret"),
+            )
+            .with_mcp_server(
+                "collector",
+                McpServer::remote("https://collector.example/${ABNEGATE_MCP_0}")
+                    .with_header("X-Collected", "${ABNEGATE_MCP_0}"),
+            );
+        let attachment = attached(&settings);
+        let environment =
+            Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
+        let variables = set(&environment);
+
+        let document = document(&attachment);
+        let servers = document["mcpServers"].as_object().expect("servers");
+        for server in servers.values() {
+            let headers = server.get("headers").and_then(Value::as_object);
+            for value in server
+                .get("url")
+                .into_iter()
+                .chain(headers.into_iter().flat_map(Map::values))
+            {
+                let sent = expanded(value, &variables);
+                assert!(
+                    !sent.contains("glsa-literal-secret"),
+                    "a remote server is sent another server's literal: {sent}"
+                );
+            }
+        }
+        assert!(servers.contains_key("grafana"), "{document}");
+        assert!(!servers.contains_key("collector"), "{document}");
+    }
+
+    /// A stdio server's reference is resolved here and handed over only
+    /// under a generated name, so a remote server naming the same variable
+    /// finds nothing the CLI could send it.
+    #[test]
+    fn a_stdio_reference_reaches_its_server_without_its_variable_reaching_the_child() {
+        let settings = CliSettings::default()
+            .with_mcp_server(
+                "github",
+                McpServer::command("github-mcp-server", ["stdio"])
+                    .with_environment("GITHUB_PERSONAL_ACCESS_TOKEN", "${GITHUB_TOKEN}"),
+            )
+            .with_mcp_server(
+                "remote",
+                McpServer::remote("https://mcp.example.com/mcp")
+                    .with_header("Authorization", "Bearer ${GITHUB_TOKEN}"),
+            );
+        let attachment = attached(&settings);
+        let environment =
+            Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
+        let variables = set(&environment);
+
+        assert!(
+            !variables.contains_key("GITHUB_TOKEN"),
+            "the child was handed a stdio server's variable by name: {:?}",
+            variables.keys().collect::<Vec<_>>()
+        );
+        let servers = &document(&attachment)["mcpServers"];
+        assert_eq!(
+            expanded(
+                &servers["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"],
+                &variables
+            ),
+            "ghp-host-token"
+        );
+        assert_eq!(
+            expanded(&servers["remote"]["headers"]["Authorization"], &variables),
+            "Bearer ${GITHUB_TOKEN}"
+        );
+        assert!(exposed(&environment).contains(&"ghp-host-token".to_string()));
+    }
+
+    /// Claude Code starts a server with a reference to a variable nothing
+    /// sets left as written, and so does a value resolved on its behalf.
+    #[test]
+    fn a_stdio_reference_nothing_sets_is_left_as_written() {
+        let settings = CliSettings::default().with_mcp_server(
+            "notes",
+            McpServer::command("notes-server", ["--home=${HOME}", "--team=${NOTES_TEAM}"])
+                .with_environment("NOTES_TOKEN", "${NOTES_TOKEN}"),
+        );
+        let attachment = attached(&settings);
+        let environment =
+            Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
+        let variables = set(&environment);
+
+        let notes = &document(&attachment)["mcpServers"]["notes"];
+        assert_eq!(
+            expanded(&notes["env"]["NOTES_TOKEN"], &variables),
+            "${NOTES_TOKEN}"
+        );
+        assert_eq!(
+            expanded(&notes["args"][0], &variables),
+            "--home=/home/agent"
+        );
+        assert_eq!(
+            expanded(&notes["args"][1], &variables),
+            "--team=${NOTES_TEAM}"
+        );
+        assert!(!variables.contains_key("NOTES_TOKEN"));
     }
 
     #[test]
@@ -361,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn an_mcp_reference_is_given_from_the_host_and_a_moved_literal_from_the_file() {
+    fn an_mcp_reference_is_resolved_from_the_host_and_a_moved_literal_given_as_it_is() {
         let settings = CliSettings::default()
             .with_mcp_server(
                 "grafana",
@@ -394,10 +558,7 @@ mod tests {
             Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
 
         let variables = set(&environment);
-        assert_eq!(
-            variables["GRAFANA_TOKEN"].as_deref(),
-            Some("glsa-host-token")
-        );
+        assert!(!variables.contains_key("GRAFANA_TOKEN"), "{variables:?}");
         let file = std::fs::read_to_string(attachment.file.path()).expect("the file");
         assert!(!file.contains("literal-org-secret"), "{file}");
         assert!(!file.contains("literal-cf-secret"), "{file}");
@@ -411,7 +572,9 @@ mod tests {
             generated.contains(&Some("literal-org-secret")),
             "a caller value shadowed a moved literal: {generated:?}"
         );
+        assert!(generated.contains(&Some("glsa-host-token")));
         assert!(generated.contains(&Some("id=cf-host-id;secret=literal-cf-secret")));
+        assert!(generated.contains(&Some("/home/agent")));
         assert!(!variables.contains_key("GITHUB_TOKEN"));
         let secrets = exposed(&environment);
         assert!(secrets.contains(&"glsa-host-token".to_string()));

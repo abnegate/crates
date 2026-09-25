@@ -123,10 +123,11 @@ pub struct CliSettings {
     /// Off by default: the agent runs tools the model chooses, and anything
     /// in its environment is theirs to read. Without it the child is also
     /// given the agent's own [configuration](crate::AgentKind::configuration)
-    /// variables, its [sign-in](crate::AgentKind::credentials) variables when
-    /// the credential is [inherited](Credential::Inherited), and each host
-    /// variable an attached MCP server refers to. Anything else it needs,
-    /// such as a proxy, is [allowed](CliSettings::allow) or set explicitly.
+    /// variables and its [sign-in](crate::AgentKind::credentials) variables
+    /// when the credential is [inherited](Credential::Inherited). An attached
+    /// MCP server's values reach it under generated names either way: see
+    /// [`McpAttachment`](crate::McpAttachment). Anything else it needs, such
+    /// as a proxy, is [allowed](CliSettings::allow) or set explicitly.
     pub inherit_environment: bool,
     /// Extra flags passed through verbatim, after the streaming flags and
     /// before the model. Nothing here is checked against the agent, except

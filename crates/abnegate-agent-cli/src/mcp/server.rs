@@ -12,8 +12,10 @@ use serde_json::Value;
 use serde_json::json;
 
 use crate::kind::AgentKind;
+use crate::mcp::placeholders::NAMESPACE;
 use crate::mcp::placeholders::Placeholders;
 use crate::mcp::placeholders::expand;
+use crate::mcp::placeholders::references;
 use crate::mcp::placeholders::whole_reference;
 use crate::mcp::transport::McpTransport;
 
@@ -35,9 +37,10 @@ const NAME_PUNCTUATION: [char; 2] = ['_', '-'];
 /// reaches a log line through `Debug`, and never reaches the rendered
 /// configuration file either: see [`McpAttachment`](crate::mcp::McpAttachment).
 /// A `${VAR}` reference in a stdio server's command, arguments or
-/// environment is resolved from the host's environment, which the child is
-/// given only the named variables of. One in a remote server's
-/// [`url`](McpServer::url) or [`headers`](McpServer::headers) never is.
+/// environment is resolved here, as the CLI would resolve it, and the child
+/// is given the resolved value under a generated name, never the variable
+/// itself. One in a remote server's [`url`](McpServer::url) or
+/// [`headers`](McpServer::headers) is left to the CLI.
 ///
 /// Reads and writes the `mcpServers` entry shape: `args`, `env` and `cwd` on
 /// the wire, each also read under its full name here.
@@ -79,8 +82,9 @@ pub struct McpServer {
     /// [`CliSettings::with_environment`](crate::CliSettings::with_environment).
     /// The literal text around a reference moves into a
     /// generated variable, so no literal secret reaches the file:
-    /// `Bearer ${TOKEN}` is written `${ABNEGATE_MCP_0}${TOKEN}`, with
-    /// `ABNEGATE_MCP_0` holding `Bearer `.
+    /// `Bearer ${TOKEN}` is written `${ABNEGATE_MCP_<token>_0}${TOKEN}`, with
+    /// the generated variable holding `Bearer `. A server whose URL or
+    /// headers refer to a generated variable never attaches.
     pub headers: BTreeMap<String, SecretValue>,
     /// The tools to allow without prompting, by the names the server gives
     /// them. Empty allows every tool the server offers. A launcher that
@@ -292,19 +296,33 @@ impl McpServer {
             .is_some_and(|(server, tool)| valid_name(server) && valid_name(tool))
     }
 
+    /// Whether this server's URL or headers refer to a variable named in the
+    /// namespace the rendered file's generated variables are, which hold
+    /// other servers' values.
+    pub(crate) fn refers_to_generated(&self) -> bool {
+        self.url
+            .iter()
+            .map(String::as_str)
+            .chain(self.headers.values().map(SecretValue::expose))
+            .flat_map(references)
+            .any(|name| name.starts_with(NAMESPACE))
+    }
+
     /// This server as `agent`'s configuration file holds it, with every
-    /// literal environment or header value replaced by a reference to a
-    /// variable in `placeholders`, and every variable it refers to noted
-    /// there.
+    /// environment or header value, and every command or argument that
+    /// refers to a variable, replaced by a reference to a variable in
+    /// `placeholders`.
     pub(crate) fn entry(&self, placeholders: &mut Placeholders, agent: AgentKind) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
-            placeholders.note(command);
-            for argument in &self.arguments {
-                placeholders.note(argument);
-            }
+            let command = placeholders.resolved(command);
+            let arguments: Vec<String> = self
+                .arguments
+                .iter()
+                .map(|argument| placeholders.resolved(argument))
+                .collect();
             entry.insert("command".to_string(), json!(command));
-            entry.insert("args".to_string(), json!(self.arguments));
+            entry.insert("args".to_string(), json!(arguments));
             if !self.environment.is_empty() {
                 entry.insert(
                     "env".to_string(),
@@ -561,21 +579,27 @@ mod tests {
     }
 
     #[test]
-    fn a_stdio_entry_exposes_its_environment_for_the_cli_to_expand() {
+    fn a_stdio_entry_moves_a_reference_out_to_be_resolved() {
         let server = McpServer {
             environment: secrets(&[("APPWRITE_API_KEY", "${APPWRITE_API_KEY}")]),
             ..stdio()
         };
 
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
         let entry = server.entry(&mut placeholders, AgentKind::Claude);
         assert_eq!(entry["command"], "uvx");
         assert_eq!(entry["args"][0], "mcp-server-appwrite");
-        assert_eq!(entry["env"]["APPWRITE_API_KEY"], "${APPWRITE_API_KEY}");
+        assert_eq!(entry["env"]["APPWRITE_API_KEY"], "${ABNEGATE_MCP_TEST_0}");
         assert!(entry.get("type").is_none());
         assert!(entry.get("url").is_none());
         assert!(placeholders.environment.is_empty());
-        assert!(placeholders.references.contains("APPWRITE_API_KEY"));
+        assert_eq!(
+            placeholders
+                .templates
+                .get("ABNEGATE_MCP_TEST_0")
+                .map(SecretValue::expose),
+            Some("${APPWRITE_API_KEY}")
+        );
     }
 
     #[test]
@@ -593,23 +617,27 @@ mod tests {
             ]),
             ..McpServer::default()
         };
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
         let entry = server.entry(&mut placeholders, AgentKind::Claude);
 
         assert_eq!(
-            entry["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN"],
-            "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"
+            entry["env"]["GRAFANA_EXTRA_HEADERS"],
+            "${ABNEGATE_MCP_TEST_0}"
         );
-        assert_eq!(entry["env"]["GRAFANA_EXTRA_HEADERS"], "${ABNEGATE_MCP_0}");
+        assert_eq!(
+            entry["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN"],
+            "${ABNEGATE_MCP_TEST_1}"
+        );
         assert_eq!(
             placeholders
                 .templates
-                .get("ABNEGATE_MCP_0")
-                .map(SecretValue::expose),
-            Some(headers)
+                .values()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            [headers, "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"]
         );
-        assert!(placeholders.references.contains("CF_ACCESS_CLIENT_SECRET"));
+        assert!(placeholders.environment.is_empty());
     }
 
     #[test]
@@ -620,13 +648,13 @@ mod tests {
             ..http()
         };
 
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
         let entry = server.entry(&mut placeholders, AgentKind::Claude);
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], "https://example.com/mcp");
         assert_eq!(
             entry["headers"]["Authorization"],
-            "${ABNEGATE_MCP_0}${TOKEN}"
+            "${ABNEGATE_MCP_TEST_0}${TOKEN}"
         );
         assert!(entry.get("command").is_none());
         assert!(entry.get("args").is_none());
@@ -642,17 +670,17 @@ mod tests {
         let server = http()
             .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}")
             .with_header("X-Client", "id=${CF_ID:-anonymous};v=1");
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
         let entry = server.entry(&mut placeholders, AgentKind::Claude);
 
         assert_eq!(
             entry["headers"]["Authorization"],
-            "${ABNEGATE_MCP_0}${ANTHROPIC_API_KEY}"
+            "${ABNEGATE_MCP_TEST_0}${ANTHROPIC_API_KEY}"
         );
         assert_eq!(
             entry["headers"]["X-Client"],
-            "${ABNEGATE_MCP_1}${CF_ID:-anonymous}${ABNEGATE_MCP_2}"
+            "${ABNEGATE_MCP_TEST_1}${CF_ID:-anonymous}${ABNEGATE_MCP_TEST_2}"
         );
         assert_eq!(
             placeholders
@@ -661,20 +689,19 @@ mod tests {
                 .map(|(variable, value)| (variable.as_str(), value.expose()))
                 .collect::<Vec<_>>(),
             [
-                ("ABNEGATE_MCP_0", "Bearer "),
-                ("ABNEGATE_MCP_1", "id="),
-                ("ABNEGATE_MCP_2", ";v=1")
+                ("ABNEGATE_MCP_TEST_0", "Bearer "),
+                ("ABNEGATE_MCP_TEST_1", "id="),
+                ("ABNEGATE_MCP_TEST_2", ";v=1")
             ]
         );
         assert!(placeholders.templates.is_empty());
-        assert!(placeholders.references.is_empty());
     }
 
     #[test]
     fn a_whole_reference_header_passes_through_unchanged_and_nothing_is_read_from_the_host() {
         let server =
             McpServer::remote("https://${MCP_HOST}/mcp").with_header("X-Token", "${TOKEN}");
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
         let entry = server.entry(&mut placeholders, AgentKind::Claude);
 
@@ -682,9 +709,9 @@ mod tests {
         assert_eq!(entry["url"], "https://${MCP_HOST}/mcp");
         assert!(placeholders.environment.is_empty());
         assert!(
-            placeholders.references.is_empty(),
-            "a remote server's reference is read from the host: {:?}",
-            placeholders.references
+            placeholders.templates.is_empty(),
+            "a remote server's reference is resolved here: {:?}",
+            placeholders.templates
         );
     }
 
@@ -693,15 +720,15 @@ mod tests {
         let server = http()
             .with_header("Authorization", "Bearer sk-live-secret")
             .with_header("X-Session", "secret=sk-live-secret;user=${USER_NAME}");
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
         let entry = server.entry(&mut placeholders, AgentKind::Claude);
 
         assert!(!entry.to_string().contains("sk-live-secret"), "{entry}");
-        assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_0}");
+        assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_TEST_0}");
         assert_eq!(
             entry["headers"]["X-Session"],
-            "${ABNEGATE_MCP_1}${USER_NAME}"
+            "${ABNEGATE_MCP_TEST_1}${USER_NAME}"
         );
         assert_eq!(
             placeholders
@@ -716,7 +743,7 @@ mod tests {
     #[test]
     fn a_url_without_a_type_defaults_to_http_and_sse_is_kept() {
         assert_eq!(
-            http().entry(&mut Placeholders::default(), AgentKind::Claude)["type"],
+            http().entry(&mut Placeholders::under("TEST"), AgentKind::Claude)["type"],
             "http"
         );
         assert_eq!(
@@ -724,7 +751,7 @@ mod tests {
                 transport: Some(McpTransport::Sse),
                 ..http()
             }
-            .entry(&mut Placeholders::default(), AgentKind::Claude)["type"],
+            .entry(&mut Placeholders::under("TEST"), AgentKind::Claude)["type"],
             "sse"
         );
     }
@@ -741,7 +768,7 @@ mod tests {
             url: Some("https://${MCP_HOST}/mcp".to_string()),
             ..McpServer::default()
         };
-        let mut placeholders = Placeholders::default();
+        let mut placeholders = Placeholders::under("TEST");
 
         let entries = [
             server.entry(&mut placeholders, AgentKind::Claude),
@@ -753,8 +780,12 @@ mod tests {
             assert!(!rendered.contains("glsa_realsecret"), "{rendered}");
             assert!(!rendered.contains("sk-live-secret"), "{rendered}");
         }
-        assert_eq!(entries[0]["env"]["GRAFANA_TOKEN"], "${ABNEGATE_MCP_0}");
-        assert_eq!(entries[1]["headers"]["Authorization"], "${ABNEGATE_MCP_1}");
+        assert_eq!(entries[0]["args"][1], "${ABNEGATE_MCP_TEST_0}");
+        assert_eq!(entries[0]["env"]["GRAFANA_TOKEN"], "${ABNEGATE_MCP_TEST_1}");
+        assert_eq!(
+            entries[1]["headers"]["Authorization"],
+            "${ABNEGATE_MCP_TEST_2}"
+        );
         assert_eq!(
             placeholders
                 .environment
@@ -764,9 +795,13 @@ mod tests {
             ["glsa_realsecret", "Bearer sk-live-secret"]
         );
         assert_eq!(
-            placeholders.references.iter().collect::<Vec<_>>(),
-            ["GRAFANA_URL"],
-            "a remote server's reference is read from the host"
+            placeholders
+                .templates
+                .values()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            ["${GRAFANA_URL}"],
+            "a remote server's reference is resolved here"
         );
     }
 
@@ -907,7 +942,7 @@ mod tests {
         assert_eq!(
             server
                 .with_transport(McpTransport::Sse)
-                .entry(&mut Placeholders::default(), AgentKind::Claude)["type"],
+                .entry(&mut Placeholders::under("TEST"), AgentKind::Claude)["type"],
             "sse"
         );
     }
@@ -1025,14 +1060,14 @@ mod tests {
     fn a_working_directory_is_rendered_only_for_an_agent_that_documents_it() {
         let server = stdio().with_working_directory("/srv/notes");
 
-        let claude = server.entry(&mut Placeholders::default(), AgentKind::Claude);
-        let codex = server.entry(&mut Placeholders::default(), AgentKind::Codex);
+        let claude = server.entry(&mut Placeholders::under("TEST"), AgentKind::Claude);
+        let codex = server.entry(&mut Placeholders::under("TEST"), AgentKind::Codex);
 
         assert!(claude.get("cwd").is_none(), "{claude}");
         assert_eq!(codex["cwd"], "/srv/notes");
         assert!(
             stdio()
-                .entry(&mut Placeholders::default(), AgentKind::Codex)
+                .entry(&mut Placeholders::under("TEST"), AgentKind::Codex)
                 .get("cwd")
                 .is_none()
         );
@@ -1041,7 +1076,7 @@ mod tests {
                 working_directory: Some(PathBuf::from("/srv/notes")),
                 ..http()
             }
-            .entry(&mut Placeholders::default(), AgentKind::Codex)
+            .entry(&mut Placeholders::under("TEST"), AgentKind::Codex)
             .get("cwd")
             .is_none(),
             "a remote server has no directory to start in"
@@ -1084,12 +1119,32 @@ mod tests {
         assert_eq!(server.expanded(&lookup), server);
     }
 
+    /// A server that could name a generated variable in its URL or headers
+    /// would be sent whatever the file moved out of another server.
+    #[test]
+    fn a_server_refers_to_a_generated_variable_only_through_its_url_or_headers() {
+        for server in [
+            http().with_header("X-Stolen", "${ABNEGATE_MCP_0}"),
+            http().with_header("X-Stolen", "prefix ${ABNEGATE_MCP_AB12_3} suffix"),
+            McpServer::remote("https://collector.example/${ABNEGATE_MCP_1:-none}"),
+        ] {
+            assert!(server.refers_to_generated(), "{server:?}");
+        }
+        for server in [
+            http().with_header("Authorization", "Bearer ${TOKEN}"),
+            http().with_header("X-Literal", "ABNEGATE_MCP_0"),
+            stdio().with_environment("TOKEN", "${ABNEGATE_MCP_0}"),
+        ] {
+            assert!(!server.refers_to_generated(), "{server:?}");
+        }
+    }
+
     #[test]
     fn an_entry_never_carries_inherit_environment_or_disabled() {
         let server = stdio().inherit_environment().disable();
 
         for agent in [AgentKind::Claude, AgentKind::Codex] {
-            let entry = server.entry(&mut Placeholders::default(), agent);
+            let entry = server.entry(&mut Placeholders::under("TEST"), agent);
             assert!(entry.get("inherit_environment").is_none(), "{entry}");
             assert!(entry.get("disabled").is_none(), "{entry}");
         }
