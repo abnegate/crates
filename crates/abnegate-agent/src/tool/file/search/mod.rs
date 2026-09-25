@@ -1,6 +1,5 @@
 mod parameters;
 
-use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Stdio;
@@ -26,6 +25,7 @@ use crate::tool::Tool;
 use crate::tool::ToolContext;
 use crate::tool::ToolError;
 use crate::tool::ToolResult;
+use crate::tool::process;
 
 pub(super) const MAXIMUM_SEARCH_RESULTS: usize = 100;
 
@@ -56,7 +56,14 @@ const CODE_EXTENSIONS: &[&str] = &[
     "txt",
 ];
 
-/// Search for code patterns in files
+/// Search for a literal pattern in code files.
+///
+/// The search runs ripgrep, started like every other child a tool starts:
+/// with the context's environment and nothing else, so `rg` is looked for
+/// on that environment's `PATH`, and with `--no-config`, so no ripgrep
+/// configuration file can widen what it reads. When `rg` cannot be started
+/// that way, or does not finish, the tree is walked instead, passing over
+/// hidden entries, build trees and links.
 pub struct SearchCodeTool;
 
 #[async_trait]
@@ -112,7 +119,9 @@ impl Tool for SearchCodeTool {
             .unwrap_or(MAXIMUM_SEARCH_RESULTS)
             .min(MAXIMUM_SEARCH_RESULTS);
 
-        if let Some(result) = search_ripgrep(&parameters, &search_path, maximum_results).await {
+        if let Some(result) =
+            search_ripgrep(&parameters, &search_path, maximum_results, context).await
+        {
             return Ok(result);
         }
 
@@ -249,31 +258,28 @@ fn search_file(
     }
 }
 
+/// Search with `rg` started through `process::command`. `None`, when it
+/// cannot be started or does not finish, hands the search to the walk.
 async fn search_ripgrep(
     parameters: &SearchCodeParameters,
     search_path: &Path,
     maximum_results: usize,
+    context: &ToolContext,
 ) -> Option<ToolResult> {
-    if !ripgrep_available() {
-        return None;
-    }
-    let arguments = ripgrep_arguments(parameters, search_path, maximum_results);
-    ripgrep(
-        OsStr::new(RIPGREP),
-        &arguments,
-        search_path,
-        maximum_results,
-        WALK_TIME_LIMIT,
-    )
-    .await
+    let mut command = process::command(RIPGREP, context);
+    command.args(ripgrep_arguments(parameters, search_path, maximum_results));
+    ripgrep(command, search_path, maximum_results, WALK_TIME_LIMIT).await
 }
 
+/// Always `--no-config`: a configuration file can add any flag, `--hidden`,
+/// `--follow` and `--pre` among them, and so change what a search reads.
 fn ripgrep_arguments(
     parameters: &SearchCodeParameters,
     search_path: &Path,
     maximum_results: usize,
 ) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = [
+        "--no-config",
         "-F",
         "-n",
         "--no-heading",
@@ -303,21 +309,19 @@ fn ripgrep_arguments(
     arguments
 }
 
-/// Read `program`'s matches as they arrive, and stop it once `maximum_results`
-/// lines are in or `limit` has passed.
+/// Read `command`'s matches as they arrive, and stop it once
+/// `maximum_results` lines are in or `limit` has passed.
 ///
 /// Nothing is buffered beyond the lines kept: a search that matches every
 /// line of a large tree costs `maximum_results` lines, not the whole of its
 /// output. `None` hands the search to the walk instead.
 async fn ripgrep(
-    program: &OsStr,
-    arguments: &[OsString],
+    mut command: Command,
     search_path: &Path,
     maximum_results: usize,
     limit: Duration,
 ) -> Option<ToolResult> {
-    let mut child = Command::new(program)
-        .args(arguments)
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -364,8 +368,9 @@ async fn ripgrep(
     Some(format_search_results(results, maximum_results, None))
 }
 
+/// A line ripgrep printed as `path:line:text`, with the path made relative
+/// to the search root.
 fn normalize_ripgrep_line(line: &str, search_path: &Path) -> String {
-    // rg prints `path:line:text`. Prefer a path relative to the search root.
     let Some((path_and_line, text)) = line.split_once(':').and_then(|(path, rest)| {
         rest.split_once(':')
             .map(|(number, text)| (format!("{path}:{number}"), text))
@@ -381,25 +386,183 @@ fn normalize_ripgrep_line(line: &str, search_path: &Path) -> String {
     format!("{}:{}: {}", relative.display(), number, text.trim())
 }
 
-fn ripgrep_available() -> bool {
-    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        std::process::Command::new(RIPGREP)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
 
-    fn shell(line: &str) -> Vec<OsString> {
-        vec!["-c".into(), line.into()]
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::test_support::CHILD_TEST;
+    use crate::test_support::assert_passed;
+
+    /// The variable ripgrep reads the path of its configuration file from.
+    const CONFIGURATION: &str = "RIPGREP_CONFIG_PATH";
+
+    /// Where the stand-in `rg` writes down how it was started, handed to the
+    /// test's re-run.
+    const RECORD: &str = "ABNEGATE_AGENT_TEST_RIPGREP_RECORD";
+
+    /// The stand-in's file of arguments, one start to a line.
+    const ARGUMENTS: &str = "arguments";
+
+    /// The stand-in's file of environments, every variable of every start.
+    const ENVIRONMENT: &str = "environment";
+
+    const MARKER: &str = "open sesame please";
+
+    fn shell(line: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(line);
+        command
+    }
+
+    /// A ripgrep configuration file in `directory` asking for dot-files,
+    /// which the walk passes over and a search has to as well.
+    fn hidden(directory: &Path) -> PathBuf {
+        let path = directory.join("ripgreprc");
+        fs::write(&path, "--hidden\n").expect("the configuration is written");
+        path
+    }
+
+    /// An `rg` in `directory` that writes its arguments and its environment
+    /// beside itself, and matches nothing.
+    fn stand_in(directory: &Path) {
+        let program = directory.join(RIPGREP);
+        fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n/usr/bin/env >> '{}'\nexit {RIPGREP_NO_MATCHES}\n",
+                directory.join(ARGUMENTS).display(),
+                directory.join(ENVIRONMENT).display(),
+            ),
+        )
+        .expect("the stand-in is written");
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755))
+            .expect("the stand-in is made executable");
+    }
+
+    /// This process's path with `directory` searched first.
+    fn first_on_path(directory: &Path) -> OsString {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::join_paths(
+            std::iter::once(directory.to_path_buf()).chain(std::env::split_paths(&path)),
+        )
+        .expect("the path joins")
+    }
+
+    /// Whether an `rg` is on this process's path, for a test of what the real
+    /// ripgrep reads.
+    fn installed() -> bool {
+        std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|directory| directory.join(RIPGREP).is_file())
+        })
+    }
+
+    /// A search started ripgrep with this process's whole environment, so a
+    /// host's `RIPGREP_CONFIG_PATH` could hand it any flag: `--hidden`,
+    /// `--follow`, a `--pre` program. A stand-in `rg` first on the path
+    /// writes down every start, so this holds whether ripgrep is installed
+    /// or not.
+    #[tokio::test]
+    async fn ripgrep_starts_with_the_context_environment_and_no_configuration() {
+        const NAME: &str = "tool::file::search::tests::ripgrep_starts_with_the_context_environment_and_no_configuration";
+        if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
+            let record = TempDir::new().expect("a directory for the stand-in");
+            stand_in(record.path());
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env(CHILD_TEST, NAME)
+                .env(RECORD, record.path())
+                .env(CONFIGURATION, hidden(record.path()))
+                .env("PATH", first_on_path(record.path()))
+                .output()
+                .await
+                .unwrap();
+            assert_passed(&output);
+            return;
+        }
+        let record = PathBuf::from(std::env::var_os(RECORD).expect("the parent names the record"));
+        let tree = TempDir::new().expect("a tree to search");
+        fs::write(tree.path().join("visible.rs"), MARKER).expect("a file to search");
+
+        SearchCodeTool
+            .execute(
+                json!({"pattern": MARKER}),
+                &ToolContext::default().within(tree.path()),
+            )
+            .await
+            .expect("the search answers");
+
+        let starts = fs::read_to_string(record.join(ARGUMENTS)).expect("the search started rg");
+        assert!(!starts.is_empty(), "the search never started rg");
+        for arguments in starts.lines() {
+            assert!(
+                arguments
+                    .split(' ')
+                    .any(|argument| argument == "--no-config"),
+                "rg was free to read a configuration file: {arguments}"
+            );
+        }
+        let environment = fs::read_to_string(record.join(ENVIRONMENT)).expect("rg's environment");
+        assert!(
+            !environment
+                .lines()
+                .any(|line| line.starts_with(&format!("{CONFIGURATION}="))),
+            "rg was handed the host's configuration: {environment}"
+        );
+    }
+
+    /// With a host configuration asking for `--hidden`, ripgrep searched the
+    /// dot-files the walk passes over and handed back what they held, even
+    /// through a context that passes the host's whole environment on.
+    #[tokio::test]
+    async fn a_host_ripgrep_configuration_never_widens_a_search() {
+        const NAME: &str =
+            "tool::file::search::tests::a_host_ripgrep_configuration_never_widens_a_search";
+        if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
+            let configuration = TempDir::new().expect("a directory for the configuration");
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env(CHILD_TEST, NAME)
+                .env(CONFIGURATION, hidden(configuration.path()))
+                .output()
+                .await
+                .unwrap();
+            assert_passed(&output);
+            return;
+        }
+        if !installed() {
+            eprintln!("skipping: ripgrep is not installed");
+            return;
+        }
+        let tree = TempDir::new().expect("a tree to search");
+        fs::write(tree.path().join(".hidden.rs"), MARKER).expect("a dot-file");
+        fs::write(tree.path().join("visible.data"), MARKER).expect("a file only rg reads");
+
+        for context in [
+            ToolContext::default().within(tree.path()),
+            ToolContext::default()
+                .within(tree.path())
+                .inherit_environment(),
+        ] {
+            let output = SearchCodeTool
+                .execute(json!({"pattern": MARKER}), &context)
+                .await
+                .expect("the search answers")
+                .output
+                .unwrap_or_default();
+            assert!(
+                output.contains("visible.data"),
+                "rg did not run the search: {output}"
+            );
+            assert!(
+                !output.contains(".hidden.rs"),
+                "a host configuration widened the search: {output}"
+            );
+        }
     }
 
     /// A search matching every line of a huge tree used to buffer every
@@ -409,8 +572,7 @@ mod tests {
     async fn a_search_stops_reading_once_it_has_its_results() {
         let started = std::time::Instant::now();
         let result = ripgrep(
-            OsStr::new("sh"),
-            &shell("while :; do echo 'src/a.rs:1:match'; done"),
+            shell("while :; do echo 'src/a.rs:1:match'; done"),
             Path::new("src"),
             5,
             Duration::from_secs(30),
@@ -428,8 +590,7 @@ mod tests {
     async fn a_search_that_runs_out_of_time_reports_what_it_found() {
         let started = std::time::Instant::now();
         let result = ripgrep(
-            OsStr::new("sh"),
-            &shell("echo 'a.rs:3:first'; exec sleep 30"),
+            shell("echo 'a.rs:3:first'; exec sleep 30"),
             Path::new("."),
             MAXIMUM_SEARCH_RESULTS,
             Duration::from_millis(300),
@@ -449,8 +610,7 @@ mod tests {
     #[tokio::test]
     async fn a_search_that_fails_hands_over_to_the_walk() {
         let result = ripgrep(
-            OsStr::new("sh"),
-            &shell("exit 2"),
+            shell("exit 2"),
             Path::new("."),
             MAXIMUM_SEARCH_RESULTS,
             Duration::from_secs(5),
