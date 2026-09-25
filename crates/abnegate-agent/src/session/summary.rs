@@ -26,7 +26,12 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
-    /// Session `id` called `title`, unfinished and in no project.
+    /// Session `id` called `title`, created at `created_at` and last changed
+    /// at `updated_at`, unfinished and in no project.
+    ///
+    /// The arguments come in the fields' order, creation before the last
+    /// change: both are [`DateTime`]s, so the compiler cannot catch the two
+    /// swapped.
     pub fn new(
         id: Uuid,
         title: impl Into<String>,

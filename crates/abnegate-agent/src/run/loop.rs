@@ -132,6 +132,10 @@ impl Agent {
     }
 
     /// Continue a finished or failed run with another user message.
+    ///
+    /// However the turn fails, `state` is left ended in
+    /// [`AgentPhase::Error`] with the error's text in
+    /// [`error`](AgentState::error), so it can be saved and continued again.
     pub async fn continue_run(
         &self,
         state: &mut AgentState,
@@ -158,8 +162,7 @@ impl Agent {
 
         loop {
             if state.iteration >= self.config.maximum_iterations {
-                state.fail(RunError::IterationLimit.to_string());
-                return Err(RunError::IterationLimit);
+                return Err(Self::failed(state, RunError::IterationLimit));
             }
 
             state.iteration += 1;
@@ -191,7 +194,8 @@ impl Agent {
                 &self.policy,
                 state.summary.as_ref(),
             )
-            .await?;
+            .await
+            .map_err(|error| Self::failed(state, error.into()))?;
             let request = CompletionRequest::new(
                 &self.model,
                 &prepared.messages,
@@ -202,7 +206,11 @@ impl Agent {
                 Some(temperature) => request.with_temperature(temperature),
                 None => request,
             };
-            let completion = self.provider.complete(request).await?;
+            let completion = self
+                .provider
+                .complete(request)
+                .await
+                .map_err(|error| Self::failed(state, error.into()))?;
             state.summary = prepared.summary;
             state.consumed = state.messages.len();
 
@@ -294,8 +302,15 @@ impl Agent {
         if *empty < MAXIMUM_EMPTY_RESPONSES {
             return Ok(());
         }
-        state.fail(RunError::Empty.to_string());
-        Err(RunError::Empty)
+        Err(Self::failed(state, RunError::Empty))
+    }
+
+    /// End the turn on `error`, recording why on `state`, and hand the error
+    /// back for the run to return: whatever stops a run, a caller holding
+    /// its state sees it ended and why.
+    fn failed(state: &mut AgentState, error: RunError) -> RunError {
+        state.fail(error.to_string());
+        error
     }
 
     fn respond(state: &mut AgentState, callback: &dyn AgentCallback, response: &str) {

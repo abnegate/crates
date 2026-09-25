@@ -82,7 +82,7 @@ const JOB_LOG_EXTENSION: &str = "log";
 /// Distinguishes a job id from a run id at a glance, and keeps it short enough
 /// to carry between calls.
 const JOB_ID_PREFIX: &str = "job_";
-const JOB_ID_HEX_CHARACTERS: usize = 12;
+const JOB_ID_HEXADECIMAL_CHARACTERS: usize = 12;
 
 const STARTED_PREFIX: &str = "Started ";
 
@@ -120,10 +120,13 @@ fn missing(id: &str) -> String {
     format!("No job {id} in this session.")
 }
 
-/// Mint a job id: `job_` and twelve lowercase hex characters.
+/// Mint a job id: `job_` and twelve lowercase hexadecimal characters.
 pub fn mint() -> String {
-    let hex = Uuid::new_v4().simple().to_string();
-    format!("{JOB_ID_PREFIX}{}", &hex[..JOB_ID_HEX_CHARACTERS])
+    let hexadecimal = Uuid::new_v4().simple().to_string();
+    format!(
+        "{JOB_ID_PREFIX}{}",
+        &hexadecimal[..JOB_ID_HEXADECIMAL_CHARACTERS]
+    )
 }
 
 /// Where the log for `id` belongs, under the session's own working tree.
@@ -186,10 +189,12 @@ pub fn parse_receipt(output: &str) -> Option<JobStarted> {
 }
 
 fn is_job_id(candidate: &str) -> bool {
-    candidate.strip_prefix(JOB_ID_PREFIX).is_some_and(|hex| {
-        hex.len() == JOB_ID_HEX_CHARACTERS
-            && hex
-                .chars()
-                .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
-    })
+    candidate
+        .strip_prefix(JOB_ID_PREFIX)
+        .is_some_and(|hexadecimal| {
+            hexadecimal.len() == JOB_ID_HEXADECIMAL_CHARACTERS
+                && hexadecimal
+                    .chars()
+                    .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
+        })
 }

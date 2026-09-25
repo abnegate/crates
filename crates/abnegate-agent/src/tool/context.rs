@@ -51,9 +51,11 @@ impl ToolContext {
     /// from [`Default`] and changes what it needs:
     ///
     /// ```
-    /// use abnegate_agent::tool::Session;
-    /// use abnegate_agent::{Application, ToolContext};
     /// use std::time::Duration;
+    ///
+    /// use abnegate_agent::Application;
+    /// use abnegate_agent::ToolContext;
+    /// use abnegate_agent::tool::Session;
     ///
     /// let mut context = ToolContext::default()
     ///     .within("/srv/checkout")

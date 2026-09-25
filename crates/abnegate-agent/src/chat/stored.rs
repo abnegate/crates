@@ -26,6 +26,10 @@ pub struct StoredMessage {
 impl StoredMessage {
     /// Message `id` in `chat_id`, written by `role`, with no metadata and no
     /// time, and not the chat's title.
+    ///
+    /// The arguments come in the fields' order: the message's own id before
+    /// its chat's, and who wrote it before what it says. Each pair shares a
+    /// type, so the compiler cannot catch either one swapped.
     pub fn new(
         id: Uuid,
         chat_id: Uuid,

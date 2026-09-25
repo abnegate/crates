@@ -20,6 +20,10 @@ pub struct Evidence {
 impl Evidence {
     /// The last page of record `id`: `content` from `offset` of a record
     /// `total` long.
+    ///
+    /// The arguments come in the fields' order: the record's id before the
+    /// page, and where the page starts before the record's length. Each pair
+    /// shares a type, so the compiler cannot catch either one swapped.
     pub fn new(id: impl Into<String>, content: impl Into<String>, offset: u64, total: u64) -> Self {
         Self {
             id: id.into(),

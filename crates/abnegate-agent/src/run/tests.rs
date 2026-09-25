@@ -25,8 +25,11 @@ use wiremock::matchers::method;
 
 use super::Agent;
 use super::AgentConfig;
+use super::AgentPhase;
+use super::AgentState;
 use super::NoOpCallback;
 use super::RunError;
+use crate::context::ContextError;
 use crate::context::ContextSource;
 use crate::context::Policy;
 use crate::tool::EnvironmentPolicy;
@@ -131,7 +134,7 @@ fn calling(calls: &[(&str, Value)]) -> Value {
 }
 
 /// The tool results the run fed back to the model, in order.
-fn tool_results(state: &super::AgentState) -> Vec<String> {
+fn tool_results(state: &AgentState) -> Vec<String> {
     state
         .messages
         .iter()
@@ -256,7 +259,7 @@ struct Approving;
 
 #[async_trait]
 impl super::AgentCallback for Approving {
-    fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
+    fn on_phase_change(&self, _phase: AgentPhase, _message: Option<&str>) {}
     fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
     fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
     fn on_response(&self, _response: &str) {}
@@ -279,7 +282,7 @@ struct Watching {
 
 #[async_trait]
 impl super::AgentCallback for Watching {
-    fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
+    fn on_phase_change(&self, _phase: AgentPhase, _message: Option<&str>) {}
     fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
     fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
     fn on_response(&self, _response: &str) {}
@@ -345,7 +348,7 @@ struct Deferring {
 
 #[async_trait]
 impl super::AgentCallback for Deferring {
-    fn on_phase_change(&self, _phase: super::AgentPhase, _message: Option<&str>) {}
+    fn on_phase_change(&self, _phase: AgentPhase, _message: Option<&str>) {}
     fn on_tool_call(&self, _tool_name: &str, _arguments: &str) {}
     fn on_tool_result(&self, _tool_name: &str, _result: &ToolResult) {}
     fn on_response(&self, _response: &str) {}
@@ -824,6 +827,66 @@ async fn a_provider_failure_ends_the_run_with_the_provider_error() {
     assert_eq!(stub.calls(), 1);
 }
 
+/// A round the provider failed returned its error and left the state it
+/// was handed thinking, with no error recorded, so a caller continuing a
+/// saved run saved one that looked still under way.
+#[tokio::test]
+async fn a_provider_failure_ends_a_continued_turn_as_failed() {
+    let agent = Agent::new(
+        Arc::new(StubProvider::failing("stub", "the gateway is overloaded")),
+        "qwen3",
+        ToolRegistry::new(),
+        AgentConfig::default(),
+        ToolContext::default(),
+    );
+    let mut state = AgentState::new("Go.", None);
+
+    let error = agent
+        .continue_run(&mut state, "Again.", &NoOpCallback)
+        .await
+        .expect_err("the provider failed");
+
+    assert!(matches!(error, RunError::Provider(_)), "{error}");
+    assert_eq!(state.phase, AgentPhase::Error);
+    assert!(state.finished);
+    assert!(state.finished_at.is_some());
+    assert_eq!(state.error, Some(error.to_string()));
+    assert!(
+        error.to_string().contains("the gateway is overloaded"),
+        "{error}"
+    );
+}
+
+/// A conversation that cannot be prepared ends the turn the same way, and
+/// before the provider is asked anything.
+#[tokio::test]
+async fn a_context_that_cannot_be_prepared_ends_a_continued_turn_as_failed() {
+    let stub = Arc::new(StubProvider::answering("stub", "done"));
+    let agent = Agent::new(
+        stub.clone(),
+        "qwen3",
+        ToolRegistry::new(),
+        AgentConfig::default(),
+        ToolContext::default(),
+    )
+    .with_context_policy(Policy::new(Some(1_024), 1_024, ContextSource::Configured));
+    let mut state = AgentState::new("Go.", None);
+
+    let error = agent
+        .continue_run(&mut state, "Again.", &NoOpCallback)
+        .await
+        .expect_err("the reservation leaves no input");
+
+    assert!(
+        matches!(error, RunError::Context(ContextError::Capacity { .. })),
+        "{error}"
+    );
+    assert_eq!(state.phase, AgentPhase::Error);
+    assert!(state.finished);
+    assert_eq!(state.error, Some(error.to_string()));
+    assert_eq!(stub.calls(), 0);
+}
+
 /// The first line of the request compaction sends for a summary.
 const SUMMARY_INSTRUCTIONS: &str = "Maintain a compact historical conversation record.";
 
@@ -852,7 +915,7 @@ fn structured() -> String {
 
 /// Run a turn whose request crowds the context, then continue it, so the
 /// second turn has consumed history to compact.
-async fn crowded(agent: &Agent) -> super::AgentState {
+async fn crowded(agent: &Agent) -> AgentState {
     let mut state = agent
         .run("x".repeat(CROWDING), &NoOpCallback)
         .await
