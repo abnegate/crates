@@ -54,6 +54,7 @@ pub enum Error {
 
     /// Every address the host resolved to must not be fetched.
     #[error("{host} resolves only to addresses that must not be fetched.")]
+    #[non_exhaustive]
     UnfetchableResolution {
         /// The host that was resolved.
         host: String,
@@ -65,6 +66,7 @@ pub enum Error {
 
     /// The response body exceeded the cap it was read under.
     #[error("The response body is larger than {limit} bytes.")]
+    #[non_exhaustive]
     OversizedBody {
         /// The cap, in bytes.
         limit: usize,
