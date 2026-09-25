@@ -15,6 +15,7 @@ pub enum EndpointError {
 
     /// The URL uses a scheme other than `https`.
     #[error("a webhook must use {REQUIRED_SCHEME}, not {scheme}")]
+    #[non_exhaustive]
     Scheme {
         /// The scheme the URL named.
         scheme: String,
@@ -30,6 +31,7 @@ pub enum EndpointError {
 
     /// The URL names a port, which a provider's hooks never need.
     #[error("a webhook may not name port {port}")]
+    #[non_exhaustive]
     Port {
         /// The port the URL named.
         port: u16,
@@ -37,6 +39,7 @@ pub enum EndpointError {
 
     /// The host is an IPv4 or IPv6 address rather than a name.
     #[error("{host} is an IP literal, which a webhook may not target")]
+    #[non_exhaustive]
     AddressLiteral {
         /// The address, as the URL parser normalised it.
         host: String,
@@ -44,6 +47,7 @@ pub enum EndpointError {
 
     /// The host is `localhost` or a name under `.localhost`.
     #[error("{host} resolves to the local machine")]
+    #[non_exhaustive]
     Loopback {
         /// The refused host.
         host: String,
@@ -51,6 +55,7 @@ pub enum EndpointError {
 
     /// The host is not one the channel's provider serves hooks from.
     #[error("{host} is not an allowed host for this channel")]
+    #[non_exhaustive]
     HostNotAllowed {
         /// The refused host, lowercased and punycode-encoded.
         host: String,
