@@ -630,6 +630,7 @@ mod tests {
     use crate::execution::Execution;
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
+    use crate::mcp::expand;
     use crate::settings::CliSettings;
     use crate::structured_result::StructuredResult;
     use crate::test_support::delegated;
@@ -1333,6 +1334,72 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             );
             assert!(!variables(&recorded).contains(&"CARGO_PKG_NAME".to_string()));
         }
+    }
+
+    /// A remote server's reference is the CLI's to expand, from the child's
+    /// environment alone, so the caller hands the token over itself: the
+    /// scrubbed setter makes it resolve, and keeps it out of every log.
+    #[tokio::test]
+    async fn a_remote_reference_resolves_to_a_token_handed_over_and_never_reaches_a_log() {
+        const TOKEN: &str = "lin-api-marker-9f3e27";
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let copied = directory.path().join("mcp.json");
+        let recorded = directory.path().join("environment");
+        let script = format!(
+            r#"env > '{recorded}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then cp "$2" '{copied}'; fi
+  shift
+done
+printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"sent %s"}}]}}}}\n' "$LINEAR_TOKEN"
+echo "sent $LINEAR_TOKEN" >&2
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            recorded = recorded.display(),
+            copied = copied.display(),
+        );
+        let settings = settings(&directory, &script)
+            .with_log(&root)
+            .with_environment("LINEAR_TOKEN", TOKEN)
+            .with_mcp_server(
+                "linear",
+                McpServer::remote("https://mcp.linear.app/mcp")
+                    .with_header("Authorization", "Bearer ${LINEAR_TOKEN}"),
+            );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&copied).expect("the MCP config"))
+                .expect("JSON");
+        let environment = std::fs::read_to_string(&recorded).expect("the child's environment");
+        let child: std::collections::BTreeMap<&str, &str> = environment
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .collect();
+        let header = document["mcpServers"]["linear"]["headers"]["Authorization"]
+            .as_str()
+            .expect("a header");
+        assert_eq!(
+            expand(header, &|name| child
+                .get(name)
+                .map(|value| value.to_string())),
+            format!("Bearer {TOKEN}")
+        );
+        let files = execution.log.clone().expect("log files");
+        for path in [&files.stdout, &files.stderr, &files.events] {
+            let contents = std::fs::read_to_string(path).expect("a log file");
+            assert!(
+                !contents.contains(TOKEN),
+                "{} leaked the token: {contents}",
+                path.display()
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&files.stdout).expect("the prose log"),
+            "sent [REDACTED]"
+        );
     }
 
     #[tokio::test]
