@@ -14,7 +14,11 @@ leads outside it. A path that enters the crate and then names something the
 audit cannot find is a failure, never a skip.
 
 With no crate named, every crate under crates/ is audited. Each offender is
-printed as `path:line: item`, and the exit status is 1 when there is one.
+printed as `path:line: item`. The exit status is 0 when there is none, 1 when
+there is one or an ALLOWED entry no longer names an exhaustive type, and 2
+when the audit could not finish, which proves nothing either way: a crate it
+was asked for does not exist, a local module or path cannot be read, the
+script itself failed, or Python is older than 3.9.
 """
 
 from __future__ import annotations
@@ -22,12 +26,16 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import traceback
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from enum import IntEnum
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CRATES = ROOT / 'crates'
+SCRIPT = Path(__file__).name
+MINIMUM_PYTHON = (3, 9)
 
 ALLOWED = frozenset({
     ('crates/abnegate-vision/src/gravity/point.rs', 'Point'),
@@ -61,6 +69,12 @@ TOKEN = re.compile(
     re.VERBOSE | re.DOTALL,
 )
 BLOCK_DELIMITER = re.compile(r'/\*|\*/')
+
+
+class Exit(IntEnum):
+    PASSED = 0
+    OFFENDERS = 1
+    ERROR = 2
 
 
 class AuditError(Exception):
@@ -136,7 +150,6 @@ class Module:
         return f'{relative(self.file)}:{token.line}'
 
 
-Target = Module | Item | External
 TYPE_ALIAS = Item()
 
 
@@ -298,7 +311,7 @@ def literal_text(token: Token) -> str:
 
 def parse_file(module: Module) -> None:
     try:
-        tokens = tokenize(module.file.read_text())
+        tokens = tokenize(module.file.read_text(encoding='utf-8'))
         parse_module(module, tokens, 0, len(tokens))
     except SourceError as error:
         raise AuditError(f'{relative(module.file)}:{error}') from None
@@ -544,14 +557,18 @@ def struct_variants(tokens: list[Token], position: int, end: int) -> Iterator[To
         position = separator(tokens, position + 1, end, False) + 1
 
 
-def resolve(module: Module, segments: tuple[str, ...], seen: frozenset[int]) -> list[Target]:
+def resolve(
+    module: Module,
+    segments: tuple[str, ...],
+    seen: frozenset[int],
+) -> list[Module | Item | External]:
     if not segments:
         return []
     head = segments[0]
     if head == '::':
         return [External()]
     if head == 'crate':
-        current: list[Target] = [module.root()]
+        current: list[Module | Item | External] = [module.root()]
     elif head == 'self':
         current = [module]
     elif head == 'super':
@@ -561,7 +578,7 @@ def resolve(module: Module, segments: tuple[str, ...], seen: frozenset[int]) -> 
         if not current and not binds(module, head, seen):
             return [External()]
     for segment in segments[1:]:
-        following: list[Target] = []
+        following: list[Module | Item | External] = []
         for target in current:
             if not isinstance(target, Module):
                 following.append(target)
@@ -575,8 +592,8 @@ def resolve(module: Module, segments: tuple[str, ...], seen: frozenset[int]) -> 
     return current
 
 
-def lookup(module: Module, name: str, seen: frozenset[int]) -> list[Target]:
-    targets: list[Target] = []
+def lookup(module: Module, name: str, seen: frozenset[int]) -> list[Module | Item | External]:
+    targets: list[Module | Item | External] = []
     for binding in module.bindings.get(name, ()):
         targets.extend(follow(binding.target, seen))
     if targets or id(module) in seen:
@@ -601,7 +618,10 @@ def binds(module: Module, name: str, seen: frozenset[int]) -> bool:
     )
 
 
-def follow(target: Module | Item | External | Import | Alias, seen: frozenset[int]) -> list[Target]:
+def follow(
+    target: Module | Item | External | Import | Alias,
+    seen: frozenset[int],
+) -> list[Module | Item | External]:
     if isinstance(target, Import):
         if id(target) in seen:
             return []
@@ -666,20 +686,16 @@ def crate_names(arguments: list[str], parser: argparse.ArgumentParser) -> list[s
     return names
 
 
-def main() -> int:
+def run() -> Exit:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('crates', nargs='*', metavar='crate', help='a directory under crates/, such as abnegate-exec')
     names = crate_names(parser.parse_args().crates, parser)
     offenders: list[Offender] = []
     stale: list[str] = []
-    try:
-        for name in names:
-            found, unneeded = audit(name)
-            offenders.extend(found)
-            stale.extend(unneeded)
-    except AuditError as error:
-        print(f'{Path(__file__).name}: {error}', file=sys.stderr)
-        return 2
+    for name in names:
+        found, unneeded = audit(name)
+        offenders.extend(found)
+        stale.extend(unneeded)
     for offender in sorted(offenders):
         print(offender)
     for entry in stale:
@@ -691,7 +707,29 @@ def main() -> int:
             'mark each #[non_exhaustive] (CONTRIBUTING.md, Public API).',
             file=sys.stderr,
         )
-    return 1 if offenders or stale else 0
+    return Exit.OFFENDERS if offenders or stale else Exit.PASSED
+
+
+def version(parts: tuple[object, ...]) -> str:
+    return '.'.join(str(part) for part in parts[:3])
+
+
+def main() -> Exit:
+    if sys.version_info < MINIMUM_PYTHON:
+        print(
+            f'{SCRIPT}: needs Python {version(MINIMUM_PYTHON)} or later, but this is Python '
+            f'{version(sys.version_info)}; nothing was audited.',
+            file=sys.stderr,
+        )
+        return Exit.ERROR
+    try:
+        return run()
+    except AuditError as error:
+        print(f'{SCRIPT}: {error}', file=sys.stderr)
+    except Exception:
+        traceback.print_exc()
+        print(f'{SCRIPT}: the audit failed on the error above and proves nothing.', file=sys.stderr)
+    return Exit.ERROR
 
 
 if __name__ == '__main__':

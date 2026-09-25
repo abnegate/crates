@@ -40,12 +40,20 @@ class AuditTest(unittest.TestCase):
         return script
 
     def audit(self, library: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, str(self.fixture(library))],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        return self.python(str(self.fixture(library)))
+
+    def audit_as_python(self, version: tuple[object, ...], library: str) -> subprocess.CompletedProcess[str]:
+        program = textwrap.dedent(f"""
+            import runpy
+            import sys
+
+            sys.version_info = {version!r}
+            runpy.run_path({str(self.fixture(library))!r}, run_name='__main__')
+        """)
+        return self.python('-c', program)
+
+    def python(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, *arguments], capture_output=True, text=True, check=False)
 
     def test_a_type_that_can_gain_a_field_passes(self) -> None:
         result = self.audit("""
@@ -117,6 +125,24 @@ class AuditTest(unittest.TestCase):
 
         self.assertEqual((result.returncode, result.stdout), (ERROR, ''), result.stderr)
         self.assertIn('no file for `mod gone;`', result.stderr)
+
+    def test_a_source_the_parser_trips_on_fails_rather_than_reporting_offenders(self) -> None:
+        result = self.audit("""
+            pub struct
+        """)
+
+        self.assertEqual((result.returncode, result.stdout), (ERROR, ''), result.stderr)
+        self.assertIn('the audit failed on the error above and proves nothing', result.stderr)
+
+    def test_a_python_older_than_the_minimum_is_refused_before_anything_is_audited(self) -> None:
+        result = self.audit_as_python((3, 8, 18, 'final', 0), """
+            pub enum Shape {
+                Circle { radius: f64 },
+            }
+        """)
+
+        self.assertEqual((result.returncode, result.stdout), (ERROR, ''), result.stderr)
+        self.assertIn('needs Python 3.9 or later, but this is Python 3.8.18', result.stderr)
 
 
 if __name__ == '__main__':
