@@ -231,8 +231,9 @@ impl McpConfig {
         McpServer::read(entry).map_err(|mismatch| McpConfigError::server(name, mismatch))
     }
 
-    /// Attach `server` under `name` when no server is enabled,
-    /// [`McpConfig::auto_connect`] is on, the server is
+    /// Attach `server` under `name` when no server is enabled, none is
+    /// configured under `name` at all, [disabled](McpServer::disabled) or
+    /// not, [`McpConfig::auto_connect`] is on, the server is
     /// [valid](McpServer::valid), and its command, if it has one, is on
     /// `PATH`.
     ///
@@ -251,9 +252,15 @@ impl McpConfig {
     /// }
     /// ```
     pub fn fallback(mut self, name: impl Into<String>, server: McpServer) -> Self {
+        let name = name.into();
         let available = server.command.as_deref().is_none_or(command_on_path);
-        if self.auto_connect && self.is_empty() && server.valid() && available {
-            self.servers.insert(name.into(), server);
+        if self.auto_connect
+            && self.is_empty()
+            && !self.servers.contains_key(&name)
+            && server.valid()
+            && available
+        {
+            self.servers.insert(name, server);
         }
         self
     }
@@ -1211,6 +1218,21 @@ mod tests {
             config.enabled().map(|(name, _)| name).collect::<Vec<_>>(),
             ["shell"]
         );
+    }
+
+    /// A server configured under a name, disabled or not, is the user's
+    /// choice, and a fallback of the same name must never replace it.
+    #[test]
+    fn fallback_leaves_a_configured_server_of_that_name_alone() {
+        let config = McpConfig::default()
+            .with_server("shell", shell().disable())
+            .fallback("shell", shell());
+
+        assert_eq!(
+            config.servers,
+            BTreeMap::from([("shell".to_string(), shell().disable())])
+        );
+        assert!(config.is_empty());
     }
 
     #[test]
