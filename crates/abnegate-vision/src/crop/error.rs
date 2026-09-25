@@ -15,6 +15,7 @@ pub enum CropError {
     EmptyTarget,
     /// The region is empty or reaches outside the oriented source image.
     #[error("crop region {region:?} does not lie inside the {}x{} image", .size.0, .size.1)]
+    #[non_exhaustive]
     Region {
         /// The region asked for.
         region: Region,
@@ -23,6 +24,7 @@ pub enum CropError {
     },
     /// The target frame holds more than [`MAXIMUM_PIXELS`].
     #[error("target of {width}x{height} exceeds the {MAXIMUM_PIXELS} pixel ceiling")]
+    #[non_exhaustive]
     TargetTooLarge {
         /// The target's width.
         width: u32,
