@@ -23,6 +23,7 @@ pub enum Error {
     Status(u16),
     /// The answer is not SearXNG's JSON.
     #[error("Search returned a body that is not SearXNG JSON, at line {line} column {column}")]
+    #[non_exhaustive]
     Malformed {
         /// Line of the answer at which decoding stopped, from 1.
         line: usize,
@@ -31,6 +32,7 @@ pub enum Error {
     },
     /// The answer passed the most this crate reads.
     #[error("Search returned more than {limit} bytes")]
+    #[non_exhaustive]
     TooLarge {
         /// The most bytes read from one answer.
         limit: usize,
