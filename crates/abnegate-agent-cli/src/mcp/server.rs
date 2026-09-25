@@ -65,19 +65,22 @@ pub struct McpServer {
     /// Where an HTTP or SSE server listens.
     ///
     /// Written to the rendered file as it is, `${VAR}` references included,
-    /// for the CLI to expand from its own environment under its own rules:
-    /// Claude Code reads its own and cloud credentials as empty here. A
-    /// variable a reference names is never read from this process's
-    /// environment, and a reference's `:-default` is written as it is, so a
-    /// default must not be a secret. The reference expands only if the
-    /// caller hands the variable to the child: a token through
+    /// for the CLI to expand from the child's environment under its own
+    /// rules: Claude Code reads its own and cloud credentials as empty here.
+    /// A reference's `:-default` is written as it is too, so a default must
+    /// not be a secret. A variable a reference names is never read from this
+    /// process's environment, so the reference expands only if the caller
+    /// hands the variable to the child: a token through
     /// [`CliSettings::with_environment`](crate::CliSettings::with_environment),
     /// or from this process's environment through
     /// [`CliSettings::allow`](crate::CliSettings::allow), either of which the
     /// run scrubs from what it writes down. A child given this process's
     /// whole environment by
     /// [`CliSettings::inherit_environment`](crate::CliSettings::inherit_environment)
-    /// has every variable a reference could name, none of them scrubbed.
+    /// has every variable a reference could name, none of them scrubbed. A
+    /// server whose URL or headers refer to a generated variable, or to one
+    /// the agent signs in with, never attaches: see
+    /// [`McpConfig::attachable`](crate::mcp::McpConfig::attachable).
     pub url: Option<String>,
     /// How the server is reached; implied by `command` or `url` when unset,
     /// and then left out of what this writes, since Claude Code refuses a
@@ -87,15 +90,11 @@ pub struct McpServer {
     /// Headers sent to an HTTP or SSE server.
     ///
     /// Each `${VAR}` reference in a value is written to the rendered file as
-    /// it is, for the CLI alone to expand under the same rules as a
-    /// reference in [`McpServer::url`], and is never read from this process's
-    /// environment: it expands only if the caller hands the variable to the
-    /// child, as for the URL.
-    /// The literal text around a reference moves into a
+    /// it is, for the CLI alone to expand, under the same rules as one in
+    /// [`McpServer::url`]. The literal text around a reference moves into a
     /// generated variable, so no literal secret reaches the file:
     /// `Bearer ${TOKEN}` is written `${ABNEGATE_MCP_<token>_0}${TOKEN}`, with
-    /// the generated variable holding `Bearer `. A server whose URL or
-    /// headers refer to a generated variable never attaches.
+    /// the generated variable holding `Bearer `.
     pub headers: BTreeMap<String, SecretValue>,
     /// The tools to allow without prompting, by the names the CLI gives
     /// them: the server's own name for each, with every character but
@@ -214,9 +213,10 @@ impl McpServer {
 
     /// The same server with every `${VAR}` and `${VAR:-default}` in its
     /// command, arguments and environment values expanded through `lookup`,
-    /// as a CLI expands the file [`McpConfig::render`](crate::mcp::McpConfig::render)
-    /// writes, for a launcher that starts the server itself. A reference to a
-    /// variable `lookup` does not give, with no default, is left as written,
+    /// as Claude Code expands them and as a child given the file
+    /// [`McpConfig::render`](crate::mcp::McpConfig::render) writes has them
+    /// resolved, for a launcher that starts the server itself. A reference to
+    /// a variable `lookup` does not give, with no default, is left as written,
     /// as the CLI leaves it.
     ///
     /// The URL and headers are left alone, since only a CLI attaches a remote

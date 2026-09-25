@@ -118,7 +118,8 @@ impl McpConfig {
     ///
     /// [`DEFAULT_PREFIX`] is the prefix for an application with none of its
     /// own. This never fails: a document that cannot be read is logged and
-    /// skipped, leaving no server configured.
+    /// skipped, leaving no server configured, and so is any one server whose
+    /// entry cannot be read, leaving the rest.
     pub fn from_environment(prefix: &str) -> Self {
         Self::load(
             prefix,
