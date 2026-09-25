@@ -927,7 +927,7 @@ fn output_that_announced_no_job_parses_as_none() {
     assert_eq!(
         parse_started("Started job_9F3C1A7B2E04 (pid 1)."),
         None,
-        "job ids are lowercase hex"
+        "job ids are lowercase hexadecimal"
     );
 }
 
@@ -937,7 +937,7 @@ fn a_minted_id_is_the_shape_the_parser_accepts() {
     assert!(id.starts_with(JOB_ID_PREFIX), "{id}");
     assert_eq!(
         id.len(),
-        JOB_ID_PREFIX.len() + JOB_ID_HEX_CHARACTERS,
+        JOB_ID_PREFIX.len() + JOB_ID_HEXADECIMAL_CHARACTERS,
         "{id}"
     );
     assert_ne!(id, mint(), "each job gets its own id");
