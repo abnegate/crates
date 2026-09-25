@@ -5,8 +5,13 @@ A caller can build a struct whose fields are public, or a struct variant of a
 public enum, with a literal, and can match it without `..`, so adding a field
 to it breaks that caller. Each must be #[non_exhaustive] unless ALLOWED names
 it. Only what a caller can reach is audited: code compiled only for tests,
-items that are not `pub`, and `pub` items of a private module that nothing
-re-exports are skipped.
+items that are not `pub`, `pub` items of a private module that nothing
+re-exports, and re-exports of a path outside the crate are skipped.
+
+The crate has already compiled, so a path whose first segment names nothing
+the crate defines or imports, such as `Option::Some` or `serde::Serialize`,
+leads outside it. A path that enters the crate and then names something the
+audit cannot find is a failure, never a skip.
 
 With no crate named, every crate under crates/ is audited. Each offender is
 printed as `path:line: item`, and the exit status is 1 when there is one.
@@ -17,7 +22,6 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +34,6 @@ ALLOWED = frozenset({
     ('crates/abnegate-vision/src/gravity/rectangle.rs', 'Rectangle'),
 })
 
-SYSROOT_CRATES = frozenset({'alloc', 'core', 'proc_macro', 'std', 'test'})
 OPENERS = frozenset({'(', '[', '{'})
 CLOSERS = frozenset({')', ']', '}'})
 RESTRICTIONS = frozenset({'crate', 'self', 'super'})
@@ -120,7 +123,6 @@ class Module:
     directory: Path
     inline: bool
     parent: Module | None
-    external: frozenset[str]
     bindings: dict[str, list[Binding]] = field(default_factory=dict)
     globs: list[Binding] = field(default_factory=list)
 
@@ -414,13 +416,13 @@ def parse_mod(
     body = position + 2
     if tokens[body].text == '{':
         close = closing(tokens, body)
-        child = Module(module.file, module.directory / name.text, True, module, module.external)
+        child = Module(module.file, module.directory / name.text, True, module)
         module.bind(name.text, public, child)
         parse_module(child, tokens, body + 1, close)
         return close + 1
     file = module_file(module, name, attributes)
     directory = file.parent if file.name == 'mod.rs' or path_attribute(attributes) else file.with_suffix('')
-    child = Module(file, directory, False, module, module.external)
+    child = Module(file, directory, False, module)
     module.bind(name.text, public, child)
     parse_file(child)
     return body + 1
@@ -556,7 +558,7 @@ def resolve(module: Module, segments: tuple[str, ...], seen: frozenset[int]) -> 
         current = [module.parent] if module.parent else []
     else:
         current = lookup(module, head, seen)
-        if not current and head in module.external:
+        if not current and not binds(module, head, seen):
             return [External()]
     for segment in segments[1:]:
         following: list[Target] = []
@@ -584,6 +586,19 @@ def lookup(module: Module, name: str, seen: frozenset[int]) -> list[Target]:
             if isinstance(source, Module):
                 targets.extend(lookup(source, name, seen | {id(module)}))
     return targets
+
+
+def binds(module: Module, name: str, seen: frozenset[int]) -> bool:
+    if name in module.bindings:
+        return True
+    if id(module) in seen:
+        return False
+    return any(
+        binds(source, name, seen | {id(module)})
+        for glob in module.globs
+        for source in follow(glob.target, seen | {id(module)})
+        if isinstance(source, Module)
+    )
 
 
 def follow(target: Module | Item | External | Import | Alias, seen: frozenset[int]) -> list[Target]:
@@ -627,19 +642,9 @@ def reachable_offenders(root: Module) -> list[Offender]:
     return offenders
 
 
-def external_crates(manifest: Path) -> frozenset[str]:
-    document = tomllib.loads(manifest.read_text())
-    names = set(SYSROOT_CRATES)
-    for table in [document, *document.get('target', {}).values()]:
-        for section in ('dependencies', 'dev-dependencies', 'build-dependencies'):
-            names.update(name.replace('-', '_') for name in table.get(section, {}))
-    return frozenset(names)
-
-
 def audit(crate: str) -> tuple[list[Offender], list[str]]:
-    directory = CRATES / crate
-    root_file = directory / 'src' / 'lib.rs'
-    root = Module(root_file, root_file.parent, False, None, external_crates(directory / 'Cargo.toml'))
+    root_file = CRATES / crate / 'src' / 'lib.rs'
+    root = Module(root_file, root_file.parent, False, None)
     parse_file(root)
     offenders = reachable_offenders(root)
     exhaustive = {(offender.path, offender.item) for offender in offenders}
