@@ -67,8 +67,9 @@ pub struct McpServer {
     /// for the CLI to expand from its own environment under its own rules:
     /// Claude Code reads its own and cloud credentials as empty here. A
     /// variable a reference names is never read from this process's
-    /// environment, so the reference expands only if the caller hands the
-    /// variable to the child: a token through
+    /// environment, and a reference's `:-default` is written as it is, so a
+    /// default must not be a secret. The reference expands only if the
+    /// caller hands the variable to the child: a token through
     /// [`CliSettings::with_environment`](crate::CliSettings::with_environment),
     /// or from this process's environment through
     /// [`CliSettings::allow`](crate::CliSettings::allow), either of which the
@@ -373,9 +374,9 @@ impl McpServer {
     }
 
     /// This server for a log line: structure intact, every environment or
-    /// header value masked unless it is nothing but a `${VAR}` reference,
-    /// which names a secret without holding one, and anything credential
-    /// shaped in the arguments or the URL redacted.
+    /// header value masked unless it is nothing but a `${VAR}` reference with
+    /// no default, which names a secret without holding one, and anything
+    /// credential shaped in the arguments or the URL redacted.
     pub(crate) fn redacted(&self) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
@@ -855,6 +856,23 @@ mod tests {
         assert_eq!(view["args"][0], "mcp-grafana");
         assert_eq!(view["tools"][0], "list_datasources");
         assert!(!view.to_string().contains("glsa_realsecret"));
+    }
+
+    /// A default is literal text from the configuration, so it may be a
+    /// secret, and so may a `${...}` that names no variable.
+    #[test]
+    fn a_log_view_masks_a_default_and_anything_that_names_no_variable() {
+        let server = stdio()
+            .with_environment("DEFAULTED", "${T:-marker-default-secret}")
+            .with_environment("UNNAMED", "${hunter2-password}")
+            .with_environment("NAMED", "${TOKEN}");
+        let remote = http().with_header("Authorization", "${T:-marker-default-secret}");
+
+        let view = server.redacted();
+        assert_eq!(view["env"]["DEFAULTED"], "[REDACTED]");
+        assert_eq!(view["env"]["UNNAMED"], "[REDACTED]");
+        assert_eq!(view["env"]["NAMED"], "${TOKEN}");
+        assert_eq!(remote.redacted()["headers"]["Authorization"], "[REDACTED]");
     }
 
     #[test]

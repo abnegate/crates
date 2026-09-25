@@ -151,14 +151,15 @@ fn refers(text: &str) -> bool {
     references(text).next().is_some()
 }
 
-/// Whether `value` is nothing but one `${VAR}` reference, which names a
-/// secret without holding one.
+/// Whether `value` is nothing but one `${VAR}` reference with no default,
+/// which names a secret without holding one: a default is literal text from
+/// the configuration, and a `${...}` that names no variable is literal text
+/// too.
 pub(crate) fn whole_reference(value: &str) -> bool {
-    value
-        .trim()
-        .strip_prefix(OPENING)
-        .and_then(|rest| rest.strip_suffix(CLOSING))
-        .is_some_and(|name| !name.contains(OPENING) && !name.contains(CLOSING))
+    matches!(
+        segments(value.trim()).as_slice(),
+        [Segment::Reference { default: None, .. }]
+    )
 }
 
 /// `template` with each `${VAR}` replaced by what `lookup` gives for it, and
@@ -424,6 +425,9 @@ mod tests {
         assert!(!whole_reference("${A}-${B}"));
         assert!(!whole_reference("literal"));
         assert!(!whole_reference("${"));
+        assert!(!whole_reference("${TOKEN:-literal-default}"));
+        assert!(!whole_reference("${1BAD}"));
+        assert!(!whole_reference("${hunter2-password}"));
     }
 
     #[test]
