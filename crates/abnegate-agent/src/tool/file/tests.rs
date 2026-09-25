@@ -696,7 +696,7 @@ async fn test_write_file_append() {
 }
 
 #[tokio::test]
-async fn test_write_file_creates_dirs() {
+async fn test_write_file_creates_directories() {
     let directory = tempdir().unwrap();
     let tool = WriteFileTool;
     let context = create_test_context(directory.path());
@@ -1420,7 +1420,7 @@ async fn test_search_code_case_insensitive() {
 }
 
 #[tokio::test]
-async fn search_code_respects_max_results() {
+async fn search_code_respects_maximum_results() {
     let directory = tempdir().unwrap();
     fs::write(
         directory.path().join("many.rs"),
@@ -1443,7 +1443,7 @@ async fn search_code_respects_max_results() {
 }
 
 #[tokio::test]
-async fn search_code_ignores_huge_max_results() {
+async fn search_code_ignores_huge_maximum_results() {
     let directory = tempdir().unwrap();
     let mut content = String::new();
     for i in 0..150 {
@@ -1714,7 +1714,7 @@ async fn apply_patch_replace_all_and_hunks() {
 }
 
 #[test]
-fn write_file_params_read_the_reason() {
+fn write_file_parameters_read_the_reason() {
     let parameters: WriteFileParameters = serde_json::from_value(serde_json::json!({
         "path": "src/main.rs",
         "content": "fn main() {}\n",
@@ -1773,7 +1773,7 @@ async fn write_file_without_a_reason_still_writes() {
 }
 
 #[test]
-fn apply_patch_params_read_the_reason() {
+fn apply_patch_parameters_read_the_reason() {
     let parameters: ApplyPatchParameters = serde_json::from_value(serde_json::json!({
         "path": "src/main.rs",
         "old_string": "foo",

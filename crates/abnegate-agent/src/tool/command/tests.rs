@@ -114,10 +114,9 @@ async fn shelling_tools_give_the_child_only_the_context_environment() {
     }
 }
 
-/// The default context passes on the timezone, so a command does not read
-/// the clock as UTC, and the certificate bundle, so it can verify a server
-/// behind a private certificate authority; each is read from this process as
-/// the child starts.
+/// The default context hands a command this process's `TZ`, so it reads the
+/// clock in its caller's timezone, and its `SSL_CERT_FILE`, so it can verify
+/// a server behind a private certificate authority.
 #[tokio::test]
 async fn the_default_context_passes_the_timezone_and_the_certificates() {
     const NAME: &str =
@@ -472,7 +471,7 @@ fn test_run_command_tool_definition() {
 }
 
 #[test]
-fn run_command_params_read_the_reason() {
+fn run_command_parameters_read_the_reason() {
     let parameters: RunCommandParameters = serde_json::from_value(json!({
         "command": "cargo",
         "args": ["test"],
@@ -519,7 +518,7 @@ async fn run_command_without_a_reason_still_runs() {
 }
 
 #[test]
-fn run_shell_params_read_the_reason() {
+fn run_shell_parameters_read_the_reason() {
     let parameters: RunShellParameters = serde_json::from_value(json!({
         "command": "cargo test 2>&1 | tail -40",
         "reason": "Check the suite still passes before committing."
@@ -744,7 +743,7 @@ async fn run_shell_output_keeps_its_tail_through_to_message() {
         "HEAD_MARKER{}TAIL_MARKER",
         "x".repeat(MAXIMUM_SHELL_OUTPUT_CHARACTERS * 4)
     );
-    let (_dir, context) = huge_output_context(&body);
+    let (_directory, context) = huge_output_context(&body);
 
     let result = RunShellTool
         .execute(json!({"command": "cat huge.txt"}), &context)
@@ -787,7 +786,7 @@ fn the_output_cap_clamps_into_range() {
 }
 
 #[test]
-fn params_read_an_optional_max_output_chars() {
+fn parameters_read_an_optional_maximum_output_characters() {
     let command: RunCommandParameters =
         serde_json::from_value(json!({"command": "cargo", "max_output_chars": 2_000})).unwrap();
     assert_eq!(command.maximum_output_characters, Some(2_000));
@@ -808,7 +807,7 @@ fn params_read_an_optional_max_output_chars() {
 /// it — so the schema has to rule out what the parser cannot take. Zero is
 /// legal and clamps up, which is why the floor is here and not 500.
 #[test]
-fn the_schema_refuses_the_negative_max_output_chars_the_parser_cannot_read() {
+fn the_schema_refuses_the_negative_maximum_output_characters_the_parser_cannot_read() {
     for schema in [
         RunCommandTool.parameters_schema(),
         RunShellTool.parameters_schema(),
@@ -840,7 +839,7 @@ fn the_schema_refuses_the_negative_max_output_chars_the_parser_cannot_read() {
 }
 
 #[test]
-fn shell_schemas_offer_max_output_chars_without_requiring_it() {
+fn shell_schemas_offer_maximum_output_characters_without_requiring_it() {
     for schema in [
         RunCommandTool.parameters_schema(),
         RunShellTool.parameters_schema(),
@@ -860,13 +859,13 @@ fn shell_schemas_offer_max_output_chars_without_requiring_it() {
 }
 
 #[tokio::test]
-async fn run_shell_spends_only_the_requested_max_output_chars() {
+async fn run_shell_spends_only_the_requested_maximum_output_characters() {
     const REQUESTED: usize = 2_000;
     let body = format!(
         "HEAD_MARKER{}TAIL_MARKER",
         "x".repeat(MAXIMUM_SHELL_OUTPUT_CHARACTERS * 4)
     );
-    let (_dir, context) = huge_output_context(&body);
+    let (_directory, context) = huge_output_context(&body);
 
     let message = RunShellTool
         .execute(
@@ -879,9 +878,9 @@ async fn run_shell_spends_only_the_requested_max_output_chars() {
 
     assert!(message.contains("HEAD_MARKER"), "{message}");
     assert!(message.contains("TAIL_MARKER"), "{message}");
-    let chars = message.chars().count();
-    assert!(chars <= REQUESTED, "{chars}");
-    assert!(chars > REQUESTED - 100, "{chars}");
+    let characters = message.chars().count();
+    assert!(characters <= REQUESTED, "{characters}");
+    assert!(characters > REQUESTED - 100, "{characters}");
 }
 
 #[tokio::test]
@@ -890,7 +889,7 @@ async fn run_shell_cannot_raise_the_cap_above_the_constant() {
         "HEAD_MARKER{}TAIL_MARKER",
         "x".repeat(MAXIMUM_SHELL_OUTPUT_CHARACTERS * 4)
     );
-    let (_dir, context) = huge_output_context(&body);
+    let (_directory, context) = huge_output_context(&body);
 
     let message = RunShellTool
         .execute(
@@ -901,14 +900,20 @@ async fn run_shell_cannot_raise_the_cap_above_the_constant() {
         .unwrap()
         .to_message();
 
-    let chars = message.chars().count();
-    assert!(chars <= MAXIMUM_SHELL_OUTPUT_CHARACTERS, "{chars}");
-    assert!(chars > MAXIMUM_SHELL_OUTPUT_CHARACTERS - 100, "{chars}");
+    let characters = message.chars().count();
+    assert!(
+        characters <= MAXIMUM_SHELL_OUTPUT_CHARACTERS,
+        "{characters}"
+    );
+    assert!(
+        characters > MAXIMUM_SHELL_OUTPUT_CHARACTERS - 100,
+        "{characters}"
+    );
     assert!(message.contains("TAIL_MARKER"), "{message}");
 }
 
 #[tokio::test]
-async fn run_command_honours_a_smaller_max_output_chars() {
+async fn run_command_honours_a_smaller_maximum_output_characters() {
     const REQUESTED: usize = 2_000;
     let directory = tempfile::tempdir().unwrap();
     let body = format!("HEAD_MARKER{}TAIL_MARKER", "x".repeat(40_000));
@@ -967,12 +972,12 @@ async fn a_failed_command_pays_for_the_error_prefix_out_of_the_requested_cap() {
     assert!(message.contains("TAIL_MARKER"), "{message}");
     assert!(message.contains("characters trimmed"), "{message}");
 
-    let chars = message.chars().count();
+    let characters = message.chars().count();
     assert!(
-        chars <= REQUESTED,
-        "the model was handed {chars} characters against a cap of {REQUESTED}"
+        characters <= REQUESTED,
+        "the model was handed {characters} characters against a cap of {REQUESTED}"
     );
-    assert!(chars > REQUESTED - 100, "{chars}");
+    assert!(characters > REQUESTED - 100, "{characters}");
 }
 
 #[tokio::test]
@@ -1449,7 +1454,7 @@ fn both_shell_schemas_offer_background_and_describe_it_the_same_way() {
 }
 
 #[test]
-fn params_default_to_the_foreground() {
+fn parameters_default_to_the_foreground() {
     let shell: RunShellParameters = serde_json::from_value(json!({"command": "true"})).unwrap();
     let command: RunCommandParameters = serde_json::from_value(json!({"command": "true"})).unwrap();
 
