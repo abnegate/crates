@@ -109,16 +109,31 @@ async fn a_session_saved_before_the_renames_still_loads() {
 
 /// Every field keeps the name it was saved under, `duration_milliseconds`
 /// and `project_directory` included, so a session saved now is read back by
-/// an older build as well.
+/// an older build as well. The file is compared byte for byte, key order and
+/// layout included, which comparing parsed values would not notice.
 #[tokio::test]
 async fn a_session_saved_before_the_renames_is_saved_again_unchanged() {
     let fixture: Value = serde_json::from_str(WRITTEN_BEFORE_THE_RENAMES).unwrap();
     let directory = TempDir::new().unwrap();
-    let store = saved(directory.path(), &fixture).await;
+    let session = saved(directory.path(), &fixture)
+        .await
+        .load(identity(&fixture))
+        .await
+        .unwrap();
 
-    let session = store.load(identity(&fixture)).await.unwrap();
+    let fresh = TempDir::new().unwrap();
+    FileSessionStore::new(fresh.path().to_path_buf())
+        .save(&session)
+        .await
+        .expect("the session is saved");
 
-    assert_eq!(serde_json::to_value(&session).unwrap(), fixture);
+    let written = tokio::fs::read(fresh.path().join(format!("{}.json", identity(&fixture))))
+        .await
+        .expect("the save wrote the session's file");
+    assert_eq!(
+        std::str::from_utf8(&written).expect("a saved session is UTF-8"),
+        WRITTEN_BEFORE_THE_RENAMES
+    );
 }
 
 #[tokio::test]
