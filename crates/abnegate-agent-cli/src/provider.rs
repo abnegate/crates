@@ -752,6 +752,15 @@ mod tests {
         run.await
     }
 
+    /// Drive `run` until the fake agent creates `marker`, then time the rest
+    /// of it.
+    async fn timed<T: Debug>(run: impl Future<Output = T>, marker: &Path) -> (T, Duration) {
+        let mut run = pin!(run);
+        reach(run.as_mut(), marker).await;
+        let reached = Instant::now();
+        (run.await, reached.elapsed())
+    }
+
     const CLAUDE_SESSION: &str = r#"
 echo '{"type":"system","subtype":"init","session_id":"6f1"}'
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Looking now. "}],"usage":{"input_tokens":4,"cache_read_input_tokens":800,"output_tokens":6}}}'
@@ -1830,16 +1839,19 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
     async fn output_held_open_outside_the_group_keeps_what_was_read() {
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("escaped");
+        let started = directory.path().join("started");
         let script = format!(
-            r#"perl -e 'use POSIX qw(setsid); setsid(); open(my $file, ">", $ARGV[0]) or die; print $file $$; close($file); sleep 60' '{}' &
+            r#"touch '{started}'
+perl -e 'use POSIX qw(setsid); setsid(); open(my $file, ">", $ARGV[0]) or die; print $file $$; close($file); sleep 120' '{marker}' &
 echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Kept."}}]}}}}'
 echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
-            marker.display()
+            started = started.display(),
+            marker = marker.display(),
         );
         let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+        let messages = [Message::user("hi")];
 
-        let started = Instant::now();
-        let completion = run(&provider, &[Message::user("hi")]).await;
+        let (completion, waited) = timed(run(&provider, &messages), &started).await;
 
         let escaped = std::fs::read_to_string(&marker).unwrap_or_default();
         let _ = std::process::Command::new("kill")
@@ -1849,7 +1861,10 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             completion.expect("an answer").message.content.as_deref(),
             Some("Kept.")
         );
-        assert!(started.elapsed() < Duration::from_secs(60));
+        assert!(
+            waited < PATIENCE,
+            "waited {waited:?} on output held open outside the group"
+        );
     }
 
     #[tokio::test]
@@ -1978,24 +1993,25 @@ exit 2";
     #[tokio::test]
     async fn a_descendant_holding_the_output_open_is_reaped_after_the_agent_exits() {
         let directory = TempDir::new().expect("a temporary directory");
-        let script = r#"
+        let started = directory.path().join("started");
+        let script = format!(
+            r#"touch '{}'
 sleep 120 &
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}'
-echo '{"type":"result","subtype":"success","is_error":false}'
-"#;
-        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
-
-        let started = Instant::now();
-        let completion = run(&provider, &[Message::user("hi")])
-            .await
-            .expect("an answer");
-
-        assert_eq!(completion.message.content.as_deref(), Some("done"));
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "waited {:?} on a straggler",
-            started.elapsed()
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"done"}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'
+"#,
+            started.display()
         );
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+        let messages = [Message::user("hi")];
+
+        let (completion, waited) = timed(run(&provider, &messages), &started).await;
+
+        assert_eq!(
+            completion.expect("an answer").message.content.as_deref(),
+            Some("done")
+        );
+        assert!(waited < PATIENCE, "waited {waited:?} on a straggler");
     }
 
     #[tokio::test]
