@@ -146,6 +146,9 @@ mod tests {
     use tokio::process::Command;
 
     use super::*;
+    use crate::mcp::McpTransport;
+    use crate::mcp::recorder::LIMIT;
+    use crate::mcp::recorder::recorder;
     use crate::mcp::register;
     use crate::test_support::CHILD_TEST;
     use crate::test_support::assert_passed;
@@ -545,20 +548,6 @@ mod tests {
         let _ = ToolContext::default();
     }
 
-    /// A server that touches `path` as it starts, and then exits without
-    /// answering.
-    fn marker(path: &std::path::Path) -> McpServer {
-        McpServer::command(
-            "sh",
-            [
-                "-c".to_string(),
-                ": > \"$1\"".to_string(),
-                "sh".to_string(),
-                path.to_string_lossy().into_owned(),
-            ],
-        )
-    }
-
     /// One `mcp.json` drives this hub and a CLI alike, so it holds servers
     /// the hub must leave alone: a disabled one must not start, and one
     /// reached by URL is the CLI's to attach.
@@ -568,15 +557,12 @@ mod tests {
         let launched = directory.path().join("launched");
         let disabled = directory.path().join("disabled");
         let config = McpConfig::default()
-            .with_server("launched", marker(&launched))
-            .with_server("off", marker(&disabled).disable())
+            .with_server("launched", recorder(":", &launched))
+            .with_server("off", recorder(":", &disabled).disable())
             .with_server("remote", McpServer::remote("https://example.com/mcp"));
 
-        let (hub, logs) = crate::test_support::captured_logs(McpHub::connect_with_timeout(
-            &config,
-            Duration::from_secs(10),
-        ))
-        .await;
+        let (hub, logs) =
+            crate::test_support::captured_logs(McpHub::connect_with_timeout(&config, LIMIT)).await;
 
         assert!(hub.is_empty());
         assert!(launched.exists(), "the enabled server never started");
@@ -607,10 +593,90 @@ mod tests {
         }))
         .expect("a configuration");
 
-        let hub = McpHub::connect_with_timeout(&config, Duration::from_secs(10)).await;
+        let hub = McpHub::connect_with_timeout(&config, LIMIT).await;
 
         assert!(hub.is_empty());
         assert!(launched.exists(), "the stdio server never started");
+    }
+
+    /// A server that is both a command and a URL, or names a transport this
+    /// crate does not attach over, is not one the hub can start as written.
+    #[tokio::test]
+    async fn connect_skips_an_invalid_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let both = directory.path().join("both");
+        let unsupported = directory.path().join("unsupported");
+        let mut ambiguous = recorder(":", &both);
+        ambiguous.url = Some("https://example.com/mcp".to_string());
+        let config = McpConfig::default()
+            .with_server("ambiguous", ambiguous)
+            .with_server(
+                "socket",
+                recorder(":", &unsupported).with_transport(McpTransport::Unsupported),
+            );
+
+        let (hub, logs) =
+            crate::test_support::captured_logs(McpHub::connect_with_timeout(&config, LIMIT)).await;
+
+        assert!(hub.is_empty());
+        assert!(!both.exists(), "a server with a command and a URL started");
+        assert!(
+            !unsupported.exists(),
+            "a server of an unsupported type started"
+        );
+        assert_eq!(
+            logs.matches("skipping an MCP server: set exactly one of")
+                .count(),
+            2,
+            "{logs}"
+        );
+    }
+
+    /// Set, in this test's own child process, to a value only a server
+    /// given the launcher's whole environment sees.
+    const INHERITED: &str = "ABNEGATE_AGENT_TEST_INHERITED";
+
+    /// A server that opts in is given the launcher's whole environment; one
+    /// that does not is given the allowlist alone.
+    #[tokio::test]
+    async fn a_server_that_inherits_the_environment_is_given_all_of_it() {
+        const NAME: &str =
+            "mcp::hub::tests::a_server_that_inherits_the_environment_is_given_all_of_it";
+        if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env(CHILD_TEST, NAME)
+                .env(INHERITED, "from-the-launcher")
+                .output()
+                .await
+                .unwrap();
+            assert_passed(&output);
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let inheriting = directory.path().join("inheriting");
+        let confined = directory.path().join("confined");
+        let config = McpConfig::default()
+            .with_server(
+                "inheriting",
+                recorder("env", &inheriting).inherit_environment(),
+            )
+            .with_server("confined", recorder("env", &confined));
+
+        let hub = McpHub::connect_with_timeout(&config, LIMIT).await;
+
+        assert!(hub.is_empty());
+        let inherited = std::fs::read_to_string(&inheriting).unwrap();
+        assert!(
+            inherited
+                .lines()
+                .any(|line| line == format!("{INHERITED}=from-the-launcher")),
+            "{inherited}"
+        );
+        let allowed = std::fs::read_to_string(&confined).unwrap();
+        assert!(!allowed.contains(INHERITED), "{allowed}");
     }
 
     /// Set, in this test's own child process, to the value a reference to it
@@ -643,7 +709,7 @@ mod tests {
             "sh",
             [
                 "-c".to_string(),
-                "printf '%s\\n' \"$2\" > \"$1\"; env >> \"$1\"; exec cat > /dev/null".to_string(),
+                "printf '%s\\n' \"$2\" > \"$1\"; env >> \"$1\"".to_string(),
                 "sh".to_string(),
                 path.to_string_lossy().into_owned(),
                 format!("--token=${{{REFERENCED}}}"),
@@ -655,7 +721,7 @@ mod tests {
 
         let hub = McpHub::connect_with_timeout(
             &McpConfig::default().with_server("recorder", server),
-            Duration::from_secs(10),
+            LIMIT,
         )
         .await;
 
@@ -680,33 +746,42 @@ mod tests {
         McpServer::command("/bin/sleep", ["60"])
     }
 
+    /// Time here is the runtime's own, paused and advanced only once every
+    /// task is waiting, so how long a connection took is exact however
+    /// loaded the machine is.
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn connect_times_out_unresponsive_server() {
+        let limit = Duration::from_millis(400);
         let config = McpConfig::default().with_server("sleepy", sleepy());
-        let started = std::time::Instant::now();
-        let hub = McpHub::connect_with_timeout(&config, Duration::from_millis(400)).await;
+        let started = tokio::time::Instant::now();
+
+        let hub = McpHub::connect_with_timeout(&config, limit).await;
+
+        let elapsed = started.elapsed();
         assert!(hub.is_empty());
         assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "handshake timeout should fail fast, took {:?}",
-            started.elapsed()
+            elapsed >= limit && elapsed < CONNECT_TIMEOUT,
+            "the handshake was given {elapsed:?}, not its limit"
         );
     }
 
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn connect_times_out_unresponsive_servers_in_parallel() {
+        let limit = Duration::from_millis(700);
         let config = McpConfig::default()
             .with_server("a", sleepy())
             .with_server("b", sleepy());
-        let started = std::time::Instant::now();
-        let hub = McpHub::connect_with_timeout(&config, Duration::from_millis(700)).await;
+        let started = tokio::time::Instant::now();
+
+        let hub = McpHub::connect_with_timeout(&config, limit).await;
+
+        let elapsed = started.elapsed();
         assert!(hub.is_empty());
         assert!(
-            started.elapsed() < Duration::from_millis(1200),
-            "silent servers should share one wall-clock budget, took {:?}",
-            started.elapsed()
+            elapsed >= limit && elapsed < limit * 2,
+            "silent servers should share one budget, took {elapsed:?}"
         );
     }
 }

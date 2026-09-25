@@ -222,26 +222,14 @@ mod tests {
     use abnegate_exec::PROXY_URL_VARIABLE;
 
     use super::*;
+    use crate::mcp::recorder::LIMIT;
+    use crate::mcp::recorder::recorder;
     use crate::test_support::CHILD_TEST;
     use crate::test_support::assert_passed;
 
     /// Set on this test's own child process, where the server under test
     /// would inherit it if nothing stopped it.
     const LEAKED: &str = "ABNEGATE_MCP_ENVIRONMENT_MARKER";
-
-    /// A server that writes what `script` prints to `path` and then never
-    /// answers the handshake.
-    fn recorder(script: &str, path: &std::path::Path) -> McpServer {
-        McpServer::command(
-            "sh",
-            [
-                "-c".to_string(),
-                format!("{script} > \"$1\"; exec cat > /dev/null"),
-                "sh".to_string(),
-                path.to_string_lossy().into_owned(),
-            ],
-        )
-    }
 
     #[tokio::test]
     async fn proxy_overrides_mcp_environment_before_handshake() {
@@ -268,9 +256,7 @@ mod tests {
             .with_environment("NO_PROXY", "*")
             .with_environment("no_proxy", "*")
             .with_environment(PROXY_URL_VARIABLE, "");
-        let result =
-            McpSession::connect_with_timeout("environment", &server, Duration::from_millis(500))
-                .await;
+        let result = McpSession::connect_with_timeout("environment", &server, LIMIT).await;
         assert!(matches!(result, Err(McpError::Handshake { .. })));
         let output = std::fs::read_to_string(path).unwrap();
         for key in [
@@ -309,9 +295,7 @@ mod tests {
         let path = directory.path().join("directory");
         let server = recorder("pwd -P", &path).with_working_directory(start.path());
 
-        let result =
-            McpSession::connect_with_timeout("directory", &server, Duration::from_millis(500))
-                .await;
+        let result = McpSession::connect_with_timeout("directory", &server, LIMIT).await;
 
         assert!(matches!(result, Err(McpError::Handshake { .. })));
         assert_eq!(
@@ -325,7 +309,7 @@ mod tests {
         let result = McpSession::connect_with_timeout(
             "remote",
             &McpServer::remote("https://example.com/mcp"),
-            Duration::from_millis(500),
+            LIMIT,
         )
         .await;
 
@@ -346,10 +330,9 @@ mod tests {
     async fn a_server_that_goes_away_takes_what_it_started_with_it() {
         let directory = tempfile::tempdir().unwrap();
         let pid_file = directory.path().join("helper");
-        let server = recorder("sleep 30 & echo $!", &pid_file);
+        let server = recorder("sleep 30 > /dev/null 2>&1 & echo $!", &pid_file);
 
-        let result =
-            McpSession::connect_with_timeout("helper", &server, Duration::from_millis(500)).await;
+        let result = McpSession::connect_with_timeout("helper", &server, LIMIT).await;
         assert!(matches!(result, Err(McpError::Handshake { .. })));
 
         let pid: i32 = std::fs::read_to_string(&pid_file)

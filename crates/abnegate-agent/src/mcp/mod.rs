@@ -73,6 +73,8 @@ mod format;
 mod guidance;
 mod hub;
 mod name;
+#[cfg(test)]
+mod recorder;
 mod register;
 mod session;
 mod tool;
