@@ -205,19 +205,30 @@ impl McpConfig {
     /// servers, with [`McpConfig::auto_connect`] on.
     ///
     /// `servers` is taken as the wrapper only when every value under it is
-    /// an object, so a bare map may still name a server `servers`. A server
-    /// that is neither a command nor a URL, or is both, is kept here and left
-    /// out wherever servers attach.
+    /// an object, so a bare map may still name a server `servers`. Each
+    /// server is read on its own: one whose entry cannot be read is left out
+    /// with a warning carrying its [`McpConfigError::Server`], and the rest
+    /// load. A server that is neither a command nor a URL, is both, or names
+    /// a transport this crate does not attach over is kept here and left out
+    /// wherever servers attach. Only a document of none of these shapes is
+    /// an error.
     pub fn from_value(value: &Value) -> Result<Self, McpConfigError> {
-        server_map(value)?
+        let servers = server_map(value)?
             .iter()
-            .map(|(name, entry)| {
-                McpServer::read(entry)
-                    .map(|server| (name.clone(), server))
-                    .map_err(|mismatch| McpConfigError::server(name, mismatch))
+            .filter_map(|(name, entry)| match Self::server(name, entry) {
+                Ok(server) => Some((name.clone(), server)),
+                Err(error) => {
+                    tracing::warn!(%error, "skipping an MCP server that could not be read");
+                    None
+                }
             })
-            .collect::<Result<BTreeMap<_, _>, _>>()
-            .map(Self::new)
+            .collect();
+        Ok(Self::new(servers))
+    }
+
+    /// The server `entry` describes under `name`, or why it describes none.
+    fn server(name: &str, entry: &Value) -> Result<McpServer, McpConfigError> {
+        McpServer::read(entry).map_err(|mismatch| McpConfigError::server(name, mismatch))
     }
 
     /// Attach `server` under `name` when no server is enabled,
@@ -274,7 +285,7 @@ impl McpConfig {
             if !server.valid() {
                 tracing::warn!(
                     server = %name,
-                    "skipping an MCP server: set exactly one of `command` and `url`, with a matching `type`"
+                    "skipping an MCP server: set exactly one of `command` and `url`, and a `type`, if any, of `stdio`, `http` or `sse` that matches it"
                 );
             } else if !server.nameable(name) {
                 tracing::warn!(
@@ -777,18 +788,61 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_mcp_servers_document_is_an_error_rather_than_a_server() {
-        let error = serde_json::from_value::<McpConfig>(serde_json::json!({
-            "mcpServers": {"appwrite": {"command": "uvx", "args": "not a list"}}
-        }))
-        .expect_err("a malformed document");
+    fn a_malformed_server_is_skipped_and_a_document_of_the_wrong_shape_is_an_error() {
+        let (config, logs) = captured_logs(|| {
+            serde_json::from_value::<McpConfig>(serde_json::json!({
+                "mcpServers": {
+                    "appwrite": {"command": "uvx", "args": "not a list"},
+                    "notes": {"command": "notes-server"}
+                }
+            }))
+        });
 
+        let config = config.expect("the servers that could be read");
+        assert_eq!(config.servers.keys().collect::<Vec<_>>(), ["notes"]);
         assert!(
-            error
-                .to_string()
-                .contains("`args` must be a list of strings"),
-            "{error}"
+            logs.contains("invalid MCP server 'appwrite': `args` must be a list of strings"),
+            "{logs}"
         );
+        for document in [
+            serde_json::json!({"mcpServers": "not an object"}),
+            serde_json::json!([1, 2]),
+            serde_json::json!("notes"),
+        ] {
+            assert!(
+                serde_json::from_value::<McpConfig>(document.clone()).is_err(),
+                "{document}"
+            );
+        }
+    }
+
+    /// One entry this crate cannot read must not take the others down with
+    /// it, and an entry written for another client, or copied from a
+    /// server's own documentation, reads as that client reads it.
+    #[test]
+    fn a_server_another_client_describes_loads_next_to_the_rest() {
+        let config = McpConfig::from_json_str(
+            r#"{
+                "mcpServers": {
+                    "notes": {"command": "notes-server", "args": ["mcp"]},
+                    "docs": {
+                        "type": "streamable-http",
+                        "url": "https://docs.example.com/mcp",
+                        "tools": [{"name": "search", "description": "Search the docs"}, "fetch"]
+                    }
+                }
+            }"#,
+        )
+        .expect("a configuration");
+
+        let notes = &config.servers["notes"];
+        assert!(config.enabled().any(|(name, _)| name == "notes"));
+        assert!(notes.valid(), "{notes:?}");
+        assert_eq!(notes.command.as_deref(), Some("notes-server"));
+        let docs = &config.servers["docs"];
+        assert_eq!(docs.transport, Some(McpTransport::Http));
+        assert_eq!(docs.tools, ["search", "fetch"]);
+        assert!(docs.valid(), "{docs:?}");
     }
 
     #[test]
@@ -1020,16 +1074,36 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_server_names_the_server() {
-        let error = McpConfig::from_json_str(
-            r#"{ "mcpServers": { "notes": { "command": "x", "args": "mcp" } } }"#,
-        )
-        .expect_err("a malformed server");
+    fn a_malformed_server_is_named_in_the_warning_that_skips_it() {
+        let (config, logs) = captured_logs(|| {
+            McpConfig::from_json_str(
+                r#"{ "mcpServers": { "notes": { "command": "x", "args": "mcp" } } }"#,
+            )
+        });
 
-        assert!(
-            matches!(&error, McpConfigError::Server { name, .. } if name == "notes"),
-            "{error}"
+        assert!(config.expect("a configuration").servers.is_empty());
+        assert!(logs.contains("invalid MCP server 'notes'"), "{logs}");
+    }
+
+    #[test]
+    fn a_transport_this_crate_cannot_attach_is_read_but_never_attached() {
+        let config = McpConfig::from_json_str(
+            r#"{ "mcpServers": {
+                "socket": { "type": "ws", "url": "wss://mcp.example.com" },
+                "notes": { "command": "notes-server" }
+            } }"#,
+        )
+        .expect("a configuration");
+
+        assert_eq!(
+            config.servers["socket"].transport,
+            Some(McpTransport::Unsupported)
         );
+        let (attachment, logs) = captured_logs(|| config.render(AgentKind::Claude));
+        let document = read(&attachment.expect("rendered").expect("an attachment").file);
+        assert!(document["mcpServers"].get("socket").is_none(), "{document}");
+        assert!(document["mcpServers"].get("notes").is_some(), "{document}");
+        assert!(logs.contains("socket"), "{logs}");
     }
 
     fn shell() -> McpServer {
@@ -1112,9 +1186,11 @@ mod tests {
         let document = misplaced();
         let read = environment(&[(variable("ACME", SERVERS_VARIABLE), document.as_str())]);
 
-        let (_, logs) = captured_logs(|| McpConfig::load("ACME", &read, None));
+        let (loaded, logs) = captured_logs(|| McpConfig::load("ACME", &read, None));
         let parsed = McpConfig::from_json_str(&document);
 
+        assert!(!loaded.servers.contains_key("remote"));
+        assert!(logs.contains("remote"), "{logs}");
         assert!(!logs.contains(MARKER), "{logs}");
         if let Err(error) = &parsed {
             let mut shown = vec![error.to_string(), format!("{error:?}")];
@@ -1132,7 +1208,9 @@ mod tests {
 
     #[test]
     fn an_unreadable_server_names_the_field_and_the_type_it_must_hold() {
-        let error = McpConfig::from_json_str(&misplaced()).expect_err("an unreadable server");
+        let document: Value = serde_json::from_str(&misplaced()).expect("JSON");
+        let error = McpConfig::server("remote", &document["mcpServers"]["remote"])
+            .expect_err("an unreadable server");
 
         assert!(
             matches!(

@@ -260,10 +260,13 @@ impl McpServer {
     }
 
     /// Whether exactly one of `command` and `url` is set, and any explicit
-    /// transport agrees with it.
+    /// transport agrees with it and is one this crate attaches a server
+    /// over: [`McpTransport::Unsupported`] never is.
     pub fn valid(&self) -> bool {
         match (&self.command, &self.url, self.transport) {
-            (Some(_), None, transport) => transport.is_none_or(|transport| !transport.remote()),
+            (Some(_), None, transport) => {
+                transport.is_none_or(|transport| transport == McpTransport::Stdio)
+            }
             (None, Some(_), transport) => transport.is_none_or(McpTransport::remote),
             _ => false,
         }
@@ -510,6 +513,13 @@ mod tests {
                 }
                 .valid()
             );
+        }
+    }
+
+    #[test]
+    fn a_transport_this_crate_does_not_attach_over_is_never_valid() {
+        for server in [stdio(), http()] {
+            assert!(!server.with_transport(McpTransport::Unsupported).valid());
         }
     }
 

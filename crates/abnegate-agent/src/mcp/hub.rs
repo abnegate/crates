@@ -119,7 +119,7 @@ fn launchable(name: &str, server: &McpServer) -> bool {
     if !server.valid() {
         tracing::warn!(
             server = %name,
-            "skipping an MCP server: set exactly one of `command` and `url`, with a matching `type`"
+            "skipping an MCP server: set exactly one of `command` and `url`, and a `type`, if any, of `stdio`, `http` or `sse` that matches it"
         );
         return false;
     }
@@ -583,6 +583,34 @@ mod tests {
         assert!(!disabled.exists(), "a disabled server started");
         assert!(logs.contains("skipping a disabled MCP server"), "{logs}");
         assert!(logs.contains("skipping a remote MCP server"), "{logs}");
+    }
+
+    /// An entry written for another client, or one this crate cannot read,
+    /// must not keep the hub from launching the servers beside it.
+    #[tokio::test]
+    async fn a_server_is_launched_beside_entries_written_for_another_client() {
+        let directory = tempfile::tempdir().unwrap();
+        let launched = directory.path().join("launched");
+        let config = McpConfig::from_value(&serde_json::json!({
+            "mcpServers": {
+                "notes": {
+                    "command": "sh",
+                    "args": ["-c", ": > \"$1\"", "sh", launched.to_string_lossy()]
+                },
+                "docs": {
+                    "type": "streamable-http",
+                    "url": "https://docs.example.com/mcp",
+                    "tools": [{"name": "search", "description": "Search the docs"}]
+                },
+                "broken": {"command": "sh", "args": "not a list"}
+            }
+        }))
+        .expect("a configuration");
+
+        let hub = McpHub::connect_with_timeout(&config, Duration::from_secs(10)).await;
+
+        assert!(hub.is_empty());
+        assert!(launched.exists(), "the stdio server never started");
     }
 
     /// Set, in this test's own child process, to the value a reference to it

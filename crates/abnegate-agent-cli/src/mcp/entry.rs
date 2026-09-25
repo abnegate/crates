@@ -21,12 +21,14 @@ const WORKING_DIRECTORY: &[&str] = &["cwd", "working_directory"];
 const INHERIT_ENVIRONMENT: &[&str] = &["inherit_environment"];
 const DISABLED: &[&str] = &["disabled"];
 
+const TOOL_NAME: &str = "name";
+
 const OBJECT: &str = "an object";
 const TEXT: &str = "a string";
 const TEXTS: &str = "a list of strings";
 const TEXT_MAP: &str = "an object of strings";
+const TOOL_LIST: &str = "a list of tool names, or of objects each with a `name`";
 const FLAG: &str = "true or false";
-const TRANSPORTS: &str = "`stdio`, `http` or `sse`";
 const ONCE: &str = "given under one name";
 
 /// One server's entry in an MCP configuration document, read field by field
@@ -54,7 +56,7 @@ impl<'document> Entry<'document> {
             url: self.text(URL)?,
             transport: self.transport()?,
             headers: self.secrets(HEADERS)?,
-            tools: self.texts(TOOLS)?,
+            tools: self.tools()?,
             working_directory: self.text(WORKING_DIRECTORY)?.map(PathBuf::from),
             inherit_environment: self.flag(INHERIT_ENVIRONMENT)?,
             disabled: self.flag(DISABLED)?,
@@ -122,13 +124,36 @@ impl<'document> Entry<'document> {
         }
     }
 
+    /// The transport named, any name this crate does not attach over
+    /// reading as [`McpTransport::Unsupported`].
     fn transport(&self) -> Result<Option<McpTransport>, Mismatch> {
         match self.value(TRANSPORT)? {
             None | Some(Value::Null) => Ok(None),
             Some(value) => McpTransport::deserialize(value)
                 .map(Some)
-                .map_err(|_| Mismatch::new(Some(TRANSPORT[0]), TRANSPORTS)),
+                .map_err(|_| Mismatch::new(Some(TRANSPORT[0]), TEXT)),
         }
+    }
+
+    /// The tools named, each by a name or by an object with a `name`, the
+    /// shape some clients list a server's tools in.
+    fn tools(&self) -> Result<Vec<String>, Mismatch> {
+        let Some(value) = self.value(TOOLS)? else {
+            return Ok(Vec::new());
+        };
+        value
+            .as_array()
+            .and_then(|tools| {
+                tools
+                    .iter()
+                    .map(|tool| {
+                        tool.as_str()
+                            .or_else(|| tool.get(TOOL_NAME).and_then(Value::as_str))
+                            .map(str::to_string)
+                    })
+                    .collect()
+            })
+            .ok_or(Mismatch::new(Some(TOOLS[0]), TOOL_LIST))
     }
 }
 
@@ -199,11 +224,16 @@ mod tests {
                 "headers",
                 "an object of strings",
             ),
-            (json!({"type": "grpc"}), "type", "`stdio`, `http` or `sse`"),
+            (json!({"type": 5}), "type", "a string"),
             (
-                json!({"tools": [{"name": "search"}]}),
+                json!({"tools": [{"description": "search"}]}),
                 "tools",
-                "a list of strings",
+                "a list of tool names, or of objects each with a `name`",
+            ),
+            (
+                json!({"tools": "search"}),
+                "tools",
+                "a list of tool names, or of objects each with a `name`",
             ),
             (json!({"cwd": false}), "cwd", "a string"),
             (json!({"disabled": "yes"}), "disabled", "true or false"),
@@ -223,5 +253,24 @@ mod tests {
             read(json!("notes-server")).expect_err("a mismatch"),
             Mismatch::new(None, "an object")
         );
+    }
+
+    #[test]
+    fn tools_read_by_name_whether_named_or_described() {
+        let server = read(json!({
+            "url": "https://docs.example.com/mcp",
+            "tools": ["fetch", {"name": "search", "description": "Search the docs"}]
+        }))
+        .expect("a server");
+
+        assert_eq!(server.tools, ["fetch", "search"]);
+    }
+
+    #[test]
+    fn a_transport_this_crate_does_not_attach_over_is_read_as_unsupported() {
+        let server = read(json!({"type": "ws", "url": "wss://mcp.example.com"})).expect("a server");
+
+        assert_eq!(server.transport, Some(McpTransport::Unsupported));
+        assert!(!server.valid());
     }
 }
