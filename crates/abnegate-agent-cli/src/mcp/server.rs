@@ -269,13 +269,12 @@ impl McpServer {
     /// is one this crate attaches a server over:
     /// [`McpTransport::Unsupported`] never is.
     pub fn valid(&self) -> bool {
-        match (&self.command, &self.url, self.transport) {
+        match (&self.command, &self.url, &self.transport) {
             (Some(command), None, transport) => {
-                !command.trim().is_empty()
-                    && transport.is_none_or(|transport| transport == McpTransport::Stdio)
+                !command.trim().is_empty() && matches!(transport, None | Some(McpTransport::Stdio))
             }
             (None, Some(url), transport) => {
-                !url.trim().is_empty() && transport.is_none_or(McpTransport::remote)
+                !url.trim().is_empty() && transport.as_ref().is_none_or(McpTransport::remote)
             }
             _ => false,
         }
@@ -363,11 +362,11 @@ impl McpServer {
                     substituted(&self.environment, placeholders),
                 );
             }
-            if let Some(transport) = self.transport {
+            if let Some(transport) = &self.transport {
                 entry.insert("type".to_string(), json!(transport));
             }
         } else if let Some(url) = &self.url {
-            let transport = self.transport.unwrap_or(McpTransport::Http);
+            let transport = self.transport.as_ref().unwrap_or(&McpTransport::Http);
             entry.insert("type".to_string(), json!(transport));
             entry.insert("url".to_string(), json!(url));
             if !self.headers.is_empty() {
@@ -403,7 +402,7 @@ impl McpServer {
                 entry.insert("headers".to_string(), masked(&self.headers));
             }
         }
-        if let Some(transport) = self.transport {
+        if let Some(transport) = &self.transport {
             entry.insert("type".to_string(), json!(transport));
         }
         entry.insert("tools".to_string(), json!(self.tools));
@@ -541,7 +540,11 @@ mod tests {
     #[test]
     fn a_transport_this_crate_does_not_attach_over_is_never_valid() {
         for server in [stdio(), http()] {
-            assert!(!server.with_transport(McpTransport::Unsupported).valid());
+            assert!(
+                !server
+                    .with_transport(McpTransport::Unsupported("ws".to_string()))
+                    .valid()
+            );
         }
     }
 

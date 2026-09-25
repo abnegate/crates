@@ -270,7 +270,10 @@ mod tests {
     fn a_transport_this_crate_does_not_attach_over_is_read_as_unsupported() {
         let server = read(json!({"type": "ws", "url": "wss://mcp.example.com"})).expect("a server");
 
-        assert_eq!(server.transport, Some(McpTransport::Unsupported));
+        assert_eq!(
+            server.transport,
+            Some(McpTransport::Unsupported("ws".to_string()))
+        );
         assert!(!server.valid());
     }
 }

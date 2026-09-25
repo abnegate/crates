@@ -1193,13 +1193,36 @@ mod tests {
 
         assert_eq!(
             config.servers["socket"].transport,
-            Some(McpTransport::Unsupported)
+            Some(McpTransport::Unsupported("ws".to_string()))
         );
         let (attachment, logs) = captured_logs(|| config.render(AgentKind::Claude));
         let document = read(&attachment.expect("rendered").expect("an attachment").file);
         assert!(document["mcpServers"].get("socket").is_none(), "{document}");
         assert!(document["mcpServers"].get("notes").is_some(), "{document}");
         assert!(logs.contains("socket"), "{logs}");
+    }
+
+    /// A configuration written back must still describe the servers it
+    /// read, the ones this crate never attaches included: rewriting a `ws`
+    /// server's type would hand another client a different server.
+    #[test]
+    fn a_transport_this_crate_cannot_attach_is_written_back_under_its_own_name() {
+        let document = serde_json::json!({
+            "mcpServers": {
+                "socket": {"type": "ws", "url": "wss://mcp.example.com"},
+                "grpc": {"type": "grpc", "url": "https://mcp.example.com"}
+            }
+        });
+
+        let config: McpConfig = serde_json::from_value(document).expect("a configuration");
+        let written = serde_json::to_value(&config).expect("serialisable");
+
+        assert_eq!(written["mcpServers"]["socket"]["type"], "ws");
+        assert_eq!(written["mcpServers"]["grpc"]["type"], "grpc");
+        assert_eq!(
+            serde_json::from_value::<McpConfig>(written).expect("a round trip"),
+            config
+        );
     }
 
     fn shell() -> McpServer {
