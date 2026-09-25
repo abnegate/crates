@@ -25,6 +25,23 @@
 //!
 //! [`DEFAULT_PREFIX`] is the prefix for an application with none of its own.
 //!
+//! The same configuration attaches its servers to a coding agent CLI through
+//! [`McpConfig::render`], which takes the [`AgentKind`] and returns the
+//! [`McpAttachment`] the CLI's child needs, both re-exported here:
+//!
+//! ```
+//! use abnegate_agent::mcp::AgentKind;
+//! use abnegate_agent::mcp::McpAttachment;
+//! use abnegate_agent::mcp::McpConfig;
+//! use abnegate_agent::mcp::McpServer;
+//!
+//! let config = McpConfig::default()
+//!     .with_server("notes", McpServer::command("notes-server", ["mcp"]));
+//! let attachment: Option<McpAttachment> = config.render(AgentKind::Claude)?;
+//! assert!(attachment.is_some());
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
 //! ```no_run
 //! use abnegate_agent::McpConfig;
 //! use abnegate_agent::McpServer;
@@ -60,7 +77,9 @@ mod register;
 mod session;
 mod tool;
 
+pub use abnegate_agent_cli::AgentKind;
 pub use abnegate_agent_cli::mcp::DEFAULT_PREFIX;
+pub use abnegate_agent_cli::mcp::McpAttachment;
 pub use abnegate_agent_cli::mcp::McpConfig;
 pub use abnegate_agent_cli::mcp::McpConfigError;
 pub use abnegate_agent_cli::mcp::McpServer;
