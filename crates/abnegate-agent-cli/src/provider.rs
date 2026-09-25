@@ -446,13 +446,13 @@ impl CliProvider {
             Ok(Some(attachment)) => {
                 tracing::info!(
                     provider = %self.name,
-                    servers = mcp.attachable().count(),
+                    servers = mcp.attachable(self.agent).count(),
                     "attaching MCP servers"
                 );
                 tracing::debug!(
                     provider = %self.name,
                     path = %attachment.file.path().display(),
-                    config = %mcp.redacted(),
+                    config = %mcp.redacted(self.agent),
                     "rendered MCP config, secret values redacted"
                 );
                 Some(attachment)

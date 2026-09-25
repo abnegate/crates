@@ -305,8 +305,8 @@ fn claude_options(
 fn allowed_tools(settings: &CliSettings, attached: bool) -> Result<Vec<String>, ProviderError> {
     let attached = match (attached, settings.read_only) {
         (false, _) => Vec::new(),
-        (true, false) => settings.mcp.allowed_tools(),
-        (true, true) => settings.mcp.scoped_tools(),
+        (true, false) => settings.mcp.allowed_tools(AgentKind::Claude),
+        (true, true) => settings.mcp.scoped_tools(AgentKind::Claude),
     };
     let web = WEB_TOOLS
         .iter()

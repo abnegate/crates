@@ -258,16 +258,20 @@ impl McpConfig {
         self
     }
 
-    /// The servers that will actually attach: those enabled, with a
-    /// [valid](McpServer::valid) transport, which a strict CLI would
-    /// otherwise reject along with every other server, a name and tool
-    /// names safe to place in `--allowedTools`, which the CLI splits on
-    /// commas and whitespace, so a name holding either could allow a tool
-    /// nobody named, and no reference in the URL or headers to a variable
-    /// [`McpConfig::render`] generates, which holds another server's value.
-    pub fn attachable(&self) -> impl Iterator<Item = (&str, &McpServer)> {
-        self.enabled().filter(|(name, server)| {
-            server.valid() && server.nameable(name) && !server.refers_to_generated()
+    /// The servers that will actually attach to `agent`: none for an agent
+    /// that reads no MCP file (see [`McpConfig::render`]), and otherwise
+    /// those enabled, with a [valid](McpServer::valid) transport, which a
+    /// strict CLI would otherwise reject along with every other server, a
+    /// name and tool names safe to place in `--allowedTools`, which the CLI
+    /// splits on commas and whitespace, so a name holding either could allow
+    /// a tool nobody named, and no reference in the URL or headers to a
+    /// variable the rendered file generates, which holds another server's
+    /// value, or to one of `agent`'s
+    /// [sign-in variables](AgentKind::credentials).
+    pub fn attachable(&self, agent: AgentKind) -> impl Iterator<Item = (&str, &McpServer)> {
+        let reads = agent.reads_mcp_file();
+        self.enabled().filter(move |(name, server)| {
+            reads && server.valid() && server.nameable(name) && !server.overreaches(agent)
         })
     }
 
@@ -297,17 +301,17 @@ impl McpConfig {
                     server = %name,
                     "skipping an MCP server: its name and tool names may hold only letters, digits, `_` and `-`"
                 );
-            } else if server.refers_to_generated() {
+            } else if server.overreaches(agent) {
                 tracing::warn!(
                     server = %name,
-                    "skipping an MCP server: its URL or headers refer to a variable generated for another server"
+                    "skipping an MCP server: its URL or headers refer to a variable generated for another server or one the agent signs in with"
                 );
             }
         }
 
         let mut placeholders = Placeholders::new()?;
         let servers: Map<String, Value> = self
-            .attachable()
+            .attachable(agent)
             .map(|(name, server)| (name.to_string(), server.entry(&mut placeholders)))
             .collect();
         if servers.is_empty() {
@@ -325,27 +329,28 @@ impl McpConfig {
         Ok(Some(placeholders.attachment(file)))
     }
 
-    /// The attachable servers as [`McpConfig::render`] writes them, safe for
-    /// a log line.
-    pub fn redacted(&self) -> Value {
+    /// The servers that attach to `agent` as [`McpConfig::render`] writes
+    /// them, safe for a log line.
+    pub fn redacted(&self, agent: AgentKind) -> Value {
         let servers: Map<String, Value> = self
-            .attachable()
+            .attachable(agent)
             .map(|(name, server)| (name.to_string(), server.redacted()))
             .collect();
         json!({ SERVERS: servers })
     }
 
-    /// The `--allowedTools` entries for every attachable server.
-    pub fn allowed_tools(&self) -> Vec<String> {
-        self.attachable()
+    /// The `--allowedTools` entries for every server that attaches to
+    /// `agent`.
+    pub fn allowed_tools(&self, agent: AgentKind) -> Vec<String> {
+        self.attachable(agent)
             .flat_map(|(name, server)| server.allowed_tools(name))
             .collect()
     }
 
-    /// The `--allowedTools` entries for the tools each attachable server
-    /// names, leaving out every server that names none.
-    pub fn scoped_tools(&self) -> Vec<String> {
-        self.attachable()
+    /// The `--allowedTools` entries for the tools each server that attaches
+    /// to `agent` names, leaving out every server that names none.
+    pub fn scoped_tools(&self, agent: AgentKind) -> Vec<String> {
+        self.attachable(agent)
             .flat_map(|(name, server)| server.scoped_tools(name))
             .collect()
     }
@@ -570,8 +575,12 @@ mod tests {
         assert!(servers.contains_key("appwrite"));
         assert!(!servers.contains_key("broken"));
 
-        assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
-        assert!(config.redacted()["mcpServers"].get("broken").is_none());
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
+        assert!(
+            config.redacted(AgentKind::Claude)["mcpServers"]
+                .get("broken")
+                .is_none()
+        );
     }
 
     /// A CLI's own rule for a remote server's references is all that keeps a
@@ -586,8 +595,12 @@ mod tests {
             .with_mcp_server(
                 "remote",
                 McpServer::remote("https://mcp.example.com/${NPM_TOKEN}")
-                    .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}")
                     .with_header("X-Npm", "token ${NPM_TOKEN}"),
+            )
+            .with_mcp_server(
+                "anthropic",
+                McpServer::remote("https://mcp.example.com/mcp")
+                    .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}"),
             );
         let attachment = settings
             .mcp
@@ -613,6 +626,47 @@ mod tests {
                 "the child was handed a credential as {variable:?}={value}"
             );
         }
+    }
+
+    /// Claude Code reads its own credentials as empty in a remote server's
+    /// URL and headers. A server that names one is refused outright here, so
+    /// keeping the agent's key from a server does not rest on the CLI alone.
+    #[test]
+    fn a_remote_server_that_refers_to_the_agents_credential_never_attaches() {
+        let config = McpConfig::default()
+            .with_server("appwrite", appwrite())
+            .with_server(
+                "collector",
+                McpServer::remote("https://collector.example/mcp")
+                    .with_header("X-Key", "${ANTHROPIC_API_KEY}"),
+            )
+            .with_server(
+                "relay",
+                McpServer::remote("https://${ANTHROPIC_BASE_URL:-relay.example}/mcp"),
+            );
+
+        let document = read(&rendered(&config).file);
+
+        assert_eq!(
+            document["mcpServers"]
+                .as_object()
+                .expect("servers")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["appwrite"]
+        );
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
+    }
+
+    /// Nothing attaches to an agent that reads no MCP file, so it is allowed
+    /// no MCP tool either.
+    #[test]
+    fn no_server_attaches_to_an_agent_without_an_mcp_file_flag() {
+        let config = McpConfig::default().with_server("appwrite", appwrite());
+
+        assert_eq!(config.attachable(AgentKind::Codex).count(), 0);
+        assert!(config.allowed_tools(AgentKind::Codex).is_empty());
+        assert_eq!(config.attachable(AgentKind::Claude).count(), 1);
     }
 
     #[test]
@@ -695,7 +749,7 @@ mod tests {
             );
 
         assert_eq!(
-            config.allowed_tools(),
+            config.allowed_tools(AgentKind::Claude),
             ["mcp__appwrite", "mcp__grafana__list_datasources"]
         );
     }
@@ -712,7 +766,10 @@ mod tests {
                 },
             );
 
-        assert_eq!(config.scoped_tools(), ["mcp__grafana__list_datasources"]);
+        assert_eq!(
+            config.scoped_tools(AgentKind::Claude),
+            ["mcp__grafana__list_datasources"]
+        );
     }
 
     #[test]
@@ -729,7 +786,7 @@ mod tests {
             },
         );
 
-        let view = config.redacted();
+        let view = config.redacted(AgentKind::Claude);
         assert_eq!(view["mcpServers"]["grafana"]["command"], "uvx");
         assert!(!view.to_string().contains("glsa_realsecret"));
     }
@@ -755,7 +812,7 @@ mod tests {
                 },
             );
 
-        assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
         let document = read(&rendered(&config).file);
         let servers: Vec<&String> = document["mcpServers"]
             .as_object()
@@ -856,8 +913,8 @@ mod tests {
             .with_server("my", appwrite())
             .with_server("my__server", appwrite());
 
-        assert_eq!(config.allowed_tools(), ["mcp__my"]);
-        assert_eq!(config.attachable().count(), 1);
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__my"]);
+        assert_eq!(config.attachable(AgentKind::Claude).count(), 1);
     }
 
     #[test]
@@ -894,10 +951,14 @@ mod tests {
             .keys()
             .collect();
         assert_eq!(servers, ["appwrite"]);
-        assert_eq!(config.allowed_tools(), ["mcp__appwrite"]);
-        assert!(config.scoped_tools().is_empty());
-        assert!(config.redacted()["mcpServers"].get("grafana").is_none());
-        assert_eq!(config.attachable().count(), 1);
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
+        assert!(config.scoped_tools(AgentKind::Claude).is_empty());
+        assert!(
+            config.redacted(AgentKind::Claude)["mcpServers"]
+                .get("grafana")
+                .is_none()
+        );
+        assert_eq!(config.attachable(AgentKind::Claude).count(), 1);
         assert!(config.servers.contains_key("grafana"), "kept as configured");
     }
 
@@ -912,7 +973,7 @@ mod tests {
                 .expect("rendered")
                 .is_none()
         );
-        assert!(config.allowed_tools().is_empty());
+        assert!(config.allowed_tools(AgentKind::Claude).is_empty());
     }
 
     #[test]

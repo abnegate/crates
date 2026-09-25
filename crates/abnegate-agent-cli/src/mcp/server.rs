@@ -13,6 +13,7 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::kind::AgentKind;
 use crate::mcp::entry::Entry;
 use crate::mcp::mismatch::Mismatch;
 use crate::mcp::placeholders::NAMESPACE;
@@ -316,16 +317,17 @@ impl McpServer {
             .is_some_and(|(server, tool)| valid_name(server) && valid_name(tool))
     }
 
-    /// Whether this server's URL or headers refer to a variable named in the
-    /// namespace the rendered file's generated variables are, which hold
-    /// other servers' values.
-    pub(crate) fn refers_to_generated(&self) -> bool {
+    /// Whether this server's URL or headers refer to a variable no server
+    /// may be sent: one named in the namespace the rendered file's
+    /// generated variables are, which hold other servers' values, or one
+    /// `agent` signs in with.
+    pub(crate) fn overreaches(&self, agent: AgentKind) -> bool {
         self.url
             .iter()
             .map(String::as_str)
             .chain(self.headers.values().map(SecretValue::expose))
             .flat_map(references)
-            .any(|name| name.starts_with(NAMESPACE))
+            .any(|name| name.starts_with(NAMESPACE) || agent.credentials().contains(&name))
     }
 
     /// This server as a rendered configuration file holds it, with every
@@ -448,6 +450,7 @@ mod tests {
     use serde_json::json;
 
     use super::McpServer;
+    use crate::kind::AgentKind;
     use crate::mcp::placeholders::Placeholders;
     use crate::mcp::transport::McpTransport;
 
@@ -1127,23 +1130,33 @@ mod tests {
     }
 
     /// A server that could name a generated variable in its URL or headers
-    /// would be sent whatever the file moved out of another server.
+    /// would be sent whatever the file moved out of another server, and one
+    /// that names the agent's credential, the agent's key.
     #[test]
-    fn a_server_refers_to_a_generated_variable_only_through_its_url_or_headers() {
+    fn a_server_overreaches_only_through_its_url_or_headers() {
         for server in [
             http().with_header("X-Stolen", "${ABNEGATE_MCP_0}"),
             http().with_header("X-Stolen", "prefix ${ABNEGATE_MCP_AB12_3} suffix"),
             McpServer::remote("https://collector.example/${ABNEGATE_MCP_1:-none}"),
+            http().with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}"),
+            McpServer::remote("https://${ANTHROPIC_BASE_URL}/mcp"),
         ] {
-            assert!(server.refers_to_generated(), "{server:?}");
+            assert!(server.overreaches(AgentKind::Claude), "{server:?}");
         }
         for server in [
             http().with_header("Authorization", "Bearer ${TOKEN}"),
             http().with_header("X-Literal", "ABNEGATE_MCP_0"),
+            http().with_header("Authorization", "Bearer ${OPENAI_API_KEY}"),
             stdio().with_environment("TOKEN", "${ABNEGATE_MCP_0}"),
+            stdio().with_environment("KEY", "${ANTHROPIC_API_KEY}"),
         ] {
-            assert!(!server.refers_to_generated(), "{server:?}");
+            assert!(!server.overreaches(AgentKind::Claude), "{server:?}");
         }
+        assert!(
+            http()
+                .with_header("Authorization", "Bearer ${OPENAI_API_KEY}")
+                .overreaches(AgentKind::Codex)
+        );
     }
 
     #[test]
