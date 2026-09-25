@@ -91,8 +91,9 @@ Every crate is shaped so that it can grow without a breaking release:
   read. A test pins the wire name.
 
 `scripts/audit_public_api.py` enforces the `#[non_exhaustive]` rules for
-structs and struct variants, and CI runs it. With no argument it audits every
-crate; given crate names, it audits only those:
+structs and struct variants, and CI runs it. It needs Python 3.9 or later and
+nothing outside the standard library. With no argument it audits every crate;
+given crate names, it audits only those:
 
 ```sh
 python3 scripts/audit_public_api.py
@@ -100,12 +101,30 @@ python3 scripts/audit_public_api.py abnegate-exec abnegate-http
 ```
 
 It follows each crate's modules down from `src/lib.rs` and audits only what a
-caller can reach: code compiled only for tests, items that are not `pub`, and
-`pub` items of a private module that nothing re-exports are skipped. Each
+caller can reach: code compiled only for tests, items that are not `pub`,
+`pub` items of a private module that nothing re-exports, and re-exports of a
+path outside the crate, such as `pub use Option::Some`, are skipped. Each
 public struct with a public field, and each struct variant of a public enum,
-that is not `#[non_exhaustive]` is printed as `path:line: item`, and the exit
-status is 1. An item that stays exhaustive by ruling, such as `Point` and
-`Rectangle`, is listed in the script's `ALLOWED`.
+that is not `#[non_exhaustive]` is printed as `path:line: item`. An item that
+stays exhaustive by ruling, such as `Point` and `Rectangle`, is listed in the
+script's `ALLOWED`.
+
+The exit status says which of three things happened:
+
+- 0: every public type the audit reached can gain a field.
+- 1: it printed at least one that cannot, or an `ALLOWED` entry that no longer
+  names an exhaustive type.
+- 2: the audit could not finish, so it proves nothing either way: a crate
+  named on the command line does not exist, a module file is missing, a path
+  that enters a crate names something the audit cannot find, a source cannot
+  be parsed, the script itself failed, or Python is older than 3.9.
+
+The script's own tests run the audit over a crate written for each case, and
+CI runs them too:
+
+```sh
+python3 -m unittest discover --start-directory scripts
+```
 
 ## Edition and MSRV
 
