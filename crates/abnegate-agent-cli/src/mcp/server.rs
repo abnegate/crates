@@ -95,10 +95,11 @@ pub struct McpServer {
     /// the generated variable holding `Bearer `. A server whose URL or
     /// headers refer to a generated variable never attaches.
     pub headers: BTreeMap<String, SecretValue>,
-    /// The tools to allow without prompting, by the names the server gives
-    /// them. Empty allows every tool the server offers. A launcher that
-    /// starts the server itself offers a model only the tools this allows:
-    /// see [`McpServer::allows`].
+    /// The tools to allow without prompting, by the names the CLI gives
+    /// them: the server's own name for each, with every character but
+    /// letters, digits, `_` and `-` replaced by `_`. Empty allows every tool
+    /// the server offers. A launcher that starts the server itself offers a
+    /// model only the tools this allows: see [`McpServer::allows`].
     pub tools: Vec<String>,
     /// The directory a stdio server starts in, or wherever its launcher
     /// chooses when unset.
@@ -288,11 +289,12 @@ impl McpServer {
     }
 
     /// Whether this server allows `tool`, as the server itself names it:
-    /// every tool when [`McpServer::tools`] is empty, and otherwise only the
-    /// tools it names, the same ones [`McpServer::allowed_tools`] allows on a
-    /// CLI.
+    /// every tool when [`McpServer::tools`] is empty, and otherwise only one
+    /// whose name, as the CLI gives it, the list holds: the same tools
+    /// [`McpServer::allowed_tools`] allows on a CLI.
     pub fn allows(&self, tool: &str) -> bool {
-        self.tools.is_empty() || self.tools.iter().any(|named| named == tool)
+        let named = cli_name(tool);
+        self.tools.is_empty() || self.tools.contains(&named)
     }
 
     /// The `--allowedTools` entries for this server under `name`.
@@ -401,6 +403,20 @@ impl McpServer {
         entry.insert("tools".to_string(), json!(self.tools));
         Value::Object(entry)
     }
+}
+
+/// `name` as the CLI names a server's tool: every character but a letter, a
+/// digit, `_` or `-` replaced by `_`.
+fn cli_name(name: &str) -> String {
+    name.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || NAME_PUNCTUATION.contains(&character) {
+                character
+            } else {
+                UNDERSCORE
+            }
+        })
+        .collect()
 }
 
 /// Whether `name` is safe to place in an `--allowedTools` entry, which the
@@ -576,6 +592,22 @@ mod tests {
         assert!(scoped.allows("search"));
         assert!(!scoped.allows("delete"));
         assert_eq!(scoped.allowed_tools("docs"), ["mcp__docs__search"]);
+    }
+
+    /// The CLI names a server's tool with every character but letters,
+    /// digits, `_` and `-` replaced by `_`, and `tools` names tools the way
+    /// the CLI does, so a launcher of its own must compare them the same way
+    /// or allow a different set of tools than the CLI.
+    #[test]
+    fn a_tool_is_allowed_by_the_name_the_cli_gives_it() {
+        let scoped = stdio().with_tools(["get_item", "list-items"]);
+
+        assert!(scoped.allows("get.item"));
+        assert!(scoped.allows("get item"));
+        assert!(scoped.allows("get_item"));
+        assert!(scoped.allows("list-items"));
+        assert!(!scoped.allows("get-item"));
+        assert!(!scoped.allows("delete"));
     }
 
     #[test]
