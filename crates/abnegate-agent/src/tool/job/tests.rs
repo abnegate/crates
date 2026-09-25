@@ -16,12 +16,17 @@ use super::jobs::JOBS;
 use super::limits::Limits;
 use super::log::Log;
 use super::*;
+use crate::test_support::CHILD_TEST;
+use crate::test_support::assert_passed;
 use crate::test_support::captured_logs;
 use crate::tool::Session;
 use crate::tool::ToolContext;
 
 const POLL: Duration = Duration::from_millis(20);
 const POLL_LIMIT: usize = 500;
+
+/// The variable that points git at a repository wherever it is run.
+const GIT_DIRECTORY: &str = "GIT_DIR";
 
 /// The directory the log directory sits in, which a teardown takes too when
 /// the logs were the only thing in it.
@@ -794,6 +799,63 @@ async fn the_exclude_path_comes_from_git_not_from_a_joined_git_directory() {
     assert!(
         !linked.join(".git").join(EXCLUDE_PATH).exists(),
         "and nowhere a hand-joined .git would have put it"
+    );
+
+    Jobs::kill_session(session).await;
+}
+
+/// The lookup that finds the exclude file started with this process's whole
+/// environment, so a host `GIT_DIR`, which every git hook runs with, sent a
+/// task run's exclude line to whichever repository it named. The lookup now
+/// sees the context's environment, which passes no such variable.
+#[tokio::test]
+async fn a_host_git_directory_never_redirects_the_exclude_write() {
+    const NAME: &str = "tool::job::tests::a_host_git_directory_never_redirects_the_exclude_write";
+    const CHECKOUT: &str = "ABNEGATE_AGENT_TEST_CHECKOUT";
+    if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
+        let root = directory();
+        let checkout = root.path().join("checkout");
+        let stranger = root.path().join("stranger");
+        for tree in [&checkout, &stranger] {
+            std::fs::create_dir(tree).expect("the repository directory is created");
+            repository(tree);
+        }
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD_TEST, NAME)
+            .env(CHECKOUT, &checkout)
+            .env(GIT_DIRECTORY, stranger.join(".git"))
+            .output()
+            .await
+            .unwrap();
+        assert_passed(&output);
+        return;
+    }
+    let checkout =
+        PathBuf::from(std::env::var_os(CHECKOUT).expect("the parent names the checkout"));
+    let elsewhere =
+        PathBuf::from(std::env::var_os(GIT_DIRECTORY).expect("the host names another repository"));
+
+    let session = task();
+    let started = Jobs::spawn(
+        &JobCommand::shell("exit 0"),
+        &ToolContext::default()
+            .within(&checkout)
+            .with_session(session),
+    )
+    .await
+    .expect("the job starts");
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
+
+    assert_eq!(
+        excluded_lines(&elsewhere.join(EXCLUDE_PATH)),
+        0,
+        "the host's GIT_DIR took the run's exclude line"
+    );
+    assert_eq!(
+        excluded_lines(&checkout.join(".git").join(EXCLUDE_PATH)),
+        1,
+        "the run's own checkout keeps its job logs out of its diff"
     );
 
     Jobs::kill_session(session).await;

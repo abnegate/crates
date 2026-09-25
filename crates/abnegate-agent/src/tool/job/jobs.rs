@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::io;
-use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -9,7 +8,6 @@ use std::time::Duration;
 use dashmap::DashMap;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
-use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 
@@ -28,13 +26,14 @@ use super::limits::Limits;
 use super::log::Log;
 use super::mint;
 use super::missing;
-use crate::Application;
 use crate::tool::Session;
 use crate::tool::ToolContext;
 use crate::tool::process;
 use crate::tool::process::Group;
 
 pub(super) static JOBS: LazyLock<DashMap<String, Job>> = LazyLock::new(DashMap::new);
+
+const GIT: &str = "git";
 
 /// Every background child process this process owns.
 pub struct Jobs;
@@ -166,7 +165,7 @@ impl Jobs {
         let log = Log::create(checkout, &context.application, &id)
             .map_err(|error| format!("Cannot create the job log: {error}"))?;
         if matches!(session, Session::Task(_)) {
-            exclude(checkout, &context.application).await;
+            exclude(context).await;
         }
 
         let child = match launch(command, context, &log) {
@@ -285,11 +284,15 @@ async fn ended(mut state: watch::Receiver<JobStatus>) -> JobStatus {
 /// worktree of the repository shares, and one chat's job must not write into
 /// all of them. It is also why the directory asked about is the session's own
 /// tree and never one the command named — a run naming somebody else's
-/// checkout would otherwise write into a repository it does not own. Every
-/// failure — not a checkout, no git, an unwritable file — is a silent skip,
-/// because a background job is worth more to the caller than a tidy diff.
-async fn exclude(checkout: &Path, application: &Application) {
-    let Ok(resolved) = Command::new("git")
+/// checkout would otherwise write into a repository it does not own — and
+/// why git is asked with the context's environment and nothing else, so a
+/// `GIT_DIR` in this process's environment does not name the repository for
+/// it. Every failure — not a checkout, no git, an unwritable file — is a
+/// silent skip, because a background job is worth more to the caller than a
+/// tidy diff.
+async fn exclude(context: &ToolContext) {
+    let checkout = context.working_directory.as_path();
+    let Ok(resolved) = process::command(GIT, context)
         .arg("rev-parse")
         .arg("--git-path")
         .arg(EXCLUDE_PATH)
@@ -315,7 +318,7 @@ async fn exclude(checkout: &Path, application: &Application) {
         return;
     }
 
-    let line = excluded(application);
+    let line = excluded(&context.application);
     let existing = tokio::fs::read_to_string(&path).await.unwrap_or_default();
     if existing.lines().any(|existing| existing.trim() == line) {
         return;
