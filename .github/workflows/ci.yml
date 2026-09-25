@@ -37,6 +37,10 @@ jobs:
         if: success() || failure()
         run: python3 scripts/audit_public_api.py
 
+      - name: Test the public API audit
+        if: success() || failure()
+        run: python3 -m unittest discover --start-directory scripts --verbose
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
