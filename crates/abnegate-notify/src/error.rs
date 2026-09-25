@@ -1,19 +1,33 @@
 //! What a delivery can fail with.
 
+use std::fmt;
 use std::time::Duration;
 
+use abnegate_secret::sanitize;
+
 use crate::endpoint::EndpointError;
+use crate::text::truncate;
+
+/// The most characters of a provider's answer that [`Error::Rejected`] keeps.
+pub(crate) const MAXIMUM_ERROR_BODY_CHARACTERS: usize = 512;
 
 /// What building a channel, or delivering through one, can fail with.
 ///
 /// No variant carries the endpoint URL. A webhook URL is a bearer credential,
 /// and an error message is the shortest path from a credential to a log file,
 /// so failures name the host and nothing more.
+///
+/// A variant may gain a field in a minor release, so a [`Notifier`](crate::Notifier)
+/// builds the error it fails with through a constructor ([`Error::timeout`],
+/// [`Error::rejected`], [`Error::unreachable`] or [`Error::malformed`]), which
+/// sanitizes the text it is given, and a pattern outside this crate ends in
+/// `..`.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
     /// The channel did not finish within its budget.
     #[error("delivery timed out after {}ms", .after.as_millis())]
+    #[non_exhaustive]
     Timeout {
         /// The budget the channel was given.
         after: Duration,
@@ -26,6 +40,7 @@ pub enum Error {
     /// The provider answered with a status that is neither success nor a rate
     /// limit, redirects included.
     #[error("{host} rejected the notification with HTTP {status}: {body}")]
+    #[non_exhaustive]
     Rejected {
         /// The provider's host, which is safe to log.
         host: String,
@@ -37,6 +52,7 @@ pub enum Error {
 
     /// The provider answered `429 Too Many Requests`.
     #[error("{host} is rate limiting this webhook{}", retry_hint(.retry_after))]
+    #[non_exhaustive]
     RateLimited {
         /// The provider's host, which is safe to log.
         host: String,
@@ -46,6 +62,7 @@ pub enum Error {
 
     /// The request never reached the provider, or its answer never arrived.
     #[error("could not reach {host}: {message}")]
+    #[non_exhaustive]
     Unreachable {
         /// The provider's host, which is safe to log.
         host: String,
@@ -55,6 +72,7 @@ pub enum Error {
 
     /// The SMTP relay could not be reached, or refused the message.
     #[error("SMTP delivery via {host} failed: {message}")]
+    #[non_exhaustive]
     Smtp {
         /// The relay's host, which is safe to log.
         host: String,
@@ -65,6 +83,7 @@ pub enum Error {
     /// A message, an address or a client could not be built from what the
     /// caller supplied.
     #[error("the message could not be built: {message}")]
+    #[non_exhaustive]
     Malformed {
         /// What could not be built, never quoting an address back.
         message: String,
@@ -76,6 +95,39 @@ pub enum Error {
 }
 
 impl Error {
+    /// The channel did not finish within `after`.
+    pub fn timeout(after: Duration) -> Self {
+        Self::Timeout { after }
+    }
+
+    /// `host` answered with `status`, which is neither success nor a rate
+    /// limit. `body` is sanitized and cut to its start.
+    pub fn rejected(host: &str, status: u16, body: &str) -> Self {
+        Self::Rejected {
+            host: sanitize(host).into_owned(),
+            status,
+            body: truncate(sanitize(body.trim()).trim(), MAXIMUM_ERROR_BODY_CHARACTERS),
+        }
+    }
+
+    /// The request never reached `host`, or its answer never arrived, for
+    /// `message`. It is sanitized, and must not carry the request URL.
+    pub fn unreachable(host: &str, message: impl fmt::Display) -> Self {
+        Self::Unreachable {
+            host: sanitize(host).into_owned(),
+            message: sanitize(&message.to_string()).into_owned(),
+        }
+    }
+
+    /// A message, an address or a client could not be built from what the
+    /// caller supplied, as `message` says. It is sanitized, and must not
+    /// quote an address back.
+    pub fn malformed(message: impl fmt::Display) -> Self {
+        Self::Malformed {
+            message: sanitize(&message.to_string()).into_owned(),
+        }
+    }
+
     /// Whether sending the same notification again could plausibly succeed.
     ///
     /// A rejected payload and an unusable endpoint will fail identically no
@@ -162,6 +214,60 @@ mod tests {
                 "HTTP {status} should be retryable"
             );
         }
+    }
+
+    #[test]
+    fn each_constructor_fills_its_variant() {
+        assert_eq!(
+            Error::timeout(Duration::from_secs(2)),
+            Error::Timeout {
+                after: Duration::from_secs(2)
+            }
+        );
+        assert_eq!(
+            Error::rejected("hooks.slack.com", 404, "no_service"),
+            Error::Rejected {
+                host: "hooks.slack.com".to_string(),
+                status: 404,
+                body: "no_service".to_string(),
+            }
+        );
+        assert_eq!(
+            Error::unreachable("database", "connection refused"),
+            Error::Unreachable {
+                host: "database".to_string(),
+                message: "connection refused".to_string(),
+            }
+        );
+        assert_eq!(
+            Error::malformed("no recipient"),
+            Error::Malformed {
+                message: "no recipient".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn constructors_sanitize_the_text_they_are_given() {
+        let secret = "hunter2seventeen";
+        let url = format!("postgres://app:{secret}@db.internal/app");
+
+        let unreachable = Error::unreachable("database", format!("cannot connect to {url}"));
+        let malformed = Error::malformed(format!("no client for {url}"));
+        let rejected = Error::rejected(
+            "hooks.slack.com",
+            500,
+            &format!("\u{1b}[31m{url} {}", "x".repeat(4_096)),
+        );
+
+        for error in [&unreachable, &malformed, &rejected] {
+            assert!(!error.to_string().contains(secret), "{error}");
+        }
+        let Error::Rejected { body, .. } = &rejected else {
+            panic!("expected a rejection, got {rejected:?}");
+        };
+        assert!(!body.contains('\u{1b}'), "{body:?}");
+        assert!(body.chars().count() <= MAXIMUM_ERROR_BODY_CHARACTERS);
     }
 
     #[test]

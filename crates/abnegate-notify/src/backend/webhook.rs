@@ -10,13 +10,13 @@ use serde_json::Value;
 
 use crate::endpoint::Endpoint;
 use crate::error::Error;
+use crate::error::MAXIMUM_ERROR_BODY_CHARACTERS;
 use crate::fanout::{DEFAULT_TIMEOUT, MINIMUM_TIMEOUT};
 use crate::text::truncate;
 
 const USER_AGENT: &str = concat!("abnegate-notify/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAXIMUM_ERROR_BODY_BYTES: usize = 2_048;
-const MAXIMUM_ERROR_BODY_CHARACTERS: usize = 512;
 const RETRY_AFTER: &str = "retry-after";
 
 /// A JSON POST to one validated endpoint.

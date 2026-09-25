@@ -13,12 +13,14 @@ use crate::application::ApplicationError;
 pub enum Error {
     /// [`Loader::load`](crate::Loader::load) found no file to read.
     #[error("Configuration file '{path}' does not exist")]
+    #[non_exhaustive]
     Missing {
         /// The file that was looked for.
         path: PathBuf,
     },
     /// A configuration or `.env` file exists but could not be read.
     #[error("Failed to read '{path}'")]
+    #[non_exhaustive]
     Read {
         /// The file that could not be read.
         path: PathBuf,
@@ -29,6 +31,7 @@ pub enum Error {
     /// A file, or the owner-only directory that holds it, could not be
     /// written.
     #[error("Failed to write '{path}'")]
+    #[non_exhaustive]
     Write {
         /// The file that could not be replaced.
         path: PathBuf,
@@ -38,6 +41,7 @@ pub enum Error {
     },
     /// The file is not TOML, or its TOML does not fit the settings type.
     #[error("Failed to parse '{path}'")]
+    #[non_exhaustive]
     Parse {
         /// The file that could not be parsed.
         path: PathBuf,
@@ -58,12 +62,14 @@ pub enum Error {
     /// A key given to [`EnvironmentFile`](crate::EnvironmentFile) is not a
     /// valid environment variable name.
     #[error("'{key}' is not an environment variable name")]
+    #[non_exhaustive]
     InvalidKey {
         /// The key that was refused.
         key: String,
     },
     /// A sealed value could not be opened with the loader's master key.
     #[error("Failed to decrypt '{field}'")]
+    #[non_exhaustive]
     Decrypt {
         /// Where the value sits in the file, such as `database.password` or
         /// `hosts[1]`.
@@ -76,6 +82,7 @@ pub enum Error {
     },
     /// A value that arrived sealed could not be sealed again on save.
     #[error("Failed to encrypt '{field}'")]
+    #[non_exhaustive]
     Encrypt {
         /// Where the value sits in the settings being saved.
         field: String,
@@ -86,6 +93,7 @@ pub enum Error {
     /// A save would write a value that arrived sealed, and there is no master
     /// key to seal it again.
     #[error("'{field}' arrived sealed and there is no master key to seal it again")]
+    #[non_exhaustive]
     SealedWithoutKey {
         /// Where the value sits in the settings being saved.
         field: String,
@@ -94,6 +102,7 @@ pub enum Error {
     /// gone from where it was or its place now holds something other than a
     /// string, so a save refuses rather than risk writing it in the clear.
     #[error("'{field}' arrived sealed and is no longer a string that can be sealed again")]
+    #[non_exhaustive]
     SealedShapeChanged {
         /// The location that lost its sealed value.
         field: String,
@@ -102,6 +111,7 @@ pub enum Error {
     #[cfg(feature = "keyring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
     #[error("No credential stored for '{name}'")]
+    #[non_exhaustive]
     NoCredential {
         /// The credential's name within the application's keyring service.
         name: String,

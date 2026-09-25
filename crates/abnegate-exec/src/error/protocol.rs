@@ -13,10 +13,15 @@ pub enum ProtocolError {
     #[error(
         "Failed to parse a {length}-byte JSON line: {category:?} error at line {line}, column {column}"
     )]
+    #[non_exhaustive]
     JsonParse {
+        /// Bytes in the line, without its newline
         length: usize,
+        /// The kind of failure serde reported
         category: Category,
+        /// Line of the JSON text at which parsing stopped, from 1
         line: usize,
+        /// Column of that line at which parsing stopped, from 1
         column: usize,
     },
 
@@ -26,6 +31,7 @@ pub enum ProtocolError {
 
     /// A line ran past the codec's length limit
     #[error("Line too long: {length} bytes (limit: {limit})")]
+    #[non_exhaustive]
     LineTooLong {
         /// Bytes read without finding the end of the line
         length: usize,

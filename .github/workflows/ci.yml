@@ -33,6 +33,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Refuse public types that cannot gain a field
+        run: python3 scripts/audit_public_api.py
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -81,9 +84,10 @@ jobs:
           cache-on-failure: true
 
       # abnegate-comfy turns a submitted clip into training frames through
-      # ffmpeg. Without it that path's end-to-end test skips itself.
-      - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      # ffmpeg, and abnegate-agent searches files with ripgrep. Without them
+      # those paths' end-to-end tests skip themselves.
+      - name: Install ffmpeg and ripgrep
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg ripgrep
 
       # Without bubblewrap abnegate-exec reports its confinement backend
       # unusable, and ABNEGATE_EXEC_REQUIRE_CONFINEMENT below turns every test

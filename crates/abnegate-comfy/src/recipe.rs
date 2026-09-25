@@ -81,15 +81,27 @@ enum TrainingArchitecture {
     QwenEdit,
 }
 
+/// One catalog entry: its workflow graph, the graph it runs with a source
+/// image when it has one, and the slots a caller may fill.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Recipe {
+    /// The catalog's name for the recipe.
     pub id: String,
+    /// Whether it makes images or video.
     pub kind: MediaKind,
+    /// The name shown to a person choosing a model.
     pub label: String,
+    /// Whether its graph loads a LoRA adapter over the base weights.
     pub adapter: bool,
+    /// How a prompt for it is written.
     pub prompt_mode: PromptMode,
+    /// The weight filename each slot loads unless a selection replaces it,
+    /// by slot name.
     pub defaults: HashMap<String, String>,
+    /// The Hugging Face base models its weights derive from.
     pub huggingface_bases: Vec<String>,
+    /// The model files its graph needs, and the directory each belongs in.
     pub required_files: Vec<RequiredFile>,
     training: Option<Training>,
     bare: Value,

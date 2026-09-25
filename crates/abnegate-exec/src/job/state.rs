@@ -10,28 +10,61 @@ use crate::protocol::ErrorCode;
 #[non_exhaustive]
 pub enum JobState {
     /// Job is being set up
-    Starting { created_at: Instant },
+    #[non_exhaustive]
+    Starting {
+        /// When the job was created
+        created_at: Instant,
+    },
 
     /// Job is actively running
-    Running { pid: u32, started_at: Instant },
+    #[non_exhaustive]
+    Running {
+        /// The process ID of the job's command
+        pid: u32,
+        /// When the job was seen to start running
+        started_at: Instant,
+    },
 
-    /// Job completed successfully
-    Completed { exit_code: i32, duration: Duration },
+    /// Job exited with a status code
+    #[non_exhaustive]
+    Completed {
+        /// The status code the command exited with
+        exit_code: i32,
+        /// How long the job ran
+        duration: Duration,
+    },
 
     /// Job terminated by signal
-    Signaled { signal: i32, duration: Duration },
+    #[non_exhaustive]
+    Signaled {
+        /// The signal that ended the command
+        signal: i32,
+        /// How long the job ran before the signal ended it
+        duration: Duration,
+    },
 
     /// Job failed with an error
+    #[non_exhaustive]
     Failed {
+        /// What kind of failure it was
         error_code: ErrorCode,
+        /// What went wrong
         message: String,
+        /// How long the job ran before it failed
         duration: Duration,
     },
 
     /// Job was cancelled
-    Cancelled { forced: bool, duration: Duration },
+    #[non_exhaustive]
+    Cancelled {
+        /// Whether the job was cancelled with SIGKILL rather than SIGTERM
+        forced: bool,
+        /// How long the job ran before it was cancelled
+        duration: Duration,
+    },
 
     /// Job timed out
+    #[non_exhaustive]
     TimedOut {
         /// The limit the job ran past, as far as whoever recorded the state
         /// knew it. [`JobRegistry::observe`](crate::job::JobRegistry::observe)

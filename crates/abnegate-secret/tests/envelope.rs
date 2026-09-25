@@ -48,7 +48,7 @@ fn an_envelope_of_a_later_version_is_recognised_as_sealed_and_refused() {
     );
     let opened = decrypt_value(&later, &key());
     assert!(
-        matches!(&opened, Err(Error::UnsupportedVersion { version }) if version == "2"),
+        matches!(&opened, Err(Error::UnsupportedVersion { version, .. }) if version == "2"),
         "{opened:?}"
     );
 }

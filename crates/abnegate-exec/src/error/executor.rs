@@ -24,6 +24,7 @@ pub enum ExecutorError {
 
     /// Output went past the limit
     #[error("Output limit exceeded: {written} bytes (limit: {limit})")]
+    #[non_exhaustive]
     OutputLimitExceeded {
         /// Bytes of output the command produced
         written: usize,

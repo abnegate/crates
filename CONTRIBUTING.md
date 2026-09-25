@@ -78,12 +78,34 @@ Every crate is shaped so that it can grow without a breaking release:
   method's return value, or configuration — has a constructor, or `Default` plus
   `with_*` methods. Closed geometry whose fields are the whole type, such as
   `Point` and `Rectangle`, stays exhaustive.
+- Every struct variant of a public enum is `#[non_exhaustive]` too, so it can
+  gain a field the same way. Outside the crate it then cannot be built with a
+  literal, and a pattern that matches it ends in `..`, so a variant a caller
+  builds, such as an error a `Notifier` implementation returns, has a
+  constructor.
 - A public constant or static holds a slice (`&[&str]`), never a fixed-length
   array (`[&str; 4]`): adding an entry changes an array's type.
 - Renaming a serialized field or variant keeps its wire name with
   `#[serde(rename = "...")]`, so NDJSON messages, saved agent sessions, agent
   configurations and provider request bodies written by an earlier version still
   read. A test pins the wire name.
+
+`scripts/audit_public_api.py` enforces the `#[non_exhaustive]` rules for
+structs and struct variants, and CI runs it. With no argument it audits every
+crate; given crate names, it audits only those:
+
+```sh
+python3 scripts/audit_public_api.py
+python3 scripts/audit_public_api.py abnegate-exec abnegate-http
+```
+
+It follows each crate's modules down from `src/lib.rs` and audits only what a
+caller can reach: code compiled only for tests, items that are not `pub`, and
+`pub` items of a private module that nothing re-exports are skipped. Each
+public struct with a public field, and each struct variant of a public enum,
+that is not `#[non_exhaustive]` is printed as `path:line: item`, and the exit
+status is 1. An item that stays exhaustive by ruling, such as `Point` and
+`Rectangle`, is listed in the script's `ALLOWED`.
 
 ## Edition and MSRV
 

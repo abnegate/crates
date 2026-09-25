@@ -60,9 +60,7 @@ impl Notifier for Stub {
                 self.delivered.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            Outcome::Fail => Err(Error::Malformed {
-                message: "nope".to_string(),
-            }),
+            Outcome::Fail => Err(Error::malformed("nope")),
             Outcome::Hang => {
                 tokio::time::sleep(Duration::from_secs(3_600)).await;
                 Ok(())
@@ -225,9 +223,7 @@ async fn a_hanging_channel_is_abandoned_at_the_timeout() {
     assert_eq!(timed_out.channel().as_str(), "discord");
     assert_eq!(
         timed_out.error(),
-        Some(&Error::Timeout {
-            after: Duration::from_secs(2)
-        })
+        Some(&Error::timeout(Duration::from_secs(2)))
     );
     assert!(timed_out.is_retryable());
 }
@@ -259,9 +255,7 @@ async fn a_channel_may_impose_a_tighter_budget_than_the_fanout() {
     assert_eq!(failure.channel().as_str(), "impatient");
     assert_eq!(
         failure.error(),
-        Some(&Error::Timeout {
-            after: Duration::from_millis(50)
-        })
+        Some(&Error::timeout(Duration::from_millis(50)))
     );
 }
 
