@@ -34,6 +34,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Refuse public types that cannot gain a field
+        if: success() || failure()
         run: python3 scripts/audit_public_api.py
 
   clippy:
