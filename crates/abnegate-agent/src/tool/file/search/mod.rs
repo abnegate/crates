@@ -58,12 +58,17 @@ const CODE_EXTENSIONS: &[&str] = &[
 
 /// Search for a literal pattern in code files.
 ///
-/// The search runs ripgrep, started like every other child a tool starts:
-/// with the context's environment and nothing else, so `rg` is looked for
-/// on that environment's `PATH`, and with `--no-config`, so no ripgrep
-/// configuration file can widen what it reads. When `rg` cannot be started
-/// that way, or does not finish, the tree is walked instead, passing over
-/// hidden entries, build trees and links.
+/// The search runs ripgrep with the context's environment and nothing else,
+/// as every child a tool starts is run, so the `rg` that runs is the first on
+/// that environment's `PATH`. What it reads is then decided by the searched
+/// directory alone, through the `.gitignore`, `.ignore`, `.rgignore` and
+/// `.git/info/exclude` files within it. Nothing outside it has a say: not a
+/// ripgrep configuration file, an ignore file in a directory above, git's
+/// global excludes, the exclude file a linked worktree shares with its
+/// repository, or whether a repository encloses it.
+///
+/// When `rg` cannot be started, or does not finish, the tree is walked
+/// instead, passing over hidden entries, build trees and links.
 pub struct SearchCodeTool;
 
 #[async_trait]
@@ -271,8 +276,13 @@ async fn search_ripgrep(
     ripgrep(command, search_path, maximum_results, WALK_TIME_LIMIT).await
 }
 
-/// Always `--no-config`: a configuration file can add any flag, `--hidden`,
-/// `--follow` and `--pre` among them, and so change what a search reads.
+/// The first four keep the host out of what a search reads: `--no-config` a
+/// configuration file, which can add any flag, `--hidden`, `--follow` and
+/// `--pre` among them; `--no-ignore-parent` the ignore files of the
+/// directories above the searched one; `--no-ignore-global` git's global
+/// excludes; and `--no-require-git` both whether a repository encloses the
+/// searched directory, which otherwise decides whether its `.gitignore` files
+/// count, and the exclude file a linked worktree shares with its repository.
 fn ripgrep_arguments(
     parameters: &SearchCodeParameters,
     search_path: &Path,
@@ -280,6 +290,9 @@ fn ripgrep_arguments(
 ) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = [
         "--no-config",
+        "--no-ignore-parent",
+        "--no-ignore-global",
+        "--no-require-git",
         "-F",
         "-n",
         "--no-heading",
@@ -461,9 +474,68 @@ mod tests {
         })
     }
 
+    /// The files a search's output names, in order.
+    fn files(output: &str) -> Vec<&str> {
+        let mut files: Vec<&str> = output
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(_, rest)| rest.ends_with(MARKER))
+            .map(|(file, _)| file)
+            .collect();
+        files.sort_unstable();
+        files
+    }
+
+    /// A tree under `outer`, beneath an ignore file that whitelists one
+    /// dot-file and ignores one plain file, holding a file for every rule a
+    /// host could bring to a search and a `.gitignore` of its own.
+    fn planted(outer: &Path) -> PathBuf {
+        fs::write(outer.join(".rgignore"), "!.parent.rs\nparent.data\n")
+            .expect("an ignore file above the tree");
+        let tree = outer.join("tree");
+        fs::create_dir(&tree).expect("a tree to search");
+        fs::write(tree.join(".gitignore"), "tree.data\n").expect("the tree's own ignore file");
+        for name in [
+            ".hidden.rs",
+            ".parent.rs",
+            ".global.rs",
+            ".shared.rs",
+            "visible.data",
+            "parent.data",
+            "global.data",
+            "shared.data",
+            "tree.data",
+        ] {
+            fs::write(tree.join(name), MARKER).expect("a file to search");
+        }
+        tree
+    }
+
+    /// Make `tree` a linked worktree of a repository beside it, whose shared
+    /// exclude file whitelists one dot-file and ignores one plain file.
+    fn link(tree: &Path) {
+        let repository = tree.with_file_name("repository");
+        let worktree = repository.join("worktrees").join("tree");
+        fs::create_dir_all(repository.join("info")).expect("the repository's info directory");
+        fs::create_dir_all(&worktree).expect("the worktree's own git directory");
+        fs::write(
+            repository.join("info").join("exclude"),
+            "!.shared.rs\nshared.data\n",
+        )
+        .expect("the exclude file the worktree shares");
+        fs::write(worktree.join("commondir"), "../..\n").expect("the worktree's common directory");
+        fs::write(
+            tree.join(".git"),
+            format!("gitdir: {}\n", worktree.display()),
+        )
+        .expect("the worktree's pointer to its git directory");
+    }
+
     /// A search started ripgrep with this process's whole environment, so a
     /// host's `RIPGREP_CONFIG_PATH` could hand it any flag: `--hidden`,
-    /// `--follow`, a `--pre` program. A stand-in `rg` first on the path
+    /// `--follow`, a `--pre` program. It also started it free to read the
+    /// ignore files above the tree, git's global excludes, and whether a
+    /// repository encloses the tree. A stand-in `rg` first on the path
     /// writes down every start, so this holds whether ripgrep is installed
     /// or not.
     #[tokio::test]
@@ -499,12 +571,17 @@ mod tests {
         let starts = fs::read_to_string(record.join(ARGUMENTS)).expect("the search started rg");
         assert!(!starts.is_empty(), "the search never started rg");
         for arguments in starts.lines() {
-            assert!(
-                arguments
-                    .split(' ')
-                    .any(|argument| argument == "--no-config"),
-                "rg was free to read a configuration file: {arguments}"
-            );
+            for (flag, freedom) in [
+                ("--no-config", "a configuration file"),
+                ("--no-ignore-parent", "the ignore files above the tree"),
+                ("--no-ignore-global", "git's global excludes"),
+                ("--no-require-git", "whether a repository encloses the tree"),
+            ] {
+                assert!(
+                    arguments.split(' ').any(|argument| argument == flag),
+                    "rg was started without {flag}, free to read {freedom}: {arguments}"
+                );
+            }
         }
         let environment = fs::read_to_string(record.join(ENVIRONMENT)).expect("rg's environment");
         assert!(
@@ -515,19 +592,35 @@ mod tests {
         );
     }
 
-    /// With a host configuration asking for `--hidden`, ripgrep searched the
-    /// dot-files the walk passes over and handed back what they held, even
-    /// through a context that passes the host's whole environment on.
+    /// What a search read used to follow the host as well as the tree. A
+    /// ripgrep configuration asking for `--hidden` handed back the dot-files
+    /// the walk passes over; an ignore file in a directory above the tree,
+    /// git's global excludes, or the exclude file a linked worktree shares
+    /// with its repository, whitelisted a dot-file or ignored a file the
+    /// search should read; and whether a repository enclosed the tree decided
+    /// whether its own `.gitignore` counted. None of it may widen or narrow a
+    /// search, even through a context that passes the host's whole
+    /// environment on.
     #[tokio::test]
-    async fn a_host_ripgrep_configuration_never_widens_a_search() {
+    async fn nothing_on_the_host_widens_or_narrows_a_search() {
         const NAME: &str =
-            "tool::file::search::tests::a_host_ripgrep_configuration_never_widens_a_search";
+            "tool::file::search::tests::nothing_on_the_host_widens_or_narrows_a_search";
         if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
             let configuration = TempDir::new().expect("a directory for the configuration");
+            let home = TempDir::new().expect("a home for the child");
+            let settings = home.path().join(".config");
+            fs::create_dir_all(settings.join("git")).expect("git's settings directory");
+            fs::write(
+                settings.join("git").join("ignore"),
+                "!.global.rs\nglobal.data\n",
+            )
+            .expect("git's global excludes");
             let output = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", NAME, "--nocapture"])
                 .env(CHILD_TEST, NAME)
                 .env(CONFIGURATION, hidden(configuration.path()))
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", &settings)
                 .output()
                 .await
                 .unwrap();
@@ -538,30 +631,35 @@ mod tests {
             eprintln!("skipping: ripgrep is not installed");
             return;
         }
-        let tree = TempDir::new().expect("a tree to search");
-        fs::write(tree.path().join(".hidden.rs"), MARKER).expect("a dot-file");
-        fs::write(tree.path().join("visible.data"), MARKER).expect("a file only rg reads");
+        let enclosed = TempDir::new().expect("a repository to hold a tree");
+        fs::create_dir(enclosed.path().join(".git")).expect("the repository's own directory");
+        let alone = TempDir::new().expect("a directory to hold a tree");
+        let worktree = TempDir::new().expect("a directory to hold a linked worktree");
+        let linked = planted(worktree.path());
+        link(&linked);
 
-        for context in [
-            ToolContext::default().within(tree.path()),
-            ToolContext::default()
-                .within(tree.path())
-                .inherit_environment(),
-        ] {
-            let output = SearchCodeTool
-                .execute(json!({"pattern": MARKER}), &context)
-                .await
-                .expect("the search answers")
-                .output
-                .unwrap_or_default();
-            assert!(
-                output.contains("visible.data"),
-                "rg did not run the search: {output}"
-            );
-            assert!(
-                !output.contains(".hidden.rs"),
-                "a host configuration widened the search: {output}"
-            );
+        for tree in [planted(enclosed.path()), planted(alone.path()), linked] {
+            for context in [
+                ToolContext::default().within(&tree),
+                ToolContext::default().within(&tree).inherit_environment(),
+            ] {
+                let output = SearchCodeTool
+                    .execute(json!({"pattern": MARKER}), &context)
+                    .await
+                    .expect("the search answers")
+                    .output
+                    .unwrap_or_default();
+                assert!(
+                    output.contains("visible.data"),
+                    "rg did not run the search: {output}"
+                );
+                assert_eq!(
+                    files(&output),
+                    ["global.data", "parent.data", "shared.data", "visible.data"],
+                    "the host changed what a search of {} read: {output}",
+                    tree.display()
+                );
+            }
         }
     }
 
