@@ -10,6 +10,7 @@ pub enum ApplicationError {
     #[error(
         "Application name {name:?} must start with an ASCII letter or digit and contain only ASCII letters, digits, '-' and '_'"
     )]
+    #[non_exhaustive]
     Invalid {
         /// The refused name, exactly as it was given.
         name: String,
