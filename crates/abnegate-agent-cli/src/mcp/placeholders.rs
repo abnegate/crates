@@ -163,8 +163,9 @@ pub(crate) fn whole_reference(value: &str) -> bool {
 }
 
 /// `template` with each `${VAR}` replaced by what `lookup` gives for it, and
-/// each `${VAR:-default}` by its default when that is unset or empty, as
-/// the CLI expands them. A reference to a variable nothing gives, with no
+/// each `${VAR:-default}` by its default when `lookup` gives nothing, as
+/// Claude Code expands them: a variable set to nothing expands to nothing,
+/// not to its default. A reference to a variable nothing gives, with no
 /// default, is left as written, as the CLI leaves it.
 pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
     let mut expanded = String::with_capacity(template.len());
@@ -175,20 +176,17 @@ pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) ->
                 written,
                 name,
                 default,
-            } => {
-                let value = lookup(name).filter(|value| !value.is_empty() || default.is_none());
-                match (value, default) {
-                    (Some(value), _) => expanded.push_str(&value),
-                    (None, Some(default)) => expanded.push_str(default),
-                    (None, None) => {
-                        tracing::warn!(
-                            variable = name,
-                            "an MCP value refers to a variable nothing sets; leaving it as written"
-                        );
-                        expanded.push_str(written);
-                    }
+            } => match (lookup(name), default) {
+                (Some(value), _) => expanded.push_str(&value),
+                (None, Some(default)) => expanded.push_str(default),
+                (None, None) => {
+                    tracing::warn!(
+                        variable = name,
+                        "an MCP value refers to a variable nothing sets; leaving it as written"
+                    );
+                    expanded.push_str(written);
                 }
-            }
+            },
         }
     }
     expanded
@@ -205,39 +203,43 @@ enum Segment<'text> {
     },
 }
 
-/// `text` as literal runs and references, in order. Anything shaped like a
-/// reference that does not name a variable, or is never closed, is literal
-/// text.
+/// `text` as literal runs and references, in order, read as Claude Code
+/// reads them: a `${` that does not open a reference to a variable is
+/// literal text, and reading goes on just past its `$`, so a reference
+/// inside it still counts; one never closed is literal to the end.
 fn segments(text: &str) -> Vec<Segment<'_>> {
     let mut segments = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find(OPENING) {
-        let after = &rest[start + OPENING.len()..];
-        let Some(end) = after.find(CLOSING) else {
+    let mut literal = 0;
+    let mut cursor = 0;
+    while let Some(found) = text[cursor..].find(OPENING) {
+        let start = cursor + found;
+        let after = start + OPENING.len();
+        let Some(length) = text[after..].find(CLOSING) else {
             break;
         };
-        let written = &rest[start..start + OPENING.len() + end + 1];
-        let expression = &after[..end];
+        let end = after + length;
+        let expression = &text[after..end];
         let (name, default) = match expression.split_once(DEFAULT) {
             Some((name, default)) => (name, Some(default)),
             None => (expression, None),
         };
-        if variable(name) {
-            if start > 0 {
-                segments.push(Segment::Literal(&rest[..start]));
-            }
-            segments.push(Segment::Reference {
-                written,
-                name,
-                default,
-            });
-        } else {
-            segments.push(Segment::Literal(&rest[..start + written.len()]));
+        if !variable(name) {
+            cursor = start + 1;
+            continue;
         }
-        rest = &after[end + 1..];
+        if start > literal {
+            segments.push(Segment::Literal(&text[literal..start]));
+        }
+        segments.push(Segment::Reference {
+            written: &text[start..=end],
+            name,
+            default,
+        });
+        cursor = end + 1;
+        literal = cursor;
     }
-    if !rest.is_empty() {
-        segments.push(Segment::Literal(rest));
+    if literal < text.len() {
+        segments.push(Segment::Literal(&text[literal..]));
     }
     segments
 }
@@ -396,11 +398,32 @@ mod tests {
         assert_eq!(expand("Bearer ${TOKEN}", &lookup), "Bearer tok");
         assert_eq!(
             expand("${MISSING:-anonymous}/${EMPTY:-fallback}", &lookup),
-            "anonymous/fallback"
+            "anonymous/"
         );
         assert_eq!(expand("[${MISSING}][${EMPTY}]", &lookup), "[${MISSING}][]");
         assert_eq!(expand("${1BAD} and ${", &lookup), "${1BAD} and ${");
         assert_eq!(expand("no references", &lookup), "no references");
+    }
+
+    /// Claude Code takes a variable's value whenever it is set, empty or
+    /// not, and turns to the default only when the variable is unset.
+    #[test]
+    fn an_empty_variable_expands_as_empty_and_not_to_its_default() {
+        let lookup = |name: &str| (name == "EMPTY").then(String::new);
+
+        assert_eq!(expand("${EMPTY:-x}", &lookup), "");
+        assert_eq!(expand("[${EMPTY:-x}][${UNSET:-y}]", &lookup), "[][y]");
+    }
+
+    /// Claude Code reads a `${` that names no variable as literal text and
+    /// goes on reading just past its `$`, so a reference inside it counts.
+    #[test]
+    fn a_reference_inside_text_that_names_no_variable_is_still_read() {
+        let lookup = |name: &str| (name == "B").then(|| "b".to_string());
+
+        assert_eq!(expand("${A ${B}", &lookup), "${A b");
+        assert_eq!(expand("${1BAD} ${B}", &lookup), "${1BAD} b");
+        assert_eq!(expand("$${B}", &lookup), "$b");
     }
 
     /// Claude Code starts a server with a reference to a variable nothing
