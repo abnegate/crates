@@ -211,13 +211,10 @@ impl McpConfig {
     pub fn from_value(value: &Value) -> Result<Self, McpConfigError> {
         server_map(value)?
             .iter()
-            .map(|(name, server)| {
-                McpServer::deserialize(server)
+            .map(|(name, entry)| {
+                McpServer::read(entry)
                     .map(|server| (name.clone(), server))
-                    .map_err(|source| McpConfigError::Server {
-                        name: name.clone(),
-                        source,
-                    })
+                    .map_err(|mismatch| McpConfigError::server(name, mismatch))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()
             .map(Self::new)
@@ -400,6 +397,7 @@ fn command_on_path(name: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::HashMap;
+    use std::error::Error;
     use std::ffi::OsString;
     use std::io::Read;
     use std::path::Path;
@@ -427,6 +425,7 @@ mod tests {
     use crate::mcp::server::McpServer;
     use crate::mcp::transport::McpTransport;
     use crate::settings::CliSettings;
+    use crate::test_support::captured_logs;
 
     fn rendered(config: &McpConfig) -> McpAttachment {
         config
@@ -784,7 +783,12 @@ mod tests {
         }))
         .expect_err("a malformed document");
 
-        assert!(error.to_string().contains("invalid type"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("`args` must be a list of strings"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1090,6 +1094,62 @@ mod tests {
         }
         .fallback("shell", shell());
         assert!(config.servers.is_empty());
+    }
+
+    const MARKER: &str = "marker-7Q2-secret";
+
+    /// A document with a secret pasted into a field of the wrong type.
+    fn misplaced() -> String {
+        format!(
+            r#"{{"mcpServers": {{"remote": {{"url": "https://mcp.example.com/mcp", "headers": "Bearer {MARKER}"}}}}}}"#
+        )
+    }
+
+    /// A value of the wrong type can still be a secret pasted into the wrong
+    /// field, and an error reading a configuration reaches a log.
+    #[test]
+    fn an_unreadable_server_never_quotes_the_document() {
+        let document = misplaced();
+        let read = environment(&[(variable("ACME", SERVERS_VARIABLE), document.as_str())]);
+
+        let (_, logs) = captured_logs(|| McpConfig::load("ACME", &read, None));
+        let parsed = McpConfig::from_json_str(&document);
+
+        assert!(!logs.contains(MARKER), "{logs}");
+        if let Err(error) = &parsed {
+            let mut shown = vec![error.to_string(), format!("{error:?}")];
+            let mut source = error.source();
+            while let Some(cause) = source {
+                shown.push(cause.to_string());
+                shown.push(format!("{cause:?}"));
+                source = cause.source();
+            }
+            for text in shown {
+                assert!(!text.contains(MARKER), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unreadable_server_names_the_field_and_the_type_it_must_hold() {
+        let error = McpConfig::from_json_str(&misplaced()).expect_err("an unreadable server");
+
+        assert!(
+            matches!(
+                &error,
+                McpConfigError::Server {
+                    name,
+                    field: Some("headers"),
+                    expected: "an object of strings",
+                } if name == "remote"
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "invalid MCP server 'remote': `headers` must be an object of strings"
+        );
+        assert!(error.source().is_none());
     }
 
     #[test]

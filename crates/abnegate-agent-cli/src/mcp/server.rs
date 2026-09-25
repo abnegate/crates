@@ -6,12 +6,16 @@ use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
 use abnegate_secret::redact;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::de::Error;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
 use crate::kind::AgentKind;
+use crate::mcp::entry::Entry;
+use crate::mcp::mismatch::Mismatch;
 use crate::mcp::placeholders::NAMESPACE;
 use crate::mcp::placeholders::Placeholders;
 use crate::mcp::placeholders::expand;
@@ -43,18 +47,19 @@ const NAME_PUNCTUATION: [char; 2] = ['_', '-'];
 /// [`headers`](McpServer::headers) is left to the CLI.
 ///
 /// Reads and writes the `mcpServers` entry shape: `args`, `env` and `cwd` on
-/// the wire, each also read under its full name here.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+/// the wire, each also read under its full name here. A value of the wrong
+/// type is reported by the field holding it and never quoted, since it may
+/// still be a secret.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct McpServer {
     /// The command that starts a stdio server, such as `uvx` or `npx`.
     pub command: Option<String>,
     /// What follows the command.
-    #[serde(rename = "args", alias = "arguments")]
+    #[serde(rename = "args")]
     pub arguments: Vec<String>,
     /// Variables a stdio server is given.
-    #[serde(rename = "env", alias = "environment")]
+    #[serde(rename = "env")]
     pub environment: BTreeMap<String, SecretValue>,
     /// Where an HTTP or SSE server listens.
     ///
@@ -98,11 +103,7 @@ pub struct McpServer {
     ///
     /// A rendered file carries it only for a CLI whose MCP configuration
     /// documents it: see [`McpConfig::render`](crate::mcp::McpConfig::render).
-    #[serde(
-        rename = "cwd",
-        alias = "working_directory",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "cwd", skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<PathBuf>,
     /// Give a stdio server its launcher's whole environment rather than
     /// [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) and
@@ -119,7 +120,20 @@ pub struct McpServer {
     pub disabled: bool,
 }
 
+impl<'de> Deserialize<'de> for McpServer {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let entry = Value::deserialize(deserializer)?;
+        Self::read(&entry).map_err(D::Error::custom)
+    }
+}
+
 impl McpServer {
+    /// The server a configuration document's `entry` describes, or why it
+    /// does not describe one.
+    pub(crate) fn read(entry: &Value) -> Result<Self, Mismatch> {
+        Entry::new(entry)?.server()
+    }
+
     /// A stdio server started as `command arguments…`.
     pub fn command(
         command: impl Into<String>,

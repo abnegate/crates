@@ -29,6 +29,8 @@
 mod attachment;
 mod config;
 mod config_error;
+mod entry;
+mod mismatch;
 mod placeholders;
 mod server;
 mod transport;
