@@ -10,7 +10,13 @@ pub enum ConfinementError {
 
     /// The backend executable is missing, not a file, or not executable
     #[error("Confinement backend is unusable: {path}: {reason}")]
-    BackendUnusable { path: String, reason: String },
+    #[non_exhaustive]
+    BackendUnusable {
+        /// The backend executable that was checked
+        path: String,
+        /// Why it cannot be run
+        reason: String,
+    },
 
     /// A root or command path is relative
     #[error("Confined path must be absolute: {0}")]
@@ -26,7 +32,13 @@ pub enum ConfinementError {
 
     /// A path does not exist or cannot be canonicalised
     #[error("Confined path is unusable: {path}: {reason}")]
-    UnusablePath { path: String, reason: String },
+    #[non_exhaustive]
+    UnusablePath {
+        /// The path, as it was given
+        path: String,
+        /// Why it could not be canonicalised
+        reason: String,
+    },
 
     /// The command is not an executable file on the search path
     #[error("Confined command not found: {0}")]
