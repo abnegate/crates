@@ -604,7 +604,10 @@ mod tests {
         let sha = commit('a');
         for (refused, other) in [(runs(&sha), statuses(&sha)), (statuses(&sha), runs(&sha))] {
             for (refusal, expected) in &refusals {
-                let server = MockServer::start().await;
+                // A refusal drops the other read while it may still be in
+                // flight, and a pooled server handed to the next case would
+                // count it there, so each case gets a server of its own.
+                let server = MockServer::builder().start().await;
                 Mock::given(method("GET"))
                     .and(path(refused.as_str()))
                     .respond_with(refusal.clone())
