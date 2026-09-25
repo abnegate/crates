@@ -172,7 +172,10 @@ impl AgentKind {
     /// [`AgentKind::invocation`]. `attachments` names the rendered MCP
     /// configuration when any server attaches, whose servers' tools join the
     /// allowed set, and the file holding the settings' instructions, which
-    /// must be given when there are any.
+    /// must be given when there are any. A read-only run, and any run whose
+    /// settings configure an enabled MCP server, attached or not, loads MCP
+    /// servers from that configuration alone: with none attached, it loads
+    /// none, never the user's or the repository's own.
     ///
     /// A setting this agent has no flag for is refused rather than dropped,
     /// since a run that silently ignored its tool restrictions or its answer
@@ -269,7 +272,7 @@ fn claude_options(
         options.push(MCP_CONFIG.to_string());
         options.push(path.display().to_string());
     }
-    if mcp.is_some() || settings.read_only {
+    if mcp.is_some() || settings.read_only || !settings.mcp.is_empty() {
         options.push(STRICT_MCP_CONFIG.to_string());
     }
     if settings.read_only {
@@ -691,6 +694,33 @@ mod tests {
 
         let options = AgentKind::Claude
             .options(&settings, &Attachments::default())
+            .expect("options");
+        assert_eq!(options, ["--strict-mcp-config"]);
+    }
+
+    /// A configuration whose every server is refused, or whose file could
+    /// not be written, attaches nothing, and without the flag the CLI would
+    /// load the user's and the repository's own MCP servers in place of the
+    /// caller's choice. A configuration with no enabled server leaves the
+    /// CLI's own sources alone.
+    #[test]
+    fn a_configuration_that_attaches_nothing_still_loads_strictly() {
+        let refused = McpServer::remote("https://mcp.example.com/mcp")
+            .with_header("Authorization", "Bearer ${TOKEN}");
+        let settings = CliSettings::default()
+            .with_permissions(["Read"])
+            .with_mcp_server("remote", refused.clone())
+            .with_mcp_server("broken", McpServer::default());
+
+        let options = AgentKind::Claude
+            .options(&settings, &Attachments::default())
+            .expect("options");
+
+        assert_eq!(options, ["--strict-mcp-config", "--allowedTools", "Read"]);
+
+        let disabled = CliSettings::default().with_mcp_server("remote", refused.disable());
+        let options = AgentKind::Claude
+            .options(&disabled, &Attachments::default())
             .expect("options");
         assert!(options.is_empty(), "{options:?}");
     }

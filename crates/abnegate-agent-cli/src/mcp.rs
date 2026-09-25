@@ -3,7 +3,9 @@
 //! The servers are rendered into a private temporary file that the CLI reads
 //! through `--mcp-config`, and only that file is loaded: `--strict-mcp-config`
 //! keeps a repository's own `.mcp.json` from adding servers the caller never
-//! chose.
+//! chose. A run whose configuration holds an enabled server loads strictly
+//! even when no server attaches, every one refused or the file impossible to
+//! write, and then loads none.
 //!
 //! The file holds no literal environment or header value. Each environment
 //! and header value, and each URL, stdio command or argument that refers to

@@ -435,8 +435,9 @@ impl CliProvider {
     }
 
     /// Render the MCP servers to attach, or attach none when rendering fails:
-    /// a run without its MCP tools can still answer, and fails loudly on its
-    /// own if it truly needed them.
+    /// the run still loads strictly, with no server at all, and without its
+    /// MCP tools can still answer, and fails loudly on its own if it truly
+    /// needed them.
     fn attach(&self) -> Option<McpAttachment> {
         let mcp = &self.settings.mcp;
         if mcp.is_empty() {
@@ -2179,6 +2180,51 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             "{document}"
         );
         assert!(!path.exists(), "the MCP config outlived the run");
+    }
+
+    /// A caller that configured servers chose which ones load. With every
+    /// one of them refused there is no file to attach, and the run still
+    /// loads strictly, so the CLI never falls back to the repository's own
+    /// `.mcp.json`.
+    #[tokio::test]
+    async fn a_run_whose_every_server_is_refused_loads_no_server_of_the_clis_own() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let script = format!(
+            r#"printf '%s\n' "$@" > '{captured}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            captured = captured.display(),
+        );
+        let settings = settings(&directory, &script).with_mcp_server(
+            "linear",
+            McpServer::remote("https://mcp.linear.app/mcp")
+                .with_header("Authorization", "Bearer ${LINEAR_TOKEN}"),
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let arguments: Vec<String> = std::fs::read_to_string(&captured)
+            .expect("the captured arguments")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert!(
+            arguments.contains(&"--strict-mcp-config".to_string()),
+            "{arguments:?}"
+        );
+        assert!(
+            !arguments.contains(&"--mcp-config".to_string()),
+            "{arguments:?}"
+        );
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.starts_with("mcp__")),
+            "{arguments:?}"
+        );
     }
 
     /// A stand-in for Claude that loads the repository's own settings, and

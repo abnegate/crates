@@ -176,6 +176,10 @@ pub struct CliSettings {
     pub web: bool,
     /// MCP servers to attach, whose tools are allowed alongside
     /// `permissions`. Claude only.
+    ///
+    /// Once any server here is enabled, the run loads the servers that
+    /// attach from it and no MCP server of the CLI's own, the user's and the
+    /// repository's included, even when none attaches.
     pub mcp: McpConfig,
     /// Where each run keeps its [execution logs](crate::log). `None` keeps none.
     pub log: Option<PathBuf>,
