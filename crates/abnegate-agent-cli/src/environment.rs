@@ -67,7 +67,9 @@ impl Environment {
                 }
             }
             for variable in &settings.allowed {
-                environment.allow(variable, host);
+                if !environment.removed.contains(&variable.as_str()) {
+                    environment.allow(variable, host);
+                }
             }
         }
         if matches!(settings.credential, Credential::Inherited) {
@@ -544,6 +546,20 @@ mod tests {
             !set(&inheriting).contains_key("LINEAR_API_URL"),
             "inherited, not set"
         );
+    }
+
+    /// The marker tells a copy of the agent started from one of its own
+    /// commands that it is nested, which it refuses or runs differently, so
+    /// an allowed name never carries it; only an explicit value does.
+    #[test]
+    fn allowing_the_nested_session_marker_never_passes_it() {
+        let settings = CliSettings::default().allow(["CLAUDECODE"]);
+        let environment = Environment::new(AgentKind::Claude, &settings, None, &host());
+        assert!(!set(&environment).contains_key("CLAUDECODE"));
+
+        let explicit = settings.with_environment("CLAUDECODE", "1");
+        let environment = Environment::new(AgentKind::Claude, &explicit, None, &host());
+        assert_eq!(set(&environment)["CLAUDECODE"].as_deref(), Some("1"));
     }
 
     #[test]

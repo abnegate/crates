@@ -114,7 +114,9 @@ pub struct CliSettings {
     /// [`CliSettings::inherit_environment`]. Every value passed this way but
     /// the proxy bypass list, `NO_PROXY` and `no_proxy`, is scrubbed from
     /// what the run writes down, like one set in
-    /// [`environment`](CliSettings::environment).
+    /// [`environment`](CliSettings::environment). The agent's
+    /// [nested-session marker](crate::AgentKind::scrubbed) is never passed
+    /// this way: a run that must see it sets it explicitly.
     pub allowed: BTreeSet<String>,
     /// Give the child the host's whole environment, less the agent's
     /// [scrubbed](crate::AgentKind::scrubbed) variables, instead of
