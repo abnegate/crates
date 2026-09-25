@@ -291,18 +291,23 @@ mod tests {
     fn constructors_sanitize_the_text_they_are_given() {
         let secret = "hunter2seventeen";
         let url = format!("postgres://app:{secret}@db.internal/app");
+        let control = "\u{1b}[31m";
+        let (head, _) = secret.split_at(secret.len() / 2);
+        let cut = MAXIMUM_ERROR_BODY_CHARACTERS - 1;
+        let secret_start = url.find(secret).expect("the URL carries the secret");
+        let padding = "x".repeat(cut - control.chars().count() - secret_start - head.len());
 
         let unreachable = Error::unreachable("database", format!("cannot connect to {url}"));
         let malformed = Error::malformed(format!("no client for {url}"));
-        let rate_limited = Error::rate_limited(&format!("\u{1b}[31m{url}"), None);
+        let rate_limited = Error::rate_limited(&format!("{control}{url}"), None);
         let smtp = Error::smtp(
             "smtp.example.test",
-            format!("\u{1b}[31m535 no account at {url}"),
+            format!("{control}535 no account at {url}"),
         );
         let rejected = Error::rejected(
             "hooks.slack.com",
             500,
-            &format!("\u{1b}[31m{url} {}", "x".repeat(4_096)),
+            &format!("{control}{padding}{url} {}", "x".repeat(4_096)),
         );
 
         for error in [&unreachable, &malformed, &rate_limited, &smtp, &rejected] {
@@ -313,7 +318,10 @@ mod tests {
         let Error::Rejected { body, .. } = &rejected else {
             panic!("expected a rejection, got {rejected:?}");
         };
-        assert!(!body.contains('\u{1b}'), "{body:?}");
+        assert!(
+            !body.contains(head),
+            "the body was cut through the credential before it was sanitized: {body:?}"
+        );
         assert!(body.chars().count() <= MAXIMUM_ERROR_BODY_CHARACTERS);
     }
 
