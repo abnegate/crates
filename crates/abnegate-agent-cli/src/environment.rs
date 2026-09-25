@@ -125,7 +125,9 @@ impl Environment {
             .filter_map(|name| self.lookup(name, host))
             .map(SecretValue::new)
             .collect();
-        self.secrets.extend(referenced);
+        for value in referenced {
+            self.secret(value);
+        }
         for (variable, value) in &mcp.environment {
             self.set(variable, value.clone());
         }
@@ -134,7 +136,7 @@ impl Environment {
             if whole_reference(text) && references(text).all(public) {
                 self.variables.insert(variable.clone(), value);
             } else {
-                self.secrets.push(template.clone());
+                self.secret(template.clone());
                 self.set(variable, value);
             }
         }
@@ -179,8 +181,7 @@ impl Environment {
             return;
         };
         if !DEFAULT_ENVIRONMENT.contains(&variable) && !BYPASS.contains(&variable) {
-            self.secrets
-                .push(SecretValue::new(value.to_string_lossy().into_owned()));
+            self.secret(SecretValue::new(value.to_string_lossy().into_owned()));
         }
         self.inherited.insert(variable.to_string(), value);
     }
@@ -197,8 +198,17 @@ impl Environment {
     }
 
     fn set(&mut self, variable: &str, value: SecretValue) {
-        self.secrets.push(value.clone());
+        self.secret(value.clone());
         self.variables.insert(variable.to_string(), value);
+    }
+
+    /// Scrub `value` from what the run writes down, unless it holds no
+    /// letter or digit: text such as the `:` a header's literal text can be
+    /// is part of every JSON line, and scrubbing it would break them all.
+    fn secret(&mut self, value: SecretValue) {
+        if value.expose().chars().any(char::is_alphanumeric) {
+            self.secrets.push(value);
+        }
     }
 }
 
@@ -232,6 +242,7 @@ mod tests {
     use crate::mcp::McpConfig;
     use crate::mcp::McpServer;
     use crate::mcp::expand;
+    use crate::scrubber::Scrubber;
     use crate::settings::CliSettings;
 
     fn host() -> impl Fn(&str) -> Option<OsString> {
@@ -683,6 +694,28 @@ mod tests {
 
         assert!(host.is_some(), "claude auth status printed no loggedIn");
         assert_eq!(child, host, "the allowlist changed the sign-in claude sees");
+    }
+
+    /// The literal text between two references in a header can be a lone
+    /// separator, and scrubbing it would break every JSON line the run
+    /// writes down.
+    #[test]
+    fn a_value_with_no_letter_or_digit_is_never_scrubbed() {
+        let settings = CliSettings::default()
+            .with_environment("SEPARATOR", "-")
+            .with_mcp_server(
+                "remote",
+                McpServer::remote("https://mcp.example.com/mcp")
+                    .with_header("Authorization", "${U}:${P}"),
+            );
+        let attachment = attached(&settings);
+        let environment =
+            Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
+
+        let scrubber = Scrubber::new(environment.secrets());
+
+        assert_eq!(scrubber.scrub(r#"{"a":"b"}"#), r#"{"a":"b"}"#);
+        assert_eq!(scrubber.scrub("a - b"), "a - b");
     }
 
     /// A proxy URL the child inherits can carry a password, and `Debug`
