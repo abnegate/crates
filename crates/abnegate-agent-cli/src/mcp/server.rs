@@ -33,14 +33,14 @@ const NAME_PUNCTUATION: [char; 2] = [UNDERSCORE, '-'];
 /// A server is either started as a local `command`, speaking over its stdin
 /// and stdout, or reached at a `url`: exactly one of the two must be set
 /// (see [`McpServer::valid`]). The same value reaches a model two ways: a
-/// CLI starts it from the file [`McpConfig::render`](crate::mcp::McpConfig::render)
-/// writes, or a launcher of its own, such as the MCP hub in `abnegate-agent`,
-/// starts a command server itself and gives it
+/// CLI run by a [`CliProvider`](crate::CliProvider) is given it in a file the
+/// provider writes, or a launcher of its own, such as the MCP hub in
+/// `abnegate-agent`, starts a command server itself and gives it
 /// [`McpServer::environment_policy`].
 ///
 /// Environment and header values are held as secrets, so a literal key never
-/// reaches a log line through `Debug`, and never reaches the rendered
-/// configuration file either: see [`McpAttachment`](crate::mcp::McpAttachment).
+/// reaches a log line through `Debug`, and never reaches the file a CLI is
+/// given either: see [`mcp`](crate::mcp).
 /// A `${VAR}` reference in a stdio server's command, arguments or
 /// environment is resolved here, as the CLI would resolve it, and the child
 /// is given the resolved value under a generated name, never the variable
@@ -213,11 +213,13 @@ impl McpServer {
 
     /// The same server with every `${VAR}` and `${VAR:-default}` in its
     /// command, arguments and environment values expanded through `lookup`,
-    /// as Claude Code expands them and as a child given the file
-    /// [`McpConfig::render`](crate::mcp::McpConfig::render) writes has them
-    /// resolved, for a launcher that starts the server itself. A reference to
-    /// a variable `lookup` does not give, with no default, is left as written,
-    /// as the CLI leaves it.
+    /// by the rules Claude Code expands them by, for a launcher that starts
+    /// the server itself: a set variable is taken even when empty, and a
+    /// reference to a variable `lookup` does not give, with no default, is
+    /// left as written, as the CLI leaves it. What each variable reads as is
+    /// `lookup`'s to say: a [`CliProvider`](crate::CliProvider) reads the
+    /// agent's sign-in variables as set but empty, and Claude Code its own
+    /// OAuth tokens.
     ///
     /// The URL and headers are left alone, since only a CLI attaches a remote
     /// server and it applies its own rules to both, and so is the working

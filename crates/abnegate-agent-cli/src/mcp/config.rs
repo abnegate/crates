@@ -267,7 +267,8 @@ impl McpConfig {
     }
 
     /// The servers that will actually attach to `agent`: none for an agent
-    /// that reads no MCP file (see [`McpConfig::render`]), and otherwise
+    /// whose CLI reads no MCP file, as Codex, which takes its servers from
+    /// its own `config.toml` alone, and otherwise
     /// those enabled, with a [valid](McpServer::valid) transport, which a
     /// strict CLI would otherwise reject along with every other server, a
     /// name and tool names safe to place in `--allowedTools`, which the CLI
@@ -294,7 +295,7 @@ impl McpConfig {
     /// MCP configuration has no field for, nor
     /// [`inherit_environment`](McpServer::inherit_environment): only a
     /// launcher that starts a server itself honours either.
-    pub fn render(&self, agent: AgentKind) -> io::Result<Option<McpAttachment>> {
+    pub(crate) fn render(&self, agent: AgentKind) -> io::Result<Option<McpAttachment>> {
         if !agent.reads_mcp_file() {
             return Ok(None);
         }
@@ -337,8 +338,9 @@ impl McpConfig {
         Ok(Some(placeholders.attachment(file)))
     }
 
-    /// The servers that attach to `agent` as [`McpConfig::render`] writes
-    /// them, safe for a log line.
+    /// The servers that attach to `agent`, safe for a log line: every
+    /// environment or header value masked unless it only names a variable,
+    /// and anything credential shaped in an argument or a URL redacted.
     pub fn redacted(&self, agent: AgentKind) -> Value {
         let servers: Map<String, Value> = self
             .attachable(agent)

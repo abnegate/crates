@@ -22,17 +22,16 @@ use tempfile::NamedTempFile;
 /// around them moves out. Other commands and arguments, and URLs, are written
 /// as they are, so a secret belongs in a reference there.
 #[derive(Debug)]
-#[non_exhaustive]
-pub struct McpAttachment {
+pub(crate) struct McpAttachment {
     /// The rendered file, readable by its owner alone and deleted when this
     /// drops, so this must outlive the child that reads it.
-    pub file: NamedTempFile,
+    pub(crate) file: NamedTempFile,
     /// Each generated variable that holds literal text, with the text: the
     /// child is given it as it is.
-    pub environment: BTreeMap<String, SecretValue>,
+    pub(crate) environment: BTreeMap<String, SecretValue>,
     /// Each generated variable that holds a stdio server's value referring
     /// to variables, with the value as configured: the child is given it with
     /// each `${VAR}` and `${VAR:-default}` resolved as the CLI would resolve
     /// it, and a reference nothing resolves left as written.
-    pub templates: BTreeMap<String, SecretValue>,
+    pub(crate) templates: BTreeMap<String, SecretValue>,
 }

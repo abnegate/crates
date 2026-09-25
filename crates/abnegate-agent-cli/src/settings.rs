@@ -129,8 +129,8 @@ pub struct CliSettings {
     /// variables and its [sign-in](crate::AgentKind::credentials) variables
     /// when the credential is [inherited](Credential::Inherited). An attached
     /// MCP server's values reach it under generated names either way: see
-    /// [`McpAttachment`](crate::McpAttachment). Anything else it needs, such
-    /// as a proxy, is [allowed](CliSettings::allow) or set explicitly.
+    /// [`mcp`](crate::mcp). Anything else it needs, such as a proxy, is
+    /// [allowed](CliSettings::allow) or set explicitly.
     pub inherit_environment: bool,
     /// Extra flags passed through verbatim, after the streaming flags and
     /// before the model. Nothing here is checked against the agent, except

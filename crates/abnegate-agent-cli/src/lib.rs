@@ -126,7 +126,6 @@ pub use crate::log::Record;
 pub use crate::log::default_log_directory;
 pub use crate::log::preview;
 pub use crate::log::resolve_log_root;
-pub use crate::mcp::McpAttachment;
 pub use crate::mcp::McpConfig;
 pub use crate::mcp::McpConfigError;
 pub use crate::mcp::McpServer;
