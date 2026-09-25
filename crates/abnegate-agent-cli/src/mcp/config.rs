@@ -924,6 +924,22 @@ mod tests {
         assert_eq!(config.attachable(AgentKind::Claude).count(), 1);
     }
 
+    /// The CLI reads `mcp__x___y` as server `x`'s tool `_y`, so a server
+    /// named `x_` would have its rules read as another server's.
+    #[test]
+    fn a_server_name_ending_in_an_underscore_never_attaches() {
+        let config = McpConfig::default()
+            .with_server("my", appwrite())
+            .with_server("my_", appwrite())
+            .with_server("_", appwrite())
+            .with_server("_my", appwrite());
+
+        assert_eq!(
+            config.allowed_tools(AgentKind::Claude),
+            ["mcp___my", "mcp__my"]
+        );
+    }
+
     #[test]
     fn a_configuration_reads_as_a_plain_map_of_servers() {
         let config: McpConfig = serde_json::from_value(serde_json::json!({

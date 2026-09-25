@@ -25,7 +25,8 @@ use crate::mcp::transport::McpTransport;
 
 const PREFIX: &str = "mcp__";
 const SEPARATOR: &str = "__";
-const NAME_PUNCTUATION: [char; 2] = ['_', '-'];
+const UNDERSCORE: char = '_';
+const NAME_PUNCTUATION: [char; 2] = [UNDERSCORE, '-'];
 
 /// One MCP server, as an MCP configuration document describes it.
 ///
@@ -275,11 +276,14 @@ impl McpServer {
 
     /// Whether `name`, and every tool this server names, holds only
     /// letters, digits, `_` and `-`, and so is safe in `--allowedTools`, and
-    /// `name` holds no `__`, which the CLI reads as the end of a server's
-    /// name, so that one server's rule can never cover another's tools.
+    /// `name` neither holds `__`, which the CLI reads as the end of a
+    /// server's name, nor ends in `_`, whose `mcp__x___tool` the CLI reads as
+    /// server `x`'s tool `_tool`, so that one server's rule can never cover
+    /// another's tools.
     pub fn nameable(&self, name: &str) -> bool {
         valid_name(name)
             && !name.contains(SEPARATOR)
+            && !name.ends_with(UNDERSCORE)
             && self.tools.iter().all(|tool| valid_name(tool))
     }
 
