@@ -5,15 +5,15 @@ use abnegate_secret::SecretValue;
 use tempfile::NamedTempFile;
 
 use crate::mcp::attachment::McpAttachment;
+use crate::mcp::segment::CLOSING;
+use crate::mcp::segment::OPENING;
+use crate::mcp::segment::Segment;
 
 /// The namespace every generated variable is named in. A remote server whose
 /// URL or headers refer to any name in it never attaches, so what the file
 /// moved out of one server's values never reaches another.
 pub(crate) const NAMESPACE: &str = "ABNEGATE_MCP_";
 const TOKEN_BYTES: usize = 16;
-const OPENING: &str = "${";
-const CLOSING: char = '}';
-const DEFAULT: &str = ":-";
 
 /// What a rendered MCP configuration leaves to the child's environment, each
 /// value under a generated variable named `ABNEGATE_MCP_<token>_<n>`, whose
@@ -82,7 +82,7 @@ impl Placeholders {
     pub(crate) fn separate(&mut self, value: &SecretValue) -> String {
         let mut rendered = String::new();
         let mut literal = String::new();
-        for segment in segments(value.expose()) {
+        for segment in Segment::split(value.expose()) {
             match segment {
                 Segment::Literal(text) => literal.push_str(text),
                 Segment::Reference { written, .. } => {
@@ -138,7 +138,7 @@ impl Placeholders {
 /// The variable each `${VAR}` or `${VAR:-default}` reference in `text`
 /// names, in order.
 pub(crate) fn references(text: &str) -> impl Iterator<Item = &str> {
-    segments(text)
+    Segment::split(text)
         .into_iter()
         .filter_map(|segment| match segment {
             Segment::Reference { name, .. } => Some(name),
@@ -157,7 +157,7 @@ fn refers(text: &str) -> bool {
 /// too.
 pub(crate) fn whole_reference(value: &str) -> bool {
     matches!(
-        segments(value.trim()).as_slice(),
+        Segment::split(value.trim()).as_slice(),
         [Segment::Reference { default: None, .. }]
     )
 }
@@ -169,7 +169,7 @@ pub(crate) fn whole_reference(value: &str) -> bool {
 /// default, is left as written, as the CLI leaves it.
 pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
     let mut expanded = String::with_capacity(template.len());
-    for segment in segments(template) {
+    for segment in Segment::split(template) {
         match segment {
             Segment::Literal(text) => expanded.push_str(text),
             Segment::Reference {
@@ -192,69 +192,9 @@ pub(crate) fn expand(template: &str, lookup: &dyn Fn(&str) -> Option<String>) ->
     expanded
 }
 
-/// A run of literal text, or one `${VAR}` or `${VAR:-default}` reference as
-/// `written`.
-enum Segment<'text> {
-    Literal(&'text str),
-    Reference {
-        written: &'text str,
-        name: &'text str,
-        default: Option<&'text str>,
-    },
-}
-
-/// `text` as literal runs and references, in order, read as Claude Code
-/// reads them: a `${` that does not open a reference to a variable is
-/// literal text, and reading goes on just past its `$`, so a reference
-/// inside it still counts; one never closed is literal to the end.
-fn segments(text: &str) -> Vec<Segment<'_>> {
-    let mut segments = Vec::new();
-    let mut literal = 0;
-    let mut cursor = 0;
-    while let Some(found) = text[cursor..].find(OPENING) {
-        let start = cursor + found;
-        let after = start + OPENING.len();
-        let Some(length) = text[after..].find(CLOSING) else {
-            break;
-        };
-        let end = after + length;
-        let expression = &text[after..end];
-        let (name, default) = match expression.split_once(DEFAULT) {
-            Some((name, default)) => (name, Some(default)),
-            None => (expression, None),
-        };
-        if !variable(name) {
-            cursor = start + 1;
-            continue;
-        }
-        if start > literal {
-            segments.push(Segment::Literal(&text[literal..start]));
-        }
-        segments.push(Segment::Reference {
-            written: &text[start..=end],
-            name,
-            default,
-        });
-        cursor = end + 1;
-        literal = cursor;
-    }
-    if literal < text.len() {
-        segments.push(Segment::Literal(&text[literal..]));
-    }
-    segments
-}
-
 /// `${variable}`.
 fn reference(variable: &str) -> String {
     format!("{OPENING}{variable}{CLOSING}")
-}
-
-fn variable(name: &str) -> bool {
-    let mut characters = name.chars();
-    characters
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 #[cfg(test)]

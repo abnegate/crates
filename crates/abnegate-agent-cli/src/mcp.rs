@@ -32,6 +32,7 @@ mod config_error;
 mod entry;
 mod mismatch;
 mod placeholders;
+mod segment;
 mod server;
 mod transport;
 
