@@ -30,9 +30,9 @@ impl McpHub {
     /// keeping only the tools each server [allows](McpServer::allows).
     ///
     /// A [disabled](McpServer::disabled) server is skipped. So is one reached
-    /// by URL, which only a CLI attaches, and one with neither a command nor
-    /// a URL, each with a warning. A server that fails to start or to answer
-    /// in time is logged and skipped.
+    /// by URL, which only a CLI attaches, and one that is not
+    /// [valid](McpServer::valid), each with a warning. A server that fails to
+    /// start or to answer in time is logged and skipped.
     pub async fn connect(config: &McpConfig) -> Self {
         Self::connect_with_timeout(config, CONNECT_TIMEOUT).await
     }

@@ -71,11 +71,15 @@ With the `mcp` feature, `McpConfig::from_environment` reads the servers an
 application configured under its own prefix: `ACME_MCP_SERVERS` inline,
 `ACME_MCP_CONFIG` naming a file, or `~/.acme/mcp.json`, each in the
 `mcpServers` shape. `mcp::with_defaults_and_mcp` launches every enabled command
-server and adds its tools to the default registry as `server__tool`. A server
-marked `"disabled": true`, or one reached by `url`, which only a CLI attaches,
-is skipped. Each server's child sees only the allowlisted environment plus its
-own `env`, unless it sets `inherit_environment`, and starts in its `cwd` when
-it names one.
+server and adds its tools to the default registry as `server__tool`: only the
+tools its `tools` list names, by the names a CLI gives them, when it has one. A
+server marked `"disabled": true`, one reached by `url`, which only a CLI
+attaches, or one that is not valid is skipped, and an entry that cannot be read
+is skipped with a warning while the rest load. Each `${VAR}` or
+`${VAR:-default}` in a server's command, arguments and `env` is expanded from
+this process's environment first, as Claude Code expands it. Each server's
+child sees only the allowlisted environment plus its own `env`, unless it sets
+`inherit_environment`, and starts in its `cwd` when it names one.
 
 This example needs the `mcp` feature, so it is not compiled with this README;
 the same example is compiled in the `mcp` module's documentation.

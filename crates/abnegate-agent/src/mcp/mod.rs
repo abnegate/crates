@@ -7,8 +7,9 @@
 //! each remote tool to a registry as `server__tool`, so one server cannot
 //! answer for another's tools or for a built-in. A server that fails to start
 //! or to answer in time is logged and skipped, and so is a
-//! [disabled](McpServer::disabled) one or one reached by URL, which only a
-//! CLI can attach.
+//! [disabled](McpServer::disabled) one, one that is not
+//! [valid](McpServer::valid), or one reached by URL, which only a CLI can
+//! attach.
 //!
 //! The configuration is `abnegate-agent-cli`'s, re-exported here, so one
 //! `mcp.json` drives both this client and a coding agent CLI.
