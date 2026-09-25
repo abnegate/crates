@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fmt;
 
 use abnegate_exec::DEFAULT_ENVIRONMENT;
 use abnegate_llm::Credential;
@@ -33,7 +34,9 @@ const BYPASS: &[&str] = &["NO_PROXY", "no_proxy"];
 /// no caller can know. A stdio server's references are resolved against
 /// what the child is given before those, falling back to the host, and only
 /// the resolved values are handed over: never the variables they name.
-#[derive(Debug)]
+///
+/// `Debug` names the variables and never prints a value: an inherited one,
+/// a proxy URL say, can carry a password.
 pub(crate) struct Environment {
     inherit: bool,
     removed: &'static [&'static str],
@@ -196,6 +199,19 @@ impl Environment {
     fn set(&mut self, variable: &str, value: SecretValue) {
         self.secrets.push(value.clone());
         self.variables.insert(variable.to_string(), value);
+    }
+}
+
+impl fmt::Debug for Environment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Environment")
+            .field("inherit", &self.inherit)
+            .field("removed", &self.removed)
+            .field("inherited", &self.inherited.keys().collect::<Vec<_>>())
+            .field("variables", &self.variables.keys().collect::<Vec<_>>())
+            .field("secrets", &self.secrets.len())
+            .finish()
     }
 }
 
@@ -667,6 +683,28 @@ mod tests {
 
         assert!(host.is_some(), "claude auth status printed no loggedIn");
         assert_eq!(child, host, "the allowlist changed the sign-in claude sees");
+    }
+
+    /// A proxy URL the child inherits can carry a password, and `Debug`
+    /// output ends up in logs.
+    #[test]
+    fn debug_names_the_variables_without_their_values() {
+        let host = |name: &str| match name {
+            "PATH" => Some(OsString::from("/usr/bin:/bin")),
+            "HTTPS_PROXY" => Some(OsString::from(
+                "http://user:hunter2seventeen@proxy.internal:3128",
+            )),
+            "HTTP_PROXY" => Some(OsString::from("http://TOKENVALUE12345@proxy")),
+            _ => None,
+        };
+        let settings = CliSettings::default().with_proxy_variables();
+        let environment = Environment::new(AgentKind::Claude, &settings, None, &host);
+
+        let debug = format!("{environment:?}");
+        assert!(debug.contains("HTTPS_PROXY"), "{debug}");
+        for value in ["hunter2seventeen", "TOKENVALUE12345", "/usr/bin"] {
+            assert!(!debug.contains(value), "{debug}");
+        }
     }
 
     #[test]
