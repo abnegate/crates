@@ -16,32 +16,44 @@ use crate::tool::ToolError;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A tool could not run.
     #[error("Tool error: {0}")]
     Tool(#[from] ToolError),
+    /// A run stopped short of an answer: its provider or its context
+    /// failed, or it ran out of iterations or of usable answers.
     #[error("Run error: {0}")]
     Run(#[from] RunError),
+    /// A name could not be an application's.
     #[error("Application error: {0}")]
     Application(#[from] ApplicationError),
+    /// A conversation could not be prepared for its model.
     #[error("Context error: {0}")]
     Context(#[from] ContextError),
+    /// A saved session could not be found, read or written.
     #[error("Session error: {0}")]
     Session(#[from] SessionError),
+    /// A conversation store refused or failed an operation.
     #[error("Chat store error: {0}")]
     Chat(#[from] ChatError),
+    /// An MCP server could not be started, reached or called.
     #[cfg(feature = "mcp")]
     #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
     #[error("MCP error: {0}")]
     Mcp(#[from] McpError),
+    /// An MCP configuration could not be read.
     #[cfg(feature = "mcp")]
     #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
     #[error("MCP config error: {0}")]
     McpConfig(#[from] McpConfigError),
+    /// A value could not be written as JSON, or read back from it.
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+    /// A file or a process could not be read, written or started.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
 
+/// A result whose failure is any of this crate's errors.
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
