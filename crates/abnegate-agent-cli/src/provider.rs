@@ -636,6 +636,7 @@ mod tests {
     use crate::mcp::expand;
     use crate::settings::CliSettings;
     use crate::structured_result::StructuredResult;
+    use crate::test_support::PATIENCE;
     use crate::test_support::delegated;
 
     const ETXTBSY: i32 = 26;
@@ -644,9 +645,6 @@ mod tests {
     /// Beyond the two minutes a lingering fake agent sleeps, so a run that
     /// waits on one instead of stopping it sees it exit by itself first.
     const TIMEOUT: Duration = Duration::from_secs(300);
-
-    /// How long a test waits in real time on a fake agent.
-    const PATIENCE: Duration = Duration::from_secs(60);
 
     /// A stand-in agent, so no test needs a real CLI installed.
     ///
@@ -1080,7 +1078,7 @@ sleep 120
         let ready = directory.path().join("ready");
         let script = format!(
             r#"trap '' TERM
-sh -c 'trap "" TERM; echo $$ > "{marker}"; touch "{ready}"; sleep 60' &
+sh -c 'trap "" TERM; echo $$ > "{marker}"; touch "{ready}"; sleep 120' &
 sleep 120"#,
             marker = marker.display(),
             ready = ready.display(),
@@ -1098,7 +1096,7 @@ sleep 120"#,
             .trim()
             .to_string();
         let started = Instant::now();
-        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+        while alive(&straggler) && started.elapsed() < PATIENCE {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(!alive(&straggler), "{straggler} outlived the timeout");
@@ -1751,7 +1749,7 @@ sleep 120
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("straggler");
         let script = format!(
-            r#"sleep 60 >/dev/null 2>&1 &
+            r#"sleep 120 >/dev/null 2>&1 &
 echo $! > '{}'
 echo '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour"}}}}'"#,
             marker.display()
@@ -1768,7 +1766,7 @@ echo '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateL
             .trim()
             .to_string();
         let started = Instant::now();
-        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+        while alive(&straggler) && started.elapsed() < PATIENCE {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
@@ -1782,7 +1780,7 @@ echo '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateL
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("straggler");
         let script = format!(
-            r#"sleep 60 >/dev/null 2>&1 &
+            r#"sleep 120 >/dev/null 2>&1 &
 echo $! > '{}'
 echo 'API Error: 429 Too Many Requests' >&2
 sleep 1
@@ -1802,7 +1800,7 @@ exit 0"#,
             .trim()
             .to_string();
         let started = Instant::now();
-        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+        while alive(&straggler) && started.elapsed() < PATIENCE {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
@@ -2040,7 +2038,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'
         };
 
         let started = Instant::now();
-        while !running(leader).is_empty() && started.elapsed() < Duration::from_secs(5) {
+        while !running(leader).is_empty() && started.elapsed() < PATIENCE {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(

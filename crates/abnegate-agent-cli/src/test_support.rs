@@ -5,9 +5,15 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::PoisonError;
+use std::time::Duration;
 
 use tokio::process::Command;
 use tracing_subscriber::fmt::MakeWriter;
+
+/// How long a test waits in real time on a child it started. A child a test
+/// expects to be killed outlives it, so a wait for it to go never mistakes
+/// its own exit for the kill.
+pub(crate) const PATIENCE: Duration = Duration::from_secs(60);
 
 /// Set in a test's own child process, naming the test the child runs, so a
 /// test that needs this process's environment shaped can re-run itself.

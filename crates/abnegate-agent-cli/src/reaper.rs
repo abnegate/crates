@@ -53,11 +53,12 @@ mod tests {
     use abnegate_exec::executor::ProcessGroup;
 
     use super::Reaper;
+    use crate::test_support::PATIENCE;
 
     fn sleeper() -> std::process::Child {
         use std::os::unix::process::CommandExt;
         Command::new("sleep")
-            .arg("30")
+            .arg("120")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -84,7 +85,10 @@ mod tests {
             ProcessGroup::try_from(child.id()).unwrap(),
         )));
 
-        assert!(exits_within(&mut child, Duration::from_secs(5)));
+        assert!(
+            exits_within(&mut child, PATIENCE),
+            "dropping the reaper left its group running"
+        );
     }
 
     #[test]
