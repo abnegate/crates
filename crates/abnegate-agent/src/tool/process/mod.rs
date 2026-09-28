@@ -165,11 +165,14 @@ async fn drain(mut pipe: impl AsyncRead + Unpin, capture: Arc<Mutex<Capture>>) {
 
 #[cfg(test)]
 mod tests {
-    use nix::sys::signal::kill;
-    use nix::unistd::Pid;
+    use tempfile::TempDir;
 
     use super::*;
+    use crate::test_support::PATIENCE;
     use crate::test_support::TIMEOUT;
+    use crate::test_support::expired;
+    use crate::test_support::gone;
+    use crate::test_support::timed;
 
     fn shell(line: &str) -> Command {
         let mut command = Command::new("sh");
@@ -177,31 +180,22 @@ mod tests {
         command
     }
 
-    async fn gone(pid: i32) -> bool {
-        for _ in 0..300 {
-            if kill(Pid::from_raw(pid), None).is_err() {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        false
-    }
-
     /// `sleep` holds the pipe `sh` handed it, so waiting for the pipe to
     /// close waited out the sleep, and once the call gave up only `sh` was
     /// killed. The call now returns once `sh` has, and takes `sleep` with it.
     #[tokio::test]
     async fn a_child_left_running_in_the_background_neither_holds_the_call_nor_outlives_it() {
-        let started = std::time::Instant::now();
-        let finished = run(shell("sleep 30 & echo $!"), Duration::from_secs(3))
-            .await
-            .expect("the command finishes");
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let line = format!("touch '{}'; sleep 120 & echo $!", started.display());
 
+        let (finished, waited) = timed(run(shell(&line), TIMEOUT), &started).await;
+
+        let finished = finished.expect("the command finishes");
         assert!(finished.status.success());
         assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "the call waited for the background child: {:?}",
-            started.elapsed()
+            waited < PATIENCE,
+            "the call waited for the background child: {waited:?}"
         );
         let pid: i32 = finished.stdout.trim().parse().expect("the child's pid");
         assert!(gone(pid).await, "sleep {pid} outlived the call");
@@ -209,15 +203,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_past_its_limit_is_killed_with_everything_it_started() {
-        let started = std::time::Instant::now();
-        let error = run(
-            shell("sleep 30 & echo $!; wait"),
-            Duration::from_millis(500),
-        )
-        .await
-        .expect_err("the command outlives its limit");
+        let directory = TempDir::new().expect("a temporary directory");
+        let spoken = directory.path().join("spoken");
+        let line = format!("sleep 120 & echo $!; touch '{}'; wait", spoken.display());
 
-        assert!(started.elapsed() < Duration::from_secs(5));
+        let (error, waited) = expired(run(shell(&line), TIMEOUT), &spoken).await;
+
+        let error = error.expect_err("the command outlives its limit");
+        assert!(
+            waited < PATIENCE,
+            "the call waited past its limit: {waited:?}"
+        );
         let message = error.to_string();
         assert!(message.contains("timed out"), "{message}");
         let pid: i32 = message

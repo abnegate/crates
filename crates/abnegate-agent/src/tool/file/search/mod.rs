@@ -424,8 +424,11 @@ mod tests {
 
     use super::*;
     use crate::test_support::CHILD_TEST;
+    use crate::test_support::PATIENCE;
     use crate::test_support::TIMEOUT;
     use crate::test_support::assert_passed;
+    use crate::test_support::expired;
+    use crate::test_support::timed;
 
     /// The variable ripgrep reads the path of its configuration file from.
     const CONFIGURATION: &str = "RIPGREP_CONFIG_PATH";
@@ -684,64 +687,98 @@ mod tests {
     /// stops printing, so only a reader that stops it returns at all.
     #[tokio::test]
     async fn a_search_stops_reading_once_it_has_its_results() {
-        let started = std::time::Instant::now();
-        let result = ripgrep(
-            shell("while :; do echo 'src/a.rs:1:match'; done"),
-            Path::new("src"),
-            5,
-            Duration::from_secs(30),
-        )
-        .await
-        .expect("the reader keeps what it read");
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let line = format!(
+            "touch '{}'; while :; do echo 'src/a.rs:1:match'; done",
+            started.display()
+        );
 
-        let output = result.output.unwrap();
+        let (result, waited) = timed(
+            ripgrep(shell(&line), Path::new("src"), 5, TIMEOUT),
+            &started,
+        )
+        .await;
+
+        let output = result
+            .expect("the reader keeps what it read")
+            .output
+            .unwrap();
         assert!(output.starts_with("Found 5 matches"), "{output}");
         assert!(output.contains("truncated at 5 results"), "{output}");
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(waited < PATIENCE, "the reader went on reading: {waited:?}");
     }
 
     #[tokio::test]
     async fn a_search_that_runs_out_of_time_reports_what_it_found() {
-        let started = std::time::Instant::now();
-        let result = ripgrep(
-            shell("echo 'a.rs:3:first'; exec sleep 30"),
-            Path::new("."),
-            MAXIMUM_SEARCH_RESULTS,
-            Duration::from_millis(300),
-        )
-        .await
-        .expect("a search out of time still answers");
+        let directory = TempDir::new().expect("a temporary directory");
+        let spoken = directory.path().join("spoken");
+        let line = format!(
+            "echo 'a.rs:3:first'; touch '{}'; exec sleep 120",
+            spoken.display()
+        );
 
-        let output = result.output.unwrap();
+        let (result, waited) = expired(
+            ripgrep(
+                shell(&line),
+                Path::new("."),
+                MAXIMUM_SEARCH_RESULTS,
+                TIMEOUT,
+            ),
+            &spoken,
+        )
+        .await;
+
+        let output = result
+            .expect("a search out of time still answers")
+            .output
+            .unwrap();
         assert!(output.contains("a.rs:3: first"), "{output}");
         assert!(
             output.contains("search stopped early: out of time"),
             "{output}"
         );
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(
+            waited < PATIENCE,
+            "the search waited on rg past its limit: {waited:?}"
+        );
     }
 
     /// A `rg` that closed its output but had not exited by the deadline
     /// handed the search to the walk, throwing away every match it printed.
     #[tokio::test]
     async fn a_search_whose_rg_outlives_its_output_reports_what_it_found() {
-        let started = std::time::Instant::now();
-        let result = ripgrep(
-            shell("echo 'a.rs:3:first'; exec >&-; exec sleep 30"),
-            Path::new("."),
-            MAXIMUM_SEARCH_RESULTS,
-            Duration::from_millis(300),
-        )
-        .await
-        .expect("a search out of time still answers");
+        let directory = TempDir::new().expect("a temporary directory");
+        let spoken = directory.path().join("spoken");
+        let line = format!(
+            "echo 'a.rs:3:first'; exec >&-; touch '{}'; exec sleep 120",
+            spoken.display()
+        );
 
-        let output = result.output.unwrap();
+        let (result, waited) = expired(
+            ripgrep(
+                shell(&line),
+                Path::new("."),
+                MAXIMUM_SEARCH_RESULTS,
+                TIMEOUT,
+            ),
+            &spoken,
+        )
+        .await;
+
+        let output = result
+            .expect("a search out of time still answers")
+            .output
+            .unwrap();
         assert!(output.contains("a.rs:3: first"), "{output}");
         assert!(
             output.contains("search stopped early: out of time"),
             "{output}"
         );
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(
+            waited < PATIENCE,
+            "the search waited on rg past its limit: {waited:?}"
+        );
     }
 
     /// `rg` exits 2 when it could not read part of the tree, having still
