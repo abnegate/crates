@@ -5,8 +5,9 @@
 
 use std::time::Instant;
 
+use reqwest::Client;
+use reqwest::Response;
 use reqwest::redirect::Policy;
-use reqwest::{Client, Response};
 
 use crate::config::WebSearchConfig;
 use crate::entry::Entry;
@@ -14,7 +15,8 @@ use crate::error::Error;
 use crate::hit::SearchHit;
 use crate::observe::record;
 use crate::outcome::Outcome;
-use crate::query::{build_search_url, sanitize_query};
+use crate::query::build_search_url;
+use crate::query::sanitize_query;
 use crate::reply::Reply;
 use crate::time_range::TimeRange;
 
@@ -129,12 +131,19 @@ mod tests {
     use super::*;
     use crate::observe::observe_searches;
     use serde_json::json;
-    use std::sync::{Mutex, PoisonError};
+    use std::sync::Mutex;
+    use std::sync::PoisonError;
     use std::time::Duration;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
-    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    use wiremock::matchers::query_param;
+    use wiremock::matchers::query_param_is_missing;
 
     fn test_client(query_url: String, result_count: usize) -> SearxngClient {
         SearxngClient::new(

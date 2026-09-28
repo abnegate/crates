@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Whether the model may, must not, or must call a tool, without naming one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

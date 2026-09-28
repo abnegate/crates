@@ -16,13 +16,22 @@ use crate::http::POLL_TIMEOUT;
 use crate::http::authorize;
 use crate::lora::TrainError;
 use crate::recipe::TrainingModel;
-use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use reqwest::header::CONTENT_DISPOSITION;
+use reqwest::header::CONTENT_TYPE;
+use serde::Deserialize;
+use serde::Serialize;
+use serde_json::Map;
+use serde_json::Value;
+use serde_json::json;
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Component, Path, PathBuf};
+use std::fs;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::io;
+use std::io::Write;
+use std::path::Component;
+use std::path::Path;
+use std::path::PathBuf;
 
 use std::time::Duration;
 use uuid::Uuid;
@@ -1102,9 +1111,14 @@ pub(crate) fn architecture(model: &TrainingModel) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recipe::{Recipe, RecipeCatalog};
-    use wiremock::matchers::{method, path, query_param};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use crate::recipe::Recipe;
+    use crate::recipe::RecipeCatalog;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    use wiremock::matchers::query_param;
 
     const DATASETS: [usize; 4] = [8, 24, 100, 300];
     const HEALTHY_PASSES: std::ops::RangeInclusive<f64> = 17.0..=19.0;

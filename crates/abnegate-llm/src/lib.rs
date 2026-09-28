@@ -83,32 +83,97 @@ mod wire;
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
-pub use crate::client::{LlmClient, LlmConfig, RequestOptions};
-pub use crate::cost::{
-    CostEstimate, CostEstimator, CostLineItem, CostStrategy, ModelPricing, PricingUnit,
-    TaskCategory, TaskSpecification, default_pricing,
-};
+pub use crate::client::LlmClient;
+pub use crate::client::LlmConfig;
+pub use crate::client::RequestOptions;
+pub use crate::cost::CostEstimate;
+pub use crate::cost::CostEstimator;
+pub use crate::cost::CostLineItem;
+pub use crate::cost::CostStrategy;
+pub use crate::cost::ModelPricing;
+pub use crate::cost::PricingUnit;
+pub use crate::cost::TaskCategory;
+pub use crate::cost::TaskSpecification;
+pub use crate::cost::default_pricing;
 pub use crate::error::Error;
-pub use crate::hardware::{GpuType, MachineProfile, ModelRecommendation, RecommendedModels};
-pub use crate::modality::{
-    AiClient, AiError, AudioProvider, AudioProviderConfig, AudioResponse, CompletionBridge,
-    EmbeddingProvider, EmbeddingProviderConfig, Exchange, ImageEditRequest, ImageProvider,
-    ImageProviderConfig, ImageRequest, ImageResponse, Model3DFormat, Model3DProvider,
-    Model3DProviderConfig, Model3DRequest, Model3DResponse, MusicRequest, ProviderConfig,
-    ResponseFormat, SoundEffectRequest, StructuredResponse, TextProvider, TextProviderConfig,
-    TextRequest, TextResponse, TranscriptionProvider, TranscriptionProviderConfig,
-    TranscriptionResponse, TranscriptionSegment, VideoProvider, VideoProviderConfig, VideoRequest,
-    VideoResponse, Voice, VoiceProvider, VoiceProviderConfig, VoiceRequest,
-};
+pub use crate::hardware::GpuType;
+pub use crate::hardware::MachineProfile;
+pub use crate::hardware::ModelRecommendation;
+pub use crate::hardware::RecommendedModels;
+pub use crate::modality::AiClient;
+pub use crate::modality::AiError;
+pub use crate::modality::AudioProvider;
+pub use crate::modality::AudioProviderConfig;
+pub use crate::modality::AudioResponse;
+pub use crate::modality::CompletionBridge;
+pub use crate::modality::EmbeddingProvider;
+pub use crate::modality::EmbeddingProviderConfig;
+pub use crate::modality::Exchange;
+pub use crate::modality::ImageEditRequest;
+pub use crate::modality::ImageProvider;
+pub use crate::modality::ImageProviderConfig;
+pub use crate::modality::ImageRequest;
+pub use crate::modality::ImageResponse;
+pub use crate::modality::Model3DFormat;
+pub use crate::modality::Model3DProvider;
+pub use crate::modality::Model3DProviderConfig;
+pub use crate::modality::Model3DRequest;
+pub use crate::modality::Model3DResponse;
+pub use crate::modality::MusicRequest;
+pub use crate::modality::ProviderConfig;
+pub use crate::modality::ResponseFormat;
+pub use crate::modality::SoundEffectRequest;
+pub use crate::modality::StructuredResponse;
+pub use crate::modality::TextProvider;
+pub use crate::modality::TextProviderConfig;
+pub use crate::modality::TextRequest;
+pub use crate::modality::TextResponse;
+pub use crate::modality::TranscriptionProvider;
+pub use crate::modality::TranscriptionProviderConfig;
+pub use crate::modality::TranscriptionResponse;
+pub use crate::modality::TranscriptionSegment;
+pub use crate::modality::VideoProvider;
+pub use crate::modality::VideoProviderConfig;
+pub use crate::modality::VideoRequest;
+pub use crate::modality::VideoResponse;
+pub use crate::modality::Voice;
+pub use crate::modality::VoiceProvider;
+pub use crate::modality::VoiceProviderConfig;
+pub use crate::modality::VoiceRequest;
 pub use crate::parse_error::ParseError;
-pub use crate::provider::{
-    Capabilities, Completion, CompletionProvider, CompletionRequest, Credential, ExitStatus,
-    HttpProvider, ProviderError, ProviderKind, Router, SelectionStrategy, Weighted,
-};
-pub use crate::reasoning::{Effort, ReasoningEffort};
-pub use crate::wire::{
-    ChatRequest, ChatResponse, ChatStreamChunk, Choice, ContentPart, FunctionCall,
-    FunctionDefinition, GeneratedImage, ImageUrl, Message, Role, SpecificFunction, StreamChoice,
-    StreamDelta, StreamFunctionCall, StreamToolCall, ToolCall, ToolChoice, ToolDefinition,
-    ToolMode, Usage, wire_arguments,
-};
+pub use crate::provider::Capabilities;
+pub use crate::provider::Completion;
+pub use crate::provider::CompletionProvider;
+pub use crate::provider::CompletionRequest;
+pub use crate::provider::Credential;
+pub use crate::provider::ExitStatus;
+pub use crate::provider::HttpProvider;
+pub use crate::provider::ProviderError;
+pub use crate::provider::ProviderKind;
+pub use crate::provider::Router;
+pub use crate::provider::SelectionStrategy;
+pub use crate::provider::Weighted;
+pub use crate::reasoning::Effort;
+pub use crate::reasoning::ReasoningEffort;
+pub use crate::wire::ChatRequest;
+pub use crate::wire::ChatResponse;
+pub use crate::wire::ChatStreamChunk;
+pub use crate::wire::Choice;
+pub use crate::wire::ContentPart;
+pub use crate::wire::FunctionCall;
+pub use crate::wire::FunctionDefinition;
+pub use crate::wire::GeneratedImage;
+pub use crate::wire::ImageUrl;
+pub use crate::wire::Message;
+pub use crate::wire::Role;
+pub use crate::wire::SpecificFunction;
+pub use crate::wire::StreamChoice;
+pub use crate::wire::StreamDelta;
+pub use crate::wire::StreamFunctionCall;
+pub use crate::wire::StreamToolCall;
+pub use crate::wire::ToolCall;
+pub use crate::wire::ToolChoice;
+pub use crate::wire::ToolDefinition;
+pub use crate::wire::ToolMode;
+pub use crate::wire::Usage;
+pub use crate::wire::wire_arguments;

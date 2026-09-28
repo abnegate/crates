@@ -1,10 +1,15 @@
 use std::cmp::Ordering;
 
-use crate::cost::{
-    CostEstimate, CostLineItem, CostStrategy, ModelPricing, PricingUnit, TaskCategory,
-    TaskSpecification, default_pricing,
-};
-use crate::hardware::{MachineProfile, NO_LOCAL_MODEL};
+use crate::cost::CostEstimate;
+use crate::cost::CostLineItem;
+use crate::cost::CostStrategy;
+use crate::cost::ModelPricing;
+use crate::cost::PricingUnit;
+use crate::cost::TaskCategory;
+use crate::cost::TaskSpecification;
+use crate::cost::default_pricing;
+use crate::hardware::MachineProfile;
+use crate::hardware::NO_LOCAL_MODEL;
 
 const LOCAL_PROVIDER: &str = "local";
 const LOCAL_SPEED_SCORE: f64 = 0.3;
@@ -268,7 +273,9 @@ fn matching_models(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hardware::{GpuType, ModelRecommendation, RecommendedModels};
+    use crate::hardware::GpuType;
+    use crate::hardware::ModelRecommendation;
+    use crate::hardware::RecommendedModels;
 
     fn task(label: &str, category: TaskCategory, quantity: u32) -> TaskSpecification {
         TaskSpecification {

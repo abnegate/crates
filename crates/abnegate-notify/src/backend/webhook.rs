@@ -4,14 +4,17 @@ use std::time::Duration;
 
 use abnegate_secret::sanitize;
 use futures::StreamExt;
+use reqwest::Client;
+use reqwest::Response;
+use reqwest::StatusCode;
 use reqwest::redirect::Policy;
-use reqwest::{Client, Response, StatusCode};
 use serde_json::Value;
 
 use crate::endpoint::Endpoint;
 use crate::error::Error;
 use crate::error::MAXIMUM_ERROR_BODY_CHARACTERS;
-use crate::fanout::{DEFAULT_TIMEOUT, MINIMUM_TIMEOUT};
+use crate::fanout::DEFAULT_TIMEOUT;
+use crate::fanout::MINIMUM_TIMEOUT;
 use crate::text::truncate;
 
 const USER_AGENT: &str = concat!("abnegate-notify/", env!("CARGO_PKG_VERSION"));
@@ -153,8 +156,11 @@ fn retry_after(response: &Response) -> Option<Duration> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     async fn webhook(server: &MockServer) -> Webhook {
         Webhook::new(Endpoint::for_test(&format!("{}/hook", server.uri()))).expect("client")

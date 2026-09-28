@@ -1,5 +1,6 @@
 use abnegate_secret::SecretValue;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Which video provider to use, and how to reach it.
 ///

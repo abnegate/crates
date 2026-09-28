@@ -1,6 +1,7 @@
 //! Choosing which provider answers a request.
 
-use sha2::{Digest, Sha256};
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::provider::weighted::Weighted;
 
@@ -73,7 +74,8 @@ pub fn sample(key: &str) -> f64 {
 mod tests {
     use std::sync::Arc;
 
-    use super::{choose, sample};
+    use super::choose;
+    use super::sample;
     use crate::provider::testing::StubProvider;
     use crate::provider::weighted::Weighted;
 

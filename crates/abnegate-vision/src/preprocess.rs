@@ -1,9 +1,16 @@
 //! Fits a decoded raster into the model's input tensor.
 
-use fast_image_resize::images::{Image, ImageRef};
-use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
+use fast_image_resize::FilterType;
+use fast_image_resize::PixelType;
+use fast_image_resize::ResizeAlg;
+use fast_image_resize::ResizeOptions;
+use fast_image_resize::Resizer;
+use fast_image_resize::images::Image;
+use fast_image_resize::images::ImageRef;
 
-use crate::decode::{Layout, Orientation, Raster};
+use crate::decode::Layout;
+use crate::decode::Orientation;
+use crate::decode::Raster;
 use crate::gravity::Rectangle;
 
 mod error;

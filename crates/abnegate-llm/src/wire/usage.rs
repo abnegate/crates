@@ -1,5 +1,7 @@
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
 use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize};
 
 /// Token usage statistics.
 ///

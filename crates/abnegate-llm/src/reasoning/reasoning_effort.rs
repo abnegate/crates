@@ -1,9 +1,11 @@
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::parse_error::ParseError;
-use crate::reasoning::{Effort, classify};
+use crate::reasoning::Effort;
+use crate::reasoning::classify;
 
 const KIND: &str = "reasoning effort";
 

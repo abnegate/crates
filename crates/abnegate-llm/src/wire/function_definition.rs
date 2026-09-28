@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// The function a [`ToolDefinition`](crate::ToolDefinition) offers the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]

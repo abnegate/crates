@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A clip a [`VideoProvider`](crate::VideoProvider) made.
 #[derive(Debug, Clone, Serialize, Deserialize)]

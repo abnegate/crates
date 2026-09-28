@@ -25,8 +25,11 @@ mod verdict;
 pub use rejection::Rejection;
 pub use verdict::Verdict;
 
-use abnegate_vision::crop::{self, Region, Target};
-use abnegate_vision::decode::{self, Raster};
+use abnegate_vision::crop;
+use abnegate_vision::crop::Region;
+use abnegate_vision::crop::Target;
+use abnegate_vision::decode;
+use abnegate_vision::decode::Raster;
 
 /// The smallest set [`crate::dataset::inspect`] considers able to teach one
 /// subject, so screening never cuts a set below it.
@@ -320,7 +323,10 @@ fn fingerprint(greyscale: &Greyscale) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageEncoder, Rgb, RgbImage, imageops};
+    use image::ImageEncoder;
+    use image::Rgb;
+    use image::RgbImage;
+    use image::imageops;
     use std::sync::LazyLock;
 
     const RESOLUTION: u32 = 512;

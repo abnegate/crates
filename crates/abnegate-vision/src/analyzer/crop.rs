@@ -1,7 +1,8 @@
 //! A crop and the decision behind it.
 
 use crate::analyzer::focus::Focus;
-use crate::crop::{Region, Rendered};
+use crate::crop::Region;
+use crate::crop::Rendered;
 
 /// A subject-aware crop and the decision behind it.
 #[derive(Debug, Clone)]

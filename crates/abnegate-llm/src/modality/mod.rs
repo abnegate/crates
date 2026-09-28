@@ -51,11 +51,15 @@ pub use crate::modality::ai_error::AiError;
 pub use crate::modality::audio_provider::AudioProvider;
 pub use crate::modality::audio_response::AudioResponse;
 pub use crate::modality::completion_bridge::CompletionBridge;
-pub use crate::modality::config::{
-    AudioProviderConfig, EmbeddingProviderConfig, ImageProviderConfig, Model3DProviderConfig,
-    ProviderConfig, TextProviderConfig, TranscriptionProviderConfig, VideoProviderConfig,
-    VoiceProviderConfig,
-};
+pub use crate::modality::config::AudioProviderConfig;
+pub use crate::modality::config::EmbeddingProviderConfig;
+pub use crate::modality::config::ImageProviderConfig;
+pub use crate::modality::config::Model3DProviderConfig;
+pub use crate::modality::config::ProviderConfig;
+pub use crate::modality::config::TextProviderConfig;
+pub use crate::modality::config::TranscriptionProviderConfig;
+pub use crate::modality::config::VideoProviderConfig;
+pub use crate::modality::config::VoiceProviderConfig;
 pub use crate::modality::embedding_provider::EmbeddingProvider;
 pub use crate::modality::exchange::Exchange;
 pub use crate::modality::image_edit_request::ImageEditRequest;

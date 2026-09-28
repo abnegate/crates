@@ -2,13 +2,18 @@
 
 use std::path::Path;
 
-use crate::crop::{Target, plan, render};
-use crate::decode::{self, Raster};
+use crate::crop::Target;
+use crate::crop::plan;
+use crate::crop::render;
+use crate::decode;
+use crate::decode::Raster;
 use crate::exclusive::Exclusive;
 use crate::gravity::Rectangle;
 use crate::gravity::from_saliency_region;
 use crate::preprocess::Preprocessor;
-use crate::saliency::{INPUT_HEIGHT, INPUT_WIDTH, Model};
+use crate::saliency::INPUT_HEIGHT;
+use crate::saliency::INPUT_WIDTH;
+use crate::saliency::Model;
 
 mod crop;
 mod error;

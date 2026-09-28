@@ -1,6 +1,10 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::hardware::{GpuType, ModelRecommendation, NO_LOCAL_MODEL, RecommendedModels};
+use crate::hardware::GpuType;
+use crate::hardware::ModelRecommendation;
+use crate::hardware::NO_LOCAL_MODEL;
+use crate::hardware::RecommendedModels;
 
 #[cfg(any(target_os = "macos", test))]
 const BYTES_PER_GIGABYTE: f64 = 1024.0 * 1024.0 * 1024.0;

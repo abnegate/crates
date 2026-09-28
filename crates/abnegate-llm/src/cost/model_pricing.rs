@@ -1,6 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::cost::{PricingUnit, TaskCategory};
+use crate::cost::PricingUnit;
+use crate::cost::TaskCategory;
 
 /// What one model costs, and how good and how fast it is.
 #[derive(Debug, Clone, Serialize, Deserialize)]

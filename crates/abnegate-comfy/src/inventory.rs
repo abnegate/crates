@@ -8,10 +8,15 @@ pub use item::InventoryItem;
 pub(crate) use weight_document::WeightDocument;
 pub use weight_sidecar::WeightSidecar;
 
-use crate::recipe::{MediaKind, Recipe, RecipeCatalog, RequiredFile, sanitize_weight_filename};
+use crate::recipe::MediaKind;
+use crate::recipe::Recipe;
+use crate::recipe::RecipeCatalog;
+use crate::recipe::RequiredFile;
+use crate::recipe::sanitize_weight_filename;
 use crate::train::Contract;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 /// Extension of every weight the inventory lists.

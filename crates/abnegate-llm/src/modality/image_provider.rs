@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 
-use crate::modality::{ImageEditRequest, ImageRequest, ImageResponse};
+use crate::modality::ImageEditRequest;
+use crate::modality::ImageRequest;
+use crate::modality::ImageResponse;
 use crate::provider::ProviderError;
 
 #[async_trait]

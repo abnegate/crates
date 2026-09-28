@@ -15,7 +15,9 @@ pub mod openai;
 mod transport;
 
 #[cfg(feature = "anthropic")]
-pub use crate::modality::vendor::anthropic::{AnthropicAuthentication, AnthropicProvider};
+pub use crate::modality::vendor::anthropic::AnthropicAuthentication;
+#[cfg(feature = "anthropic")]
+pub use crate::modality::vendor::anthropic::AnthropicProvider;
 #[cfg(feature = "google")]
 pub use crate::modality::vendor::google::GeminiProvider;
 #[cfg(test)]

@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A sound effect for an [`AudioProvider`](crate::AudioProvider) to make.
 #[derive(Debug, Clone, Serialize, Deserialize)]

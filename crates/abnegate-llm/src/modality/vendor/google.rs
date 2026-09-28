@@ -7,10 +7,12 @@ use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Url;
 
+use crate::modality::ResponseFormat;
+use crate::modality::StructuredResponse;
+use crate::modality::TextProvider;
+use crate::modality::TextRequest;
+use crate::modality::TextResponse;
 use crate::modality::vendor::transport::Transport;
-use crate::modality::{
-    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
-};
 use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -207,8 +209,11 @@ impl TextProvider for GeminiProvider {
 
 #[cfg(test)]
 mod tests {
-    use wiremock::matchers::{header, method};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::header;
+    use wiremock::matchers::method;
 
     use super::*;
 

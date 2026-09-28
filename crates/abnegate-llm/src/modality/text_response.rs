@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 const DEFAULT_FINISH_REASON: &str = "stop";
 

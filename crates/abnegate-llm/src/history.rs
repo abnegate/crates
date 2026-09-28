@@ -4,7 +4,10 @@
 //! vision model accepts, and cannot round-trip. A stored history uses these two
 //! functions instead, through `#[serde(with = "abnegate_llm::history")]`.
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
+use serde::Serializer;
 
 use crate::wire::GeneratedImage;
 use crate::wire::ImageUrl;
@@ -76,7 +79,8 @@ pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Mes
 
 #[cfg(test)]
 mod tests {
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
+    use serde::Serialize;
 
     use crate::wire::Message;
     use crate::wire::Role;

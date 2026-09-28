@@ -1,6 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::cost::{CostLineItem, CostStrategy};
+use crate::cost::CostLineItem;
+use crate::cost::CostStrategy;
 
 /// What a batch of tasks is expected to cost.
 #[derive(Debug, Clone, Serialize, Deserialize)]

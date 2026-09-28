@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// The model name a slot with no local model holds, which
 /// [`CostEstimator::with_hardware`](crate::CostEstimator::with_hardware)

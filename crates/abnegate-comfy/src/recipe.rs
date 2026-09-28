@@ -20,7 +20,8 @@ pub use training_adapter::TrainingAdapter;
 pub use training_model::TrainingModel;
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 

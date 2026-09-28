@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
-use crate::modality::{VideoRequest, VideoResponse};
+use crate::modality::VideoRequest;
+use crate::modality::VideoResponse;
 use crate::provider::ProviderError;
 
 #[async_trait]

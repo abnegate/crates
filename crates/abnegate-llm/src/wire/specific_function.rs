@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// The function a [`ToolChoice`](crate::ToolChoice) forces the model to call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

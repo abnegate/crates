@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 
-use crate::modality::{AudioResponse, Voice, VoiceRequest};
+use crate::modality::AudioResponse;
+use crate::modality::Voice;
+use crate::modality::VoiceRequest;
 use crate::provider::ProviderError;
 
 #[async_trait]

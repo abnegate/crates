@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use futures::Stream;
 
-use crate::modality::{StructuredResponse, TextRequest, TextResponse};
+use crate::modality::StructuredResponse;
+use crate::modality::TextRequest;
+use crate::modality::TextResponse;
 use crate::provider::ProviderError;
 
 /// A source of text, one prompt at a time.

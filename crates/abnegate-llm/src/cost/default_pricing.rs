@@ -1,4 +1,6 @@
-use crate::cost::{ModelPricing, PricingUnit, TaskCategory};
+use crate::cost::ModelPricing;
+use crate::cost::PricingUnit;
+use crate::cost::TaskCategory;
 
 /// The shipped pricing table: published list prices, with a quality and speed
 /// score for each model.

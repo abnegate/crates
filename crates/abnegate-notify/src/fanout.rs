@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::{Id, JoinSet};
+use tokio::task::Id;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::delivery::Delivery;
@@ -157,11 +158,14 @@ fn describe(notifier: &dyn Notifier, outcome: Result<(), Error>) -> Delivery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Discord, Slack};
+    use crate::backend::Discord;
+    use crate::backend::Slack;
     use crate::channel::Channel;
     use crate::severity::Severity;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
     use wiremock::matchers::method;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
     async fn real_backends_deliver_together() {

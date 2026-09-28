@@ -41,6 +41,7 @@ pub use crate::provider::http::HttpProvider;
 pub use crate::provider::kind::ProviderKind;
 pub use crate::provider::request::CompletionRequest;
 pub use crate::provider::router::Router;
-pub use crate::provider::selection::{choose, sample};
+pub use crate::provider::selection::choose;
+pub use crate::provider::selection::sample;
 pub use crate::provider::strategy::SelectionStrategy;
 pub use crate::provider::weighted::Weighted;

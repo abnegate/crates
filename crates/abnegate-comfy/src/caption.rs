@@ -15,9 +15,12 @@ pub use draft::Draft;
 pub use image::CaptionImage;
 pub use request::CaptionRequest;
 
-use abnegate_llm::{LlmClient, LlmConfig, Message};
+use abnegate_llm::LlmClient;
+use abnegate_llm::LlmConfig;
+use abnegate_llm::Message;
 use abnegate_secret::SecretValue;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
@@ -291,8 +294,13 @@ fn tidy(answer: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_string_contains, header, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_string_contains;
+    use wiremock::matchers::header;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     fn config(model: &str) -> Config {
         Config {

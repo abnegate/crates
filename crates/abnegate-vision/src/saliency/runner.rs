@@ -1,6 +1,8 @@
 //! The session and the run options it is always driven with.
 
-use ort::session::{HasSelectedOutputs, RunOptions, Session};
+use ort::session::HasSelectedOutputs;
+use ort::session::RunOptions;
+use ort::session::Session;
 
 pub(crate) struct Runner {
     pub(crate) session: Session,

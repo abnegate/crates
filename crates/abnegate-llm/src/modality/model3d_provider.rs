@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
-use crate::modality::{Model3DRequest, Model3DResponse};
+use crate::modality::Model3DRequest;
+use crate::modality::Model3DResponse;
 use crate::provider::ProviderError;
 
 #[async_trait]

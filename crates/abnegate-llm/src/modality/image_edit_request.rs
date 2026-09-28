@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A change for an [`ImageProvider`](crate::ImageProvider) to make to an
 /// existing image.

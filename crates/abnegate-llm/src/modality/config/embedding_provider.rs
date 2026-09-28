@@ -1,5 +1,6 @@
 use abnegate_secret::SecretValue;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Which embedding provider to use, and how to reach it.
 ///

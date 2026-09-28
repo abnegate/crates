@@ -18,9 +18,12 @@ mod models;
 pub use error::SubjectError;
 
 use crate::config::Config;
-use abnegate_vision::crop::{self, Rendered, Target};
+use abnegate_vision::Raster;
+use abnegate_vision::crop;
+use abnegate_vision::crop::Rendered;
+use abnegate_vision::crop::Target;
+use abnegate_vision::decode;
 use abnegate_vision::gravity::Point;
-use abnegate_vision::{Raster, decode};
 
 /// The centre of the frame, and the answer whenever nothing better is known.
 pub const CENTRE: Point = Point { x: 0.5, y: 0.5 };
@@ -137,7 +140,8 @@ fn centre(
     content: abnegate_vision::gravity::Rectangle,
     bias: &[f32],
 ) -> Option<Point> {
-    use abnegate_vision::saliency::{INPUT_HEIGHT, INPUT_WIDTH};
+    use abnegate_vision::saliency::INPUT_HEIGHT;
+    use abnegate_vision::saliency::INPUT_WIDTH;
 
     let peak = bias.iter().copied().fold(0.0f32, f32::max);
     let side = (bias.len() as f64).sqrt() as usize;

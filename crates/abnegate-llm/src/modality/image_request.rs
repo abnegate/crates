@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// An image for an [`ImageProvider`](crate::ImageProvider) to generate.
 #[derive(Debug, Clone, Serialize, Deserialize)]

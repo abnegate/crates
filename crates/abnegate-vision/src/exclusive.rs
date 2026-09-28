@@ -1,6 +1,8 @@
 //! A value used by one caller at a time.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::PoisonError;
 
 /// A mutex whose value outlives a panic in whoever held it.
 ///
@@ -22,7 +24,8 @@ impl<T> Exclusive<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
 
     use super::*;
 

@@ -104,7 +104,9 @@ fn is_high(lower: &str, text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Effort, ReasoningEffort, classify};
+    use super::Effort;
+    use super::ReasoningEffort;
+    use super::classify;
 
     #[test]
     fn auto_picks_effort_from_the_request() {

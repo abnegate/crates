@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// One task within a [`CostEstimate`](crate::cost::CostEstimate), and what it
 /// is expected to cost.

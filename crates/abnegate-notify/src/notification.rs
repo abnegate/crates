@@ -1,7 +1,8 @@
 //! What gets delivered.
 
 use abnegate_secret::sanitize_owned;
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use chrono::Utc;
 use url::Url;
 
 use crate::field::Field;

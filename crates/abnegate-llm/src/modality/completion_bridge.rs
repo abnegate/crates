@@ -2,8 +2,13 @@ use async_trait::async_trait;
 use futures::Stream;
 
 use crate::client::RequestOptions;
-use crate::modality::{StructuredResponse, TextProvider, TextRequest, TextResponse};
-use crate::provider::{CompletionProvider, CompletionRequest, ProviderError};
+use crate::modality::StructuredResponse;
+use crate::modality::TextProvider;
+use crate::modality::TextRequest;
+use crate::modality::TextResponse;
+use crate::provider::CompletionProvider;
+use crate::provider::CompletionRequest;
+use crate::provider::ProviderError;
 use crate::wire::Message;
 
 const DEFAULT_MAXIMUM_CONTEXT_TOKENS: u32 = 128_000;
@@ -127,9 +132,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::modality::{AiClient, ResponseFormat};
+    use crate::modality::AiClient;
+    use crate::modality::ResponseFormat;
+    use crate::provider::Capabilities;
+    use crate::provider::CompletionProvider;
     use crate::provider::testing::StubProvider;
-    use crate::provider::{Capabilities, CompletionProvider};
     use crate::wire::Role;
     use crate::wire::Usage;
 

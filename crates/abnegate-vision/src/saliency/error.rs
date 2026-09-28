@@ -1,6 +1,7 @@
 //! What running the saliency model can fail with.
 
-use crate::saliency::{INPUT_HEIGHT, INPUT_WIDTH};
+use crate::saliency::INPUT_HEIGHT;
+use crate::saliency::INPUT_WIDTH;
 
 /// A failure loading or running the saliency model.
 #[derive(Debug, thiserror::Error)]

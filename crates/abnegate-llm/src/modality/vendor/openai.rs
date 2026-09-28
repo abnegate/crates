@@ -9,12 +9,20 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use futures::Stream;
 
+use crate::modality::EmbeddingProvider;
+use crate::modality::ImageEditRequest;
+use crate::modality::ImageProvider;
+use crate::modality::ImageRequest;
+use crate::modality::ImageResponse;
+use crate::modality::ResponseFormat;
+use crate::modality::StructuredResponse;
+use crate::modality::TextProvider;
+use crate::modality::TextRequest;
+use crate::modality::TextResponse;
+use crate::modality::TranscriptionProvider;
+use crate::modality::TranscriptionResponse;
+use crate::modality::TranscriptionSegment;
 use crate::modality::vendor::transport::Transport;
-use crate::modality::{
-    EmbeddingProvider, ImageEditRequest, ImageProvider, ImageRequest, ImageResponse,
-    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
-    TranscriptionProvider, TranscriptionResponse, TranscriptionSegment,
-};
 use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://api.openai.com";
@@ -448,8 +456,13 @@ fn parse_segment(segment: &serde_json::Value) -> TranscriptionSegment {
 
 #[cfg(test)]
 mod tests {
-    use wiremock::matchers::{body_partial_json, header, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_partial_json;
+    use wiremock::matchers::header;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     use super::*;
 

@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::wire::content_part::ContentPart;
 use crate::wire::generated_image::GeneratedImage;

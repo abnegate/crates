@@ -23,26 +23,43 @@ pub use train_image::TrainImage;
 pub use train_outcome::TrainOutcome;
 pub use train_request::TrainRequest;
 
-use crate::caption::{Captioner, Draft};
-use crate::client::{Client, SourceImage};
+use crate::caption::Captioner;
+use crate::caption::Draft;
+use crate::client::Client;
+use crate::client::SourceImage;
 use crate::config::Config;
-use crate::inventory::{WeightDocument, WeightSidecar, publication_marker, sidecar_path};
-use crate::recipe::{RecipeCatalog, TrainingModel, sanitize_weight_filename};
-use crate::subject::{CENTRE, Subject};
-use crate::train::{Contract, Run};
+use crate::inventory::WeightDocument;
+use crate::inventory::WeightSidecar;
+use crate::inventory::publication_marker;
+use crate::inventory::sidecar_path;
+use crate::recipe::RecipeCatalog;
+use crate::recipe::TrainingModel;
+use crate::recipe::sanitize_weight_filename;
+use crate::subject::CENTRE;
+use crate::subject::Subject;
+use crate::train::Contract;
+use crate::train::Run;
 use abnegate_exec::EnvironmentPolicy;
 use abnegate_secret::SecretValue;
+use abnegate_vision::Raster;
+use abnegate_vision::Rendered;
+use abnegate_vision::decode;
 use abnegate_vision::gravity::Point;
-use abnegate_vision::{Raster, Rendered, decode};
 use process_group::ProcessGroup;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
+use std::sync::Arc;
+use std::sync::LazyLock;
+use std::sync::Mutex;
+use std::sync::PoisonError;
+use std::sync::Weak;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::ChildStderr;
@@ -1472,20 +1489,29 @@ pub(crate) fn png(rendered: &Rendered) -> Result<Vec<u8>, TrainError> {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::screening::{Rejection, Verdict};
-    use crate::train::{
-        ARTIFACT_PREFIX, ENVIRONMENT_PREFIX, FOLDER_PREFIX, INPUT_ENVIRONMENT_PREFIX,
-        PROBE_LOSS_NODE, PUBLICATION_DIRECTORY, SIDECAR_SUFFIX, TRAIN_LORA_NODE,
-    };
+    use crate::screening::Rejection;
+    use crate::screening::Verdict;
+    use crate::train::ARTIFACT_PREFIX;
+    use crate::train::ENVIRONMENT_PREFIX;
+    use crate::train::FOLDER_PREFIX;
+    use crate::train::INPUT_ENVIRONMENT_PREFIX;
+    use crate::train::PROBE_LOSS_NODE;
+    use crate::train::PUBLICATION_DIRECTORY;
+    use crate::train::SIDECAR_SUFFIX;
+    use crate::train::TRAIN_LORA_NODE;
     use base64::Engine;
-    use serde_json::{Value, json};
+    use serde_json::Value;
+    use serde_json::json;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::thread::ThreadId;
-    use wiremock::{
-        Mock, MockServer, Request, ResponseTemplate,
-        matchers::{method, path, path_regex},
-    };
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::Request;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    use wiremock::matchers::path_regex;
 
     /// The trainer's variables under a prefix of the test's own, so every
     /// script below also proves the prefix is configurable.

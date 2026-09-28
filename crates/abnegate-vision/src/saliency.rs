@@ -2,8 +2,10 @@
 
 use std::path::Path;
 
+use ort::session::OutputSelector;
+use ort::session::RunOptions;
+use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
-use ort::session::{OutputSelector, RunOptions, Session};
 use ort::value::TensorRef;
 
 use crate::exclusive::Exclusive;

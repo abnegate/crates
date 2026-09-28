@@ -15,19 +15,24 @@ pub use source_video::SourceVideo;
 
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::config::Config;
 use crate::media::MediaType;
-use crate::recipe::{
-    Fill, PromptMode, Recipe, RecipeCatalog, sanitize_upload_name, sanitize_weight_filename,
-};
+use crate::recipe::Fill;
+use crate::recipe::PromptMode;
+use crate::recipe::Recipe;
+use crate::recipe::RecipeCatalog;
+use crate::recipe::sanitize_upload_name;
+use crate::recipe::sanitize_weight_filename;
 
 const PACKAGED_VIDEO_WORKFLOW: &str = include_str!("../comfyui/workflows/wan2.2-ti2v-5b-api.json");
 const PACKAGED_IMAGE_TO_VIDEO_WORKFLOW: &str =
@@ -1214,10 +1219,11 @@ fn uploaded_image_name(uploaded: &UploadResponse, fallback: &str) -> Result<Stri
 mod tests {
     use super::*;
     use std::time::Duration;
-    use wiremock::{
-        Mock, MockServer, ResponseTemplate,
-        matchers::{method, path},
-    };
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     const REQUEST_WAIT: Duration = Duration::from_secs(10);
 

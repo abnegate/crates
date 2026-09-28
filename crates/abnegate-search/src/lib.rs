@@ -48,14 +48,18 @@ mod reply;
 mod time_range;
 
 pub use crate::client::SearxngClient;
-pub use crate::config::{DEFAULT_SEARXNG_QUERY_URL, WebSearchConfig};
-pub use crate::context::{SearchContext, format_search_context};
+pub use crate::config::DEFAULT_SEARXNG_QUERY_URL;
+pub use crate::config::WebSearchConfig;
+pub use crate::context::SearchContext;
+pub use crate::context::format_search_context;
 pub use crate::error::Error;
 pub use crate::hit::SearchHit;
 pub use crate::intent::needs_web_search;
-pub use crate::observe::{SearchObserver, observe_searches};
+pub use crate::observe::SearchObserver;
+pub use crate::observe::observe_searches;
 pub use crate::outcome::Outcome;
-pub use crate::query::{build_search_url, sanitize_query};
+pub use crate::query::build_search_url;
+pub use crate::query::sanitize_query;
 pub use crate::time_range::TimeRange;
 
 #[cfg(doctest)]

@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::modality::{AudioResponse, MusicRequest, SoundEffectRequest};
+use crate::modality::AudioResponse;
+use crate::modality::MusicRequest;
+use crate::modality::SoundEffectRequest;
 use crate::provider::ProviderError;
 
 /// A provider that generates music and sound effects.

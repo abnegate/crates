@@ -2,7 +2,8 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// The weight of a notification, which each backend renders in its own way.
 ///

@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use reqwest::header::ETAG;
 use reqwest::header::HeaderMap;
 use reqwest::header::LAST_MODIFIED;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::fs;
 
 const WEAK_PREFIX: &str = "W/";

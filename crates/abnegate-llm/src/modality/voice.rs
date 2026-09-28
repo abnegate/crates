@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A voice a [`VoiceProvider`](crate::VoiceProvider) can speak in.
 #[derive(Debug, Clone, Serialize, Deserialize)]

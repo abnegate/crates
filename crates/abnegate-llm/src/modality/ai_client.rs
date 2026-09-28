@@ -5,7 +5,11 @@ use std::time::Duration;
 use abnegate_http::Backoff;
 use serde::de::DeserializeOwned;
 
-use crate::modality::{AiError, Exchange, ResponseFormat, TextProvider, TextRequest};
+use crate::modality::AiError;
+use crate::modality::Exchange;
+use crate::modality::ResponseFormat;
+use crate::modality::TextProvider;
+use crate::modality::TextRequest;
 #[cfg(doc)]
 use crate::provider::ProviderError;
 
@@ -260,15 +264,17 @@ impl AiClient {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
 
     use async_trait::async_trait;
     use futures::Stream;
     use serde::Deserialize;
 
     use super::*;
+    use crate::modality::StructuredResponse;
+    use crate::modality::TextResponse;
     use crate::modality::vendor::MockProvider;
-    use crate::modality::{StructuredResponse, TextResponse};
     use crate::provider::ProviderError;
 
     /// Answers each structured request with the next scripted result and

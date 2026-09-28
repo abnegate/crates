@@ -8,16 +8,23 @@ use crate::config::Config;
 use crate::http::CANCEL_TIMEOUT;
 use crate::http::POLL_TIMEOUT;
 use crate::recipe::TrainingModel;
+use crate::train::Contract;
 use crate::train::MINIMUM_WEIGHT_BYTES;
 use crate::train::PACKAGED_TRAIN_CONFIG;
-use crate::train::{Contract, Run};
-use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use crate::train::Run;
+use reqwest::header::CONTENT_DISPOSITION;
+use reqwest::header::CONTENT_TYPE;
+use serde::Deserialize;
+use serde::Serialize;
+use serde_json::Map;
+use serde_json::Value;
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -948,11 +955,18 @@ fn remove_namespace(root: &Path, name: &str, prefix: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::train::{ARTIFACT_PREFIX, FOLDER_PREFIX, PROBE_PREFIX};
+    use crate::train::ARTIFACT_PREFIX;
+    use crate::train::FOLDER_PREFIX;
+    use crate::train::PROBE_PREFIX;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering as AtomicOrdering;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::Request;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     fn flux() -> TrainingModel {
         TrainingModel::Flux {

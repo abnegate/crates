@@ -10,9 +10,11 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use futures::Stream;
 
-use crate::modality::{
-    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
-};
+use crate::modality::ResponseFormat;
+use crate::modality::StructuredResponse;
+use crate::modality::TextProvider;
+use crate::modality::TextRequest;
+use crate::modality::TextResponse;
 use crate::provider::ProviderError;
 
 const MAXIMUM_CONTEXT_TOKENS: u32 = 100_000;

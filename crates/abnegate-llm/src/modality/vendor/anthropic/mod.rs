@@ -14,12 +14,14 @@ use futures::Stream;
 
 pub use crate::modality::vendor::anthropic::authentication::AnthropicAuthentication;
 
+use crate::modality::ResponseFormat;
+use crate::modality::StructuredResponse;
+use crate::modality::TextProvider;
+use crate::modality::TextRequest;
+use crate::modality::TextResponse;
 use crate::modality::vendor::anthropic::cli::Cli;
 use crate::modality::vendor::anthropic::failure::Failure;
 use crate::modality::vendor::transport::Transport;
-use crate::modality::{
-    ResponseFormat, StructuredResponse, TextProvider, TextRequest, TextResponse,
-};
 use crate::provider::ExitStatus;
 use crate::provider::ProviderError;
 
@@ -409,8 +411,12 @@ impl TextProvider for AnthropicProvider {
 mod tests {
     use std::time::Instant;
 
-    use wiremock::matchers::{header, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::header;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     use super::*;
 

@@ -2,10 +2,12 @@
 
 use std::io::Cursor;
 
+use image::ColorType;
+use image::ImageDecoder;
+use image::Limits;
 use image::codecs::jpeg::JpegDecoder;
 use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
-use image::{ColorType, ImageDecoder, Limits};
 
 use crate::decode::format::Format;
 

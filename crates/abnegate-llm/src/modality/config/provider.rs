@@ -1,12 +1,17 @@
 #[cfg(any(feature = "anthropic", feature = "openai"))]
 use abnegate_secret::SecretValue;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::cost::CostStrategy;
-use crate::modality::config::{
-    AudioProviderConfig, EmbeddingProviderConfig, ImageProviderConfig, Model3DProviderConfig,
-    TextProviderConfig, TranscriptionProviderConfig, VideoProviderConfig, VoiceProviderConfig,
-};
+use crate::modality::config::AudioProviderConfig;
+use crate::modality::config::EmbeddingProviderConfig;
+use crate::modality::config::ImageProviderConfig;
+use crate::modality::config::Model3DProviderConfig;
+use crate::modality::config::TextProviderConfig;
+use crate::modality::config::TranscriptionProviderConfig;
+use crate::modality::config::VideoProviderConfig;
+use crate::modality::config::VoiceProviderConfig;
 
 const BUDGET_PREFIX: &str = "budget:";
 const DEFAULT_BUDGET_USD: f64 = 10.0;

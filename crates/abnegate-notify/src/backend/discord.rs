@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::SecondsFormat;
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 
 use crate::backend::webhook::Webhook;
 use crate::channel::Channel;
@@ -200,9 +201,15 @@ fn colour(severity: Severity) -> u32 {
 mod tests {
     use super::*;
     use crate::endpoint::EndpointError;
-    use chrono::{TimeZone, Utc};
-    use wiremock::matchers::{body_json, header, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use chrono::TimeZone;
+    use chrono::Utc;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_json;
+    use wiremock::matchers::header;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     fn at(server: &MockServer) -> Discord {
         Discord::at_test_server(&server.uri())

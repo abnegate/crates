@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Music for an [`AudioProvider`](crate::AudioProvider) to compose.
 #[derive(Debug, Clone, Serialize, Deserialize)]
