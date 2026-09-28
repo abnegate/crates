@@ -231,7 +231,6 @@ mod tests {
 
     use crate::executor::ConfinementMode;
     use crate::executor::EnvironmentPolicy;
-    use crate::executor::GRACE_PERIOD;
     use crate::executor::child;
     use crate::executor::sandbox;
     use crate::executor::sandbox::REQUIRE_CONFINEMENT;
@@ -920,19 +919,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_descendant_holding_the_output_open_ends_with_the_child() {
-        let started = Instant::now();
+        let directory = tempfile::tempdir().unwrap();
+        let started = directory.path().join("started");
+        let script = format!("touch '{}'; sleep 120 & echo $!; exit 0", started.display());
+        let (sender, receiver) = mpsc::channel(100);
+        CommandExecutor::new()
+            .spawn(&shell("holder", &script), sender)
+            .await
+            .unwrap();
 
-        let run = run(
-            &CommandExecutor::new(),
-            shell("holder", "sleep 120 & echo $!; exit 0"),
-        )
-        .await;
+        reach(&started).await;
+        let reached = Instant::now();
+        let run = finish(receiver).await;
+        let waited = reached.elapsed();
 
         assert_eq!(run.exit(), Some((Some(0), None)));
         assert!(
-            started.elapsed() < GRACE_PERIOD,
-            "the run waited on a descendant, took {:?}",
-            started.elapsed()
+            waited < PATIENCE,
+            "the run waited on a descendant, took {waited:?}"
         );
         assert!(gone(printed_pid(&run)).await);
     }
