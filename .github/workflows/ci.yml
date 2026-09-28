@@ -390,6 +390,7 @@ jobs:
 
   semver:
     name: Semver
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-plz-')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

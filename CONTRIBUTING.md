@@ -227,8 +227,18 @@ Every release is tagged `abnegate-<name>-v<version>`, such as
 `abnegate-http-v0.2.0`, and gets a GitHub release from its changelog entry. A
 crate whose tag already exists counts as released.
 
-The `semver` CI job runs `cargo semver-checks check-release` against each
-crate's latest version on crates.io, so a pull request that breaks a crate's
-public API without raising its version fails. cargo-semver-checks refuses a
-crate that has never been published, so a new crate's first version reaches
-crates.io before the pull request that adds it can pass.
+Feature pull requests are not semver-checked in CI: versions move only in the
+release pull request, where release-plz has already run cargo-semver-checks to
+choose each bump. The `semver` CI job runs only on the release pull request,
+whose branch starts with `release-plz-`, and runs `cargo semver-checks
+check-release` against each crate's latest version on crates.io to confirm the
+proposed bump is big enough. cargo-semver-checks refuses a crate that has never
+been published, so a new crate's first version reaches crates.io before the
+release pull request that includes it can pass.
+
+CI runs on the release pull request only if the release PR job gives
+release-plz a GitHub App token or a personal access token in place of
+`GITHUB_TOKEN`: a pull request opened with `GITHUB_TOKEN` triggers no
+workflows. The repository setting "Allow GitHub Actions to create and approve
+pull requests", under Settings, Actions, General, Workflow permissions, must be
+on, or the release PR job cannot open the pull request.
