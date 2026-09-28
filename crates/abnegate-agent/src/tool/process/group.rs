@@ -50,9 +50,7 @@ mod tests {
     use nix::unistd::Pid;
 
     use super::Group;
-
-    /// How long the test waits for the group to start or to go.
-    const PATIENCE: Duration = Duration::from_secs(60);
+    use crate::test_support::PATIENCE;
 
     /// The members of `group` still running; a zombie runs nothing.
     fn running(group: u32) -> Vec<i32> {
