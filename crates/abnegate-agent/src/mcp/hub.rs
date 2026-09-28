@@ -610,7 +610,10 @@ mod tests {
             .with_server("ambiguous", ambiguous)
             .with_server(
                 "socket",
-                recorder(":", &unsupported).with_transport(McpTransport::Unsupported),
+                recorder(":", &unsupported).with_transport(
+                    serde_json::from_value::<McpTransport>(serde_json::json!("ws"))
+                        .expect("a transport"),
+                ),
             );
 
         let (hub, logs) =

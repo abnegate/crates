@@ -74,8 +74,9 @@ impl McpSession {
         }
     }
 
-    /// The server's references are expanded from this process's environment,
-    /// as a CLI expands them. The child is given the server's environment
+    /// The server's references are expanded from the secrets bound to it and
+    /// then this process's environment, as a CLI expands them. The child is
+    /// given the server's environment
     /// policy, and then the process-level proxy policy on top of it. Its
     /// stderr is logged, up to a bound, rather than written over this
     /// process's own.

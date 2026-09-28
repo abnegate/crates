@@ -56,6 +56,7 @@ impl<'document> Entry<'document> {
             url: self.text(URL)?,
             transport: self.transport()?,
             headers: self.secrets(HEADERS)?,
+            secrets: BTreeMap::new(),
             tools: self.tools()?,
             working_directory: self.text(WORKING_DIRECTORY)?.map(PathBuf::from),
             inherit_environment: self.flag(INHERIT_ENVIRONMENT)?,
@@ -270,7 +271,10 @@ mod tests {
     fn a_transport_this_crate_does_not_attach_over_is_read_as_unsupported() {
         let server = read(json!({"type": "ws", "url": "wss://mcp.example.com"})).expect("a server");
 
-        assert_eq!(server.transport, Some(McpTransport::Unsupported));
+        assert_eq!(
+            server.transport,
+            Some(McpTransport::Unsupported("ws".to_string()))
+        );
         assert!(!server.valid());
     }
 }

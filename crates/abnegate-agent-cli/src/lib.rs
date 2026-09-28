@@ -40,6 +40,11 @@
 //! variables, the public variables, the proxy bypass list and whatever it
 //! inherits; credential-shaped text is redacted wherever it appears. A secret
 //! the agent re-encodes any other way, such as in base64, is not recognised.
+//! The agent's own tools, and every stdio MCP server it starts, can read
+//! everything it is given, what an [`mcp`] configuration moves out of its
+//! file included; a remote MCP server is sent nothing it is given by name,
+//! only what its own configuration and the [secrets](McpServer::secrets)
+//! bound to it resolve to.
 //!
 //! ```no_run
 //! use abnegate_agent_cli::AgentKind;
@@ -126,7 +131,6 @@ pub use crate::log::Record;
 pub use crate::log::default_log_directory;
 pub use crate::log::preview;
 pub use crate::log::resolve_log_root;
-pub use crate::mcp::McpAttachment;
 pub use crate::mcp::McpConfig;
 pub use crate::mcp::McpConfigError;
 pub use crate::mcp::McpServer;

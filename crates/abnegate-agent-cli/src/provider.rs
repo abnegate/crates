@@ -435,8 +435,9 @@ impl CliProvider {
     }
 
     /// Render the MCP servers to attach, or attach none when rendering fails:
-    /// a run without its MCP tools can still answer, and fails loudly on its
-    /// own if it truly needed them.
+    /// the run still loads strictly, with no server at all, and without its
+    /// MCP tools can still answer, and fails loudly on its own if it truly
+    /// needed them.
     fn attach(&self) -> Option<McpAttachment> {
         let mcp = &self.settings.mcp;
         if mcp.is_empty() {
@@ -1336,57 +1337,73 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         }
     }
 
-    /// A remote server's reference is the CLI's to expand, from the child's
-    /// environment alone, so the caller hands the token over itself: the
-    /// scrubbed setter makes it resolve, and keeps it out of every log.
+    /// The child's environment a fake agent recorded with `env`.
+    fn recorded_environment(path: &Path) -> std::collections::BTreeMap<String, String> {
+        std::fs::read_to_string(path)
+            .expect("the child's environment")
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    /// `value`, from a remote server's entry, as the CLI sends it: expanded
+    /// against the `child`'s environment when the CLI reads the file, and a
+    /// header value again when it connects.
+    fn sent(value: &Value, child: &std::collections::BTreeMap<String, String>) -> String {
+        let lookup = |name: &str| child.get(name).cloned();
+        expand(&expand(value.as_str().expect("text"), &lookup), &lookup)
+    }
+
+    /// A remote server's reference resolves to the secret bound to it, which
+    /// reaches the child only inside the generated variable the file refers
+    /// to, never under its own name, and never reaches a log, echoed alone or
+    /// inside the header.
     #[tokio::test]
-    async fn a_remote_reference_resolves_to_a_token_handed_over_and_never_reaches_a_log() {
+    async fn a_secret_bound_to_a_remote_server_reaches_it_and_never_a_log() {
         const TOKEN: &str = "lin-api-marker-9f3e27";
         let directory = TempDir::new().expect("a temporary directory");
         let root = directory.path().join("logs");
         let copied = directory.path().join("mcp.json");
-        let recorded = directory.path().join("environment");
+        let environment = directory.path().join("environment");
         let script = format!(
-            r#"env > '{recorded}'
+            r#"env > '{environment}'
 while [ $# -gt 0 ]; do
   if [ "$1" = "--mcp-config" ]; then cp "$2" '{copied}'; fi
   shift
 done
-printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"sent %s"}}]}}}}\n' "$LINEAR_TOKEN"
-echo "sent $LINEAR_TOKEN" >&2
+header=$(sed -n 's/^ABNEGATE_MCP_[^=]*=//p' '{environment}')
+token=${{header#Bearer }}
+printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"sent %s"}}]}}}}\n' "$token"
+echo "sent $header" >&2
 echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
-            recorded = recorded.display(),
+            environment = environment.display(),
             copied = copied.display(),
         );
         let settings = settings(&directory, &script)
             .with_log(&root)
-            .with_environment("LINEAR_TOKEN", TOKEN)
             .with_mcp_server(
                 "linear",
                 McpServer::remote("https://mcp.linear.app/mcp")
-                    .with_header("Authorization", "Bearer ${LINEAR_TOKEN}"),
+                    .with_header("Authorization", "Bearer ${LINEAR_TOKEN}")
+                    .with_secret("LINEAR_TOKEN", TOKEN),
             );
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
         let execution = execute(&provider, &[Message::user("hi")]).await;
 
-        let document: Value =
-            serde_json::from_str(&std::fs::read_to_string(&copied).expect("the MCP config"))
-                .expect("JSON");
-        let environment = std::fs::read_to_string(&recorded).expect("the child's environment");
-        let child: std::collections::BTreeMap<&str, &str> = environment
-            .lines()
-            .filter_map(|line| line.split_once('='))
-            .collect();
-        let header = document["mcpServers"]["linear"]["headers"]["Authorization"]
-            .as_str()
-            .expect("a header");
+        let file = std::fs::read_to_string(&copied).expect("the MCP config");
+        assert!(!file.contains(TOKEN), "{file}");
+        let document: Value = serde_json::from_str(&file).expect("JSON");
+        let child = recorded_environment(&environment);
         assert_eq!(
-            expand(header, &|name| child
-                .get(name)
-                .map(|value| value.to_string())),
+            sent(
+                &document["mcpServers"]["linear"]["headers"]["Authorization"],
+                &child
+            ),
             format!("Bearer {TOKEN}")
         );
+        assert!(!child.contains_key("LINEAR_TOKEN"), "{child:?}");
         let files = execution.log.clone().expect("log files");
         for path in [&files.stdout, &files.stderr, &files.events] {
             let contents = std::fs::read_to_string(path).expect("a log file");
@@ -1399,6 +1416,134 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         assert_eq!(
             std::fs::read_to_string(&files.stdout).expect("the prose log"),
             "sent [REDACTED]"
+        );
+    }
+
+    /// A secret bound to a stdio server is what its references read first,
+    /// before what the agent is given and this process's environment, and it
+    /// reaches the server only under a generated name. The host's own `T` is
+    /// set in this test's own child process.
+    #[tokio::test]
+    async fn a_secret_bound_to_a_stdio_server_wins_over_the_hosts_variable() {
+        const NAME: &str =
+            "provider::tests::a_secret_bound_to_a_stdio_server_wins_over_the_hosts_variable";
+        const HOST: &str = "t-host-marker-3a8f";
+        const BOUND: &str = "t-bound-marker-71c2";
+        if delegated(NAME, &[("T", HOST)]).await {
+            return;
+        }
+        let directory = TempDir::new().expect("a temporary directory");
+        let copied = directory.path().join("mcp.json");
+        let environment = directory.path().join("environment");
+        let script = format!(
+            r#"env > '{environment}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then cp "$2" '{copied}'; fi
+  shift
+done
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            environment = environment.display(),
+            copied = copied.display(),
+        );
+        let settings = settings(&directory, &script).with_mcp_server(
+            "notes",
+            McpServer::command("notes-server", ["mcp"])
+                .with_environment("T", "${T}")
+                .with_secret("T", BOUND),
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let file = std::fs::read_to_string(&copied).expect("the MCP config");
+        assert!(!file.contains(BOUND), "{file}");
+        let document: Value = serde_json::from_str(&file).expect("JSON");
+        let variable = document["mcpServers"]["notes"]["env"]["T"]
+            .as_str()
+            .and_then(|value| value.strip_prefix("${"))
+            .and_then(|value| value.strip_suffix('}'))
+            .expect("a generated variable");
+        let child = recorded_environment(&environment);
+        assert_eq!(child.get(variable).map(String::as_str), Some(BOUND));
+        assert!(!child.contains_key("T"), "{child:?}");
+        assert!(
+            !child.values().any(|value| value.contains(HOST)),
+            "{child:?}"
+        );
+    }
+
+    /// A token the agent's own tools need, allowed through from this
+    /// process's environment, must never reach a remote server that names
+    /// it: Claude Code reads its own and cloud credentials as empty toward a
+    /// remote server, but not `GITHUB_TOKEN`. The token is set in this test's
+    /// own child process, and the file the agent is given is read as the CLI
+    /// reads it, against the agent's environment.
+    #[tokio::test]
+    async fn a_remote_server_is_never_sent_a_token_allowed_through_to_the_agent() {
+        const NAME: &str =
+            "provider::tests::a_remote_server_is_never_sent_a_token_allowed_through_to_the_agent";
+        const TOKEN: &str = "ghp-host-marker-5c1d";
+        if delegated(NAME, &[("GITHUB_TOKEN", TOKEN)]).await {
+            return;
+        }
+        let directory = TempDir::new().expect("a temporary directory");
+        let copied = directory.path().join("mcp.json");
+        let environment = directory.path().join("environment");
+        let script = format!(
+            r#"env > '{environment}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then cp "$2" '{copied}'; fi
+  shift
+done
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            environment = environment.display(),
+            copied = copied.display(),
+        );
+        let settings = settings(&directory, &script)
+            .allow(["GITHUB_TOKEN"])
+            .with_mcp_server(
+                "analytics",
+                McpServer::remote("https://analytics.example/mcp")
+                    .with_header("X-Auth", "${GITHUB_TOKEN}"),
+            )
+            .with_mcp_server(
+                "tracker",
+                McpServer::remote("https://tracker.example/${GITHUB_TOKEN:-public}/mcp")
+                    .with_header("X-Auth", "token ${GITHUB_TOKEN:-anonymous}"),
+            );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let child = recorded_environment(&environment);
+        assert_eq!(
+            child.get("GITHUB_TOKEN").map(String::as_str),
+            Some(TOKEN),
+            "the agent's own tools are handed the token"
+        );
+        let file = std::fs::read_to_string(&copied).expect("the MCP config");
+        assert!(!file.contains(TOKEN), "{file}");
+        let document: Value = serde_json::from_str(&file).expect("JSON");
+        let servers = document["mcpServers"].as_object().expect("servers");
+        for (name, server) in servers {
+            let headers = server["headers"].as_object().into_iter().flatten();
+            for value in std::iter::once(&server["url"]).chain(headers.map(|(_, value)| value)) {
+                let sent = sent(value, &child);
+                assert!(!sent.contains(TOKEN), "{name} is sent the token: {sent}");
+            }
+        }
+        assert_eq!(servers.keys().collect::<Vec<_>>(), ["tracker"]);
+        assert_eq!(
+            sent(&servers["tracker"]["url"], &child),
+            "https://tracker.example/public/mcp"
+        );
+        assert_eq!(
+            sent(&servers["tracker"]["headers"]["X-Auth"], &child),
+            "token anonymous"
         );
     }
 
@@ -2090,6 +2235,51 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             "{document}"
         );
         assert!(!path.exists(), "the MCP config outlived the run");
+    }
+
+    /// A caller that configured servers chose which ones load. With every
+    /// one of them refused there is no file to attach, and the run still
+    /// loads strictly, so the CLI never falls back to the repository's own
+    /// `.mcp.json`.
+    #[tokio::test]
+    async fn a_run_whose_every_server_is_refused_loads_no_server_of_the_clis_own() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let script = format!(
+            r#"printf '%s\n' "$@" > '{captured}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            captured = captured.display(),
+        );
+        let settings = settings(&directory, &script).with_mcp_server(
+            "linear",
+            McpServer::remote("https://mcp.linear.app/mcp")
+                .with_header("Authorization", "Bearer ${LINEAR_TOKEN}"),
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let arguments: Vec<String> = std::fs::read_to_string(&captured)
+            .expect("the captured arguments")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert!(
+            arguments.contains(&"--strict-mcp-config".to_string()),
+            "{arguments:?}"
+        );
+        assert!(
+            !arguments.contains(&"--mcp-config".to_string()),
+            "{arguments:?}"
+        );
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.starts_with("mcp__")),
+            "{arguments:?}"
+        );
     }
 
     /// A stand-in for Claude that loads the repository's own settings, and

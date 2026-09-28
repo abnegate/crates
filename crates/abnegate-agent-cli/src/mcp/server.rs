@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::iter;
 use std::path::PathBuf;
 
 use abnegate_exec::EnvironmentPolicy;
@@ -13,14 +14,18 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
-use crate::kind::AgentKind;
 use crate::mcp::entry::Entry;
 use crate::mcp::mismatch::Mismatch;
-use crate::mcp::placeholders::NAMESPACE;
 use crate::mcp::placeholders::Placeholders;
 use crate::mcp::placeholders::expand;
-use crate::mcp::placeholders::references;
+use crate::mcp::placeholders::refers;
+use crate::mcp::placeholders::resolvable;
 use crate::mcp::placeholders::whole_reference;
+use crate::mcp::refusal::Refusal;
+use crate::mcp::segment::CLOSING;
+use crate::mcp::segment::DEFAULT;
+use crate::mcp::segment::OPENING;
+use crate::mcp::segment::Segment;
 use crate::mcp::transport::McpTransport;
 
 const PREFIX: &str = "mcp__";
@@ -33,24 +38,32 @@ const NAME_PUNCTUATION: [char; 2] = [UNDERSCORE, '-'];
 /// A server is either started as a local `command`, speaking over its stdin
 /// and stdout, or reached at a `url`: exactly one of the two must be set
 /// (see [`McpServer::valid`]). The same value reaches a model two ways: a
-/// CLI starts it from the file [`McpConfig::render`](crate::mcp::McpConfig::render)
-/// writes, or a launcher of its own, such as the MCP hub in `abnegate-agent`,
-/// starts a command server itself and gives it
+/// CLI run by a [`CliProvider`](crate::CliProvider) is given it in a file the
+/// provider writes, or a launcher of its own, such as the MCP hub in
+/// `abnegate-agent`, starts a command server itself and gives it
 /// [`McpServer::environment_policy`].
 ///
 /// Environment and header values are held as secrets, so a literal key never
-/// reaches a log line through `Debug`, and never reaches the rendered
-/// configuration file either: see [`McpAttachment`](crate::mcp::McpAttachment).
+/// reaches a log line through `Debug`, and never reaches the file a CLI is
+/// given either: see [`mcp`](crate::mcp).
+///
 /// A `${VAR}` reference in a stdio server's command, arguments or
-/// environment is resolved here, as the CLI would resolve it, and the child
-/// is given the resolved value under a generated name, never the variable
-/// itself. One in a remote server's [`url`](McpServer::url) or
-/// [`headers`](McpServer::headers) is left to the CLI.
+/// environment is resolved here, as the CLI would resolve it, against the
+/// server's own [`secrets`](McpServer::secrets) first, then what the child is
+/// given and then this process's environment, and the child is given the
+/// resolved value under a generated name. Resolving it hands the
+/// child nothing under the variable's own name, which the child holds only
+/// when the caller hands it over; the CLI starts every stdio server with
+/// what the child holds, so each can read the others' generated variables
+/// too. A reference in a remote server's [`url`](McpServer::url) or
+/// [`headers`](McpServer::headers) is resolved against that server's own
+/// [`secrets`](McpServer::secrets) alone, so a remote server is sent no
+/// variable the child is handed by name.
 ///
 /// Reads and writes the `mcpServers` entry shape: `args`, `env` and `cwd` on
-/// the wire, each also read under its full name here. A value of the wrong
-/// type is reported by the field holding it and never quoted, since it may
-/// still be a secret.
+/// the wire, each also read under its full name here, and never the
+/// [`secrets`](McpServer::secrets). A value of the wrong type is reported by
+/// the field holding it and never quoted, since it may still be a secret.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct McpServer {
@@ -64,22 +77,21 @@ pub struct McpServer {
     pub environment: BTreeMap<String, SecretValue>,
     /// Where an HTTP or SSE server listens.
     ///
-    /// Written to the rendered file as it is, `${VAR}` references included,
-    /// for the CLI to expand from the child's environment under its own
-    /// rules: Claude Code reads its own and cloud credentials as empty here.
-    /// A reference's `:-default` is written as it is too, so a default must
-    /// not be a secret. A variable a reference names is never read from this
-    /// process's environment, so the reference expands only if the caller
-    /// hands the variable to the child: a token through
+    /// Each `${VAR}` or `${VAR:-default}` reference in it is resolved when a
+    /// run attaches the server, against the server's own
+    /// [`secrets`](McpServer::secrets) and never against an environment:
+    /// a variable handed to the child under its own name, as
     /// [`CliSettings::with_environment`](crate::CliSettings::with_environment),
-    /// or from this process's environment through
-    /// [`CliSettings::allow`](crate::CliSettings::allow), either of which the
-    /// run scrubs from what it writes down. A child given this process's
-    /// whole environment by
+    /// [`CliSettings::allow`](crate::CliSettings::allow) and
     /// [`CliSettings::inherit_environment`](crate::CliSettings::inherit_environment)
-    /// has every variable a reference could name, none of them scrubbed. A
-    /// server whose URL or headers refer to a generated variable, or to one
-    /// the agent signs in with, never attaches: see
+    /// hand one over, is never sent to a remote server. A reference to a
+    /// variable with no secret takes its default. A URL that refers to
+    /// anything reaches the file the CLI is given only through a generated
+    /// variable holding it resolved, so neither a secret nor a default
+    /// reaches the file; one that refers to nothing is written as it is, so a
+    /// secret belongs in a reference. A server whose URL refers to a variable
+    /// with no secret and no default, or still holds `${` once resolved,
+    /// never attaches: see
     /// [`McpConfig::attachable`](crate::mcp::McpConfig::attachable).
     pub url: Option<String>,
     /// How the server is reached; implied by `command` or `url` when unset,
@@ -89,13 +101,38 @@ pub struct McpServer {
     pub transport: Option<McpTransport>,
     /// Headers sent to an HTTP or SSE server.
     ///
-    /// Each `${VAR}` reference in a value is written to the rendered file as
-    /// it is, for the CLI alone to expand, under the same rules as one in
-    /// [`McpServer::url`]. The literal text around a reference moves into a
-    /// generated variable, so no literal secret reaches the file:
-    /// `Bearer ${TOKEN}` is written `${ABNEGATE_MCP_<token>_0}${TOKEN}`, with
-    /// the generated variable holding `Bearer `.
+    /// Each value is resolved as [`McpServer::url`] is, against the server's
+    /// own [`secrets`](McpServer::secrets) alone, and reaches the file only
+    /// through a generated variable holding it resolved, so no literal,
+    /// default or secret reaches the file: with `TOKEN` bound,
+    /// `Bearer ${TOKEN}` is written `${ABNEGATE_MCP_<token>_0}`, and the
+    /// generated variable holds `Bearer ` and the token. A header's name is
+    /// sent as it is, since the CLI never expands one, and a server with a
+    /// name that holds `${` never attaches.
     pub headers: BTreeMap<String, SecretValue>,
+    /// Values for this server's `${VAR}` references, by variable name, which
+    /// no other server's references ever resolve to.
+    ///
+    /// A remote server's [`url`](McpServer::url) and
+    /// [`headers`](McpServer::headers) resolve against them alone, a
+    /// reference with no secret taking its default. A stdio server's command,
+    /// arguments and [`environment`](McpServer::environment) read them
+    /// first, before anything the agent is given or this process's
+    /// environment holds, and a secret bound here is read as bound even under
+    /// a name the agent signs in with.
+    ///
+    /// Each is bound in code, with [`McpServer::with_secret`] or, to a server
+    /// read from a document, [`McpConfig::with_secret`](crate::mcp::McpConfig::with_secret),
+    /// and never read from or written to a configuration document. A run
+    /// hands the CLI a resolved value that holds one inside a generated
+    /// variable of the agent's environment, never under the variable's own
+    /// name, where the agent's own tools and every stdio server it starts can
+    /// read it, as they can anything the agent is given: binding keeps a
+    /// secret from every other remote server, not from them. The run scrubs
+    /// each from what it writes down. A launcher that starts a stdio server
+    /// itself reads them first too: see [`McpServer::expanded`].
+    #[serde(skip)]
+    pub secrets: BTreeMap<String, SecretValue>,
     /// The tools to allow without prompting, by the names the CLI gives
     /// them: the server's own name for each, with every character but
     /// letters, digits, `_` and `-` replaced by `_`. Empty allows every tool
@@ -160,7 +197,10 @@ impl McpServer {
         }
     }
 
-    /// The same server, giving it `variable` set to `value`.
+    /// The same server, giving it `variable` set to `value`: a stdio
+    /// server's [`environment`](McpServer::environment). A remote server is
+    /// sent a value through a reference to one of its
+    /// [`secrets`](McpServer::secrets) instead.
     pub fn with_environment(
         mut self,
         variable: impl Into<String>,
@@ -173,6 +213,32 @@ impl McpServer {
     /// The same server, sending it the header `name` set to `value`.
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<SecretValue>) -> Self {
         self.headers.insert(name.into(), value.into());
+        self
+    }
+
+    /// The same server, with `value` bound for its references to
+    /// `variable`: a remote server's in its URL and headers, and a stdio
+    /// server's in its command, arguments and environment. See
+    /// [`McpServer::secrets`].
+    ///
+    /// ```
+    /// use abnegate_agent_cli::McpServer;
+    ///
+    /// # let token = String::new();
+    /// # let key = String::new();
+    /// let linear = McpServer::remote("https://mcp.linear.app/mcp")
+    ///     .with_header("Authorization", "Bearer ${LINEAR_TOKEN}")
+    ///     .with_secret("LINEAR_TOKEN", token);
+    /// let notes = McpServer::command("notes-server", ["mcp"])
+    ///     .with_environment("NOTES_KEY", "${NOTES_KEY}")
+    ///     .with_secret("NOTES_KEY", key);
+    /// ```
+    pub fn with_secret(
+        mut self,
+        variable: impl Into<String>,
+        value: impl Into<SecretValue>,
+    ) -> Self {
+        self.secrets.insert(variable.into(), value.into());
         self
     }
 
@@ -212,26 +278,36 @@ impl McpServer {
     }
 
     /// The same server with every `${VAR}` and `${VAR:-default}` in its
-    /// command, arguments and environment values expanded through `lookup`,
-    /// as Claude Code expands them and as a child given the file
-    /// [`McpConfig::render`](crate::mcp::McpConfig::render) writes has them
-    /// resolved, for a launcher that starts the server itself. A reference to
-    /// a variable `lookup` does not give, with no default, is left as written,
-    /// as the CLI leaves it.
+    /// command, arguments and environment values expanded through the
+    /// server's own [`secrets`](McpServer::secrets) and then `lookup`, by the
+    /// rules Claude Code expands them by, for a launcher that starts the
+    /// server itself: a secret bound for a variable wins, a set variable is
+    /// taken even when empty, and a reference to a variable neither gives,
+    /// with no default, is left as written, as the CLI leaves it. What any
+    /// other variable reads as is `lookup`'s to say: a
+    /// [`CliProvider`](crate::CliProvider) reads the agent's sign-in
+    /// variables as set but empty, and Claude Code its own OAuth tokens.
     ///
-    /// The URL and headers are left alone, since only a CLI attaches a remote
-    /// server and it applies its own rules to both, and so is the working
-    /// directory, which neither CLI expands.
+    /// The URL and headers are left alone, since only a CLI's run attaches a
+    /// remote server, resolving both against its
+    /// [`secrets`](McpServer::secrets), and so is the working directory,
+    /// which neither CLI expands.
     pub fn expanded(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Self {
+        let lookup = |variable: &str| {
+            self.secrets
+                .get(variable)
+                .map(|secret| secret.expose().to_string())
+                .or_else(|| lookup(variable))
+        };
         Self {
             command: self
                 .command
                 .as_deref()
-                .map(|command| expand(command, lookup)),
+                .map(|command| expand(command, &lookup)),
             arguments: self
                 .arguments
                 .iter()
-                .map(|argument| expand(argument, lookup))
+                .map(|argument| expand(argument, &lookup))
                 .collect(),
             environment: self
                 .environment
@@ -239,7 +315,7 @@ impl McpServer {
                 .map(|(variable, value)| {
                     (
                         variable.clone(),
-                        SecretValue::new(expand(value.expose(), lookup)),
+                        SecretValue::new(expand(value.expose(), &lookup)),
                     )
                 })
                 .collect(),
@@ -269,13 +345,12 @@ impl McpServer {
     /// is one this crate attaches a server over:
     /// [`McpTransport::Unsupported`] never is.
     pub fn valid(&self) -> bool {
-        match (&self.command, &self.url, self.transport) {
+        match (&self.command, &self.url, &self.transport) {
             (Some(command), None, transport) => {
-                !command.trim().is_empty()
-                    && transport.is_none_or(|transport| transport == McpTransport::Stdio)
+                !command.trim().is_empty() && matches!(transport, None | Some(McpTransport::Stdio))
             }
             (None, Some(url), transport) => {
-                !url.trim().is_empty() && transport.is_none_or(McpTransport::remote)
+                !url.trim().is_empty() && transport.as_ref().is_none_or(McpTransport::remote)
             }
             _ => false,
         }
@@ -329,81 +404,135 @@ impl McpServer {
             .is_some_and(|(server, tool)| valid_name(server) && valid_name(tool))
     }
 
-    /// Whether this server's URL or headers refer to a variable no server
-    /// may be sent: one named in the namespace the rendered file's
-    /// generated variables are, which hold other servers' values, or one
-    /// `agent` signs in with.
-    pub(crate) fn overreaches(&self, agent: AgentKind) -> bool {
-        self.url
-            .iter()
-            .map(String::as_str)
-            .chain(self.headers.values().map(SecretValue::expose))
-            .flat_map(references)
-            .any(|name| name.starts_with(NAMESPACE) || agent.credentials().contains(&name))
+    /// Why this server, configured under `name`, never attaches to a CLI's
+    /// run, or none when it does.
+    pub(crate) fn refusal(&self, name: &str) -> Option<Refusal> {
+        if !self.valid() {
+            return Some(Refusal::Invalid);
+        }
+        if !self.nameable(name) {
+            return Some(Refusal::Unnameable);
+        }
+        let Some(url) = &self.url else {
+            return None;
+        };
+        if self.headers.keys().any(|header| header.contains(OPENING)) {
+            return Some(Refusal::HeaderName);
+        }
+        let headers: Option<Vec<String>> = self
+            .headers
+            .values()
+            .map(|value| self.resolved(value.expose()))
+            .collect();
+        let (Some(url), Some(headers)) = (self.resolved(url), headers) else {
+            return Some(Refusal::Unbound);
+        };
+        if iter::once(&url)
+            .chain(&headers)
+            .any(|value| value.contains(OPENING))
+        {
+            return Some(Refusal::Expandable);
+        }
+        url.trim().is_empty().then_some(Refusal::Invalid)
+    }
+
+    /// `value`, from this server's URL or headers, with every reference
+    /// resolved against the server's own [`secrets`](McpServer::secrets), one
+    /// with no secret taking its default, or none when such a reference has
+    /// no default.
+    fn resolved(&self, value: &str) -> Option<String> {
+        resolvable(value, &|name| self.secrets.contains_key(name)).then(|| {
+            expand(value, &|name| {
+                self.secrets
+                    .get(name)
+                    .map(|secret| secret.expose().to_string())
+            })
+        })
+    }
+
+    /// `value` as the server is sent it: resolved, or nothing at all when it
+    /// cannot be, so a server that could not attach is never sent anything
+    /// for the CLI to expand.
+    fn sent(&self, value: &str) -> String {
+        self.resolved(value)
+            .filter(|resolved| !resolved.contains(OPENING))
+            .unwrap_or_default()
     }
 
     /// This server as a rendered configuration file holds it, with every
-    /// environment or header value, and every command or argument that
-    /// refers to a variable, replaced by a reference to a variable in
-    /// `placeholders`.
+    /// environment or header value, every URL, command or argument that
+    /// refers to a variable, and every remote value once resolved, replaced
+    /// by a reference to a variable in `placeholders`.
     pub(crate) fn entry(&self, placeholders: &mut Placeholders) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
-            let command = placeholders.resolved(command);
+            let command = placeholders.resolved(command, &self.secrets);
             let arguments: Vec<String> = self
                 .arguments
                 .iter()
-                .map(|argument| placeholders.resolved(argument))
+                .map(|argument| placeholders.resolved(argument, &self.secrets))
                 .collect();
             entry.insert("command".to_string(), json!(command));
             entry.insert("args".to_string(), json!(arguments));
             if !self.environment.is_empty() {
                 entry.insert(
                     "env".to_string(),
-                    substituted(&self.environment, placeholders),
+                    substituted(&self.environment, &self.secrets, placeholders),
                 );
             }
-            if let Some(transport) = self.transport {
+            if let Some(transport) = &self.transport {
                 entry.insert("type".to_string(), json!(transport));
             }
         } else if let Some(url) = &self.url {
-            let transport = self.transport.unwrap_or(McpTransport::Http);
+            let transport = self.transport.as_ref().unwrap_or(&McpTransport::Http);
             entry.insert("type".to_string(), json!(transport));
+            let url = if refers(url) {
+                placeholders.hold(self.sent(url))
+            } else {
+                url.clone()
+            };
             entry.insert("url".to_string(), json!(url));
             if !self.headers.is_empty() {
-                entry.insert(
-                    "headers".to_string(),
-                    separated(&self.headers, placeholders),
-                );
+                let headers: Map<String, Value> = self
+                    .headers
+                    .iter()
+                    .map(|(name, value)| {
+                        let sent = placeholders.hold(self.sent(value.expose()));
+                        (name.clone(), json!(sent))
+                    })
+                    .collect();
+                entry.insert("headers".to_string(), Value::Object(headers));
             }
         }
+        placeholders.secrets.extend(self.secrets.values().cloned());
         Value::Object(entry)
     }
 
     /// This server for a log line: structure intact, every environment or
     /// header value masked unless it is nothing but a `${VAR}` reference with
-    /// no default, which names a secret without holding one, and anything
-    /// credential shaped in the arguments or the URL redacted.
+    /// no default, which names a secret without holding one, and in the
+    /// command, the arguments and the URL every reference's default masked
+    /// and anything credential shaped redacted.
     pub(crate) fn redacted(&self) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
-            let arguments: Vec<_> = self
+            let arguments: Vec<String> = self
                 .arguments
                 .iter()
-                .map(|argument| redact(argument))
+                .map(|argument| logged(argument))
                 .collect();
-            entry.insert("command".to_string(), json!(command));
+            entry.insert("command".to_string(), json!(logged(command)));
             entry.insert("args".to_string(), json!(arguments));
             if !self.environment.is_empty() {
                 entry.insert("env".to_string(), masked(&self.environment));
             }
         } else if let Some(url) = &self.url {
-            entry.insert("url".to_string(), json!(redact(url)));
+            entry.insert("url".to_string(), json!(logged(url)));
             if !self.headers.is_empty() {
                 entry.insert("headers".to_string(), masked(&self.headers));
             }
         }
-        if let Some(transport) = self.transport {
+        if let Some(transport) = &self.transport {
             entry.insert("type".to_string(), json!(transport));
         }
         entry.insert("tools".to_string(), json!(self.tools));
@@ -434,20 +563,34 @@ pub(crate) fn valid_name(name: &str) -> bool {
         })
 }
 
-fn substituted(values: &BTreeMap<String, SecretValue>, placeholders: &mut Placeholders) -> Value {
+fn substituted(
+    values: &BTreeMap<String, SecretValue>,
+    secrets: &BTreeMap<String, SecretValue>,
+    placeholders: &mut Placeholders,
+) -> Value {
     values
         .iter()
-        .map(|(key, value)| (key.clone(), json!(placeholders.substitute(value))))
+        .map(|(key, value)| (key.clone(), json!(placeholders.substitute(value, secrets))))
         .collect::<Map<String, Value>>()
         .into()
 }
 
-fn separated(values: &BTreeMap<String, SecretValue>, placeholders: &mut Placeholders) -> Value {
-    values
-        .iter()
-        .map(|(key, value)| (key.clone(), json!(placeholders.separate(value))))
-        .collect::<Map<String, Value>>()
-        .into()
+/// `text` for a log line: every reference's default, literal text from the
+/// configuration that may be a secret, masked, and anything credential shaped
+/// redacted.
+fn logged(text: &str) -> String {
+    let masked: String = Segment::split(text)
+        .into_iter()
+        .map(|segment| match segment {
+            Segment::Reference {
+                name,
+                default: Some(_),
+                ..
+            } => format!("{OPENING}{name}{DEFAULT}{REDACTED}{CLOSING}"),
+            Segment::Reference { written, .. } | Segment::Literal(written) => written.to_string(),
+        })
+        .collect();
+    redact(&masked).into_owned()
 }
 
 fn masked(values: &BTreeMap<String, SecretValue>) -> Value {
@@ -475,9 +618,12 @@ mod tests {
     use abnegate_secret::SecretValue;
     use serde_json::json;
 
+    use serde_json::Value;
+
     use super::McpServer;
-    use crate::kind::AgentKind;
     use crate::mcp::placeholders::Placeholders;
+    use crate::mcp::placeholders::expand;
+    use crate::mcp::refusal::Refusal;
     use crate::mcp::transport::McpTransport;
 
     fn secrets(pairs: &[(&str, &str)]) -> BTreeMap<String, SecretValue> {
@@ -541,7 +687,11 @@ mod tests {
     #[test]
     fn a_transport_this_crate_does_not_attach_over_is_never_valid() {
         for server in [stdio(), http()] {
-            assert!(!server.with_transport(McpTransport::Unsupported).valid());
+            assert!(
+                !server
+                    .with_transport(McpTransport::Unsupported("ws".to_string()))
+                    .valid()
+            );
         }
     }
 
@@ -662,7 +812,7 @@ mod tests {
             placeholders
                 .templates
                 .get("ABNEGATE_MCP_TEST_0")
-                .map(SecretValue::expose),
+                .map(|template| template.value.expose()),
             Some("${APPWRITE_API_KEY}")
         );
     }
@@ -698,7 +848,7 @@ mod tests {
             placeholders
                 .templates
                 .values()
-                .map(SecretValue::expose)
+                .map(|template| template.value.expose())
                 .collect::<Vec<_>>(),
             [headers, "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"]
         );
@@ -711,42 +861,40 @@ mod tests {
             transport: Some(McpTransport::Http),
             headers: secrets(&[("Authorization", "Bearer ${TOKEN}")]),
             ..http()
-        };
+        }
+        .with_secret("TOKEN", "bound-token");
 
         let mut placeholders = Placeholders::under("TEST");
         let entry = server.entry(&mut placeholders);
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], "https://example.com/mcp");
-        assert_eq!(
-            entry["headers"]["Authorization"],
-            "${ABNEGATE_MCP_TEST_0}${TOKEN}"
-        );
+        assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_TEST_0}");
         assert!(entry.get("command").is_none());
         assert!(entry.get("args").is_none());
         assert!(entry.get("env").is_none());
     }
 
-    /// Claude Code reads its own and cloud credentials as empty in a remote
-    /// server's url and headers. A reference expanded here would get around
-    /// that, so each is left for the CLI alone to expand, and only the literal
-    /// text around it moves out of the file.
+    /// Claude Code expands a remote server's URL and headers against the
+    /// environment it was started with, which holds whatever the caller
+    /// handed the agent's own tools. Each reference is resolved here instead,
+    /// against the server's own secrets alone, and the file holds only a
+    /// generated variable with the value resolved.
     #[test]
-    fn a_remote_header_leaves_its_references_to_the_cli_and_moves_only_its_literal_text() {
-        let server = http()
-            .with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}")
-            .with_header("X-Client", "id=${CF_ID:-anonymous};v=1");
+    fn a_remote_value_resolves_against_the_servers_own_secrets_alone() {
+        let server = McpServer::remote("https://${HOST}/mcp?team=${TEAM:-core}")
+            .with_header("Authorization", "Bearer ${TOKEN}")
+            .with_header("X-Client", "id=${CLIENT};v=1")
+            .with_secret("HOST", "mcp.example.com")
+            .with_secret("TOKEN", "bound-token")
+            .with_secret("CLIENT", "bound-client");
         let mut placeholders = Placeholders::under("TEST");
 
         let entry = server.entry(&mut placeholders);
 
-        assert_eq!(
-            entry["headers"]["Authorization"],
-            "${ABNEGATE_MCP_TEST_0}${ANTHROPIC_API_KEY}"
-        );
-        assert_eq!(
-            entry["headers"]["X-Client"],
-            "${ABNEGATE_MCP_TEST_1}${CF_ID:-anonymous}${ABNEGATE_MCP_TEST_2}"
-        );
+        assert_eq!(entry["url"], "${ABNEGATE_MCP_TEST_0}");
+        assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_TEST_1}");
+        assert_eq!(entry["headers"]["X-Client"], "${ABNEGATE_MCP_TEST_2}");
+        assert!(!entry.to_string().contains("bound-"), "{entry}");
         assert_eq!(
             placeholders
                 .environment
@@ -754,29 +902,80 @@ mod tests {
                 .map(|(variable, value)| (variable.as_str(), value.expose()))
                 .collect::<Vec<_>>(),
             [
-                ("ABNEGATE_MCP_TEST_0", "Bearer "),
-                ("ABNEGATE_MCP_TEST_1", "id="),
-                ("ABNEGATE_MCP_TEST_2", ";v=1")
+                (
+                    "ABNEGATE_MCP_TEST_0",
+                    "https://mcp.example.com/mcp?team=core"
+                ),
+                ("ABNEGATE_MCP_TEST_1", "Bearer bound-token"),
+                ("ABNEGATE_MCP_TEST_2", "id=bound-client;v=1"),
             ]
         );
         assert!(placeholders.templates.is_empty());
+        assert_eq!(
+            placeholders
+                .secrets
+                .iter()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            ["bound-client", "mcp.example.com", "bound-token"]
+        );
     }
 
+    /// The child holds every generated variable, and the CLI expands one
+    /// wherever the file names it, so a remote server able to name the one
+    /// holding another server's literal would be sent that literal. Its
+    /// reference, even to that very name, resolves against its own secrets
+    /// alone, here to its default.
     #[test]
-    fn a_whole_reference_header_passes_through_unchanged_and_nothing_is_read_from_the_host() {
-        let server =
-            McpServer::remote("https://${MCP_HOST}/mcp").with_header("X-Token", "${TOKEN}");
+    fn a_remote_server_naming_another_servers_generated_variable_is_sent_its_own_default() {
+        let grafana = stdio().with_environment("GRAFANA_TOKEN", "glsa-literal-secret");
+        let collector = McpServer::remote("https://collector.example/${ABNEGATE_MCP_TEST_0:-open}")
+            .with_header("X-Collected", "${ABNEGATE_MCP_TEST_0:-none}");
+        let mut placeholders = Placeholders::under("TEST");
+
+        let stdio = grafana.entry(&mut placeholders);
+        let remote = collector.entry(&mut placeholders);
+
+        assert_eq!(stdio["env"]["GRAFANA_TOKEN"], "${ABNEGATE_MCP_TEST_0}");
+        let child = |name: &str| {
+            placeholders
+                .environment
+                .get(name)
+                .map(|value| value.expose().to_string())
+        };
+        let sent = |value: &Value| {
+            let written = value.as_str().expect("text");
+            expand(&expand(written, &child), &child)
+        };
+        assert_eq!(sent(&remote["url"]), "https://collector.example/open");
+        assert_eq!(sent(&remote["headers"]["X-Collected"]), "none");
+    }
+
+    /// A default is literal text from the configuration, and may be a
+    /// secret, so it moves out of the file with the rest of the value; a
+    /// secret bound as empty is used as it is, as a variable set to nothing
+    /// is.
+    #[test]
+    fn a_remote_reference_with_no_secret_takes_its_default() {
+        let server = http()
+            .with_header("X-Client", "id=${CF_ID:-anonymous}")
+            .with_header("X-Empty", "[${EMPTY:-unused}]")
+            .with_header("X-Key", "${KEY:-default-literal-key}")
+            .with_secret("EMPTY", "");
         let mut placeholders = Placeholders::under("TEST");
 
         let entry = server.entry(&mut placeholders);
 
-        assert_eq!(entry["headers"]["X-Token"], "${TOKEN}");
-        assert_eq!(entry["url"], "https://${MCP_HOST}/mcp");
-        assert!(placeholders.environment.is_empty());
-        assert!(
-            placeholders.templates.is_empty(),
-            "a remote server's reference is resolved here: {:?}",
-            placeholders.templates
+        let written = entry.to_string();
+        assert!(!written.contains("anonymous"), "{written}");
+        assert!(!written.contains("default-literal"), "{written}");
+        assert_eq!(
+            placeholders
+                .environment
+                .values()
+                .map(SecretValue::expose)
+                .collect::<Vec<_>>(),
+            ["id=anonymous", "[]", "default-literal-key"]
         );
     }
 
@@ -784,24 +983,24 @@ mod tests {
     fn a_literal_secret_in_a_remote_header_reaches_the_child_only_through_a_placeholder() {
         let server = http()
             .with_header("Authorization", "Bearer sk-live-secret")
-            .with_header("X-Session", "secret=sk-live-secret;user=${USER_NAME}");
+            .with_header(
+                "X-Session",
+                "secret=sk-live-secret;user=${USER_NAME:-agent}",
+            );
         let mut placeholders = Placeholders::under("TEST");
 
         let entry = server.entry(&mut placeholders);
 
         assert!(!entry.to_string().contains("sk-live-secret"), "{entry}");
         assert_eq!(entry["headers"]["Authorization"], "${ABNEGATE_MCP_TEST_0}");
-        assert_eq!(
-            entry["headers"]["X-Session"],
-            "${ABNEGATE_MCP_TEST_1}${USER_NAME}"
-        );
+        assert_eq!(entry["headers"]["X-Session"], "${ABNEGATE_MCP_TEST_1}");
         assert_eq!(
             placeholders
                 .environment
                 .values()
                 .map(SecretValue::expose)
                 .collect::<Vec<_>>(),
-            ["Bearer sk-live-secret", "secret=sk-live-secret;user="]
+            ["Bearer sk-live-secret", "secret=sk-live-secret;user=agent"]
         );
     }
 
@@ -832,7 +1031,8 @@ mod tests {
             headers: secrets(&[("Authorization", "Bearer sk-live-secret")]),
             url: Some("https://${MCP_HOST}/mcp".to_string()),
             ..McpServer::default()
-        };
+        }
+        .with_secret("MCP_HOST", "mcp.example.com");
         let mut placeholders = Placeholders::under("TEST");
 
         let entries = [
@@ -847,9 +1047,10 @@ mod tests {
         }
         assert_eq!(entries[0]["args"][1], "${ABNEGATE_MCP_TEST_0}");
         assert_eq!(entries[0]["env"]["GRAFANA_TOKEN"], "${ABNEGATE_MCP_TEST_1}");
+        assert_eq!(entries[1]["url"], "${ABNEGATE_MCP_TEST_2}");
         assert_eq!(
             entries[1]["headers"]["Authorization"],
-            "${ABNEGATE_MCP_TEST_2}"
+            "${ABNEGATE_MCP_TEST_3}"
         );
         assert_eq!(
             placeholders
@@ -857,16 +1058,20 @@ mod tests {
                 .values()
                 .map(SecretValue::expose)
                 .collect::<Vec<_>>(),
-            ["glsa_realsecret", "Bearer sk-live-secret"]
+            [
+                "glsa_realsecret",
+                "https://mcp.example.com/mcp",
+                "Bearer sk-live-secret"
+            ]
         );
         assert_eq!(
             placeholders
                 .templates
                 .values()
-                .map(SecretValue::expose)
+                .map(|template| template.value.expose())
                 .collect::<Vec<_>>(),
             ["${GRAFANA_URL}"],
-            "a remote server's reference is resolved here"
+            "only a stdio server's reference is resolved against the child"
         );
     }
 
@@ -921,6 +1126,37 @@ mod tests {
         assert_eq!(view["env"]["UNNAMED"], "[REDACTED]");
         assert_eq!(view["env"]["NAMED"], "${TOKEN}");
         assert_eq!(remote.redacted()["headers"]["Authorization"], "[REDACTED]");
+    }
+
+    /// A default in a URL, a command or an argument is literal text from the
+    /// configuration too, and the file never holds it, so the log view masks
+    /// it as it masks one in an environment or header value, keeping the
+    /// rest of the value legible.
+    #[test]
+    fn a_log_view_masks_a_default_in_a_url_command_or_argument() {
+        let remote = McpServer::remote(
+            "https://${HOST:-internal-default-host}/mcp?team=${TEAM:-url-default-marker}&region=${REGION}",
+        );
+        let stdio = McpServer::command(
+            "${LAUNCHER:-command-default-marker}",
+            [
+                "--team=${TEAM:-argument-default-marker}",
+                "--region=${REGION}",
+            ],
+        );
+
+        let url = remote.redacted()["url"].clone();
+        let view = stdio.redacted();
+
+        assert_eq!(
+            url,
+            "https://${HOST:-[REDACTED]}/mcp?team=${TEAM:-[REDACTED]}&region=${REGION}"
+        );
+        assert_eq!(view["command"], "${LAUNCHER:-[REDACTED]}");
+        assert_eq!(
+            view["args"],
+            json!(["--team=${TEAM:-[REDACTED]}", "--region=${REGION}"])
+        );
     }
 
     #[test]
@@ -1015,6 +1251,7 @@ mod tests {
     fn a_remote_server_built_in_code_is_reached_at_its_url() {
         let server = McpServer::remote("https://example.com/mcp")
             .with_header("Authorization", "Bearer ${TOKEN}")
+            .with_secret("TOKEN", "bound-token")
             .with_tools(["search"]);
 
         assert_eq!(server.url.as_deref(), Some("https://example.com/mcp"));
@@ -1033,6 +1270,7 @@ mod tests {
     fn every_builder_sets_the_field_it_names() {
         let server = McpServer::command("notes-server", ["mcp"])
             .with_environment("NOTES_TOKEN", "token")
+            .with_secret("NOTES_SECRET", "secret")
             .with_working_directory("/srv/notes")
             .with_transport(McpTransport::Stdio)
             .inherit_environment()
@@ -1044,6 +1282,10 @@ mod tests {
                 .get("NOTES_TOKEN")
                 .map(SecretValue::expose),
             Some("token")
+        );
+        assert_eq!(
+            server.secrets.get("NOTES_SECRET").map(SecretValue::expose),
+            Some("secret")
         );
         assert_eq!(server.working_directory, Some(PathBuf::from("/srv/notes")));
         assert_eq!(server.transport, Some(McpTransport::Stdio));
@@ -1174,41 +1416,189 @@ mod tests {
         assert_eq!(expanded.tools, ["search"]);
     }
 
+    /// A launcher that starts a stdio server itself reads the secrets bound
+    /// to it first, as a CLI's run does, whatever its lookup gives.
     #[test]
-    fn expanding_a_remote_server_leaves_its_url_and_headers_to_the_cli() {
+    fn expanding_a_server_reads_its_own_secrets_before_the_lookup() {
+        let lookup = |name: &str| Some(format!("{name}-from-the-lookup"));
+        let server = McpServer::command("${LAUNCHER:-uvx}", ["--token=${T}", "--home=${HOME}"])
+            .with_environment("T", "${T:-unused}")
+            .with_secret("T", "bound");
+
+        let expanded = server.expanded(&lookup);
+
+        assert_eq!(
+            expanded.command.as_deref(),
+            Some("LAUNCHER-from-the-lookup")
+        );
+        assert_eq!(
+            expanded.arguments,
+            ["--token=bound", "--home=HOME-from-the-lookup"]
+        );
+        assert_eq!(
+            expanded.environment.get("T").map(SecretValue::expose),
+            Some("bound")
+        );
+    }
+
+    #[test]
+    fn expanding_a_remote_server_leaves_its_url_and_headers_alone() {
         let lookup = |_: &str| Some("example.com".to_string());
-        let server = McpServer::remote("https://${HOST}/mcp").with_header("X-Host", "${HOST}");
+        let server = McpServer::remote("https://${HOST}/mcp")
+            .with_header("X-Host", "${HOST}")
+            .with_secret("HOST", "secret.example.com");
 
         assert_eq!(server.expanded(&lookup), server);
     }
 
-    /// A server that could name a generated variable in its URL or headers
-    /// would be sent whatever the file moved out of another server, and one
-    /// that names the agent's credential, the agent's key.
     #[test]
-    fn a_server_overreaches_only_through_its_url_or_headers() {
-        for server in [
-            http().with_header("X-Stolen", "${ABNEGATE_MCP_0}"),
-            http().with_header("X-Stolen", "prefix ${ABNEGATE_MCP_AB12_3} suffix"),
-            McpServer::remote("https://collector.example/${ABNEGATE_MCP_1:-none}"),
-            http().with_header("Authorization", "Bearer ${ANTHROPIC_API_KEY}"),
-            McpServer::remote("https://${ANTHROPIC_BASE_URL}/mcp"),
-        ] {
-            assert!(server.overreaches(AgentKind::Claude), "{server:?}");
-        }
+    fn a_server_that_is_invalid_or_unnameable_is_refused() {
+        assert_eq!(
+            McpServer::default().refusal("remote"),
+            Some(Refusal::Invalid)
+        );
+        assert_eq!(
+            http().with_transport(McpTransport::Stdio).refusal("remote"),
+            Some(Refusal::Invalid)
+        );
+        assert_eq!(stdio().refusal("a b"), Some(Refusal::Unnameable));
+        assert_eq!(http().refusal("remote__x"), Some(Refusal::Unnameable));
+        assert_eq!(stdio().refusal("appwrite"), None);
+        assert_eq!(http().refusal("remote"), None);
+    }
+
+    /// A remote server is sent a value only through one of its own secrets
+    /// or a default, so a reference with neither leaves the server out,
+    /// whatever variable it names, rather than sending it anything.
+    #[test]
+    fn a_remote_server_with_a_reference_to_no_secret_and_no_default_is_refused() {
         for server in [
             http().with_header("Authorization", "Bearer ${TOKEN}"),
-            http().with_header("X-Literal", "ABNEGATE_MCP_0"),
-            http().with_header("Authorization", "Bearer ${OPENAI_API_KEY}"),
-            stdio().with_environment("TOKEN", "${ABNEGATE_MCP_0}"),
-            stdio().with_environment("KEY", "${ANTHROPIC_API_KEY}"),
-        ] {
-            assert!(!server.overreaches(AgentKind::Claude), "{server:?}");
-        }
-        assert!(
+            McpServer::remote("https://${HOST}/mcp"),
+            http().with_header("X-Stolen", "${ABNEGATE_MCP_0}"),
+            http().with_header("X-Key", "${ANTHROPIC_API_KEY}"),
             http()
-                .with_header("Authorization", "Bearer ${OPENAI_API_KEY}")
-                .overreaches(AgentKind::Codex)
+                .with_header("Authorization", "Bearer ${TOKEN}")
+                .with_secret("OTHER", "bound"),
+        ] {
+            assert_eq!(
+                server.refusal("remote"),
+                Some(Refusal::Unbound),
+                "{server:?}"
+            );
+        }
+        for server in [
+            http()
+                .with_header("Authorization", "Bearer ${TOKEN}")
+                .with_secret("TOKEN", "bound"),
+            http().with_header("X-Key", "${ANTHROPIC_API_KEY:-none}"),
+            McpServer::remote("https://${ABNEGATE_MCP_0:-relay.example}/mcp"),
+            http().with_header("X-Literal", "ABNEGATE_MCP_0"),
+            stdio().with_environment("TOKEN", "${UNSET}"),
+        ] {
+            assert_eq!(server.refusal("remote"), None, "{server:?}");
+        }
+    }
+
+    /// A URL that resolves to nothing reaches no server, and one configured
+    /// blank is refused as invalid, so one that resolves blank, through an
+    /// empty default or an empty secret, is refused by the same rule rather
+    /// than written for the CLI to fail on.
+    #[test]
+    fn a_remote_url_that_resolves_to_nothing_is_refused_like_a_blank_one() {
+        for server in [
+            McpServer::remote("${HOST:-}"),
+            McpServer::remote("${HOST:-  }"),
+            McpServer::remote("${HOST}").with_secret("HOST", ""),
+            McpServer::remote(" ${HOST} ${PATH:-}").with_secret("HOST", ""),
+        ] {
+            assert_eq!(
+                server.refusal("remote"),
+                Some(Refusal::Invalid),
+                "{server:?}"
+            );
+        }
+        for server in [
+            McpServer::remote("https://${HOST:-}mcp.example.com/mcp"),
+            McpServer::remote("${HOST}").with_secret("HOST", "https://mcp.example.com/mcp"),
+        ] {
+            assert_eq!(server.refusal("remote"), None, "{server:?}");
+        }
+    }
+
+    /// Claude Code expands a remote server's header values once when it
+    /// reads the file and again when it connects, so `${` in a value resolved
+    /// here would be read as a reference of its own; and it never expands a
+    /// header's name, which would reach the server as written.
+    #[test]
+    fn a_remote_server_left_holding_text_the_cli_would_expand_is_refused() {
+        for server in [
+            http()
+                .with_header("Authorization", "Bearer ${TOKEN}")
+                .with_secret("TOKEN", "${GITHUB_TOKEN}"),
+            http().with_header("X-Key", "${KEY:-${GITHUB_TOKEN}}"),
+            McpServer::remote("https://example.com/${1BAD}"),
+            http().with_header("X-Literal", "${"),
+        ] {
+            assert_eq!(
+                server.refusal("remote"),
+                Some(Refusal::Expandable),
+                "{server:?}"
+            );
+        }
+        assert_eq!(
+            http()
+                .with_header("X-${TOKEN}", "value")
+                .with_secret("TOKEN", "bound")
+                .refusal("remote"),
+            Some(Refusal::HeaderName)
+        );
+    }
+
+    /// A server that could not attach is never rendered, and one rendered
+    /// anyway is sent nothing the CLI could expand.
+    #[test]
+    fn a_value_that_cannot_be_resolved_is_never_written_for_the_cli_to_expand() {
+        let server = McpServer::remote("https://${HOST}/mcp")
+            .with_header("Authorization", "Bearer ${TOKEN}")
+            .with_header("X-Key", "${KEY:-${GITHUB_TOKEN}}");
+        let mut placeholders = Placeholders::under("TEST");
+
+        let entry = server.entry(&mut placeholders);
+
+        assert_eq!(entry["url"], "");
+        assert_eq!(entry["headers"]["Authorization"], "");
+        assert_eq!(entry["headers"]["X-Key"], "");
+        assert!(placeholders.environment.is_empty());
+    }
+
+    /// A secret is bound in code and never belongs in a document: one written
+    /// back would put the token in a file.
+    #[test]
+    fn a_secret_is_never_written_read_or_printed() {
+        let server = http()
+            .with_header("Authorization", "Bearer ${TOKEN}")
+            .with_secret("TOKEN", "bound-secret-marker");
+
+        let written = serde_json::to_value(&server).expect("serialisable");
+        let read: McpServer = serde_json::from_value(json!({
+            "url": "https://example.com/mcp",
+            "secrets": {"TOKEN": "from-a-document"}
+        }))
+        .expect("a server");
+
+        assert!(
+            !written.to_string().contains("bound-secret-marker"),
+            "{written}"
+        );
+        assert!(written.get("secrets").is_none(), "{written}");
+        assert!(read.secrets.is_empty());
+        assert!(!format!("{server:?}").contains("bound-secret-marker"));
+        assert!(
+            !server
+                .redacted()
+                .to_string()
+                .contains("bound-secret-marker")
         );
     }
 

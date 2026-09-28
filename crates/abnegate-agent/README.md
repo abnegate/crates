@@ -75,9 +75,15 @@ server and adds its tools to the default registry as `server__tool`: only the
 tools its `tools` list names, by the names a CLI gives them, when it has one. A
 server marked `"disabled": true`, one reached by `url`, which only a CLI
 attaches, or one that is not valid is skipped, and an entry that cannot be read
-is skipped with a warning while the rest load. Each `${VAR}` or
-`${VAR:-default}` in a server's command, arguments and `env` is expanded from
-this process's environment first, as Claude Code expands it. Each server's
+is skipped with a warning while the rest load. `abnegate-agent-cli`'s
+`CliProvider` resolves each `${VAR}` in a server reached by `url` against the
+secrets bound to that server in code with `McpServer::with_secret` or
+`McpConfig::with_secret`, which a document never holds, or else its default,
+and never against the environment its CLI is given. Each `${VAR}` or
+`${VAR:-default}` in a server's command, arguments and `env` is expanded before
+it starts, as Claude Code expands it: from the secrets bound to the server with
+`McpServer::with_secret` or `McpConfig::with_secret` first, and then from this
+process's environment. Each server's
 child sees only the allowlisted environment plus its own `env`, unless it sets
 `inherit_environment`, and starts in its `cwd` when it names one.
 

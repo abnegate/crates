@@ -26,21 +26,24 @@
 //!
 //! [`DEFAULT_PREFIX`] is the prefix for an application with none of its own.
 //!
-//! The same configuration attaches its servers to a coding agent CLI through
-//! [`McpConfig::render`], which takes the [`AgentKind`] and returns the
-//! [`McpAttachment`] the CLI's child needs, both re-exported here:
+//! The same configuration attaches its servers to a coding agent CLI run by
+//! `abnegate-agent-cli`'s `CliProvider`, which writes the file its CLI reads.
+//! A remote server attaches only there, and each `${VAR}` in its URL and
+//! headers resolves only to a [secret](McpServer::secrets) bound to it with
+//! [`McpConfig::with_secret`] or [`McpServer::with_secret`], or to its
+//! default, and never against the environment the CLI is given. Which
+//! servers attach, and the tools each allows there, depend on the
+//! [`AgentKind`], re-exported here:
 //!
 //! ```
 //! use abnegate_agent::mcp::AgentKind;
-//! use abnegate_agent::mcp::McpAttachment;
 //! use abnegate_agent::mcp::McpConfig;
 //! use abnegate_agent::mcp::McpServer;
 //!
 //! let config = McpConfig::default()
 //!     .with_server("notes", McpServer::command("notes-server", ["mcp"]));
-//! let attachment: Option<McpAttachment> = config.render(AgentKind::Claude)?;
-//! assert!(attachment.is_some());
-//! # Ok::<(), std::io::Error>(())
+//! assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__notes"]);
+//! assert!(config.allowed_tools(AgentKind::Codex).is_empty());
 //! ```
 //!
 //! ```no_run
@@ -57,7 +60,8 @@
 //! ```
 //!
 //! Each server is started with the references in its command, arguments and
-//! environment [expanded](McpServer::expanded) from this process's
+//! environment [expanded](McpServer::expanded) from the
+//! [secrets](McpServer::secrets) bound to it, and then this process's
 //! environment, as a CLI expands them.
 //!
 //! Children are given [`McpServer::environment_policy`]: the
@@ -82,7 +86,6 @@ mod tool;
 
 pub use abnegate_agent_cli::AgentKind;
 pub use abnegate_agent_cli::mcp::DEFAULT_PREFIX;
-pub use abnegate_agent_cli::mcp::McpAttachment;
 pub use abnegate_agent_cli::mcp::McpConfig;
 pub use abnegate_agent_cli::mcp::McpConfigError;
 pub use abnegate_agent_cli::mcp::McpServer;
