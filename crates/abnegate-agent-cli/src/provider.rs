@@ -723,16 +723,24 @@ mod tests {
             .expect("an execution")
     }
 
-    /// Drive `run` until the fake agent creates `marker`.
-    async fn reach<T: Debug>(run: Pin<&mut impl Future<Output = T>>, marker: &Path) {
+    /// Drive `run` until the fake agent creates `marker`, and return what the
+    /// run returned if it ended first, having created it.
+    async fn reach<T: Debug>(run: Pin<&mut impl Future<Output = T>>, marker: &Path) -> Option<T> {
         let created = async {
             while !marker.exists() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         };
         tokio::select! {
-            ended = run => panic!("the run ended before the agent reached {}: {ended:?}", marker.display()),
-            () = created => {}
+            ended = run => {
+                assert!(
+                    marker.exists(),
+                    "the run ended before the agent reached {}: {ended:?}",
+                    marker.display()
+                );
+                Some(ended)
+            }
+            () = created => None,
             () = tokio::time::sleep(PATIENCE) => panic!("the agent never reached {} in {PATIENCE:?}", marker.display()),
         }
     }
@@ -743,7 +751,9 @@ mod tests {
     /// grace period.
     async fn expired<T: Debug>(run: impl Future<Output = T>, marker: &Path) -> T {
         let mut run = pin!(run);
-        reach(run.as_mut(), marker).await;
+        if let Some(ended) = reach(run.as_mut(), marker).await {
+            return ended;
+        }
         tokio::time::pause();
         tokio::time::advance(TIMEOUT).await;
         tokio::time::resume();
@@ -754,9 +764,34 @@ mod tests {
     /// of it.
     async fn timed<T: Debug>(run: impl Future<Output = T>, marker: &Path) -> (T, Duration) {
         let mut run = pin!(run);
-        reach(run.as_mut(), marker).await;
+        let ended = reach(run.as_mut(), marker).await;
         let reached = Instant::now();
-        (run.await, reached.elapsed())
+        let output = match ended {
+            Some(output) => output,
+            None => run.await,
+        };
+        (output, reached.elapsed())
+    }
+
+    #[tokio::test]
+    async fn a_run_that_ends_just_after_its_agent_reaches_the_marker_still_reached_it() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("reached");
+        let run = pin!(async {
+            std::fs::File::create(&marker).expect("the marker");
+            "ended"
+        });
+
+        assert_eq!(reach(run, &marker).await, Some("ended"));
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "the run ended before the agent reached")]
+    async fn a_run_that_ends_before_its_agent_reaches_the_marker_fails() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("reached");
+
+        reach(pin!(async { "ended" }), &marker).await;
     }
 
     const CLAUDE_SESSION: &str = r#"
