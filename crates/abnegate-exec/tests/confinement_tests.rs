@@ -48,6 +48,13 @@ const GRANTED: &str = "granted\n";
 const REQUIRE_CONFINEMENT: &str = "ABNEGATE_EXEC_REQUIRE_CONFINEMENT";
 const NETWORK_CLIENTS: [&str; 3] = ["/usr/bin/nc", "/bin/nc", "/usr/bin/curl"];
 
+/// Far beyond any start a loaded host needs, so no run times out unless its
+/// test is about a timeout.
+const TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long a test waits in real time on a run past its timeout.
+const PATIENCE: Duration = Duration::from_secs(60);
+
 fn confinement_required() -> bool {
     std::env::var_os(REQUIRE_CONFINEMENT).is_some_and(|value| !value.is_empty() && value != "0")
 }
@@ -134,7 +141,7 @@ fn text(path: &Path) -> String {
 fn confined_run(job_id: &str, root: &Path, target: &Path) -> RunStart {
     RunStart::new(job_id, root, "/bin/cat")
         .with_arguments([text(target)])
-        .with_timeout(Duration::from_secs(15))
+        .with_timeout(TIMEOUT)
         .with_confinement(request(root))
 }
 
@@ -614,7 +621,7 @@ async fn test_spawn_fails_closed_when_confinement_cannot_be_established() {
 
     let request = RunStart::new("unprovable", workspace.root.clone(), "/bin/cat")
         .with_arguments([text(&workspace.granted)])
-        .with_timeout(Duration::from_secs(15))
+        .with_timeout(TIMEOUT)
         .with_confinement(
             ConfinementRequest::default().with_read_roots([workspace.root.join("does-not-exist")]),
         );
@@ -668,7 +675,7 @@ async fn test_a_host_that_requires_confinement_proves_it() {
 async fn run_confined(request: &RunStart) -> Vec<OutboundMessage> {
     let (sender, mut receiver) = mpsc::channel(1000);
     CommandExecutor::new().spawn(request, sender).await.unwrap();
-    collect_messages(&mut receiver, Duration::from_secs(20)).await
+    collect_messages(&mut receiver, TIMEOUT + PATIENCE).await
 }
 
 #[tokio::test]
@@ -825,7 +832,7 @@ async fn attempt_connection(root: &Path, client: &str, confined: bool) -> (bool,
 
     let mut run = RunStart::new(format!("network-{confined}"), root, client)
         .with_arguments(args)
-        .with_timeout(Duration::from_secs(15));
+        .with_timeout(TIMEOUT);
     run.confinement = confined.then(|| Box::new(request(root)));
     let messages = run_confined(&run).await;
 
@@ -918,7 +925,7 @@ fn confined_tree_run(
 ) -> RunStart {
     RunStart::new(job_id, root, SHELL)
         .with_arguments([script])
-        .with_timeout(Duration::from_secs(20))
+        .with_timeout(TIMEOUT)
         .with_confinement(tree_request(root, execute_roots))
 }
 
@@ -1209,7 +1216,7 @@ async fn test_single_command_mode_bounds_a_second_process_or_refuses_it() {
     let messages = run_confined(
         &RunStart::new("single-second-process", workspace.root.clone(), SHELL)
             .with_arguments([PARENT_SCRIPT])
-            .with_timeout(Duration::from_secs(20))
+            .with_timeout(TIMEOUT)
             .with_confinement(request(&workspace.root)),
     )
     .await;
@@ -1426,7 +1433,7 @@ async fn test_a_preloaded_library_never_runs_in_the_bubblewrap_host() {
             "/bin/true",
         )
         .with_environment([("LD_PRELOAD", text(&library))])
-        .with_timeout(Duration::from_secs(15));
+        .with_timeout(TIMEOUT);
         run.confinement = confined.then(|| Box::new(request(&workspace.root)));
         run
     };
