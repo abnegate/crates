@@ -22,7 +22,10 @@ use crate::mcp::placeholders::refers;
 use crate::mcp::placeholders::resolvable;
 use crate::mcp::placeholders::whole_reference;
 use crate::mcp::refusal::Refusal;
+use crate::mcp::segment::CLOSING;
+use crate::mcp::segment::DEFAULT;
 use crate::mcp::segment::OPENING;
+use crate::mcp::segment::Segment;
 use crate::mcp::transport::McpTransport;
 
 const PREFIX: &str = "mcp__";
@@ -503,23 +506,24 @@ impl McpServer {
 
     /// This server for a log line: structure intact, every environment or
     /// header value masked unless it is nothing but a `${VAR}` reference with
-    /// no default, which names a secret without holding one, and anything
-    /// credential shaped in the arguments or the URL redacted.
+    /// no default, which names a secret without holding one, and in the
+    /// command, the arguments and the URL every reference's default masked
+    /// and anything credential shaped redacted.
     pub(crate) fn redacted(&self) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
-            let arguments: Vec<_> = self
+            let arguments: Vec<String> = self
                 .arguments
                 .iter()
-                .map(|argument| redact(argument))
+                .map(|argument| logged(argument))
                 .collect();
-            entry.insert("command".to_string(), json!(command));
+            entry.insert("command".to_string(), json!(logged(command)));
             entry.insert("args".to_string(), json!(arguments));
             if !self.environment.is_empty() {
                 entry.insert("env".to_string(), masked(&self.environment));
             }
         } else if let Some(url) = &self.url {
-            entry.insert("url".to_string(), json!(redact(url)));
+            entry.insert("url".to_string(), json!(logged(url)));
             if !self.headers.is_empty() {
                 entry.insert("headers".to_string(), masked(&self.headers));
             }
@@ -565,6 +569,24 @@ fn substituted(
         .map(|(key, value)| (key.clone(), json!(placeholders.substitute(value, secrets))))
         .collect::<Map<String, Value>>()
         .into()
+}
+
+/// `text` for a log line: every reference's default, literal text from the
+/// configuration that may be a secret, masked, and anything credential shaped
+/// redacted.
+fn logged(text: &str) -> String {
+    let masked: String = Segment::split(text)
+        .into_iter()
+        .map(|segment| match segment {
+            Segment::Reference {
+                name,
+                default: Some(_),
+                ..
+            } => format!("{OPENING}{name}{DEFAULT}{REDACTED}{CLOSING}"),
+            Segment::Reference { written, .. } | Segment::Literal(written) => written.to_string(),
+        })
+        .collect();
+    redact(&masked).into_owned()
 }
 
 fn masked(values: &BTreeMap<String, SecretValue>) -> Value {
@@ -1100,6 +1122,37 @@ mod tests {
         assert_eq!(view["env"]["UNNAMED"], "[REDACTED]");
         assert_eq!(view["env"]["NAMED"], "${TOKEN}");
         assert_eq!(remote.redacted()["headers"]["Authorization"], "[REDACTED]");
+    }
+
+    /// A default in a URL, a command or an argument is literal text from the
+    /// configuration too, and the file never holds it, so the log view masks
+    /// it as it masks one in an environment or header value, keeping the
+    /// rest of the value legible.
+    #[test]
+    fn a_log_view_masks_a_default_in_a_url_command_or_argument() {
+        let remote = McpServer::remote(
+            "https://${HOST:-internal-default-host}/mcp?team=${TEAM:-url-default-marker}&region=${REGION}",
+        );
+        let stdio = McpServer::command(
+            "${LAUNCHER:-command-default-marker}",
+            [
+                "--team=${TEAM:-argument-default-marker}",
+                "--region=${REGION}",
+            ],
+        );
+
+        let url = remote.redacted()["url"].clone();
+        let view = stdio.redacted();
+
+        assert_eq!(
+            url,
+            "https://${HOST:-[REDACTED]}/mcp?team=${TEAM:-[REDACTED]}&region=${REGION}"
+        );
+        assert_eq!(view["command"], "${LAUNCHER:-[REDACTED]}");
+        assert_eq!(
+            view["args"],
+            json!(["--team=${TEAM:-[REDACTED]}", "--region=${REGION}"])
+        );
     }
 
     #[test]

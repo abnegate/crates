@@ -1,6 +1,6 @@
 pub(crate) const OPENING: &str = "${";
 pub(crate) const CLOSING: char = '}';
-const DEFAULT: &str = ":-";
+pub(crate) const DEFAULT: &str = ":-";
 
 /// A run of literal text, or one `${VAR}` or `${VAR:-default}` reference as
 /// `written`.
