@@ -605,10 +605,13 @@ async fn drain<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::pin::Pin;
+    use std::pin::pin;
     use std::process::Stdio;
     use std::time::Duration;
     use std::time::Instant;
@@ -634,10 +637,16 @@ mod tests {
     use crate::mcp::expand;
     use crate::settings::CliSettings;
     use crate::structured_result::StructuredResult;
+    use crate::test_support::PATIENCE;
     use crate::test_support::delegated;
+    use crate::test_support::running;
 
     const ETXTBSY: i32 = 26;
     const PROBE: &str = "FAKE_AGENT_PROBE";
+
+    /// Beyond the two minutes a lingering fake agent sleeps, so a run that
+    /// waits on one instead of stopping it sees it exit by itself first.
+    const TIMEOUT: Duration = Duration::from_secs(300);
 
     /// A stand-in agent, so no test needs a real CLI installed.
     ///
@@ -695,7 +704,7 @@ mod tests {
     fn settings(directory: &TempDir, script: &str) -> CliSettings {
         CliSettings::default()
             .with_executable(fake(directory, script))
-            .with_timeout(Duration::from_secs(20))
+            .with_timeout(TIMEOUT)
     }
 
     fn request(messages: &[Message]) -> CompletionRequest<'_> {
@@ -714,6 +723,77 @@ mod tests {
             .execute(request(messages), "test-run")
             .await
             .expect("an execution")
+    }
+
+    /// Drive `run` until the fake agent creates `marker`, and return what the
+    /// run returned if it ended first, having created it.
+    async fn reach<T: Debug>(run: Pin<&mut impl Future<Output = T>>, marker: &Path) -> Option<T> {
+        let created = async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::select! {
+            ended = run => {
+                assert!(
+                    marker.exists(),
+                    "the run ended before the agent reached {}: {ended:?}",
+                    marker.display()
+                );
+                Some(ended)
+            }
+            () = created => None,
+            () = tokio::time::sleep(PATIENCE) => panic!("the agent never reached {} in {PATIENCE:?}", marker.display()),
+        }
+    }
+
+    /// Drive `run` until the fake agent creates `marker`, then move the clock
+    /// past its deadline. The clock runs on at once, so the run stops its
+    /// agent and drains its output in real time rather than skipping each
+    /// grace period.
+    async fn expired<T: Debug>(run: impl Future<Output = T>, marker: &Path) -> T {
+        let mut run = pin!(run);
+        if let Some(ended) = reach(run.as_mut(), marker).await {
+            return ended;
+        }
+        tokio::time::pause();
+        tokio::time::advance(TIMEOUT).await;
+        tokio::time::resume();
+        run.await
+    }
+
+    /// Drive `run` until the fake agent creates `marker`, then time the rest
+    /// of it.
+    async fn timed<T: Debug>(run: impl Future<Output = T>, marker: &Path) -> (T, Duration) {
+        let mut run = pin!(run);
+        let ended = reach(run.as_mut(), marker).await;
+        let reached = Instant::now();
+        let output = match ended {
+            Some(output) => output,
+            None => run.await,
+        };
+        (output, reached.elapsed())
+    }
+
+    #[tokio::test]
+    async fn a_run_that_ends_just_after_its_agent_reaches_the_marker_still_reached_it() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("reached");
+        let run = pin!(async {
+            std::fs::File::create(&marker).expect("the marker");
+            "ended"
+        });
+
+        assert_eq!(reach(run, &marker).await, Some("ended"));
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "the run ended before the agent reached")]
+    async fn a_run_that_ends_before_its_agent_reaches_the_marker_fails() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("reached");
+
+        reach(pin!(async { "ended" }), &marker).await;
     }
 
     const CLAUDE_SESSION: &str = r#"
@@ -863,21 +943,15 @@ echo '{"type":"result","subtype":"success","is_error":false}'
 echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1772096400}}'
 sleep 120
 "#;
-        let provider = CliProvider::agent(
-            AgentKind::Claude,
-            settings(&directory, script).with_timeout(Duration::from_secs(60)),
-        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
 
-        let started = Instant::now();
-        let error = run(&provider, &[Message::user("hi")])
-            .await
-            .expect_err("a failure");
+        let execution = execute(&provider, &[Message::user("hi")]).await;
 
         assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "waited {:?} on a throttled agent",
-            started.elapsed()
+            execution.stopped.is_some(),
+            "the throttled agent was waited on until it exited"
         );
+        let error = provider.assemble(execution).expect_err("a failure");
         let ProviderError::Agent { message, .. } = &error else {
             panic!("expected the agent's own failure, got {error:?}");
         };
@@ -961,18 +1035,21 @@ sleep 120
     async fn a_timed_out_run_still_says_where_its_logs_are_and_closes_them() {
         let directory = TempDir::new().expect("a temporary directory");
         let root = directory.path().join("logs");
-        let script = r#"
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Partial."}]}}'
+        let spoken = directory.path().join("spoken");
+        let script = format!(
+            r#"
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Partial."}}]}}}}'
 echo 'still thinking' >&2
+touch '{}'
 sleep 120
-"#;
-        let settings = settings(&directory, script)
-            .with_timeout(Duration::from_secs(10))
-            .with_log(&root);
+"#,
+            spoken.display()
+        );
+        let settings = settings(&directory, &script).with_log(&root);
         let provider = CliProvider::agent(AgentKind::Claude, settings);
+        let messages = [Message::user("hi")];
 
-        let failure = provider
-            .execute(request(&[Message::user("hi")]), "test-run")
+        let failure = expired(provider.execute(request(&messages), "test-run"), &spoken)
             .await
             .expect_err("a timeout");
 
@@ -1035,17 +1112,18 @@ sleep 120
     async fn a_timed_out_agent_that_ignores_termination_is_killed_with_its_group() {
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("straggler");
+        let ready = directory.path().join("ready");
         let script = format!(
             r#"trap '' TERM
-sh -c 'trap "" TERM; sleep 60' &
-echo $! > '{}'
-sleep 60"#,
-            marker.display()
+sh -c 'trap "" TERM; echo $$ > "{marker}"; touch "{ready}"; sleep 120' &
+sleep 120"#,
+            marker = marker.display(),
+            ready = ready.display(),
         );
-        let settings = settings(&directory, &script).with_timeout(Duration::from_secs(10));
-        let provider = CliProvider::agent(AgentKind::Claude, settings);
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+        let messages = [Message::user("hi")];
 
-        let error = run(&provider, &[Message::user("hi")])
+        let error = expired(run(&provider, &messages), &ready)
             .await
             .expect_err("a timeout");
 
@@ -1055,7 +1133,7 @@ sleep 60"#,
             .trim()
             .to_string();
         let started = Instant::now();
-        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+        while alive(&straggler) && started.elapsed() < PATIENCE {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(!alive(&straggler), "{straggler} outlived the timeout");
@@ -1834,17 +1912,12 @@ sleep 120
 "#;
         let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
 
-        let started = Instant::now();
         let execution = execute(&provider, &[Message::user("hi")]).await;
 
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "waited {:?} on a finished agent",
-            started.elapsed()
-        );
         assert_eq!(
             execution.stopped.as_deref(),
-            Some("the agent finished its turn but did not exit")
+            Some("the agent finished its turn but did not exit"),
+            "the finished agent was waited on until it exited"
         );
         assert_eq!(execution.stdout.text, "Done.");
 
@@ -1857,7 +1930,7 @@ sleep 120
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("straggler");
         let script = format!(
-            r#"sleep 60 >/dev/null 2>&1 &
+            r#"sleep 120 >/dev/null 2>&1 &
 echo $! > '{}'
 echo '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour"}}}}'"#,
             marker.display()
@@ -1874,7 +1947,7 @@ echo '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateL
             .trim()
             .to_string();
         let started = Instant::now();
-        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+        while alive(&straggler) && started.elapsed() < PATIENCE {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
@@ -1888,7 +1961,7 @@ echo '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateL
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("straggler");
         let script = format!(
-            r#"sleep 60 >/dev/null 2>&1 &
+            r#"sleep 120 >/dev/null 2>&1 &
 echo $! > '{}'
 echo 'API Error: 429 Too Many Requests' >&2
 sleep 1
@@ -1908,7 +1981,7 @@ exit 0"#,
             .trim()
             .to_string();
         let started = Instant::now();
-        while alive(&straggler) && started.elapsed() < Duration::from_secs(5) {
+        while alive(&straggler) && started.elapsed() < PATIENCE {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
@@ -1945,16 +2018,19 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
     async fn output_held_open_outside_the_group_keeps_what_was_read() {
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("escaped");
+        let started = directory.path().join("started");
         let script = format!(
-            r#"perl -e 'use POSIX qw(setsid); setsid(); open(my $file, ">", $ARGV[0]) or die; print $file $$; close($file); sleep 60' '{}' &
+            r#"touch '{started}'
+perl -e 'use POSIX qw(setsid); setsid(); open(my $file, ">", $ARGV[0]) or die; print $file $$; close($file); sleep 120' '{marker}' &
 echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Kept."}}]}}}}'
 echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
-            marker.display()
+            started = started.display(),
+            marker = marker.display(),
         );
         let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+        let messages = [Message::user("hi")];
 
-        let started = Instant::now();
-        let completion = run(&provider, &[Message::user("hi")]).await;
+        let (completion, waited) = timed(run(&provider, &messages), &started).await;
 
         let escaped = std::fs::read_to_string(&marker).unwrap_or_default();
         let _ = std::process::Command::new("kill")
@@ -1964,7 +2040,10 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             completion.expect("an answer").message.content.as_deref(),
             Some("Kept.")
         );
-        assert!(started.elapsed() < Duration::from_secs(60));
+        assert!(
+            waited < PATIENCE,
+            "waited {waited:?} on output held open outside the group"
+        );
     }
 
     #[tokio::test]
@@ -1972,17 +2051,16 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         let directory = TempDir::new().expect("a temporary directory");
         let script = "echo 'API Error: 429 Too Many Requests, retrying in 60s' >&2
 sleep 120";
-        let settings = settings(&directory, script)
-            .with_timeout(Duration::from_secs(90))
-            .with_tripwire(|line| line.contains("429"));
+        let settings = settings(&directory, script).with_tripwire(|line| line.contains("429"));
         let provider = CliProvider::agent(AgentKind::Claude, settings);
 
-        let started = Instant::now();
-        let error = run(&provider, &[Message::user("hi")])
-            .await
-            .expect_err("a failure");
+        let execution = execute(&provider, &[Message::user("hi")]).await;
 
-        assert!(started.elapsed() < Duration::from_secs(60));
+        assert!(
+            execution.stopped.is_some(),
+            "the agent retrying against a limit was waited on until it exited"
+        );
+        let error = provider.assemble(execution).expect_err("a failure");
         let ProviderError::Agent { message, .. } = &error else {
             panic!("expected the tripped line as the failure, got {error:?}");
         };
@@ -2094,31 +2172,32 @@ exit 2";
     #[tokio::test]
     async fn a_descendant_holding_the_output_open_is_reaped_after_the_agent_exits() {
         let directory = TempDir::new().expect("a temporary directory");
-        let script = r#"
+        let started = directory.path().join("started");
+        let script = format!(
+            r#"touch '{}'
 sleep 120 &
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}'
-echo '{"type":"result","subtype":"success","is_error":false}'
-"#;
-        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
-
-        let started = Instant::now();
-        let completion = run(&provider, &[Message::user("hi")])
-            .await
-            .expect("an answer");
-
-        assert_eq!(completion.message.content.as_deref(), Some("done"));
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "waited {:?} on a straggler",
-            started.elapsed()
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"done"}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'
+"#,
+            started.display()
         );
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+        let messages = [Message::user("hi")];
+
+        let (completion, waited) = timed(run(&provider, &messages), &started).await;
+
+        assert_eq!(
+            completion.expect("an answer").message.content.as_deref(),
+            Some("done")
+        );
+        assert!(waited < PATIENCE, "waited {waited:?} on a straggler");
     }
 
     #[tokio::test]
     async fn a_cancelled_run_takes_its_process_tree_with_it() {
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("group");
-        let script = format!("echo $$ > '{}'\nsleep 120 &\nwait", marker.display());
+        let script = format!("sleep 120 &\necho $$ > '{}'\nwait", marker.display());
         let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
 
         let messages = [Message::user("hi")];
@@ -2135,12 +2214,12 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         };
         let leader = tokio::select! {
             result = run(&provider, &messages) => panic!("the run finished before it was cancelled: {result:?}"),
-            () = tokio::time::sleep(Duration::from_secs(15)) => panic!("the agent never started"),
+            () = tokio::time::sleep(PATIENCE) => panic!("the agent never started"),
             pid = started => pid,
         };
 
         let started = Instant::now();
-        while !running(leader).is_empty() && started.elapsed() < Duration::from_secs(5) {
+        while !running(leader).is_empty() && started.elapsed() < PATIENCE {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
@@ -2148,25 +2227,6 @@ echo '{"type":"result","subtype":"success","is_error":false}'
             "the agent's group outlived the cancelled run: {:?}",
             running(leader)
         );
-    }
-
-    /// The members of process group `group` still running. A killed leader
-    /// the runtime has yet to reap lingers as a zombie, which still counts as
-    /// a member to a signal but runs nothing.
-    fn running(group: u32) -> Vec<String> {
-        let output = std::process::Command::new("ps")
-            .args(["-A", "-o", "pid=,pgid=,stat="])
-            .output()
-            .expect("a process listing");
-        let group = group.to_string();
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                let (pid, pgid, state) = (fields.next()?, fields.next()?, fields.next()?);
-                (pgid == group && !state.starts_with('Z')).then(|| pid.to_string())
-            })
-            .collect()
     }
 
     #[tokio::test]

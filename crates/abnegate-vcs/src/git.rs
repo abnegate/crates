@@ -53,7 +53,7 @@ mod authentication;
 mod diff_summary;
 mod error;
 #[cfg(unix)]
-mod group;
+pub(crate) mod group;
 mod hardening;
 mod remote_head;
 mod service;

@@ -45,6 +45,7 @@ impl Drop for Reaper {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::CommandExt;
     use std::process::Command;
     use std::process::Stdio;
     use std::time::Duration;
@@ -53,11 +54,12 @@ mod tests {
     use abnegate_exec::executor::ProcessGroup;
 
     use super::Reaper;
+    use crate::test_support::PATIENCE;
+    use crate::test_support::running;
 
     fn sleeper() -> std::process::Child {
-        use std::os::unix::process::CommandExt;
         Command::new("sleep")
-            .arg("30")
+            .arg("120")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -84,7 +86,51 @@ mod tests {
             ProcessGroup::try_from(child.id()).unwrap(),
         )));
 
-        assert!(exits_within(&mut child, Duration::from_secs(5)));
+        assert!(
+            exits_within(&mut child, PATIENCE),
+            "dropping the reaper left its group running"
+        );
+    }
+
+    fn eventually(condition: impl Fn() -> bool) -> bool {
+        let start = Instant::now();
+        while !condition() {
+            if start.elapsed() > PATIENCE {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+
+    /// A cancelled run drops its reaper whatever the agent is doing, forking
+    /// included. Each of the shell's sleeps outlives [`PATIENCE`], so one the
+    /// kill missed is still running when the test gives up on the group.
+    #[test]
+    fn dropping_an_armed_reaper_reaches_a_child_forked_as_it_fires() {
+        let mut shell = Command::new("sh")
+            .args(["-c", "while :; do sleep 300 & done"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("the shell starts");
+        let leader = shell.id();
+        assert!(
+            eventually(|| running(leader).len() > 2),
+            "the shell never started forking"
+        );
+
+        drop(Reaper::new(Some(ProcessGroup::try_from(leader).unwrap())));
+        shell.wait().expect("the shell is reaped");
+
+        let gone = eventually(|| running(leader).is_empty());
+        let survivors = running(leader);
+        for pid in &survivors {
+            let _ = Command::new("kill").args(["-9", pid]).status();
+        }
+        assert!(gone, "the reaper's kill missed {survivors:?}");
     }
 
     #[test]
