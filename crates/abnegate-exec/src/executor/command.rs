@@ -241,7 +241,14 @@ mod tests {
 
     use super::*;
 
-    const RUN_LIMIT: Duration = Duration::from_secs(10);
+    /// Far beyond any start a loaded host needs, so no run times out unless
+    /// its test is about a timeout.
+    const TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// How long a test waits in real time on a child. A child a test expects
+    /// to be killed sleeps two minutes, past it, so a wait for it to go never
+    /// mistakes its own exit for the kill.
+    const PATIENCE: Duration = Duration::from_secs(60);
 
     /// Everything one run reported, in the order it arrived.
     #[derive(Default)]
@@ -289,9 +296,10 @@ mod tests {
         }
     }
 
-    /// Collect messages until the run's terminal message.
+    /// Collect messages until the run's terminal message, which it sends by
+    /// its timeout at the latest.
     async fn finish(mut receiver: mpsc::Receiver<OutboundMessage>) -> Run {
-        tokio::time::timeout(RUN_LIMIT, async {
+        tokio::time::timeout(TIMEOUT + PATIENCE, async {
             let mut run = Run::default();
             while let Some(message) = receiver.recv().await {
                 let terminal = matches!(
@@ -309,11 +317,11 @@ mod tests {
         .expect("the run reports how it ended")
     }
 
-    /// Whether process `pid` has exited within two seconds. A zombie counts
-    /// as exited: an orphan is reaped by whichever process adopted it, which
+    /// Whether process `pid` exits within [`PATIENCE`]. A zombie counts as
+    /// exited: an orphan is reaped by whichever process adopted it, which
     /// this test does not control.
     async fn gone(pid: u32) -> bool {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(PATIENCE, async {
             loop {
                 let output = Command::new("ps")
                     .args(["-o", "stat=", "-p", &pid.to_string()])
@@ -351,13 +359,13 @@ mod tests {
     fn shell(job_id: &str, script: &str) -> RunStart {
         RunStart::new(job_id, "/tmp", "sh")
             .with_arguments(["-c", script])
-            .with_timeout(Duration::from_secs(10))
+            .with_timeout(TIMEOUT)
     }
 
     /// Run `command` confined to `root`, which it may read and write.
     fn confined(job_id: &str, root: &Path, command: &str) -> RunStart {
         RunStart::new(job_id, root, command)
-            .with_timeout(Duration::from_secs(15))
+            .with_timeout(TIMEOUT)
             .with_confinement(
                 ConfinementRequest::default()
                     .with_read_roots([root])
@@ -368,7 +376,7 @@ mod tests {
     fn environment_listing(environment: HashMap<String, String>) -> RunStart {
         RunStart::new("environment", std::env::temp_dir(), "env")
             .with_environment(environment)
-            .with_timeout(Duration::from_secs(5))
+            .with_timeout(TIMEOUT)
     }
 
     async fn environment_of(executor: &CommandExecutor, request: RunStart) -> String {
@@ -503,7 +511,7 @@ mod tests {
             &executor,
             RunStart::new("environment", std::env::temp_dir(), "/usr/bin/env")
                 .with_environment([("SHADOWED", "request")])
-                .with_timeout(Duration::from_secs(5)),
+                .with_timeout(TIMEOUT),
         )
         .await;
 
@@ -733,11 +741,11 @@ mod tests {
         let executor = CommandExecutor::new();
         let (sender, mut receiver) = mpsc::channel(100);
         let handle = executor
-            .spawn(&shell("partial-line", "printf prompt; sleep 30"), sender)
+            .spawn(&shell("partial-line", "printf prompt; sleep 120"), sender)
             .await
             .unwrap();
 
-        let delivered = tokio::time::timeout(Duration::from_secs(5), async {
+        let delivered = tokio::time::timeout(PATIENCE, async {
             while let Some(message) = receiver.recv().await {
                 if let OutboundMessage::RunStdout { data, .. } = message {
                     return BASE64_STANDARD.decode(data).unwrap();
@@ -773,7 +781,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let handle = executor
             .spawn_with_cancellation(
-                &shell("cancelled", "sleep 30"),
+                &shell("cancelled", "sleep 120"),
                 sender,
                 cancellation.clone(),
             )
@@ -800,7 +808,7 @@ mod tests {
             ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
         );
         let (sender, receiver) = mpsc::channel(100);
-        let request = shell("timeout", "sleep 30 & echo $!; sleep 30")
+        let request = shell("timeout", "sleep 120 & echo $!; sleep 120")
             .with_timeout(Duration::from_millis(200));
         let handle = executor.spawn(&request, sender).await.unwrap();
 
@@ -819,7 +827,7 @@ mod tests {
             ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
         );
         let (sender, _receiver) = mpsc::channel(1);
-        let request = shell("unread", "sleep 30").with_timeout(Duration::from_millis(200));
+        let request = shell("unread", "sleep 120").with_timeout(Duration::from_millis(200));
 
         let handle = executor.spawn(&request, sender).await.unwrap();
 
@@ -865,7 +873,7 @@ mod tests {
     async fn a_child_that_exits_takes_its_group_with_it() {
         let run = run(
             &CommandExecutor::new(),
-            shell("orphan", "sleep 60 > /dev/null 2>&1 & echo $!; exit 0"),
+            shell("orphan", "sleep 120 > /dev/null 2>&1 & echo $!; exit 0"),
         )
         .await;
 
@@ -882,7 +890,7 @@ mod tests {
 
         let run = run(
             &CommandExecutor::new(),
-            shell("holder", "sleep 60 & echo $!; exit 0"),
+            shell("holder", "sleep 120 & echo $!; exit 0"),
         )
         .await;
 
@@ -902,7 +910,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         executor
             .spawn_with_cancellation(
-                &shell("late-cancel", "sleep 60 & echo $!; exit 0"),
+                &shell("late-cancel", "sleep 120 & echo $!; exit 0"),
                 sender,
                 cancellation.clone(),
             )
@@ -979,7 +987,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel(100);
 
         let handle = executor
-            .spawn(&shell("cancel-test", "sleep 10"), sender)
+            .spawn(&shell("cancel-test", "sleep 120"), sender)
             .await
             .unwrap();
         assert!(!handle.is_cancelled());

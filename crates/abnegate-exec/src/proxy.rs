@@ -126,6 +126,9 @@ mod tests {
 
     use super::*;
 
+    /// How long a test server waits for curl to start and reach it.
+    const PATIENCE: Duration = Duration::from_secs(60);
+
     fn curl(proxy: &Proxy, url: &str) -> Command {
         let mut command = Command::new("curl");
         command
@@ -137,10 +140,7 @@ mod tests {
     }
 
     async fn response(listener: TcpListener, status: &str) -> String {
-        let (stream, _) = timeout(Duration::from_secs(5), listener.accept())
-            .await
-            .unwrap()
-            .unwrap();
+        let (stream, _) = timeout(PATIENCE, listener.accept()).await.unwrap().unwrap();
         let mut stream = BufReader::new(stream);
         let mut request = String::new();
         stream.read_line(&mut request).await.unwrap();
