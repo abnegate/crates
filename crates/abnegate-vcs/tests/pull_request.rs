@@ -58,7 +58,7 @@ fn a_pull_request_is_titled_with_a_conventional_commit_subject() {
     );
 }
 
-#[cfg(feature = "github")]
+#[cfg(all(feature = "github", feature = "testing"))]
 mod pull_requests {
     use abnegate_secret::SecretValue;
     use abnegate_vcs::BranchName;

@@ -40,9 +40,12 @@ uuid = { workspace = true, features = ["v4"] }
 nix = { workspace = true, features = ["fs", "process", "signal"] }
 
 [dev-dependencies]
-abnegate-vcs = { path = ".", features = ["testing"] }
 tokio = { workspace = true, features = ["net", "test-util"] }
 wiremock = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = { workspace = true, features = ["user"] }
+
+[[test]]
+name = "conflict"
+required-features = ["testing"]
