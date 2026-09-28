@@ -68,7 +68,7 @@ use resolved::resolve_execute_roots;
 pub struct Confinement {
     command: String,
     arguments: Vec<String>,
-    working_dir: PathBuf,
+    working_directory: PathBuf,
     read_roots: Vec<PathBuf>,
     write_roots: Vec<PathBuf>,
     execute_roots: Vec<PathBuf>,
@@ -78,17 +78,17 @@ pub struct Confinement {
 }
 
 impl Confinement {
-    /// Confine `command`, run with `arguments` from `working_dir`, to no roots
+    /// Confine `command`, run with `arguments` from `working_directory`, to no roots
     /// at all until [`Confinement::with_roots`] grants some.
     pub fn new(
         command: impl Into<String>,
         arguments: Vec<String>,
-        working_dir: impl Into<PathBuf>,
+        working_directory: impl Into<PathBuf>,
     ) -> Self {
         Self {
             command: command.into(),
             arguments,
-            working_dir: working_dir.into(),
+            working_directory: working_directory.into(),
             read_roots: Vec::new(),
             write_roots: Vec::new(),
             execute_roots: Vec::new(),
@@ -192,7 +192,7 @@ impl Confinement {
 
     fn resolve(&self) -> Result<Resolved, ConfinementError> {
         let command = resolve_command(&self.command, &self.environment)?;
-        let working_dir = canonical(&self.working_dir)?;
+        let working_directory = canonical(&self.working_directory)?;
         let read_roots = canonical_roots(&self.read_roots)?;
         let write_roots = canonical_roots(&self.write_roots)?;
         let execute_roots = resolve_execute_roots(self.mode, &self.execute_roots)?;
@@ -200,7 +200,7 @@ impl Confinement {
             &self.environment,
             &self.inherited,
             &command,
-            write_roots.first().unwrap_or(&working_dir),
+            write_roots.first().unwrap_or(&working_directory),
         );
         if let Some(name) = environment.iter().find_map(|(name, value)| {
             (name.is_empty() || name.contains(['=', '\0']) || value.contains('\0')).then_some(name)
@@ -213,7 +213,7 @@ impl Confinement {
         Ok(Resolved {
             command,
             arguments: self.arguments.clone(),
-            working_dir,
+            working_directory,
             read_roots,
             write_roots,
             execute_roots,
@@ -229,7 +229,7 @@ impl fmt::Debug for Confinement {
             .debug_struct("Confinement")
             .field("command", &self.command)
             .field("arguments", &self.arguments)
-            .field("working_dir", &self.working_dir)
+            .field("working_directory", &self.working_directory)
             .field("read_roots", &self.read_roots)
             .field("write_roots", &self.write_roots)
             .field("execute_roots", &self.execute_roots)

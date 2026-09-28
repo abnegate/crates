@@ -53,7 +53,7 @@ pub(super) fn arguments(resolved: &Resolved) -> Result<Vec<String>, ConfinementE
     }
     arguments.extend([
         "--chdir".to_string(),
-        text(&resolved.working_dir)?.to_string(),
+        text(&resolved.working_directory)?.to_string(),
         "--".to_string(),
         text(&resolved.command)?.to_string(),
     ]);

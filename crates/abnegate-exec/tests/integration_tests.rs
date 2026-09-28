@@ -223,7 +223,7 @@ async fn test_environment_variables() {
 }
 
 #[tokio::test]
-async fn test_custom_working_dir() {
+async fn test_custom_working_directory() {
     let executor = CommandExecutor::new();
     let (sender, mut receiver) = mpsc::channel(100);
 

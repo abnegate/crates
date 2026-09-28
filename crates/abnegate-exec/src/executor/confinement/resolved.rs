@@ -8,7 +8,7 @@ use super::path::canonical_roots;
 pub(super) struct Resolved {
     pub(super) command: PathBuf,
     pub(super) arguments: Vec<String>,
-    pub(super) working_dir: PathBuf,
+    pub(super) working_directory: PathBuf,
     pub(super) read_roots: Vec<PathBuf>,
     pub(super) write_roots: Vec<PathBuf>,
     pub(super) execute_roots: Vec<PathBuf>,
