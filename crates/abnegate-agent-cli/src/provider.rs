@@ -638,6 +638,7 @@ mod tests {
     use crate::structured_result::StructuredResult;
     use crate::test_support::PATIENCE;
     use crate::test_support::delegated;
+    use crate::test_support::running;
 
     const ETXTBSY: i32 = 26;
     const PROBE: &str = "FAKE_AGENT_PROBE";
@@ -2081,25 +2082,6 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'
             "the agent's group outlived the cancelled run: {:?}",
             running(leader)
         );
-    }
-
-    /// The members of process group `group` still running. A killed leader
-    /// the runtime has yet to reap lingers as a zombie, which still counts as
-    /// a member to a signal but runs nothing.
-    fn running(group: u32) -> Vec<String> {
-        let output = std::process::Command::new("ps")
-            .args(["-A", "-o", "pid=,pgid=,stat="])
-            .output()
-            .expect("a process listing");
-        let group = group.to_string();
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                let (pid, pgid, state) = (fields.next()?, fields.next()?, fields.next()?);
-                (pgid == group && !state.starts_with('Z')).then(|| pid.to_string())
-            })
-            .collect()
     }
 
     #[tokio::test]

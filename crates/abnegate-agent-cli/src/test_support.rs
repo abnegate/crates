@@ -15,6 +15,25 @@ use tracing_subscriber::fmt::MakeWriter;
 /// its own exit for the kill.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(60);
 
+/// The members of process group `group` still running. A killed leader not
+/// yet reaped lingers as a zombie, which still counts as a member to a signal
+/// but runs nothing.
+pub(crate) fn running(group: u32) -> Vec<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=,pgid=,stat="])
+        .output()
+        .expect("a process listing");
+    let group = group.to_string();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (pid, pgid, state) = (fields.next()?, fields.next()?, fields.next()?);
+            (pgid == group && !state.starts_with('Z')).then(|| pid.to_string())
+        })
+        .collect()
+}
+
 /// Set in a test's own child process, naming the test the child runs, so a
 /// test that needs this process's environment shaped can re-run itself.
 const CHILD_TEST: &str = "ABNEGATE_AGENT_CLI_CHILD_TEST";
