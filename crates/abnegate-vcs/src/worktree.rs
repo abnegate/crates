@@ -32,6 +32,8 @@ use crate::git::GITLINK_MODE;
 use crate::git::IGNORE_SUBMODULES;
 use crate::git::LOCATING;
 use crate::git::WorktreeEntry;
+#[cfg(unix)]
+use crate::git::group::Group;
 use crate::git::harden;
 use crate::git::refused;
 pub use crate::worktree::unfinished::Unfinished;
@@ -194,12 +196,7 @@ fn run(command: &mut Command, what: &str) -> std::io::Result<Vec<u8>> {
 /// helper it started with it.
 fn terminate(child: &mut Child) {
     #[cfg(unix)]
-    {
-        let _ = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(child.id() as i32),
-            nix::sys::signal::Signal::SIGKILL,
-        );
-    }
+    drop(Group::new(nix::unistd::Pid::from_raw(child.id() as i32)));
     let _ = child.kill();
     let _ = child.wait();
 }
