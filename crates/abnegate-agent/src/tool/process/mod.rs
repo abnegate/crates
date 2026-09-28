@@ -169,6 +169,7 @@ mod tests {
     use nix::unistd::Pid;
 
     use super::*;
+    use crate::test_support::TIMEOUT;
 
     fn shell(line: &str) -> Command {
         let mut command = Command::new("sh");
@@ -232,7 +233,7 @@ mod tests {
     async fn a_flood_of_output_is_held_to_its_two_ends() {
         let finished = run(
             shell("head -c 20000000 /dev/zero | tr '\\0' x; echo; echo END"),
-            Duration::from_secs(30),
+            TIMEOUT,
         )
         .await
         .expect("the command finishes");
@@ -245,12 +246,9 @@ mod tests {
 
     #[tokio::test]
     async fn both_streams_and_the_status_come_back() {
-        let finished = run(
-            shell("echo out; echo err >&2; exit 3"),
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("the command finishes");
+        let finished = run(shell("echo out; echo err >&2; exit 3"), TIMEOUT)
+            .await
+            .expect("the command finishes");
 
         assert_eq!(finished.status.code(), Some(3));
         assert_eq!(finished.stdout, "out\n");

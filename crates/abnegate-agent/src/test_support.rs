@@ -5,12 +5,17 @@ use std::process::Output;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Once;
+use std::time::Duration;
 
 use tracing_subscriber::fmt::MakeWriter;
 
 /// Set in a test's own child process, naming the test the child should run,
 /// so a test that needs a pristine process environment can re-run itself.
 pub(crate) const CHILD_TEST: &str = "ABNEGATE_AGENT_CHILD_TEST";
+
+/// Far beyond any start a loaded host needs, so no test's child runs into a
+/// limit unless the test is about that limit.
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Fail unless the re-run of one test that produced `output` passed and
 /// ran that test at all: a name that matches no test runs nothing and still

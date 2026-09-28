@@ -424,6 +424,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::CHILD_TEST;
+    use crate::test_support::TIMEOUT;
     use crate::test_support::assert_passed;
 
     /// The variable ripgrep reads the path of its configuration file from.
@@ -753,7 +754,7 @@ mod tests {
             shell("echo 'a.rs:3:first'; exit 2"),
             Path::new("."),
             MAXIMUM_SEARCH_RESULTS,
-            Duration::from_secs(5),
+            TIMEOUT,
         )
         .await
         .expect("the matches rg printed are kept");
@@ -773,7 +774,7 @@ mod tests {
             shell("exit 2"),
             Path::new("."),
             MAXIMUM_SEARCH_RESULTS,
-            Duration::from_secs(5),
+            TIMEOUT,
         )
         .await;
 

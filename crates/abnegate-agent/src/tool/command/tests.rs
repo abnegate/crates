@@ -11,6 +11,7 @@ use super::shell::RunShellParameters;
 use super::shell::total_sleep;
 use super::*;
 use crate::test_support::CHILD_TEST;
+use crate::test_support::TIMEOUT;
 use crate::test_support::assert_passed;
 use crate::test_support::captured_logs;
 use crate::tool::MAXIMUM_TOOL_MESSAGE_CHARACTERS;
@@ -22,7 +23,7 @@ fn create_test_context() -> ToolContext {
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
         environment: crate::tool::EnvironmentPolicy::empty(),
         maximum_file_size: 1024 * 1024,
-        command_timeout: std::time::Duration::from_secs(30),
+        command_timeout: TIMEOUT,
         unrestricted: false,
         session: Session::Detached,
         application: crate::Application::default(),
@@ -39,12 +40,9 @@ fn logs(checkout: &Path) -> PathBuf {
 /// the environment `run_command` builds is read through the one function both
 /// tools and background jobs start their children with.
 async fn environments(context: &ToolContext) -> [String; 2] {
-    let command = crate::tool::process::run(
-        crate::tool::process::command("env", context),
-        std::time::Duration::from_secs(10),
-    )
-    .await
-    .expect("env runs");
+    let command = crate::tool::process::run(crate::tool::process::command("env", context), TIMEOUT)
+        .await
+        .expect("env runs");
     assert!(command.status.success(), "{command:?}");
     let shell = RunShellTool
         .execute(json!({"command": "env"}), context)
