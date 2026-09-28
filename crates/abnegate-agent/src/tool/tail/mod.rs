@@ -114,18 +114,19 @@ impl Tool for TailJobTool {
 mod tests {
     use std::path::Path;
     use std::time::Duration;
+    use std::time::Instant;
 
     use tempfile::TempDir;
     use uuid::Uuid;
 
     use super::*;
+    use crate::test_support::PATIENCE;
     use crate::tool::RunShellTool;
     use crate::tool::Session;
     use crate::tool::job::UNAVAILABLE;
     use crate::tool::job::parse_started;
 
     const POLL: Duration = Duration::from_millis(20);
-    const POLL_LIMIT: usize = 500;
 
     fn directory() -> TempDir {
         TempDir::new().expect("a temporary working directory")
@@ -171,14 +172,15 @@ mod tests {
 
     /// Read the whole log until the footer says the job has stopped.
     async fn settled(id: &str, context: &ToolContext) -> String {
-        for _ in 0..POLL_LIMIT {
+        let deadline = Instant::now() + PATIENCE;
+        loop {
             let slice = tail(id, 0, context).await.output.unwrap_or_default();
             if !slice.contains("[job running;") {
                 return slice;
             }
+            assert!(Instant::now() < deadline, "{id} never settled");
             tokio::time::sleep(POLL).await;
         }
-        panic!("{id} never settled");
     }
 
     #[tokio::test]

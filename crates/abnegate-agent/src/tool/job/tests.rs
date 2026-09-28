@@ -5,6 +5,7 @@ use std::process::Command as Process;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -17,13 +18,13 @@ use super::limits::Limits;
 use super::log::Log;
 use super::*;
 use crate::test_support::CHILD_TEST;
+use crate::test_support::PATIENCE;
 use crate::test_support::assert_passed;
 use crate::test_support::captured_logs;
 use crate::tool::Session;
 use crate::tool::ToolContext;
 
 const POLL: Duration = Duration::from_millis(20);
-const POLL_LIMIT: usize = 500;
 
 /// The variable that points git at a repository wherever it is run.
 const GIT_DIRECTORY: &str = "GIT_DIR";
@@ -82,16 +83,17 @@ async fn spawned(session: Session, line: &str, cwd: &Path) -> JobStarted {
 }
 
 async fn settles(session: Session, id: &str) -> JobStatus {
-    for _ in 0..POLL_LIMIT {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
         let tail = Jobs::read(session, id, 0, 1)
             .await
             .expect("its own session reads it");
         if tail.state.settled() {
             return tail.state;
         }
+        assert!(Instant::now() < deadline, "{id} never settled");
         tokio::time::sleep(POLL).await;
     }
-    panic!("{id} never settled");
 }
 
 fn alive(pid: u32) -> bool {
@@ -1014,26 +1016,28 @@ fn a_job_that_was_killed_serialises_without_an_exit_code() {
 
 /// The first line of a job's log, once the job has written one.
 async fn first_line(session: Session, id: &str) -> String {
-    for _ in 0..POLL_LIMIT {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
         let tail = Jobs::read(session, id, 0, 500)
             .await
             .expect("its own session reads it");
         if let Some((line, _)) = tail.output.split_once('\n') {
             return line.to_string();
         }
+        assert!(Instant::now() < deadline, "{id} never wrote a line");
         tokio::time::sleep(POLL).await;
     }
-    panic!("{id} never wrote a line");
 }
 
 async fn gone(pid: u32) -> bool {
-    for _ in 0..POLL_LIMIT {
-        if !alive(pid) {
-            return true;
+    let deadline = Instant::now() + PATIENCE;
+    while alive(pid) {
+        if Instant::now() >= deadline {
+            return false;
         }
         tokio::time::sleep(POLL).await;
     }
-    false
+    true
 }
 
 /// Killing a job used to kill `sh` alone, and whatever `sh` had started
@@ -1042,7 +1046,7 @@ async fn gone(pid: u32) -> bool {
 async fn killing_a_job_kills_everything_it_started() {
     let cwd = directory();
     let session = task();
-    let started = spawned(session, "sleep 30 & echo $!; wait", cwd.path()).await;
+    let started = spawned(session, "sleep 120 & echo $!; wait", cwd.path()).await;
     let sleeper: u32 = first_line(session, &started.id)
         .await
         .parse()
@@ -1058,7 +1062,7 @@ async fn killing_a_job_kills_everything_it_started() {
 async fn a_job_that_ends_takes_what_it_left_running_with_it() {
     let cwd = directory();
     let session = task();
-    let started = spawned(session, "sleep 30 & echo $!", cwd.path()).await;
+    let started = spawned(session, "sleep 120 & echo $!", cwd.path()).await;
     let sleeper: u32 = first_line(session, &started.id)
         .await
         .parse()

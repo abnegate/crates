@@ -6,7 +6,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Once;
 use std::time::Duration;
+use std::time::Instant;
 
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
 use tracing_subscriber::fmt::MakeWriter;
 
 /// Set in a test's own child process, naming the test the child should run,
@@ -16,6 +19,23 @@ pub(crate) const CHILD_TEST: &str = "ABNEGATE_AGENT_CHILD_TEST";
 /// Far beyond any start a loaded host needs, so no test's child runs into a
 /// limit unless the test is about that limit.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long a test waits in real time on a child it started. A child a test
+/// expects to be killed outlives it, so a wait for it to go never mistakes
+/// its own exit for the kill.
+pub(crate) const PATIENCE: Duration = Duration::from_secs(60);
+
+/// Whether process `pid` goes within [`PATIENCE`]. A zombie has not gone.
+pub(crate) async fn gone(pid: i32) -> bool {
+    let deadline = Instant::now() + PATIENCE;
+    while kill(Pid::from_raw(pid), None).is_ok() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    true
+}
 
 /// Fail unless the re-run of one test that produced `output` passed and
 /// ran that test at all: a name that matches no test runs nothing and still
