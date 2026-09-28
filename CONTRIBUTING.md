@@ -203,85 +203,32 @@ Conventional commits: `type(scope): subject`, where type is one of `feat`,
 why, not what — the diff already says what. release-plz reads these to decide
 each crate's next version.
 
-## First publish
+## Releases
 
-crates.io Trusted Publishing cannot create a crate name that does not yet exist,
-so the first version of each crate is published by hand, from a machine with a
-crates.io token. Until every crate has Trusted Publishing, `release-plz.toml`
-sets `release = false` and `.github/workflows/release-plz.yml` runs only when
-dispatched: with `publish` left off, it opens the release PR and never asks
-crates.io for a token.
+`.github/workflows/release-plz.yml` runs release-plz on every push to `main`.
+Its release PR job opens or updates a single release pull request, which bumps
+versions from the conventional commits since each crate's last release tag,
+checks with cargo-semver-checks that each bump is large enough for the API
+change, and updates each crate's `CHANGELOG.md`. Nothing is published until
+that pull request is merged.
 
-1. Pre-flight, on a clean `main` whose CI is green:
+Merging the release pull request publishes every crate whose new version is not
+yet on crates.io. The release job authenticates through crates.io Trusted
+Publishing: release-plz exchanges the job's GitHub OIDC token for a short-lived
+publish token scoped to this repository and `release-plz.yml`, and revokes it
+once the job has published. No crates.io token is stored anywhere. Each crate's
+Trusted Publishing settings on crates.io name GitHub, owner `abnegate`,
+repository `crates`, workflow `release-plz.yml` and no environment. Trusted
+Publishing cannot create a crate, so a new crate's first version is published
+by hand and its Trusted Publishing entry added before release-plz can publish
+it.
 
-   ```sh
-   git switch main && git pull --ff-only
-   git status
-   cargo publish --workspace --dry-run
-   ```
+Every release is tagged `abnegate-<name>-v<version>`, such as
+`abnegate-http-v0.2.0`, and gets a GitHub release from its changelog entry. A
+crate whose tag already exists counts as released.
 
-2. Token. Sign in to crates.io with GitHub and verify the account's email
-   address, which publishing requires. At
-   <https://crates.io/settings/tokens/new> create a token named
-   `abnegate-first-publish`, expiring in 7 days, with the scopes `publish-new`
-   and `publish-update` and the crate pattern `abnegate-*`. In the publishing
-   shell, either read it into the environment, which writes nothing to disk or
-   history, or run `cargo login` now and `cargo logout` afterwards:
-
-   ```sh
-   read -rs CARGO_REGISTRY_TOKEN && export CARGO_REGISTRY_TOKEN
-   ```
-
-3. Publish in batches. crates.io lets new crates through in a burst of 5, then
-   one every 10 minutes ([rate limits](https://crates.io/docs/rate-limits)),
-   and `cargo publish --workspace` stops at the first 429. Either ask
-   help@crates.io to raise the limit beforehand, or:
-
-   ```sh
-   cargo publish -p abnegate-secret -p abnegate-http -p abnegate-vision -p abnegate-exec -p abnegate-config
-   for crate in abnegate-llm abnegate-notify abnegate-search abnegate-vcs abnegate-agent-cli abnegate-agent abnegate-comfy; do
-     sleep 610
-     cargo publish -p "$crate" || break
-   done
-   ```
-
-   That takes about 75 minutes. After a 429, wait until the time the error
-   names, then re-run from the crate that failed. Cargo waits for each
-   dependency to reach the index before it publishes a dependent.
-
-4. Verify:
-
-   - `cargo search abnegate --limit 20` lists all 12 crates at 0.1.0.
-   - Every docs.rs build at `https://docs.rs/crate/abnegate-<name>/0.1.0/builds`
-     succeeded.
-   - A scratch consumer builds against the published crates:
-
-     ```sh
-     cd "$(mktemp -d)" && cargo new --lib consumer && cd consumer
-     cargo add abnegate-secret abnegate-llm abnegate-vcs --features abnegate-vcs/github
-     cargo check
-     ```
-
-5. Tag the release, pushing only the 12 new tags. The names match
-   release-plz's `git_tag_name`, so its first run starts from them:
-
-   ```sh
-   tags=()
-   for crate in secret http vision exec config llm notify search vcs agent-cli agent comfy; do
-     git tag "abnegate-$crate-v0.1.0"
-     tags+=("abnegate-$crate-v0.1.0")
-   done
-   git push origin "${tags[@]}"
-   ```
-
-6. Afterwards:
-
-   - Revoke the token.
-   - On crates.io, open each crate's Settings, then Trusted Publishing, and add
-     GitHub with owner `abnegate`, repository `crates`, workflow
-     `release-plz.yml` and no environment.
-   - In one change, lift the first-publish gates: drop `release = false` from
-     `release-plz.toml`, run `release-plz.yml` on pushes to `main` as well as on
-     dispatch, without the `publish` input, and drop `if: false` from the
-     `semver` job in `ci.yml`.
-   - Watch the first release-plz run that change triggers.
+The `semver` CI job runs `cargo semver-checks check-release` against each
+crate's latest version on crates.io, so a pull request that breaks a crate's
+public API without raising its version fails. cargo-semver-checks refuses a
+crate that has never been published, so a new crate's first version reaches
+crates.io before the pull request that adds it can pass.
