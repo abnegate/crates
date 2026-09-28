@@ -2051,7 +2051,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'
     async fn a_cancelled_run_takes_its_process_tree_with_it() {
         let directory = TempDir::new().expect("a temporary directory");
         let marker = directory.path().join("group");
-        let script = format!("echo $$ > '{}'\nsleep 120 &\nwait", marker.display());
+        let script = format!("sleep 120 &\necho $$ > '{}'\nwait", marker.display());
         let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
 
         let messages = [Message::user("hi")];
