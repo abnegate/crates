@@ -315,7 +315,8 @@ impl McpConfig {
     /// its own `config.toml` alone, and otherwise those enabled
     ///
     /// - with a [valid](McpServer::valid) transport, which a strict CLI would
-    ///   otherwise reject along with every other server;
+    ///   otherwise reject along with every other server, and, for a remote
+    ///   server, a URL that is not blank once resolved either;
     /// - with a name and tool names safe to place in `--allowedTools`, which
     ///   the CLI splits on commas and whitespace, so a name holding either
     ///   could allow a tool nobody named;
@@ -772,6 +773,39 @@ mod tests {
         assert!(warning.contains("no secret bound"), "{warning}");
         assert!(!warning.contains("LINEAR_TOKEN"), "{warning}");
         assert!(!warning.contains("Bearer"), "{warning}");
+    }
+
+    /// A URL that resolves to nothing is as blank as one configured blank,
+    /// so its server never attaches either, and the warning names it.
+    #[test]
+    fn a_remote_server_whose_url_resolves_to_nothing_never_attaches() {
+        let config = McpConfig::default()
+            .with_server("appwrite", appwrite())
+            .with_server("defaulted", McpServer::remote("${HOST:-}"))
+            .with_server(
+                "bound",
+                McpServer::remote("${HOST}").with_secret("HOST", ""),
+            );
+
+        let (attachment, logs) = captured_logs(|| rendered(&config));
+
+        let document = read(&attachment.file);
+        assert_eq!(
+            document["mcpServers"]
+                .as_object()
+                .expect("servers")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["appwrite"]
+        );
+        assert_eq!(config.allowed_tools(AgentKind::Claude), ["mcp__appwrite"]);
+        for name in ["defaulted", "bound"] {
+            assert!(
+                logs.lines()
+                    .any(|line| line.contains(name) && line.contains("skipping an MCP server")),
+                "{logs}"
+            );
+        }
     }
 
     /// A configuration read from a document never holds a secret, so one is

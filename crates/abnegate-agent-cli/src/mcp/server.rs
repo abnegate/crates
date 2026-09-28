@@ -419,17 +419,21 @@ impl McpServer {
         if self.headers.keys().any(|header| header.contains(OPENING)) {
             return Some(Refusal::HeaderName);
         }
-        let resolved: Option<Vec<String>> = iter::once(url.as_str())
-            .chain(self.headers.values().map(SecretValue::expose))
-            .map(|value| self.resolved(value))
+        let headers: Option<Vec<String>> = self
+            .headers
+            .values()
+            .map(|value| self.resolved(value.expose()))
             .collect();
-        match resolved {
-            None => Some(Refusal::Unbound),
-            Some(values) if values.iter().any(|value| value.contains(OPENING)) => {
-                Some(Refusal::Expandable)
-            }
-            Some(_) => None,
+        let (Some(url), Some(headers)) = (self.resolved(url), headers) else {
+            return Some(Refusal::Unbound);
+        };
+        if iter::once(&url)
+            .chain(&headers)
+            .any(|value| value.contains(OPENING))
+        {
+            return Some(Refusal::Expandable);
         }
+        url.trim().is_empty().then_some(Refusal::Invalid)
     }
 
     /// `value`, from this server's URL or headers, with every reference
@@ -1491,6 +1495,32 @@ mod tests {
             McpServer::remote("https://${ABNEGATE_MCP_0:-relay.example}/mcp"),
             http().with_header("X-Literal", "ABNEGATE_MCP_0"),
             stdio().with_environment("TOKEN", "${UNSET}"),
+        ] {
+            assert_eq!(server.refusal("remote"), None, "{server:?}");
+        }
+    }
+
+    /// A URL that resolves to nothing reaches no server, and one configured
+    /// blank is refused as invalid, so one that resolves blank, through an
+    /// empty default or an empty secret, is refused by the same rule rather
+    /// than written for the CLI to fail on.
+    #[test]
+    fn a_remote_url_that_resolves_to_nothing_is_refused_like_a_blank_one() {
+        for server in [
+            McpServer::remote("${HOST:-}"),
+            McpServer::remote("${HOST:-  }"),
+            McpServer::remote("${HOST}").with_secret("HOST", ""),
+            McpServer::remote(" ${HOST} ${PATH:-}").with_secret("HOST", ""),
+        ] {
+            assert_eq!(
+                server.refusal("remote"),
+                Some(Refusal::Invalid),
+                "{server:?}"
+            );
+        }
+        for server in [
+            McpServer::remote("https://${HOST:-}mcp.example.com/mcp"),
+            McpServer::remote("${HOST}").with_secret("HOST", "https://mcp.example.com/mcp"),
         ] {
             assert_eq!(server.refusal("remote"), None, "{server:?}");
         }

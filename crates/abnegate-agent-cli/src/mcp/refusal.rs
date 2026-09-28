@@ -3,8 +3,9 @@ use std::fmt;
 /// Why an enabled server never attaches to a CLI's run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Refusal {
-    /// Not exactly one of `command` and `url`, or a transport that
-    /// disagrees with it or that this crate does not attach over.
+    /// Not exactly one of `command` and `url`, one of them blank, a URL that
+    /// resolves to blank text, or a transport that disagrees with it or that
+    /// this crate does not attach over.
     Invalid,
     /// A name or tool name unsafe in `--allowedTools`.
     Unnameable,
@@ -25,7 +26,7 @@ impl fmt::Display for Refusal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Invalid => {
-                "set exactly one of `command` and `url`, and a `type`, if any, of `stdio`, `http` or `sse` that matches it"
+                "set exactly one of `command` and `url`, not blank once resolved, and a `type`, if any, of `stdio`, `http` or `sse` that matches it"
             }
             Self::Unnameable => {
                 "its name and tool names may hold only letters, digits, `_` and `-`"
