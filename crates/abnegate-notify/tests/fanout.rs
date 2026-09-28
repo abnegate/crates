@@ -20,6 +20,7 @@ enum Outcome {
     Fail,
     Hang,
     Panic,
+    RateLimited(Duration),
     Slow(Duration),
     Yield,
 }
@@ -71,6 +72,9 @@ impl Notifier for Stub {
                 Ok(())
             }
             Outcome::Panic => panic!("this backend is broken"),
+            Outcome::RateLimited(wait) => {
+                Err(Error::rate_limited("chat.example.test", Some(*wait)))
+            }
             Outcome::Yield => {
                 tokio::task::yield_now().await;
                 self.delivered.fetch_add(1, Ordering::SeqCst);
@@ -202,6 +206,24 @@ async fn a_failure_is_reported_with_its_reason() {
         Some("the message could not be built: nope".to_string())
     );
     assert!(!failure.is_retryable());
+}
+
+#[tokio::test]
+async fn a_rate_limited_channel_says_how_long_to_wait() {
+    let report = Fanout::new()
+        .with(Stub::new(
+            Channel::custom("chat"),
+            Outcome::RateLimited(Duration::from_secs(30)),
+        ))
+        .deliver(&notification())
+        .await;
+
+    let failure = report.failures().next().expect("one failure");
+    assert_eq!(
+        failure.error().and_then(Error::retry_after),
+        Some(Duration::from_secs(30))
+    );
+    assert!(failure.is_retryable());
 }
 
 #[tokio::test(start_paused = true)]

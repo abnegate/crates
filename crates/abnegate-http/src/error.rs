@@ -2,6 +2,12 @@
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Everything that can go wrong issuing or validating an HTTP request.
+///
+/// A variant may gain a field in a minor release, so an
+/// [`HttpClient`](crate::HttpClient) implemented outside this crate, a test
+/// double included, fails through a constructor rather than a literal:
+/// [`Error::unfetchable_resolution`] or [`Error::oversized_body`]. A pattern
+/// outside this crate ends in `..`.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -77,6 +83,19 @@ pub enum Error {
     UnreadableBody(#[source] reqwest::Error),
 }
 
+impl Error {
+    /// Every address `host` resolved to must not be fetched. `host` is the
+    /// name alone, never the URL it came from.
+    pub fn unfetchable_resolution(host: impl Into<String>) -> Self {
+        Self::UnfetchableResolution { host: host.into() }
+    }
+
+    /// A response body outgrew `limit`, the most bytes it was read under.
+    pub fn oversized_body(limit: usize) -> Self {
+        Self::OversizedBody { limit }
+    }
+}
+
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
         Self::Request(error.without_url())
@@ -115,5 +134,23 @@ mod tests {
         let error = Error::from(error);
 
         assert!(!chain(&error).contains("hunter2"), "{}", chain(&error));
+    }
+
+    #[test]
+    fn each_constructor_fills_its_variant() {
+        assert!(
+            matches!(
+                Error::unfetchable_resolution("inside.example"),
+                Error::UnfetchableResolution { host } if host == "inside.example"
+            ),
+            "the host is kept"
+        );
+        assert!(
+            matches!(
+                Error::oversized_body(1_024),
+                Error::OversizedBody { limit: 1_024 }
+            ),
+            "the limit is kept"
+        );
     }
 }

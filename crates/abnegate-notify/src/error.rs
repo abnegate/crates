@@ -17,11 +17,12 @@ pub(crate) const MAXIMUM_ERROR_BODY_CHARACTERS: usize = 512;
 /// and an error message is the shortest path from a credential to a log file,
 /// so failures name the host and nothing more.
 ///
-/// A variant may gain a field in a minor release, so a [`Notifier`](crate::Notifier)
-/// builds the error it fails with through a constructor ([`Error::timeout`],
-/// [`Error::rejected`], [`Error::unreachable`] or [`Error::malformed`]), which
-/// sanitizes the text it is given, and a pattern outside this crate ends in
-/// `..`.
+/// A variant may gain a field in a minor release, so a
+/// [`Notifier`](crate::Notifier) or a [`Mail`](crate::Mail) builds the error it
+/// fails with through a constructor, which sanitizes the text it is given:
+/// [`Error::timeout`], [`Error::rejected`], [`Error::rate_limited`],
+/// [`Error::unreachable`], [`Error::smtp`] or [`Error::malformed`]. A pattern
+/// outside this crate ends in `..`.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
@@ -110,10 +111,28 @@ impl Error {
         }
     }
 
+    /// `host` answered `429 Too Many Requests`, and asked the caller to wait
+    /// `retry_after` when it said how long. `host` is sanitized.
+    pub fn rate_limited(host: &str, retry_after: Option<Duration>) -> Self {
+        Self::RateLimited {
+            host: sanitize(host).into_owned(),
+            retry_after,
+        }
+    }
+
     /// The request never reached `host`, or its answer never arrived, for
     /// `message`. It is sanitized, and must not carry the request URL.
     pub fn unreachable(host: &str, message: impl fmt::Display) -> Self {
         Self::Unreachable {
+            host: sanitize(host).into_owned(),
+            message: sanitize(&message.to_string()).into_owned(),
+        }
+    }
+
+    /// The mail relay at `host` could not be reached, or refused the message,
+    /// for `message`. Both are sanitized.
+    pub fn smtp(host: &str, message: impl fmt::Display) -> Self {
+        Self::Smtp {
             host: sanitize(host).into_owned(),
             message: sanitize(&message.to_string()).into_owned(),
         }
@@ -233,10 +252,31 @@ mod tests {
             }
         );
         assert_eq!(
+            Error::rate_limited("discord.com", Some(Duration::from_secs(30))),
+            Error::RateLimited {
+                host: "discord.com".to_string(),
+                retry_after: Some(Duration::from_secs(30)),
+            }
+        );
+        assert_eq!(
+            Error::rate_limited("discord.com", None),
+            Error::RateLimited {
+                host: "discord.com".to_string(),
+                retry_after: None,
+            }
+        );
+        assert_eq!(
             Error::unreachable("database", "connection refused"),
             Error::Unreachable {
                 host: "database".to_string(),
                 message: "connection refused".to_string(),
+            }
+        );
+        assert_eq!(
+            Error::smtp("smtp.example.test", "421 try again later"),
+            Error::Smtp {
+                host: "smtp.example.test".to_string(),
+                message: "421 try again later".to_string(),
             }
         );
         assert_eq!(
@@ -251,22 +291,37 @@ mod tests {
     fn constructors_sanitize_the_text_they_are_given() {
         let secret = "hunter2seventeen";
         let url = format!("postgres://app:{secret}@db.internal/app");
+        let control = "\u{1b}[31m";
+        let (head, _) = secret.split_at(secret.len() / 2);
+        let cut = MAXIMUM_ERROR_BODY_CHARACTERS - 1;
+        let secret_start = url.find(secret).expect("the URL carries the secret");
+        let padding = "x".repeat(cut - control.chars().count() - secret_start - head.len());
 
         let unreachable = Error::unreachable("database", format!("cannot connect to {url}"));
         let malformed = Error::malformed(format!("no client for {url}"));
+        let rate_limited = Error::rate_limited(&format!("{control}{url}"), None);
+        let smtp = Error::smtp(
+            "smtp.example.test",
+            format!("{control}535 no account at {url}"),
+        );
         let rejected = Error::rejected(
             "hooks.slack.com",
             500,
-            &format!("\u{1b}[31m{url} {}", "x".repeat(4_096)),
+            &format!("{control}{padding}{url} {}", "x".repeat(4_096)),
         );
 
-        for error in [&unreachable, &malformed, &rejected] {
-            assert!(!error.to_string().contains(secret), "{error}");
+        for error in [&unreachable, &malformed, &rate_limited, &smtp, &rejected] {
+            let rendered = error.to_string();
+            assert!(!rendered.contains(secret), "{rendered}");
+            assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
         }
         let Error::Rejected { body, .. } = &rejected else {
             panic!("expected a rejection, got {rejected:?}");
         };
-        assert!(!body.contains('\u{1b}'), "{body:?}");
+        assert!(
+            !body.contains(head),
+            "the body was cut through the credential before it was sanitized: {body:?}"
+        );
         assert!(body.chars().count() <= MAXIMUM_ERROR_BODY_CHARACTERS);
     }
 

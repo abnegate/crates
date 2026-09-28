@@ -382,6 +382,8 @@ impl RecipeCatalog {
 }
 
 impl Recipe {
+    /// The model this recipe trains, as its catalog `training` metadata
+    /// declares it, with each weight its defaults name.
     pub fn training_model(&self) -> Result<TrainingModel, Error> {
         let architecture = self
             .training
@@ -391,14 +393,12 @@ impl Recipe {
             ))?
             .architecture;
         match architecture {
-            TrainingArchitecture::Flux => Ok(TrainingModel::Flux {
-                checkpoint: self.training_weight("checkpoint")?,
-            }),
-            TrainingArchitecture::QwenEdit => Ok(TrainingModel::QwenEdit {
-                unet: self.training_weight("unet")?,
-                clip: self.training_weight("clip")?,
-                vae: self.training_weight("vae")?,
-            }),
+            TrainingArchitecture::Flux => TrainingModel::flux(self.training_weight("checkpoint")?),
+            TrainingArchitecture::QwenEdit => TrainingModel::qwen_edit(
+                self.training_weight("unet")?,
+                self.training_weight("clip")?,
+                self.training_weight("vae")?,
+            ),
         }
     }
 
@@ -411,13 +411,13 @@ impl Recipe {
             ))
     }
 
-    fn training_weight(&self, name: &str) -> Result<String, Error> {
+    fn training_weight(&self, name: &str) -> Result<&str, Error> {
         self.defaults
             .get(name)
+            .map(String::as_str)
             .ok_or(Error::Configuration(
                 "training metadata references a missing model weight",
             ))
-            .and_then(|filename| sanitize_weight_filename(filename))
     }
 
     pub fn has_lora_slot(&self) -> bool {
