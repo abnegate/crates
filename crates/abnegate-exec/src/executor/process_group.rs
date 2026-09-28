@@ -7,6 +7,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::PoisonError;
+#[cfg(not(target_os = "linux"))]
+use std::time::Duration;
+#[cfg(not(target_os = "linux"))]
+use std::time::Instant;
 
 use nix::errno::Errno;
 use nix::sys::signal::Signal;
@@ -20,6 +24,14 @@ use crate::error::ExecutorError;
 /// caller's own group and `1` is init, and `kill(-1, ...)` signals every
 /// process the caller may signal.
 const LOWEST_GROUP: u32 = 2;
+
+/// The pause between one SIGKILL to a group and the next.
+#[cfg(not(target_os = "linux"))]
+const ROUND: Duration = Duration::from_millis(1);
+
+/// How long a kill goes on repeating itself for a group that still answers.
+#[cfg(not(target_os = "linux"))]
+const BUDGET: Duration = Duration::from_millis(100);
 
 /// A handle to a process group for signal management.
 ///
@@ -81,11 +93,16 @@ impl ProcessGroup {
         self.signal(Signal::SIGTERM)
     }
 
-    /// Send SIGKILL to the entire process group.
+    /// Send SIGKILL to the entire process group, and again until no member is
+    /// left alive to receive it, for at most a tenth of a second.
     ///
-    /// This forcefully kills all processes in the group.
+    /// Outside Linux a group signal reaches only the members present when it
+    /// lands, so a child a member was forking at that instant would survive
+    /// a single kill.
     pub fn kill(&self) -> Result<(), ExecutorError> {
-        self.signal(Signal::SIGKILL)
+        self.signal(Signal::SIGKILL)?;
+        self.kill_until_gone();
+        Ok(())
     }
 
     /// Check if the process group is still running.
@@ -108,6 +125,26 @@ impl ProcessGroup {
         *self.released()
     }
 
+    /// Repeat SIGKILL until it finds no live member -- `ESRCH` once the group
+    /// is empty, `EPERM` once only its unreaped zombies are left -- or the
+    /// group is released, or the budget runs out.
+    #[cfg(not(target_os = "linux"))]
+    fn kill_until_gone(&self) {
+        let deadline = Instant::now() + BUDGET;
+        while Instant::now() < deadline {
+            std::thread::sleep(ROUND);
+            let released = self.released();
+            if *released || kill(Pid::from_raw(-self.pgid), Signal::SIGKILL).is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Linux restarts a fork that a group signal interrupts, so its child is
+    /// never left out of a kill.
+    #[cfg(target_os = "linux")]
+    fn kill_until_gone(&self) {}
+
     fn released(&self) -> MutexGuard<'_, bool> {
         self.released.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -129,9 +166,78 @@ impl ProcessGroup {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+    use std::process::Stdio;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use crate::executor::sleeper::Sleeper;
 
     use super::*;
+
+    /// How long a test waits for a group to start or to go, however loaded
+    /// the machine.
+    const PATIENCE: Duration = Duration::from_secs(60);
+
+    /// The members of `group` still running; a zombie runs nothing.
+    fn running(group: i32) -> Vec<i32> {
+        let output = Command::new("ps")
+            .args(["-A", "-o", "pid=,pgid=,stat="])
+            .output()
+            .expect("a process listing");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let (pid, pgid, state) = (fields.next()?, fields.next()?, fields.next()?);
+                (pgid.parse() == Ok(group) && !state.starts_with('Z'))
+                    .then(|| pid.parse().ok())
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// Whether `condition` holds within [`PATIENCE`].
+    fn eventually(condition: impl Fn() -> bool) -> bool {
+        let started = Instant::now();
+        while !condition() {
+            if started.elapsed() > PATIENCE {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+
+    /// Each of its sleeps outlives [`PATIENCE`], so one a kill missed is
+    /// still running when the test gives up waiting for the group to go.
+    #[test]
+    fn kill_reaches_a_child_forked_as_it_lands() {
+        let mut shell = Command::new("sh")
+            .args(["-c", "while :; do sleep 300 & done"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("the shell starts");
+        let group = ProcessGroup::try_from(shell.id()).expect("a child leading its own group");
+        assert!(
+            eventually(|| running(group.pgid()).len() > 2),
+            "the shell never started forking"
+        );
+
+        group.kill().unwrap();
+        shell.wait().expect("the shell is reaped");
+
+        let gone = eventually(|| running(group.pgid()).is_empty());
+        let survivors = running(group.pgid());
+        for pid in &survivors {
+            let _ = kill(Pid::from_raw(*pid), Signal::SIGKILL);
+        }
+        assert!(gone, "the kill missed {survivors:?}");
+    }
 
     #[test]
     fn a_pid_that_is_not_one_jobs_group_is_refused() {
