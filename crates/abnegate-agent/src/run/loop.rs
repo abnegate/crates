@@ -136,6 +136,9 @@ impl Agent {
     /// However the turn fails, `state` is left ended in
     /// [`AgentPhase::Error`] with the error's text in
     /// [`error`](AgentState::error), so it can be saved and continued again.
+    /// A future dropped before it resolves records nothing: `state` is left
+    /// mid-turn and unfinished, and [`finished_at`](AgentState::finished_at)
+    /// still holds the previous turn's time.
     pub async fn continue_run(
         &self,
         state: &mut AgentState,
@@ -305,9 +308,9 @@ impl Agent {
         Err(Self::failed(state, RunError::Empty))
     }
 
-    /// End the turn on `error`, recording why on `state`, and hand the error
-    /// back for the run to return: whatever stops a run, a caller holding
-    /// its state sees it ended and why.
+    /// End the turn on `error`, recording it on `state`, and hand the error
+    /// back for the run to return. Every error a turn ends on is recorded
+    /// here; a turn whose future is dropped first records nothing.
     fn failed(state: &mut AgentState, error: RunError) -> RunError {
         state.fail(error.to_string());
         error

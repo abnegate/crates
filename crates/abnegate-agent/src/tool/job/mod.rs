@@ -101,6 +101,28 @@ const MAXIMUM_CHARACTER_BYTES: usize = 4;
 /// a pointer file and the real exclude lives in the common directory.
 const EXCLUDE_PATH: &str = "info/exclude";
 
+/// The variables git keeps local to one repository, exactly as
+/// `git rev-parse --local-env-vars` lists them: what git itself clears before
+/// it works in another repository, `GIT_DIR`, `GIT_WORK_TREE` and
+/// `GIT_COMMON_DIR` among them.
+const REPOSITORY_ENVIRONMENT: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
 /// The directory the tools keep their own files in, inside a working tree.
 pub fn application_directory(checkout: &Path, application: &Application) -> PathBuf {
     checkout.join(application.directory())

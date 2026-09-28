@@ -2,6 +2,7 @@ mod parameters;
 
 use std::ffi::OsString;
 use std::path::Path;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use tokio::time::timeout_at;
 use super::confine;
 use super::read_text;
 use super::resolve;
+use super::walk::OUT_OF_TIME;
 use super::walk::Visit;
 use super::walk::WALK_TIME_LIMIT;
 use super::walk::Walk;
@@ -37,6 +39,11 @@ const RIPGREP_NO_MATCHES: i32 = 1;
 /// Widest matching line ripgrep prints whole; a wider one is cut to a
 /// preview, so one minified file cannot fill a result.
 const RIPGREP_MAXIMUM_COLUMNS: &str = "400";
+
+/// Why a search reports only part of the tree when ripgrep fails after
+/// printing matches: a file or directory it could not read makes it exit 2
+/// once it has searched the rest.
+const UNREADABLE: &str = "some files could not be read";
 
 /// Build output and dependency trees a search walks past.
 const SKIPPED_DIRECTORIES: &[&str] = &[
@@ -58,12 +65,19 @@ const CODE_EXTENSIONS: &[&str] = &[
 
 /// Search for a literal pattern in code files.
 ///
-/// The search runs ripgrep, started like every other child a tool starts:
-/// with the context's environment and nothing else, so `rg` is looked for
-/// on that environment's `PATH`, and with `--no-config`, so no ripgrep
-/// configuration file can widen what it reads. When `rg` cannot be started
-/// that way, or does not finish, the tree is walked instead, passing over
-/// hidden entries, build trees and links.
+/// The search runs ripgrep with the context's environment and nothing else,
+/// as every child a tool starts is run, so the `rg` that runs is the first on
+/// that environment's `PATH`. What it reads is then decided by the searched
+/// directory alone, through the `.gitignore`, `.ignore`, `.rgignore` and
+/// `.git/info/exclude` files within it. Nothing outside it has a say: not a
+/// ripgrep configuration file, an ignore file in a directory above, git's
+/// global excludes, the exclude file a linked worktree shares with its
+/// repository, or whether a repository encloses it.
+///
+/// When `rg` cannot be started, or fails having printed nothing, the tree is
+/// walked instead, passing over hidden entries, build trees and links. A
+/// search that runs out of time, or that `rg` could not read all of, returns
+/// the matches `rg` printed, marked as stopped early.
 pub struct SearchCodeTool;
 
 #[async_trait]
@@ -259,7 +273,8 @@ fn search_file(
 }
 
 /// Search with `rg` started through `process::command`. `None`, when it
-/// cannot be started or does not finish, hands the search to the walk.
+/// cannot be started or fails having printed nothing, hands the search to
+/// the walk.
 async fn search_ripgrep(
     parameters: &SearchCodeParameters,
     search_path: &Path,
@@ -271,8 +286,13 @@ async fn search_ripgrep(
     ripgrep(command, search_path, maximum_results, WALK_TIME_LIMIT).await
 }
 
-/// Always `--no-config`: a configuration file can add any flag, `--hidden`,
-/// `--follow` and `--pre` among them, and so change what a search reads.
+/// The first four keep the host out of what a search reads: `--no-config` a
+/// configuration file, which can add any flag, `--hidden`, `--follow` and
+/// `--pre` among them; `--no-ignore-parent` the ignore files of the
+/// directories above the searched one; `--no-ignore-global` git's global
+/// excludes; and `--no-require-git` both whether a repository encloses the
+/// searched directory, which otherwise decides whether its `.gitignore` files
+/// count, and the exclude file a linked worktree shares with its repository.
 fn ripgrep_arguments(
     parameters: &SearchCodeParameters,
     search_path: &Path,
@@ -280,6 +300,9 @@ fn ripgrep_arguments(
 ) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = [
         "--no-config",
+        "--no-ignore-parent",
+        "--no-ignore-global",
+        "--no-require-git",
         "-F",
         "-n",
         "--no-heading",
@@ -314,7 +337,9 @@ fn ripgrep_arguments(
 ///
 /// Nothing is buffered beyond the lines kept: a search that matches every
 /// line of a large tree costs `maximum_results` lines, not the whole of its
-/// output. `None` hands the search to the walk instead.
+/// output. Whatever it printed is reported, marked when it ran out of time or
+/// failed; only a failure that printed nothing returns `None`, handing the
+/// search to the walk.
 async fn ripgrep(
     mut command: Command,
     search_path: &Path,
@@ -332,15 +357,20 @@ async fn ripgrep(
     let deadline = Instant::now() + limit;
 
     let mut results = Vec::new();
-    let mut stopped = None;
     let mut line = Vec::new();
-    let finished = loop {
+    let stopped = loop {
         if results.len() >= maximum_results {
-            break false;
+            break None;
         }
         line.clear();
         match timeout_at(deadline, stdout.read_until(b'\n', &mut line)).await {
-            Ok(Ok(0)) => break true,
+            Ok(Ok(0)) => {
+                break match timeout_at(deadline, child.wait()).await {
+                    Ok(Ok(status)) if searched_everything(status) => None,
+                    Ok(_) => Some(UNREADABLE),
+                    Err(_) => Some(OUT_OF_TIME),
+                };
+            }
             Ok(Ok(_)) => {
                 let text = String::from_utf8_lossy(&line);
                 let text = text.trim_end_matches(['\n', '\r']);
@@ -348,24 +378,22 @@ async fn ripgrep(
                     results.push(normalize_ripgrep_line(text, search_path));
                 }
             }
-            Ok(Err(_)) => return None,
-            Err(_) => {
-                stopped = Some("out of time");
-                break false;
-            }
+            Ok(Err(_)) => break Some(UNREADABLE),
+            Err(_) => break Some(OUT_OF_TIME),
         }
     };
 
-    if !finished {
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-        return Some(format_search_results(results, maximum_results, stopped));
-    }
-    let status = timeout_at(deadline, child.wait()).await.ok()?.ok()?;
-    if !status.success() && status.code() != Some(RIPGREP_NO_MATCHES) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    if results.is_empty() && stopped == Some(UNREADABLE) {
         return None;
     }
-    Some(format_search_results(results, maximum_results, None))
+    Some(format_search_results(results, maximum_results, stopped))
+}
+
+/// Whether ripgrep exited having searched all it was given, matching or not.
+fn searched_everything(status: ExitStatus) -> bool {
+    status.success() || status.code() == Some(RIPGREP_NO_MATCHES)
 }
 
 /// A line ripgrep printed as `path:line:text`, with the path made relative
@@ -396,7 +424,11 @@ mod tests {
 
     use super::*;
     use crate::test_support::CHILD_TEST;
+    use crate::test_support::PATIENCE;
+    use crate::test_support::TIMEOUT;
     use crate::test_support::assert_passed;
+    use crate::test_support::expired;
+    use crate::test_support::timed;
 
     /// The variable ripgrep reads the path of its configuration file from.
     const CONFIGURATION: &str = "RIPGREP_CONFIG_PATH";
@@ -461,9 +493,68 @@ mod tests {
         })
     }
 
+    /// The files a search's output names, in order.
+    fn files(output: &str) -> Vec<&str> {
+        let mut files: Vec<&str> = output
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(_, rest)| rest.ends_with(MARKER))
+            .map(|(file, _)| file)
+            .collect();
+        files.sort_unstable();
+        files
+    }
+
+    /// A tree under `outer`, beneath an ignore file that whitelists one
+    /// dot-file and ignores one plain file, holding a file for every rule a
+    /// host could bring to a search and a `.gitignore` of its own.
+    fn planted(outer: &Path) -> PathBuf {
+        fs::write(outer.join(".rgignore"), "!.parent.rs\nparent.data\n")
+            .expect("an ignore file above the tree");
+        let tree = outer.join("tree");
+        fs::create_dir(&tree).expect("a tree to search");
+        fs::write(tree.join(".gitignore"), "tree.data\n").expect("the tree's own ignore file");
+        for name in [
+            ".hidden.rs",
+            ".parent.rs",
+            ".global.rs",
+            ".shared.rs",
+            "visible.data",
+            "parent.data",
+            "global.data",
+            "shared.data",
+            "tree.data",
+        ] {
+            fs::write(tree.join(name), MARKER).expect("a file to search");
+        }
+        tree
+    }
+
+    /// Make `tree` a linked worktree of a repository beside it, whose shared
+    /// exclude file whitelists one dot-file and ignores one plain file.
+    fn link(tree: &Path) {
+        let repository = tree.with_file_name("repository");
+        let worktree = repository.join("worktrees").join("tree");
+        fs::create_dir_all(repository.join("info")).expect("the repository's info directory");
+        fs::create_dir_all(&worktree).expect("the worktree's own git directory");
+        fs::write(
+            repository.join("info").join("exclude"),
+            "!.shared.rs\nshared.data\n",
+        )
+        .expect("the exclude file the worktree shares");
+        fs::write(worktree.join("commondir"), "../..\n").expect("the worktree's common directory");
+        fs::write(
+            tree.join(".git"),
+            format!("gitdir: {}\n", worktree.display()),
+        )
+        .expect("the worktree's pointer to its git directory");
+    }
+
     /// A search started ripgrep with this process's whole environment, so a
     /// host's `RIPGREP_CONFIG_PATH` could hand it any flag: `--hidden`,
-    /// `--follow`, a `--pre` program. A stand-in `rg` first on the path
+    /// `--follow`, a `--pre` program. It also started it free to read the
+    /// ignore files above the tree, git's global excludes, and whether a
+    /// repository encloses the tree. A stand-in `rg` first on the path
     /// writes down every start, so this holds whether ripgrep is installed
     /// or not.
     #[tokio::test]
@@ -499,12 +590,17 @@ mod tests {
         let starts = fs::read_to_string(record.join(ARGUMENTS)).expect("the search started rg");
         assert!(!starts.is_empty(), "the search never started rg");
         for arguments in starts.lines() {
-            assert!(
-                arguments
-                    .split(' ')
-                    .any(|argument| argument == "--no-config"),
-                "rg was free to read a configuration file: {arguments}"
-            );
+            for (flag, freedom) in [
+                ("--no-config", "a configuration file"),
+                ("--no-ignore-parent", "the ignore files above the tree"),
+                ("--no-ignore-global", "git's global excludes"),
+                ("--no-require-git", "whether a repository encloses the tree"),
+            ] {
+                assert!(
+                    arguments.split(' ').any(|argument| argument == flag),
+                    "rg was started without {flag}, free to read {freedom}: {arguments}"
+                );
+            }
         }
         let environment = fs::read_to_string(record.join(ENVIRONMENT)).expect("rg's environment");
         assert!(
@@ -515,19 +611,35 @@ mod tests {
         );
     }
 
-    /// With a host configuration asking for `--hidden`, ripgrep searched the
-    /// dot-files the walk passes over and handed back what they held, even
-    /// through a context that passes the host's whole environment on.
+    /// What a search read used to follow the host as well as the tree. A
+    /// ripgrep configuration asking for `--hidden` handed back the dot-files
+    /// the walk passes over; an ignore file in a directory above the tree,
+    /// git's global excludes, or the exclude file a linked worktree shares
+    /// with its repository, whitelisted a dot-file or ignored a file the
+    /// search should read; and whether a repository enclosed the tree decided
+    /// whether its own `.gitignore` counted. None of it may widen or narrow a
+    /// search, even through a context that passes the host's whole
+    /// environment on.
     #[tokio::test]
-    async fn a_host_ripgrep_configuration_never_widens_a_search() {
+    async fn nothing_on_the_host_widens_or_narrows_a_search() {
         const NAME: &str =
-            "tool::file::search::tests::a_host_ripgrep_configuration_never_widens_a_search";
+            "tool::file::search::tests::nothing_on_the_host_widens_or_narrows_a_search";
         if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
             let configuration = TempDir::new().expect("a directory for the configuration");
+            let home = TempDir::new().expect("a home for the child");
+            let settings = home.path().join(".config");
+            fs::create_dir_all(settings.join("git")).expect("git's settings directory");
+            fs::write(
+                settings.join("git").join("ignore"),
+                "!.global.rs\nglobal.data\n",
+            )
+            .expect("git's global excludes");
             let output = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", NAME, "--nocapture"])
                 .env(CHILD_TEST, NAME)
                 .env(CONFIGURATION, hidden(configuration.path()))
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", &settings)
                 .output()
                 .await
                 .unwrap();
@@ -538,30 +650,35 @@ mod tests {
             eprintln!("skipping: ripgrep is not installed");
             return;
         }
-        let tree = TempDir::new().expect("a tree to search");
-        fs::write(tree.path().join(".hidden.rs"), MARKER).expect("a dot-file");
-        fs::write(tree.path().join("visible.data"), MARKER).expect("a file only rg reads");
+        let enclosed = TempDir::new().expect("a repository to hold a tree");
+        fs::create_dir(enclosed.path().join(".git")).expect("the repository's own directory");
+        let alone = TempDir::new().expect("a directory to hold a tree");
+        let worktree = TempDir::new().expect("a directory to hold a linked worktree");
+        let linked = planted(worktree.path());
+        link(&linked);
 
-        for context in [
-            ToolContext::default().within(tree.path()),
-            ToolContext::default()
-                .within(tree.path())
-                .inherit_environment(),
-        ] {
-            let output = SearchCodeTool
-                .execute(json!({"pattern": MARKER}), &context)
-                .await
-                .expect("the search answers")
-                .output
-                .unwrap_or_default();
-            assert!(
-                output.contains("visible.data"),
-                "rg did not run the search: {output}"
-            );
-            assert!(
-                !output.contains(".hidden.rs"),
-                "a host configuration widened the search: {output}"
-            );
+        for tree in [planted(enclosed.path()), planted(alone.path()), linked] {
+            for context in [
+                ToolContext::default().within(&tree),
+                ToolContext::default().within(&tree).inherit_environment(),
+            ] {
+                let output = SearchCodeTool
+                    .execute(json!({"pattern": MARKER}), &context)
+                    .await
+                    .expect("the search answers")
+                    .output
+                    .unwrap_or_default();
+                assert!(
+                    output.contains("visible.data"),
+                    "rg did not run the search: {output}"
+                );
+                assert_eq!(
+                    files(&output),
+                    ["global.data", "parent.data", "shared.data", "visible.data"],
+                    "the host changed what a search of {} read: {output}",
+                    tree.display()
+                );
+            }
         }
     }
 
@@ -570,41 +687,122 @@ mod tests {
     /// stops printing, so only a reader that stops it returns at all.
     #[tokio::test]
     async fn a_search_stops_reading_once_it_has_its_results() {
-        let started = std::time::Instant::now();
-        let result = ripgrep(
-            shell("while :; do echo 'src/a.rs:1:match'; done"),
-            Path::new("src"),
-            5,
-            Duration::from_secs(30),
-        )
-        .await
-        .expect("the reader keeps what it read");
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let line = format!(
+            "touch '{}'; while :; do echo 'src/a.rs:1:match'; done",
+            started.display()
+        );
 
-        let output = result.output.unwrap();
+        let (result, waited) = timed(
+            ripgrep(shell(&line), Path::new("src"), 5, TIMEOUT),
+            &started,
+        )
+        .await;
+
+        let output = result
+            .expect("the reader keeps what it read")
+            .output
+            .unwrap();
         assert!(output.starts_with("Found 5 matches"), "{output}");
         assert!(output.contains("truncated at 5 results"), "{output}");
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(waited < PATIENCE, "the reader went on reading: {waited:?}");
     }
 
     #[tokio::test]
     async fn a_search_that_runs_out_of_time_reports_what_it_found() {
-        let started = std::time::Instant::now();
-        let result = ripgrep(
-            shell("echo 'a.rs:3:first'; exec sleep 30"),
-            Path::new("."),
-            MAXIMUM_SEARCH_RESULTS,
-            Duration::from_millis(300),
-        )
-        .await
-        .expect("a search out of time still answers");
+        let directory = TempDir::new().expect("a temporary directory");
+        let spoken = directory.path().join("spoken");
+        let line = format!(
+            "echo 'a.rs:3:first'; touch '{}'; exec sleep 120",
+            spoken.display()
+        );
 
-        let output = result.output.unwrap();
+        let (result, waited) = expired(
+            ripgrep(
+                shell(&line),
+                Path::new("."),
+                MAXIMUM_SEARCH_RESULTS,
+                TIMEOUT,
+            ),
+            &spoken,
+        )
+        .await;
+
+        let output = result
+            .expect("a search out of time still answers")
+            .output
+            .unwrap();
         assert!(output.contains("a.rs:3: first"), "{output}");
         assert!(
             output.contains("search stopped early: out of time"),
             "{output}"
         );
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(
+            waited < PATIENCE,
+            "the search waited on rg past its limit: {waited:?}"
+        );
+    }
+
+    /// A `rg` that closed its output but had not exited by the deadline
+    /// handed the search to the walk, throwing away every match it printed.
+    #[tokio::test]
+    async fn a_search_whose_rg_outlives_its_output_reports_what_it_found() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let spoken = directory.path().join("spoken");
+        let line = format!(
+            "echo 'a.rs:3:first'; exec >&-; touch '{}'; exec sleep 120",
+            spoken.display()
+        );
+
+        let (result, waited) = expired(
+            ripgrep(
+                shell(&line),
+                Path::new("."),
+                MAXIMUM_SEARCH_RESULTS,
+                TIMEOUT,
+            ),
+            &spoken,
+        )
+        .await;
+
+        let output = result
+            .expect("a search out of time still answers")
+            .output
+            .unwrap();
+        assert!(output.contains("a.rs:3: first"), "{output}");
+        assert!(
+            output.contains("search stopped early: out of time"),
+            "{output}"
+        );
+        assert!(
+            waited < PATIENCE,
+            "the search waited on rg past its limit: {waited:?}"
+        );
+    }
+
+    /// `rg` exits 2 when it could not read part of the tree, having still
+    /// printed the matches it found in the rest. Those were thrown away for
+    /// the walk, which reads fewer kinds of file and passes over what it
+    /// cannot read without a word, so the model heard of no matches at all.
+    #[tokio::test]
+    async fn a_search_that_could_not_read_everything_keeps_what_it_found() {
+        let result = ripgrep(
+            shell("echo 'a.rs:3:first'; exit 2"),
+            Path::new("."),
+            MAXIMUM_SEARCH_RESULTS,
+            TIMEOUT,
+        )
+        .await
+        .expect("the matches rg printed are kept");
+
+        let output = result.output.unwrap();
+        assert!(output.starts_with("Found 1 matches"), "{output}");
+        assert!(output.contains("a.rs:3: first"), "{output}");
+        assert!(
+            output.contains("search stopped early: some files could not be read"),
+            "{output}"
+        );
     }
 
     #[tokio::test]
@@ -613,7 +811,7 @@ mod tests {
             shell("exit 2"),
             Path::new("."),
             MAXIMUM_SEARCH_RESULTS,
-            Duration::from_secs(5),
+            TIMEOUT,
         )
         .await;
 

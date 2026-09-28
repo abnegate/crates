@@ -178,6 +178,11 @@ impl Confinement {
     /// A tree is a strictly larger claim than a single command, so its verdict
     /// is cached separately: a host that can prove one is not thereby taken to
     /// have proven the other.
+    ///
+    /// A probe whose confined command does not finish in time reaches no
+    /// verdict, so nothing is cached: the call that ran it is refused, and the
+    /// next call probes again. A call made while a probe is running waits for
+    /// it, and probes again itself only if that probe ran out of time.
     pub async fn probe(mode: ConfinementMode) -> Result<(), ConfinementError> {
         match mode {
             ConfinementMode::SingleCommand => probe_single_command().await,

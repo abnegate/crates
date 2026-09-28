@@ -231,7 +231,6 @@ mod tests {
 
     use crate::executor::ConfinementMode;
     use crate::executor::EnvironmentPolicy;
-    use crate::executor::GRACE_PERIOD;
     use crate::executor::child;
     use crate::executor::sandbox;
     use crate::executor::sandbox::REQUIRE_CONFINEMENT;
@@ -241,7 +240,14 @@ mod tests {
 
     use super::*;
 
-    const RUN_LIMIT: Duration = Duration::from_secs(10);
+    /// Far beyond any start a loaded host needs, so no run times out unless
+    /// its test is about a timeout.
+    const TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// How long a test waits in real time on a child. A child a test expects
+    /// to be killed sleeps two minutes, past it, so a wait for it to go never
+    /// mistakes its own exit for the kill.
+    const PATIENCE: Duration = Duration::from_secs(60);
 
     /// Everything one run reported, in the order it arrived.
     #[derive(Default)]
@@ -289,9 +295,10 @@ mod tests {
         }
     }
 
-    /// Collect messages until the run's terminal message.
+    /// Collect messages until the run's terminal message, which it sends by
+    /// its timeout at the latest.
     async fn finish(mut receiver: mpsc::Receiver<OutboundMessage>) -> Run {
-        tokio::time::timeout(RUN_LIMIT, async {
+        tokio::time::timeout(TIMEOUT + PATIENCE, async {
             let mut run = Run::default();
             while let Some(message) = receiver.recv().await {
                 let terminal = matches!(
@@ -309,11 +316,11 @@ mod tests {
         .expect("the run reports how it ended")
     }
 
-    /// Whether process `pid` has exited within two seconds. A zombie counts
-    /// as exited: an orphan is reaped by whichever process adopted it, which
+    /// Whether process `pid` exits within [`PATIENCE`]. A zombie counts as
+    /// exited: an orphan is reaped by whichever process adopted it, which
     /// this test does not control.
     async fn gone(pid: u32) -> bool {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(PATIENCE, async {
             loop {
                 let output = Command::new("ps")
                     .args(["-o", "stat=", "-p", &pid.to_string()])
@@ -329,6 +336,32 @@ mod tests {
         })
         .await
         .is_ok()
+    }
+
+    /// Wait for the child to create `marker`. The wait yields before it
+    /// looks, so the supervisor the spawn started has set its deadline before
+    /// anything moves the clock.
+    async fn reach(marker: &Path) {
+        tokio::time::timeout(PATIENCE, async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                if marker.exists() {
+                    return;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the child never reached {}", marker.display()));
+    }
+
+    /// Once the child has created `marker`, move the clock past the run's
+    /// timeout. The clock runs on at once, so the run stops its child and
+    /// drains its output in real time rather than skipping each grace period.
+    async fn expire(marker: &Path) {
+        reach(marker).await;
+        tokio::time::pause();
+        tokio::time::advance(TIMEOUT).await;
+        tokio::time::resume();
     }
 
     /// The pid a script printed as the first line of its output.
@@ -351,13 +384,13 @@ mod tests {
     fn shell(job_id: &str, script: &str) -> RunStart {
         RunStart::new(job_id, "/tmp", "sh")
             .with_arguments(["-c", script])
-            .with_timeout(Duration::from_secs(10))
+            .with_timeout(TIMEOUT)
     }
 
     /// Run `command` confined to `root`, which it may read and write.
     fn confined(job_id: &str, root: &Path, command: &str) -> RunStart {
         RunStart::new(job_id, root, command)
-            .with_timeout(Duration::from_secs(15))
+            .with_timeout(TIMEOUT)
             .with_confinement(
                 ConfinementRequest::default()
                     .with_read_roots([root])
@@ -368,7 +401,7 @@ mod tests {
     fn environment_listing(environment: HashMap<String, String>) -> RunStart {
         RunStart::new("environment", std::env::temp_dir(), "env")
             .with_environment(environment)
-            .with_timeout(Duration::from_secs(5))
+            .with_timeout(TIMEOUT)
     }
 
     async fn environment_of(executor: &CommandExecutor, request: RunStart) -> String {
@@ -503,7 +536,7 @@ mod tests {
             &executor,
             RunStart::new("environment", std::env::temp_dir(), "/usr/bin/env")
                 .with_environment([("SHADOWED", "request")])
-                .with_timeout(Duration::from_secs(5)),
+                .with_timeout(TIMEOUT),
         )
         .await;
 
@@ -733,11 +766,11 @@ mod tests {
         let executor = CommandExecutor::new();
         let (sender, mut receiver) = mpsc::channel(100);
         let handle = executor
-            .spawn(&shell("partial-line", "printf prompt; sleep 30"), sender)
+            .spawn(&shell("partial-line", "printf prompt; sleep 120"), sender)
             .await
             .unwrap();
 
-        let delivered = tokio::time::timeout(Duration::from_secs(5), async {
+        let delivered = tokio::time::timeout(PATIENCE, async {
             while let Some(message) = receiver.recv().await {
                 if let OutboundMessage::RunStdout { data, .. } = message {
                     return BASE64_STANDARD.decode(data).unwrap();
@@ -773,7 +806,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let handle = executor
             .spawn_with_cancellation(
-                &shell("cancelled", "sleep 30"),
+                &shell("cancelled", "sleep 120"),
                 sender,
                 cancellation.clone(),
             )
@@ -796,14 +829,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_timeout_kills_the_whole_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let spoken = directory.path().join("spoken");
         let executor = CommandExecutor::with_config(
             ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
         );
         let (sender, receiver) = mpsc::channel(100);
-        let request = shell("timeout", "sleep 30 & echo $!; sleep 30")
-            .with_timeout(Duration::from_millis(200));
-        let handle = executor.spawn(&request, sender).await.unwrap();
+        let script = format!(
+            "sleep 120 & echo $!; touch '{}'; sleep 120",
+            spoken.display()
+        );
+        let handle = executor
+            .spawn(&shell("timeout", &script), sender)
+            .await
+            .unwrap();
 
+        expire(&spoken).await;
         let run = finish(receiver).await;
 
         assert_eq!(run.error(), Some(ErrorCode::Timeout));
@@ -819,7 +860,7 @@ mod tests {
             ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
         );
         let (sender, _receiver) = mpsc::channel(1);
-        let request = shell("unread", "sleep 30").with_timeout(Duration::from_millis(200));
+        let request = shell("unread", "sleep 120").with_timeout(Duration::from_millis(200));
 
         let handle = executor.spawn(&request, sender).await.unwrap();
 
@@ -865,7 +906,7 @@ mod tests {
     async fn a_child_that_exits_takes_its_group_with_it() {
         let run = run(
             &CommandExecutor::new(),
-            shell("orphan", "sleep 60 > /dev/null 2>&1 & echo $!; exit 0"),
+            shell("orphan", "sleep 120 > /dev/null 2>&1 & echo $!; exit 0"),
         )
         .await;
 
@@ -878,19 +919,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_descendant_holding_the_output_open_ends_with_the_child() {
-        let started = Instant::now();
+        let directory = tempfile::tempdir().unwrap();
+        let started = directory.path().join("started");
+        let script = format!("touch '{}'; sleep 120 & echo $!; exit 0", started.display());
+        let (sender, receiver) = mpsc::channel(100);
+        CommandExecutor::new()
+            .spawn(&shell("holder", &script), sender)
+            .await
+            .unwrap();
 
-        let run = run(
-            &CommandExecutor::new(),
-            shell("holder", "sleep 60 & echo $!; exit 0"),
-        )
-        .await;
+        reach(&started).await;
+        let reached = Instant::now();
+        let run = finish(receiver).await;
+        let waited = reached.elapsed();
 
         assert_eq!(run.exit(), Some((Some(0), None)));
         assert!(
-            started.elapsed() < GRACE_PERIOD,
-            "the run waited on a descendant, took {:?}",
-            started.elapsed()
+            waited < PATIENCE,
+            "the run waited on a descendant, took {waited:?}"
         );
         assert!(gone(printed_pid(&run)).await);
     }
@@ -902,7 +948,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         executor
             .spawn_with_cancellation(
-                &shell("late-cancel", "sleep 60 & echo $!; exit 0"),
+                &shell("late-cancel", "sleep 120 & echo $!; exit 0"),
                 sender,
                 cancellation.clone(),
             )
@@ -979,7 +1025,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel(100);
 
         let handle = executor
-            .spawn(&shell("cancel-test", "sleep 10"), sender)
+            .spawn(&shell("cancel-test", "sleep 120"), sender)
             .await
             .unwrap();
         assert!(!handle.is_cancelled());

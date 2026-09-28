@@ -2,6 +2,9 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use abnegate_exec::PROXY_URL_VARIABLE;
+use nix::sys::signal::Signal;
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
 use serde_json::json;
 use tokio::process::Command;
 
@@ -11,8 +14,12 @@ use super::shell::RunShellParameters;
 use super::shell::total_sleep;
 use super::*;
 use crate::test_support::CHILD_TEST;
+use crate::test_support::PATIENCE;
+use crate::test_support::TIMEOUT;
 use crate::test_support::assert_passed;
 use crate::test_support::captured_logs;
+use crate::test_support::gone;
+use crate::test_support::timed;
 use crate::tool::MAXIMUM_TOOL_MESSAGE_CHARACTERS;
 use crate::tool::Session;
 use crate::tool::Tool;
@@ -22,7 +29,7 @@ fn create_test_context() -> ToolContext {
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
         environment: crate::tool::EnvironmentPolicy::empty(),
         maximum_file_size: 1024 * 1024,
-        command_timeout: std::time::Duration::from_secs(30),
+        command_timeout: TIMEOUT,
         unrestricted: false,
         session: Session::Detached,
         application: crate::Application::default(),
@@ -39,12 +46,9 @@ fn logs(checkout: &Path) -> PathBuf {
 /// the environment `run_command` builds is read through the one function both
 /// tools and background jobs start their children with.
 async fn environments(context: &ToolContext) -> [String; 2] {
-    let command = crate::tool::process::run(
-        crate::tool::process::command("env", context),
-        std::time::Duration::from_secs(10),
-    )
-    .await
-    .expect("env runs");
+    let command = crate::tool::process::run(crate::tool::process::command("env", context), TIMEOUT)
+        .await
+        .expect("env runs");
     assert!(command.status.success(), "{command:?}");
     let shell = RunShellTool
         .execute(json!({"command": "env"}), context)
@@ -1492,41 +1496,40 @@ async fn the_sleep_refusal_points_at_a_background_job_rather_than_another_call()
     assert!(!message.contains("later call"), "{message}");
 }
 
-/// `sleep` inherits the output pipe `sh` was given, so `output()` waited out
-/// the whole sleep, and when the call gave up it killed `sh` alone. The call
-/// now ends when `sh` does and takes the sleep with it.
+/// A child left in the background inherits the output pipe `sh` was given,
+/// so `output()` waited on it, and when the call gave up it killed `sh`
+/// alone. The call now ends when `sh` does and takes the child with it.
 #[tokio::test]
 async fn a_shell_call_that_leaves_a_child_behind_returns_and_takes_the_child_with_it() {
     let context = shell_test_context();
-    let started = std::time::Instant::now();
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let started = directory.path().join("started");
+    let command = format!("touch '{}'; tail -f /dev/null & echo $!", started.display());
 
-    let result = RunShellTool
-        .execute(
-            json!({"command": "sleep 30 & echo $!", "timeout_secs": 3}),
+    let (result, waited) = timed(
+        RunShellTool.execute(
+            json!({"command": command, "timeout_secs": TIMEOUT.as_secs()}),
             &context,
-        )
-        .await
-        .expect("the call returns");
+        ),
+        &started,
+    )
+    .await;
 
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(3),
-        "the call waited on the background child: {:?}",
-        started.elapsed()
+        waited < PATIENCE,
+        "the call waited on the background child: {waited:?}"
     );
-    let output = result.output.expect("the child's pid");
+    let output = result
+        .expect("the call returns")
+        .output
+        .expect("the child's pid");
     let pid: i32 = output
         .lines()
         .find_map(|line| line.trim().parse().ok())
         .unwrap_or_else(|| panic!("no pid in {output}"));
-    let mut gone = false;
-    for _ in 0..300 {
-        if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err() {
-            gone = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(gone, "sleep {pid} outlived the call");
+    let stopped = gone(pid).await;
+    let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+    assert!(stopped, "tail {pid} outlived the call");
 }
 
 /// Each of these runs whatever code its arguments hand it, so leaving one on

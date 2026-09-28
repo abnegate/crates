@@ -1,16 +1,98 @@
 use std::cell::RefCell;
+use std::fmt::Debug;
 use std::future::Future;
 use std::io;
+use std::path::Path;
+use std::pin::Pin;
+use std::pin::pin;
 use std::process::Output;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Once;
+use std::time::Duration;
+use std::time::Instant;
 
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
 use tracing_subscriber::fmt::MakeWriter;
 
 /// Set in a test's own child process, naming the test the child should run,
 /// so a test that needs a pristine process environment can re-run itself.
 pub(crate) const CHILD_TEST: &str = "ABNEGATE_AGENT_CHILD_TEST";
+
+/// Far beyond any start a loaded host needs, so no test's child runs into a
+/// limit unless the test is about that limit.
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long a test waits in real time on a child it started. A child a test
+/// expects to be killed outlives it, so a wait for it to go never mistakes
+/// its own exit for the kill.
+pub(crate) const PATIENCE: Duration = Duration::from_secs(60);
+
+/// Drive `run` until the child it starts creates `marker`, and return what
+/// the run returned if it ended first, having created it.
+async fn reach<T: Debug>(run: Pin<&mut impl Future<Output = T>>, marker: &Path) -> Option<T> {
+    let created = async {
+        while !marker.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::select! {
+        ended = run => {
+            assert!(
+                marker.exists(),
+                "the run ended before its child reached {}: {ended:?}",
+                marker.display()
+            );
+            Some(ended)
+        }
+        () = created => None,
+        () = tokio::time::sleep(PATIENCE) => panic!("the child never reached {} in {PATIENCE:?}", marker.display()),
+    }
+}
+
+/// Drive `run` until its child creates `marker`, then move the clock past
+/// [`TIMEOUT`]. The clock runs on at once, so the run stops its child and
+/// drains its output in real time rather than skipping each grace period.
+/// Returns what the run returned and how long it took from there.
+pub(crate) async fn expired<T: Debug>(
+    run: impl Future<Output = T>,
+    marker: &Path,
+) -> (T, Duration) {
+    let mut run = pin!(run);
+    if let Some(ended) = reach(run.as_mut(), marker).await {
+        return (ended, Duration::ZERO);
+    }
+    tokio::time::pause();
+    tokio::time::advance(TIMEOUT).await;
+    tokio::time::resume();
+    let advanced = Instant::now();
+    (run.await, advanced.elapsed())
+}
+
+/// Drive `run` until its child creates `marker`, then time the rest of it.
+pub(crate) async fn timed<T: Debug>(run: impl Future<Output = T>, marker: &Path) -> (T, Duration) {
+    let mut run = pin!(run);
+    let ended = reach(run.as_mut(), marker).await;
+    let reached = Instant::now();
+    let output = match ended {
+        Some(output) => output,
+        None => run.await,
+    };
+    (output, reached.elapsed())
+}
+
+/// Whether process `pid` goes within [`PATIENCE`]. A zombie has not gone.
+pub(crate) async fn gone(pid: i32) -> bool {
+    let deadline = Instant::now() + PATIENCE;
+    while kill(Pid::from_raw(pid), None).is_ok() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    true
+}
 
 /// Fail unless the re-run of one test that produced `output` passed and
 /// ran that test at all: a name that matches no test runs nothing and still

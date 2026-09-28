@@ -63,14 +63,46 @@ pub(super) fn probe_failure(error: std::io::Error) -> ConfinementError {
     ConfinementError::Unproven(error.to_string())
 }
 
+/// The refusal a probe gives when a confined command outruns
+/// [`PROBE_TIMEOUT`]. It says nothing about the sandbox, so it is never kept
+/// as a verdict.
+fn out_of_time() -> ConfinementError {
+    ConfinementError::Unproven(format!(
+        "the sandbox probe did not finish within {}s",
+        PROBE_TIMEOUT.as_secs()
+    ))
+}
+
 pub(super) async fn probe_single_command() -> Result<(), ConfinementError> {
-    static OUTCOME: OnceCell<Result<(), ConfinementError>> = OnceCell::const_new();
-    OUTCOME.get_or_init(run_single_command_probe).await.clone()
+    static VERDICT: OnceCell<Result<(), ConfinementError>> = OnceCell::const_new();
+    verdict(&VERDICT, run_single_command_probe).await
 }
 
 pub(super) async fn probe_process_tree() -> Result<(), ConfinementError> {
-    static OUTCOME: OnceCell<Result<(), ConfinementError>> = OnceCell::const_new();
-    OUTCOME.get_or_init(run_process_tree_probe).await.clone()
+    static VERDICT: OnceCell<Result<(), ConfinementError>> = OnceCell::const_new();
+    verdict(&VERDICT, run_process_tree_probe).await
+}
+
+/// The verdict `probe` reaches, kept in `cache` for every later call. A
+/// probe that ran [`out_of_time`] reached none, so nothing is kept: the call
+/// that ran it is refused, and the next call runs `probe` again. A call made
+/// while a probe is running waits for it.
+async fn verdict<Probe>(
+    cache: &OnceCell<Result<(), ConfinementError>>,
+    probe: impl FnOnce() -> Probe,
+) -> Result<(), ConfinementError>
+where
+    Probe: Future<Output = Result<(), ConfinementError>>,
+{
+    cache
+        .get_or_try_init(|| async move {
+            match probe().await {
+                Err(error) if error == out_of_time() => Err(error),
+                reached => Ok(reached),
+            }
+        })
+        .await?
+        .clone()
 }
 
 async fn run_single_command_probe() -> Result<(), ConfinementError> {
@@ -432,9 +464,84 @@ async fn run_in_sandbox(
     match timeout(PROBE_TIMEOUT, child.wait_with_output()).await {
         Ok(Ok(output)) => Ok(output),
         Ok(Err(error)) => Err(probe_failure(error)),
-        Err(_) => Err(ConfinementError::Unproven(format!(
-            "the sandbox probe did not finish within {}s",
-            PROBE_TIMEOUT.as_secs()
-        ))),
+        Err(_) => Err(out_of_time()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::executor::child;
+    use crate::executor::sandbox;
+
+    use super::*;
+
+    async fn proving() -> Result<(), ConfinementError> {
+        Ok(())
+    }
+
+    async fn disproving() -> Result<(), ConfinementError> {
+        Err(ConfinementError::Unproven(
+            "a denied file was readable inside the sandbox".to_string(),
+        ))
+    }
+
+    async fn running_out_of_time() -> Result<(), ConfinementError> {
+        Err(out_of_time())
+    }
+
+    async fn probing_again() -> Result<(), ConfinementError> {
+        panic!("a verdict already reached was probed for again")
+    }
+
+    #[tokio::test]
+    async fn only_a_verdict_a_probe_reached_is_kept() {
+        let proven = OnceCell::new();
+        assert_eq!(
+            verdict(&proven, running_out_of_time).await,
+            Err(out_of_time())
+        );
+        assert_eq!(verdict(&proven, proving).await, Ok(()));
+        assert_eq!(verdict(&proven, probing_again).await, Ok(()));
+
+        let disproven = OnceCell::new();
+        let refused = disproving().await;
+        assert_eq!(verdict(&disproven, disproving).await, refused);
+        assert_eq!(verdict(&disproven, probing_again).await, refused);
+    }
+
+    /// A probe that runs out of time says nothing about the sandbox, so it is
+    /// not kept as the verdict: the next call probes again, and proves a
+    /// sandbox that works. Runs in a child process, where no verdict is
+    /// cached, with the clock paused, so the first confined command of each
+    /// first probe runs out of time the moment the runtime has nothing to do.
+    #[tokio::test(start_paused = true)]
+    async fn a_probe_that_ran_out_of_time_is_run_again() {
+        const NAME: &str =
+            "executor::confinement::probe::tests::a_probe_that_ran_out_of_time_is_run_again";
+        let modes: Vec<ConfinementMode> =
+            [ConfinementMode::SingleCommand, ConfinementMode::ProcessTree]
+                .into_iter()
+                .filter(|mode| sandbox::required(*mode))
+                .collect();
+        if modes.is_empty() || child::delegated(NAME, &[]).await {
+            return;
+        }
+
+        for mode in &modes {
+            assert_eq!(
+                Confinement::probe(*mode).await,
+                Err(out_of_time()),
+                "{mode:?}"
+            );
+        }
+        tokio::time::resume();
+
+        for mode in modes {
+            assert_eq!(
+                Confinement::probe(mode).await,
+                Ok(()),
+                "{mode:?} kept a probe that ran out of time as its verdict"
+            );
+        }
     }
 }

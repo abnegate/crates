@@ -24,6 +24,12 @@ pub(super) const MAXIMUM_WALK_ENTRIES: usize = 100_000;
 /// that runs out of time still reports what it found.
 pub(super) const WALK_TIME_LIMIT: Duration = Duration::from_secs(20);
 
+pub(super) const OUT_OF_TIME: &str = "out of time";
+
+const TOO_MANY_ENTRIES: &str = "too many entries";
+
+const TOO_DEEP: &str = "too deep";
+
 /// A depth-first walk of a directory tree that never follows a link.
 ///
 /// A symlinked directory is shown to the visitor as the link it is and never
@@ -103,17 +109,17 @@ impl Walk {
 
     fn exhausted(&self) -> Option<&'static str> {
         if self.remaining == 0 {
-            return Some("too many entries");
+            return Some(TOO_MANY_ENTRIES);
         }
         if Instant::now() >= self.deadline {
-            return Some("out of time");
+            return Some(OUT_OF_TIME);
         }
         None
     }
 
     fn enter(&mut self, directory: PathBuf, depth: usize) -> Option<fs::ReadDir> {
         if depth + 1 > MAXIMUM_WALK_DEPTH {
-            self.stopped = Some("too deep");
+            self.stopped = Some(TOO_DEEP);
             return None;
         }
         let metadata = fs::symlink_metadata(&directory).ok()?;

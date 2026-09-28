@@ -5,6 +5,7 @@ use std::process::Command as Process;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -17,13 +18,13 @@ use super::limits::Limits;
 use super::log::Log;
 use super::*;
 use crate::test_support::CHILD_TEST;
+use crate::test_support::PATIENCE;
 use crate::test_support::assert_passed;
 use crate::test_support::captured_logs;
 use crate::tool::Session;
 use crate::tool::ToolContext;
 
 const POLL: Duration = Duration::from_millis(20);
-const POLL_LIMIT: usize = 500;
 
 /// The variable that points git at a repository wherever it is run.
 const GIT_DIRECTORY: &str = "GIT_DIR";
@@ -82,16 +83,17 @@ async fn spawned(session: Session, line: &str, cwd: &Path) -> JobStarted {
 }
 
 async fn settles(session: Session, id: &str) -> JobStatus {
-    for _ in 0..POLL_LIMIT {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
         let tail = Jobs::read(session, id, 0, 1)
             .await
             .expect("its own session reads it");
         if tail.state.settled() {
             return tail.state;
         }
+        assert!(Instant::now() < deadline, "{id} never settled");
         tokio::time::sleep(POLL).await;
     }
-    panic!("{id} never settled");
 }
 
 fn alive(pid: u32) -> bool {
@@ -104,10 +106,20 @@ fn alive(pid: u32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// `git` run in `cwd` on the repository found from there, whatever
+/// repository this process's environment names.
+fn git_in(cwd: &Path) -> Process {
+    let mut command = Process::new("git");
+    command.current_dir(cwd);
+    for name in REPOSITORY_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    command
+}
+
 fn git(cwd: &Path, arguments: &[&str]) {
-    let status = Process::new("git")
+    let status = git_in(cwd)
         .args(arguments)
-        .current_dir(cwd)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_AUTHOR_NAME", "Agent")
@@ -139,9 +151,8 @@ fn untemplated_repository(root: &Path) {
 }
 
 fn exclude_path(cwd: &Path) -> PathBuf {
-    let resolved = Process::new("git")
+    let resolved = git_in(cwd)
         .args(["rev-parse", "--git-path", EXCLUDE_PATH])
-        .current_dir(cwd)
         .output()
         .expect("git is installed");
     assert!(resolved.status.success(), "the fixture is a checkout");
@@ -804,61 +815,87 @@ async fn the_exclude_path_comes_from_git_not_from_a_joined_git_directory() {
     Jobs::kill_session(session).await;
 }
 
-/// The lookup that finds the exclude file started with this process's whole
-/// environment, so a host `GIT_DIR`, which every git hook runs with, sent a
-/// task run's exclude line to whichever repository it named. The lookup now
-/// sees the context's environment, which passes no such variable.
+/// A host `GIT_DIR`, which every git hook runs with, sent a task run's
+/// exclude line to whichever repository it named: first through a lookup
+/// that started with this process's whole environment, then through a
+/// context that inherits that environment or sets the variable itself. The
+/// lookup now runs without any variable that names a repository, whatever
+/// the context passes on.
 #[tokio::test]
 async fn a_host_git_directory_never_redirects_the_exclude_write() {
     const NAME: &str = "tool::job::tests::a_host_git_directory_never_redirects_the_exclude_write";
-    const CHECKOUT: &str = "ABNEGATE_AGENT_TEST_CHECKOUT";
     if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
-        let root = directory();
-        let checkout = root.path().join("checkout");
-        let stranger = root.path().join("stranger");
-        for tree in [&checkout, &stranger] {
-            std::fs::create_dir(tree).expect("the repository directory is created");
-            repository(tree);
-        }
+        let stranger = directory();
+        repository(stranger.path());
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", NAME, "--nocapture"])
             .env(CHILD_TEST, NAME)
-            .env(CHECKOUT, &checkout)
-            .env(GIT_DIRECTORY, stranger.join(".git"))
+            .env(GIT_DIRECTORY, stranger.path().join(".git"))
             .output()
             .await
             .unwrap();
         assert_passed(&output);
         return;
     }
-    let checkout =
-        PathBuf::from(std::env::var_os(CHECKOUT).expect("the parent names the checkout"));
     let elsewhere =
         PathBuf::from(std::env::var_os(GIT_DIRECTORY).expect("the host names another repository"));
+    let assigned = crate::tool::EnvironmentPolicy::allowlist()
+        .with(GIT_DIRECTORY, elsewhere.to_str().expect("a utf-8 path"));
 
-    let session = task();
-    let started = Jobs::spawn(
-        &JobCommand::shell("exit 0"),
-        &ToolContext::default()
-            .within(&checkout)
-            .with_session(session),
-    )
-    .await
-    .expect("the job starts");
-    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
+    for (pass, context) in [
+        ("the allowlist", ToolContext::default()),
+        (
+            "an inherited environment",
+            ToolContext::default().inherit_environment(),
+        ),
+        (
+            "a policy that sets GIT_DIR",
+            ToolContext::default().with_environment(assigned),
+        ),
+    ] {
+        let checkout = directory();
+        repository(checkout.path());
+        let session = task();
+        let started = Jobs::spawn(
+            &JobCommand::shell("exit 0"),
+            &context.within(checkout.path()).with_session(session),
+        )
+        .await
+        .expect("the job starts");
+        assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
 
-    assert_eq!(
-        excluded_lines(&elsewhere.join(EXCLUDE_PATH)),
-        0,
-        "the host's GIT_DIR took the run's exclude line"
-    );
-    assert_eq!(
-        excluded_lines(&checkout.join(".git").join(EXCLUDE_PATH)),
-        1,
-        "the run's own checkout keeps its job logs out of its diff"
-    );
+        assert_eq!(
+            excluded_lines(&elsewhere.join(EXCLUDE_PATH)),
+            0,
+            "{pass}: another repository took the run's exclude line"
+        );
+        assert_eq!(
+            excluded_lines(&checkout.path().join(".git").join(EXCLUDE_PATH)),
+            1,
+            "{pass}: the run's own checkout keeps its job logs out of its diff"
+        );
 
-    Jobs::kill_session(session).await;
+        Jobs::kill_session(session).await;
+    }
+}
+
+/// The exclude lookup drops every variable git itself keeps local to one
+/// repository, so a git that grows the list fails here first.
+#[test]
+fn the_exclude_lookup_drops_every_variable_git_keeps_local_to_a_repository() {
+    let listed = Process::new("git")
+        .args(["rev-parse", "--local-env-vars"])
+        .output()
+        .expect("git is installed");
+    assert!(listed.status.success(), "git lists its local variables");
+    let listed = String::from_utf8(listed.stdout).expect("the names are utf-8");
+    assert!(!listed.trim().is_empty(), "git listed no variables");
+    for name in listed.lines() {
+        assert!(
+            REPOSITORY_ENVIRONMENT.contains(&name),
+            "the exclude lookup keeps {name}"
+        );
+    }
 }
 
 #[test]
@@ -979,26 +1016,28 @@ fn a_job_that_was_killed_serialises_without_an_exit_code() {
 
 /// The first line of a job's log, once the job has written one.
 async fn first_line(session: Session, id: &str) -> String {
-    for _ in 0..POLL_LIMIT {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
         let tail = Jobs::read(session, id, 0, 500)
             .await
             .expect("its own session reads it");
         if let Some((line, _)) = tail.output.split_once('\n') {
             return line.to_string();
         }
+        assert!(Instant::now() < deadline, "{id} never wrote a line");
         tokio::time::sleep(POLL).await;
     }
-    panic!("{id} never wrote a line");
 }
 
 async fn gone(pid: u32) -> bool {
-    for _ in 0..POLL_LIMIT {
-        if !alive(pid) {
-            return true;
+    let deadline = Instant::now() + PATIENCE;
+    while alive(pid) {
+        if Instant::now() >= deadline {
+            return false;
         }
         tokio::time::sleep(POLL).await;
     }
-    false
+    true
 }
 
 /// Killing a job used to kill `sh` alone, and whatever `sh` had started
@@ -1007,7 +1046,7 @@ async fn gone(pid: u32) -> bool {
 async fn killing_a_job_kills_everything_it_started() {
     let cwd = directory();
     let session = task();
-    let started = spawned(session, "sleep 30 & echo $!; wait", cwd.path()).await;
+    let started = spawned(session, "sleep 120 & echo $!; wait", cwd.path()).await;
     let sleeper: u32 = first_line(session, &started.id)
         .await
         .parse()
@@ -1023,7 +1062,7 @@ async fn killing_a_job_kills_everything_it_started() {
 async fn a_job_that_ends_takes_what_it_left_running_with_it() {
     let cwd = directory();
     let session = task();
-    let started = spawned(session, "sleep 30 & echo $!", cwd.path()).await;
+    let started = spawned(session, "sleep 120 & echo $!", cwd.path()).await;
     let sleeper: u32 = first_line(session, &started.id)
         .await
         .parse()

@@ -32,6 +32,8 @@ use super::RunError;
 use crate::context::ContextError;
 use crate::context::ContextSource;
 use crate::context::Policy;
+use crate::test_support::PATIENCE;
+use crate::test_support::gone;
 use crate::tool::EnvironmentPolicy;
 use crate::tool::Preview;
 use crate::tool::RunShellTool;
@@ -490,25 +492,17 @@ async fn a_tool_past_its_timeout_fails_its_call() {
     assert!(results[0].contains("timed out"), "{results:?}");
 }
 
-/// Whether `pid` has gone within a few seconds.
-async fn gone(pid: i32) -> bool {
-    for _ in 0..300 {
-        if kill(Pid::from_raw(pid), None).is_err() {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    false
-}
-
 /// Dropping a run dropped the handle to the task its tool call ran on, and
 /// dropping a handle detaches a task rather than stopping it: the command
 /// went on running, and everything it started with it.
 #[tokio::test]
 async fn dropping_a_run_stops_the_command_it_was_waiting_on() {
     let directory = tempfile::tempdir().expect("a working directory");
-    let recorded = directory.path().join("dropped-run-sleeper.pid");
-    let command = format!("sleep 30 & echo $! > '{}'; wait", recorded.display());
+    let recorded = directory.path().join("dropped-run-child.pid");
+    let command = format!(
+        "tail -f /dev/null & echo $! > '{}'; wait",
+        recorded.display()
+    );
     let endpoint = endpoint(vec![calling(&[(
         "run_shell",
         json!({"command": command, "reason": "Outlive the run."}),
@@ -530,7 +524,7 @@ async fn dropping_a_run_stops_the_command_it_was_waiting_on() {
     );
 
     let mut run = Box::pin(agent.run("Go.", &Approving));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + PATIENCE;
     let pid = loop {
         tokio::select! {
             _ = &mut run => panic!("the run ended while its command was still running"),
@@ -550,7 +544,7 @@ async fn dropping_a_run_stops_the_command_it_was_waiting_on() {
 
     let stopped = gone(pid).await;
     let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
-    assert!(stopped, "sleep {pid} outlived the run that started it");
+    assert!(stopped, "tail {pid} outlived the run that started it");
 }
 
 struct Asking;
