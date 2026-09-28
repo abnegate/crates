@@ -13,3 +13,14 @@ pub struct JobStarted {
     /// Where the job's log is written.
     pub log_path: String,
 }
+
+impl JobStarted {
+    /// The job `id`, led by process `pid`, logging to `log_path`.
+    pub fn new(id: impl Into<String>, pid: u32, log_path: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            pid,
+            log_path: log_path.into(),
+        }
+    }
+}
