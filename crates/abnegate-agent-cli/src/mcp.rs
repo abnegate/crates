@@ -16,10 +16,11 @@
 //! in a reference there.
 //!
 //! A stdio server's `${VAR}` references are resolved here, as the CLI would
-//! resolve them, against what the child is given and then this process's
+//! resolve them, against the [`secrets`](McpServer::secrets) bound to the
+//! server first, and then what the child is given and this process's
 //! environment, with the agent's sign-in variables, the credential's own and
-//! Claude Code's OAuth refresh token read as set but empty. The child is
-//! given each resolved value under its
+//! Claude Code's OAuth refresh token read as set but empty there. The child
+//! is given each resolved value under its
 //! generated name: resolving hands it nothing under the name of the variable
 //! a reference names. Claude Code starts every stdio server, as it does the
 //! agent's own tools, with its whole environment, so each of them can read
@@ -52,6 +53,7 @@ mod placeholders;
 mod refusal;
 mod segment;
 mod server;
+mod template;
 mod transport;
 
 pub(crate) use crate::mcp::attachment::McpAttachment;
@@ -62,4 +64,5 @@ pub(crate) use crate::mcp::placeholders::expand;
 pub(crate) use crate::mcp::placeholders::references;
 pub(crate) use crate::mcp::placeholders::whole_reference;
 pub use crate::mcp::server::McpServer;
+pub(crate) use crate::mcp::template::Template;
 pub use crate::mcp::transport::McpTransport;

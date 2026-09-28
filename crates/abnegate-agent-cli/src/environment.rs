@@ -11,6 +11,7 @@ use tokio::process::Command;
 
 use crate::kind::AgentKind;
 use crate::mcp::McpAttachment;
+use crate::mcp::Template;
 use crate::mcp::expand;
 use crate::mcp::references;
 use crate::mcp::whole_reference;
@@ -36,11 +37,12 @@ const REFRESH_TOKEN: &str = "CLAUDE_CODE_OAUTH_REFRESH_TOKEN";
 /// variables from the host when its credential is inherited, the caller's
 /// public variables and then its secret ones, the credential, and last the
 /// values an MCP configuration moved out of its file, under generated names
-/// no caller can know. A stdio server's references are resolved against
-/// what the child is given before those, falling back to the host, with the
-/// agent's sign-in variables and the credential's own read as set but empty,
-/// and only the resolved values are handed over: resolving one hands the
-/// child nothing under the name of the variable it refers to.
+/// no caller can know. A stdio server's references are resolved against the
+/// secrets bound to it first, and then what the child is given before those,
+/// falling back to the host, with the agent's sign-in variables and the
+/// credential's own read as set but empty, and only the resolved values are
+/// handed over: resolving one hands the child nothing under the name of the
+/// variable it refers to.
 ///
 /// `Debug` names the variables and never prints a value: an inherited one,
 /// a proxy URL say, can carry a password.
@@ -104,13 +106,14 @@ impl Environment {
     }
 
     /// Give the child every value `mcp` moved out of its file: literal text
-    /// as it is, and each template resolved against what the child is given
-    /// so far, falling back to the host, with every variable `agent` signs in
-    /// with and the credential's own read as set but empty. Each is a secret,
-    /// and so is every secret bound to a server in the file and every value a
-    /// template's references resolved to, unless all it holds is public: the
-    /// value of an allowlisted name or of one of the caller's public
-    /// variables.
+    /// as it is, and each template resolved against the secrets bound to its
+    /// server, and then what the child is given so far, falling back to the
+    /// host, with every variable `agent` signs in with and the credential's
+    /// own read as set but empty. Each is a secret, and so is every secret
+    /// bound to a server in the file and every value a template's references
+    /// resolved to, unless all it holds is public: the value of an
+    /// allowlisted name or of one of the caller's public variables, bound to
+    /// no secret.
     fn attach(
         &mut self,
         agent: AgentKind,
@@ -128,18 +131,22 @@ impl Environment {
                 self.lookup(name, host)
             }
         };
-        let resolved: Vec<(&String, &SecretValue, SecretValue)> = mcp
+        let resolved: Vec<(&String, &Template, SecretValue)> = mcp
             .templates
             .iter()
             .map(|(variable, template)| {
-                let value = expand(template.expose(), &lookup);
+                let read = |name: &str| template.bound(name).or_else(|| lookup(name));
+                let value = expand(template.value.expose(), &read);
                 (variable, template, SecretValue::new(value))
             })
             .collect();
         let referenced: Vec<SecretValue> = mcp
             .templates
             .values()
-            .flat_map(|template| references(template.expose()))
+            .flat_map(|template| {
+                references(template.value.expose())
+                    .filter(move |name| !template.secrets.contains_key(*name))
+            })
             .filter(|name| !public(name))
             .filter_map(lookup)
             .map(SecretValue::new)
@@ -151,11 +158,12 @@ impl Environment {
             self.set(variable, value.clone());
         }
         for (variable, template, value) in resolved {
-            let text = template.expose();
-            if whole_reference(text) && references(text).all(public) {
+            let text = template.value.expose();
+            let unbound_public = |name: &str| public(name) && !template.secrets.contains_key(name);
+            if whole_reference(text) && references(text).all(unbound_public) {
                 self.variables.insert(variable.clone(), value);
             } else {
-                self.secret(template.clone());
+                self.secret(template.value.clone());
                 self.set(variable, value);
             }
         }
@@ -577,6 +585,61 @@ mod tests {
                     "{variable}"
                 );
             }
+        }
+    }
+
+    /// A secret the caller binds to a stdio server is what its reference
+    /// reads, even under a name the agent signs in with or one on the
+    /// allowlist; it is scrubbed, and the names nothing binds are read as
+    /// before.
+    #[test]
+    fn a_secret_bound_to_a_stdio_server_is_read_first_and_scrubbed() {
+        let settings = CliSettings::default().with_mcp_server(
+            "notes",
+            McpServer::command("notes-server", ["--path=${PATH}"])
+                .with_environment("OAUTH", "${CLAUDE_CODE_OAUTH_TOKEN}")
+                .with_environment("KEY", "${ANTHROPIC_API_KEY}")
+                .with_environment("GRAFANA", "${GRAFANA_TOKEN}")
+                .with_secret("CLAUDE_CODE_OAUTH_TOKEN", "bound-oauth-marker")
+                .with_secret("PATH", "bound-path-marker"),
+        );
+        let attachment = attached(&settings);
+        let environment =
+            Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
+        let variables = set(&environment);
+
+        let notes = &document(&attachment)["mcpServers"]["notes"];
+        assert_eq!(
+            expanded(&notes["args"][0], &variables),
+            "--path=bound-path-marker"
+        );
+        assert_eq!(
+            expanded(&notes["env"]["OAUTH"], &variables),
+            "bound-oauth-marker"
+        );
+        assert_eq!(expanded(&notes["env"]["KEY"], &variables), "");
+        assert_eq!(
+            expanded(&notes["env"]["GRAFANA"], &variables),
+            "glsa-host-token"
+        );
+        let holders: Vec<&String> = variables
+            .iter()
+            .filter(|(_, value)| {
+                value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("bound-"))
+            })
+            .map(|(variable, _)| variable)
+            .collect();
+        assert!(
+            holders
+                .iter()
+                .all(|variable| variable.starts_with("ABNEGATE_MCP_")),
+            "a bound secret reached the child under a name of its own: {holders:?}"
+        );
+        let scrubber = Scrubber::new(environment.secrets());
+        for secret in ["bound-oauth-marker", "bound-path-marker"] {
+            assert_eq!(scrubber.scrub(secret), "[REDACTED]", "{secret}");
         }
     }
 

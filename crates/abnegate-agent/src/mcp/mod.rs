@@ -60,7 +60,8 @@
 //! ```
 //!
 //! Each server is started with the references in its command, arguments and
-//! environment [expanded](McpServer::expanded) from this process's
+//! environment [expanded](McpServer::expanded) from the
+//! [secrets](McpServer::secrets) bound to it, and then this process's
 //! environment, as a CLI expands them.
 //!
 //! Children are given [`McpServer::environment_policy`]: the

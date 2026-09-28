@@ -45,9 +45,10 @@ const NAME_PUNCTUATION: [char; 2] = [UNDERSCORE, '-'];
 /// given either: see [`mcp`](crate::mcp).
 ///
 /// A `${VAR}` reference in a stdio server's command, arguments or
-/// environment is resolved here, as the CLI would resolve it, against what
-/// the child is given and then this process's environment, and the child is
-/// given the resolved value under a generated name. Resolving it hands the
+/// environment is resolved here, as the CLI would resolve it, against the
+/// server's own [`secrets`](McpServer::secrets) first, then what the child is
+/// given and then this process's environment, and the child is given the
+/// resolved value under a generated name. Resolving it hands the
 /// child nothing under the variable's own name, which the child holds only
 /// when the caller hands it over; the CLI starts every stdio server with
 /// what the child holds, so each can read the others' generated variables
@@ -106,21 +107,27 @@ pub struct McpServer {
     /// sent as it is, since the CLI never expands one, and a server with a
     /// name that holds `${` never attaches.
     pub headers: BTreeMap<String, SecretValue>,
-    /// Values for the `${VAR}` references in a remote server's
-    /// [`url`](McpServer::url) and [`headers`](McpServer::headers), by
-    /// variable name: what those references resolve to, one with no secret
-    /// taking its default, and what no other server's references ever
-    /// resolve to.
+    /// Values for this server's `${VAR}` references, by variable name, which
+    /// no other server's references ever resolve to.
+    ///
+    /// A remote server's [`url`](McpServer::url) and
+    /// [`headers`](McpServer::headers) resolve against them alone, a
+    /// reference with no secret taking its default. A stdio server's command,
+    /// arguments and [`environment`](McpServer::environment) read them
+    /// first, before anything the agent is given or this process's
+    /// environment holds, and a secret bound here is read as bound even under
+    /// a name the agent signs in with.
     ///
     /// Each is bound in code, with [`McpServer::with_secret`] or, to a server
     /// read from a document, [`McpConfig::with_secret`](crate::mcp::McpConfig::with_secret),
     /// and never read from or written to a configuration document. A run
     /// hands the CLI a resolved value that holds one inside a generated
-    /// variable of the agent's environment, where the agent's own tools and
-    /// every stdio server it starts can read it, as they can anything the
-    /// agent is given: binding keeps a secret from every other remote
-    /// server, not from them. The run scrubs each from what it writes down.
-    /// A stdio server's references never resolve to them.
+    /// variable of the agent's environment, never under the variable's own
+    /// name, where the agent's own tools and every stdio server it starts can
+    /// read it, as they can anything the agent is given: binding keeps a
+    /// secret from every other remote server, not from them. The run scrubs
+    /// each from what it writes down. A launcher that starts a stdio server
+    /// itself reads them first too: see [`McpServer::expanded`].
     #[serde(skip)]
     pub secrets: BTreeMap<String, SecretValue>,
     /// The tools to allow without prompting, by the names the CLI gives
@@ -206,16 +213,22 @@ impl McpServer {
         self
     }
 
-    /// The same server, with `value` bound for its URL's and headers'
-    /// references to `variable`: see [`McpServer::secrets`].
+    /// The same server, with `value` bound for its references to
+    /// `variable`: a remote server's in its URL and headers, and a stdio
+    /// server's in its command, arguments and environment. See
+    /// [`McpServer::secrets`].
     ///
     /// ```
     /// use abnegate_agent_cli::McpServer;
     ///
     /// # let token = String::new();
+    /// # let key = String::new();
     /// let linear = McpServer::remote("https://mcp.linear.app/mcp")
     ///     .with_header("Authorization", "Bearer ${LINEAR_TOKEN}")
     ///     .with_secret("LINEAR_TOKEN", token);
+    /// let notes = McpServer::command("notes-server", ["mcp"])
+    ///     .with_environment("NOTES_KEY", "${NOTES_KEY}")
+    ///     .with_secret("NOTES_KEY", key);
     /// ```
     pub fn with_secret(
         mut self,
@@ -262,29 +275,36 @@ impl McpServer {
     }
 
     /// The same server with every `${VAR}` and `${VAR:-default}` in its
-    /// command, arguments and environment values expanded through `lookup`,
-    /// by the rules Claude Code expands them by, for a launcher that starts
-    /// the server itself: a set variable is taken even when empty, and a
-    /// reference to a variable `lookup` does not give, with no default, is
-    /// left as written, as the CLI leaves it. What each variable reads as is
-    /// `lookup`'s to say: a [`CliProvider`](crate::CliProvider) reads the
-    /// agent's sign-in variables as set but empty, and Claude Code its own
-    /// OAuth tokens.
+    /// command, arguments and environment values expanded through the
+    /// server's own [`secrets`](McpServer::secrets) and then `lookup`, by the
+    /// rules Claude Code expands them by, for a launcher that starts the
+    /// server itself: a secret bound for a variable wins, a set variable is
+    /// taken even when empty, and a reference to a variable neither gives,
+    /// with no default, is left as written, as the CLI leaves it. What any
+    /// other variable reads as is `lookup`'s to say: a
+    /// [`CliProvider`](crate::CliProvider) reads the agent's sign-in
+    /// variables as set but empty, and Claude Code its own OAuth tokens.
     ///
     /// The URL and headers are left alone, since only a CLI's run attaches a
     /// remote server, resolving both against its
     /// [`secrets`](McpServer::secrets), and so is the working directory,
     /// which neither CLI expands.
     pub fn expanded(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Self {
+        let lookup = |variable: &str| {
+            self.secrets
+                .get(variable)
+                .map(|secret| secret.expose().to_string())
+                .or_else(|| lookup(variable))
+        };
         Self {
             command: self
                 .command
                 .as_deref()
-                .map(|command| expand(command, lookup)),
+                .map(|command| expand(command, &lookup)),
             arguments: self
                 .arguments
                 .iter()
-                .map(|argument| expand(argument, lookup))
+                .map(|argument| expand(argument, &lookup))
                 .collect(),
             environment: self
                 .environment
@@ -292,7 +312,7 @@ impl McpServer {
                 .map(|(variable, value)| {
                     (
                         variable.clone(),
-                        SecretValue::new(expand(value.expose(), lookup)),
+                        SecretValue::new(expand(value.expose(), &lookup)),
                     )
                 })
                 .collect(),
@@ -439,18 +459,18 @@ impl McpServer {
     pub(crate) fn entry(&self, placeholders: &mut Placeholders) -> Value {
         let mut entry = Map::new();
         if let Some(command) = &self.command {
-            let command = placeholders.resolved(command);
+            let command = placeholders.resolved(command, &self.secrets);
             let arguments: Vec<String> = self
                 .arguments
                 .iter()
-                .map(|argument| placeholders.resolved(argument))
+                .map(|argument| placeholders.resolved(argument, &self.secrets))
                 .collect();
             entry.insert("command".to_string(), json!(command));
             entry.insert("args".to_string(), json!(arguments));
             if !self.environment.is_empty() {
                 entry.insert(
                     "env".to_string(),
-                    substituted(&self.environment, placeholders),
+                    substituted(&self.environment, &self.secrets, placeholders),
                 );
             }
             if let Some(transport) = &self.transport {
@@ -476,8 +496,8 @@ impl McpServer {
                     .collect();
                 entry.insert("headers".to_string(), Value::Object(headers));
             }
-            placeholders.secrets.extend(self.secrets.values().cloned());
         }
+        placeholders.secrets.extend(self.secrets.values().cloned());
         Value::Object(entry)
     }
 
@@ -535,10 +555,14 @@ pub(crate) fn valid_name(name: &str) -> bool {
         })
 }
 
-fn substituted(values: &BTreeMap<String, SecretValue>, placeholders: &mut Placeholders) -> Value {
+fn substituted(
+    values: &BTreeMap<String, SecretValue>,
+    secrets: &BTreeMap<String, SecretValue>,
+    placeholders: &mut Placeholders,
+) -> Value {
     values
         .iter()
-        .map(|(key, value)| (key.clone(), json!(placeholders.substitute(value))))
+        .map(|(key, value)| (key.clone(), json!(placeholders.substitute(value, secrets))))
         .collect::<Map<String, Value>>()
         .into()
 }
@@ -762,7 +786,7 @@ mod tests {
             placeholders
                 .templates
                 .get("ABNEGATE_MCP_TEST_0")
-                .map(SecretValue::expose),
+                .map(|template| template.value.expose()),
             Some("${APPWRITE_API_KEY}")
         );
     }
@@ -798,7 +822,7 @@ mod tests {
             placeholders
                 .templates
                 .values()
-                .map(SecretValue::expose)
+                .map(|template| template.value.expose())
                 .collect::<Vec<_>>(),
             [headers, "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"]
         );
@@ -1018,7 +1042,7 @@ mod tests {
             placeholders
                 .templates
                 .values()
-                .map(SecretValue::expose)
+                .map(|template| template.value.expose())
                 .collect::<Vec<_>>(),
             ["${GRAFANA_URL}"],
             "only a stdio server's reference is resolved against the child"
@@ -1333,6 +1357,31 @@ mod tests {
             Some(PathBuf::from("/srv/${HOST}"))
         );
         assert_eq!(expanded.tools, ["search"]);
+    }
+
+    /// A launcher that starts a stdio server itself reads the secrets bound
+    /// to it first, as a CLI's run does, whatever its lookup gives.
+    #[test]
+    fn expanding_a_server_reads_its_own_secrets_before_the_lookup() {
+        let lookup = |name: &str| Some(format!("{name}-from-the-lookup"));
+        let server = McpServer::command("${LAUNCHER:-uvx}", ["--token=${T}", "--home=${HOME}"])
+            .with_environment("T", "${T:-unused}")
+            .with_secret("T", "bound");
+
+        let expanded = server.expanded(&lookup);
+
+        assert_eq!(
+            expanded.command.as_deref(),
+            Some("LAUNCHER-from-the-lookup")
+        );
+        assert_eq!(
+            expanded.arguments,
+            ["--token=bound", "--home=HOME-from-the-lookup"]
+        );
+        assert_eq!(
+            expanded.environment.get("T").map(SecretValue::expose),
+            Some("bound")
+        );
     }
 
     #[test]

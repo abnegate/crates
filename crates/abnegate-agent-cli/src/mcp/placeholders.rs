@@ -8,6 +8,7 @@ use crate::mcp::attachment::McpAttachment;
 use crate::mcp::segment::CLOSING;
 use crate::mcp::segment::OPENING;
 use crate::mcp::segment::Segment;
+use crate::mcp::template::Template;
 
 /// The namespace every generated variable is named in, under a token drawn
 /// at random for every rendering, so that no configuration can name one in
@@ -25,14 +26,14 @@ const TOKEN_BYTES: usize = 16;
 /// value under a generated variable named `ABNEGATE_MCP_<token>_<n>`: literal
 /// text moved out of the file as it is, a remote server's URL and header
 /// values resolved against its own secrets, as they are, and a stdio
-/// server's values that refer to variables, to be resolved before the child
-/// is given them; and every secret bound to a server the file holds, to be
-/// scrubbed from what the run writes down.
+/// server's values that refer to variables, with its secrets, to be resolved
+/// before the child is given them; and every secret bound to a server the
+/// file holds, to be scrubbed from what the run writes down.
 #[derive(Debug)]
 pub(crate) struct Placeholders {
     prefix: String,
     pub(crate) environment: BTreeMap<String, SecretValue>,
-    pub(crate) templates: BTreeMap<String, SecretValue>,
+    pub(crate) templates: BTreeMap<String, Template>,
     pub(crate) secrets: Vec<SecretValue>,
 }
 
@@ -59,14 +60,18 @@ impl Placeholders {
     /// What to write in place of a stdio server's environment `value`:
     /// nothing for an empty value, and otherwise a reference to a generated
     /// variable holding it, as it is when it refers to no variable and to be
-    /// resolved when it does.
-    pub(crate) fn substitute(&mut self, value: &SecretValue) -> String {
+    /// resolved, reading the server's `secrets` first, when it does.
+    pub(crate) fn substitute(
+        &mut self,
+        value: &SecretValue,
+        secrets: &BTreeMap<String, SecretValue>,
+    ) -> String {
         let text = value.expose();
         if text.is_empty() {
             return String::new();
         }
         if refers(text) {
-            self.template(value.clone())
+            self.template(value.clone(), secrets)
         } else {
             self.hold(text.to_string())
         }
@@ -74,10 +79,15 @@ impl Placeholders {
 
     /// What to write in place of a stdio server's command or argument: `text`
     /// itself when it refers to no variable, and otherwise a reference to a
-    /// generated variable holding it, to be resolved.
-    pub(crate) fn resolved(&mut self, text: &str) -> String {
+    /// generated variable holding it, to be resolved, reading the server's
+    /// `secrets` first.
+    pub(crate) fn resolved(
+        &mut self,
+        text: &str,
+        secrets: &BTreeMap<String, SecretValue>,
+    ) -> String {
         if refers(text) {
-            self.template(SecretValue::new(text))
+            self.template(SecretValue::new(text), secrets)
         } else {
             text.to_string()
         }
@@ -108,10 +118,14 @@ impl Placeholders {
         reference(&variable)
     }
 
-    /// A reference to a new generated variable holding `template`, to be
-    /// resolved before the child is given it.
-    fn template(&mut self, template: SecretValue) -> String {
+    /// A reference to a new generated variable holding `value`, to be
+    /// resolved, reading `secrets` first, before the child is given it.
+    fn template(&mut self, value: SecretValue, secrets: &BTreeMap<String, SecretValue>) -> String {
         let variable = self.generated();
+        let template = Template {
+            value,
+            secrets: secrets.clone(),
+        };
         self.templates.insert(variable.clone(), template);
         reference(&variable)
     }
@@ -199,6 +213,8 @@ fn reference(variable: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use abnegate_secret::SecretValue;
 
     use super::NAMESPACE;
@@ -211,8 +227,9 @@ mod tests {
     fn a_literal_moves_to_a_generated_variable() {
         let mut placeholders = Placeholders::under("TEST");
 
-        let first = placeholders.substitute(&SecretValue::new("glsa_realsecret"));
-        let second = placeholders.substitute(&SecretValue::new("Bearer sk-live-secret"));
+        let first = placeholders.substitute(&SecretValue::new("glsa_realsecret"), &BTreeMap::new());
+        let second =
+            placeholders.substitute(&SecretValue::new("Bearer sk-live-secret"), &BTreeMap::new());
 
         assert_eq!(first, "${ABNEGATE_MCP_TEST_0}");
         assert_eq!(second, "${ABNEGATE_MCP_TEST_1}");
@@ -243,7 +260,7 @@ mod tests {
         for value in ["${APPWRITE_API_KEY}", "${CF_ID:-anonymous}"] {
             assert!(
                 placeholders
-                    .substitute(&SecretValue::new(value))
+                    .substitute(&SecretValue::new(value), &BTreeMap::new())
                     .starts_with("${ABNEGATE_MCP_TEST_"),
                 "{value}"
             );
@@ -254,7 +271,7 @@ mod tests {
             placeholders
                 .templates
                 .values()
-                .map(SecretValue::expose)
+                .map(|template| template.value.expose())
                 .collect::<Vec<_>>(),
             ["${APPWRITE_API_KEY}", "${CF_ID:-anonymous}"]
         );
@@ -265,8 +282,9 @@ mod tests {
         let mut placeholders = Placeholders::under("TEST");
         let blob = "{\"id\": \"${CF_ID}\", \"secret\": \"literal-cf-secret\"}";
 
-        let first = placeholders.substitute(&SecretValue::new(blob));
-        let second = placeholders.substitute(&SecretValue::new("Bearer ${TOKEN}"));
+        let first = placeholders.substitute(&SecretValue::new(blob), &BTreeMap::new());
+        let second =
+            placeholders.substitute(&SecretValue::new("Bearer ${TOKEN}"), &BTreeMap::new());
 
         assert_eq!(first, "${ABNEGATE_MCP_TEST_0}");
         assert_eq!(second, "${ABNEGATE_MCP_TEST_1}");
@@ -274,7 +292,7 @@ mod tests {
             placeholders
                 .templates
                 .get("ABNEGATE_MCP_TEST_0")
-                .map(SecretValue::expose),
+                .map(|template| template.value.expose()),
             Some(blob)
         );
         assert!(placeholders.environment.is_empty());
@@ -284,17 +302,20 @@ mod tests {
     fn a_command_or_argument_moves_out_only_when_it_refers_to_a_variable() {
         let mut placeholders = Placeholders::under("TEST");
 
-        assert_eq!(placeholders.resolved("uvx"), "uvx");
-        assert_eq!(placeholders.resolved("--verbose"), "--verbose");
+        assert_eq!(placeholders.resolved("uvx", &BTreeMap::new()), "uvx");
         assert_eq!(
-            placeholders.resolved("--token=${TOKEN}"),
+            placeholders.resolved("--verbose", &BTreeMap::new()),
+            "--verbose"
+        );
+        assert_eq!(
+            placeholders.resolved("--token=${TOKEN}", &BTreeMap::new()),
             "${ABNEGATE_MCP_TEST_0}"
         );
         assert_eq!(
             placeholders
                 .templates
                 .get("ABNEGATE_MCP_TEST_0")
-                .map(SecretValue::expose),
+                .map(|template| template.value.expose()),
             Some("--token=${TOKEN}")
         );
         assert!(placeholders.environment.is_empty());
@@ -307,8 +328,8 @@ mod tests {
         let mut first = Placeholders::new().expect("a random token");
         let mut second = Placeholders::new().expect("a random token");
 
-        let first = first.substitute(&SecretValue::new("literal"));
-        let second = second.substitute(&SecretValue::new("literal"));
+        let first = first.substitute(&SecretValue::new("literal"), &BTreeMap::new());
+        let second = second.substitute(&SecretValue::new("literal"), &BTreeMap::new());
 
         assert_ne!(first, second);
         for name in [&first, &second] {
@@ -397,13 +418,16 @@ mod tests {
     fn an_empty_value_or_a_broken_reference_is_never_mistaken_for_a_reference() {
         let mut placeholders = Placeholders::under("TEST");
 
-        assert_eq!(placeholders.substitute(&SecretValue::new("")), "");
         assert_eq!(
-            placeholders.substitute(&SecretValue::new("abc${")),
+            placeholders.substitute(&SecretValue::new(""), &BTreeMap::new()),
+            ""
+        );
+        assert_eq!(
+            placeholders.substitute(&SecretValue::new("abc${"), &BTreeMap::new()),
             "${ABNEGATE_MCP_TEST_0}"
         );
         assert_eq!(
-            placeholders.substitute(&SecretValue::new("${1BAD} ${}")),
+            placeholders.substitute(&SecretValue::new("${1BAD} ${}"), &BTreeMap::new()),
             "${ABNEGATE_MCP_TEST_1}"
         );
         assert_eq!(placeholders.environment.len(), 2);

@@ -1419,6 +1419,61 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         );
     }
 
+    /// A secret bound to a stdio server is what its references read first,
+    /// before what the agent is given and this process's environment, and it
+    /// reaches the server only under a generated name. The host's own `T` is
+    /// set in this test's own child process.
+    #[tokio::test]
+    async fn a_secret_bound_to_a_stdio_server_wins_over_the_hosts_variable() {
+        const NAME: &str =
+            "provider::tests::a_secret_bound_to_a_stdio_server_wins_over_the_hosts_variable";
+        const HOST: &str = "t-host-marker-3a8f";
+        const BOUND: &str = "t-bound-marker-71c2";
+        if delegated(NAME, &[("T", HOST)]).await {
+            return;
+        }
+        let directory = TempDir::new().expect("a temporary directory");
+        let copied = directory.path().join("mcp.json");
+        let environment = directory.path().join("environment");
+        let script = format!(
+            r#"env > '{environment}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then cp "$2" '{copied}'; fi
+  shift
+done
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            environment = environment.display(),
+            copied = copied.display(),
+        );
+        let settings = settings(&directory, &script).with_mcp_server(
+            "notes",
+            McpServer::command("notes-server", ["mcp"])
+                .with_environment("T", "${T}")
+                .with_secret("T", BOUND),
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let file = std::fs::read_to_string(&copied).expect("the MCP config");
+        assert!(!file.contains(BOUND), "{file}");
+        let document: Value = serde_json::from_str(&file).expect("JSON");
+        let variable = document["mcpServers"]["notes"]["env"]["T"]
+            .as_str()
+            .and_then(|value| value.strip_prefix("${"))
+            .and_then(|value| value.strip_suffix('}'))
+            .expect("a generated variable");
+        let child = recorded_environment(&environment);
+        assert_eq!(child.get(variable).map(String::as_str), Some(BOUND));
+        assert!(!child.contains_key("T"), "{child:?}");
+        assert!(
+            !child.values().any(|value| value.contains(HOST)),
+            "{child:?}"
+        );
+    }
+
     /// A token the agent's own tools need, allowed through from this
     /// process's environment, must never reach a remote server that names
     /// it: Claude Code reads its own and cloud credentials as empty toward a

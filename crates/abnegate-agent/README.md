@@ -80,8 +80,10 @@ is skipped with a warning while the rest load. `abnegate-agent-cli`'s
 secrets bound to that server in code with `McpServer::with_secret` or
 `McpConfig::with_secret`, which a document never holds, or else its default,
 and never against the environment its CLI is given. Each `${VAR}` or
-`${VAR:-default}` in a server's command, arguments and `env` is expanded from
-this process's environment first, as Claude Code expands it. Each server's
+`${VAR:-default}` in a server's command, arguments and `env` is expanded before
+it starts, as Claude Code expands it: from the secrets bound to the server with
+`McpServer::with_secret` or `McpConfig::with_secret` first, and then from this
+process's environment. Each server's
 child sees only the allowlisted environment plus its own `env`, unless it sets
 `inherit_environment`, and starts in its `cwd` when it names one.
 

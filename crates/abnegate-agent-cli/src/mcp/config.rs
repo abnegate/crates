@@ -41,7 +41,7 @@ const CONFIG_FILE: &str = "mcp.json";
 /// It reads a `{"mcpServers": {...}}` document, the shape Claude Code and
 /// Cursor use, a `{"servers": {...}}` one, or a bare map of servers, and
 /// writes the first. [`McpConfig::from_environment`] finds one through an
-/// application's own variables. No document holds a remote server's
+/// application's own variables. No document holds a server's
 /// [secrets](McpServer::secrets): they are bound in code, to a server read
 /// from one by its name with [`McpConfig::with_secret`].
 ///
@@ -97,9 +97,11 @@ impl McpConfig {
     }
 
     /// The same configuration with `value` bound, for the server configured
-    /// under `server`, to its URL's and headers' references to `variable`:
-    /// see [`McpServer::secrets`]. For a server read from a document, the
-    /// environment or a file, whose secret a document never holds:
+    /// under `server`, to its references to `variable`: a remote server's in
+    /// its URL and headers, and a stdio server's in its command, arguments
+    /// and environment. See [`McpServer::secrets`]. For a server read from a
+    /// document, the environment or a file, whose secret a document never
+    /// holds:
     ///
     /// ```
     /// use abnegate_agent_cli::McpConfig;
@@ -556,7 +558,10 @@ mod tests {
             .and_then(|value| value.strip_suffix('}'))
             .expect("a reference");
         assert_eq!(
-            attachment.templates.get(variable).map(SecretValue::expose),
+            attachment
+                .templates
+                .get(variable)
+                .map(|template| template.value.expose()),
             Some("${APPWRITE_API_KEY}")
         );
         assert_eq!(document["mcpServers"]["remote"]["type"], "http");
@@ -889,7 +894,7 @@ mod tests {
             attachment
                 .templates
                 .values()
-                .map(SecretValue::expose)
+                .map(|template| template.value.expose())
                 .collect::<Vec<_>>(),
             ["${GRAFANA_URL}"]
         );

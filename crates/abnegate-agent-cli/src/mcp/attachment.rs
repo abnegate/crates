@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use abnegate_secret::SecretValue;
 use tempfile::NamedTempFile;
 
+use crate::mcp::template::Template;
+
 /// A rendered MCP configuration and what the child needs for it to resolve.
 ///
 /// The file holds no environment or header value, no URL that refers to a
@@ -24,10 +26,11 @@ pub(crate) struct McpAttachment {
     /// Each generated variable the child is given as it is, with its value.
     pub(crate) environment: BTreeMap<String, SecretValue>,
     /// Each generated variable that holds a stdio server's value referring
-    /// to variables, with the value as configured: the child is given it with
-    /// each `${VAR}` and `${VAR:-default}` resolved as the CLI would resolve
-    /// it, and a reference nothing resolves left as written.
-    pub(crate) templates: BTreeMap<String, SecretValue>,
+    /// to variables, with the value as configured and the server's secrets:
+    /// the child is given it with each `${VAR}` and `${VAR:-default}`
+    /// resolved as the CLI would resolve it, a secret bound for the variable
+    /// read first, and a reference nothing resolves left as written.
+    pub(crate) templates: BTreeMap<String, Template>,
     /// Every secret bound to a server the file holds, which the run scrubs
     /// from what it writes down on its own as well as within a value.
     pub(crate) secrets: Vec<SecretValue>,

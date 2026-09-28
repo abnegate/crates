@@ -24,10 +24,12 @@ everything it is given. A remote MCP server is sent nothing the agent is given
 by name: each `${VAR}` in its URL and headers resolves only to a secret bound to
 that server with `McpServer::with_secret`, or by name with
 `McpConfig::with_secret`, or else to its default, and a server that refers to a
-variable with neither is left out. The file the CLI reads holds no environment
-or header value and no bound secret: each reaches the agent in a generated
-variable of its environment, which its tools and stdio servers can read too, so
-binding keeps a secret from every other remote server, not from them.
+variable with neither is left out. A stdio server's references read the secrets
+bound to it first, and then what the agent is given and this process's
+environment. The file the CLI reads holds no environment or header value and no
+bound secret: each reaches the agent in a generated variable of its environment,
+which its tools and stdio servers can read too, so binding keeps a secret from
+every other remote server, not from them.
 
 ## Features
 
