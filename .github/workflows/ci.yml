@@ -257,6 +257,7 @@ jobs:
         with:
           shared-key: package
           cache-on-failure: true
+          cache-targets: false
 
       - name: Package every crate
         run: cargo package --workspace
