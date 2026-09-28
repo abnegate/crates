@@ -339,6 +339,32 @@ mod tests {
         .is_ok()
     }
 
+    /// Wait for the child to create `marker`. The wait yields before it
+    /// looks, so the supervisor the spawn started has set its deadline before
+    /// anything moves the clock.
+    async fn reach(marker: &Path) {
+        tokio::time::timeout(PATIENCE, async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                if marker.exists() {
+                    return;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the child never reached {}", marker.display()));
+    }
+
+    /// Once the child has created `marker`, move the clock past the run's
+    /// timeout. The clock runs on at once, so the run stops its child and
+    /// drains its output in real time rather than skipping each grace period.
+    async fn expire(marker: &Path) {
+        reach(marker).await;
+        tokio::time::pause();
+        tokio::time::advance(TIMEOUT).await;
+        tokio::time::resume();
+    }
+
     /// The pid a script printed as the first line of its output.
     fn printed_pid(run: &Run) -> u32 {
         String::from_utf8(run.stdout())
@@ -804,14 +830,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_timeout_kills_the_whole_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let spoken = directory.path().join("spoken");
         let executor = CommandExecutor::with_config(
             ExecutorConfig::default().with_grace_period(Duration::from_millis(100)),
         );
         let (sender, receiver) = mpsc::channel(100);
-        let request = shell("timeout", "sleep 120 & echo $!; sleep 120")
-            .with_timeout(Duration::from_millis(200));
-        let handle = executor.spawn(&request, sender).await.unwrap();
+        let script = format!(
+            "sleep 120 & echo $!; touch '{}'; sleep 120",
+            spoken.display()
+        );
+        let handle = executor
+            .spawn(&shell("timeout", &script), sender)
+            .await
+            .unwrap();
 
+        expire(&spoken).await;
         let run = finish(receiver).await;
 
         assert_eq!(run.error(), Some(ErrorCode::Timeout));
