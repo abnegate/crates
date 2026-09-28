@@ -257,13 +257,19 @@ jobs:
         with:
           shared-key: package
           cache-on-failure: true
-          cache-targets: false
 
       - name: Package every crate
         run: cargo package --workspace
 
       - name: Package every crate with every feature
         run: cargo package --workspace --all-features
+
+      # rust-cache's post step mistakes each unpacked crate's tests/ directory
+      # for a build profile and reports every missing tests/target and
+      # tests/trybuild beneath it as an error.
+      - name: Drop the unpacked packages before the cache is saved
+        if: always()
+        run: rm -rf target/package
 
   semver:
     name: Semver
