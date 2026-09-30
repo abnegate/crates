@@ -248,7 +248,7 @@ async fn supervise(
             _ = flood => JobStatus::Flooded,
         }
     };
-    group.kill();
+    group.kill_until_gone().await;
     if !matches!(outcome, JobStatus::Exited(_)) {
         let _ = child.wait().await;
     }

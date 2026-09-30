@@ -541,7 +541,7 @@ async fn run_trainer(mut process: Command, budget: Duration) -> Result<(), Train
         .take()
         .map(|stderr| tokio::spawn(read_tail(stderr, Arc::clone(&tail))));
     let waited = tokio::time::timeout(budget, child.wait()).await;
-    group.kill();
+    group.kill_until_gone().await;
     if waited.is_err() {
         let _ = child.kill().await;
     }

@@ -570,10 +570,10 @@ async fn stop_agent(
     };
     let _ = group.terminate();
     if let Ok(Ok(status)) = timeout(GRACE_PERIOD, child.wait()).await {
-        let _ = group.kill();
+        let _ = group.kill_until_gone().await;
         return Some(status);
     }
-    let _ = group.kill();
+    let _ = group.kill_until_gone().await;
     child.wait().await.ok()
 }
 
@@ -593,7 +593,7 @@ async fn drain<T>(
         return joined.map_err(|error| error.to_string());
     }
     if let Some(group) = group {
-        let _ = group.kill();
+        let _ = group.kill_until_gone().await;
     }
     if let Ok(joined) = timeout(GRACE_PERIOD, &mut *task).await {
         return joined.map_err(|error| error.to_string());

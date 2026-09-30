@@ -82,7 +82,7 @@ impl Supervisor {
 
         match ending {
             Ending::Exited(Ok(())) => {
-                let _ = self.process_group.kill();
+                let _ = self.process_group.kill_until_gone().await;
                 self.delivered_start().await;
                 let drained = tokio::select! {
                     drained = drain(streams, self.grace_period) => Some(drained),
@@ -154,13 +154,13 @@ impl Supervisor {
     async fn stop(&self, child: &mut Child, exit: &mut LeaderExit) {
         let _ = self.process_group.terminate();
         let _ = tokio::time::timeout(self.grace_period, exit.wait()).await;
-        let _ = self.process_group.kill();
+        let _ = self.process_group.kill_until_gone().await;
         let _ = self.reap(child).await;
     }
 
     /// Kill the group, reap the child and stop reading its output.
     async fn abandon(&self, child: &mut Child, streams: Vec<JoinHandle<()>>) {
-        let _ = self.process_group.kill();
+        let _ = self.process_group.kill_until_gone().await;
         let _ = self.reap(child).await;
         for stream in streams {
             stream.abort();
