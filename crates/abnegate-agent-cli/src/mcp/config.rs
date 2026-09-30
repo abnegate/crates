@@ -329,8 +329,9 @@ impl McpConfig {
     ///   which it would send as it is;
     /// - and, for Codex, which takes each server on its command line and
     ///   expands no reference, reached over streamable HTTP rather than
-    ///   `sse`, with a URL that refers to no variable, and with every
-    ///   variable of a stdio server's `env` named as a shell identifier.
+    ///   `sse`, with a URL that refers to no variable and holds neither
+    ///   user-info nor a query string, and with every variable of a stdio
+    ///   server's `env` named as a shell identifier.
     ///
     /// A run's log names every other enabled server, and why it was left
     /// out, and nothing it holds.
@@ -947,6 +948,38 @@ mod tests {
             overrides.contains(r#""enabled_tools" = ["list.files", "read_file"]"#),
             "{overrides}"
         );
+    }
+
+    /// Codex takes a remote server's URL on its command line, so user-info
+    /// or a query string there, either of which can carry a credential,
+    /// would show for as long as the run lasts. Claude reads the URL from a
+    /// private file, so such a server still attaches to Claude.
+    #[test]
+    fn a_remote_url_that_could_carry_a_credential_attaches_to_claude_alone() {
+        const TOKEN: &str = "url-credential-marker-51c7";
+        let config = McpConfig::default()
+            .with_server("plain", McpServer::remote("https://mcp.example.com/mcp"))
+            .with_server(
+                "queried",
+                McpServer::remote(format!("https://mcp.example.com/mcp?token={TOKEN}")),
+            )
+            .with_server(
+                "signed",
+                McpServer::remote(format!("https://user:{TOKEN}@mcp.example.com/mcp")),
+            );
+
+        let codex: Vec<&str> = config
+            .attachable(AgentKind::Codex)
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(codex, ["plain"]);
+        assert_eq!(config.attachable(AgentKind::Claude).count(), 3);
+        let attachment = config
+            .render(AgentKind::Codex)
+            .expect("rendered")
+            .expect("an attachment");
+        let overrides = attachment.overrides.join(" ");
+        assert!(!overrides.contains(TOKEN), "{overrides}");
     }
 
     /// Codex expands no reference and takes a server only on its command

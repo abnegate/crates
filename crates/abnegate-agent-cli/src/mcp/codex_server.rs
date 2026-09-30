@@ -50,11 +50,11 @@ impl<'server> CodexServer<'server> {
         if self.server.transport == Some(McpTransport::Sse) {
             return Some(Refusal::ServerSentEvents);
         }
-        self.server
-            .url
-            .as_deref()
-            .filter(|url| refers(url))
-            .map(|_| Refusal::ReferringUrl)
+        let url = self.server.url.as_deref()?;
+        if refers(url) {
+            return Some(Refusal::ReferringUrl);
+        }
+        revealing(url).then_some(Refusal::RevealingUrl)
     }
 
     /// The `-c` override that attaches this server under `name`, moving
@@ -159,6 +159,15 @@ impl<'server> CodexServer<'server> {
             false => table.with_table("http_headers", empty),
         }
     }
+}
+
+/// Whether `url` holds user-info or a query string, either of which can
+/// carry a credential. Read as widely as any parser could: `\` ends the
+/// authority as `/` does, and a `?` anywhere counts.
+fn revealing(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
+    authority.contains('@') || url.contains('?')
 }
 
 /// Whether `name` is a shell identifier: a letter or `_`, then letters,

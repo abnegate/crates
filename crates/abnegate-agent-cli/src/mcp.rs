@@ -25,8 +25,10 @@
 //! server is handed its generated variables. A remote server's header values
 //! reach Codex as generated variables its `env_http_headers` names. Codex
 //! cannot attach a remote server over `sse`, one whose URL refers to a
-//! variable, or a stdio server whose `env` names a variable other than as a
-//! shell identifier, and each is left out with a warning. A server's
+//! variable or holds user-info or a query string, either of which its
+//! command line would show, or a stdio server whose `env` names a variable
+//! other than as a shell identifier, and each is left out with a warning;
+//! such a server still attaches to Claude. A server's
 //! [`tools`](McpServer::tools) become its `enabled_tools` as written, since
 //! Codex matches them against the names the server gives its tools, not the
 //! names a CLI gives them: `list.files` enables a tool the server calls
