@@ -52,9 +52,16 @@ fn default_checkpoints_per_run() -> u32 {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Quality {
+    /// The share of the base's denoising error on the training images that
+    /// the adapter removes: 0.34 means 34% lower. Negative when the adapter
+    /// does worse.
     pub improvement: f32,
+    /// The checkpoint kept: `final`, or `step` and its step number.
     pub checkpoint: String,
+    /// Whether the score comes from the full measurement across noise
+    /// levels, rather than the single level checkpoints were ranked at.
     pub measured: bool,
+    /// Which thresholds the score may be read against.
     pub calibration: QualityCalibration,
 }
 

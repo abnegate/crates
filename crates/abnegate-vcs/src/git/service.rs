@@ -153,6 +153,9 @@ impl Default for GitService {
 }
 
 impl GitService {
+    /// A service that names generated branches under `task` and commits as
+    /// the crate, until [`with_branch_prefix`](Self::with_branch_prefix) and
+    /// [`with_author`](Self::with_author) say otherwise.
     pub fn new() -> Self {
         Self {
             maximum_branch_length: MAXIMUM_BRANCH_LENGTH,

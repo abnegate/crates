@@ -17,14 +17,20 @@ use serde::Serialize;
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum Severity {
+    /// Something happened that needs no action. The default.
     #[default]
     Info,
+    /// Something finished as intended.
     Success,
+    /// Something needs attention but has not failed.
     Warning,
+    /// Something failed.
     Error,
 }
 
 impl Severity {
+    /// The lowercase name, which is also the serialized form: `"info"`,
+    /// `"success"`, `"warning"` or `"error"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Info => "info",

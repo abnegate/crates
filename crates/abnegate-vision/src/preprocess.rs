@@ -32,6 +32,9 @@ pub struct Preprocessor {
 }
 
 impl Preprocessor {
+    /// Scratch for a model input `width` by `height` pixels. A zero dimension
+    /// is accepted here and refused by [`prepare`](Self::prepare) with
+    /// [`PreprocessError::Dimensions`].
     pub fn new(width: u32, height: u32) -> Self {
         let pixels = width as usize * height as usize;
         Self {

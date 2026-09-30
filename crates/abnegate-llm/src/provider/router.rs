@@ -32,6 +32,8 @@ pub struct Router {
 }
 
 impl Router {
+    /// A router named `router` over `providers` under `strategy`, requiring
+    /// nothing of them.
     pub fn new(providers: Vec<Weighted>, strategy: SelectionStrategy) -> Self {
         Self {
             providers,
@@ -66,6 +68,7 @@ impl Router {
         Self::new(providers, SelectionStrategy::WeightedFallback)
     }
 
+    /// Report the router as `name` in completions, logs and errors.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
@@ -88,18 +91,22 @@ impl Router {
         self
     }
 
+    /// How the router picks a provider.
     pub fn strategy(&self) -> SelectionStrategy {
         self.strategy
     }
 
+    /// The providers, in order, with their weights.
     pub fn providers(&self) -> &[Weighted] {
         &self.providers
     }
 
+    /// The experiment this router's split serves, if one was named.
     pub fn experiment(&self) -> Option<&str> {
         self.experiment.as_deref()
     }
 
+    /// What a provider must support to be routed to.
     pub fn required(&self) -> Capabilities {
         self.required
     }

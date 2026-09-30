@@ -22,6 +22,7 @@ pub struct Execution {
     /// [`output_limit`](crate::CliSettings::output_limit) bytes, starting on
     /// a character, scrubbed of every secret the run was given.
     pub stderr: String,
+    /// How the agent's process ended.
     pub status: ExitStatus,
     /// Why the agent was stopped rather than left to exit, when it was: the
     /// failure it reported, the diagnostic that tripped
@@ -34,5 +35,7 @@ pub struct Execution {
     /// [`CliSettings::tripwire`](crate::CliSettings::tripwire) — kept whether
     /// the agent was then stopped or exited by itself first.
     pub failure: Option<String>,
+    /// Where the run's logs are, when [`CliSettings::log`](crate::CliSettings::log)
+    /// kept any.
     pub log: Option<ExecutionLogFiles>,
 }

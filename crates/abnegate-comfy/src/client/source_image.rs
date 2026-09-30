@@ -3,13 +3,18 @@ use crate::media::MediaType;
 use std::fmt;
 use uuid::Uuid;
 
+/// The largest source image [`SourceImage::new`] accepts: 8 MiB.
 pub const MAXIMUM_SOURCE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
+/// An image to upload as the source of an edit or an upscale.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct SourceImage {
+    /// The encoded image.
     pub bytes: bytes::Bytes,
+    /// `image/png`, `image/jpeg` or `image/webp`.
     pub mime: String,
+    /// A fresh, unique name to upload it under, never the caller's own.
     pub filename: String,
 }
 

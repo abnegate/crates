@@ -13,6 +13,9 @@ const SHA256_LENGTH: usize = 64;
 pub struct CommitSha(String);
 
 impl CommitSha {
+    /// Accept a 40-digit SHA-1 or 64-digit SHA-256 hex identifier, trimmed
+    /// of surrounding whitespace and lowercased, or fail with
+    /// [`ParseError::CommitSha`]. An abbreviated identifier is refused.
     pub fn parse(value: &str) -> Result<Self, ParseError> {
         let trimmed = value.trim();
         let accepted = matches!(trimmed.len(), SHA1_LENGTH | SHA256_LENGTH)

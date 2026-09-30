@@ -10,7 +10,11 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Attachments<'a> {
+    /// The rendered MCP configuration file, which Claude loads with
+    /// `--mcp-config`.
     pub mcp: Option<&'a Path>,
+    /// The file holding the instructions appended to the agent's system
+    /// prompt.
     pub instructions: Option<&'a Path>,
     /// The `-c mcp_servers.<name>={...}` overrides that attach MCP servers
     /// to Codex, each flag and its value in turn. They hold no value that may
@@ -19,11 +23,13 @@ pub struct Attachments<'a> {
 }
 
 impl<'a> Attachments<'a> {
+    /// The same attachments, with the MCP configuration at `path`.
     pub fn with_mcp(mut self, path: &'a Path) -> Self {
         self.mcp = Some(path);
         self
     }
 
+    /// The same attachments, with the appended instructions at `path`.
     pub fn with_instructions(mut self, path: &'a Path) -> Self {
         self.instructions = Some(path);
         self

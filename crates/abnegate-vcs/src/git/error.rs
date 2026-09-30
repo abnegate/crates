@@ -7,18 +7,25 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum GitError {
+    /// A git command, or a check of the repository around one, failed. The
+    /// text names what failed only; git's own output, which can quote names
+    /// the repository chose, is logged at debug level and never carried.
     #[error("Git command failed: {0}")]
     CommandFailed(String),
 
+    /// A git command ran past its time limit and was killed.
     #[error("Git operation timed out")]
     TimedOut,
 
+    /// The checkout has no remote by the name asked for.
     #[error("Remote not configured")]
     NoRemote,
 
+    /// A commit was asked for with nothing staged.
     #[error("No changes to commit")]
     NoChanges,
 
+    /// A branch to be created is already there.
     #[error("Branch already exists: {0}")]
     BranchExists(BranchName),
 
@@ -36,9 +43,15 @@ pub enum GitError {
     #[error("Refusing a default branch that is a symbolic ref")]
     SymbolicDefaultBranch,
 
+    /// Something git printed, such as a branch name or a commit identifier,
+    /// is not one this crate accepts.
     #[error(transparent)]
     Parse(#[from] ParseError),
 
+    /// The repository's own configuration sets a key, named here in lower
+    /// case, outside the short allowlist of format, remote and branch
+    /// tracking settings. Any other key might make git run a program or read
+    /// from elsewhere, so the repository is refused.
     #[error("Refusing to run in a repository whose configuration sets {0:?}")]
     UnsafeConfig(String),
 
@@ -69,6 +82,7 @@ pub enum GitError {
     #[error("Refusing a repository that borrows objects from another store")]
     AlternateObjects,
 
+    /// A worktree to be removed is not a directory this service manages.
     #[error("Refusing to remove directory outside worktrees area: {}", .0.display())]
     UnsafeWorktree(PathBuf),
 
@@ -78,6 +92,7 @@ pub enum GitError {
     #[error("Refusing to stage beside the nested repository at {0:?}")]
     NestedRepository(PathBuf),
 
+    /// Starting git, talking to it, or touching the file system failed.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

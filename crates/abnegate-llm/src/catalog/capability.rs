@@ -6,16 +6,27 @@ use serde::Serialize;
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ModelCapability {
+    /// Reads or writes text.
     Text,
+    /// Reads images.
     ImageInput,
+    /// Generates images.
     ImageGeneration,
+    /// Handles audio, in a direction the catalogue does not say.
     Audio,
+    /// Reads audio, such as speech to transcribe.
     AudioInput,
+    /// Generates audio, such as speech or music.
     AudioGeneration,
+    /// Reads video.
     VideoInput,
+    /// Generates video.
     VideoGeneration,
+    /// Calls tools.
     Tools,
+    /// Produces embeddings.
     Embeddings,
+    /// Thinks before it answers.
     Reasoning,
 }
 

@@ -7,10 +7,15 @@
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Capabilities {
+    /// Holds an answer to the JSON schema a request asks for.
     pub structured_output: bool,
+    /// Asks before running each tool, rather than running any it is given.
     pub tool_permissions: bool,
+    /// Takes instructions appended to its own system prompt.
     pub custom_instructions: bool,
+    /// Reports progress as it runs, not only the finished answer.
     pub streaming_events: bool,
+    /// Reports what each completion cost.
     pub cost_reporting: bool,
 }
 

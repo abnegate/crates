@@ -4,13 +4,21 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Kind {
+    /// A new capability.
     Feat,
+    /// A bug fix.
     Fix,
+    /// A restructuring that changes no behaviour.
     Refactor,
+    /// A speed or resource improvement.
     Perf,
+    /// Tests only.
     Test,
+    /// Documentation only.
     Docs,
+    /// Formatting only.
     Style,
+    /// Maintenance that fits no other kind.
     Chore,
 }
 
@@ -47,6 +55,8 @@ impl Kind {
         }
     }
 
+    /// The kind whose [`label`](Self::label) is `value`, ignoring case and
+    /// surrounding whitespace, or `None`.
     pub fn parse(value: &str) -> Option<Self> {
         let value = value.trim().to_ascii_lowercase();
         Self::ALL.iter().copied().find(|kind| kind.label() == value)

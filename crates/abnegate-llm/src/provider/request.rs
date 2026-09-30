@@ -12,9 +12,13 @@ use crate::wire::ToolDefinition;
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct CompletionRequest<'a> {
+    /// The model to ask.
     pub model: &'a str,
+    /// The conversation so far.
     pub messages: &'a [Message],
+    /// Tools the model may call, or `None` for none.
     pub tools: Option<&'a [ToolDefinition]>,
+    /// How much of the context the answer may take.
     pub options: RequestOptions,
     /// The shape the answer must take. Only a provider whose
     /// [`Capabilities::structured_output`](crate::Capabilities::structured_output)
@@ -25,6 +29,8 @@ pub struct CompletionRequest<'a> {
 }
 
 impl<'a> CompletionRequest<'a> {
+    /// Ask `model` to continue `messages`, with no tools, no response format
+    /// and the provider's own temperature.
     pub fn new(model: &'a str, messages: &'a [Message], options: RequestOptions) -> Self {
         Self {
             model,
@@ -36,16 +42,19 @@ impl<'a> CompletionRequest<'a> {
         }
     }
 
+    /// Offer the model `tools`.
     pub fn with_tools(mut self, tools: &'a [ToolDefinition]) -> Self {
         self.tools = Some(tools);
         self
     }
 
+    /// Ask for the answer in `response_format`.
     pub fn with_response_format(mut self, response_format: &'a ResponseFormat) -> Self {
         self.response_format = Some(response_format);
         self
     }
 
+    /// Sample at `temperature` rather than the provider's own.
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
         self

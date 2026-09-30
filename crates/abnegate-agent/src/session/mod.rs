@@ -26,8 +26,11 @@ use crate::run::AgentState;
 pub struct Session {
     /// The run's own id, so a session and its state never disagree.
     pub id: Uuid,
+    /// What a listing shows the session as.
     pub title: String,
+    /// Everything the run has said and done.
     pub state: AgentState,
+    /// When the session was created.
     pub created_at: DateTime<Utc>,
     /// Moved forward by [`update`](Self::update), never by saving.
     pub updated_at: DateTime<Utc>,

@@ -43,6 +43,13 @@ const PACKAGED_UPSCALE_WORKFLOW: &str = include_str!("../comfyui/workflows/upsca
 const PACKAGED_UPSCALE_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/upscale-video-api.json");
 
+/// Runs generation and upscaling workflows on one ComfyUI server.
+///
+/// Every call submits a workflow, reports progress as it runs, and collects
+/// what it produced. A call fails with [`Error::Disabled`] when
+/// [`Config::enabled`] is off, [`Error::Cancelled`] once the cancel channel
+/// fires, and [`Error::Timeout`] past the configured time limit for its kind
+/// of work.
 #[derive(Clone)]
 pub struct Client {
     config: Config,
@@ -181,6 +188,11 @@ fn outputs_from_history_entry(
 }
 
 impl Client {
+    /// A client for the server `config` names, with its recipe catalog
+    /// loaded. Fails with [`Error::Configuration`] when a setting cannot
+    /// work, such as an empty base URL, a checkpoint that is not a bare
+    /// filename, an unreadable catalog, or a checkpoint no image recipe
+    /// runs.
     pub fn new(config: Config) -> Result<Self, Error> {
         let client = crate::http::client(&config)?;
         Self::with_http(config, client)
@@ -207,6 +219,8 @@ impl Client {
         Ok(client)
     }
 
+    /// How a prompt for the selected checkpoint should be written, falling
+    /// back to [`PromptMode::ClipScene`] when no recipe runs it.
     pub fn prompt_mode(&self) -> PromptMode {
         self.image_recipe()
             .map(|recipe| recipe.prompt_mode)
@@ -275,6 +289,12 @@ impl Client {
         Ok(workflow)
     }
 
+    /// Generate images from `prompt` with the selected checkpoint's recipe,
+    /// editing `source` when one is given. A blank prompt is refused unless
+    /// there is a source, which is then edited generically.
+    ///
+    /// Progress messages are sent on `progress`, and a message on `cancel`
+    /// stops the run.
     pub async fn generate(
         &self,
         prompt: &str,
@@ -339,6 +359,8 @@ impl Client {
         .await
     }
 
+    /// Generate a video from `prompt`, animating `source` when one is given.
+    /// A blank prompt is refused unless there is a source.
     pub async fn generate_video(
         &self,
         prompt: &str,
@@ -402,6 +424,7 @@ impl Client {
         .await
     }
 
+    /// Upscale `source` with the configured upscale model.
     pub async fn upscale_image(
         &self,
         source: &SourceImage,
@@ -444,6 +467,7 @@ impl Client {
         .await
     }
 
+    /// Upscale every frame of `source` with the configured upscale model.
     pub async fn upscale_video(
         &self,
         source: &SourceVideo,
@@ -486,6 +510,7 @@ impl Client {
         .await
     }
 
+    /// Generate audio from `prompt` with the configured audio checkpoint.
     pub async fn generate_audio(
         &self,
         prompt: &str,

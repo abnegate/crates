@@ -10,7 +10,9 @@ pub(super) const PACKAGE_MANIFEST: &str = "package.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum Manifest {
+    /// PHP's Composer, read from `composer.json`.
     Composer,
+    /// npm, read from `package.json`.
     Npm,
 }
 

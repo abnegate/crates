@@ -16,6 +16,7 @@ const HEXADECIMAL_RADIX: u32 = 16;
 pub struct Checksum([u8; DIGEST_BYTES]);
 
 impl Checksum {
+    /// The SHA-256 `digest`, as raw bytes.
     pub fn new(digest: [u8; DIGEST_BYTES]) -> Self {
         Self(digest)
     }
@@ -42,6 +43,7 @@ impl Checksum {
         Ok(Self(digest))
     }
 
+    /// The digest as raw bytes.
     pub fn bytes(&self) -> &[u8; DIGEST_BYTES] {
         &self.0
     }

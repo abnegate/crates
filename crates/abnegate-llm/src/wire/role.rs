@@ -23,9 +23,13 @@ use serde::Serialize;
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum Role {
+    /// Instructions the model follows.
     System,
+    /// The person asking.
     User,
+    /// The model.
     Assistant,
+    /// A tool's answer to a call.
     Tool,
 }
 

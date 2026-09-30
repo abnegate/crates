@@ -20,9 +20,11 @@ use serde::Deserialize;
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum ApiDelta {
+    /// More prose for a text block.
     #[serde(rename = "text_delta")]
     #[non_exhaustive]
     TextDelta {
+        /// The prose added.
         #[serde(default)]
         text: String,
     },
@@ -31,9 +33,11 @@ pub enum ApiDelta {
     #[serde(rename = "input_json_delta")]
     #[non_exhaustive]
     InputJsonDelta {
+        /// The fragment, which is not JSON on its own.
         #[serde(default)]
         partial_json: String,
     },
+    /// Any other kind of delta, such as thinking, which is ignored.
     #[serde(other)]
     Other,
 }

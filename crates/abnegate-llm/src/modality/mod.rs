@@ -11,6 +11,7 @@
 //! a `TextProvider`, so an [`AiClient`] can run on a local model server or a
 //! fallback chain as readily as on a vendor API.
 
+/// Which provider serves each modality, as a configuration file names them.
 pub mod config;
 pub mod vendor;
 

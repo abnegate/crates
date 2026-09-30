@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! Sandboxed command execution with streaming output.
 //!
 //! A [`CommandExecutor`] spawns a process in its own session, streams stdout and

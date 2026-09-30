@@ -7,7 +7,9 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ExitStatus {
+    /// The process exited with this code.
     Code(i32),
+    /// A signal ended the process, so it has no exit code.
     Signalled,
 }
 

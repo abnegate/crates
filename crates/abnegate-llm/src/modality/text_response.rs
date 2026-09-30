@@ -7,10 +7,15 @@ const DEFAULT_FINISH_REASON: &str = "stop";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TextResponse {
+    /// The answer.
     pub content: String,
+    /// The model that answered.
     pub model: String,
+    /// Tokens the prompt took.
     pub input_tokens: u32,
+    /// Tokens the answer took.
     pub output_tokens: u32,
+    /// Why the model stopped, in the provider's own words, such as `stop`.
     pub finish_reason: String,
 }
 

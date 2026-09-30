@@ -9,6 +9,7 @@ pub struct ModelSize {
     pub name: String,
     /// Human label, such as `1B` or `Q4_0`.
     pub label: String,
+    /// The download size, in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
 }

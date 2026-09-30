@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! Credential handling.
 //!
 //! [`SecretValue`] holds a credential without letting it reach a log line by

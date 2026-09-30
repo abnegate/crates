@@ -10,12 +10,16 @@ use serde::Serialize;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct CliUsage {
+    /// Prompt tokens neither read from nor written to the cache.
     #[serde(default)]
     pub input_tokens: Option<u64>,
+    /// Tokens the model generated.
     #[serde(default)]
     pub output_tokens: Option<u64>,
+    /// Prompt tokens read from the cache.
     #[serde(default)]
     pub cache_read_input_tokens: Option<u64>,
+    /// Prompt tokens written to the cache.
     #[serde(default)]
     pub cache_creation_input_tokens: Option<u64>,
 }

@@ -10,12 +10,19 @@ use crate::hardware::ModelRecommendation;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct RecommendedModels {
+    /// Text generation.
     pub llm: ModelRecommendation,
+    /// Image generation.
     pub image: ModelRecommendation,
+    /// Speech synthesis.
     pub voice: ModelRecommendation,
+    /// Music generation.
     pub music: ModelRecommendation,
+    /// 3D model generation.
     pub model3d: ModelRecommendation,
+    /// Embeddings.
     pub embedding: ModelRecommendation,
+    /// Speech to text.
     pub transcription: ModelRecommendation,
 }
 

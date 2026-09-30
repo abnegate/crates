@@ -21,6 +21,7 @@ pub trait CompletionProvider: fmt::Debug + Send + Sync {
     /// A stable identifier used in logs, metrics, and [`Completion::provider`].
     fn name(&self) -> &str;
 
+    /// How the provider reaches its model.
     fn kind(&self) -> ProviderKind;
 
     /// What this provider supports beyond returning a completion.
@@ -28,6 +29,8 @@ pub trait CompletionProvider: fmt::Debug + Send + Sync {
         Capabilities::NONE
     }
 
+    /// Run one completion. A failure the next provider in a chain may
+    /// rescue is [`ProviderError::recoverable`].
     async fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, ProviderError>;
 }
 

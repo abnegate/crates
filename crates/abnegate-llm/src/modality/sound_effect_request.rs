@@ -5,8 +5,11 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SoundEffectRequest {
+    /// What the sound should be.
     pub prompt: String,
+    /// How long it should play, in seconds.
     pub duration_seconds: f64,
+    /// A category the provider sorts sounds into, such as `ambience`.
     pub category: Option<String>,
 }
 

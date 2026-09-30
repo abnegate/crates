@@ -2,6 +2,7 @@
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Behaviour {
+    /// Answers with this text.
     Answer(String),
     /// Fails in a way a chain is expected to move past.
     Fail(String),

@@ -28,14 +28,25 @@ const DEFAULT_BUDGET_USD: f64 = 10.0;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ProviderConfig {
+    /// Text generation, the one modality every config has.
     pub text_provider: TextProviderConfig,
+    /// Image generation, when configured.
     pub image_provider: Option<ImageProviderConfig>,
+    /// Music and sound effects, when configured.
     pub audio_provider: Option<AudioProviderConfig>,
+    /// Speech synthesis, when configured.
     pub voice_provider: Option<VoiceProviderConfig>,
+    /// Video generation, when configured.
     pub video_provider: Option<VideoProviderConfig>,
+    /// 3D model generation, when configured.
     pub model3d_provider: Option<Model3DProviderConfig>,
+    /// Embeddings, when configured.
     pub embedding_provider: Option<EmbeddingProviderConfig>,
+    /// Speech to text, when configured.
     pub transcription_provider: Option<TranscriptionProviderConfig>,
+    /// The [`CostStrategy`] as a config file spells it, such as
+    /// `best-value` or `budget:10`; read it with
+    /// [`parse_cost_strategy`](Self::parse_cost_strategy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_strategy: Option<String>,
 }

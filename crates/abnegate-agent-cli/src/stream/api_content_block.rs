@@ -20,20 +20,26 @@ use serde::Deserialize;
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum ApiContentBlock {
+    /// A block of prose, whose text the deltas after it stream.
     #[serde(rename = "text")]
     #[non_exhaustive]
     Text {
+        /// Any text the block opens with, usually none.
         #[serde(default)]
         text: String,
     },
+    /// A tool call, whose input the deltas after it stream.
     #[serde(rename = "tool_use")]
     #[non_exhaustive]
     ToolUse {
+        /// The call's identifier, which its result names.
         #[serde(default)]
         id: String,
+        /// The tool called.
         #[serde(default)]
         name: String,
     },
+    /// Any other kind of block, such as thinking, which is ignored.
     #[serde(other)]
     Other,
 }

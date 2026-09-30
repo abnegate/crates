@@ -39,7 +39,9 @@ pub enum ProviderError {
     #[error("{provider}: {source}")]
     #[non_exhaustive]
     Http {
+        /// The provider that failed.
         provider: String,
+        /// What the HTTP client reported.
         #[source]
         source: Error,
     },
@@ -48,8 +50,11 @@ pub enum ProviderError {
     #[error("{provider}: agent command {executable} could not be started: {reason}")]
     #[non_exhaustive]
     Unavailable {
+        /// The provider that failed.
         provider: String,
+        /// The command that could not be started.
         executable: String,
+        /// Why it could not be started.
         reason: String,
     },
 
@@ -57,8 +62,11 @@ pub enum ProviderError {
     #[error("{provider}: agent command exited with status {status}: {message}")]
     #[non_exhaustive]
     Exit {
+        /// The provider that failed.
         provider: String,
+        /// How the command ended.
         status: ExitStatus,
+        /// What the command said about it.
         message: String,
     },
 
@@ -67,42 +75,74 @@ pub enum ProviderError {
     /// 500 ms reads `500ms`.
     #[error("{provider}: agent command timed out after {timeout:?}")]
     #[non_exhaustive]
-    Timeout { provider: String, timeout: Duration },
+    Timeout {
+        /// The provider that failed.
+        provider: String,
+        /// The deadline it ran past.
+        timeout: Duration,
+    },
 
     /// The agent's output could not be read as an answer.
     #[error("{provider}: agent output could not be parsed: {message}")]
     #[non_exhaustive]
-    Malformed { provider: String, message: String },
+    Malformed {
+        /// The provider that failed.
+        provider: String,
+        /// What could not be read.
+        message: String,
+    },
 
     /// The agent ran and reported a failure of its own.
     #[error("{provider}: {message}")]
     #[non_exhaustive]
-    Agent { provider: String, message: String },
+    Agent {
+        /// The provider that failed.
+        provider: String,
+        /// The agent's account of the failure.
+        message: String,
+    },
 
     /// The request never reached the provider, or its answer never arrived.
     #[error("network error: {detail}")]
     #[non_exhaustive]
-    Network { detail: String },
+    Network {
+        /// What went wrong on the way.
+        detail: String,
+    },
 
     /// The provider answered with a failing HTTP `status`.
     #[error("API error (status {status}): {message}")]
     #[non_exhaustive]
-    Api { status: u16, message: String },
+    Api {
+        /// The HTTP status code.
+        status: u16,
+        /// The provider's explanation.
+        message: String,
+    },
 
     /// The provider's answer did not parse.
     #[error("parse error: {detail}")]
     #[non_exhaustive]
-    Parse { detail: String },
+    Parse {
+        /// What did not parse.
+        detail: String,
+    },
 
     /// Reading or writing a local file failed.
     #[error("IO error: {detail}")]
     #[non_exhaustive]
-    Io { detail: String },
+    Io {
+        /// What failed.
+        detail: String,
+    },
 
     /// The provider is configured wrongly, such as with a missing key.
     #[error("configuration error: {detail}")]
     #[non_exhaustive]
-    Config { detail: String },
+    Config {
+        /// What is wrong with the configuration.
+        detail: String,
+    },
 
     /// No provider is configured.
     #[error("no provider is configured")]
@@ -111,7 +151,10 @@ pub enum ProviderError {
     /// The provider does not offer the operation asked of it.
     #[error("unsupported operation: {detail}")]
     #[non_exhaustive]
-    Unsupported { detail: String },
+    Unsupported {
+        /// The operation that is not offered.
+        detail: String,
+    },
 
     /// Every one of `attempted` providers failed. `last` is the final
     /// failure, and it decides [`Self::provider`], [`Self::recoverable`] and
@@ -119,7 +162,9 @@ pub enum ProviderError {
     #[error("all {attempted} providers failed, last was {last}")]
     #[non_exhaustive]
     Exhausted {
+        /// How many providers were tried.
         attempted: usize,
+        /// The last one's failure.
         last: Box<ProviderError>,
     },
 }

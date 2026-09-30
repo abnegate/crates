@@ -6,8 +6,10 @@ use async_trait::async_trait;
 /// A browsable remote model catalogue.
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
+    /// The catalogue's name, as [`browse`](crate::catalog::browse) takes it.
     fn name(&self) -> &'static str;
 
+    /// One page of the models `options` asks for.
     async fn search(&self, options: BrowseQuery<'_>) -> Result<ModelPage, CatalogError>;
 }
 

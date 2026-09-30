@@ -4,14 +4,22 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum Orientation {
+    /// EXIF 1, and any value outside 1 to 8: stored upright.
     #[default]
     Normal,
+    /// EXIF 2: mirrored left to right.
     FlipHorizontal,
+    /// EXIF 3: turned half a revolution.
     Rotate180,
+    /// EXIF 4: mirrored top to bottom.
     FlipVertical,
+    /// EXIF 5: mirrored across the top-left to bottom-right diagonal.
     Transpose,
+    /// EXIF 6: turned a quarter revolution clockwise to display.
     Rotate90,
+    /// EXIF 7: mirrored across the top-right to bottom-left diagonal.
     Transverse,
+    /// EXIF 8: turned a quarter revolution anticlockwise to display.
     Rotate270,
 }
 

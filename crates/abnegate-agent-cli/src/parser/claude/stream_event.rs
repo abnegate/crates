@@ -29,17 +29,22 @@ use crate::parser::claude::turn::Turn;
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum StreamEvent {
+    /// A notice from the CLI itself, such as `init` when a session starts.
     #[serde(rename = "system")]
     #[non_exhaustive]
     System {
+        /// What kind of notice it is.
         #[serde(default)]
         subtype: Option<String>,
+        /// The session the run belongs to, which resumes it.
         #[serde(default)]
         session_id: Option<String>,
     },
+    /// A message the model wrote: prose, tool calls, or both.
     #[serde(rename = "assistant")]
     #[non_exhaustive]
     Assistant {
+        /// The message, when the event carries one.
         #[serde(default)]
         message: Option<CliMessage>,
         /// The call that started the subagent whose line this is, or `None`
@@ -55,14 +60,19 @@ pub enum StreamEvent {
         #[serde(default)]
         api_error: Option<String>,
     },
+    /// Tool results fed back to the model, which carry nothing this crate
+    /// reads.
     #[serde(rename = "user")]
     #[non_exhaustive]
     User {},
+    /// The run's final event: its answer or failure, and what it cost.
     #[serde(rename = "result")]
     #[non_exhaustive]
     Result {
+        /// How the run ended, such as `success` or `error_max_turns`.
         #[serde(default)]
         subtype: Option<String>,
+        /// Whether the run ended in failure.
         #[serde(default)]
         is_error: bool,
         /// The agent's final prose, or its own account of why it failed.
@@ -71,14 +81,20 @@ pub enum StreamEvent {
         /// The answer shaped to the schema passed with `--json-schema`.
         #[serde(default)]
         structured_output: Option<serde_json::Value>,
+        /// What the run cost, in US dollars.
         #[serde(default)]
         total_cost_usd: Option<f64>,
+        /// How many turns the run took, read from `num_turns`.
         #[serde(default, rename = "num_turns")]
         turns: Option<i64>,
+        /// The session the run belongs to, which resumes it.
         #[serde(default)]
         session_id: Option<String>,
+        /// Milliseconds spent waiting on the model's API, read from
+        /// `duration_api_ms`.
         #[serde(default, rename = "duration_api_ms")]
         api_milliseconds: Option<i64>,
+        /// The tokens the whole run cost.
         #[serde(default)]
         usage: Option<CliUsage>,
     },
@@ -97,6 +113,7 @@ pub enum StreamEvent {
         #[serde(default, rename = "resetsAt")]
         resets_at: Option<serde_json::Value>,
     },
+    /// Any event this crate does not read.
     #[serde(other)]
     Unknown,
 }

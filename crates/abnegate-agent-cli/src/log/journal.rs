@@ -30,6 +30,7 @@ pub struct Journal {
 }
 
 impl Journal {
+    /// A journal that accepts every entry and writes none.
     pub fn disabled() -> Self {
         Self::default()
     }
@@ -63,6 +64,9 @@ impl Journal {
         }
     }
 
+    /// Whether entries reach a file, which is false for a
+    /// [`disabled`](Self::disabled) journal and one whose file could not be
+    /// created.
     pub fn enabled(&self) -> bool {
         self.writer.is_some()
     }

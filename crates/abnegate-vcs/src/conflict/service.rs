@@ -68,6 +68,9 @@ impl Default for ConflictService {
 }
 
 impl ConflictService {
+    /// A service that commits repairs as `abnegate-vcs
+    /// <abnegate-vcs@localhost>` until [`with_author`](Self::with_author)
+    /// names someone else.
     pub fn new() -> Self {
         Self {
             author_name: DEFAULT_AUTHOR_NAME.to_string(),

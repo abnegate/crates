@@ -15,12 +15,14 @@ use crate::log::ExecutionLogFiles;
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ExecutionError {
+    /// Why the run failed.
     pub error: Box<ProviderError>,
     /// The run's logs, when it kept any and got far enough to open them.
     pub log: Option<ExecutionLogFiles>,
 }
 
 impl ExecutionError {
+    /// `error`, with the run's logs at `log` when it kept any.
     pub fn new(error: ProviderError, log: Option<ExecutionLogFiles>) -> Self {
         Self {
             error: Box::new(error),

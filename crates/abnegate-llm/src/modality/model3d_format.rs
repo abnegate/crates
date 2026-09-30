@@ -1,12 +1,17 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+/// A 3D model file format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Model3DFormat {
+    /// Binary glTF, one self-contained file.
     Glb,
+    /// glTF as JSON.
     Gltf,
+    /// Wavefront OBJ.
     Obj,
+    /// Autodesk FBX.
     Fbx,
 }
 

@@ -11,13 +11,19 @@ const DEFAULT_MAXIMUM_TOKENS: u32 = 4096;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TextRequest {
+    /// Instructions the model follows.
     pub system_prompt: String,
+    /// What the model is asked.
     pub user_prompt: String,
+    /// The sampling temperature.
     pub temperature: f64,
     /// The most tokens the answer may use. Serialised as `max_tokens`.
     #[serde(rename = "max_tokens")]
     pub maximum_tokens: u32,
+    /// The shape the answer should take, or `None` for prose.
     pub response_format: Option<ResponseFormat>,
+    /// Data carried alongside the prompts for the caller's own use. No
+    /// provider here sends it.
     pub context: Option<serde_json::Value>,
 }
 

@@ -7,11 +7,17 @@ const DEFAULT_SPEED: f64 = 1.0;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct VoiceRequest {
+    /// What to say.
     pub text: String,
+    /// A voice by the provider's id, or `None` for its default.
     pub voice_id: Option<String>,
+    /// A voice described in words, for a provider that designs one.
     pub voice_description: Option<String>,
+    /// How to sound, such as `cheerful`.
     pub emotion: Option<String>,
+    /// How fast to speak, where 1 is normal.
     pub speed: f64,
+    /// Recordings of the voice to imitate.
     pub reference_samples: Vec<String>,
 }
 

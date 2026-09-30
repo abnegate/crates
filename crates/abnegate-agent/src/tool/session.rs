@@ -7,7 +7,11 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Session {
+    /// Belongs to no conversation or task, so it can start no background job
+    /// and wait on none.
     Detached,
+    /// A chat conversation, by its id.
     Chat(Uuid),
+    /// A task run, by its id.
     Task(Uuid),
 }

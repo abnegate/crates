@@ -10,6 +10,8 @@ pub struct Field {
 }
 
 impl Field {
+    /// A field labelled `name` holding `value`, both passed through
+    /// [`abnegate_secret::sanitize`] like the rest of a notification's text.
     pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             name: clean(name.into()),
@@ -17,10 +19,12 @@ impl Field {
         }
     }
 
+    /// The label, sanitized.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// The detail shown under the label, sanitized.
     pub fn value(&self) -> &str {
         &self.value
     }

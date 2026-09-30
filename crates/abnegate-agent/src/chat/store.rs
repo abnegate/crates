@@ -53,6 +53,8 @@ pub trait ContextStore: Send + Sync {
         entries: &[NewEntry],
     ) -> Result<(), ChatError>;
 
+    /// Store a visible `user`, `assistant` or `system` message outside any
+    /// turn. A user message may claim the chat's automatic title.
     async fn create_message(
         &self,
         lease: &Lease,
@@ -61,11 +63,16 @@ pub trait ContextStore: Send + Sync {
         metadata: Option<Value>,
     ) -> Result<StoredMessage, ChatError>;
 
+    /// Delete message `id`, and the evidence it owns, invalidating the
+    /// checkpoint. False when there was no such message.
     async fn delete_message(&self, lease: &Lease, id: Uuid) -> Result<bool, ChatError>;
 
     /// Mark evidence as folded into the visible history.
     async fn consumed(&self, lease: &Lease, ids: &[String]) -> Result<(), ChatError>;
 
+    /// Close turn `turn_id` with its final answer. Fails with
+    /// [`ChatError::Integrity`] while any of its tool calls still awaits an
+    /// outcome.
     async fn complete(
         &self,
         lease: &Lease,
@@ -74,6 +81,8 @@ pub trait ContextStore: Send + Sync {
         metadata: Option<Value>,
     ) -> Result<StoredMessage, ChatError>;
 
+    /// Write the running turn's visible answer so far, so a reader that
+    /// reloads sees streamed text before the turn ends. The turn stays open.
     async fn publish(
         &self,
         lease: &Lease,
@@ -93,6 +102,8 @@ pub trait ContextStore: Send + Sync {
         partial: Option<&ReplayMessage>,
     ) -> Result<StoredMessage, ChatError>;
 
+    /// Mark turn `turn_id` interrupted without an answer, recording every tool
+    /// call still waiting as having an unknown outcome.
     async fn interrupt(&self, lease: &Lease, turn_id: Uuid) -> Result<(), ChatError>;
 
     /// Close a turn whose lease is already gone, so a lost lease cannot leave a
@@ -111,6 +122,8 @@ pub trait ContextStore: Send + Sync {
     /// Settle turns a previous process left open. Returns how many.
     async fn recover(&self, lease: &Lease) -> Result<usize, ChatError>;
 
+    /// Read the whole conversation, with its checkpoint validated against
+    /// it. Needs no lease: it writes nothing.
     async fn load(&self) -> Result<History, ChatError>;
 
     /// Replace the summary, refusing when someone else moved it first.
@@ -121,7 +134,14 @@ pub trait ContextStore: Send + Sync {
         proposed: &Summary,
     ) -> Result<(), ChatError>;
 
+    /// Up to `limit` characters of the tool output recorded as `id`, from
+    /// `offset`. [`ChatError::NotFound`] when no such output belongs to this
+    /// chat. An `id` returned by [`catalog`](Self::catalog) continues that
+    /// catalog's snapshot.
     async fn evidence(&self, id: &str, offset: u64, limit: u64) -> Result<Evidence, ChatError>;
 
+    /// A page of the index of every piece of evidence in the chat, taken as a
+    /// snapshot so reading it cannot make it grow. Its [`Evidence::id`] reads
+    /// the rest through [`evidence`](Self::evidence).
     async fn catalog(&self, offset: u64, limit: u64) -> Result<Evidence, ChatError>;
 }

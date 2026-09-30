@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! Subject-aware image cropping.
 //!
 //! Finds the visual subject of an image and frames a crop on it, so a pipeline

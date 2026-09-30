@@ -43,6 +43,8 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
+    /// A client for the endpoint `config` names. Every client in the process
+    /// shares one connection pool, so building one is cheap.
     pub fn new(config: LlmConfig) -> Self {
         Self {
             client: Pool::client(),
@@ -87,6 +89,7 @@ impl LlmClient {
         self
     }
 
+    /// The endpoint settings, with any temperature a `with_` method set.
     pub fn config(&self) -> &LlmConfig {
         &self.config
     }
@@ -180,6 +183,9 @@ impl LlmClient {
             .await
     }
 
+    /// Make a chat completion request against `model`, reserving
+    /// `options.reserved` tokens for the answer. Fails with
+    /// [`Error::Timeout`] past [`LlmConfig::timeout`].
     pub async fn chat_with_options(
         &self,
         model: &str,
@@ -243,6 +249,9 @@ impl LlmClient {
             .await
     }
 
+    /// Stream a chat completion from `model`, reserving `options.reserved`
+    /// tokens for the answer. The stream fails with [`Error::Timeout`] when
+    /// the endpoint goes [`LlmConfig::read_timeout`] without sending a byte.
     pub async fn chat_stream_with_options(
         &self,
         model: &str,

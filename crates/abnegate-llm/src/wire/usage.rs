@@ -11,8 +11,11 @@ use serde::de::Error as _;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct Usage {
+    /// Tokens the prompt took.
     pub prompt_tokens: u32,
+    /// Tokens the answer took.
     pub completion_tokens: u32,
+    /// Tokens billed in all, which may exceed the other two together.
     pub total_tokens: u32,
 }
 

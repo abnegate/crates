@@ -65,10 +65,12 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
+    /// A provider asking OpenAI's default chat model with `api_key`.
     pub fn new(api_key: impl Into<SecretValue>) -> Self {
         Self::with_model(api_key, DEFAULT_MODEL)
     }
 
+    /// A provider asking `model` with `api_key`.
     pub fn with_model(api_key: impl Into<SecretValue>, model: &str) -> Self {
         Self::with_base_url(api_key, model, BASE_URL)
     }
@@ -94,6 +96,7 @@ impl OpenAiProvider {
         self
     }
 
+    /// The Chat Completions body this provider sends for `request`.
     pub fn build_chat_request_body(&self, request: &TextRequest) -> serde_json::Value {
         let mut body = serde_json::json!({
             "model": self.model,
@@ -136,6 +139,7 @@ impl OpenAiProvider {
         body
     }
 
+    /// The image generation body this provider sends for `request`.
     pub fn build_image_request_body(&self, request: &ImageRequest) -> serde_json::Value {
         let mut body = serde_json::json!({
             "model": IMAGE_MODEL,
@@ -154,6 +158,7 @@ impl OpenAiProvider {
         body
     }
 
+    /// The embeddings body this provider sends for `texts`.
     pub fn build_embedding_request_body(&self, texts: &[String]) -> serde_json::Value {
         serde_json::json!({
             "model": EMBEDDING_MODEL,
@@ -162,6 +167,8 @@ impl OpenAiProvider {
         })
     }
 
+    /// Read a Chat Completions response body, failing with a
+    /// [`ProviderError`] when it holds no answer.
     pub fn parse_chat_response(body: &serde_json::Value) -> Result<TextResponse, ProviderError> {
         let choice = body
             .get("choices")

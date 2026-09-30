@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! Version control over the `git` command line.
 //!
 //! [`git::GitService`] shells out to `git` for the clone, branch, commit, push

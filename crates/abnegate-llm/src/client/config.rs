@@ -20,7 +20,10 @@ pub struct LlmConfig {
     pub base_url: String,
     /// Sent as a bearer token. An empty key sends no `Authorization` header.
     pub api_key: SecretValue,
+    /// The model asked when a call names none.
     pub default_model: String,
+    /// The sampling temperature sent with every request that does not
+    /// override it.
     pub temperature: f32,
     /// The most tokens an answer may use, for a request that does not reserve
     /// its own through [`RequestOptions`](crate::RequestOptions). Sent as
@@ -50,6 +53,7 @@ impl LlmConfig {
         }
     }
 
+    /// Set [`Self::temperature`].
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = temperature;
         self
@@ -61,11 +65,13 @@ impl LlmConfig {
         self
     }
 
+    /// Set [`Self::timeout`].
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
+    /// Set [`Self::read_timeout`].
     pub fn with_read_timeout(mut self, read_timeout: Duration) -> Self {
         self.read_timeout = read_timeout;
         self

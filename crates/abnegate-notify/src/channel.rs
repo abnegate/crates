@@ -13,14 +13,21 @@ use std::fmt;
 pub struct Channel(Cow<'static, str>);
 
 impl Channel {
+    /// Email, sent through SMTP.
     pub const EMAIL: Self = Self(Cow::Borrowed("email"));
+    /// A Slack incoming webhook.
     pub const SLACK: Self = Self(Cow::Borrowed("slack"));
+    /// A Discord webhook.
     pub const DISCORD: Self = Self(Cow::Borrowed("discord"));
 
+    /// A channel this crate does not ship, named `name`. Two channels are
+    /// equal when their names are, so a custom name that matches a built-in
+    /// one is that channel.
     pub fn custom(name: impl Into<Cow<'static, str>>) -> Self {
         Self(name.into())
     }
 
+    /// The name a delivery is reported under, such as `"slack"`.
     pub fn as_str(&self) -> &str {
         &self.0
     }

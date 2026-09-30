@@ -32,6 +32,7 @@ struct Record {
     thinking_blocks: Vec<serde_json::Value>,
 }
 
+/// Write `messages` in the stored shape, with images kept as plain URL lists.
 pub fn serialize<S: Serializer>(messages: &[Message], serializer: S) -> Result<S::Ok, S::Error> {
     messages
         .iter()
@@ -54,6 +55,7 @@ pub fn serialize<S: Serializer>(messages: &[Message], serializer: S) -> Result<S
         .serialize(serializer)
 }
 
+/// Read messages written by [`serialize`].
 pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Message>, D::Error> {
     Ok(Vec::<Record>::deserialize(deserializer)?
         .into_iter()

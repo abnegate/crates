@@ -5,11 +5,17 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct MusicRequest {
+    /// What the music should be.
     pub prompt: String,
+    /// How long it should play, in seconds.
     pub duration_seconds: f64,
+    /// A genre, such as `jazz`, or `None` to leave it to the provider.
     pub genre: Option<String>,
+    /// A mood, such as `calm`, or `None` to leave it to the provider.
     pub mood: Option<String>,
+    /// The tempo, in beats a minute.
     pub tempo_bpm: Option<u32>,
+    /// The URL of audio the music should resemble.
     pub reference_audio: Option<String>,
 }
 

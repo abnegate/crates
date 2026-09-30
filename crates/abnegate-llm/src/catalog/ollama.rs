@@ -62,6 +62,9 @@ impl OllamaProvider {
         Self::with_proxy(None)
     }
 
+    /// A client for Ollama's own catalogue that sends every request through
+    /// `proxy_url` when one is given. Fails with [`CatalogError::Http`] when
+    /// the proxy URL is invalid.
     pub fn with_proxy(proxy_url: Option<&str>) -> Result<Self, CatalogError> {
         Self::with_catalog(
             DEFAULT_OLLAMA_SEARCH_URL,
@@ -70,6 +73,9 @@ impl OllamaProvider {
         )
     }
 
+    /// A client for a mirror of Ollama's catalogue: its library search page
+    /// at `search_url` and its registry API at `registry_url`, reached
+    /// through `proxy_url` when one is given.
     pub fn with_catalog(
         search_url: impl Into<String>,
         registry_url: impl Into<String>,

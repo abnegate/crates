@@ -5,11 +5,17 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct VideoResponse {
+    /// The encoded video.
     pub data: Vec<u8>,
+    /// The container, such as `mp4`.
     pub format: String,
+    /// How long it plays, in seconds.
     pub duration_seconds: f64,
+    /// Width, in pixels.
     pub width: u32,
+    /// Height, in pixels.
     pub height: u32,
+    /// Frames a second.
     pub fps: u32,
 }
 

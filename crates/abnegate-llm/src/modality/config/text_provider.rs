@@ -9,12 +9,18 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TextProviderConfig {
+    /// The provider's name, such as `anthropic`.
     pub provider: String,
+    /// The key to authenticate with. Never serialised.
     #[serde(skip_serializing)]
     pub api_key: Option<SecretValue>,
+    /// An OAuth token to authenticate with in place of a key. Never
+    /// serialised.
     #[serde(skip_serializing)]
     pub oauth_token: Option<SecretValue>,
+    /// The model to ask for, or `None` for the provider's default.
     pub model: Option<String>,
+    /// Where to reach the provider, or `None` for its public endpoint.
     pub base_url: Option<String>,
 }
 

@@ -6,11 +6,15 @@ use crate::provider::completion_provider::CompletionProvider;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Weighted {
+    /// The provider.
     pub provider: Arc<dyn CompletionProvider>,
+    /// Its share of the split, relative to the others. A weight that is not
+    /// a positive finite number counts as zero.
     pub weight: f64,
 }
 
 impl Weighted {
+    /// `provider` with `weight`.
     pub fn new(provider: Arc<dyn CompletionProvider>, weight: f64) -> Self {
         Self { provider, weight }
     }

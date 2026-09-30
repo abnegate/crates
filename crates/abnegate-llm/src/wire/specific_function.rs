@@ -5,6 +5,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SpecificFunction {
+    /// The function's name.
     pub name: String,
 }
 

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! One notification, every channel.
 //!
 //! [`Fanout`] delivers a [`Notification`] to every registered [`Notifier`]

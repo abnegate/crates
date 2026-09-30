@@ -4,25 +4,38 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Record {
+    /// The run's settings, before the agent is started.
     Initialized,
+    /// The agent's process could not be started.
     SpawnFailed,
+    /// The agent's process started.
     Spawned,
+    /// One line the agent printed to stdout.
     StdoutLine,
+    /// The agent closed its stdout.
     StdoutClosed,
+    /// Reading the agent's stdout failed.
     StdoutFailed,
     /// An event too long to read that the run could do without was skipped.
     StdoutDropped,
+    /// One line the agent printed to stderr.
     StderrLine,
+    /// The agent closed its stderr.
     StderrClosed,
     /// The run was abandoned while the agent was still running: it reported
     /// a failure, or its output broke the stream's limits.
     Abandoned,
+    /// The agent's process exited, with its status.
     Exited,
+    /// Waiting for the agent's process to exit failed.
     WaitFailed,
+    /// The run outlived [`CliSettings::timeout`](crate::CliSettings::timeout)
+    /// and was stopped.
     TimedOut,
     /// The agent was stopped because it did not exit once its output had
     /// settled the run.
     Stopped,
+    /// The run's outcome, once the agent is gone and its output parsed.
     Completed,
     /// The journal reached its limit, and the lines printed after this are
     /// not recorded.
@@ -30,6 +43,7 @@ pub enum Record {
 }
 
 impl Record {
+    /// The entry's `event` name in the journal, such as `stdout_line`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Initialized => "execution_initialized",

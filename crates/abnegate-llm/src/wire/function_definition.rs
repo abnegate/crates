@@ -5,8 +5,11 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct FunctionDefinition {
+    /// The name the model calls the function by.
     pub name: String,
+    /// What the function does, as the model reads it.
     pub description: String,
+    /// JSON Schema for its arguments.
     pub parameters: serde_json::Value,
 }
 

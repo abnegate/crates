@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! The pieces a service needs to talk to the network safely.
 //!
 //! [`HttpClient`] is the trait a source adapter or an API client depends on, so

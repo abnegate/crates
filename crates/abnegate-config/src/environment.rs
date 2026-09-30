@@ -60,10 +60,12 @@ pub struct EnvironmentFile {
 }
 
 impl EnvironmentFile {
+    /// The file at `path`. Nothing is read or created until it is used.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 
+    /// The file this reads and replaces.
     pub fn path(&self) -> &Path {
         &self.path
     }

@@ -11,15 +11,21 @@ use crate::wire::usage::Usage;
 #[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct ChatResponse {
+    /// The completion's identifier, or empty.
     #[serde(default)]
     pub id: String,
+    /// The object type, `chat.completion`, or empty.
     #[serde(default)]
     pub object: String,
+    /// When it was created, in Unix seconds, or 0.
     #[serde(default)]
     pub created: i64,
+    /// The model that answered, or empty.
     #[serde(default)]
     pub model: String,
+    /// The answers; one unless more were asked for.
     pub choices: Vec<Choice>,
+    /// The tokens it took, when the server said.
     pub usage: Option<Usage>,
 }
 

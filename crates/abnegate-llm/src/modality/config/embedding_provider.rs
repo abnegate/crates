@@ -9,10 +9,14 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct EmbeddingProviderConfig {
+    /// The provider's name, such as `openai`.
     pub provider: String,
+    /// The key to authenticate with. Never serialised.
     #[serde(skip_serializing)]
     pub api_key: Option<SecretValue>,
+    /// The model to ask for, or `None` for the provider's default.
     pub model: Option<String>,
+    /// Where to reach the provider, or `None` for its public endpoint.
     pub base_url: Option<String>,
 }
 

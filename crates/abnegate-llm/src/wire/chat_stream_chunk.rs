@@ -11,16 +11,22 @@ use crate::wire::usage::Usage;
 #[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct ChatStreamChunk {
+    /// The completion's identifier.
     #[serde(default)]
     pub id: Option<String>,
+    /// The object type, `chat.completion.chunk`.
     #[serde(default)]
     pub object: Option<String>,
+    /// When the completion was created, in Unix seconds.
     #[serde(default)]
     pub created: Option<i64>,
+    /// The model answering.
     #[serde(default)]
     pub model: Option<String>,
+    /// What each answer adds in this chunk.
     #[serde(default)]
     pub choices: Vec<StreamChoice>,
+    /// The tokens the whole completion took, usually only on the last chunk.
     #[serde(default)]
     pub usage: Option<Usage>,
 }

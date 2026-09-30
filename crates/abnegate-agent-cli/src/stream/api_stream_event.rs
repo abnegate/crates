@@ -30,31 +30,41 @@ use crate::stream::api_message_delta::ApiMessageDelta;
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum ApiStreamEvent {
+    /// The message opens.
     #[serde(rename = "message_start")]
     #[non_exhaustive]
     MessageStart {
+        /// The message, without its content.
         #[serde(default)]
         message: Option<ApiMessage>,
     },
+    /// A content block opens.
     #[serde(rename = "content_block_start")]
     #[non_exhaustive]
     ContentBlockStart {
+        /// The block's position in the message.
         #[serde(default)]
         index: Option<usize>,
+        /// The block, without the content its deltas stream.
         #[serde(default)]
         content_block: Option<ApiContentBlock>,
     },
+    /// More of a content block.
     #[serde(rename = "content_block_delta")]
     #[non_exhaustive]
     ContentBlockDelta {
+        /// The position of the block it adds to.
         #[serde(default)]
         index: Option<usize>,
+        /// What it adds.
         #[serde(default)]
         delta: Option<ApiDelta>,
     },
+    /// A content block is complete.
     #[serde(rename = "content_block_stop")]
     #[non_exhaustive]
     ContentBlockStop {
+        /// The position of the block that closed.
         #[serde(default)]
         index: Option<usize>,
     },
@@ -62,11 +72,14 @@ pub enum ApiStreamEvent {
     #[serde(rename = "message_delta")]
     #[non_exhaustive]
     MessageDelta {
+        /// Why the message ended.
         #[serde(default)]
         delta: Option<ApiMessageDelta>,
+        /// The tokens it cost, output included.
         #[serde(default)]
         usage: Option<CliUsage>,
     },
+    /// The message is complete.
     #[serde(rename = "message_stop")]
     #[non_exhaustive]
     MessageStop {},
@@ -74,9 +87,11 @@ pub enum ApiStreamEvent {
     #[serde(rename = "error")]
     #[non_exhaustive]
     Error {
+        /// What went wrong.
         #[serde(default)]
         error: Option<ApiError>,
     },
+    /// Any event this crate does not read, such as `ping`.
     #[serde(other)]
     Unknown,
 }

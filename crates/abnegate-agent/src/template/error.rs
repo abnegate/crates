@@ -5,6 +5,8 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum TemplateError {
+    /// The template names this key, and neither the context nor the
+    /// enclosing `{{#each}}` item holds it.
     #[error("the template uses {0:?}, which the context does not hold")]
     Missing(String),
 }

@@ -2,6 +2,7 @@ use crate::lora::TrainError;
 use crate::train::PACKAGED_TRAIN_CONFIG;
 use serde::Deserialize;
 
+/// The packaged training hyperparameters.
 #[derive(Debug, Deserialize)]
 pub struct TrainConfig {
     pub(crate) passes_per_image: u32,
@@ -35,6 +36,8 @@ impl TrainConfig {
     }
 }
 
+/// The hyperparameters compiled into the crate. Fails only if they are
+/// themselves malformed.
 pub fn packaged_config() -> Result<TrainConfig, TrainError> {
     serde_json::from_str(PACKAGED_TRAIN_CONFIG)
         .map_err(|error| TrainError::Failed(format!("train config: {error}")))

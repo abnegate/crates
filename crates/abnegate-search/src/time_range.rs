@@ -11,8 +11,11 @@ use serde::Serialize;
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum TimeRange {
+    /// The past day.
     Day,
+    /// The past week.
     Week,
+    /// The past month.
     Month,
 }
 
@@ -23,6 +26,8 @@ impl TimeRange {
     /// Every variant, narrowest first, for schemas and error messages.
     pub const ALL: &'static [Self] = &[Self::Day, Self::Week, Self::Month];
 
+    /// The lowercase wire name, as sent to the engine and accepted from a
+    /// tool call: `"day"`, `"week"` or `"month"`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Day => "day",

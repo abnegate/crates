@@ -138,6 +138,13 @@ struct Measured {
     hash: u64,
 }
 
+/// Pull training frames out of `video` with ffmpeg, choosing sharp,
+/// well-exposed and varied ones and cropping each to its subject under
+/// `options`. `filename`'s extension picks the container the clip is read as.
+///
+/// Fails with [`TrainError::Invalid`] for an empty clip or one with no
+/// readable frames, and [`TrainError::Failed`] when ffmpeg cannot run or
+/// times out.
 pub async fn extract(
     config: &Config,
     video: &[u8],

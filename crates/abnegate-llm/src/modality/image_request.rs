@@ -5,11 +5,18 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ImageRequest {
+    /// What to draw.
     pub prompt: String,
+    /// What the image must not show.
     pub negative_prompt: Option<String>,
+    /// Width, in pixels.
     pub width: u32,
+    /// Height, in pixels.
     pub height: u32,
+    /// A style from the provider's
+    /// [`supported_styles`](crate::ImageProvider::supported_styles).
     pub style: Option<String>,
+    /// URLs of images the result should resemble.
     pub reference_images: Vec<String>,
     /// How many images to generate. Read as `num_images` too.
     #[serde(alias = "num_images")]

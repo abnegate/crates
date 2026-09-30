@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! An OpenAI-compatible chat completions client, a provider abstraction that
 //! puts several of them behind one handle, and one trait per generative
 //! modality for the vendors that do not speak that API.

@@ -35,10 +35,12 @@ pub struct GeminiProvider {
 }
 
 impl GeminiProvider {
+    /// A provider asking Gemini 2.5 Pro with `api_key`.
     pub fn new(api_key: impl Into<SecretValue>) -> Self {
         Self::with_model(api_key, DEFAULT_MODEL)
     }
 
+    /// A provider asking `model` with `api_key`.
     pub fn with_model(api_key: impl Into<SecretValue>, model: &str) -> Self {
         Self::with_base_url(api_key, model, BASE_URL)
     }
@@ -64,6 +66,7 @@ impl GeminiProvider {
         self
     }
 
+    /// The `generateContent` body this provider sends for `request`.
     pub fn build_request_body(&self, request: &TextRequest) -> serde_json::Value {
         let mut body = serde_json::json!({
             "contents": [
@@ -97,6 +100,8 @@ impl GeminiProvider {
         })
     }
 
+    /// Read a `generateContent` response body, failing with a
+    /// [`ProviderError`] when it holds no answer.
     pub fn parse_response(body: &serde_json::Value) -> Result<TextResponse, ProviderError> {
         let candidate = body
             .get("candidates")

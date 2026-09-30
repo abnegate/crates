@@ -1,8 +1,10 @@
-/// Output stream type
+/// Which of a child's output streams a chunk was read from.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum OutputKind {
+    /// Standard output, relayed as `RunStdout`.
     Stdout,
+    /// Standard error, relayed as `RunStderr`.
     Stderr,
 }
 

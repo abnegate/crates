@@ -103,6 +103,7 @@ impl AnthropicProvider {
         self
     }
 
+    /// The Messages API body this provider sends for `request`.
     pub fn build_request_body(&self, request: &TextRequest) -> serde_json::Value {
         serde_json::json!({
             "model": self.model,
@@ -115,6 +116,8 @@ impl AnthropicProvider {
         })
     }
 
+    /// Read a Messages API response body, failing with a [`ProviderError`]
+    /// when it holds no answer.
     pub fn parse_response(body: &serde_json::Value) -> Result<TextResponse, ProviderError> {
         let content = body
             .get("content")

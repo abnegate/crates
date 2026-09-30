@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! ComfyUI integration: image, video, and audio generation, upscaling, model
 //! inventory, and LoRA training.
 //!

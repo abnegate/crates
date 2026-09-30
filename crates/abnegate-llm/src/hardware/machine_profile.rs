@@ -15,11 +15,17 @@ const MEGABYTES_PER_GIGABYTE: f64 = 1024.0;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct MachineProfile {
+    /// What the machine is called.
     pub name: String,
+    /// Memory the GPU can use, in gigabytes.
     pub gpu_vram_gb: f64,
+    /// System memory, in gigabytes.
     pub system_ram_gb: f64,
+    /// Whether the GPU and CPU share one pool of memory, as on Apple Silicon.
     pub unified_memory: bool,
+    /// The graphics hardware.
     pub gpu_type: GpuType,
+    /// The best local model for each modality.
     pub recommended_models: RecommendedModels,
 }
 

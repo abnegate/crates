@@ -13,12 +13,19 @@ pub(crate) const NO_LOCAL_MODEL: &str = "none";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ModelRecommendation {
+    /// The model's name, or `none` for no local model.
     pub model_name: String,
+    /// The quantization it runs at, such as `Q4_K_M`.
     pub quantization: Option<String>,
+    /// The VRAM, in gigabytes, it needs loaded.
     pub vram_needed_gb: f64,
+    /// How good its output is, from 0 to 1.
     pub quality_score: f64,
+    /// How fast it runs, in words, such as `~8 tok/s`.
     pub estimated_speed: String,
+    /// The modalities whose models fit in memory alongside it.
     pub can_run_with_others: Vec<String>,
+    /// Anything else worth knowing about running it here.
     pub notes: String,
 }
 

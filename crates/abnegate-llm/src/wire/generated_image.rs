@@ -10,6 +10,7 @@ use crate::wire::image_url::ImageUrl;
 #[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct GeneratedImage {
+    /// Where the image is, usually a data URL.
     pub image_url: ImageUrl,
 }
 

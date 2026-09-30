@@ -32,6 +32,8 @@ pub struct StubProvider {
 }
 
 impl StubProvider {
+    /// A stub called `name` that does as `behaviour` says, reporting itself
+    /// as an HTTP provider with no capabilities.
     pub fn new(name: impl Into<String>, behaviour: Behaviour) -> Self {
         Self {
             name: name.into(),
@@ -44,41 +46,50 @@ impl StubProvider {
         }
     }
 
+    /// A stub that answers every request with `text`.
     pub fn answering(name: impl Into<String>, text: impl Into<String>) -> Self {
         Self::new(name, Behaviour::Answer(text.into()))
     }
 
+    /// A stub that fails every request in a way a chain moves past.
     pub fn failing(name: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(name, Behaviour::Fail(message.into()))
     }
 
+    /// A stub that fails every request in a way a chain must not move past.
     pub fn rejecting(name: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(name, Behaviour::Reject(message.into()))
     }
 
+    /// Report `capabilities`.
     pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
         self.capabilities = capabilities;
         self
     }
 
+    /// Report itself as `kind`.
     pub fn with_kind(mut self, kind: ProviderKind) -> Self {
         self.kind = kind;
         self
     }
 
+    /// Report `usage` with every answer.
     pub fn with_usage(mut self, usage: Usage) -> Self {
         self.usage = Some(usage);
         self
     }
 
+    /// The stub behind a shared handle, as a router takes it.
     pub fn shared(self) -> Arc<dyn CompletionProvider> {
         Arc::new(self)
     }
 
+    /// How many requests the stub has been handed.
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
 
+    /// The last request the stub was handed, or `None` before the first.
     pub fn seen(&self) -> Option<Seen> {
         self.seen
             .lock()

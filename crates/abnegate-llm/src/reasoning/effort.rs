@@ -2,12 +2,16 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Effort {
+    /// Think briefly.
     Low,
+    /// Think moderately.
     Medium,
+    /// Think at length.
     High,
 }
 
 impl Effort {
+    /// The value sent as `reasoning_effort`: `low`, `medium` or `high`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Low => "low",

@@ -2,10 +2,13 @@ use crate::lora::TrainError;
 use crate::train::Contract;
 use uuid::Uuid;
 
+/// The names one training run works under on the ComfyUI server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Run {
+    /// The input folder the dataset is staged in.
     pub folder: String,
+    /// The stem every checkpoint and the final adapter are saved under.
     pub artifact: String,
 }
 

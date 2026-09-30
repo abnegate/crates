@@ -44,6 +44,8 @@ impl ToolResult {
         }
     }
 
+    /// Attach artifact URLs for the loop to surface as generated images,
+    /// replacing any attached before.
     pub fn with_images(mut self, images: Vec<String>) -> Self {
         self.images = images;
         self

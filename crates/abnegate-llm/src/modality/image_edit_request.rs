@@ -6,10 +6,15 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ImageEditRequest {
+    /// The encoded image to change.
     pub image: Vec<u8>,
+    /// An encoded mask marking the area to change, or `None` for all of it.
     pub mask: Option<Vec<u8>>,
+    /// What to change.
     pub prompt: String,
+    /// The result's width, in pixels.
     pub width: u32,
+    /// The result's height, in pixels.
     pub height: u32,
 }
 

@@ -17,7 +17,10 @@ pub struct StdoutParseResult {
     pub text: String,
     /// Tools the agent ran for itself. Reported, never replayed.
     pub tools: Vec<ToolCall>,
+    /// The last token counts reported, cache reads and writes counted as
+    /// prompt.
     pub usage: Option<Usage>,
+    /// The last raw token counts reported, with the cache kept apart.
     pub tokens: Option<CliUsage>,
     /// The first failure the agent reported, in its own words, or the last
     /// [diagnostic](StdoutParseResult::diagnostic) of a stream that ended
@@ -25,15 +28,19 @@ pub struct StdoutParseResult {
     pub failure: Option<String>,
     /// The last problem the agent reported without ending its turn.
     pub diagnostic: Option<String>,
+    /// Why the agent ended its turn, in its own words, when it said.
     pub finish_reason: Option<String>,
     /// Whether the stream reached a terminal event, successful or not.
     pub finished: bool,
+    /// The agent's identifier for the conversation, which resumes it.
     pub session: Option<String>,
     /// The last schema-shaped answer the agent gave.
     pub structured: Option<serde_json::Value>,
     /// In US dollars.
     pub cost: Option<f64>,
+    /// How many turns the agent took.
     pub turns: Option<u32>,
+    /// How long the agent spent waiting on its model's API.
     pub latency: Option<Duration>,
     /// Events too long to read that the run could do without, such as a
     /// tool result holding an image, which were skipped.
@@ -44,6 +51,9 @@ pub struct StdoutParseResult {
 }
 
 impl StdoutParseResult {
+    /// Fold one event in. Prose and tool calls accumulate, the first failure
+    /// and the first credit window are kept, and every other field takes the
+    /// latest value reported.
     pub fn record(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Text(chunk) => self.text.push_str(&chunk),

@@ -40,6 +40,9 @@ impl OpenRouterProvider {
         Self::with_proxy(catalog_url, None)
     }
 
+    /// A client for `catalog_url` that sends every request through
+    /// `proxy_url` when one is given. Fails with [`CatalogError::Http`] when
+    /// the proxy URL is invalid.
     pub fn with_proxy(
         catalog_url: impl Into<String>,
         proxy_url: Option<&str>,

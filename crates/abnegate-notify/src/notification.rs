@@ -29,6 +29,8 @@ pub struct Notification {
 }
 
 impl Notification {
+    /// An [`Info`](Severity::Info) notification stamped with the current
+    /// time, with `title` and `body` sanitized.
     pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
         Self {
             title: clean(title.into()),
@@ -40,6 +42,7 @@ impl Notification {
         }
     }
 
+    /// Set how loud the notification is.
     #[must_use]
     pub fn severity(mut self, severity: Severity) -> Self {
         self.severity = severity;
@@ -63,38 +66,48 @@ impl Notification {
         self
     }
 
+    /// Append a labelled detail, sanitized like the title and body. Fields
+    /// render in the order they were added.
     #[must_use]
     pub fn field(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.fields.push(Field::new(name, value));
         self
     }
 
+    /// Set when the event happened, replacing the construction time.
     #[must_use]
     pub fn at(mut self, timestamp: DateTime<Utc>) -> Self {
         self.timestamp = timestamp;
         self
     }
 
+    /// The headline, sanitized.
     pub fn title(&self) -> &str {
         &self.title
     }
 
+    /// The main text, sanitized; it may be empty.
     pub fn body(&self) -> &str {
         &self.body
     }
 
+    /// How loud the notification is.
     pub fn kind(&self) -> Severity {
         self.severity
     }
 
+    /// The `http(s)` link attached by [`link`](Self::link), if one was kept.
     pub fn url(&self) -> Option<&str> {
         self.link.as_deref()
     }
 
+    /// The labelled details, in the order they were added.
     pub fn fields(&self) -> &[Field] {
         &self.fields
     }
 
+    /// When the event happened: the construction time unless
+    /// [`at`](Self::at) set another.
     pub fn timestamp(&self) -> DateTime<Utc> {
         self.timestamp
     }

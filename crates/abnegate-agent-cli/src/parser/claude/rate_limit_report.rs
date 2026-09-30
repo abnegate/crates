@@ -10,6 +10,8 @@ const ALLOWED: [&str; 2] = ["allowed", "allowed_warning"];
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct RateLimitReport {
+    /// `allowed` or `allowed_warning` for headroom; anything else, or
+    /// nothing, is a refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// A Unix timestamp or an RFC 3339 string, depending on the CLI release.
@@ -22,6 +24,7 @@ pub struct RateLimitReport {
         skip_serializing_if = "Option::is_none"
     )]
     pub kind: Option<String>,
+    /// How much of the window is spent, as a fraction where 1 is all of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilization: Option<f64>,
     /// Whether the account's usage credits carry the request past the

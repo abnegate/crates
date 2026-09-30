@@ -11,14 +11,19 @@ use crate::saliency::SaliencyError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AnalyzerError {
+    /// The bytes could not be decoded as an image.
     #[error(transparent)]
     Decode(#[from] DecodeError),
+    /// The decoded image could not be fitted into the model's input.
     #[error(transparent)]
     Preprocess(#[from] PreprocessError),
+    /// The saliency model could not be loaded or run.
     #[error(transparent)]
     Saliency(#[from] SaliencyError),
+    /// The model's saliency map could not be reduced to a focus point.
     #[error(transparent)]
     Gravity(#[from] GravityError),
+    /// The crop around the focus could not be framed or rendered.
     #[error(transparent)]
     Crop(#[from] CropError),
 }

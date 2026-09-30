@@ -81,7 +81,11 @@ pub struct CliSettings {
     pub executable: Option<PathBuf>,
     /// The child's working directory. `None` inherits this process's.
     pub working_directory: Option<PathBuf>,
+    /// The key the agent signs in with, or [`Credential::Inherited`] to use
+    /// the host's existing session.
     pub credential: Credential,
+    /// How long one run may take in all, after which the agent's process
+    /// group is stopped and the run fails as timed out.
     pub timeout: Duration,
     /// Bytes of the agent's prose, and of its diagnostics, kept. Prose past
     /// the limit abandons the run as malformed, with a failure that starts
@@ -240,31 +244,38 @@ impl Default for CliSettings {
 }
 
 impl CliSettings {
+    /// Run `executable` instead of the agent's own command name.
     pub fn with_executable(mut self, executable: impl Into<PathBuf>) -> Self {
         self.executable = Some(executable.into());
         self
     }
 
+    /// Run the agent in `directory`.
     pub fn with_working_directory(mut self, directory: impl Into<PathBuf>) -> Self {
         self.working_directory = Some(directory.into());
         self
     }
 
+    /// Sign the agent in with `credential`.
     pub fn with_credential(mut self, credential: Credential) -> Self {
         self.credential = credential;
         self
     }
 
+    /// Allow each run `timeout` in all. See [`CliSettings::timeout`].
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
+    /// Keep `limit` bytes of prose and of diagnostics. See
+    /// [`CliSettings::output_limit`].
     pub fn with_output_limit(mut self, limit: usize) -> Self {
         self.output_limit = limit;
         self
     }
 
+    /// Allow one event `limit` bytes. See [`CliSettings::line_limit`].
     pub fn with_line_limit(mut self, limit: usize) -> Self {
         self.line_limit = limit;
         self
@@ -341,6 +352,8 @@ impl CliSettings {
         self
     }
 
+    /// Append `arguments` to the flags passed through verbatim. See
+    /// [`CliSettings::arguments`].
     pub fn with_arguments<I>(mut self, arguments: I) -> Self
     where
         I: IntoIterator,
@@ -350,16 +363,21 @@ impl CliSettings {
         self
     }
 
+    /// Hold the final answer to the JSON schema `schema`, such as
+    /// [`StructuredResult::SCHEMA`](crate::StructuredResult::SCHEMA).
     pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
         self.schema = Some(schema.into());
         self
     }
 
+    /// Append `instructions` to the agent's system prompt.
     pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
         self.instructions = Some(instructions.into());
         self
     }
 
+    /// Add `permissions` to the tools the agent may use without asking. See
+    /// [`CliSettings::read_only`] for what a read-only run accepts.
     pub fn with_permissions<I>(mut self, permissions: I) -> Self
     where
         I: IntoIterator,
@@ -386,21 +404,27 @@ impl CliSettings {
         self
     }
 
+    /// Attach `server` as `name`, replacing any server attached under that
+    /// name. See [`CliSettings::mcp`].
     pub fn with_mcp_server(mut self, name: impl Into<String>, server: McpServer) -> Self {
         self.mcp = self.mcp.with_server(name, server);
         self
     }
 
+    /// Keep each run's execution logs under `root`.
     pub fn with_log(mut self, root: impl Into<PathBuf>) -> Self {
         self.log = Some(root.into());
         self
     }
 
+    /// Let the lines a run printed fill `limit` bytes of its journal.
     pub fn with_journal_limit(mut self, limit: u64) -> Self {
         self.journal_limit = limit;
         self
     }
 
+    /// Settle a run as failed on the first stderr line `tripwire` returns
+    /// true for. See [`CliSettings::tripwire`].
     pub fn with_tripwire(
         mut self,
         tripwire: impl Fn(&str) -> bool + Send + Sync + 'static,

@@ -8,8 +8,10 @@ use crate::wire::function_definition::FunctionDefinition;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ToolDefinition {
+    /// The tool type, `function`; `type` on the wire.
     #[serde(rename = "type")]
     pub tool_type: String,
+    /// The function the tool is.
     pub function: FunctionDefinition,
 }
 

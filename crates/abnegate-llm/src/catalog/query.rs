@@ -10,14 +10,21 @@ use crate::catalog::sort::ModelSort;
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct BrowseQuery<'a> {
+    /// Text to search for, or `None` for every model.
     pub query: Option<&'a str>,
+    /// The cursor of the page to fetch, from an earlier
+    /// [`ModelPage::next_cursor`](crate::catalog::ModelPage::next_cursor).
     pub cursor: Option<&'a str>,
     /// The page size asked for, which a provider reads through
     /// [`Self::page_size`].
     pub limit: usize,
+    /// The order of the results.
     pub sort: ModelSort,
+    /// A model family to keep, such as `llama`, or `None` for every family.
     pub family: Option<&'a str>,
+    /// The parameter-count bucket to keep.
     pub size: ModelSizeFilter,
+    /// The medium to keep.
     pub medium: ModelMediumFilter,
 }
 

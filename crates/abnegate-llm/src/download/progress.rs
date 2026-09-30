@@ -9,14 +9,20 @@ const PERCENT: f64 = 100.0;
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct DownloadProgress {
+    /// Bytes on disk so far, a resumed download's earlier bytes included.
     pub downloaded_bytes: AtomicU64,
+    /// The file's full size, or 0 until the server has said.
     pub total_bytes: AtomicU64,
+    /// Set once the file is installed at its target.
     pub completed: AtomicBool,
+    /// Set once the download has failed.
     pub failed: AtomicBool,
+    /// Why the download failed, once it has.
     pub error_message: Mutex<Option<String>>,
 }
 
 impl DownloadProgress {
+    /// Counters at zero, neither completed nor failed.
     pub fn new() -> Self {
         Self::default()
     }

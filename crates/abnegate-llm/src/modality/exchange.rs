@@ -4,17 +4,23 @@ const TOKENS_PER_MILLION: f64 = 1_000_000.0;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Exchange {
+    /// The provider that answered.
     pub provider: String,
+    /// The model that answered.
     pub model: String,
     /// The schema asked for, when one was.
     pub schema: Option<String>,
+    /// The system prompt sent.
     pub system_prompt: String,
+    /// The user prompt sent.
     pub user_prompt: String,
+    /// The answer that was kept.
     pub answer: String,
     /// Every token sent across the attempts this exchange took.
     pub input_tokens: u32,
     /// Every token received across the attempts this exchange took.
     pub output_tokens: u32,
+    /// How many requests it took to get an answer that was kept.
     pub attempts: u32,
 }
 

@@ -36,7 +36,9 @@ pub enum ToolChoice {
     /// Force a specific tool.
     #[non_exhaustive]
     Specific {
+        /// The tool type, `function`.
         r#type: String,
+        /// The function the model must call.
         function: SpecificFunction,
     },
 }

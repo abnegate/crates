@@ -8,12 +8,16 @@ pub struct Completion {
     /// The provider that actually produced this, which under a fallback chain
     /// is not necessarily the one the caller configured first.
     pub provider: String,
+    /// The answer, as an assistant message.
     pub message: Message,
+    /// The tokens it took, when the provider said.
     pub usage: Option<Usage>,
+    /// Why the model stopped, in the provider's own words, when it said.
     pub finish_reason: Option<String>,
 }
 
 impl Completion {
+    /// `message` as `provider` answered it, with no usage or finish reason.
     pub fn new(provider: impl Into<String>, message: Message) -> Self {
         Self {
             provider: provider.into(),
@@ -23,11 +27,13 @@ impl Completion {
         }
     }
 
+    /// Set [`Self::usage`].
     pub fn with_usage(mut self, usage: impl Into<Option<Usage>>) -> Self {
         self.usage = usage.into();
         self
     }
 
+    /// Set [`Self::finish_reason`].
     pub fn with_finish_reason(mut self, finish_reason: impl Into<Option<String>>) -> Self {
         self.finish_reason = finish_reason.into();
         self
