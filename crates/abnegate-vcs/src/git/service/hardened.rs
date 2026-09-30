@@ -2033,6 +2033,55 @@ mod publication_tests {
             pushed.as_str()
         );
     }
+
+    /// A push to the remote's address is never read as a push to the
+    /// configured remote with that address, so a fetch refspec a run wrote
+    /// there cannot carry the pushed commit onto a local branch.
+    #[tokio::test]
+    async fn a_push_moves_no_local_branch_a_fetch_refspec_names() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        crate::worktree::fixtures::remote(&remote);
+        let first = root.path().join("first");
+        let service = GitService::new();
+        service
+            .clone_repository(&local(&remote), &first, None)
+            .await
+            .unwrap();
+        let start = git(&first, &["rev-parse", "HEAD"]);
+        let checkout = Checkout::base(&first);
+        service
+            .prepare_branch(&checkout, &branch("task/one"), false)
+            .await
+            .unwrap();
+        git(&first, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        git(&first, &["branch", "task/other", &start]);
+        git(
+            &first,
+            &[
+                "config",
+                "--replace-all",
+                "remote.origin.fetch",
+                "+refs/heads/task/one:refs/heads/task/other",
+            ],
+        );
+
+        let pushed = service
+            .push_with_token(&checkout, &branch("task/one"), &local(&remote), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git(&first, &["rev-parse", "refs/heads/task/other"]),
+            start,
+            "the pushed commit landed on the branch the fetch refspec named"
+        );
+        assert_eq!(
+            git(&remote, &["rev-parse", "refs/heads/task/one"]),
+            pushed.as_str()
+        );
+    }
 }
 
 #[cfg(test)]
