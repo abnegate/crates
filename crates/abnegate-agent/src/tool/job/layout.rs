@@ -1,10 +1,14 @@
 use std::fs;
 use std::fs::File;
-use std::fs::OpenOptions;
-use std::io;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::fcntl::open;
+use nix::fcntl::openat;
+use nix::sys::stat::Mode;
+use nix::sys::stat::mkdirat;
 
 use super::EXCLUDE_PATH;
 
@@ -70,25 +74,8 @@ impl GitLayout {
     /// in if either is missing. Neither is ever reached through a link.
     pub(super) fn exclude(&self, checkout: &Path) -> Result<File, String> {
         let repository = self.owned(checkout)?;
-        let exclude = repository.join(EXCLUDE_PATH);
-        let information = exclude
-            .parent()
-            .ok_or("the exclude path names no directory")?;
-        match fs::symlink_metadata(information) {
-            Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => return Err(format!("{} is not a directory", information.display())),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir(information).map_err(|error| error.to_string())?;
-            }
-            Err(error) => return Err(error.to_string()),
-        }
-        OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .custom_flags(nix::libc::O_NOFOLLOW)
-            .open(&exclude)
-            .map_err(|error| format!("{}: {error}", exclude.display()))
+        open_exclude(&repository)
+            .map_err(|error| format!("{}: {error}", repository.join(EXCLUDE_PATH).display()))
     }
 
     /// The canonical directory the checkout's exclude file belongs in.
@@ -125,13 +112,98 @@ impl GitLayout {
     }
 }
 
+/// The exclude file under `repository`, each step opened through the
+/// descriptor of the directory before it and none through a link, so a run
+/// that swaps `info` or `exclude` for a link between steps is refused rather
+/// than followed.
+fn open_exclude(repository: &Path) -> nix::Result<File> {
+    let exclude = Path::new(EXCLUDE_PATH);
+    let (Some(information), Some(name)) = (exclude.parent(), exclude.file_name()) else {
+        return Err(Errno::EINVAL);
+    };
+    let directory = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let repository = open(repository, directory, Mode::empty())?;
+    match mkdirat(&repository, information, Mode::from_bits_truncate(0o777)) {
+        Ok(()) | Err(Errno::EEXIST) => {}
+        Err(error) => return Err(error),
+    }
+    let information = openat(&repository, information, directory, Mode::empty())?;
+    let file = openat(
+        &information,
+        name,
+        OFlag::O_RDWR | OFlag::O_APPEND | OFlag::O_CREAT | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::from_bits_truncate(0o666),
+    )?;
+    Ok(File::from(file))
+}
+
 fn canonical(path: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
+
+    use tempfile::TempDir;
+
     use super::GitLayout;
+    use super::open_exclude;
+
+    const FOREIGN: &str = "# someone else's\n";
+
+    /// A repository directory and a directory outside it, side by side.
+    fn planted() -> (TempDir, PathBuf, PathBuf) {
+        let root = TempDir::new().expect("a temporary directory");
+        let repository = root.path().join("repository");
+        let outside = root.path().join("outside");
+        for created in [&repository, &outside] {
+            fs::create_dir(created).expect("the fixture's directories are created");
+        }
+        (root, repository, outside)
+    }
+
+    /// Checking `info` and then opening `exclude` by path left a window in
+    /// which a run could swap `info` for a link and have the append follow
+    /// it. The open itself now refuses a linked `info`.
+    #[test]
+    fn a_linked_info_directory_is_refused_by_the_open_itself() {
+        let (_root, repository, outside) = planted();
+        symlink(&outside, repository.join("info")).expect("the planted link");
+
+        assert!(open_exclude(&repository).is_err());
+        assert!(
+            !outside.join("exclude").exists(),
+            "the open followed a linked info directory"
+        );
+    }
+
+    #[test]
+    fn a_linked_exclude_file_is_refused_by_the_open_itself() {
+        let (_root, repository, outside) = planted();
+        let target = outside.join("exclude");
+        fs::write(&target, FOREIGN).expect("the file outside");
+        fs::create_dir(repository.join("info")).expect("the info directory");
+        symlink(&target, repository.join("info").join("exclude")).expect("the planted link");
+
+        assert!(open_exclude(&repository).is_err());
+        assert_eq!(
+            fs::read_to_string(&target).expect("the file outside reads"),
+            FOREIGN,
+            "the open followed a linked exclude file"
+        );
+    }
+
+    #[test]
+    fn a_missing_info_directory_and_exclude_file_are_created() {
+        let (_root, repository, _outside) = planted();
+
+        open_exclude(&repository).expect("the exclude file opens");
+
+        assert!(repository.join("info").join("exclude").is_file());
+    }
 
     /// A path with a line break in it prints as more than one line, and
     /// reading it as three would name directories git never printed.
