@@ -11,6 +11,7 @@ impl ConfigError {
         Self(message)
     }
 
+    /// What is wrong, naming the setting.
     pub fn message(&self) -> &'static str {
         self.0
     }

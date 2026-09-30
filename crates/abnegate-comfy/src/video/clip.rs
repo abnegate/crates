@@ -5,6 +5,7 @@ use serde::Serialize;
 #[derive(Clone, Debug, Serialize)]
 #[non_exhaustive]
 pub struct Clip {
+    /// The frames chosen for training, in time order.
     pub frames: Vec<Frame>,
     /// Frames pulled out of the video before selection.
     pub sampled: usize,

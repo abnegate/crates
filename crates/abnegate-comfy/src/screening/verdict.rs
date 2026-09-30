@@ -7,6 +7,8 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct Verdict {
+    /// The positions of the images to train on, ascending.
     pub keep: Vec<usize>,
+    /// The position of each image left out, with why.
     pub drop: Vec<(usize, Rejection)>,
 }

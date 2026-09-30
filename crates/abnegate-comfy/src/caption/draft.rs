@@ -7,6 +7,8 @@ use std::fmt;
 pub struct Draft {
     /// Inline data URL, the only image shape a vision model takes.
     pub image: String,
+    /// The caption so far: one a person wrote is kept, and a blank one is
+    /// filled in.
     pub caption: String,
     /// Drafts sharing a group are described once and captioned alike.
     pub group: usize,

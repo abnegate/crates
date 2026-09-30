@@ -79,6 +79,7 @@ pub fn data_url(filename: &str, base64: &str) -> String {
     format!("data:{mime};base64,{}", base64.trim())
 }
 
+/// Writes training captions with a vision model reached through LiteLLM.
 pub struct Captioner {
     model: String,
     timeout: Duration,
@@ -87,6 +88,9 @@ pub struct Captioner {
 }
 
 impl Captioner {
+    /// A captioner using `config`'s caption model and time limit, reached at
+    /// `litellm_host` with `litellm_key`. Nothing is contacted until
+    /// [`fill`](Self::fill) runs.
     pub fn new(config: &Config, litellm_host: String, litellm_key: SecretValue) -> Self {
         Self {
             model: config.caption_model.clone(),
@@ -96,6 +100,8 @@ impl Captioner {
         }
     }
 
+    /// Whether both a LiteLLM host and a caption model are configured. When
+    /// not, [`fill`](Self::fill) leaves every caption as it is.
     pub fn available(&self) -> bool {
         !self.host.trim().is_empty() && !self.model.trim().is_empty()
     }

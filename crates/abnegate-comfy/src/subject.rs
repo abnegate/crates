@@ -56,6 +56,8 @@ impl Subject {
         }
     }
 
+    /// An instance that always falls back: without the `saliency` feature
+    /// there is no model to load.
     #[cfg(not(feature = "saliency"))]
     pub async fn shared(_config: &Config) -> Self {
         Self {}
@@ -70,11 +72,14 @@ impl Subject {
         }
     }
 
+    /// Whether the saliency model loaded, so crops follow the subject rather
+    /// than the centre. Always false without the `saliency` feature.
     #[cfg(feature = "saliency")]
     pub fn available(&self) -> bool {
         self.analyzer.is_some()
     }
 
+    /// Always false: without the `saliency` feature there is no model.
     #[cfg(not(feature = "saliency"))]
     pub fn available(&self) -> bool {
         false

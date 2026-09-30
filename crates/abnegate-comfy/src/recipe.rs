@@ -178,6 +178,7 @@ struct CatalogSlots {
     weights: HashMap<String, String>,
 }
 
+/// Every recipe this crate can run, and which weight file selects which.
 #[derive(Clone)]
 pub struct RecipeCatalog {
     default_image: String,
@@ -187,6 +188,8 @@ pub struct RecipeCatalog {
 }
 
 impl RecipeCatalog {
+    /// The catalog compiled into the crate. Fails only if that catalog is
+    /// itself inconsistent.
     pub fn packaged() -> Result<Self, Error> {
         Self::from_json(PACKAGED_CATALOG, None)
     }
@@ -315,10 +318,15 @@ impl RecipeCatalog {
         })
     }
 
+    /// The recipe named `id`, if any.
     pub fn get(&self, id: &str) -> Option<&Recipe> {
         self.recipes.iter().find(|recipe| recipe.id == id)
     }
 
+    /// The base image recipe that runs `checkpoint`: the one listing it by
+    /// name, else the one with the longest filename hint it contains, else
+    /// the catalog's default. [`Error::Configuration`] when that recipe is
+    /// missing or is not a base image recipe.
     pub fn image_recipe_for(&self, checkpoint: &str) -> Result<&Recipe, Error> {
         let id = self.resolve_image_id(checkpoint);
         self.get(id)
@@ -328,6 +336,8 @@ impl RecipeCatalog {
             ))
     }
 
+    /// Whether a recipe claims `filename` by name or by a filename hint,
+    /// rather than it falling back to the default image recipe.
     pub fn is_explicit_image_match(&self, filename: &str) -> bool {
         let trimmed = filename.trim();
         self.files.contains_key(trimmed)
@@ -351,12 +361,15 @@ impl RecipeCatalog {
         best_id.unwrap_or(self.default_image.as_str())
     }
 
+    /// Every image recipe, bases and adapters both, in catalog order.
     pub fn image_recipes(&self) -> impl Iterator<Item = &Recipe> {
         self.recipes
             .iter()
             .filter(|recipe| recipe.kind == MediaKind::Image)
     }
 
+    /// Every Hugging Face base model an image recipe derives from, each once,
+    /// in catalog order.
     pub fn huggingface_bases(&self) -> Vec<String> {
         let mut bases = Vec::new();
         for recipe in self.image_recipes() {
@@ -369,6 +382,8 @@ impl RecipeCatalog {
         bases
     }
 
+    /// The image recipe that loads a LoRA over `huggingface_base`, matched
+    /// ignoring ASCII case, if any.
     pub fn adapter_recipe_for_base(&self, huggingface_base: &str) -> Option<&Recipe> {
         self.recipes.iter().find(|recipe| {
             recipe.kind == MediaKind::Image
@@ -403,6 +418,8 @@ impl Recipe {
         }
     }
 
+    /// The recipe that runs a LoRA trained on this one, or
+    /// [`Error::Configuration`] when this recipe cannot be trained on.
     pub fn training_adapter(&self) -> Result<&TrainingAdapter, Error> {
         self.training
             .as_ref()
@@ -421,10 +438,15 @@ impl Recipe {
             ))
     }
 
+    /// Whether its graph has a slot for a LoRA file.
     pub fn has_lora_slot(&self) -> bool {
         self.slots.weights.contains_key("lora")
     }
 
+    /// The weight file for each slot with `selected` in place: in the LoRA
+    /// slot when there is one, else the checkpoint slot, else the UNet slot.
+    /// [`Error::Configuration`] when `selected` is not a bare filename or a
+    /// slot is left without a file.
     pub fn weight_map(&self, selected: &str) -> Result<HashMap<String, String>, Error> {
         let selected = sanitize_weight_filename(selected)?;
         let mut weights = self.defaults.clone();
@@ -443,6 +465,10 @@ impl Recipe {
         Ok(weights)
     }
 
+    /// The workflow graph with `fill` written into its slots, the
+    /// source-image graph when `fill` has a source. [`Error::Configuration`]
+    /// when the prompt is blank or over 100,000 bytes, a file name is
+    /// unsafe, or the graph lacks a slot `fill` needs.
     pub fn apply(&self, fill: Fill<'_>) -> Result<Value, Error> {
         if fill.prompt.trim().is_empty() || fill.prompt.len() > 100_000 {
             return Err(Error::Configuration("prompt is empty or too long"));
@@ -583,6 +609,8 @@ fn set_pointer(root: &mut Value, pointer: &str, value: Value) -> Result<(), Erro
     Err(Error::Configuration("invalid recipe slot pointer"))
 }
 
+/// `name` unchanged when it is a bare filename of at most 256 bytes, holding
+/// no `/`, `\` or `..`; [`Error::Configuration`] otherwise.
 pub fn sanitize_weight_filename(name: &str) -> Result<String, Error> {
     if name.is_empty()
         || name.len() > 256
@@ -595,6 +623,8 @@ pub fn sanitize_weight_filename(name: &str) -> Result<String, Error> {
     Ok(name.to_string())
 }
 
+/// `name` unchanged when it is at most 128 bytes of ASCII letters, digits,
+/// `.`, `-` and `_`, with no `..`; [`Error::Configuration`] otherwise.
 pub fn sanitize_upload_name(name: &str) -> Result<String, Error> {
     if name.is_empty()
         || name.len() > 128

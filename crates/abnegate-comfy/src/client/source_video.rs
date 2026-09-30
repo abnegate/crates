@@ -6,11 +6,15 @@ use uuid::Uuid;
 /// cap matches what the store is willing to keep rather than a request body.
 pub const MAXIMUM_SOURCE_VIDEO_BYTES: usize = 64 * 1024 * 1024;
 
+/// A clip to upload as the source of an upscale.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct SourceVideo {
+    /// The encoded clip.
     pub bytes: bytes::Bytes,
+    /// `video/webm` or `video/mp4`.
     pub mime: String,
+    /// A fresh, unique name to upload it under, never the caller's own.
     pub filename: String,
 }
 

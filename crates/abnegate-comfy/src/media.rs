@@ -10,6 +10,8 @@ enum Lane {
     Audio,
 }
 
+/// A file format this crate emits or accepts: its media type, its suffix,
+/// and whether it is an image, a video or audio.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MediaType {
@@ -25,54 +27,63 @@ pub struct MediaType {
 }
 
 impl MediaType {
+    /// PNG, `image/png`.
     pub const PNG: Self = Self {
         lane: Lane::Image,
         mime: "image/png",
         extension: "png",
         aliases: &[],
     };
+    /// JPEG, `image/jpeg`, written `.jpg` and also read as `.jpeg`.
     pub const JPEG: Self = Self {
         lane: Lane::Image,
         mime: "image/jpeg",
         extension: "jpg",
         aliases: &["jpeg"],
     };
+    /// WebP, `image/webp`.
     pub const WEBP: Self = Self {
         lane: Lane::Image,
         mime: "image/webp",
         extension: "webp",
         aliases: &[],
     };
+    /// GIF, `image/gif`.
     pub const GIF: Self = Self {
         lane: Lane::Image,
         mime: "image/gif",
         extension: "gif",
         aliases: &[],
     };
+    /// AVIF, `image/avif`.
     pub const AVIF: Self = Self {
         lane: Lane::Image,
         mime: "image/avif",
         extension: "avif",
         aliases: &[],
     };
+    /// WebM, `video/webm`.
     pub const WEBM: Self = Self {
         lane: Lane::Video,
         mime: "video/webm",
         extension: "webm",
         aliases: &[],
     };
+    /// MPEG-4, `video/mp4`.
     pub const MP4: Self = Self {
         lane: Lane::Video,
         mime: "video/mp4",
         extension: "mp4",
         aliases: &[],
     };
+    /// FLAC, `audio/flac`.
     pub const FLAC: Self = Self {
         lane: Lane::Audio,
         mime: "audio/flac",
         extension: "flac",
         aliases: &[],
     };
+    /// MP3, `audio/mpeg`.
     pub const MP3: Self = Self {
         lane: Lane::Audio,
         mime: "audio/mpeg",
@@ -88,6 +99,7 @@ impl MediaType {
         extension: "opus",
         aliases: &["audio/opus", "ogg"],
     };
+    /// WAV, `audio/wav`.
     pub const WAV: Self = Self {
         lane: Lane::Audio,
         mime: "audio/wav",
@@ -116,6 +128,8 @@ impl MediaType {
         Self::for_extension(extension)
     }
 
+    /// Look a format up by a suffix without its dot, such as `jpeg`,
+    /// ignoring case.
     pub fn for_extension(extension: &str) -> Option<Self> {
         let extension = extension.to_ascii_lowercase();
         Self::ALL
@@ -124,6 +138,9 @@ impl MediaType {
             .copied()
     }
 
+    /// Look a format up by media type, such as `audio/opus`, ignoring case
+    /// and surrounding whitespace. Parameters such as `; charset` are not
+    /// stripped.
     pub fn for_mime(mime: &str) -> Option<Self> {
         let mime = mime.trim().to_ascii_lowercase();
         Self::ALL
@@ -132,14 +149,17 @@ impl MediaType {
             .copied()
     }
 
+    /// Whether it is an image format.
     pub fn is_image(&self) -> bool {
         self.lane == Lane::Image
     }
 
+    /// Whether it is a video format.
     pub fn is_video(&self) -> bool {
         self.lane == Lane::Video
     }
 
+    /// Whether it is an audio format.
     pub fn is_audio(&self) -> bool {
         self.lane == Lane::Audio
     }

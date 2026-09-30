@@ -5,7 +5,9 @@ use std::fmt;
 #[derive(Deserialize)]
 #[non_exhaustive]
 pub struct FrameRequest {
+    /// The clip's name, whose extension picks the container it is read as.
     pub filename: String,
+    /// The encoded clip, in standard base64.
     pub bytes_base64: String,
     /// Frames kept per second. Falls back to the configured rate.
     #[serde(default)]

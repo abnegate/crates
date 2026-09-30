@@ -136,6 +136,11 @@ impl From<TrainError> for Failure {
     }
 }
 
+/// Run the packaged training graph on ComfyUI over the dataset in `work`,
+/// sized for `image_count` images, and download the adapter to `output`.
+///
+/// A run that fails is cleaned up before the error returns. Fails with
+/// [`TrainError::Disabled`] when ComfyUI is off.
 pub async fn run(
     config: &Config,
     model: &TrainingModel,
@@ -914,6 +919,10 @@ fn train_prompt_terminal(entry: &Value) -> bool {
         || status.status_str.eq_ignore_ascii_case("error")
 }
 
+/// Remove what `run` left behind: its input folder and checkpoints on local
+/// disk where the models directory's ComfyUI root is visible, and on the
+/// server through the contract's cleanup node. Best effort; a name outside
+/// the contract's namespaces is never touched.
 pub async fn cleanup(config: &Config, run: &Run) {
     match crate::http::client(config) {
         Ok(client) => cleanup_with(&client, config, run).await,

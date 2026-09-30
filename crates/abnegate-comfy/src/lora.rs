@@ -204,6 +204,18 @@ pub fn available_bases(
         .collect()
 }
 
+/// Train a LoRA from `request` and install the best checkpoint it produced.
+///
+/// The images are screened for size, blur and duplicates, with an upscale
+/// tried on any rejected as too small or blurred; the survivors are cropped
+/// to their subject and captioned through `litellm_host` where a caption was
+/// left blank; then the packaged graph trains on ComfyUI, or
+/// [`Config::train_command`] runs instead, and every checkpoint is scored.
+///
+/// Fails with [`TrainError::Disabled`] when neither ComfyUI nor a training
+/// command is configured, [`TrainError::Invalid`] for a request that cannot
+/// train, [`TrainError::Configuration`] for a setting that cannot work, and
+/// [`TrainError::Failed`] when the run itself fails.
 pub async fn train(
     config: &Config,
     litellm_host: String,
