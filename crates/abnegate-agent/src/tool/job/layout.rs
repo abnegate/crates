@@ -79,10 +79,16 @@ impl GitLayout {
     }
 
     /// The canonical directory the checkout's exclude file belongs in.
+    ///
+    /// The checkout has to be the top level git found: a directory inside
+    /// another repository is not a checkout, and that repository is not its
+    /// to write.
     fn owned(&self, checkout: &Path) -> Result<PathBuf, String> {
         let top_level = canonical(&self.top_level)?;
-        if !canonical(checkout)?.starts_with(&top_level) {
-            return Err("git found a repository outside the checkout".to_string());
+        if canonical(checkout)? != top_level {
+            return Err(
+                "the checkout is not the top level of the repository git found".to_string(),
+            );
         }
         let pointer = top_level.join(".git");
         let kind = fs::symlink_metadata(&pointer)

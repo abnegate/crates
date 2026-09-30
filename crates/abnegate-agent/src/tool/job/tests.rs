@@ -904,6 +904,26 @@ async fn a_planted_git_file_cannot_send_the_exclude_write_out_of_the_checkout() 
     );
 }
 
+/// A working directory that is an ordinary directory inside another
+/// repository is not a checkout, but git names the enclosing repository from
+/// it, and the run's line was appended to that repository's exclude file.
+#[tokio::test]
+async fn a_directory_inside_another_repository_takes_no_exclude_line() {
+    let root = directory();
+    repository(root.path());
+    let nested = root.path().join("nested");
+    std::fs::create_dir(&nested).expect("the nested directory is created");
+    let exclude = exclude_path(root.path());
+
+    excluded_from(&nested).await;
+
+    assert_eq!(
+        excluded_lines(&exclude),
+        0,
+        "the enclosing repository took the run's exclude line"
+    );
+}
+
 /// A `.git` file naming another repository's git directory outright sent
 /// the exclude line into that repository.
 #[tokio::test]
