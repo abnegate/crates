@@ -28,6 +28,11 @@ pub struct RepositoryUrl {
 }
 
 impl RepositoryUrl {
+    /// Accept an `https://github.com/{owner}/{name}` address, with or without
+    /// `.git`, or fail with [`ParseError::RepositoryUrl`] for any other host
+    /// or scheme, credentials, a port, a query, a fragment, a path of other
+    /// than two segments, or an owner or name holding characters GitHub does
+    /// not allow.
     pub fn parse(source: &str) -> Result<Self, ParseError> {
         let url = Url::parse(source).map_err(|_| ParseError::RepositoryUrl)?;
         if url.scheme() != HTTPS

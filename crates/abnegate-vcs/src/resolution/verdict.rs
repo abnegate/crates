@@ -4,10 +4,16 @@ use crate::resolution::ConflictSide;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ResolutionVerdict {
+    /// Markers are gone and lines unique to each side survive. The only
+    /// verdict that may be committed.
     Resolved,
+    /// The conflicted file held no conflict hunks to judge against.
     NoConflict,
+    /// The repair still holds conflict markers.
     MarkersRemain,
+    /// The repair is blank where the conflicted file was not.
     Emptied,
+    /// None of the lines unique to this side survived the repair.
     Discarded(ConflictSide),
 }
 

@@ -24,6 +24,12 @@ const RESERVED: [&str; 2] = ["@", "HEAD"];
 pub struct BranchName(String);
 
 impl BranchName {
+    /// Accept `value` as it is, untrimmed, or fail with
+    /// [`ParseError::BranchName`] when git would refuse it as a branch or a
+    /// command line could read it as something else: empty, over 255 bytes,
+    /// `@` or `HEAD`, led by `-`, `+` or `/`, ended by `/` or `.`, holding
+    /// `..`, `@{`, `//`, a space, a control character or any of `~^:?*[\`,
+    /// or with a component that is empty, starts with `.` or ends in `.lock`.
     pub fn parse(value: &str) -> Result<Self, ParseError> {
         let refused = value.is_empty()
             || value.len() > MAXIMUM_LENGTH

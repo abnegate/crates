@@ -14,6 +14,10 @@ use std::path::PathBuf;
 pub struct ConflictedPath(String);
 
 impl ConflictedPath {
+    /// Accept `value` as a repository-relative path, or fail with
+    /// [`ConflictError::UnsafePath`] when it is empty, absolute, led by `-`,
+    /// holds a backslash, `//` or a control character, or has a `.` or `..`
+    /// component.
     pub fn parse(value: &str) -> ConflictResult<Self> {
         let refused = value.is_empty()
             || value.starts_with('/')

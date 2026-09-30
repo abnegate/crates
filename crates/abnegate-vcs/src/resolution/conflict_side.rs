@@ -2,7 +2,9 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConflictSide {
+    /// The branch being merged into.
     Ours,
+    /// The branch being merged in.
     Theirs,
 }
 
