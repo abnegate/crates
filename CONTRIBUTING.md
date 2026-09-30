@@ -249,6 +249,10 @@ its `release-plz-` branch through `gh workflow run`, which is why that job alone
 holds `actions: write`. The dispatched run checks every crate and runs the
 `semver` job, and its checks attach to the branch's head commit, so they show on
 the release pull request. No personal access token or GitHub App is involved.
-The release PR job cannot open the pull request without the repository setting
-"Allow GitHub Actions to create and approve pull requests", under Settings,
-Actions, General, Workflow permissions. It is required, and it is on.
+If required status checks are ever turned on for `main`, the release PR job
+needs a GitHub App token or personal access token in place of `GITHUB_TOKEN`,
+because checks from a dispatched run do not count toward required checks from
+a `pull_request` run. The release PR job cannot open the pull request without
+the repository setting "Allow GitHub Actions to create and approve pull
+requests", under Settings, Actions, General, Workflow permissions. It is
+required, and it is on.
