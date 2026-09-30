@@ -54,3 +54,5 @@ abnegate-http = { path = "../crates/crates/abnegate-http" }
 ## License
 
 MIT
+
+<!-- Throwaway change proving a docs-only change checks no crate; never merged. -->
