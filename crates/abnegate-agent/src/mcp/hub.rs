@@ -155,7 +155,6 @@ mod tests {
     use crate::tool::Tier;
     use crate::tool::ToolContext;
     use crate::tool::ToolRegistry;
-    use crate::tool::process::Group;
 
     #[derive(Clone, Default)]
     struct Echo;
@@ -490,7 +489,7 @@ mod tests {
             let _ = server.waiting().await;
         });
         let client = ().serve((client_from_server, client_to_server)).await.expect("client serve");
-        let session = McpSession::listed("pair", server, client, Group::led_by(None))
+        let session = McpSession::listed("pair", server, client, None)
             .await
             .expect("listed");
         let hub = McpHub {

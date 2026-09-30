@@ -5,6 +5,13 @@ use crate::git::native;
 use crate::truncation;
 use tokio::io::AsyncWriteExt;
 
+/// The start of the name of the remote a push goes through, defined on the
+/// push's own command line and ended with a random suffix, so that no remote
+/// a repository configures can share it. Git updates the tracking refs of
+/// any configured remote whose URL a push names, and does it through a link
+/// standing at one.
+const PUBLISHING_REMOTE: &str = "abnegate-publishing-";
+
 /// The status a change check runs: every untracked path, and no descent into a
 /// nested repository standing in the working tree.
 const STATUS: [&str; 5] = [
@@ -864,14 +871,17 @@ impl GitService {
         Self::verify_config(checkout).await?;
         let path = checkout.top();
         let commit = self.revision(checkout, "HEAD").await?;
+        let destination = format!("{PUBLISHING_REMOTE}{}", Uuid::new_v4().simple());
         let mut command = Self::connected(remote, Some(token));
         command
+            .arg("-c")
+            .arg(format!("remote.{destination}.url={}", remote.as_str()))
             .args([
                 "push",
                 "--porcelain",
                 "--no-follow-tags",
                 "--",
-                remote.as_str(),
+                &destination,
                 &format!("{commit}:{}", branch.reference()),
             ])
             .current_dir(path)
@@ -1160,10 +1170,8 @@ mod checkout_tests {
             "{environment:?}"
         );
         let outside = tempfile::tempdir().unwrap();
-        let listed = std::process::Command::new("git")
+        let listed = crate::worktree::fixtures::git_command()
             .current_dir(outside.path())
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_CONFIG_PARAMETERS")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_COUNT", "1")
@@ -2221,7 +2229,7 @@ mod branch_tests {
             ],
             [OsStr::new("symbolic-ref"), OsStr::new("HEAD"), name],
         ] {
-            let status = std::process::Command::new("git")
+            let status = crate::worktree::fixtures::git_command()
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .args(arguments)

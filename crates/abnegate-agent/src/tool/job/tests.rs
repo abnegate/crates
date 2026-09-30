@@ -815,6 +815,188 @@ async fn the_exclude_path_comes_from_git_not_from_a_joined_git_directory() {
     Jobs::kill_session(session).await;
 }
 
+/// A run's checkout is often a linked worktree of a clone, whose exclude
+/// file is the clone's own, outside the checkout.
+#[tokio::test]
+async fn a_linked_worktree_of_a_clone_excludes_its_logs_in_the_clone() {
+    let root = directory();
+    let origin = root.path().join("origin");
+    std::fs::create_dir(&origin).expect("the origin directory is created");
+    repository(&origin);
+    let clone = root.path().join("clone");
+    git(
+        root.path(),
+        &[
+            "clone",
+            "--quiet",
+            origin.to_str().expect("a utf-8 path"),
+            clone.to_str().expect("a utf-8 path"),
+        ],
+    );
+    let linked = root.path().join("linked");
+    git(
+        &clone,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "run",
+            linked.to_str().expect("a utf-8 path"),
+        ],
+    );
+
+    let session = task();
+    let started = spawned(session, "exit 0", &linked).await;
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
+
+    assert_eq!(
+        excluded_lines(&clone.join(".git").join(EXCLUDE_PATH)),
+        1,
+        "the clone's exclude keeps the worktree's job logs out of its diff"
+    );
+
+    Jobs::kill_session(session).await;
+}
+
+/// Start a task job in `checkout`, let it end, and end its session.
+async fn excluded_from(checkout: &Path) {
+    let session = task();
+    let started = spawned(session, "exit 0", checkout).await;
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
+    Jobs::kill_session(session).await;
+}
+
+/// A `.git` file planted in the checkout can name a git directory of its
+/// own making whose `commondir` points anywhere that holds `objects` and
+/// `refs`, and git then resolves the exclude file there: the run appended
+/// its line to a directory outside the checkout, creating `info` to do so.
+#[tokio::test]
+async fn a_planted_git_file_cannot_send_the_exclude_write_out_of_the_checkout() {
+    let root = directory();
+    let checkout = root.path().join("checkout");
+    let planted = checkout.join("planted");
+    let outside = root.path().join("outside");
+    for created in [&planted, &outside.join("objects"), &outside.join("refs")] {
+        std::fs::create_dir_all(created).expect("the fixture's directories are created");
+    }
+    std::fs::write(checkout.join(".git"), "gitdir: planted\n").expect("the planted .git");
+    std::fs::write(planted.join("HEAD"), "ref: refs/heads/main\n").expect("the planted HEAD");
+    std::fs::write(
+        planted.join("commondir"),
+        outside.to_str().expect("a utf-8 path"),
+    )
+    .expect("the planted commondir");
+    assert_eq!(
+        exclude_path(&checkout)
+            .parent()
+            .and_then(Path::parent)
+            .and_then(|directory| std::fs::canonicalize(directory).ok()),
+        std::fs::canonicalize(&outside).ok(),
+        "git resolves the exclude file outside the checkout"
+    );
+
+    excluded_from(&checkout).await;
+
+    assert!(
+        !outside.join("info").exists(),
+        "the exclude write left the checkout for {}",
+        outside.display()
+    );
+}
+
+/// A `.git` file naming another repository's git directory outright sent
+/// the exclude line into that repository.
+#[tokio::test]
+async fn a_git_file_naming_another_repository_takes_no_exclude_line() {
+    let root = directory();
+    let checkout = root.path().join("checkout");
+    let stranger = root.path().join("stranger");
+    for created in [&checkout, &stranger] {
+        std::fs::create_dir(created).expect("the fixture's directories are created");
+    }
+    repository(&stranger);
+    std::fs::write(
+        checkout.join(".git"),
+        format!("gitdir: {}\n", stranger.join(".git").display()),
+    )
+    .expect("the planted .git");
+
+    excluded_from(&checkout).await;
+
+    assert_eq!(
+        excluded_lines(&stranger.join(".git").join(EXCLUDE_PATH)),
+        0,
+        "another repository took the run's exclude line"
+    );
+}
+
+/// A `.git` that is a link to another repository's git directory is that
+/// repository's, not the checkout's.
+#[tokio::test]
+async fn a_git_directory_linked_to_another_repository_takes_no_exclude_line() {
+    let root = directory();
+    let checkout = root.path().join("checkout");
+    let stranger = root.path().join("stranger");
+    for created in [&checkout, &stranger] {
+        std::fs::create_dir(created).expect("the fixture's directories are created");
+    }
+    repository(&stranger);
+    std::os::unix::fs::symlink(stranger.join(".git"), checkout.join(".git"))
+        .expect("the planted link");
+
+    excluded_from(&checkout).await;
+
+    assert_eq!(
+        excluded_lines(&stranger.join(".git").join(EXCLUDE_PATH)),
+        0,
+        "another repository took the run's exclude line"
+    );
+}
+
+/// The checkout's own git directory can hold a link where `info` should be,
+/// and the append followed it out.
+#[tokio::test]
+async fn an_info_directory_linked_out_of_the_checkout_takes_no_exclude_line() {
+    let root = directory();
+    let checkout = root.path().join("checkout");
+    let outside = root.path().join("outside");
+    for created in [&checkout, &outside] {
+        std::fs::create_dir(created).expect("the fixture's directories are created");
+    }
+    untemplated_repository(&checkout);
+    std::os::unix::fs::symlink(&outside, checkout.join(".git").join("info"))
+        .expect("the planted link");
+
+    excluded_from(&checkout).await;
+
+    assert!(
+        !outside.join("exclude").exists(),
+        "the exclude write followed a link out of the checkout"
+    );
+}
+
+/// The exclude file itself can be a link out of the checkout.
+#[tokio::test]
+async fn an_exclude_file_linked_out_of_the_checkout_takes_no_exclude_line() {
+    let root = directory();
+    let checkout = root.path().join("checkout");
+    std::fs::create_dir(&checkout).expect("the checkout directory is created");
+    repository(&checkout);
+    let outside = root.path().join("outside");
+    std::fs::write(&outside, "# someone else's\n").expect("the file outside");
+    let exclude = checkout.join(".git").join(EXCLUDE_PATH);
+    let _ = std::fs::remove_file(&exclude);
+    std::os::unix::fs::symlink(&outside, &exclude).expect("the planted link");
+
+    excluded_from(&checkout).await;
+
+    assert_eq!(
+        std::fs::read_to_string(&outside).expect("the file outside reads"),
+        "# someone else's\n",
+        "the exclude write followed a link out of the checkout"
+    );
+}
+
 /// A host `GIT_DIR`, which every git hook runs with, sent a task run's
 /// exclude line to whichever repository it named: first through a lookup
 /// that started with this process's whole environment, then through a

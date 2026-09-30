@@ -34,6 +34,17 @@ impl ProcessGroup {
             tracing::warn!(group = group.pgid(), %error, "could not kill the trainer's process group");
         }
     }
+
+    /// Kills every process still in the group, resolving once the kill has
+    /// stopped repeating itself, so the shell reaped next is reaped only
+    /// after the whole kill has landed. Later calls do nothing.
+    pub(super) async fn kill_until_gone(&mut self) {
+        if let Some(group) = self.group.take()
+            && let Err(error) = group.kill_until_gone().await
+        {
+            tracing::warn!(group = group.pgid(), %error, "could not kill the trainer's process group");
+        }
+    }
 }
 
 impl Drop for ProcessGroup {

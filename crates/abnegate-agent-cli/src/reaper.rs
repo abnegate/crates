@@ -9,7 +9,9 @@ use abnegate_exec::executor::ProcessGroup;
 ///
 /// A run holds this alongside the child and drops it first, so a cancelled
 /// run kills the group while its leader is still unreaped and the group's id
-/// cannot belong to anyone else. A run that failed after its leader exited
+/// cannot belong to anyone else. The drop never waits: the kill's repeats,
+/// which catch a child forked as the first one lands, follow from a thread
+/// of their own and stop as soon as the group is empty. A run that failed after its leader exited
 /// by itself kills the group once its output is drained; that reaches
 /// stragglers safely because a live straggler keeps the id from being
 /// reused, and an emptied group whose id was taken in the meantime is the

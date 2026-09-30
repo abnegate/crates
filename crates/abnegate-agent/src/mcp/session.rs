@@ -11,8 +11,6 @@ use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
 use rmcp::model::Tool as RemoteTool;
 use rmcp::service::RunningService;
-use rmcp::transport::ConfigureCommandExt;
-use rmcp::transport::TokioChildProcess;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::process::ChildStderr;
@@ -22,9 +20,9 @@ use tokio::sync::Mutex;
 use super::McpError;
 use super::McpServer;
 use super::name::unique_qualified_tool_name;
+use super::server_process::ServerProcess;
 use super::tool::McpTool;
 use crate::tool::Tool;
-use crate::tool::process::Group;
 
 /// Most of a server's stderr logged, after which the rest is read and
 /// dropped so the server never blocks writing to it.
@@ -36,12 +34,14 @@ const STDERR_BUFFER_BYTES: usize = 4 * 1024;
 ///
 /// The server leads a process group of its own, and dropping the session
 /// kills the whole group, so a server that starts helpers of its own leaves
-/// none of them behind.
+/// none of them behind. The session holds the server itself, not only its
+/// group, and never lets it be reaped before that kill: the server's pid
+/// keeps the group's id its own however long the session outlives it.
 pub(super) struct McpSession {
     pub(super) name: String,
     pub(super) remote_tools: Vec<RemoteTool>,
     client: Mutex<RunningService<RoleClient, ()>>,
-    group: Group,
+    process: Option<ServerProcess>,
 }
 
 impl McpSession {
@@ -54,7 +54,7 @@ impl McpSession {
             name,
             remote_tools,
             client: Mutex::new(client),
-            group: Group::led_by(None),
+            process: None,
         }
     }
 
@@ -89,35 +89,44 @@ impl McpSession {
             });
         };
         let mut command = Command::new(program);
-        command.kill_on_drop(true).process_group(0);
-        let (transport, stderr) = TokioChildProcess::builder(command.configure(|process| {
-            process.args(&server.arguments);
-            server.environment_policy().apply(process);
-            Proxy::from_environment().apply(process);
-            if let Some(directory) = &server.working_directory {
-                process.current_dir(directory);
-            }
-        }))
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| McpError::Spawn {
+        command
+            .args(&server.arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .process_group(0);
+        server.environment_policy().apply(&mut command);
+        Proxy::from_environment().apply(&mut command);
+        if let Some(directory) = &server.working_directory {
+            command.current_dir(directory);
+        }
+        let mut child = command.spawn().map_err(|source| McpError::Spawn {
             server: name.to_string(),
             source,
         })?;
-        let group = Group::led_by(transport.id());
+        let (stdin, stdout, stderr) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take());
+        let process = ServerProcess::new(child);
         if let Some(stderr) = stderr {
             tokio::spawn(log_stderr(name.to_string(), stderr));
         }
+        let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
+            return Err(McpError::Spawn {
+                server: name.to_string(),
+                source: io::Error::other("the server was started without its pipes"),
+            });
+        };
 
         let client =
-            ().serve(transport)
+            ().serve((stdout, stdin))
                 .await
                 .map_err(|error| McpError::Handshake {
                     server: name.to_string(),
                     message: error.to_string(),
                 })?;
 
-        Self::listed(name, &server, client, group).await
+        Self::listed(name, &server, client, Some(process)).await
     }
 
     /// The session for `server`, whose handshake `client` has completed, with
@@ -127,7 +136,7 @@ impl McpSession {
         name: &str,
         server: &McpServer,
         client: RunningService<RoleClient, ()>,
-        group: Group,
+        process: Option<ServerProcess>,
     ) -> Result<Self, McpError> {
         let remote_tools = client
             .list_all_tools()
@@ -141,7 +150,7 @@ impl McpSession {
             .collect();
 
         let mut session = Self::new(name.to_string(), remote_tools, client);
-        session.group = group;
+        session.process = process;
         Ok(session)
     }
 
@@ -186,12 +195,6 @@ impl McpSession {
     }
 }
 
-impl Drop for McpSession {
-    fn drop(&mut self) {
-        self.group.kill();
-    }
-}
-
 /// Log what a server writes to stderr, up to [`MAXIMUM_LOGGED_STDERR_BYTES`],
 /// and keep reading past that so it never fills the pipe.
 async fn log_stderr(server: String, mut stderr: ChildStderr) {
@@ -220,12 +223,15 @@ async fn log_stderr(server: String, mut stderr: ChildStderr) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use abnegate_exec::PROXY_URL_VARIABLE;
 
     use super::*;
     use crate::mcp::recorder::LIMIT;
     use crate::mcp::recorder::recorder;
     use crate::test_support::CHILD_TEST;
+    use crate::test_support::PATIENCE;
     use crate::test_support::assert_passed;
 
     /// Set on this test's own child process, where the server under test
@@ -350,5 +356,116 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(gone, "the helper {pid} outlived its server");
+    }
+
+    /// A stdio server that answers the handshake and an empty tool listing,
+    /// then leaves a helper in its group and exits, having written its own
+    /// pid and the helper's to the path it is given.
+    fn lingering(path: &Path) -> McpServer {
+        const SCRIPT: &str = r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"lingering","version":"1"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id"
+      (while :; do sleep 1; done) < /dev/null > /dev/null 2>&1 &
+      printf '%s %s\n' "$$" "$!" > "$1"
+      exit 0 ;;
+  esac
+done"#;
+        McpServer::command(
+            "sh",
+            [
+                "-c".to_string(),
+                SCRIPT.to_string(),
+                "sh".to_string(),
+                path.to_string_lossy().into_owned(),
+            ],
+        )
+    }
+
+    /// The state `ps` gives `pid`, `Z` for a zombie, or `None` once it has
+    /// been reaped.
+    fn state(pid: i32) -> Option<String> {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .expect("a process listing");
+        let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!state.is_empty()).then_some(state)
+    }
+
+    async fn eventually(condition: impl Fn() -> bool) -> bool {
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+        while !condition() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        true
+    }
+
+    /// A server that exited by itself was reaped as soon as its transport
+    /// closed, while its session went on holding the group it led, for as
+    /// long as the session lived, and a kill it sent later could reach
+    /// whatever group had been given that id since. The session keeps the
+    /// server unreaped, holding the id, until the group has been killed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_server_is_reaped_only_once_its_group_has_been_killed() {
+        let directory = tempfile::tempdir().unwrap();
+        let pids = directory.path().join("pids");
+
+        let session = McpSession::connect_with_timeout("lingering", &lingering(&pids), LIMIT)
+            .await
+            .expect("the handshake completes");
+        assert!(
+            eventually(|| pids.exists()).await,
+            "the server never listed its tools"
+        );
+        let written = std::fs::read_to_string(&pids).unwrap();
+        let (server, helper) = written
+            .trim()
+            .split_once(' ')
+            .map(|(server, helper)| {
+                (
+                    server.parse::<i32>().unwrap(),
+                    helper.parse::<i32>().unwrap(),
+                )
+            })
+            .expect("two pids");
+        let closed = eventually(|| {
+            session
+                .client
+                .try_lock()
+                .is_ok_and(|client| client.is_transport_closed())
+        })
+        .await;
+        assert!(closed, "the session never saw its server go");
+        assert!(
+            eventually(|| state(server).is_none_or(|state| state.starts_with('Z'))).await,
+            "the server never exited"
+        );
+
+        assert!(
+            state(server).is_some_and(|state| state.starts_with('Z')),
+            "the server was reaped while its session could still signal its group"
+        );
+        assert!(
+            state(helper).is_some(),
+            "the helper went before the session"
+        );
+
+        drop(session);
+
+        assert!(
+            eventually(|| state(helper).is_none()).await,
+            "dropping the session left the helper {helper} running"
+        );
+        assert!(
+            eventually(|| state(server).is_none()).await,
+            "dropping the session never reaped the server"
+        );
     }
 }

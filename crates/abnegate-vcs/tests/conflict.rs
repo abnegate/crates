@@ -18,14 +18,36 @@ use abnegate_vcs::resolution::judge;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::LazyLock;
 use tempfile::TempDir;
 
 const OURS: &str = "fn value() -> u32 {\n    1\n}\n";
 const THEIRS: &str = "fn value() -> u32 {\n    2\n}\n";
 const UNRELATED: &str = "# notes\n";
 
+/// The variables git keeps local to one repository, as the installed git's
+/// `rev-parse --local-env-vars` lists them, `GIT_DIR` and `GIT_INDEX_FILE`
+/// among them. A fixture that inherited one from the process running the
+/// tests would build its repository in the one that variable names.
+static REPOSITORY_ENVIRONMENT: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let listed = Command::new("git")
+        .args(["rev-parse", "--local-env-vars"])
+        .output()
+        .expect("git must be available to run these tests");
+    assert!(listed.status.success(), "git lists its local variables");
+    String::from_utf8(listed.stdout)
+        .expect("the names are utf-8")
+        .lines()
+        .map(str::to_string)
+        .collect()
+});
+
 fn git(repository: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    for name in REPOSITORY_ENVIRONMENT.iter() {
+        command.env_remove(name);
+    }
+    let output = command
         .current_dir(repository)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
