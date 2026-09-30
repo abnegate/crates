@@ -6,7 +6,8 @@
 //! and worktree a change needs, in a [`Checkout`] named by its top and bound
 //! to the clone it was made from; [`worktree`] adds and removes the detached
 //! worktrees a batch of concurrent runs works in; [`conflict::ConflictService`]
-//! reproduces a pull request's merge conflict in a throwaway checkout and
+//! reproduces a pull request's merge conflict in a throwaway checkout, or
+//! refreshes a branch by merging its base in there and pushing the merge, and
 //! [`resolution::judge`] refuses a repair that threw a branch's work away;
 //! [`subject::Subject`] names a change the way a conventional-commit history
 //! names one; [`discovery::DependencyDiscovery`] reads package manifests for
@@ -70,6 +71,7 @@ pub use crate::conflict::ConflictError;
 pub use crate::conflict::ConflictRequest;
 pub use crate::conflict::ConflictService;
 pub use crate::conflict::ConflictedPath;
+pub use crate::conflict::Refreshed;
 pub use crate::discovery::DependencyDiscovery;
 pub use crate::discovery::DiscoveredDependency;
 pub use crate::discovery::Manifest;

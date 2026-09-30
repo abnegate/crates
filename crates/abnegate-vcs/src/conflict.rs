@@ -5,7 +5,9 @@
 //! may have moved on, and is shared with whatever else is running — this builds a
 //! fresh repository in a temporary directory, fetches only the two commits under
 //! discussion, and reproduces the merge there. The directory is deleted when the
-//! [`Conflict`] is dropped.
+//! [`Conflict`] is dropped. A branch that merely fell behind its base is
+//! refreshed the same way: [`ConflictService::refresh`] merges the base in
+//! there and pushes the merge.
 //!
 //! Nothing here ever touches an existing repository, and nothing here ever uses
 //! the stash: `refs/stash` is shared between worktrees, so a background repair
@@ -13,9 +15,11 @@
 
 mod conflicted_path;
 mod error;
+mod fetched;
 mod index;
 mod layout;
 pub(crate) mod marker;
+mod refreshed;
 mod request;
 mod service;
 
@@ -32,6 +36,7 @@ pub use crate::conflict::marker::OURS_MARKER;
 pub use crate::conflict::marker::SPLIT_MARKER;
 pub use crate::conflict::marker::THEIRS_MARKER;
 pub use crate::conflict::marker::has_markers;
+pub use crate::conflict::refreshed::Refreshed;
 pub use crate::conflict::request::ConflictRequest;
 pub use crate::conflict::service::ConflictService;
 use crate::repository_url::RepositoryUrl;

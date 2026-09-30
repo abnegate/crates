@@ -7,6 +7,8 @@ use crate::conflict::ConflictRequest;
 use crate::conflict::ConflictResult;
 use crate::conflict::ConflictedPath;
 use crate::conflict::HEAD_REF;
+use crate::conflict::Refreshed;
+use crate::conflict::fetched::Fetched;
 use crate::conflict::has_markers;
 use crate::conflict::index;
 use crate::conflict::layout::Layout;
@@ -89,33 +91,12 @@ impl ConflictService {
     /// the caller expected — a repair of a tree nobody asked about is worse than
     /// no repair at all.
     pub async fn reproduce(&self, request: &ConflictRequest) -> ConflictResult<Conflict> {
-        let root = TempDir::new()?;
-        let layout = Layout::under(root.path());
-        layout.create()?;
-
-        let mut init = self.command(&layout);
-        init.args(["init", "--quiet", "--template=", "--separate-git-dir"])
-            .arg(&layout.git)
-            .arg(&layout.checkout);
-        self.succeed(&mut init, "init").await?;
-        std::fs::remove_file(layout.checkout.join(GIT_LINK))?;
-
-        let mut fetch = self.bound(&layout);
-        GitService::connect(&mut fetch, &request.remote, request.token.as_ref());
-        fetch.args(fetch_arguments(
-            &request.remote,
-            &request.head,
-            &request.base,
-        ));
-        self.succeed(&mut fetch, "fetch").await?;
-
-        let head = self.rev_parse(&layout, HEAD_REF).await?;
-        let base = self.rev_parse(&layout, BASE_REF).await?;
-        expect(&request.expected_head, &head, &request.head)?;
-        expect(&request.expected_base, &base, &request.base)?;
-
-        self.run(&layout, &["checkout", "--detach", "--quiet", HEAD_REF])
-            .await?;
+        let Fetched {
+            root,
+            layout,
+            head,
+            base,
+        } = self.fetch(request).await?;
 
         let merged = self
             .attempt(&layout, &["merge", "--no-commit", "--no-ff", BASE_REF])
@@ -161,6 +142,73 @@ impl ConflictService {
             files,
             index,
         })
+    }
+
+    /// Merge the base into the head and push the merge to the head branch, so
+    /// a branch opened before its base grew something -- a workflow, say --
+    /// picks it up, and the push that carries it runs whatever now watches
+    /// the branch.
+    ///
+    /// Both sides are fetched into a fresh repository exactly as
+    /// [`Self::reproduce`] fetches them, and a side that moved away from what
+    /// the caller expected is [`ConflictError::Moved`]. A base already
+    /// contained in the head makes no commit and pushes nothing: there is
+    /// nothing to pick up. A merge that conflicts is
+    /// [`ConflictError::Conflicted`], for the caller to hand to a repair, and a
+    /// branch somebody advanced during the refresh is
+    /// [`ConflictError::Rejected`], because nothing here ever forces.
+    pub async fn refresh(
+        &self,
+        request: &ConflictRequest,
+        message: &str,
+    ) -> ConflictResult<Refreshed> {
+        let Fetched {
+            root: _root,
+            layout,
+            head,
+            ..
+        } = self.fetch(request).await?;
+
+        let contained = self
+            .attempt(
+                &layout,
+                &["merge-base", "--is-ancestor", BASE_REF, HEAD_REF],
+            )
+            .await?;
+        if contained {
+            return Ok(Refreshed::new(head, false));
+        }
+
+        let merged = self
+            .attempt(
+                &layout,
+                &[
+                    "merge",
+                    "--no-ff",
+                    "--no-edit",
+                    "--no-verify",
+                    "--quiet",
+                    "-m",
+                    message,
+                    BASE_REF,
+                ],
+            )
+            .await?;
+        if !merged {
+            return Err(ConflictError::Conflicted);
+        }
+
+        self.verify_config(&layout).await?;
+        let commit = self.rev_parse(&layout, "HEAD").await?;
+        self.push(
+            &layout,
+            &request.remote,
+            request.token.as_ref(),
+            &commit,
+            &request.head,
+        )
+        .await?;
+        Ok(Refreshed::new(commit, true))
     }
 
     /// Files the repair changed that the conflict did not name: an edit the
@@ -300,18 +348,73 @@ impl ConflictService {
         if *first != conflict.head || *second != conflict.base {
             return Err(ConflictError::NotApplied);
         }
-        let commit = commit.clone();
-
-        let mut push = self.bound(&conflict.layout);
-        GitService::connect(&mut push, &conflict.remote, token);
-        push.args(push_arguments(
+        self.push(
+            &conflict.layout,
             &conflict.remote,
-            &commit,
+            token,
+            commit,
             &conflict.head_branch,
+        )
+        .await?;
+        Ok(commit.clone())
+    }
+
+    /// Initialise a fresh repository beside an empty checkout, fetch both
+    /// sides of `request` into it, refuse a side that moved away from what the
+    /// caller expected, and check the head out detached.
+    async fn fetch(&self, request: &ConflictRequest) -> ConflictResult<Fetched> {
+        let root = TempDir::new()?;
+        let layout = Layout::under(root.path());
+        layout.create()?;
+
+        let mut init = self.command(&layout);
+        init.args(["init", "--quiet", "--template=", "--separate-git-dir"])
+            .arg(&layout.git)
+            .arg(&layout.checkout);
+        self.succeed(&mut init, "init").await?;
+        std::fs::remove_file(layout.checkout.join(GIT_LINK))?;
+
+        let mut fetch = self.bound(&layout);
+        GitService::connect(&mut fetch, &request.remote, request.token.as_ref());
+        fetch.args(fetch_arguments(
+            &request.remote,
+            &request.head,
+            &request.base,
         ));
+        self.succeed(&mut fetch, "fetch").await?;
+
+        let head = self.rev_parse(&layout, HEAD_REF).await?;
+        let base = self.rev_parse(&layout, BASE_REF).await?;
+        expect(&request.expected_head, &head, &request.head)?;
+        expect(&request.expected_base, &base, &request.base)?;
+
+        self.run(&layout, &["checkout", "--detach", "--quiet", HEAD_REF])
+            .await?;
+
+        Ok(Fetched {
+            root,
+            layout,
+            head,
+            base,
+        })
+    }
+
+    /// Push `commit` to `branch` in `remote`, never forced, telling a push the
+    /// remote refused apart from one that could not reach it.
+    async fn push(
+        &self,
+        layout: &Layout,
+        remote: &RepositoryUrl,
+        token: Option<&SecretValue>,
+        commit: &CommitSha,
+        branch: &BranchName,
+    ) -> ConflictResult<()> {
+        let mut push = self.bound(layout);
+        GitService::connect(&mut push, remote, token);
+        push.args(push_arguments(remote, commit, branch));
         let output = self.execute(&mut push).await?;
         if output.status.success() {
-            return Ok(commit);
+            return Ok(());
         }
         let rejected = output
             .stdout

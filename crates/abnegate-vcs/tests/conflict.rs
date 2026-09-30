@@ -12,6 +12,7 @@ use abnegate_vcs::conflict::ConflictError;
 use abnegate_vcs::conflict::ConflictRequest;
 use abnegate_vcs::conflict::ConflictService;
 use abnegate_vcs::conflict::ConflictedPath;
+use abnegate_vcs::conflict::Refreshed;
 use abnegate_vcs::conflict::has_markers;
 use abnegate_vcs::resolution::ResolutionVerdict;
 use abnegate_vcs::resolution::judge;
@@ -850,4 +851,210 @@ async fn a_nested_repository_in_the_checkout_is_a_stray_that_refuses_the_commit(
         conflict.head().as_str(),
         "nothing was committed"
     );
+}
+
+/// A repository whose `feature` branch is behind a `main` that has grown an
+/// unrelated file since, so the two merge cleanly.
+fn diverged_origin() -> TempDir {
+    let origin = clean_origin();
+    let path = origin.path();
+    write(path, ".github/workflows/ci.yml", "on: push\n");
+    commit(path, "main adds a workflow");
+    origin
+}
+
+fn tip(origin: &Path, branch: &str) -> CommitSha {
+    CommitSha::parse(&git(origin, &["rev-parse", branch])).unwrap()
+}
+
+/// A branch that already contains its base has nothing to pick up, so the
+/// refresh makes no commit and pushes nothing.
+#[tokio::test]
+async fn refreshing_a_branch_that_contains_its_base_pushes_nothing() {
+    let origin = clean_origin();
+    let head = tip(origin.path(), "feature");
+
+    let refreshed = ConflictService::new()
+        .refresh(&request(origin.path()), "(chore): refresh")
+        .await
+        .unwrap();
+
+    assert_eq!(refreshed, Refreshed::new(head.clone(), false));
+    assert_eq!(tip(origin.path(), "feature"), head);
+}
+
+/// A base that grew something since the branch was opened is merged in and
+/// the merge is pushed to the branch, which now carries both sides.
+#[tokio::test]
+async fn refreshing_a_branch_behind_its_base_pushes_the_merge() {
+    let origin = diverged_origin();
+    let head = tip(origin.path(), "feature");
+    let base = tip(origin.path(), "main");
+
+    let refreshed = ConflictService::new()
+        .refresh(&request(origin.path()), "(chore): refresh")
+        .await
+        .unwrap();
+
+    assert!(refreshed.pushed);
+    assert_eq!(tip(origin.path(), "feature"), refreshed.commit);
+    assert_eq!(tip(origin.path(), "main"), base, "the base never moves");
+    assert_eq!(
+        git(
+            origin.path(),
+            &[
+                "rev-parse",
+                &format!("{}^1", refreshed.commit),
+                &format!("{}^2", refreshed.commit)
+            ]
+        ),
+        format!("{head}\n{base}"),
+        "the pushed commit is the merge of the head and the base"
+    );
+    assert_eq!(
+        git(
+            origin.path(),
+            &["log", "-1", "--format=%s", refreshed.commit.as_str()]
+        ),
+        "(chore): refresh"
+    );
+}
+
+/// A refresh that would conflict is handed back for a repair, and the branch
+/// is left where it was.
+#[tokio::test]
+async fn refreshing_a_branch_that_conflicts_with_its_base_is_conflicted() {
+    let origin = conflicting_origin();
+    let head = tip(origin.path(), "feature");
+
+    let outcome = ConflictService::new()
+        .refresh(&request(origin.path()), "(chore): refresh")
+        .await;
+
+    assert!(
+        matches!(outcome, Err(ConflictError::Conflicted)),
+        "{outcome:?}"
+    );
+    assert_eq!(tip(origin.path(), "feature"), head);
+}
+
+#[tokio::test]
+async fn refreshing_a_head_that_moved_since_the_caller_looked_is_refused() {
+    let origin = diverged_origin();
+    let head = tip(origin.path(), "feature");
+    let request = request(origin.path())
+        .with_expected_head(CommitSha::parse("0123456789abcdef0123456789abcdef01234567").unwrap());
+
+    let outcome = ConflictService::new()
+        .refresh(&request, "(chore): refresh")
+        .await;
+
+    match outcome {
+        Err(ConflictError::Moved { branch, .. }) => assert_eq!(branch.as_str(), "feature"),
+        other => panic!("a moved head must refuse the refresh, got {other:?}"),
+    }
+    assert_eq!(tip(origin.path(), "feature"), head);
+}
+
+/// Somebody advancing the branch between the fetch and the push keeps their
+/// commits: the push is refused rather than forced. The origin's own
+/// `pre-receive` hook stands in for them, moving the branch once the push has
+/// been negotiated against the head the refresh fetched.
+#[cfg(unix)]
+#[tokio::test]
+async fn refreshing_a_branch_that_advanced_mid_refresh_is_rejected() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let origin = diverged_origin();
+    let head = tip(origin.path(), "feature");
+    let advanced = git(
+        origin.path(),
+        &[
+            "commit-tree",
+            "feature^{tree}",
+            "-p",
+            "feature",
+            "-m",
+            "somebody else's work",
+        ],
+    );
+    let hook = origin.path().join(".git").join("hooks").join("pre-receive");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nunset GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\nexec git update-ref refs/heads/feature {advanced} {head}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let outcome = ConflictService::new()
+        .refresh(&request(origin.path()), "(chore): refresh")
+        .await;
+
+    assert!(
+        matches!(outcome, Err(ConflictError::Rejected)),
+        "{outcome:?}"
+    );
+    assert_eq!(tip(origin.path(), "feature").as_str(), advanced);
+}
+
+/// A branch whose tree is laid out as a repository of its own -- a `HEAD`,
+/// `objects`, `refs`, a configuration naming a monitor and a hooks
+/// directory full of hooks -- is only ever content: nothing it carries runs
+/// while the refresh checks it out, merges it and pushes the merge.
+#[cfg(unix)]
+#[tokio::test]
+async fn nothing_a_refreshed_branch_carries_runs_during_the_refresh() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let origin = clean_origin();
+    let path = origin.path();
+    let markers = TempDir::new().unwrap();
+    let marker = markers.path().join("ran");
+    let script = format!("#!/bin/sh\ntouch '{}'\n", marker.display());
+    let monitor = markers.path().join("monitor");
+    std::fs::write(&monitor, &script).unwrap();
+    std::fs::set_permissions(&monitor, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    git(path, &["checkout", "--quiet", "feature"]);
+    write(path, "HEAD", "ref: refs/heads/main\n");
+    write(path, "objects/info/.keep", "");
+    write(path, "refs/heads/.keep", "");
+    write(
+        path,
+        "config",
+        &format!(
+            "[core]\n\tbare = true\n\tfsmonitor = {}\n\thooksPath = hooks\n",
+            monitor.display()
+        ),
+    );
+    for hook in [
+        "post-checkout",
+        "pre-merge-commit",
+        "prepare-commit-msg",
+        "commit-msg",
+        "post-merge",
+        "post-commit",
+        "post-index-change",
+        "reference-transaction",
+        "pre-push",
+    ] {
+        let file = path.join("hooks").join(hook);
+        write(path, &format!("hooks/{hook}"), &script);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    commit(path, "feature carries a repository's layout");
+    git(path, &["checkout", "--quiet", "main"]);
+    write(path, ".github/workflows/ci.yml", "on: push\n");
+    commit(path, "main adds a workflow");
+
+    let refreshed = ConflictService::new()
+        .refresh(&request(path), "(chore): refresh")
+        .await
+        .unwrap();
+
+    assert!(refreshed.pushed);
+    assert!(!marker.exists(), "a hook the branch carried ran");
 }
