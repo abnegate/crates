@@ -87,6 +87,8 @@ pub struct CliProvider {
 }
 
 impl CliProvider {
+    /// A provider that runs `agent` under `settings`, reporting itself as
+    /// `name` in its errors and logs.
     pub fn new(name: impl Into<String>, agent: AgentKind, settings: CliSettings) -> Self {
         Self {
             name: name.into(),
@@ -100,6 +102,7 @@ impl CliProvider {
         Self::new(agent.as_str(), agent, settings)
     }
 
+    /// The settings every run is started with.
     pub fn settings(&self) -> &CliSettings {
         &self.settings
     }

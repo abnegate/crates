@@ -13,22 +13,29 @@ use crate::question::BlockingQuestion;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct StructuredResult {
+    /// What was done, or why the agent stopped.
     #[serde(default)]
     pub summary: String,
+    /// Whether the agent completed the task.
     pub success: bool,
     /// The pull request the agent says it opened, exactly as it gave it,
     /// for the caller to vet before following. Read from and written as
     /// `pr_url`, the name [`StructuredResult::SCHEMA`] asks for.
     #[serde(default, rename = "pr_url")]
     pub pull_request_url: Option<String>,
+    /// A short bullet list of the changes made, or `None` when there were
+    /// none.
     #[serde(default)]
     pub changelog: Option<String>,
+    /// The question the agent stopped to ask instead of attempting the
+    /// task.
     #[serde(default)]
     pub blocking_question: Option<BlockingQuestion>,
     /// How sure the agent is, from 0 to 100, that the change is correct and
     /// introduces no regressions.
     #[serde(default)]
     pub confidence: u8,
+    /// Why the agent is as sure as [`confidence`](Self::confidence) says.
     #[serde(default)]
     pub confidence_reasoning: Option<String>,
     /// The repository the agent believes the task belongs in, in `org/repo`

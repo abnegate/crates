@@ -7,6 +7,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct BlockingQuestion {
+    /// The question itself.
     pub question: String,
     /// What the agent found that made the question necessary.
     #[serde(default, skip_serializing_if = "Option::is_none")]

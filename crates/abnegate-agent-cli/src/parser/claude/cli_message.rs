@@ -7,8 +7,10 @@ use crate::parser::claude::cli_usage::CliUsage;
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[non_exhaustive]
 pub struct CliMessage {
+    /// The message's blocks, in order.
     #[serde(default)]
     pub content: Vec<CliContentBlock>,
+    /// The tokens the message cost, when the event reports them.
     #[serde(default)]
     pub usage: Option<CliUsage>,
 }

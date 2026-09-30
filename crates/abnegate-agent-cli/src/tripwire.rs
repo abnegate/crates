@@ -12,10 +12,12 @@ use std::sync::Arc;
 pub struct Tripwire(Arc<dyn Fn(&str) -> bool + Send + Sync>);
 
 impl Tripwire {
+    /// A tripwire that trips on each line `test` returns true for.
     pub fn new(test: impl Fn(&str) -> bool + Send + Sync + 'static) -> Self {
         Self(Arc::new(test))
     }
 
+    /// Whether `line` settles the run as failed.
     pub fn trips(&self, line: &str) -> bool {
         (self.0)(line)
     }

@@ -8,6 +8,7 @@ pub struct ApiError {
     /// The API's name for the failure, such as `overloaded_error`.
     #[serde(default, rename = "type")]
     pub kind: Option<String>,
+    /// The API's description of the failure.
     #[serde(default)]
     pub message: Option<String>,
 }

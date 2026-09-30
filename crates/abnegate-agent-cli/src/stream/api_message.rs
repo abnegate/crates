@@ -7,10 +7,13 @@ use crate::parser::claude::CliUsage;
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[non_exhaustive]
 pub struct ApiMessage {
+    /// The message's identifier.
     #[serde(default)]
     pub id: Option<String>,
+    /// The model answering.
     #[serde(default)]
     pub model: Option<String>,
+    /// Why the model stopped, which is unset until a `message_delta` says.
     #[serde(default)]
     pub stop_reason: Option<String>,
     /// The prompt's token counts, known before any output is.

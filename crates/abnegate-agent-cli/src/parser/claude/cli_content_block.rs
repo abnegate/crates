@@ -20,17 +20,26 @@ use serde::Deserialize;
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum CliContentBlock {
+    /// Prose the agent wrote.
     #[serde(rename = "text")]
     #[non_exhaustive]
-    Text { text: String },
+    Text {
+        /// The prose itself.
+        text: String,
+    },
+    /// A tool call the agent made and runs itself.
     #[serde(rename = "tool_use")]
     #[non_exhaustive]
     ToolUse {
+        /// The call's identifier, which its result names.
         id: String,
+        /// The tool called.
         name: String,
+        /// The call's arguments, `null` when absent.
         #[serde(default)]
         input: serde_json::Value,
     },
+    /// Any other kind of block, such as thinking, which is ignored.
     #[serde(other)]
     Other,
 }

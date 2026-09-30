@@ -31,6 +31,8 @@ pub struct Lines {
 }
 
 impl Lines {
+    /// A splitter holding each line to `limit` bytes, not counting its
+    /// newline or a carriage return before it.
     pub fn new(limit: usize) -> Self {
         Self {
             buffer: Vec::new(),
@@ -41,6 +43,8 @@ impl Lines {
         }
     }
 
+    /// Add the next `chunk` read from the stream, which may end mid-line or
+    /// mid-character. The rest of an overlong line is dropped as it arrives.
     pub fn extend(&mut self, chunk: &[u8]) {
         let chunk = if self.discarding {
             match chunk.iter().position(|byte| *byte == NEWLINE) {

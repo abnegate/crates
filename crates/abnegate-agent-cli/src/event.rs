@@ -33,13 +33,21 @@ use crate::parser::claude::CliUsage;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum AgentEvent {
+    /// A fragment of the agent's prose, in streaming order.
     Text(String),
+    /// A tool the agent ran for itself, reported and never replayed.
     Tool(ToolCall),
+    /// Prompt and completion token counts, cache reads and writes counted
+    /// as prompt.
     Usage(Usage),
+    /// The agent ended its turn in failure, in its own words. The first one
+    /// a run reports is its failure.
     Failed(String),
     /// The agent ended its turn, and why, in its own words.
     #[non_exhaustive]
     Finished {
+        /// The agent's reason for stopping, such as `end_turn`, when it gave
+        /// one.
         finish_reason: Option<String>,
     },
     /// A problem the agent reported without ending its turn, such as a

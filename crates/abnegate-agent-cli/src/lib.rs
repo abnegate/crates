@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! Coding agent CLIs driven as child processes, behind the same
 //! [`CompletionProvider`](abnegate_llm::CompletionProvider) contract as an
 //! HTTP model.

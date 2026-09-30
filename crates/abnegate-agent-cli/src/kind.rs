@@ -64,11 +64,15 @@ const WORKSPACE_READS: &str = "Read(./**)";
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum AgentKind {
+    /// Anthropic's Claude Code, run as `claude`.
     Claude,
+    /// OpenAI's Codex CLI, run as `codex`.
     Codex,
 }
 
 impl AgentKind {
+    /// The agent's lowercase name, which is also its serialized form and the
+    /// default provider name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Claude => "claude",
@@ -84,6 +88,7 @@ impl AgentKind {
         }
     }
 
+    /// How the agent is handed its prompt: on stdin, for every agent here.
     pub fn delivery(self) -> Delivery {
         match self {
             Self::Claude | Self::Codex => Delivery::Stdin,
