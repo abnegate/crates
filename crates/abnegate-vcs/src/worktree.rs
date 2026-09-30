@@ -477,10 +477,13 @@ pub(crate) mod fixtures {
         command
     }
 
-    /// Git in a fixture with a fixed identity and no host configuration.
+    /// Git in a fixture with a fixed identity, no host configuration and no
+    /// automatic maintenance, which a commit would otherwise start in the
+    /// background to write into the repository after the command returns.
     fn command(path: &Path, arguments: &[&str]) -> Command {
         let mut command = git_command();
         command
+            .args(["-c", "maintenance.auto=false"])
             .env("GIT_AUTHOR_NAME", "Fixture")
             .env("GIT_AUTHOR_EMAIL", "fixture@example.test")
             .env("GIT_COMMITTER_NAME", "Fixture")
