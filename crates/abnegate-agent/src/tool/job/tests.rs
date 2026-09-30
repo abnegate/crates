@@ -858,6 +858,41 @@ async fn a_linked_worktree_of_a_clone_excludes_its_logs_in_the_clone() {
     Jobs::kill_session(session).await;
 }
 
+/// With `worktree.useRelativePaths`, git writes a linked worktree's `gitdir`
+/// back-link relative to the worktree's git directory, and reading it
+/// against this process's own directory refused a worktree git made.
+#[tokio::test]
+async fn a_linked_worktree_with_a_relative_back_link_excludes_its_logs() {
+    let root = directory();
+    let origin = root.path().join("origin");
+    std::fs::create_dir(&origin).expect("the origin directory is created");
+    repository(&origin);
+    let linked = root.path().join("linked");
+    git(
+        &origin,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "run",
+            linked.to_str().expect("a utf-8 path"),
+        ],
+    );
+    std::fs::write(
+        origin.join(".git/worktrees/linked/gitdir"),
+        "../../../../linked/.git\n",
+    )
+    .expect("the back-link is made relative");
+
+    excluded_from(&linked).await;
+
+    assert_eq!(
+        excluded_lines(&origin.join(".git").join(EXCLUDE_PATH)),
+        1,
+        "a worktree with a relative back-link kept its job logs in the diff"
+    );
+}
+
 /// Start a task job in `checkout`, let it end, and end its session.
 async fn excluded_from(checkout: &Path) {
     let session = task();

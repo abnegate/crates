@@ -111,7 +111,8 @@ impl GitLayout {
         }
         let named = fs::read_to_string(git_directory.join(BACK_LINK))
             .map_err(|error| format!("the linked worktree names no checkout: {error}"))?;
-        if canonical(Path::new(named.trim_end_matches(['\n', '\r'])))? != pointer {
+        let named = git_directory.join(named.trim_end_matches(['\n', '\r']));
+        if canonical(&named)? != pointer {
             return Err("the linked worktree belongs to another checkout".to_string());
         }
         Ok(common_directory)
