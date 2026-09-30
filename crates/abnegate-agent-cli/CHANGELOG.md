@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-agent-cli-v0.1.1...abnegate-agent-cli-v0.1.2) - 2026-09-30
+
+### Added
+
+- *(agent-cli)* report codex mcp tool calls as tool events
+
+### Fixed
+
+- *(agent-cli)* keep the end of a stderr line that holds no space
+- *(agent-cli)* never keep a piece of a secret where stderr's tail is cut
+- *(agent-cli)* never pass an allowed credential beside the caller's own
+- *(agent-cli)* carry the end of an agent's stderr in the failure it reports
+- *(agent-cli)* read a claude turn as a whole, keeping subagents out of it
+
+### Other
+
+- describe four items as the merged port left them
+- *(agent-cli)* document every public item
+
 ## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-agent-cli-v0.1.0...abnegate-agent-cli-v0.1.1) - 2026-09-30
 
 ### Added

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-agent-v0.1.1...abnegate-agent-v0.1.2) - 2026-09-30
+
+### Added
+
+- *(agent)* withhold denied paths from the file tools by identity
+
+### Fixed
+
+- *(agent)* keep denied entries out of a listing by name as well
+- *(agent)* refuse a path that runs through more links than the kernel follows
+- *(agent)* refuse a job exclude that is not a regular file
+- *(agent)* hedge wait_for only for a turn that is not offered it
+- *(agent)* judge each search match by its file and bound a listing by the context
+
+### Other
+
+- *(agent)* document every public item
+
 ## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-agent-v0.1.0...abnegate-agent-v0.1.1) - 2026-09-30
 
 ### Other
