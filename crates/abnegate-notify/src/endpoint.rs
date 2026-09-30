@@ -90,6 +90,15 @@ impl Endpoint {
         &self.host
     }
 
+    /// The URL as it was checked, which is the credential itself.
+    ///
+    /// It stays wrapped, so formatting it prints `[REDACTED]`. Expose it only
+    /// where it is sent, or post through a [`Webhook`](crate::Webhook), which
+    /// also refuses redirects so the allowlist cannot be walked around.
+    pub fn url(&self) -> &SecretValue {
+        &self.url
+    }
+
     pub(crate) fn post(&self, client: &Client) -> RequestBuilder {
         client.post(self.url.expose())
     }

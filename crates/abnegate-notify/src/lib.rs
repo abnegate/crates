@@ -64,7 +64,9 @@
 //! A configured webhook URL points wherever its author said, which makes
 //! delivery a server-side request forgery surface. Each backend accepts only
 //! `https` URLs whose host matches its provider exactly, and redirects are
-//! refused rather than followed.
+//! refused rather than followed. A [`Notifier`] of the caller's own gets the
+//! same guard by checking its URL with [`Endpoint::new`] and posting through a
+//! [`Webhook`].
 
 mod backend;
 mod channel;
@@ -85,6 +87,7 @@ pub use crate::backend::Discord;
 #[cfg(feature = "smtp")]
 pub use crate::backend::Email;
 pub use crate::backend::Slack;
+pub use crate::backend::Webhook;
 pub use crate::channel::Channel;
 pub use crate::delivery::Delivery;
 pub use crate::endpoint::Endpoint;
