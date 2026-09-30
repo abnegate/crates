@@ -42,6 +42,8 @@ pub struct TokenStore {
 }
 
 impl TokenStore {
+    /// A store for `application`'s credentials. Nothing touches the keyring
+    /// until a credential is read or written.
     pub fn new(application: Application) -> Self {
         Self { application }
     }
@@ -71,30 +73,39 @@ impl TokenStore {
             .map_err(|source| self.failure(name, source))
     }
 
+    /// Whether a credential can be read under `name`. Any failure to read
+    /// it, including an unavailable keyring, counts as absent.
     pub fn contains(&self, name: &str) -> bool {
         self.read(name).is_ok()
     }
 
+    /// The stored access token, or [`Error::NoCredential`] when none is.
     pub fn access_token(&self) -> Result<SecretValue, Error> {
         self.read(ACCESS_TOKEN)
     }
 
+    /// Store `token` as the access token, replacing any before it.
     pub fn set_access_token(&self, token: &SecretValue) -> Result<(), Error> {
         self.write(ACCESS_TOKEN, token)
     }
 
+    /// The stored refresh token, or [`Error::NoCredential`] when none is.
     pub fn refresh_token(&self) -> Result<SecretValue, Error> {
         self.read(REFRESH_TOKEN)
     }
 
+    /// Store `token` as the refresh token, replacing any before it.
     pub fn set_refresh_token(&self, token: &SecretValue) -> Result<(), Error> {
         self.write(REFRESH_TOKEN, token)
     }
 
+    /// The stored token metadata: [`Error::NoCredential`] when none is stored,
+    /// and [`Error::Metadata`] when what is stored is not metadata JSON.
     pub fn metadata(&self) -> Result<TokenMetadata, Error> {
         Ok(serde_json::from_str(self.read(METADATA)?.expose())?)
     }
 
+    /// Store `metadata` as JSON beside the tokens, replacing any before it.
     pub fn set_metadata(&self, metadata: &TokenMetadata) -> Result<(), Error> {
         self.write(
             METADATA,

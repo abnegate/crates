@@ -50,10 +50,13 @@ impl<'key> Loader<'key> {
         self
     }
 
+    /// The file [`load`](Self::load) reads.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Whether a regular file is at [`path`](Self::path). A directory or a
+    /// path that cannot be inspected reads as absent.
     pub fn exists(&self) -> bool {
         self.path.is_file()
     }

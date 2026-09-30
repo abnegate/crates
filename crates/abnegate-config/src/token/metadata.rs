@@ -11,11 +11,15 @@ use serde::Serialize;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct TokenMetadata {
+    /// The server that issued the token.
     pub host: String,
+    /// When the token stops working, to the second.
     #[serde(with = "chrono::serde::ts_seconds")]
     pub expires_at: DateTime<Utc>,
+    /// The issuing server's identifier for the account, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
+    /// The account's email address, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
 }
@@ -32,6 +36,7 @@ impl TokenMetadata {
         }
     }
 
+    /// Whether [`expires_at`](Self::expires_at) is now or already past.
     pub fn is_expired(&self) -> bool {
         self.expires_within(TimeDelta::zero())
     }

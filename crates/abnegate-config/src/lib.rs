@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! Configuration for command line applications.
 //!
 //! [`Config`] is the application's own settings type loaded from a TOML file,

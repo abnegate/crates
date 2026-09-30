@@ -49,18 +49,25 @@ impl<T> Config<T> {
         }
     }
 
+    /// The file the settings were read from, and the one
+    /// [`save`](Self::save) replaces.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// The settings, with every sealed value already opened when the loader
+    /// had a master key.
     pub fn value(&self) -> &T {
         &self.value
     }
 
+    /// The settings, for editing before a [`save`](Self::save). A value that
+    /// arrived sealed is sealed again on save, wherever it ends up.
     pub fn value_mut(&mut self) -> &mut T {
         &mut self.value
     }
 
+    /// The settings alone, dropping the path and the key needed to save them.
     pub fn into_value(self) -> T {
         self.value
     }
