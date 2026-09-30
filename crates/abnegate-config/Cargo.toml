@@ -4,7 +4,7 @@ description = "Typed TOML configuration for command line applications: a generic
 keywords = ["config", "toml", "keyring", "dotenv", "cli"]
 categories = ["config", "command-line-interface"]
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -22,7 +22,7 @@ default = []
 keyring = ["dep:chrono", "dep:keyring", "dep:serde_json", "dep:zeroize"]
 
 [dependencies]
-abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.1" }
 chrono = { workspace = true, optional = true, features = ["serde"] }
 dirs = { workspace = true }
 keyring = { workspace = true, optional = true }

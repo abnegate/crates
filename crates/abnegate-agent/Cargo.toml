@@ -4,7 +4,7 @@ description = "A ReAct agent loop with a sandbox-aware tool registry, background
 keywords = ["agent", "llm", "tools", "mcp", "react"]
 categories = ["asynchronous", "development-tools", "text-processing"]
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -22,11 +22,11 @@ default = []
 mcp = ["dep:rmcp", "dep:abnegate-agent-cli"]
 
 [dependencies]
-abnegate-agent-cli = { path = "../abnegate-agent-cli", version = "0.1.0", optional = true }
-abnegate-config = { path = "../abnegate-config", version = "0.1.0" }
-abnegate-exec = { path = "../abnegate-exec", version = "0.1.0" }
-abnegate-llm = { path = "../abnegate-llm", version = "0.1.0" }
-abnegate-secret = { path = "../abnegate-secret", version = "0.1.0" }
+abnegate-agent-cli = { path = "../abnegate-agent-cli", version = "0.1.1", optional = true }
+abnegate-config = { path = "../abnegate-config", version = "0.1.1" }
+abnegate-exec = { path = "../abnegate-exec", version = "0.1.1" }
+abnegate-llm = { path = "../abnegate-llm", version = "0.1.1" }
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.1" }
 async-trait = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 dashmap = { workspace = true }
@@ -49,7 +49,7 @@ urlencoding = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
-abnegate-llm = { path = "../abnegate-llm", version = "0.1.0", features = ["testing"] }
+abnegate-llm = { path = "../abnegate-llm", version = "0.1.1", features = ["testing"] }
 rmcp = { workspace = true, features = ["client", "macros", "schemars", "server", "transport-async-rw"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "test-util"] }
