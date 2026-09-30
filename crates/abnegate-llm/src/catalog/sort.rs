@@ -9,7 +9,8 @@ use serde::Serialize;
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ModelSort {
-    /// The catalogue's own order. The default.
+    /// No reordering: models come as the catalogue ranks them, which for
+    /// Hugging Face is by downloads. The default.
     #[default]
     Relevance,
     /// Most downloaded first.

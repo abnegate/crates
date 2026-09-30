@@ -61,8 +61,9 @@ impl<T> Config<T> {
         &self.value
     }
 
-    /// The settings, for editing before a [`save`](Self::save). A value that
-    /// arrived sealed is sealed again on save, wherever it ends up.
+    /// The settings, for editing before a [`save`](Self::save), which says
+    /// when a value that arrived sealed is sealed again and when saving
+    /// refuses instead.
     pub fn value_mut(&mut self) -> &mut T {
         &mut self.value
     }

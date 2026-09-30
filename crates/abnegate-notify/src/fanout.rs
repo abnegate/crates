@@ -57,15 +57,17 @@ impl Fanout {
         self
     }
 
-    /// Add `notifier`, delivered to after every channel already registered.
+    /// Add `notifier`. Every channel is delivered to concurrently; the
+    /// [`Report`] lists them in registration order.
     #[must_use]
     pub fn with(mut self, notifier: impl Notifier) -> Self {
         self.register(Arc::new(notifier));
         self
     }
 
-    /// Add a shared `notifier`, delivered to after every channel already
-    /// registered. Registering one twice delivers to it twice.
+    /// Add a shared `notifier`. Every channel is delivered to concurrently;
+    /// the [`Report`] lists them in registration order. Registering one twice
+    /// delivers to it twice.
     pub fn register(&mut self, notifier: Arc<dyn Notifier>) {
         self.notifiers.push(notifier);
     }
