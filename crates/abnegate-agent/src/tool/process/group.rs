@@ -29,6 +29,35 @@ impl Group {
             tracing::warn!(group = leader.pgid(), %error, "Could not kill a process group");
         }
     }
+
+    /// Kill every process still in the group before returning, and go on
+    /// repeating the kill from a thread of its own, which a runtime that never
+    /// runs again cannot stop, keeping the group to be killed again: what a
+    /// drop sends when the rest of its cleanup may never get to run. A later
+    /// [`kill_until_gone`](Self::kill_until_gone) stops those repeats before it
+    /// resolves.
+    #[cfg(feature = "mcp")]
+    pub(crate) fn kill_now(&self) {
+        if let Some(leader) = &self.leader
+            && let Err(error) = leader.kill()
+        {
+            tracing::warn!(group = leader.pgid(), %error, "Could not kill a process group");
+        }
+    }
+
+    /// Kill every process still in the group, resolving once the kill has
+    /// stopped repeating itself and the group is released, so no repeat, not
+    /// even one [`kill_now`](Self::kill_now) started, can land after a leader
+    /// reaped next has given up the group's id. Later calls do nothing.
+    pub(crate) async fn kill_until_gone(&mut self) {
+        let Some(leader) = self.leader.take() else {
+            return;
+        };
+        if let Err(error) = leader.kill_until_gone().await {
+            tracing::warn!(group = leader.pgid(), %error, "Could not kill a process group");
+        }
+        leader.release();
+    }
 }
 
 impl Drop for Group {
@@ -108,5 +137,31 @@ mod tests {
             let _ = kill(Pid::from_raw(*pid), Signal::SIGKILL);
         }
         assert!(gone, "the group's kill missed {survivors:?}");
+    }
+
+    /// A kill's repeats went on from their own thread after the group had
+    /// been killed until gone, so one could land after the leader was reaped
+    /// and its id given to another group. Every handle to the group is now
+    /// released first, and a released group answers as gone even while its
+    /// leader, a zombie here, still holds the id.
+    #[tokio::test]
+    async fn a_group_killed_until_gone_is_released_for_every_handle() {
+        let mut leader = Command::new("sleep")
+            .arg("300")
+            .stdin(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("the leader starts");
+        let mut group = Group::led_by(Some(leader.id()));
+        let shared = group.leader.clone().expect("a group to kill");
+
+        group.kill_until_gone().await;
+        let released = !shared.is_alive();
+        leader.wait().expect("the leader is reaped");
+
+        assert!(
+            released,
+            "a handle the kill shared could still signal the group"
+        );
     }
 }

@@ -127,6 +127,30 @@ const OBJECTS_WALKED: [&str; 2] = ["info", "pack"];
 /// from.
 const ALTERNATES: [&str; 2] = ["info", "alternates"];
 
+/// The variables git keeps local to one repository, exactly as
+/// `git rev-parse --local-env-vars` lists them: what git itself clears
+/// before it works in another repository, `GIT_DIR`, `GIT_INDEX_FILE` and
+/// `GIT_COMMON_DIR` among them. A command that keeps the caller's
+/// environment drops these, so the repository it works in is the one its
+/// directory holds, even when the caller runs inside a git hook.
+pub(crate) const REPOSITORY_ENVIRONMENT: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
 /// Prints the worktree's own git directory and the one every worktree of
 /// its repository shares, a line each, as absolute paths. Git resolves every
 /// link on the way to an absolute path it prints, so what stands under them

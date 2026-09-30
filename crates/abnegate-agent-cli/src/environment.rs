@@ -346,7 +346,9 @@ mod tests {
     }
 
     fn document(attachment: &McpAttachment) -> Value {
-        let file = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        let file =
+            std::fs::read_to_string(attachment.file.as_ref().expect("a rendered file").path())
+                .expect("the file");
         serde_json::from_str(&file).expect("JSON")
     }
 
@@ -585,6 +587,53 @@ mod tests {
                     "{variable}"
                 );
             }
+        }
+    }
+
+    /// Codex signs in with an OpenAI key, a Codex key or a Codex access
+    /// token, and a stdio server's reference to any of them reads as set but
+    /// empty, as Claude's own sign-in does, or the server Codex starts would
+    /// be handed the agent's credential.
+    #[test]
+    fn a_codex_stdio_reference_to_codexs_sign_in_resolves_as_set_but_empty() {
+        const CREDENTIALS: [(&str, &str); 3] = [
+            ("OPENAI_API_KEY", "openai-host-marker"),
+            ("CODEX_API_KEY", "codex-host-marker"),
+            ("CODEX_ACCESS_TOKEN", "codex-access-marker"),
+        ];
+        let shared = host();
+        let host = |name: &str| {
+            CREDENTIALS
+                .iter()
+                .find(|(variable, _)| *variable == name)
+                .map(|(_, value)| OsString::from(value))
+                .or_else(|| shared(name))
+        };
+        let server = CREDENTIALS.iter().fold(
+            McpServer::command("notes-server", ["--key=${CODEX_API_KEY}"]),
+            |server, (variable, _)| server.with_environment(*variable, format!("${{{variable}}}")),
+        );
+        let settings = CliSettings::default().with_mcp_server("notes", server);
+        let attachment = settings
+            .mcp
+            .render(AgentKind::Codex)
+            .expect("rendered")
+            .expect("an attachment");
+
+        let environment = Environment::new(AgentKind::Codex, &settings, Some(&attachment), &host);
+
+        let variables = set(&environment);
+        assert!(!attachment.templates.is_empty());
+        for variable in attachment
+            .environment
+            .keys()
+            .chain(attachment.templates.keys())
+        {
+            let value = variables[variable].clone().unwrap_or_default();
+            assert!(
+                value.is_empty() || value == "--key=",
+                "{variable} holds a credential: {value}"
+            );
         }
     }
 
@@ -882,7 +931,9 @@ mod tests {
 
         let variables = set(&environment);
         assert!(!variables.contains_key("GRAFANA_TOKEN"), "{variables:?}");
-        let file = std::fs::read_to_string(attachment.file.path()).expect("the file");
+        let file =
+            std::fs::read_to_string(attachment.file.as_ref().expect("a rendered file").path())
+                .expect("the file");
         assert!(!file.contains("literal-org-secret"), "{file}");
         assert!(!file.contains("literal-cf-secret"), "{file}");
         let generated: Vec<Option<&str>> = attachment

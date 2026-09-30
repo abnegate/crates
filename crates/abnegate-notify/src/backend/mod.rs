@@ -13,3 +13,4 @@ pub use crate::backend::discord::Discord;
 #[cfg(feature = "smtp")]
 pub use crate::backend::email::Email;
 pub use crate::backend::slack::Slack;
+pub use crate::backend::webhook::Webhook;

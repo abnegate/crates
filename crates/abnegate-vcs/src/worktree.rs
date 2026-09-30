@@ -464,10 +464,26 @@ pub(crate) mod fixtures {
     use std::path::PathBuf;
     use std::process::Command;
 
-    /// Git in a fixture with a fixed identity and no host configuration.
-    fn command(path: &Path, arguments: &[&str]) -> Command {
+    use crate::git::REPOSITORY_ENVIRONMENT;
+
+    /// `git` without any of [`REPOSITORY_ENVIRONMENT`], so the repository it
+    /// works in is the one its directory holds, whatever repository the
+    /// process running the tests names.
+    pub fn git_command() -> Command {
         let mut command = Command::new("git");
+        for name in REPOSITORY_ENVIRONMENT {
+            command.env_remove(name);
+        }
         command
+    }
+
+    /// Git in a fixture with a fixed identity, no host configuration and no
+    /// automatic maintenance, which a commit would otherwise start in the
+    /// background to write into the repository after the command returns.
+    fn command(path: &Path, arguments: &[&str]) -> Command {
+        let mut command = git_command();
+        command
+            .args(["-c", "maintenance.auto=false"])
             .env("GIT_AUTHOR_NAME", "Fixture")
             .env("GIT_AUTHOR_EMAIL", "fixture@example.test")
             .env("GIT_COMMITTER_NAME", "Fixture")
@@ -608,6 +624,90 @@ mod tests {
             remote: remote_path,
             base,
             worktrees,
+        }
+    }
+
+    /// Every file under `directory`, with its content.
+    fn fingerprint(directory: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = std::collections::BTreeMap::new();
+        let mut pending = vec![directory.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            for entry in std::fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.insert(path.clone(), std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        files
+    }
+
+    /// The fixtures inherited `GIT_DIR` and `GIT_INDEX_FILE` from the
+    /// process running the tests, which a git hook sets, so every repository
+    /// a test built was built in whichever one those named. The fixtures now
+    /// drop every variable git keeps local to a repository.
+    #[test]
+    fn fixtures_build_their_repositories_whatever_repository_the_environment_names() {
+        const NAME: &str = "worktree::tests::fixtures_build_their_repositories_whatever_repository_the_environment_names";
+        if std::env::var(CHILD).as_deref() == Ok(NAME) {
+            let repositories = repositories();
+            for path in [&repositories.remote, &repositories.base] {
+                assert_eq!(
+                    std::fs::canonicalize(git(path, &["rev-parse", "--show-toplevel"])).unwrap(),
+                    std::fs::canonicalize(path).unwrap(),
+                    "a fixture worked in another repository"
+                );
+            }
+            return;
+        }
+        let elsewhere = tempfile::tempdir().unwrap();
+        remote(elsewhere.path());
+        let directory = elsewhere.path().join(".git");
+        let before = fingerprint(&directory);
+
+        let output = Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD, NAME)
+            .env("GIT_DIR", &directory)
+            .env("GIT_INDEX_FILE", directory.join("index"))
+            .output()
+            .expect("the child runs");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test, so it proved nothing\n{stdout}"
+        );
+        assert!(
+            fingerprint(&directory) == before,
+            "the fixtures wrote into the repository the environment named"
+        );
+    }
+
+    /// Managed commands and the fixtures drop every variable git itself
+    /// keeps local to a repository, so a git that grows the list fails here
+    /// first.
+    #[test]
+    fn every_variable_git_keeps_local_to_a_repository_is_dropped() {
+        let listed = Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+            .expect("git is installed");
+        assert!(listed.status.success(), "git lists its local variables");
+        let listed = String::from_utf8(listed.stdout).expect("the names are utf-8");
+        assert!(!listed.trim().is_empty(), "git listed no variables");
+        for name in listed.lines() {
+            assert!(
+                crate::git::REPOSITORY_ENVIRONMENT.contains(&name),
+                "{name} is kept"
+            );
         }
     }
 

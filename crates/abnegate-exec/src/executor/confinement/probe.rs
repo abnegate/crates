@@ -73,14 +73,18 @@ fn out_of_time() -> ConfinementError {
     ))
 }
 
+/// The verdict the single-command probe reached, once it has reached one.
+static SINGLE_COMMAND_VERDICT: OnceCell<Result<(), ConfinementError>> = OnceCell::const_new();
+
+/// The verdict the process-tree probe reached, once it has reached one.
+static PROCESS_TREE_VERDICT: OnceCell<Result<(), ConfinementError>> = OnceCell::const_new();
+
 pub(super) async fn probe_single_command() -> Result<(), ConfinementError> {
-    static VERDICT: OnceCell<Result<(), ConfinementError>> = OnceCell::const_new();
-    verdict(&VERDICT, run_single_command_probe).await
+    verdict(&SINGLE_COMMAND_VERDICT, run_single_command_probe).await
 }
 
 pub(super) async fn probe_process_tree() -> Result<(), ConfinementError> {
-    static VERDICT: OnceCell<Result<(), ConfinementError>> = OnceCell::const_new();
-    verdict(&VERDICT, run_process_tree_probe).await
+    verdict(&PROCESS_TREE_VERDICT, run_process_tree_probe).await
 }
 
 /// The verdict `probe` reaches, kept in `cache` for every later call. A
@@ -543,5 +547,38 @@ mod tests {
                 "{mode:?} kept a probe that ran out of time as its verdict"
             );
         }
+    }
+
+    /// Once [`Confinement::probe`] has reached a verdict for `mode`, a later
+    /// call is answered from `cache` without starting a probe: the stand-in
+    /// here panics if it is started. A first probe that ran out of time
+    /// reached no verdict, and then nothing may have been kept.
+    async fn assert_kept(mode: ConfinementMode, cache: &OnceCell<Result<(), ConfinementError>>) {
+        let reached = Confinement::probe(mode).await;
+        if reached == Err(out_of_time()) {
+            assert!(
+                cache.get().is_none(),
+                "{mode:?} kept a probe that ran out of time"
+            );
+            return;
+        }
+
+        assert_eq!(
+            verdict(cache, probing_again).await,
+            reached,
+            "{mode:?} kept a verdict other than the one it reached"
+        );
+    }
+
+    /// The integration tests these replace compared two calls' verdicts,
+    /// which agree just as well when nothing is kept and every call probes.
+    #[tokio::test]
+    async fn a_single_command_verdict_is_probed_for_once() {
+        assert_kept(ConfinementMode::SingleCommand, &SINGLE_COMMAND_VERDICT).await;
+    }
+
+    #[tokio::test]
+    async fn a_process_tree_verdict_is_probed_for_once() {
+        assert_kept(ConfinementMode::ProcessTree, &PROCESS_TREE_VERDICT).await;
     }
 }

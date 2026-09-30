@@ -644,22 +644,6 @@ async fn test_spawn_fails_closed_when_confinement_cannot_be_established() {
     );
 }
 
-/// A probe that runs out of time reaches no verdict and the next call probes
-/// again, so two calls differ only when the first ran out of time, and then
-/// the verdict the second reached is kept.
-#[tokio::test]
-async fn test_probe_result_is_cached() {
-    let first = Confinement::probe(ConfinementMode::SingleCommand).await;
-    let second = Confinement::probe(ConfinementMode::SingleCommand).await;
-
-    if first != second {
-        assert_eq!(
-            Confinement::probe(ConfinementMode::SingleCommand).await,
-            second
-        );
-    }
-}
-
 /// CI sets the switch where the sandbox must work, so a regression that breaks
 /// the probe fails there instead of skipping every real-sandbox test.
 #[tokio::test]
@@ -1142,19 +1126,6 @@ fn test_the_single_process_capability_is_advertised_only_where_it_is_enforced() 
 
     assert_eq!(advertised, host_enforces(Backend::enforces_single_process));
     assert!(Capability::all().contains(&"confinement_single_process".to_string()));
-}
-
-#[tokio::test]
-async fn test_the_tree_probe_verdict_is_cached() {
-    let first = Confinement::probe(ConfinementMode::ProcessTree).await;
-    let second = Confinement::probe(ConfinementMode::ProcessTree).await;
-
-    if first != second {
-        assert_eq!(
-            Confinement::probe(ConfinementMode::ProcessTree).await,
-            second
-        );
-    }
 }
 
 /// The self-test that carries the whole claim: on a host whose backend can

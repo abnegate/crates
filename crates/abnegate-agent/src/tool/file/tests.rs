@@ -53,6 +53,7 @@ fn create_test_context(directory: &Path) -> ToolContext {
         environment: crate::tool::EnvironmentPolicy::empty(),
         maximum_file_size: 1024 * 1024,
         command_timeout: std::time::Duration::from_secs(30),
+        search_timeout: std::time::Duration::from_secs(20),
         unrestricted: false,
         session: Session::Detached,
         application: crate::Application::default(),

@@ -5,9 +5,15 @@ impl GitService {
     /// caller's own environment and configuration, for the clone that creates
     /// it -- so an address only that setup can reach, a local path, an SSH
     /// remote, a credential helper, still works -- and for the local reads and
-    /// configuration writes that run nothing a repository names.
+    /// configuration writes that run nothing a repository names. Only the
+    /// [`REPOSITORY_ENVIRONMENT`] variables are dropped: a `GIT_DIR` or
+    /// `GIT_INDEX_FILE` the caller runs with, as it does inside a git hook,
+    /// would otherwise send the command to another repository.
     pub(super) fn managed_command(path: Option<&Path>) -> Command {
         let mut command = Command::new("git");
+        for name in REPOSITORY_ENVIRONMENT {
+            command.env_remove(name);
+        }
         command
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null())
@@ -392,12 +398,9 @@ impl GitService {
     /// one building a file-system index.
     pub fn detect_default_branch_blocking(&self, path: &Path) -> BranchName {
         let read = |arguments: &[&str]| {
-            std::process::Command::new("git")
+            Self::managed_command(Some(path))
+                .as_std_mut()
                 .args(arguments)
-                .current_dir(path)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
                 .output()
         };
         let branch = match read(&DEFAULT_BRANCH) {
@@ -521,6 +524,28 @@ mod managed_tests {
         format!("file://{}", path.display())
     }
 
+    /// A managed command kept the caller's whole environment, so a `GIT_DIR`
+    /// or `GIT_INDEX_FILE` the caller ran with, as it does inside a git
+    /// hook, sent a clone, a fetch or a default-branch read to another
+    /// repository.
+    #[test]
+    fn a_managed_command_drops_every_variable_that_names_a_repository() {
+        let command = GitService::managed_command(None);
+        let removed: Vec<String> = command
+            .as_std()
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+
+        for name in REPOSITORY_ENVIRONMENT {
+            assert!(
+                removed.iter().any(|removed| removed == name),
+                "{name} reaches a managed command"
+            );
+        }
+    }
+
     /// Whether any recorded git command reached a remote.
     fn reached_remote(recorded: &[Vec<String>]) -> bool {
         recorded.iter().flatten().any(|argument| {
@@ -550,7 +575,7 @@ mod managed_tests {
 
     /// Whether `path`'s object store holds `object`.
     fn holds(path: &Path, object: &str) -> bool {
-        std::process::Command::new("git")
+        crate::worktree::fixtures::git_command()
             .args(["cat-file", "-e", object])
             .current_dir(path)
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -2738,7 +2763,7 @@ mod managed_tests {
             ("credential.helper", "fixture-helper"),
             ("http.proxy", "http://proxy.test:3128"),
         ] {
-            let resolved = std::process::Command::new("git")
+            let resolved = crate::worktree::fixtures::git_command()
                 .args(options)
                 .args(["config", "--get-all", key])
                 .env("GIT_CONFIG_GLOBAL", &global)

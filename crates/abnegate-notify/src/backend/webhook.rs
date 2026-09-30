@@ -7,8 +7,9 @@ use futures::StreamExt;
 use reqwest::Client;
 use reqwest::Response;
 use reqwest::StatusCode;
+use reqwest::header::CONTENT_TYPE;
 use reqwest::redirect::Policy;
-use serde_json::Value;
+use serde::Serialize;
 
 use crate::endpoint::Endpoint;
 use crate::error::Error;
@@ -21,25 +22,47 @@ const USER_AGENT: &str = concat!("abnegate-notify/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAXIMUM_ERROR_BODY_BYTES: usize = 2_048;
 const RETRY_AFTER: &str = "retry-after";
+const JSON: &str = "application/json";
 
-/// A JSON POST to one validated endpoint.
+/// A JSON POST to one validated [`Endpoint`], the client [`Slack`](crate::Slack)
+/// and [`Discord`](crate::Discord) deliver through.
 ///
-/// Redirects are refused rather than followed. Following one would let the
-/// endpoint hand back a `Location` pointing at a private address and walk
-/// straight around the host allowlist that [`Endpoint`] enforces, which is
-/// the usual way an allowlisted webhook still turns into an SSRF.
+/// A third-party [`Notifier`](crate::Notifier) posts through it to keep the
+/// same guarantees without restating them:
 ///
-/// Each request is bounded by [`DEFAULT_TIMEOUT`] until a backend sets its
-/// own, and a backend that sets one hands the same budget to the fan-out.
-#[derive(Debug)]
-pub(crate) struct Webhook {
+/// - Redirects are refused rather than followed. Following one would let the
+///   endpoint hand back a `Location` pointing at a private address and walk
+///   straight around the host allowlist that [`Endpoint`] enforces, which is
+///   the usual way an allowlisted webhook still turns into an SSRF.
+/// - No failure carries the URL, only its host, and a provider's error body
+///   is read no further than its start and sanitized.
+/// - A `429` becomes [`Error::RateLimited`] with the provider's `Retry-After`.
+///
+/// Each request is bounded by [`DEFAULT_TIMEOUT`] until [`Webhook::with_timeout`]
+/// sets another, and a notifier that sets one hands [`Webhook::timeout`] to the
+/// fan-out through [`Notifier::timeout`](crate::Notifier::timeout).
+///
+/// ```no_run
+/// # async fn example() -> Result<(), abnegate_notify::Error> {
+/// use abnegate_notify::Endpoint;
+/// use abnegate_notify::Webhook;
+///
+/// let endpoint = Endpoint::new("https://chat.example.com/hooks/xxxx", &["chat.example.com"])?;
+/// let webhook = Webhook::new(endpoint)?;
+/// webhook.post(&serde_json::json!({ "text": "deployed" })).await?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug)]
+pub struct Webhook {
     endpoint: Endpoint,
     client: Client,
     timeout: Option<Duration>,
 }
 
 impl Webhook {
-    pub(crate) fn new(endpoint: Endpoint) -> Result<Self, Error> {
+    /// A client for `endpoint` that refuses redirects.
+    pub fn new(endpoint: Endpoint) -> Result<Self, Error> {
         let client = Client::builder()
             .redirect(Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)
@@ -56,12 +79,28 @@ impl Webhook {
         })
     }
 
-    pub(crate) fn host(&self) -> &str {
+    /// Give up on a request after `timeout` rather than [`DEFAULT_TIMEOUT`].
+    ///
+    /// A budget below the fan-out's minimum is raised to it.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.set_timeout(timeout);
+        self
+    }
+
+    /// The endpoint this client posts to.
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
+    }
+
+    /// The endpoint's host, which is safe to log.
+    pub fn host(&self) -> &str {
         self.endpoint.host()
     }
 
-    /// The budget a backend set, which the fan-out honours in place of its own.
-    pub(crate) fn timeout(&self) -> Option<Duration> {
+    /// The budget [`Webhook::with_timeout`] set, if any, which the fan-out
+    /// should honour in place of its own.
+    pub fn timeout(&self) -> Option<Duration> {
         self.timeout
     }
 
@@ -69,20 +108,26 @@ impl Webhook {
         self.timeout = Some(timeout.max(MINIMUM_TIMEOUT));
     }
 
-    pub(crate) async fn post(&self, payload: &Value) -> Result<Response, Error> {
+    /// POST `payload` as JSON, and succeed only on a `2xx` answer.
+    ///
+    /// A redirect is reported as [`Error::Rejected`], never followed. A
+    /// payload with no JSON form is [`Error::Malformed`] and sends nothing.
+    pub async fn post<T: Serialize + ?Sized + Sync>(&self, payload: &T) -> Result<(), Error> {
+        let body = serde_json::to_vec(payload).map_err(Error::malformed)?;
         let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
         let response = self
             .endpoint
             .post(&self.client)
             .timeout(timeout)
-            .json(payload)
+            .header(CONTENT_TYPE, JSON)
+            .body(body)
             .send()
             .await
             .map_err(|error| self.unsent(error, timeout))?;
 
         let status = response.status();
         if status.is_success() {
-            return Ok(response);
+            return Ok(());
         }
 
         if status == StatusCode::TOO_MANY_REQUESTS {
@@ -167,7 +212,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_success_returns_the_response() {
+    async fn a_success_is_delivered() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/hook"))
@@ -175,12 +220,11 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = webhook(&server)
+        webhook(&server)
             .await
             .post(&json!({ "text": "hi" }))
             .await
             .expect("delivered");
-        assert_eq!(response.status(), 204);
     }
 
     #[tokio::test]

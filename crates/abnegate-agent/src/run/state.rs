@@ -38,6 +38,7 @@ pub struct AgentState {
     /// Why the turn failed, when it did.
     pub error: Option<String>,
     pub started_at: DateTime<Utc>,
+    /// When the last turn ended, and `None` while a turn is under way.
     pub finished_at: Option<DateTime<Utc>>,
 }
 
