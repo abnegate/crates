@@ -29,7 +29,8 @@
 //! names [`CliSettings::allow`] adds, a proxy among them with
 //! [`CliSettings::with_proxy_variables`], and its own configuration
 //! variables, each from this process's environment; its sign-in variables
-//! when its credential is inherited; and what the settings hand it: public
+//! when its credential is inherited, and never otherwise, allowed or not;
+//! and what the settings hand it: public
 //! [variables](CliSettings::variables), secret
 //! [environment](CliSettings::environment) values, the credential, and what
 //! an [`mcp`] configuration moves out of its file.

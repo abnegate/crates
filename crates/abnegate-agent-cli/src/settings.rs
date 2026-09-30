@@ -130,7 +130,12 @@ pub struct CliSettings {
     /// what the run writes down, like one set in
     /// [`environment`](CliSettings::environment). The agent's
     /// [nested-session marker](crate::AgentKind::scrubbed) is never passed
-    /// this way: a run that must see it sets it explicitly.
+    /// this way: a run that must see it sets it explicitly. Nor is a
+    /// variable the agent [signs in with](crate::AgentKind::credentials),
+    /// unless its [credential](CliSettings::credential) is inherited: beside
+    /// a credential of the caller's own, the host's would be one more the
+    /// agent could sign in with. A gateway such as `ANTHROPIC_BASE_URL` for
+    /// a run given its own key is set explicitly.
     pub allowed: BTreeSet<String>,
     /// Give the child the host's whole environment, less the agent's
     /// [scrubbed](crate::AgentKind::scrubbed) variables, instead of

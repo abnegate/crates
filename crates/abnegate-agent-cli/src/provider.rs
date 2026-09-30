@@ -1346,6 +1346,103 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         assert!(names.contains(&"PATH".to_string()));
     }
 
+    /// What a host's environment can hold that no agent signed in with a
+    /// credential of its own may be handed. Every value says `notreal`, so a
+    /// leak shows up under any name.
+    const HOST_SECRETS: &[(&str, &str)] = &[
+        ("DATABASE_URL", "postgres://app:notrealpassword@db/app"),
+        ("SESSION_SECRET", "notreal-session-secret"),
+        ("ENCRYPTION_KEY", "notreal-encryption-key"),
+        ("ANTHROPIC_API_KEY", concat!("sk-ant-", "notreal-key")),
+        ("ANTHROPIC_AUTH_TOKEN", "notreal-auth-token"),
+        (
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            concat!("sk-ant-", "oat-notreal-token"),
+        ),
+        ("OPENAI_API_KEY", concat!("sk-", "notreal-openai-key")),
+        ("CLAUDECODE", "notreal-session"),
+    ];
+
+    /// The host's secrets are set in this test's own child process. The
+    /// caller signs the agent in with a key of its own and allows, beside a
+    /// harmless name, the other variables the agent signs in with and its
+    /// nested-session marker, none of which may pass.
+    #[tokio::test]
+    async fn the_hosts_secrets_never_reach_the_agent() {
+        const NAME: &str = "provider::tests::the_hosts_secrets_never_reach_the_agent";
+        const KEY: &str = concat!("sk-ant-", "explicit-key");
+        const CERTIFICATE: &str = "/etc/ssl/corporate.pem";
+        let mut host = HOST_SECRETS.to_vec();
+        host.push(("CORPORATE_CA", CERTIFICATE));
+        if delegated(NAME, &host).await {
+            return;
+        }
+        let directory = TempDir::new().expect("a temporary directory");
+        let recorded = directory.path().join("environment");
+        let settings = settings(&directory, &recording_environment(&recorded))
+            .with_credential(Credential::key("ANTHROPIC_API_KEY", KEY))
+            .allow([
+                "CORPORATE_CA",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDECODE",
+            ]);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let child = recorded_environment(&recorded);
+        let leaked: Vec<&str> = HOST_SECRETS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| *name != "ANTHROPIC_API_KEY" && child.contains_key(*name))
+            .collect();
+        assert!(leaked.is_empty(), "these reached the agent: {leaked:?}");
+        let carrying: Vec<&String> = child
+            .iter()
+            .filter(|(_, value)| value.contains("notreal"))
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            carrying.is_empty(),
+            "these carried a secret's value to the agent: {carrying:?}"
+        );
+        assert_eq!(
+            child.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some(KEY)
+        );
+        assert_eq!(
+            child.get("CORPORATE_CA").map(String::as_str),
+            Some(CERTIFICATE),
+            "the allowed name was not honoured"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_agent_still_finds_its_home_and_its_commands() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let recorded = directory.path().join("environment");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &recording_environment(&recorded)),
+        );
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let child = recorded_environment(&recorded);
+        for name in ["HOME", "PATH"] {
+            assert_eq!(
+                child.get(name),
+                std::env::var(name).ok().as_ref(),
+                "{name} did not reach the agent as it was"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn an_opted_in_child_inherits_the_hosts_environment() {
         let Ok(package) = std::env::var("CARGO_PKG_NAME") else {

@@ -14,11 +14,13 @@ that fails in any way takes every process the agent forked with it. The agent is
 given an allowlisted part of this process's environment, the names
 `CliSettings::allow` adds (a proxy among them with
 `CliSettings::with_proxy_variables`) and what the settings hand it, or this
-process's whole environment with `CliSettings::inherit_environment`. Every value
-it is handed but the allowlisted names, its configuration variables, the public
-variables, the proxy bypass list and what it inherits is scrubbed from what the
-run writes down, as written, JSON-escaped or percent-encoded; a secret the agent
-re-encodes any other way is not recognised. Unix only.
+process's whole environment with `CliSettings::inherit_environment`. A name the
+agent signs in with (`AgentKind::credentials`) passes only when the credential is
+inherited, however `CliSettings::allow` names it. Every value it is handed but
+the allowlisted names, its configuration variables, the public variables, the
+proxy bypass list and what it inherits is scrubbed from what the run writes
+down, as written, JSON-escaped or percent-encoded; a secret the agent re-encodes
+any other way is not recognised. Unix only.
 
 The agent's own tools, and every stdio MCP server it starts, can read
 everything it is given. A remote MCP server is sent nothing the agent is given
@@ -31,6 +33,12 @@ environment. The file the CLI reads holds no environment or header value and no
 bound secret: each reaches the agent in a generated variable of its environment,
 which its tools and stdio servers can read too, so binding keeps a secret from
 every other remote server, not from them.
+
+No agent is passed a permission-bypass flag, and nothing is approved in advance
+but what the settings allow. Claude's own tools keep Claude's own permission
+checks. Codex's do not: `codex exec` never asks for approval, so only its
+sandbox confines them, whichever one the user's configuration or a `--sandbox`
+argument names, and `danger-full-access` confines nothing.
 
 ## Claude turns
 

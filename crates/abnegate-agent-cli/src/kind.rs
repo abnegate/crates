@@ -110,7 +110,8 @@ impl AgentKind {
     }
 
     /// Variables the agent may sign in with, which it is given from the host
-    /// when its credential is [inherited](abnegate_llm::Credential::Inherited).
+    /// when its credential is [inherited](abnegate_llm::Credential::Inherited),
+    /// and never otherwise, even when [allowed](crate::CliSettings::allow).
     pub fn credentials(self) -> &'static [&'static str] {
         match self {
             Self::Claude => &[
@@ -161,9 +162,12 @@ impl AgentKind {
 
     /// A non-interactive invocation that streams newline-delimited JSON.
     ///
-    /// No permission-bypass flag is passed to any agent. These commands run
-    /// with the user's own credentials and file access, so the agent's own
-    /// approval behaviour is left exactly as the user configured it.
+    /// No permission-bypass flag is passed to any agent, and nothing is
+    /// approved in advance but what the settings allow. Claude's own tools
+    /// keep Claude's own permission checks, as the user configured them.
+    /// Codex's do not: `codex exec` never asks for approval, so only its
+    /// sandbox confines them, whichever one the user's configuration or a
+    /// `--sandbox` argument names, and `danger-full-access` confines nothing.
     pub fn arguments(self, model: Option<&str>) -> Vec<String> {
         self.invocation(model, Vec::new())
     }
@@ -534,17 +538,23 @@ mod tests {
         }
     }
 
+    const PERMISSION_BYPASSES: &[&str] = &[
+        "--dangerously-skip-permissions",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--full-auto",
+        "--always-approve",
+        "--approve-for-me",
+        "--yolo",
+        "--permission-mode",
+        "--permission-prompts",
+        "--ask-for-approval",
+    ];
+
     #[test]
     fn no_agent_is_ever_asked_to_skip_its_permission_prompts() {
         for agent in [AgentKind::Claude, AgentKind::Codex] {
             let arguments = AgentKind::arguments(agent, Some("model")).join(" ");
-            for bypass in [
-                "--dangerously-skip-permissions",
-                "--full-auto",
-                "--always-approve",
-                "--yolo",
-                "--permission-mode",
-            ] {
+            for bypass in PERMISSION_BYPASSES {
                 assert!(
                     !arguments.contains(bypass),
                     "{agent} was handed {bypass}: {arguments}"
