@@ -1,17 +1,18 @@
+use std::fs::File;
 use std::future::Future;
 use std::io;
+use std::io::Read;
+use std::io::Write;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 
-use super::EXCLUDE_PATH;
 use super::JobCommand;
 use super::JobExited;
 use super::JobStarted;
@@ -23,6 +24,7 @@ use super::REPOSITORY_ENVIRONMENT;
 use super::UNAVAILABLE;
 use super::entry::Job;
 use super::excluded;
+use super::layout::GitLayout;
 use super::limits::Limits;
 use super::log::Log;
 use super::mint;
@@ -248,7 +250,7 @@ async fn supervise(
             _ = flood => JobStatus::Flooded,
         }
     };
-    group.kill();
+    group.kill_until_gone().await;
     if !matches!(outcome, JobStatus::Exited(_)) {
         let _ = child.wait().await;
     }
@@ -288,21 +290,23 @@ async fn ended(mut state: watch::Receiver<JobStatus>) -> JobStatus {
 /// checkout would otherwise write into a repository it does not own — and
 /// why git is asked without any [`REPOSITORY_ENVIRONMENT`] variable, whatever
 /// the context passes on: a `GIT_DIR` the context inherits from this process
-/// or sets itself would otherwise name the repository for it. Every failure
-/// — not a checkout, no git, an unwritable file — is a silent skip, because
-/// a background job is worth more to the caller than a tidy diff.
+/// or sets itself would otherwise name the repository for it. What git names
+/// is still the run's to plant, so the line is written only into a git
+/// directory the checkout owns, as [`GitLayout`] decides. Every failure —
+/// not a checkout, no git, a git directory the checkout does not own, an
+/// unwritable file — is a skip, logged at debug, because a background job
+/// is worth more to the caller than a tidy diff.
 async fn exclude(context: &ToolContext) {
-    let checkout = context.working_directory.as_path();
+    let checkout = context.working_directory.clone();
     let mut lookup = process::command(GIT, context);
     for name in REPOSITORY_ENVIRONMENT {
         lookup.env_remove(name);
     }
     let Ok(resolved) = lookup
-        .arg("rev-parse")
-        .arg("--git-path")
-        .arg(EXCLUDE_PATH)
-        .current_dir(checkout)
+        .args(GitLayout::QUERY)
+        .current_dir(&checkout)
         .stdin(Stdio::null())
+        .stderr(Stdio::null())
         .output()
         .await
     else {
@@ -311,39 +315,36 @@ async fn exclude(context: &ToolContext) {
     if !resolved.status.success() {
         return;
     }
-    let Ok(resolved) = std::str::from_utf8(&resolved.stdout) else {
+    let Some(layout) = std::str::from_utf8(&resolved.stdout)
+        .ok()
+        .and_then(GitLayout::parse)
+    else {
         return;
     };
-    let path = checkout.join(resolved.trim());
-    // A checkout cloned with an empty template has no `info` directory, and an
-    // append cannot create the parent it is missing.
-    if let Some(parent) = path.parent()
-        && tokio::fs::create_dir_all(parent).await.is_err()
-    {
-        return;
-    }
-
     let line = excluded(&context.application);
-    let existing = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let written = tokio::task::spawn_blocking(move || {
+        let mut file = layout.exclude(&checkout)?;
+        append_once(&mut file, &line).map_err(|error| error.to_string())
+    })
+    .await;
+    if let Ok(Err(reason)) = written {
+        tracing::debug!(%reason, "Job logs are not excluded from the checkout's diff");
+    }
+}
+
+/// Append `line` to `file` unless a line of it already says the same.
+fn append_once(file: &mut File, line: &str) -> io::Result<()> {
+    let mut existing = String::new();
+    file.read_to_string(&mut existing)?;
     if existing.lines().any(|existing| existing.trim() == line) {
-        return;
+        return Ok(());
     }
     let opening = if existing.is_empty() || existing.ends_with('\n') {
         ""
     } else {
         "\n"
     };
-    let Ok(mut file) = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .await
-    else {
-        return;
-    };
-    let _ = file
-        .write_all(format!("{opening}{line}\n").as_bytes())
-        .await;
+    file.write_all(format!("{opening}{line}\n").as_bytes())
 }
 
 /// Take whole characters only, and say how many bytes that spent.

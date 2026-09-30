@@ -36,7 +36,7 @@ hex = { workspace = true }
 nix = { workspace = true, features = ["fs", "process", "signal"] }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
-rmcp = { workspace = true, optional = true, features = ["client", "transport-child-process"] }
+rmcp = { workspace = true, optional = true, features = ["client", "transport-async-rw"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -50,7 +50,7 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
 abnegate-llm = { path = "../abnegate-llm", version = "0.1.0", features = ["testing"] }
-rmcp = { workspace = true, features = ["client", "macros", "schemars", "server", "transport-async-rw", "transport-child-process"] }
+rmcp = { workspace = true, features = ["client", "macros", "schemars", "server", "transport-async-rw"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "test-util"] }
 tracing-subscriber = { workspace = true }

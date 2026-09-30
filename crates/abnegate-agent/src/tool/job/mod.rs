@@ -15,6 +15,7 @@ mod command;
 mod entry;
 mod exited;
 mod jobs;
+mod layout;
 mod limits;
 mod log;
 mod started;
@@ -97,8 +98,9 @@ const LOG_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 /// waiting for the rest of one.
 const MAXIMUM_CHARACTER_BYTES: usize = 4;
 
-/// Asked of git rather than joined onto `.git`: in a linked worktree `.git` is
-/// a pointer file and the real exclude lives in the common directory.
+/// Joined onto the common directory git names rather than onto `.git`: in a
+/// linked worktree `.git` is a pointer file and the real exclude lives in
+/// the common directory.
 const EXCLUDE_PATH: &str = "info/exclude";
 
 /// The variables git keeps local to one repository, exactly as

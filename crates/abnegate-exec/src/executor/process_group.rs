@@ -33,6 +33,10 @@ const ROUND: Duration = Duration::from_millis(1);
 #[cfg(not(target_os = "linux"))]
 const BUDGET: Duration = Duration::from_millis(100);
 
+/// The name of the thread a kill's repeats are sent from.
+#[cfg(not(target_os = "linux"))]
+const REPEATER: &str = "process-group-kill";
+
 /// A handle to a process group for signal management.
 ///
 /// Built from the pid of a child that leads its own group, spawned with
@@ -93,15 +97,41 @@ impl ProcessGroup {
         self.signal(Signal::SIGTERM)
     }
 
-    /// Send SIGKILL to the entire process group, and again until no member is
-    /// left alive to receive it, for at most a tenth of a second.
+    /// Send SIGKILL to the entire process group, and go on sending it until no
+    /// member is left alive to receive it, for at most a tenth of a second,
+    /// without making the caller wait for any of it.
     ///
     /// Outside Linux a group signal reaches only the members present when it
     /// lands, so a child a member was forking at that instant would survive
-    /// a single kill.
+    /// a single kill. The first SIGKILL is sent before this returns; the
+    /// repeats are sent from a thread of their own, each one only while the
+    /// group has not been released, so none is sent once it has been. That
+    /// makes this safe to call from async code and from `Drop`. A caller
+    /// that goes on to reap the leader itself should await
+    /// [`kill_until_gone`](Self::kill_until_gone) instead, so that every
+    /// repeat lands while the leader still holds the group's id.
     pub fn kill(&self) -> Result<(), ExecutorError> {
+        self.kill_repeating(Self::kill_again)
+    }
+
+    /// Send SIGKILL to the entire process group, and again until no member is
+    /// left alive to receive it, for at most a tenth of a second, resolving
+    /// once the last repeat has been sent.
+    ///
+    /// Between repeats it waits on the runtime's timer rather than blocking
+    /// its thread, so nothing else on the runtime is held up.
+    pub async fn kill_until_gone(&self) -> Result<(), ExecutorError> {
         self.signal(Signal::SIGKILL)?;
-        self.kill_until_gone();
+        #[cfg(not(target_os = "linux"))]
+        {
+            let deadline = tokio::time::Instant::now() + BUDGET;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(ROUND).await;
+                if !self.round(&mut Self::kill_again) {
+                    break;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -114,9 +144,10 @@ impl ProcessGroup {
     }
 
     /// Stop every clone of this handle signalling the group, once any signal
-    /// already on its way has been sent. Call it just before reaping the
-    /// leader, after which the group's identifier can name an unrelated group.
-    pub(crate) fn release(&self) {
+    /// already on its way has been sent, the repeats a [`kill`](Self::kill)
+    /// left running included. Call it just before reaping the leader, after
+    /// which the group's identifier can name an unrelated group.
+    pub fn release(&self) {
         *self.released() = true;
     }
 
@@ -125,25 +156,61 @@ impl ProcessGroup {
         *self.released()
     }
 
-    /// Repeat SIGKILL until it finds no live member -- `ESRCH` once the group
-    /// is empty, `EPERM` once only its unreaped zombies are left -- or the
-    /// group is released, or the budget runs out.
+    fn kill_repeating(
+        &self,
+        again: impl FnMut(&Self) -> bool + Clone + Send + 'static,
+    ) -> Result<(), ExecutorError> {
+        self.signal(Signal::SIGKILL)?;
+        self.repeat_in_background(again);
+        Ok(())
+    }
+
+    /// Whether SIGKILL found a live member: not `ESRCH`, as once the group is
+    /// empty, nor `EPERM`, as once only its unreaped zombies are left.
+    fn kill_again(&self) -> bool {
+        kill(Pid::from_raw(-self.pgid), Signal::SIGKILL).is_ok()
+    }
+
+    /// [`repeat`](Self::repeat) on a thread of its own, or on the caller's
+    /// when no thread can be started.
     #[cfg(not(target_os = "linux"))]
-    fn kill_until_gone(&self) {
-        let deadline = Instant::now() + BUDGET;
-        while Instant::now() < deadline {
-            std::thread::sleep(ROUND);
-            let released = self.released();
-            if *released || kill(Pid::from_raw(-self.pgid), Signal::SIGKILL).is_err() {
-                return;
-            }
+    fn repeat_in_background(&self, again: impl FnMut(&Self) -> bool + Clone + Send + 'static) {
+        let group = self.clone();
+        let rounds = again.clone();
+        let started = std::thread::Builder::new()
+            .name(REPEATER.to_string())
+            .spawn(move || group.repeat(rounds));
+        if started.is_err() {
+            self.repeat(again);
         }
     }
 
     /// Linux restarts a fork that a group signal interrupts, so its child is
     /// never left out of a kill.
     #[cfg(target_os = "linux")]
-    fn kill_until_gone(&self) {}
+    fn repeat_in_background(&self, _again: impl FnMut(&Self) -> bool + Clone + Send + 'static) {}
+
+    /// Repeat `again` until it finds no live member, or the group is
+    /// released, or the budget runs out.
+    #[cfg(not(target_os = "linux"))]
+    fn repeat(&self, mut again: impl FnMut(&Self) -> bool) {
+        let deadline = Instant::now() + BUDGET;
+        while Instant::now() < deadline {
+            std::thread::sleep(ROUND);
+            if !self.round(&mut again) {
+                return;
+            }
+        }
+    }
+
+    /// Send one repeat unless the group has been released, holding the guard
+    /// while it is sent so that a release waits for it. Returns whether to go
+    /// on.
+    #[cfg(not(target_os = "linux"))]
+    fn round(&self, again: &mut impl FnMut(&Self) -> bool) -> bool {
+        let released = self.released();
+        !*released && again(self)
+    }
 
     fn released(&self) -> MutexGuard<'_, bool> {
         self.released.lock().unwrap_or_else(PoisonError::into_inner)
@@ -169,6 +236,12 @@ mod tests {
     use std::os::unix::process::CommandExt;
     use std::process::Command;
     use std::process::Stdio;
+    #[cfg(not(target_os = "linux"))]
+    use std::sync::atomic::AtomicUsize;
+    #[cfg(not(target_os = "linux"))]
+    use std::sync::atomic::Ordering;
+    #[cfg(not(target_os = "linux"))]
+    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -237,6 +310,105 @@ mod tests {
             let _ = kill(Pid::from_raw(*pid), Signal::SIGKILL);
         }
         assert!(gone, "the kill missed {survivors:?}");
+    }
+
+    #[tokio::test]
+    async fn kill_until_gone_reaches_a_child_forked_as_it_lands() {
+        let mut shell = Command::new("sh")
+            .args(["-c", "while :; do sleep 300 & done"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("the shell starts");
+        let group = ProcessGroup::try_from(shell.id()).expect("a child leading its own group");
+        assert!(
+            eventually(|| running(group.pgid()).len() > 2),
+            "the shell never started forking"
+        );
+
+        group.kill_until_gone().await.unwrap();
+        shell.wait().expect("the shell is reaped");
+
+        let gone = eventually(|| running(group.pgid()).is_empty());
+        let survivors = running(group.pgid());
+        for pid in &survivors {
+            let _ = kill(Pid::from_raw(*pid), Signal::SIGKILL);
+        }
+        assert!(gone, "the kill missed {survivors:?}");
+    }
+
+    /// A kill's repeats were sent on the caller's thread, which held a
+    /// current-thread runtime, and every task on it, for up to a tenth of a
+    /// second. Here the first repeat waits on a task of the caller's runtime,
+    /// so it is answered only when the kill has left that runtime running.
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_kill_leaves_a_current_thread_runtime_running() {
+        let mut sleeper = Sleeper::start();
+        let (proceed, proceeding) = mpsc::channel::<()>();
+        let proceeding = Arc::new(Mutex::new(proceeding));
+        let (answer, answered) = mpsc::channel::<bool>();
+        let task = tokio::spawn(async move {
+            let _ = proceed.send(());
+        });
+
+        sleeper
+            .group()
+            .kill_repeating(move |_| {
+                let waited = proceeding
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .recv_timeout(PATIENCE);
+                let _ = answer.send(waited.is_ok());
+                false
+            })
+            .unwrap();
+        task.await.unwrap();
+
+        assert!(
+            answered.recv_timeout(PATIENCE).expect("a repeat was sent"),
+            "a repeat held the runtime's only thread"
+        );
+        assert_eq!(sleeper.wait(), Some(Signal::SIGKILL as i32));
+    }
+
+    /// Releasing the group waits for a repeat on its way and stops every one
+    /// after it, so none can land on an identifier the reap has freed.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn no_repeat_is_sent_once_the_group_is_released() {
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&sent);
+        let (report, reported) = mpsc::channel::<()>();
+
+        group
+            .kill_repeating(move |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let _ = report.send(());
+                true
+            })
+            .unwrap();
+        reported.recv_timeout(PATIENCE).expect("a repeat was sent");
+        group.release();
+        let at_release = sent.load(Ordering::SeqCst);
+
+        loop {
+            match reported.recv_timeout(PATIENCE) {
+                Ok(()) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("the repeats never ended"),
+            }
+        }
+        assert_eq!(
+            sent.load(Ordering::SeqCst),
+            at_release,
+            "a repeat was sent after the release"
+        );
+        assert_eq!(sleeper.wait(), Some(Signal::SIGKILL as i32));
     }
 
     #[test]

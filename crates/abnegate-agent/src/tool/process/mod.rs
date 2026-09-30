@@ -81,7 +81,7 @@ pub(crate) async fn run(mut command: Command, limit: Duration) -> Result<Finishe
         })
         .await;
     }
-    group.kill();
+    group.kill_until_gone().await;
     let _ = timeout(DRAIN_TIMEOUT, async {
         stdout.closed().await;
         stderr.closed().await;

@@ -136,9 +136,10 @@ impl Agent {
     /// However the turn fails, `state` is left ended in
     /// [`AgentPhase::Error`] with the error's text in
     /// [`error`](AgentState::error), so it can be saved and continued again.
-    /// A future dropped before it resolves records nothing: `state` is left
-    /// mid-turn and unfinished, and [`finished_at`](AgentState::finished_at)
-    /// still holds the previous turn's time.
+    /// The previous turn's ending is cleared as the turn starts, its
+    /// [`finished_at`](AgentState::finished_at) included. A future dropped
+    /// before it resolves records nothing more: `state` is left mid-turn and
+    /// unfinished, with no finish time.
     pub async fn continue_run(
         &self,
         state: &mut AgentState,
@@ -151,6 +152,7 @@ impl Agent {
         state.finished = false;
         state.final_response = None;
         state.error = None;
+        state.finished_at = None;
 
         self.run_loop(state, callback).await
     }
