@@ -81,6 +81,7 @@ mod name;
 #[cfg(test)]
 mod recorder;
 mod register;
+mod server_process;
 mod session;
 mod tool;
 
