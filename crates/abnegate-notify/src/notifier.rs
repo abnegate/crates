@@ -33,5 +33,11 @@ pub trait Notifier: Send + Sync + 'static {
         None
     }
 
+    /// Send `notification` to this destination.
+    ///
+    /// The fan-out bounds the call with [`timeout`](Self::timeout) and turns a
+    /// panic into [`Error::Panicked`], so an implementation need not guard
+    /// against either. The error it returns is built through one of
+    /// [`Error`]'s constructors and must not carry the endpoint URL.
     async fn deliver(&self, notification: &Notification) -> Result<(), Error>;
 }

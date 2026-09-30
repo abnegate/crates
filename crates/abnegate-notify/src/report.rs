@@ -17,6 +17,7 @@ impl Report {
         Self { deliveries }
     }
 
+    /// Every channel's outcome, in registration order.
     pub fn deliveries(&self) -> &[Delivery] {
         &self.deliveries
     }
@@ -50,10 +51,14 @@ impl Report {
         self.deliveries.is_empty()
     }
 
+    /// Whether every channel took the notification; true when none was
+    /// registered.
     pub fn all_delivered(&self) -> bool {
         self.deliveries.iter().all(Delivery::is_delivered)
     }
 
+    /// Whether at least one channel took the notification; false when none
+    /// was registered.
     pub fn any_delivered(&self) -> bool {
         self.deliveries.iter().any(Delivery::is_delivered)
     }

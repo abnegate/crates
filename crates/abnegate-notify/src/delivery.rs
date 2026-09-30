@@ -21,6 +21,7 @@ impl Delivery {
         }
     }
 
+    /// The kind of destination that was attempted.
     pub fn channel(&self) -> &Channel {
         &self.channel
     }
@@ -30,10 +31,12 @@ impl Delivery {
         &self.name
     }
 
+    /// Whether the channel took the notification.
     pub fn is_delivered(&self) -> bool {
         self.outcome.is_ok()
     }
 
+    /// Why the channel did not take the notification, or `None` when it did.
     pub fn error(&self) -> Option<&Error> {
         self.outcome.as_ref().err()
     }

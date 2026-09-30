@@ -38,6 +38,7 @@ impl Default for Fanout {
 }
 
 impl Fanout {
+    /// A fan-out with no channels and a [`DEFAULT_TIMEOUT`] budget.
     pub fn new() -> Self {
         Self {
             notifiers: Vec::new(),
@@ -56,20 +57,25 @@ impl Fanout {
         self
     }
 
+    /// Add `notifier`, delivered to after every channel already registered.
     #[must_use]
     pub fn with(mut self, notifier: impl Notifier) -> Self {
         self.register(Arc::new(notifier));
         self
     }
 
+    /// Add a shared `notifier`, delivered to after every channel already
+    /// registered. Registering one twice delivers to it twice.
     pub fn register(&mut self, notifier: Arc<dyn Notifier>) {
         self.notifiers.push(notifier);
     }
 
+    /// How many channels are registered.
     pub fn len(&self) -> usize {
         self.notifiers.len()
     }
 
+    /// Whether no channel is registered.
     pub fn is_empty(&self) -> bool {
         self.notifiers.is_empty()
     }
