@@ -45,6 +45,10 @@ pub struct CompletionBridge<P> {
 }
 
 impl<P: CompletionProvider> CompletionBridge<P> {
+    /// `provider` as a text provider that asks `model`, taking 128,000
+    /// tokens of context until
+    /// [`with_maximum_context_tokens`](Self::with_maximum_context_tokens)
+    /// says otherwise.
     pub fn new(provider: P, model: impl Into<String>) -> Self {
         Self {
             provider,
@@ -60,6 +64,7 @@ impl<P: CompletionProvider> CompletionBridge<P> {
         self
     }
 
+    /// The completion provider underneath.
     pub fn provider(&self) -> &P {
         &self.provider
     }

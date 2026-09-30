@@ -30,7 +30,12 @@ pub enum Error {
     /// The endpoint answered with a failing HTTP `status`.
     #[error("API error: {status} - {message}")]
     #[non_exhaustive]
-    Api { status: u16, message: String },
+    Api {
+        /// The HTTP status code.
+        status: u16,
+        /// The endpoint's explanation, from its response body.
+        message: String,
+    },
     /// A body did not serialise, or did not parse.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),

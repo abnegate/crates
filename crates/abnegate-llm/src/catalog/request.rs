@@ -18,18 +18,26 @@ pub struct BrowseRequest {
     /// Catalogue to browse: `ollama`, `huggingface`, `gpt4all` or `openrouter`.
     #[serde(default)]
     pub source: Option<String>,
+    /// Text to search for; `q` on the wire too.
     #[serde(default, alias = "q")]
     pub search: Option<String>,
+    /// The cursor of the page to fetch.
     #[serde(default)]
     pub cursor: Option<String>,
+    /// The page size, held to `1..=MAXIMUM_PAGE_SIZE`; absent asks for the
+    /// default.
     #[serde(default)]
     pub limit: Option<usize>,
+    /// The order of the results; absent is relevance.
     #[serde(default)]
     pub sort: Option<ModelSort>,
+    /// A model family to keep; absent or `all` keeps every one.
     #[serde(default)]
     pub family: Option<String>,
+    /// The parameter-count bucket to keep; absent keeps every size.
     #[serde(default)]
     pub size: Option<ModelSizeFilter>,
+    /// The medium to keep; absent keeps every medium.
     #[serde(default)]
     pub medium: Option<ModelMediumFilter>,
 }

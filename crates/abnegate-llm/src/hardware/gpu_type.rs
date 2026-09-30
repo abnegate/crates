@@ -19,19 +19,40 @@ pub enum GpuType {
     /// An Apple Silicon `chip`, such as `M4 Max`, whose GPU memory is the
     /// machine's own.
     #[non_exhaustive]
-    AppleSilicon { chip: String, gpu_cores: u32 },
+    AppleSilicon {
+        /// The chip's name.
+        chip: String,
+        /// How many GPU cores it has.
+        gpu_cores: u32,
+    },
     /// A desktop NVIDIA card, such as an `RTX 4090`.
     #[non_exhaustive]
-    NvidiaDesktop { model: String, cuda_cores: u32 },
+    NvidiaDesktop {
+        /// The card's model name.
+        model: String,
+        /// How many CUDA cores it has.
+        cuda_cores: u32,
+    },
     /// A laptop NVIDIA GPU, such as an `RTX 4060 Laptop`.
     #[non_exhaustive]
-    NvidiaLaptop { model: String, cuda_cores: u32 },
+    NvidiaLaptop {
+        /// The GPU's model name.
+        model: String,
+        /// How many CUDA cores it has.
+        cuda_cores: u32,
+    },
     /// A desktop AMD card, such as an `RX 7900 XTX`.
     #[non_exhaustive]
-    AmdDesktop { model: String },
+    AmdDesktop {
+        /// The card's model name.
+        model: String,
+    },
     /// An Intel Arc card, such as an `A770`.
     #[non_exhaustive]
-    IntelArc { model: String },
+    IntelArc {
+        /// The card's model name.
+        model: String,
+    },
     /// No GPU a model can run on.
     CpuOnly,
 }

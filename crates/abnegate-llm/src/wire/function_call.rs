@@ -8,7 +8,9 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct FunctionCall {
+    /// The function called.
     pub name: String,
+    /// Its arguments, as JSON text the model wrote, which may not parse.
     pub arguments: String,
 }
 

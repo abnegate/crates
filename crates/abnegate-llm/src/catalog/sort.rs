@@ -9,26 +9,37 @@ use serde::Serialize;
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ModelSort {
+    /// The catalogue's own order. The default.
     #[default]
     Relevance,
+    /// Most downloaded first.
     #[serde(alias = "downloads_desc")]
     DownloadsDescending,
+    /// Least downloaded first.
     #[serde(alias = "downloads_asc")]
     DownloadsAscending,
+    /// A to Z, ignoring case.
     #[serde(alias = "name_asc")]
     NameAscending,
+    /// Z to A, ignoring case.
     #[serde(alias = "name_desc")]
     NameDescending,
+    /// Smallest download first.
     #[serde(alias = "size_asc")]
     SizeAscending,
+    /// Largest download first.
     #[serde(alias = "size_desc")]
     SizeDescending,
+    /// Fewest parameters first.
     #[serde(alias = "params_asc")]
     ParametersAscending,
+    /// Most parameters first.
     #[serde(alias = "params_desc")]
     ParametersDescending,
+    /// Most recently updated first.
     #[serde(alias = "updated_desc")]
     UpdatedDescending,
+    /// Least recently updated first.
     #[serde(alias = "updated_asc")]
     UpdatedAscending,
 }

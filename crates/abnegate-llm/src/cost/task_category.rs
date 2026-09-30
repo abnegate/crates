@@ -9,13 +9,21 @@ use serde::Serialize;
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TaskCategory {
+    /// Text generation.
     Text,
+    /// Image generation.
     Image,
+    /// Speech synthesis.
     Voice,
+    /// Music generation.
     Music,
+    /// 3D model generation.
     Model3D,
+    /// Video generation.
     Video,
+    /// Embeddings.
     Embedding,
+    /// Speech to text.
     Transcription,
 }
 

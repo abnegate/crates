@@ -8,6 +8,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ImageUrl {
+    /// An `http(s)` URL or a `data:` URL.
     pub url: String,
 }
 

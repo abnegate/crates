@@ -31,7 +31,9 @@ pub enum Credential {
     /// sent as a bearer token by an HTTP provider.
     #[non_exhaustive]
     Key {
+        /// The environment variable a CLI provider reads the key from.
         variable: String,
+        /// The key itself.
         value: SecretValue,
     },
 }

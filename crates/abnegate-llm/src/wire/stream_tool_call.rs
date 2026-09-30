@@ -9,11 +9,15 @@ use crate::wire::stream_function_call::StreamFunctionCall;
 #[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct StreamToolCall {
+    /// Which call of the answer this fragment belongs to, from 0.
     #[serde(default)]
     pub index: u32,
+    /// The call's identifier, usually only on its first fragment.
     pub id: Option<String>,
+    /// The call's type, `function`; `type` on the wire.
     #[serde(rename = "type")]
     pub call_type: Option<String>,
+    /// More of the function call.
     pub function: Option<StreamFunctionCall>,
 }
 

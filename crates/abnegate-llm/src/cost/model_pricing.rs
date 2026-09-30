@@ -8,15 +8,21 @@ use crate::cost::TaskCategory;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ModelPricing {
+    /// Who serves the model, `local` for one on this machine.
     pub provider: String,
+    /// The model's name.
     pub model: String,
     /// The work this model does. A model is only offered for its own category.
     pub category: TaskCategory,
     /// The price quoted per [`ModelPricing::unit`].
     pub cost_per_unit: f64,
+    /// What the price is quoted per.
     pub unit: PricingUnit,
+    /// How good the model's work is, from 0 to 1.
     pub quality_score: f64,
+    /// How fast the model works, from 0 to 1.
     pub speed_score: f64,
+    /// Whether the model runs on this machine.
     pub local_available: bool,
 }
 

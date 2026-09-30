@@ -14,15 +14,21 @@ const KIND: &str = "reasoning effort";
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ReasoningEffort {
+    /// Pick an effort from the prompt. The default.
     #[default]
     Auto,
+    /// Do not think.
     Off,
+    /// Always think briefly.
     Low,
+    /// Always think moderately.
     Medium,
+    /// Always think at length.
     High,
 }
 
 impl ReasoningEffort {
+    /// The snake case name, which is also the serialized form.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",

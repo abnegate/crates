@@ -5,9 +5,13 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TranscriptionSegment {
+    /// Where the piece starts, in seconds into the audio.
     pub start: f64,
+    /// Where the piece ends, in seconds into the audio.
     pub end: f64,
+    /// What was heard.
     pub text: String,
+    /// How sure the provider is of it, from 0 to 1.
     pub confidence: f64,
 }
 

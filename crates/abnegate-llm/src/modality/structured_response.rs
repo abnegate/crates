@@ -8,9 +8,13 @@ use crate::provider::ProviderError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct StructuredResponse {
+    /// The answer, parsed.
     pub value: serde_json::Value,
+    /// The model that answered.
     pub model: String,
+    /// Tokens the prompt took.
     pub input_tokens: u32,
+    /// Tokens the answer took.
     pub output_tokens: u32,
 }
 

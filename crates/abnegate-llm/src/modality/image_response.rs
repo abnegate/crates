@@ -5,10 +5,16 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ImageResponse {
+    /// The encoded image.
     pub data: Vec<u8>,
+    /// Width, in pixels.
     pub width: u32,
+    /// Height, in pixels.
     pub height: u32,
+    /// The encoding, such as `png`.
     pub format: String,
+    /// The prompt the provider actually drew, when it rewrote the one it was
+    /// given.
     pub revised_prompt: Option<String>,
 }
 

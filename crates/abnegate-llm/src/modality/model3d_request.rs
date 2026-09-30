@@ -7,8 +7,11 @@ use crate::modality::Model3DFormat;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Model3DRequest {
+    /// What to model.
     pub prompt: String,
+    /// The file format to return.
     pub format: Model3DFormat,
+    /// URLs of images the model should resemble.
     pub reference_images: Vec<String>,
     /// How many polygons the mesh should have, if the provider takes a
     /// target. Serialised as `poly_count`.

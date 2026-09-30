@@ -7,9 +7,13 @@ use crate::modality::TranscriptionSegment;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TranscriptionResponse {
+    /// Everything heard, as one text.
     pub text: String,
+    /// The same text in timed pieces, when the provider gives them.
     pub segments: Vec<TranscriptionSegment>,
+    /// The language heard, such as `en`.
     pub language: String,
+    /// How long the audio plays, in seconds.
     pub duration_seconds: f64,
 }
 

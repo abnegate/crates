@@ -23,6 +23,7 @@ pub enum SelectionStrategy {
 }
 
 impl SelectionStrategy {
+    /// The strategy's snake case name, which [`str::parse`] reads back.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Primary => "primary",

@@ -7,9 +7,13 @@ use crate::modality::Model3DFormat;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Model3DResponse {
+    /// The encoded model.
     pub data: Vec<u8>,
+    /// Its file format.
     pub format: Model3DFormat,
+    /// How many vertices the mesh has.
     pub vertex_count: u32,
+    /// How many faces the mesh has.
     pub face_count: u32,
 }
 

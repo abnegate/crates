@@ -7,12 +7,19 @@ const TOKENS_PER_MILLION: f64 = 1_000_000.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PricingUnit {
+    /// Per million tokens.
     PerMillionTokens,
+    /// Per image generated.
     PerImage,
+    /// Per second of audio.
     PerSecondAudio,
+    /// Per character of text, as speech synthesis is priced.
     PerCharacter,
+    /// Per 3D model generated.
     Per3DModel,
+    /// Per second of video.
     PerVideoSecond,
+    /// No charge, as for a model run locally.
     Free,
 }
 

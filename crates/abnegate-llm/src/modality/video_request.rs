@@ -5,11 +5,17 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct VideoRequest {
+    /// What the video should show.
     pub prompt: String,
+    /// How long it should play, in seconds.
     pub duration_seconds: f64,
+    /// Width, in pixels.
     pub width: u32,
+    /// Height, in pixels.
     pub height: u32,
+    /// Frames a second.
     pub fps: u32,
+    /// The URL of an image to animate or resemble.
     pub reference_image: Option<String>,
 }
 

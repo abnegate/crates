@@ -59,6 +59,7 @@ impl HttpProvider {
         self
     }
 
+    /// The client that talks to the endpoint.
     pub fn client(&self) -> &LlmClient {
         &self.client
     }

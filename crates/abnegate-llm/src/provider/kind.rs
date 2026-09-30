@@ -17,6 +17,7 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    /// The kind's lowercase name: `http`, `cli` or `mixed`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Http => "http",

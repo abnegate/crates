@@ -15,13 +15,21 @@ use crate::wire::tool_call::ToolCall;
 #[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct Message {
+    /// Who wrote the message.
     pub role: Role,
+    /// Its text, when it has any.
     pub content: Option<String>,
+    /// The participant's name, for a provider that distinguishes them.
     pub name: Option<String>,
+    /// The tool calls an assistant message made.
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// The call a tool message answers.
     pub tool_call_id: Option<String>,
+    /// Image URLs sent with the message, as `image_url` content parts. Never
+    /// read from a response.
     #[serde(default, skip_deserializing)]
     pub images: Vec<String>,
+    /// Images the model produced, read from the response's `images`.
     #[serde(default, rename = "images", deserialize_with = "null_to_default")]
     pub generated_images: Vec<GeneratedImage>,
     /// Normalized thinking text. Required on the next turn for some providers.
@@ -92,18 +100,22 @@ impl Message {
         }
     }
 
+    /// A system message holding `content`.
     pub fn system(content: impl Into<String>) -> Self {
         Self::text(Role::System, content)
     }
 
+    /// A user message holding `content`.
     pub fn user(content: impl Into<String>) -> Self {
         Self::text(Role::User, content)
     }
 
+    /// An assistant message holding `content`.
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::text(Role::Assistant, content)
     }
 
+    /// An assistant message that makes `tool_calls` and says nothing.
     pub fn assistant_with_tools(tool_calls: Vec<ToolCall>) -> Self {
         Self {
             tool_calls: Some(tool_calls),
@@ -111,6 +123,7 @@ impl Message {
         }
     }
 
+    /// A tool message answering the call `tool_call_id` with `content`.
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             tool_call_id: Some(tool_call_id.into()),

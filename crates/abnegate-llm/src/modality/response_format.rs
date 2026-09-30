@@ -28,7 +28,9 @@ pub enum ResponseFormat {
     /// the schema for it.
     #[non_exhaustive]
     Json {
+        /// The JSON Schema the answer must fit, or `None` for any JSON.
         schema: Option<serde_json::Value>,
+        /// Whether to ask the provider to enforce the schema exactly.
         #[serde(default)]
         strict: bool,
     },

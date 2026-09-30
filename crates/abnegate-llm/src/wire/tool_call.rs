@@ -8,9 +8,12 @@ use crate::wire::function_call::FunctionCall;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ToolCall {
+    /// The call's identifier, which the tool's answer names.
     pub id: String,
+    /// The call's type, `function`; `type` on the wire.
     #[serde(rename = "type")]
     pub call_type: String,
+    /// The function called and its arguments.
     pub function: FunctionCall,
 }
 

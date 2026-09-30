@@ -83,10 +83,12 @@ impl CostEstimator {
         }
     }
 
+    /// The model for `category` with the lowest price per unit.
     pub fn cheapest_for(category: TaskCategory, pricing: &[ModelPricing]) -> Option<&ModelPricing> {
         matching_models(category, pricing).min_by(|a, b| compare_cost(a, b))
     }
 
+    /// The model for `category` with the highest quality score.
     pub fn best_quality_for(
         category: TaskCategory,
         pricing: &[ModelPricing],
@@ -94,6 +96,8 @@ impl CostEstimator {
         matching_models(category, pricing).max_by(|a, b| compare_quality(a, b))
     }
 
+    /// The model for `category` with the most quality per quoted dollar, a
+    /// free model counting as a hundred times its quality score.
     pub fn best_value_for(
         category: TaskCategory,
         pricing: &[ModelPricing],
@@ -105,6 +109,9 @@ impl CostEstimator {
         })
     }
 
+    /// The best-quality model for `category` that runs on this machine,
+    /// falling back to [`best_value_for`](Self::best_value_for) when none
+    /// does.
     pub fn local_first_for(
         category: TaskCategory,
         pricing: &[ModelPricing],

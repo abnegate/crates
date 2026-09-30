@@ -16,19 +16,26 @@ const SCHEMA_NAME: &str = "response";
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
 pub struct ChatRequest<'a> {
+    /// The model to ask.
     pub model: &'a str,
+    /// The conversation so far.
     pub messages: &'a [Message],
+    /// Tools the model may call; omitted when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<&'a [ToolDefinition]>,
+    /// Whether and which tool the model must call; omitted when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// The sampling temperature; omitted when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     /// The most tokens the answer may use. Sent as `max_tokens`.
     #[serde(rename = "max_tokens", skip_serializing_if = "Option::is_none")]
     pub maximum_tokens: Option<u32>,
+    /// Whether to stream the answer as server-sent events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    /// Strings that end the answer when the model writes them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<&'a [String]>,
     /// Sent in the OpenAI shape: `json_schema` with the schema when there is

@@ -6,9 +6,13 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct AudioResponse {
+    /// The encoded audio.
     pub data: Vec<u8>,
+    /// The encoding, such as `wav` or `mp3`.
     pub format: String,
+    /// How long the audio plays, in seconds.
     pub duration_seconds: f64,
+    /// Samples a second.
     pub sample_rate: u32,
 }
 

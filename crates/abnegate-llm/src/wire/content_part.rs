@@ -21,10 +21,16 @@ use crate::wire::image_url::ImageUrl;
 pub enum ContentPart {
     /// Prose.
     #[non_exhaustive]
-    Text { text: String },
+    Text {
+        /// The prose itself.
+        text: String,
+    },
     /// An image, by URL or data URL.
     #[non_exhaustive]
-    ImageUrl { image_url: ImageUrl },
+    ImageUrl {
+        /// Where the image is.
+        image_url: ImageUrl,
+    },
 }
 
 impl ContentPart {
