@@ -848,12 +848,13 @@ mod tests {
     }
 
     /// A tree with one readable match and `locked`, whatever `plant` makes of
-    /// it, and what a walk of it found and why it stopped, if it did. `None`
-    /// when `locked` could not be made unreadable.
+    /// it, and what a walk of it given `timeout` found and why it stopped, if
+    /// it did. `None` when `locked` could not be made unreadable.
     fn walked(
         locked: &str,
         plant: impl FnOnce(&Path),
         mode: u32,
+        timeout: Duration,
     ) -> Option<(Vec<String>, Option<&'static str>)> {
         let tree = TempDir::new().expect("a tree to search");
         fs::write(tree.path().join("found.rs"), MARKER).expect("a file to search");
@@ -870,7 +871,9 @@ mod tests {
             MARKER,
             false,
             MAXIMUM_SEARCH_RESULTS,
-            &ToolContext::default().within(tree.path()),
+            &ToolContext::default()
+                .within(tree.path())
+                .with_search_timeout(timeout),
         );
 
         unlock(&locked, mode);
@@ -887,6 +890,7 @@ mod tests {
             "locked.rs",
             |path| fs::write(path, MARKER).expect("a file to lock"),
             0o644,
+            TIMEOUT,
         ) else {
             return;
         };
@@ -904,6 +908,7 @@ mod tests {
                 fs::write(path.join("inside.rs"), MARKER).expect("a file inside it");
             },
             0o755,
+            TIMEOUT,
         ) else {
             return;
         };
@@ -920,12 +925,32 @@ mod tests {
             "locked.bin",
             |path| fs::write(path, MARKER).expect("a file to lock"),
             0o644,
+            TIMEOUT,
         ) else {
             return;
         };
 
         assert_eq!(files(&results.join("\n")), ["found.rs"]);
         assert_eq!(stopped, None);
+    }
+
+    /// The walk reads its time from the context's `search_timeout` and says
+    /// when it could not read part of the tree: out of time, it reports that
+    /// first; within its time, it reports what it could not read.
+    #[test]
+    fn a_walk_honours_its_search_timeout_and_what_it_could_not_read() {
+        let plant = |path: &Path| fs::write(path, MARKER).expect("a file to lock");
+        let Some((results, stopped)) = walked("locked.rs", plant, 0o644, Duration::ZERO) else {
+            return;
+        };
+        assert!(results.is_empty(), "{results:?}");
+        assert_eq!(stopped, Some(OUT_OF_TIME));
+
+        let Some((results, stopped)) = walked("locked.rs", plant, 0o644, TIMEOUT) else {
+            return;
+        };
+        assert_eq!(files(&results.join("\n")), ["found.rs"]);
+        assert_eq!(stopped, Some(UNREADABLE));
     }
 
     #[tokio::test]
