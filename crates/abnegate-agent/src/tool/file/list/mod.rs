@@ -73,7 +73,7 @@ impl Tool for ListFilesTool {
         let parameters: ListFilesParameters = serde_json::from_value(parameters)
             .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
-        let full_path = resolve(&context.working_directory.join(&parameters.path));
+        let full_path = resolve(&context.working_directory.join(&parameters.path))?;
         confine(&full_path, context)?;
         if !full_path.exists() {
             return Err(ToolError::Execution(format!(

@@ -916,6 +916,49 @@ async fn list_files_refuses_a_path_outside_cwd() {
     }
 }
 
+/// `resolve` gave up after its link budget and kept the last link's own name,
+/// a path under cwd that confinement accepted; the walk and `rg` then
+/// followed that one link out of it. Past the budget the path is refused, as
+/// the kernel refuses it with `ELOOP`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_chain_of_links_longer_than_the_kernel_follows_is_refused() {
+    let outside = tempdir().unwrap();
+    fs::write(outside.path().join("id_rsa.rs"), SECRET).unwrap();
+    let inside = tempdir().unwrap();
+    let context = ToolContext {
+        environment: ToolContext::default().environment,
+        ..create_test_context(inside.path())
+    };
+    let chain = crate::tool::beneath::LINKS + 1;
+    std::os::unix::fs::symlink(outside.path(), inside.path().join(format!("link{chain}"))).unwrap();
+    for link in 1..chain {
+        std::os::unix::fs::symlink(
+            format!("link{}", link + 1),
+            inside.path().join(format!("link{link}")),
+        )
+        .unwrap();
+    }
+
+    let listed = ListFilesTool
+        .execute(serde_json::json!({"path": "link1"}), &context)
+        .await;
+    let searched = SearchCodeTool
+        .execute(
+            serde_json::json!({"pattern": SECRET, "path": "link1"}),
+            &context,
+        )
+        .await;
+
+    for (tool, result) in [("list_files", listed), ("search_code", searched)] {
+        let error = result.expect_err(tool);
+        assert!(
+            !error.to_string().contains("id_rsa"),
+            "{tool} left cwd through the chain: {error}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn list_files_does_not_follow_a_symlink_out_of_cwd() {
@@ -1171,7 +1214,7 @@ fn the_search_walk_finds_files_under_a_working_directory_reached_through_a_link(
         "the fixture has to be reached through a link to be a test"
     );
 
-    let root = super::resolve(&context.working_directory);
+    let root = super::resolve(&context.working_directory).unwrap();
     let (found, _) = search_tree(
         &root,
         "open sesame please",
@@ -2207,15 +2250,15 @@ fn resolve_follows_each_link_where_the_kernel_would() {
     let home = shared.home.canonicalize().unwrap();
 
     assert_eq!(
-        super::resolve(&shared.workspace.join("work/../auth.json")),
+        super::resolve(&shared.workspace.join("work/../auth.json")).unwrap(),
         home.join("auth.json")
     );
     assert_eq!(
-        super::resolve(&shared.workspace.join("instructions.md")),
+        super::resolve(&shared.workspace.join("instructions.md")).unwrap(),
         home.join("AGENTS.md")
     );
     assert_eq!(
-        super::resolve(&shared.workspace.join("missing/deeper.txt")),
+        super::resolve(&shared.workspace.join("missing/deeper.txt")).unwrap(),
         shared
             .workspace
             .canonicalize()

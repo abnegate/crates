@@ -38,6 +38,8 @@ use super::beneath::Access;
 /// context.
 pub const OFF_LIMITS: &str = "Path is off limits to file tools";
 
+const TOO_MANY_LINKS: &str = "Path runs through too many symbolic links";
+
 /// Refuse a resolved path a file tool may not reach: one that is withheld from
 /// every file tool, and unless the context is unrestricted, one that leaves
 /// `context.working_directory`.
@@ -125,8 +127,10 @@ pub(super) async fn blocking<Value: Send + 'static>(
 /// That is what makes a symlinked ancestor leaving the working directory
 /// visible to [`confine`] *before* the directories under it are created.
 /// Nothing past a process's `/proc` entry is resolved, since [`confine`]
-/// refuses it whole.
-pub(crate) fn resolve(path: &Path) -> PathBuf {
+/// refuses it whole. A path that needs more links followed than the kernel
+/// would follow is refused, as the kernel refuses it: kept as written, its
+/// last link would pass for a directory inside whatever holds it.
+pub(crate) fn resolve(path: &Path) -> Result<PathBuf, ToolError> {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut pending = steps(&absolute);
     let mut resolved = PathBuf::new();
@@ -145,20 +149,22 @@ pub(crate) fn resolve(path: &Path) -> PathBuf {
             Some(Component::Normal(name)) => {
                 let candidate = resolved.join(name);
                 match fs::read_link(&candidate) {
-                    Ok(target) if links > 0 => {
-                        links -= 1;
+                    Ok(target) => {
+                        links = links
+                            .checked_sub(1)
+                            .ok_or_else(|| ToolError::Execution(TOO_MANY_LINKS.to_string()))?;
                         for step in steps(&target).into_iter().rev() {
                             pending.push_front(step);
                         }
                     }
-                    _ => resolved = candidate,
+                    Err(_) => resolved = candidate,
                 }
             }
             Some(Component::CurDir) | None => {}
             Some(root) => resolved.push(root),
         }
     }
-    resolved
+    Ok(resolved)
 }
 
 /// Each component of `path`, owned, so a link's target can be spliced in.

@@ -28,7 +28,8 @@ impl Denied {
                 missing: Vec::new(),
             });
         }
-        let resolved = resolve(path);
+        let resolved = resolve(path)
+            .unwrap_or_else(|_| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
         let mut missing = Vec::new();
         for ancestor in resolved.ancestors() {
             if let Some(existing) = Identity::of(ancestor) {

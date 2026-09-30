@@ -87,7 +87,7 @@ pub(crate) fn open(context: &ToolContext, path: &Path, access: Access) -> Result
 /// symlink swapped in while the open runs.
 fn admitted(context: &ToolContext, path: &Path) -> Result<(), ToolError> {
     file::confine(
-        &file::resolve(&context.working_directory.join(path)),
+        &file::resolve(&context.working_directory.join(path))?,
         context,
     )
 }

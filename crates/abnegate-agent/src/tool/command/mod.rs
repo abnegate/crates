@@ -109,7 +109,7 @@ fn working_directory(context: &ToolContext, directory: Option<&str>) -> Result<P
     let Some(directory) = directory else {
         return Ok(context.working_directory.clone());
     };
-    let resolved = resolve(&context.working_directory.join(directory));
+    let resolved = resolve(&context.working_directory.join(directory))?;
     confine(&resolved, context)?;
     Ok(resolved)
 }

@@ -145,7 +145,7 @@ impl Tool for SearchCodeTool {
         let search_path = resolve(&match &parameters.path {
             Some(path) => context.working_directory.join(path),
             None => context.working_directory.clone(),
-        });
+        })?;
         confine(&search_path, context)?;
         let maximum_results = parameters
             .maximum_results
@@ -464,7 +464,9 @@ async fn next_match<Reader: AsyncBufRead + Unpin>(
 /// path beneath the searched directory, which is all ripgrep was handed, and
 /// only when it stays confined once resolved.
 fn reachable(path: &Path, search_path: &Path, context: &ToolContext) -> bool {
-    path.is_absolute() && path.starts_with(search_path) && confine(&resolve(path), context).is_ok()
+    path.is_absolute()
+        && path.starts_with(search_path)
+        && resolve(path).is_ok_and(|resolved| confine(&resolved, context).is_ok())
 }
 
 /// Whether ripgrep exited having searched all it was given, matching or not.
