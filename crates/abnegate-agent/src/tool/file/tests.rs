@@ -2434,6 +2434,36 @@ async fn a_denied_directory_inside_cwd_stays_denied() {
     assert!(!listed.contains("auth.json"), "{listed}");
 }
 
+/// The walk handed every entry to the listing before it asked what was
+/// withheld, so a listing named a denied file, and a denied directory, that a
+/// direct request for either refused.
+#[tokio::test]
+async fn a_listing_never_names_what_is_denied() {
+    let shared = shared();
+    fs::write(shared.root.join(".env"), SECRET).unwrap();
+    fs::write(shared.workspace.join("own.rs"), "mine").unwrap();
+    let context = create_test_context(&shared.root).with_denied([STATE, ".env"]);
+
+    for recursive in [false, true] {
+        let listed = ListFilesTool
+            .execute(
+                serde_json::json!({"path": ".", "recursive": recursive}),
+                &context,
+            )
+            .await
+            .expect("cwd lists")
+            .output
+            .unwrap();
+        assert!(listed.contains("workspace"), "{listed}");
+        for withheld in [STATE, ".env", ACCOUNT] {
+            assert!(
+                !listed.contains(withheld),
+                "recursive {recursive}: {withheld} was listed: {listed}"
+            );
+        }
+    }
+}
+
 /// `rg` searches the whole tree it is handed, so a match inside a denied
 /// directory under the searched one reached the model unless each file it
 /// named was judged the way every other file tool judges a path.

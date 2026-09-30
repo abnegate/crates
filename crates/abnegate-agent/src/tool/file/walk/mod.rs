@@ -33,7 +33,7 @@ const TOO_DEEP: &str = "too deep";
 /// A symlinked directory is shown to the visitor as the link it is and never
 /// entered, and a directory reached twice by any route (a bind mount, a
 /// hard-linked directory) is entered once, so a tree that loops back on
-/// itself still ends. A directory the context withholds is shown and never
+/// itself still ends. An entry the context withholds is neither shown nor
 /// entered, whatever name the walk reaches it by. Depth, entry and time
 /// budgets bound whatever is left.
 pub(super) struct Walk {
@@ -106,6 +106,9 @@ impl Walk {
                 self.unreadable = true;
                 continue;
             };
+            if self.withholds(&entry) {
+                continue;
+            }
             match visit(&entry, file_type) {
                 Visit::Stop => return Ok(()),
                 Visit::Skip => {}
@@ -134,6 +137,15 @@ impl Walk {
         None
     }
 
+    /// Whether the context withholds `entry` itself, judged by what it is on
+    /// disk rather than by its name.
+    fn withholds(&self, entry: &DirEntry) -> bool {
+        entry.metadata().is_ok_and(|metadata| {
+            self.withheld
+                .holds_entry(&entry.path(), Identity::from(&metadata))
+        })
+    }
+
     fn enter(&mut self, directory: PathBuf, depth: usize) -> Option<fs::ReadDir> {
         if depth + 1 > MAXIMUM_WALK_DEPTH {
             self.stopped = Some(TOO_DEEP);
@@ -145,7 +157,7 @@ impl Walk {
         };
         let identity = Identity::from(&metadata);
         if !metadata.is_dir()
-            || self.withheld.holds_directory(&directory, identity)
+            || self.withheld.holds_entry(&directory, identity)
             || !self.visited.insert(identity)
         {
             return None;
@@ -246,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn a_denied_directory_is_seen_and_never_entered_under_any_name() {
+    fn a_denied_directory_is_neither_shown_nor_entered_under_any_name() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("state/inner")).unwrap();
         std::fs::write(root.path().join("state/inner/file"), "x").unwrap();
@@ -258,7 +270,7 @@ mod tests {
 
         let (seen, stopped) = names_withholding(root.path(), &context);
 
-        assert_eq!(seen, ["beside", "beside/file", "state"]);
+        assert_eq!(seen, ["beside", "beside/file"]);
         assert_eq!(stopped, None);
     }
 }

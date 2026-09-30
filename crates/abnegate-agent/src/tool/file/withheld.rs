@@ -61,9 +61,9 @@ impl Withheld {
         })
     }
 
-    /// Whether the directory at `path`, already known to be `identity`, is
-    /// withheld whole, for a walk deciding whether to enter it.
-    pub(super) fn holds_directory(&self, path: &Path, identity: Identity) -> bool {
+    /// Whether the entry at `path`, already known to be `identity`, is
+    /// withheld whole, for a walk deciding whether to show or enter it.
+    pub(super) fn holds_entry(&self, path: &Path, identity: Identity) -> bool {
         per_process(path) || self.denied.iter().any(|denied| denied.is(identity))
     }
 }
