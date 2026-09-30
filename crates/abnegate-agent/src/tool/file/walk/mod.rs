@@ -67,7 +67,8 @@ impl Walk {
     }
 
     /// Show `visit` every entry beneath `root`, entering the directories it
-    /// asks to.
+    /// asks to. A visit that ends past the walk's time stops it, out of time,
+    /// even when it was the last entry left.
     ///
     /// Only a `root` that cannot be read is an error: a directory further down
     /// that cannot be read is left out, as the entries it held would be, and
@@ -112,6 +113,10 @@ impl Walk {
                     }
                 }
                 Visit::Descend => {}
+            }
+            if Instant::now() >= self.deadline {
+                self.stopped = Some(OUT_OF_TIME);
+                return Ok(());
             }
         }
         Ok(())
@@ -205,6 +210,24 @@ mod tests {
         let mut walk = Walk::new(Duration::ZERO);
 
         walk.run(root.path(), |_, _| Visit::Descend).unwrap();
+
+        assert_eq!(walk.stopped(), Some("out of time"));
+    }
+
+    /// The time was checked only before an entry, so a visit that ran past
+    /// it on the last entry left the walk looking complete.
+    #[test]
+    fn a_walk_whose_last_visit_runs_past_its_time_says_so() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), "x").unwrap();
+        let limit = Duration::from_millis(50);
+        let mut walk = Walk::new(limit);
+
+        walk.run(root.path(), |_, _| {
+            std::thread::sleep(limit * 2);
+            Visit::Skip
+        })
+        .unwrap();
 
         assert_eq!(walk.stopped(), Some("out of time"));
     }

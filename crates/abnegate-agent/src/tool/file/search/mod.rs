@@ -193,7 +193,8 @@ fn format_search_results(
 /// are passed over, as is any file past the context's `maximum_file_size`,
 /// and every file is opened through the working directory's own descriptor.
 /// A directory, or a code file, that could not be read is left out, and the
-/// search says so with [`UNREADABLE`], as a search through `rg` does.
+/// search says so with [`UNREADABLE`], as a search through `rg` does; so
+/// does a search whose `root` itself could not be read.
 pub(super) fn search_tree(
     root: &Path,
     pattern: &str,
@@ -209,7 +210,7 @@ pub(super) fn search_tree(
     let mut results = Vec::new();
     let mut unreadable = false;
     let mut walk = Walk::new(context.search_timeout);
-    let _ = walk.run(root, |entry, file_type| {
+    let walked = walk.run(root, |entry, file_type| {
         if results.len() >= maximum_results {
             return Visit::Stop;
         }
@@ -237,7 +238,7 @@ pub(super) fn search_tree(
         }
         Visit::Skip
     });
-    let unreadable = unreadable || walk.unreadable();
+    let unreadable = unreadable || walk.unreadable() || walked.is_err();
     (results, walk.stopped().or(unreadable.then_some(UNREADABLE)))
 }
 
@@ -914,6 +915,30 @@ mod tests {
         };
 
         assert_eq!(files(&results.join("\n")), ["found.rs"]);
+        assert_eq!(stopped, Some(UNREADABLE));
+    }
+
+    /// A root the walk could not open was reported as a tree with no match.
+    #[test]
+    fn a_walk_that_could_not_read_its_root_says_so() {
+        let tree = TempDir::new().expect("a tree to search");
+        fs::write(tree.path().join("found.rs"), MARKER).expect("a file to search");
+        if !lock(tree.path()) {
+            unlock(tree.path(), 0o755);
+            eprintln!("skipping: {} stayed readable", tree.path().display());
+            return;
+        }
+
+        let (results, stopped) = search_tree(
+            tree.path(),
+            MARKER,
+            false,
+            MAXIMUM_SEARCH_RESULTS,
+            &ToolContext::default().within(tree.path()),
+        );
+
+        unlock(tree.path(), 0o755);
+        assert!(results.is_empty(), "{results:?}");
         assert_eq!(stopped, Some(UNREADABLE));
     }
 
