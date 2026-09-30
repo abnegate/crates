@@ -82,10 +82,18 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(workspace().owner('crates/abnegate-agent/src/lib.rs').name, 'abnegate-agent')
 
     def test_the_innermost_crate_owns_a_nested_file(self) -> None:
-        nested = metadata({'outer': [], 'outer/inner': []})
+        nested = metadata({'outer': [], 'inner': []})
+        for package in nested['packages']:
+            if package['name'] == 'inner':
+                package['manifest_path'] = f'{ROOT}/crates/outer/inner/Cargo.toml'
         found = affected_crates.Workspace.from_metadata(nested)
-        self.assertEqual(found.owner('crates/outer/inner/src/lib.rs').name, 'outer/inner')
+        self.assertEqual(found.owner('crates/outer/inner/src/lib.rs').name, 'inner')
         self.assertEqual(found.owner('crates/outer/src/lib.rs').name, 'outer')
+
+    def test_a_name_cargo_would_refuse_is_never_selected(self) -> None:
+        for name in ('abnegate-exec; true', 'abnegate exec', '--workspace', '-p', ''):
+            with self.subTest(name=name), self.assertRaisesRegex(affected_crates.SelectionError, 'not a cargo package name'):
+                affected_crates.Workspace.from_metadata(metadata({name: []}))
 
     def test_a_registry_dependency_is_not_a_workspace_edge(self) -> None:
         self.assertEqual(workspace().crates['abnegate-secret'].dependencies, frozenset())

@@ -22,7 +22,8 @@ Each result is printed as a GitHub Actions output, `name=value`:
   exec      whether abnegate-exec is affected
 
 The exit status is 0 when the selection was made and 2 when it could not be:
-git or cargo failed, the tag names no workspace package, or Python is older
+git or cargo failed, the tag names no workspace package, a package name is not
+one cargo accepts and so is unsafe to splice into a command, or Python is older
 than 3.9.
 """
 
@@ -46,6 +47,7 @@ SCRIPT = Path(__file__).name
 MINIMUM_PYTHON = (3, 9)
 
 CRATES = 'crates/'
+PACKAGE = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*')
 SANDBOXED = 'abnegate-exec'
 TAG = re.compile(r'(?P<package>.+)-v(?P<version>\d+\.\d+\.\d+\S*)')
 WORKSPACE_FILES = frozenset({
@@ -83,6 +85,9 @@ class Selection:
 class Workspace:
     def __init__(self, crates: Iterable[Crate]) -> None:
         self.crates = {crate.name: crate for crate in crates}
+        for name in self.crates:
+            if PACKAGE.fullmatch(name) is None:
+                raise SelectionError(f'{name!r} is not a cargo package name, so it cannot be passed to cargo as -p')
         self.names = frozenset(self.crates)
         self.dependents: dict[str, set[str]] = {name: set() for name in self.names}
         for crate in self.crates.values():
