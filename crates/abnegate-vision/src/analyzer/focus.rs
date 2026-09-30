@@ -8,6 +8,7 @@ use crate::gravity::Point;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Focus {
+    /// The subject's centre of mass.
     pub point: Point,
     /// The model's peak activation, in `[0, 1]`.
     ///

@@ -10,8 +10,10 @@ use crate::decode::DecodeError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// The bytes could not be decoded as an image.
     #[error(transparent)]
     Decode(#[from] DecodeError),
+    /// The crop could not be framed or rendered.
     #[error(transparent)]
     Crop(#[from] CropError),
 }
