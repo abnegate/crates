@@ -1668,3 +1668,143 @@ fn the_shell_schemas_keep_their_wire_keys() {
     assert_eq!(parsed.timeout_seconds, Some(5));
     assert_eq!(parsed.maximum_output_characters, Some(900));
 }
+
+async fn refused_sleep(tool: &dyn Tool, background: bool, context: &ToolContext) -> String {
+    tool.execute(
+        json!({
+            "command": "sleep 600",
+            "background": background,
+            "reason": "Wait for the deploy."
+        }),
+        context,
+    )
+    .await
+    .expect_err("a sleep past the cap is refused")
+    .to_string()
+}
+
+fn unwaited(tool: impl Tool) -> std::sync::Arc<dyn Tool> {
+    tool.unwaited()
+        .expect("a shell tool tells the model to wait for its jobs")
+}
+
+/// A turn that is offered wait_for is told to use it in the words it has
+/// always been told, byte for byte, and a registry that holds wait_for serves
+/// the shell tools in that form.
+#[tokio::test]
+async fn a_turn_offered_wait_for_is_told_to_wait_as_it_always_was() {
+    let context = shell_test_context();
+    let registry = crate::tool::ToolRegistry::with_host_tools();
+    let shell = registry
+        .get("run_shell")
+        .expect("the host profile has a shell");
+    let command = registry
+        .get("run_command")
+        .expect("the host profile has run_command");
+
+    assert_eq!(
+        shell.parameters_schema()["properties"]["command"]["description"].as_str(),
+        Some(
+            "Shell command to run, e.g. 'cargo test 2>&1 | tail -40'. It may not block on sleep \
+             for more than 60 seconds: to wait longer, start it with background: true and wait \
+             for it with wait_for."
+        )
+    );
+    for tool in [&shell, &command] {
+        assert_eq!(
+            tool.parameters_schema()["properties"][BACKGROUND_PARAMETER]["description"].as_str(),
+            Some(
+                "Detach and return immediately with a job id and log path. Use for anything \
+                 long-running; wait for it with wait_for instead of blocking. A background job \
+                 ends with the turn that started it, or with the run. Default false."
+            ),
+            "{}",
+            tool.name()
+        );
+    }
+    assert_eq!(
+        refused_sleep(shell.as_ref(), false, &context).await,
+        "Execution failed: This command sleeps for 600 seconds, and a call may block on sleep for \
+         at most 60. Start it with background: true and wait for it with wait_for."
+    );
+    assert_eq!(
+        refused_sleep(shell.as_ref(), true, &context).await,
+        "Execution failed: This command sleeps for 600 seconds, and a call may block on sleep for \
+         at most 60. Backgrounding does not raise the cap. Start something that finishes on its \
+         own and wait for it with wait_for rather than sleeping."
+    );
+    assert_eq!(
+        job::receipt(
+            &job::JobStarted::new("job_9f3c1a7b2e04", 48213, "/tmp/job_9f3c1a7b2e04.log"),
+            crate::tool::WaitFor::Offered
+        ),
+        "Started job_9f3c1a7b2e04 (pid 48213). Log: /tmp/job_9f3c1a7b2e04.log\nWait for it with \
+         wait_for, or read it with tail_job."
+    );
+}
+
+/// A coding agent's turn is never offered wait_for, so the shell tools it is
+/// served say that each instruction to call the tool holds only on a turn
+/// that has it: in their schemas, their receipts and their refusals.
+#[tokio::test]
+async fn an_unwaited_shell_tool_says_each_instruction_to_wait_needs_the_tool() {
+    let (_directory, context, session) = background_context();
+    let started = json!({"command": "true", "background": true, "reason": "Start it."});
+    let mut texts = Vec::new();
+
+    for tool in [unwaited(RunShellTool), unwaited(RunCommandTool)] {
+        texts.push(tool.parameters_schema().to_string());
+        let receipt = tool
+            .execute(started.clone(), &context)
+            .await
+            .expect("the job starts");
+        texts.extend(receipt.output);
+    }
+    for background in [false, true] {
+        texts.push(refused_sleep(unwaited(RunShellTool).as_ref(), background, &context).await);
+    }
+    Jobs::kill_session(session).await;
+
+    assert_eq!(texts.len(), 6, "{texts:?}");
+    for text in texts {
+        assert!(text.contains(WAIT_FOR), "{text}");
+        assert_eq!(
+            text.matches(WAIT_FOR).count(),
+            text.matches(crate::tool::WaitFor::Withheld.condition())
+                .count(),
+            "{text}"
+        );
+    }
+}
+
+/// What a shell tool says about waiting is all that changes for a turn
+/// without wait_for: the call it makes, what that costs and how a reader is
+/// shown it stay what they are.
+#[test]
+fn an_unwaited_shell_tool_is_otherwise_the_same_tool() {
+    let context = create_test_context();
+    let call = json!({"command": "cargo", "args": ["test"], "reason": "Run the tests."});
+    let tools: [std::sync::Arc<dyn Tool>; 2] = [
+        std::sync::Arc::new(RunShellTool),
+        std::sync::Arc::new(RunCommandTool),
+    ];
+
+    for tool in tools {
+        let unwaited = tool
+            .unwaited()
+            .expect("a shell tool has a form without waits");
+        assert_eq!(unwaited.name(), tool.name());
+        assert_eq!(unwaited.description(), tool.description());
+        assert_eq!(unwaited.tier(), tool.tier());
+        assert_eq!(unwaited.ends_turn(), tool.ends_turn());
+        assert_eq!(unwaited.timeout(&context), tool.timeout(&context));
+        assert_eq!(unwaited.preview(&call), tool.preview(&call));
+        assert_eq!(
+            unwaited
+                .parameters_schema()
+                .to_string()
+                .replace(crate::tool::WaitFor::Withheld.condition(), ""),
+            tool.parameters_schema().to_string()
+        );
+    }
+}

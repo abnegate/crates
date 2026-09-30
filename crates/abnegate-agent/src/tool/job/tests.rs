@@ -1331,3 +1331,31 @@ fn the_application_directory_is_one_hidden_name_inside_the_checkout() {
         assert!(crate::Application::new(name).is_err(), "{name:?}");
     }
 }
+
+/// A chat reads its jobs back out of the results its turns were handed, and a
+/// turn that is offered wait_for and one that is not were handed different
+/// receipts.
+#[test]
+fn a_receipt_reads_back_whether_or_not_its_turn_could_wait() {
+    let first = "Started job_9f3c1a7b2e04 (pid 48213). Log: \
+                 /tmp/work/.abnegate/jobs/job_9f3c1a7b2e04.log";
+
+    for (wait_for, advice) in [
+        (
+            WaitFor::Offered,
+            "Wait for it with wait_for, or read it with tail_job.",
+        ),
+        (
+            WaitFor::Withheld,
+            "Wait for it with wait_for when you have that tool, or read it with tail_job.",
+        ),
+    ] {
+        let receipt = format!("{first}\n{advice}");
+        assert_eq!(super::receipt(&job(), wait_for), receipt);
+        assert_eq!(parse_receipt(&receipt), Some(job()), "{advice}");
+    }
+    assert_eq!(
+        started_text(&job()),
+        super::receipt(&job(), WaitFor::Offered)
+    );
+}

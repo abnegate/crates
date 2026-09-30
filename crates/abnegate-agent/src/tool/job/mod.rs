@@ -38,6 +38,7 @@ pub use status::JobStatus;
 pub use tail::JobTail;
 use uuid::Uuid;
 
+use super::WaitFor;
 use crate::Application;
 
 pub const TAIL_JOB: &str = "tail_job";
@@ -46,7 +47,8 @@ pub const TAIL_JOB: &str = "tail_job";
 /// job ends, built on [`Jobs::settled`].
 ///
 /// Receipts and schemas point the model at it by this name, so an application
-/// that registers such a tool registers it under this name.
+/// that registers such a tool registers it under this name. A registry without
+/// it serves each tool's [unwaited](super::Tool::unwaited) form.
 pub const WAIT_FOR: &str = "wait_for";
 
 /// Longest a background job may run before it is killed.
@@ -163,11 +165,20 @@ fn log_name(id: &str) -> String {
     format!("{id}.{JOB_LOG_EXTENSION}")
 }
 
-/// What a backgrounded shell call returns to the model.
+/// What a backgrounded shell call returns to a turn that is offered
+/// [`WAIT_FOR`].
 pub fn started_text(job: &JobStarted) -> String {
+    receipt(job, WaitFor::Offered)
+}
+
+/// What a backgrounded shell call returns to the model.
+pub fn receipt(job: &JobStarted, wait_for: WaitFor) -> String {
     format!(
-        "{STARTED_PREFIX}{} (pid {}). Log: {}\nWait for it with {WAIT_FOR}, or read it with {TAIL_JOB}.",
-        job.id, job.pid, job.log_path
+        "{STARTED_PREFIX}{} (pid {}). Log: {}\nWait for it with {WAIT_FOR}{}, or read it with {TAIL_JOB}.",
+        job.id,
+        job.pid,
+        job.log_path,
+        wait_for.condition()
     )
 }
 
@@ -192,11 +203,12 @@ const RECEIPT_PID_CLOSING: &str = "). Log: ";
 ///
 /// A caller holding only the tool's own output has nowhere else to look: the
 /// registry keeps no pid and a `ToolResult` has no slot for one. What is read
-/// back is therefore checked by rebuilding the receipt from it, so a change to
-/// [`started_text`] stops this recognising the line rather than reporting a job
-/// with the wrong pid. Reading lives beside writing for the same reason: the
-/// format is this module's, and a reader that re-derived it elsewhere would
-/// drift from the builder in silence.
+/// back is therefore checked by rebuilding the receipt from it, in the form
+/// for a turn that is offered [`WAIT_FOR`] and in the form for one that is not,
+/// so a change to [`receipt`] stops this recognising the line rather than
+/// reporting a job with the wrong pid. Reading lives beside writing for the
+/// same reason: the format is this module's, and a reader that re-derived it
+/// elsewhere would drift from the builder in silence.
 pub fn parse_receipt(output: &str) -> Option<JobStarted> {
     let id = parse_started(output)?;
     let (announced, rest) = output.lines().next()?.split_once(RECEIPT_PID_OPENING)?;
@@ -209,7 +221,10 @@ pub fn parse_receipt(output: &str) -> Option<JobStarted> {
         pid: pid.parse().ok()?,
         log_path: log_path.to_string(),
     };
-    (started_text(&job) == output).then_some(job)
+    WaitFor::ALL
+        .iter()
+        .any(|wait_for| receipt(&job, *wait_for) == output)
+        .then_some(job)
 }
 
 fn is_job_id(candidate: &str) -> bool {

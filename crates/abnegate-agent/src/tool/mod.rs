@@ -29,6 +29,7 @@ mod tier;
 mod vision;
 mod wait;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use abnegate_exec::DEFAULT_ENVIRONMENT;
@@ -67,6 +68,7 @@ pub(crate) use text::word;
 pub use tier::CONFIRMED_FROM;
 pub use tier::Tier;
 pub use vision::is_vision_url;
+pub use wait::WaitFor;
 pub use wait::WaitForTool;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -132,6 +134,15 @@ pub trait Tool: Send + Sync {
     /// holds can close. A tool that leaves this alone is shown as the call
     /// itself, its name and every argument.
     fn preview(&self, _parameters: &Value) -> Option<Rendering> {
+        None
+    }
+
+    /// This tool as a turn that is not offered [`WAIT_FOR`](job::WAIT_FOR) is
+    /// served it, or `None` when nothing it says sends the model to that tool.
+    ///
+    /// A [`ToolRegistry`] with no tool of that name registered serves this
+    /// form in place of the tool.
+    fn unwaited(&self) -> Option<Arc<dyn Tool>> {
         None
     }
 

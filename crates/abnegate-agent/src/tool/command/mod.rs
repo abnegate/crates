@@ -4,6 +4,8 @@ mod run;
 mod shell;
 #[cfg(test)]
 mod tests;
+mod unwaited;
+mod waiting;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -19,12 +21,15 @@ use super::Rendering;
 use super::ToolContext;
 use super::ToolError;
 use super::ToolResult;
+use super::WaitFor;
 use super::file::confine;
 use super::file::resolve;
 use super::job;
 use super::job::JobCommand;
 use super::job::Jobs;
 use super::job::WAIT_FOR;
+use unwaited::Unwaited;
+use waiting::Waiting;
 
 pub(super) const MAXIMUM_OUTPUT_PARAMETER: &str = "max_output_chars";
 const BACKGROUND_PARAMETER: &str = "background";
@@ -66,13 +71,14 @@ pub(super) fn maximum_output_property() -> Value {
     })
 }
 
-fn background_property() -> Value {
+fn background_property(wait_for: WaitFor) -> Value {
     json!({
         "type": "boolean",
         "description": format!(
             "Detach and return immediately with a job id and log path. Use for anything \
-             long-running; wait for it with {WAIT_FOR} instead of blocking. A background job \
-             ends with the turn that started it, or with the run. Default false."
+             long-running; wait for it with {WAIT_FOR}{} instead of blocking. A background job \
+             ends with the turn that started it, or with the run. Default false.",
+            wait_for.condition()
         )
     })
 }
@@ -114,10 +120,14 @@ fn working_directory(context: &ToolContext, directory: Option<&str>) -> Result<P
 /// a command nothing the foreground would have refused it. The job is keyed to
 /// the session's own working tree and the command carries the directory the
 /// child runs in, so where the model pointed the command cannot move the log.
-async fn background(command: &JobCommand, context: &ToolContext) -> Result<ToolResult, ToolError> {
+async fn background(
+    command: &JobCommand,
+    context: &ToolContext,
+    wait_for: WaitFor,
+) -> Result<ToolResult, ToolError> {
     Jobs::spawn(command, context)
         .await
-        .map(|started| ToolResult::success(job::started_text(&started)))
+        .map(|started| ToolResult::success(job::receipt(&started, wait_for)))
         .map_err(ToolError::Execution)
 }
 

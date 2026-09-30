@@ -1,6 +1,7 @@
 mod parameters;
 
 use std::iter::once;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 pub(super) use parameters::RunCommandParameters;
@@ -11,6 +12,8 @@ use tokio::time::Duration;
 use super::BACKGROUND_PARAMETER;
 use super::MAXIMUM_OUTPUT_PARAMETER;
 use super::MAXIMUM_SHELL_TIMEOUT;
+use super::Unwaited;
+use super::Waiting;
 use super::background;
 use super::background_property;
 use super::call_limit;
@@ -27,6 +30,7 @@ use crate::tool::Tool;
 use crate::tool::ToolContext;
 use crate::tool::ToolError;
 use crate::tool::ToolResult;
+use crate::tool::WaitFor;
 use crate::tool::job::JobCommand;
 use crate::tool::process;
 use crate::tool::reason_property;
@@ -91,6 +95,25 @@ impl Tool for RunCommandTool {
     }
 
     fn parameters_schema(&self) -> Value {
+        Self::schema(WaitFor::Offered)
+    }
+
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        self.run(parameters, context, WaitFor::Offered).await
+    }
+
+    fn unwaited(&self) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Unwaited(Self)))
+    }
+}
+
+#[async_trait]
+impl Waiting for RunCommandTool {
+    fn schema(wait_for: WaitFor) -> Value {
         json!({
             "type": "object",
             "properties": {
@@ -115,7 +138,7 @@ impl Tool for RunCommandTool {
                         MAXIMUM_SHELL_TIMEOUT.as_secs()
                     )
                 },
-                BACKGROUND_PARAMETER: background_property(),
+                BACKGROUND_PARAMETER: background_property(wait_for),
                 MAXIMUM_OUTPUT_PARAMETER: maximum_output_property(),
                 REASON_PARAMETER: reason_property()
             },
@@ -123,10 +146,11 @@ impl Tool for RunCommandTool {
         })
     }
 
-    async fn execute(
+    async fn run(
         &self,
         parameters: Value,
         context: &ToolContext,
+        wait_for: WaitFor,
     ) -> Result<ToolResult, ToolError> {
         let parameters: RunCommandParameters = serde_json::from_value(parameters)
             .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
@@ -163,7 +187,7 @@ impl Tool for RunCommandTool {
         if parameters.background {
             let command = JobCommand::new(&parameters.command, parameters.arguments.clone())
                 .within(&directory);
-            return background(&command, context).await;
+            return background(&command, context, wait_for).await;
         }
 
         let mut process = process::command(&parameters.command, context);

@@ -66,6 +66,13 @@ it found so far, marked as stopped early. `search_code` shows a match only when
 the file it is in lies beneath the searched directory and stays beneath the
 working directory once its links are resolved.
 
+A registry without `wait_for`, such as one serving a coding agent whose own
+loop cannot park on it, serves each tool that tells the model to wait in its
+`Tool::unwaited` form: the shell tools' schemas, spawn receipts and sleep
+refusals then say that waiting needs a tool the turn does not have. A registry
+that has `wait_for` serves every tool as it is, and `job::parse_receipt` reads a
+receipt back in either form.
+
 The model is named when the agent is built, so one provider can serve several
 agents. When the provider stops on custom sequences or asks for reasoning, give
 compaction a provider that does neither with `Agent::with_summarizer`: a summary
