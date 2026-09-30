@@ -17,7 +17,8 @@ pub enum CatalogError {
     /// Reading or writing a local file failed.
     #[error("Filesystem error: {0}")]
     Io(#[from] std::io::Error),
-    /// A configured catalogue URL is not a valid URL.
+    /// A configured catalogue URL does not parse, or is not `http` or
+    /// `https`.
     #[error("Invalid catalogue URL: {0}")]
     InvalidUrl(String),
 }

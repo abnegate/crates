@@ -51,9 +51,9 @@ pub struct StdoutParseResult {
 }
 
 impl StdoutParseResult {
-    /// Fold one event in. The first failure is kept; every other field
-    /// takes the latest value reported, and prose and tool calls
-    /// accumulate.
+    /// Fold one event in. Prose and tool calls accumulate, the first failure
+    /// and the first credit window are kept, and every other field takes the
+    /// latest value reported.
     pub fn record(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Text(chunk) => self.text.push_str(&chunk),

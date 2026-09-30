@@ -189,9 +189,10 @@ fn outputs_from_history_entry(
 
 impl Client {
     /// A client for the server `config` names, with its recipe catalog
-    /// loaded. Fails with [`Error::Configuration`] when the base URL is
-    /// empty, the checkpoint is not a bare filename, the catalog cannot be
-    /// read, or no image recipe runs the selected checkpoint.
+    /// loaded. Fails with [`Error::Configuration`] when a setting cannot
+    /// work, such as an empty base URL, a checkpoint that is not a bare
+    /// filename, an unreadable catalog, or a checkpoint no image recipe
+    /// runs.
     pub fn new(config: Config) -> Result<Self, Error> {
         let client = crate::http::client(&config)?;
         Self::with_http(config, client)

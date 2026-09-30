@@ -7,9 +7,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum GitError {
-    /// A git command exited unsuccessfully. The text names the operation
-    /// only; git's own output, which can quote names the repository chose,
-    /// is logged at debug level and never carried.
+    /// A git command, or a check of the repository around one, failed. The
+    /// text names what failed only; git's own output, which can quote names
+    /// the repository chose, is logged at debug level and never carried.
     #[error("Git command failed: {0}")]
     CommandFailed(String),
 
