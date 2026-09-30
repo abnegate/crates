@@ -49,6 +49,18 @@ lines contribute only the tools it calls: its words, token counts and refusals
 stay in its own conversation, and the main agent answers without them. Nothing
 names a failure by the words it is written in.
 
+## Failures
+
+A failure the agent reported is its own words, then `STDERR_HEADING`, then the
+last whole lines of its stderr that fit in 1 KiB: some agents give the reason
+for a failure, such as a sign-in that could not be renewed, only on stderr.
+Split on `STDERR_HEADING` to read the agent's words alone. An agent that exits
+nonzero with no report of its own fails with the end of its stderr. Stderr is
+read to its end, every line of it checked against the tripwire, and only its
+last `output_limit` bytes are kept in `Execution::stderr`. A run stopped for
+prose past its output limit fails with a message starting with
+`PROSE_EXCEEDED`, so a caller can tell it from any other failure.
+
 ## Features
 
 None.

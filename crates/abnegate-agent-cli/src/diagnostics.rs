@@ -17,15 +17,22 @@ use crate::verdict::Verdict;
 
 const BUFFER: usize = 8 * 1024;
 
-/// Reads one run's stderr to its end, keeping up to the output limit.
+/// Bytes of the agent's stderr that a failure it reported carries: several
+/// lines of a verbose agent's errors, which it tends to repeat on every retry.
+const TAIL: usize = 1024;
+
+/// Reads one run's stderr to its end, keeping its last output limit's worth.
 ///
 /// Stderr is drained whether or not it is ever read back, and past the limit
 /// too. An agent writing to a piped stderr that nobody reads blocks the moment
 /// it fills the pipe buffer, which on a verbose agent happens long before it
-/// reaches its answer.
+/// reaches its answer, and one whose pipe was closed dies of its next write.
+/// Its end is what explains a failure, so that is what is kept, and every
+/// line reaches the tripwire and the journal wherever it falls.
 pub(crate) struct Diagnostics {
     lines: Lines,
-    limiter: OutputLimiter,
+    limit: usize,
+    logged: OutputLimiter,
     journal: Journal,
     raw: Sink,
     scrubber: Scrubber,
@@ -49,7 +56,8 @@ impl Diagnostics {
     ) -> Self {
         Self {
             lines: Lines::new(line_limit),
-            limiter: OutputLimiter::new(output_limit),
+            limit: output_limit,
+            logged: OutputLimiter::new(output_limit),
             journal,
             raw,
             scrubber,
@@ -72,8 +80,18 @@ impl Diagnostics {
             .await;
         self.raw.finish().await;
         self.scrubber
-            .scrub(&String::from_utf8_lossy(&self.collected))
+            .scrub(&String::from_utf8_lossy(self.kept()))
             .into_owned()
+    }
+
+    /// The last `limit` bytes collected, starting on a character.
+    fn kept(&self) -> &[u8] {
+        let kept = &self.collected[self.collected.len().saturating_sub(self.limit)..];
+        let start = kept
+            .iter()
+            .position(|byte| !is_continuation(*byte))
+            .unwrap_or(kept.len());
+        &kept[start..]
     }
 
     async fn read(&mut self, mut stderr: ChildStderr) {
@@ -90,10 +108,7 @@ impl Diagnostics {
             if read == 0 {
                 break;
             }
-            let accepted = self.limiter.admit(read).accepted;
-            if accepted > 0 {
-                self.keep(&buffer[..accepted]).await;
-            }
+            self.keep(&buffer[..read]).await;
         }
         if let Ok(Some(line)) = self.lines.flush() {
             self.line(line).await;
@@ -102,6 +117,10 @@ impl Diagnostics {
 
     async fn keep(&mut self, chunk: &[u8]) {
         self.collected.extend_from_slice(chunk);
+        if self.collected.len() > self.limit.saturating_mul(2).max(BUFFER) {
+            let excess = self.collected.len() - self.limit;
+            self.collected.drain(..excess);
+        }
         self.lines.extend(chunk);
         loop {
             match self.lines.take() {
@@ -127,8 +146,11 @@ impl Diagnostics {
         }
 
         tracing::debug!(line = %scrubbed, "agent stderr");
-        self.raw.write(scrubbed.as_bytes()).await;
-        self.raw.write(b"\n").await;
+        let length = scrubbed.len() + 1;
+        if self.logged.admit(length).accepted == length {
+            self.raw.write(scrubbed.as_bytes()).await;
+            self.raw.write(b"\n").await;
+        }
         if self.journal.enabled() {
             self.journal
                 .append_line(
@@ -138,4 +160,24 @@ impl Diagnostics {
                 .await;
         }
     }
+}
+
+/// The last whole lines of `stderr` that fit in [`TAIL`] bytes, or the end of
+/// its last line, cut between characters, when that line alone does not.
+pub(crate) fn tail(stderr: &str) -> &str {
+    let stderr = stderr.trim();
+    let mut start = stderr.len().saturating_sub(TAIL);
+    while !stderr.is_char_boundary(start) {
+        start += 1;
+    }
+    let window = &stderr[start..];
+    if start == 0 || stderr.as_bytes()[start - 1] == b'\n' {
+        return window;
+    }
+    window.split_once('\n').map_or(window, |(_, whole)| whole)
+}
+
+/// Whether `byte` continues a UTF-8 character rather than starting one.
+fn is_continuation(byte: u8) -> bool {
+    byte & 0b1100_0000 == 0b1000_0000
 }

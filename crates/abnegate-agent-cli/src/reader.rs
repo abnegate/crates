@@ -186,7 +186,7 @@ impl Reader {
             let event = match event {
                 AgentEvent::Text(text) => {
                     if self.limiter.admit(text.len()).accepted < text.len() {
-                        return Err(format!("the agent's prose exceeded {} bytes", self.limit));
+                        return Err(format!("{} {} bytes", crate::PROSE_EXCEEDED, self.limit));
                     }
                     self.prose
                         .write(self.scrubber.scrub(&text).as_bytes())

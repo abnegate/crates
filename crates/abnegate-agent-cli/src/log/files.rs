@@ -20,9 +20,10 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct ExecutionLogFiles {
     /// The agent's decoded prose, scrubbed of secrets.
     pub stdout: PathBuf,
-    /// The agent's stderr, a line at a time and scrubbed of secrets. A line
-    /// past the line limit is left out; the run's own copy of its
-    /// diagnostics keeps it.
+    /// The agent's stderr, a line at a time and scrubbed of secrets, up to
+    /// the output limit. A line past the line limit is left out; the run's
+    /// own copy of its diagnostics keeps it, and the journal records every
+    /// other line, past the output limit too, up to its own limit.
     pub stderr: PathBuf,
     /// The run's [`Journal`](crate::log::Journal), one JSON object per line.
     pub events: PathBuf,

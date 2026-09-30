@@ -84,9 +84,12 @@ pub struct CliSettings {
     pub credential: Credential,
     pub timeout: Duration,
     /// Bytes of the agent's prose, and of its diagnostics, kept. Prose past
-    /// the limit abandons the run as malformed; diagnostics past it are still
-    /// drained, and dropped. The stream around the prose is read to its end
-    /// whatever its size, since none of it is kept.
+    /// the limit abandons the run as malformed, with a failure that starts
+    /// with [`PROSE_EXCEEDED`](crate::PROSE_EXCEEDED). Diagnostics are read
+    /// to their end, every line of them checked against the
+    /// [tripwire](CliSettings::tripwire), and only their last `output_limit`
+    /// bytes kept. The stream around the prose is read to its end whatever
+    /// its size, since none of it is kept.
     pub output_limit: usize,
     /// Bytes one event may occupy. A longer one is dropped and counted in
     /// [`StdoutParseResult::dropped`](crate::StdoutParseResult::dropped),
