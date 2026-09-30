@@ -154,7 +154,8 @@ impl ConflictService {
     /// the caller expected is [`ConflictError::Moved`]. A base already
     /// contained in the head makes no commit and pushes nothing: there is
     /// nothing to pick up. A merge that conflicts is
-    /// [`ConflictError::Conflicted`], for the caller to hand to a repair, and a
+    /// [`ConflictError::Conflicted`], for the caller to hand to a repair, one
+    /// that fails leaving no conflict is [`ConflictError::CommandFailed`], and a
     /// branch somebody advanced during the refresh is
     /// [`ConflictError::Rejected`], because nothing here ever forces.
     pub async fn refresh(
@@ -195,6 +196,17 @@ impl ConflictService {
             )
             .await?;
         if !merged {
+            let unmerged = self
+                .capture(
+                    &layout,
+                    &[&DIFF_PREFIX[..], &["--name-only", "--diff-filter=U", "-z"]].concat(),
+                )
+                .await?;
+            if unmerged.split('\0').all(str::is_empty) {
+                return Err(ConflictError::CommandFailed(
+                    "git merge failed without a conflict".to_string(),
+                ));
+            }
             return Err(ConflictError::Conflicted);
         }
 

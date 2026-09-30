@@ -1058,3 +1058,67 @@ async fn nothing_a_refreshed_branch_carries_runs_during_the_refresh() {
     assert!(refreshed.pushed);
     assert!(!marker.exists(), "a hook the branch carried ran");
 }
+
+/// Set in the re-run of a test that needs its own `PATH`.
+const CHILD_TEST: &str = "ABNEGATE_VCS_TEST_CHILD";
+
+/// git exits 1 for some merges that fail without leaving a conflict, and the
+/// refresh read every exit 1 as one, handing a repair a merge with nothing
+/// to resolve. A stand-in `git`, first on the path of a re-run, makes every
+/// merge exit 1 having done nothing and hands everything else to git.
+#[tokio::test]
+async fn a_merge_that_fails_without_a_conflict_is_not_conflicted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const NAME: &str = "a_merge_that_fails_without_a_conflict_is_not_conflicted";
+    if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
+        let programs = TempDir::new().unwrap();
+        let real = String::from_utf8(
+            Command::new("sh")
+                .args(["-c", "command -v git"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let stand_in = programs.path().join("git");
+        std::fs::write(
+            &stand_in,
+            format!(
+                "#!/bin/sh\nfor argument in \"$@\"; do\n  [ \"$argument\" = merge ] && exit 1\ndone\nexec '{}' \"$@\"\n",
+                real.trim()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths(std::iter::once(programs.path().to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ))
+        .unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD_TEST, NAME)
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        let printed = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && printed.contains("1 passed"),
+            "{printed}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let origin = diverged_origin();
+    let head = tip(origin.path(), "feature");
+
+    let outcome = ConflictService::new()
+        .refresh(&request(origin.path()), "(chore): refresh")
+        .await;
+
+    assert!(
+        matches!(outcome, Err(ConflictError::CommandFailed(_))),
+        "{outcome:?}"
+    );
+    assert_eq!(tip(origin.path(), "feature"), head);
+}
