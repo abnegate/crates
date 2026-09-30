@@ -3,9 +3,13 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use abnegate_llm::Completion;
 use abnegate_llm::CompletionProvider;
+use abnegate_llm::CompletionRequest;
 use abnegate_llm::Credential;
 use abnegate_llm::HttpProvider;
+use abnegate_llm::ProviderError;
+use abnegate_llm::ProviderKind;
 use abnegate_llm::Role;
 use abnegate_llm::provider::testing::StubProvider;
 use async_trait::async_trait;
@@ -848,6 +852,71 @@ async fn a_provider_failure_ends_a_continued_turn_as_failed() {
     assert!(
         error.to_string().contains("the gateway is overloaded"),
         "{error}"
+    );
+}
+
+/// A provider that says when it has been asked, and never answers.
+#[derive(Debug)]
+struct Unanswering {
+    asked: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+#[async_trait]
+impl CompletionProvider for Unanswering {
+    fn name(&self) -> &str {
+        "unanswering"
+    }
+
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Http
+    }
+
+    async fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, ProviderError> {
+        if let Some(asked) = self.asked.lock().expect("the signal").take() {
+            let _ = asked.send(());
+        }
+        std::future::pending().await
+    }
+}
+
+/// A continued turn left the previous turn's `finished_at` in place while it
+/// ran, so a state saved mid-turn claimed to have finished at a time before
+/// it started again.
+#[tokio::test]
+async fn a_continued_turn_is_unfinished_until_it_ends() {
+    let mut state = Agent::new(
+        Arc::new(StubProvider::answering("stub", "done")),
+        "qwen3",
+        ToolRegistry::new(),
+        AgentConfig::default(),
+        ToolContext::default(),
+    )
+    .run("Go.", &NoOpCallback)
+    .await
+    .expect("the first turn ends");
+    assert!(state.finished_at.is_some());
+    let (asked, provider_asked) = oneshot::channel();
+    let agent = Agent::new(
+        Arc::new(Unanswering {
+            asked: Mutex::new(Some(asked)),
+        }),
+        "qwen3",
+        ToolRegistry::new(),
+        AgentConfig::default(),
+        ToolContext::default(),
+    );
+
+    tokio::select! {
+        _ = agent.continue_run(&mut state, "Again.", &NoOpCallback) => {
+            panic!("a provider that never answers ended the turn")
+        }
+        _ = provider_asked => {}
+    }
+
+    assert!(!state.finished);
+    assert_eq!(
+        state.finished_at, None,
+        "a turn under way kept the previous turn's finish time"
     );
 }
 
