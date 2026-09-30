@@ -18,8 +18,8 @@
 //! [`CliProvider::execute`] returns the whole [`Execution`] for a caller that
 //! needs more than prose: the answer to a [`StructuredResult::SCHEMA`], the
 //! session to resume, the cost, and where the run's [`log`] files are. A
-//! Claude run can attach [`mcp`] servers and restrict its tools, or be
-//! confined to reading its working directory with
+//! Claude or Codex run can attach [`mcp`] servers, and a Claude run can
+//! restrict its tools, or be confined to reading its working directory with
 //! [`CliSettings::read_only`], and
 //! [`BlockingQuestion`] recovers a question the agent stopped to ask.
 //! [`stream`] reads the raw Messages API stream the CLI is built on.

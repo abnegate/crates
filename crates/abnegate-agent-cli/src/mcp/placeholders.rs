@@ -66,14 +66,26 @@ impl Placeholders {
         value: &SecretValue,
         secrets: &BTreeMap<String, SecretValue>,
     ) -> String {
+        self.variable_for(value, secrets)
+            .map(|variable| reference(&variable))
+            .unwrap_or_default()
+    }
+
+    /// The generated variable [`Placeholders::substitute`] would refer to
+    /// for `value`, or none for an empty value.
+    pub(crate) fn variable_for(
+        &mut self,
+        value: &SecretValue,
+        secrets: &BTreeMap<String, SecretValue>,
+    ) -> Option<String> {
         let text = value.expose();
         if text.is_empty() {
-            return String::new();
+            return None;
         }
         if refers(text) {
-            self.template(value.clone(), secrets)
+            Some(self.template(value.clone(), secrets))
         } else {
-            self.hold(text.to_string())
+            self.variable_holding(text.to_string())
         }
     }
 
@@ -86,18 +98,40 @@ impl Placeholders {
         text: &str,
         secrets: &BTreeMap<String, SecretValue>,
     ) -> String {
-        if refers(text) {
-            self.template(SecretValue::new(text), secrets)
-        } else {
-            text.to_string()
+        match self.template_for(text, secrets) {
+            Some(variable) => reference(&variable),
+            None => text.to_string(),
         }
+    }
+
+    /// The generated variable [`Placeholders::resolved`] would refer to for
+    /// `text`, or none when it refers to no variable and stays as it is.
+    pub(crate) fn template_for(
+        &mut self,
+        text: &str,
+        secrets: &BTreeMap<String, SecretValue>,
+    ) -> Option<String> {
+        refers(text).then(|| self.template(SecretValue::new(text), secrets))
     }
 
     /// The attachment for the rendered `file`, carrying every value moved
     /// out of it and every secret its values hold.
     pub(crate) fn attachment(self, file: NamedTempFile) -> McpAttachment {
         McpAttachment {
-            file,
+            file: Some(file),
+            overrides: Vec::new(),
+            environment: self.environment,
+            templates: self.templates,
+            secrets: self.secrets,
+        }
+    }
+
+    /// The attachment for the rendered Codex `overrides`, carrying every
+    /// value moved out of them and every secret their values hold.
+    pub(crate) fn overridden(self, overrides: Vec<String>) -> McpAttachment {
+        McpAttachment {
+            file: None,
+            overrides,
             environment: self.environment,
             templates: self.templates,
             secrets: self.secrets,
@@ -109,17 +143,25 @@ impl Placeholders {
     /// to a new generated variable holding it, or nothing when there is no
     /// text to hold.
     pub(crate) fn hold(&mut self, literal: String) -> String {
+        self.variable_holding(literal)
+            .map(|variable| reference(&variable))
+            .unwrap_or_default()
+    }
+
+    /// The generated variable [`Placeholders::hold`] would refer to for
+    /// `literal`, or none when there is no text to hold.
+    pub(crate) fn variable_holding(&mut self, literal: String) -> Option<String> {
         if literal.is_empty() {
-            return String::new();
+            return None;
         }
         let variable = self.generated();
         self.environment
             .insert(variable.clone(), SecretValue::new(literal));
-        reference(&variable)
+        Some(variable)
     }
 
-    /// A reference to a new generated variable holding `value`, to be
-    /// resolved, reading `secrets` first, before the child is given it.
+    /// A new generated variable holding `value`, to be resolved, reading
+    /// `secrets` first, before the child is given it.
     fn template(&mut self, value: SecretValue, secrets: &BTreeMap<String, SecretValue>) -> String {
         let variable = self.generated();
         let template = Template {
@@ -127,7 +169,7 @@ impl Placeholders {
             secrets: secrets.clone(),
         };
         self.templates.insert(variable.clone(), template);
-        reference(&variable)
+        variable
     }
 
     /// The name of the next generated variable.

@@ -7,6 +7,7 @@ use crate::Application;
 
 const DEFAULT_MAXIMUM_FILE_SIZE: usize = 10 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
+const DEFAULT_SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Where and how a tool call runs.
 ///
@@ -30,6 +31,10 @@ pub struct ToolContext {
     pub maximum_file_size: usize,
     /// How long a command runs when its call names no limit of its own.
     pub command_timeout: Duration,
+    /// How long `search_code` searches before it returns the matches it has,
+    /// marked as stopped early. Twenty seconds by default, inside the default
+    /// [`command_timeout`](Self::command_timeout).
+    pub search_timeout: Duration,
     /// Whether tools may act outside `working_directory`.
     ///
     /// Off by default: file tools stay inside the working directory. On, they
@@ -81,6 +86,21 @@ impl ToolContext {
         self
     }
 
+    /// The same context, giving `search_code` `timeout` to search in.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use abnegate_agent::ToolContext;
+    ///
+    /// let context = ToolContext::default().with_search_timeout(Duration::from_secs(5));
+    /// assert_eq!(context.search_timeout, Duration::from_secs(5));
+    /// ```
+    pub fn with_search_timeout(mut self, timeout: Duration) -> Self {
+        self.search_timeout = timeout;
+        self
+    }
+
     /// The same context, giving children exactly `environment`.
     pub fn with_environment(mut self, environment: EnvironmentPolicy) -> Self {
         self.environment = environment;
@@ -105,6 +125,7 @@ impl Default for ToolContext {
             environment: EnvironmentPolicy::allowlist(),
             maximum_file_size: DEFAULT_MAXIMUM_FILE_SIZE,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
+            search_timeout: DEFAULT_SEARCH_TIMEOUT,
             unrestricted: false,
             session: Session::Detached,
             application: Application::default(),
@@ -124,6 +145,7 @@ mod tests {
         );
         assert_eq!(context.maximum_file_size, 10 * 1024 * 1024);
         assert_eq!(context.command_timeout, Duration::from_secs(300));
+        assert_eq!(context.search_timeout, Duration::from_secs(20));
         assert_eq!(context.application, Application::default());
         assert!(!context.environment.inherits());
     }

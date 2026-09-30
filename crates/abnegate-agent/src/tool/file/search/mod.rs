@@ -22,7 +22,6 @@ use super::read_text;
 use super::resolve;
 use super::walk::OUT_OF_TIME;
 use super::walk::Visit;
-use super::walk::WALK_TIME_LIMIT;
 use super::walk::Walk;
 use crate::tool::Tool;
 use crate::tool::ToolContext;
@@ -209,7 +208,7 @@ pub(super) fn search_tree(
     };
     let mut results = Vec::new();
     let mut unreadable = false;
-    let mut walk = Walk::new(WALK_TIME_LIMIT);
+    let mut walk = Walk::new(context.search_timeout);
     let _ = walk.run(root, |entry, file_type| {
         if results.len() >= maximum_results {
             return Visit::Stop;
@@ -303,7 +302,13 @@ async fn search_ripgrep(
 ) -> Option<ToolResult> {
     let mut command = process::command(RIPGREP, context);
     command.args(ripgrep_arguments(parameters, search_path, maximum_results));
-    ripgrep(command, search_path, maximum_results, WALK_TIME_LIMIT).await
+    ripgrep(
+        command,
+        search_path,
+        maximum_results,
+        context.search_timeout,
+    )
+    .await
 }
 
 /// The first four keep the host out of what a search reads: `--no-config` a

@@ -7,8 +7,9 @@ conversation flattened into one prompt on stdin, reads the agent's
 newline-delimited JSON as it streams with a cap on any one event, and returns its
 final prose as a completion; `CliProvider::execute` returns the whole
 `Execution` for a caller that needs the structured answer, the session to
-resume, the cost, or the run's log files. A Claude run can attach MCP servers,
-restrict its tools, or be confined to reading its working directory, and a run
+resume, the cost, or the run's log files. A Claude or Codex run can attach MCP
+servers, and a Claude run can restrict its tools, or be confined to reading its
+working directory, and a run
 that fails in any way takes every process the agent forked with it. The agent is
 given an allowlisted part of this process's environment, the names
 `CliSettings::allow` adds (a proxy among them with

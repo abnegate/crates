@@ -24,12 +24,23 @@ const DIGEST_CHARACTERS: usize = 8;
 const UNNAMED_SERVER: &str = "server";
 const UNNAMED_TOOL: &str = "tool";
 
+const UNDERSCORE: char = '_';
+
 /// `server` + `tool` → a function name safe for OpenAI-style tool calling:
 /// `server__tool`, at most [`MAXIMUM_TOOL_NAME_CHARACTERS`] long.
 ///
-/// A tool already named under its server's prefix keeps its name. A name
-/// that would run long is cut and ends in a digest of the whole, so two long
-/// names that share a start still differ.
+/// Both parts are named as a coding agent CLI names them in
+/// `mcp__<server>__<tool>`: every character but an ASCII letter, a digit,
+/// `_` and `-` becomes `_`, and the tool is always prefixed, even one whose
+/// own name already starts with its server's, so `notes__search` on `notes`
+/// is `notes__notes__search` here as it is `mcp__notes__notes__search` there.
+/// A server name the CLI would refuse, one holding `__` or ending in `_`, has
+/// its runs of `_` collapsed and its trailing `_` dropped, so the separator
+/// still marks where the server's part ends.
+///
+/// A name that would run long is cut and ends in a digest of the whole, so
+/// two long names that share a start still differ, and a server's part is
+/// cut to 32 characters first so its prefix survives that cut.
 pub fn qualified_tool_name(server: &str, tool: &str) -> String {
     fit(&joined(server, tool))
 }
@@ -55,27 +66,27 @@ pub(super) fn server_prefix(server: &str) -> String {
 }
 
 fn joined(server: &str, tool: &str) -> String {
-    let prefix = server_prefix(server);
-    let tool = sanitize_identifier(tool, UNNAMED_TOOL);
-    if tool.starts_with(&prefix) {
-        tool
-    } else {
-        format!("{prefix}{tool}")
-    }
+    format!(
+        "{}{}",
+        server_prefix(server),
+        sanitize_identifier(tool, UNNAMED_TOOL)
+    )
 }
 
-/// A server's name as its tools carry it: sanitized, with no run of
-/// underscores inside it and none at either end, so it can never hold the
+/// A server's name as its tools carry it: sanitized, with every run of
+/// underscores cut to one and none at its end, so it can never hold the
 /// separator, and cut to [`MAXIMUM_SERVER_CHARACTERS`].
 fn server_identifier(server: &str) -> String {
     let sanitized = sanitize_identifier(server, UNNAMED_SERVER);
-    let collapsed: Vec<&str> = sanitized
-        .split('_')
-        .filter(|part| !part.is_empty())
-        .collect();
-    let joined = collapsed.join("_");
-    let cut: String = joined.chars().take(MAXIMUM_SERVER_CHARACTERS).collect();
-    match cut.trim_end_matches('_') {
+    let mut collapsed = String::with_capacity(sanitized.len());
+    for character in sanitized.chars() {
+        if character == UNDERSCORE && collapsed.ends_with(UNDERSCORE) {
+            continue;
+        }
+        collapsed.push(character);
+    }
+    let cut: String = collapsed.chars().take(MAXIMUM_SERVER_CHARACTERS).collect();
+    match cut.trim_end_matches(UNDERSCORE) {
         "" => UNNAMED_SERVER.to_string(),
         identifier => identifier.to_string(),
     }
@@ -87,7 +98,7 @@ fn sanitize_identifier(value: &str, fallback: &str) -> String {
     let sanitized: String = value
         .chars()
         .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+            if character.is_ascii_alphanumeric() || character == UNDERSCORE || character == '-' {
                 character
             } else {
                 '_'
@@ -114,18 +125,60 @@ fn fit(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::McpServer;
 
     #[test]
-    fn prefixes_unless_already_namespaced() {
+    fn a_tool_is_always_prefixed_even_when_it_already_starts_with_its_server() {
         assert_eq!(
             qualified_tool_name("notes", "search_notes"),
             "notes__search_notes"
         );
         assert_eq!(
             qualified_tool_name("notes", "notes__search_notes"),
-            "notes__search_notes"
+            "notes__notes__search_notes"
         );
         assert_eq!(qualified_tool_name("docs", "docs"), "docs__docs");
+    }
+
+    /// One `tools` list scopes a CLI and the hub alike only if every server
+    /// the CLI attaches names its tools here as the CLI names them there.
+    #[test]
+    fn a_name_is_the_clis_own_without_its_mcp_prefix() {
+        for (server, tool, listed) in [
+            ("notes", "search", "search"),
+            ("notes", "notes__search", "notes__search"),
+            ("_internal", "run", "run"),
+            ("my-server", "list.files", "list_files"),
+            ("docs", "docs", "docs"),
+        ] {
+            let scoped = McpServer::command("server", Vec::<String>::new()).with_tools([listed]);
+            assert!(scoped.nameable(server), "{server}");
+            assert!(scoped.allows(tool), "{tool}");
+
+            assert_eq!(
+                [format!("mcp__{}", qualified_tool_name(server, tool))],
+                scoped.scoped_tools(server).as_slice(),
+                "{server} {tool}"
+            );
+        }
+    }
+
+    /// A tool advertised as `search` and another as `notes__search` are two
+    /// tools to a CLI, and must not trade names here by the order a server
+    /// lists them in.
+    #[test]
+    fn a_prefixed_tool_never_takes_the_name_of_the_tool_it_repeats() {
+        for order in [["search", "notes__search"], ["notes__search", "search"]] {
+            let mut used = HashSet::new();
+            let names: Vec<String> = order
+                .iter()
+                .map(|tool| unique_qualified_tool_name(&mut used, "notes", tool))
+                .collect();
+            let search = order.iter().position(|tool| *tool == "search").unwrap();
+
+            assert_eq!(names[search], "notes__search", "{order:?}");
+            assert_eq!(names[1 - search], "notes__notes__search", "{order:?}");
+        }
     }
 
     #[test]
@@ -136,12 +189,15 @@ mod tests {
         );
     }
 
-    /// A server part that held the separator, or began or ended on an
-    /// underscore, would move where the name's first `__` falls.
+    /// A server part that held the separator, or ended on an underscore,
+    /// would move where the name's first `__` falls. One leading underscore
+    /// cannot, and the CLI keeps it.
     #[test]
     fn a_server_part_never_holds_the_separator() {
         assert_eq!(qualified_tool_name("a__b", "c"), "a_b__c");
-        assert_eq!(qualified_tool_name("_run_", "deploy"), "run__deploy");
+        assert_eq!(qualified_tool_name("_run_", "deploy"), "_run__deploy");
+        assert_eq!(qualified_tool_name("__run", "deploy"), "_run__deploy");
+        assert_eq!(qualified_tool_name("_", "x"), "server__x");
         assert_eq!(qualified_tool_name("...", "x"), "server__x");
         assert_eq!(qualified_tool_name("", ""), "server__tool");
     }
@@ -155,7 +211,7 @@ mod tests {
         );
         assert_eq!(
             unique_qualified_tool_name(&mut used, "srv", "srv__ping"),
-            "srv__ping_2"
+            "srv__srv__ping"
         );
         assert_eq!(
             unique_qualified_tool_name(&mut used, "my.server", "list/files"),
