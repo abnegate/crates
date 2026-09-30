@@ -224,8 +224,13 @@ by hand and its Trusted Publishing entry added before release-plz can publish
 it.
 
 Every release is tagged `abnegate-<name>-v<version>`, such as
-`abnegate-http-v0.2.0`, and gets a GitHub release from its changelog entry. A
-crate whose tag already exists counts as released.
+`abnegate-http-v0.2.0`, and gets a GitHub release of the same name from its
+changelog entry. A crate whose tag already exists counts as released.
+
+Each crate carries its own `version` rather than inheriting one from the
+workspace, so release-plz bumps and releases only the crates that changed, and
+the crates that depend on them. A shared workspace version would move every
+crate that inherits it whenever any of them is released.
 
 Feature pull requests are not semver-checked in CI: versions move only in the
 release pull request, where release-plz has already run cargo-semver-checks to
