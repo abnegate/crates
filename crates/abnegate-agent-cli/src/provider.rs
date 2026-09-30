@@ -2356,6 +2356,7 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         let directory = TempDir::new().expect("a temporary directory");
         let script = r#"
 head -c 262144 /dev/zero | tr '\0' 'e' >&2
+echo >&2
 echo 'error: the real reason' >&2
 exit 3
 "#;

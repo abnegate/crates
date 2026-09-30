@@ -79,19 +79,10 @@ impl Diagnostics {
             .append(Record::StderrClosed, json!({ "line_count": self.count }))
             .await;
         self.raw.finish().await;
+        let kept = retained(&self.collected, self.limit, &self.scrubber);
         self.scrubber
-            .scrub(&String::from_utf8_lossy(self.kept()))
+            .scrub(&String::from_utf8_lossy(kept))
             .into_owned()
-    }
-
-    /// The last `limit` bytes collected, starting on a character.
-    fn kept(&self) -> &[u8] {
-        let kept = &self.collected[self.collected.len().saturating_sub(self.limit)..];
-        let start = kept
-            .iter()
-            .position(|byte| !is_continuation(*byte))
-            .unwrap_or(kept.len());
-        &kept[start..]
     }
 
     async fn read(&mut self, mut stderr: ChildStderr) {
@@ -118,7 +109,8 @@ impl Diagnostics {
     async fn keep(&mut self, chunk: &[u8]) {
         self.collected.extend_from_slice(chunk);
         if self.collected.len() > self.limit.saturating_mul(2).max(BUFFER) {
-            let excess = self.collected.len() - self.limit;
+            let reach = self.limit + self.scrubber.longest() + 1;
+            let excess = self.collected.len().saturating_sub(reach);
             self.collected.drain(..excess);
         }
         self.lines.extend(chunk);
@@ -177,7 +169,81 @@ pub(crate) fn tail(stderr: &str) -> &str {
     window.split_once('\n').map_or(window, |(_, whole)| whole)
 }
 
-/// Whether `byte` continues a UTF-8 character rather than starting one.
-fn is_continuation(byte: u8) -> bool {
-    byte & 0b1100_0000 == 0b1000_0000
+/// At most the last `limit` bytes of `collected`, starting past any secret
+/// the cut would split and past the rest of any word it falls in.
+///
+/// The scrubber sees only what is kept, and recognises a secret, or a
+/// credential-shaped word, whole: a piece of one left at the start would pass
+/// it untouched.
+fn retained<'a>(collected: &'a [u8], limit: usize, scrubber: &Scrubber) -> &'a [u8] {
+    let cut = collected.len().saturating_sub(limit);
+    if cut == 0 {
+        return collected;
+    }
+    let cut = scrubber.past(collected, cut);
+    if cut >= collected.len() || collected[cut - 1].is_ascii_whitespace() {
+        return &collected[cut..];
+    }
+    let start = collected[cut..]
+        .iter()
+        .position(u8::is_ascii_whitespace)
+        .map_or(collected.len(), |offset| cut + offset + 1);
+    &collected[start..]
+}
+
+#[cfg(test)]
+mod tests {
+    use abnegate_secret::SecretValue;
+
+    use super::Scrubber;
+    use super::retained;
+
+    const CONFIGURED: &str = concat!("notreal-", "stderr-secret-", "0123456789");
+    const SPOKEN: &str = concat!("correct horse ", "battery staple ", "notreal");
+    const SHAPED: &str = concat!(
+        "sk-ant-",
+        "api03-",
+        "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"
+    );
+    const PIECE: usize = 6;
+
+    /// A cut that fell inside a secret kept its end, which the scrubber, looking
+    /// for the whole secret, could not recognise; so did a cut inside a
+    /// credential-shaped word that no pattern matches in part.
+    #[test]
+    fn a_cut_never_keeps_a_piece_of_a_secret() {
+        let scrubber = Scrubber::new([SecretValue::new(CONFIGURED), SecretValue::new(SPOKEN)]);
+        let text = format!(
+            "first line\nsaid {CONFIGURED} then\nsaid {SPOKEN} then\nsaid {SHAPED} then\nlast line\n"
+        );
+
+        for limit in 1..=text.len() {
+            let kept = String::from_utf8_lossy(retained(text.as_bytes(), limit, &scrubber));
+            let scrubbed = scrubber.scrub(&kept);
+            for secret in [CONFIGURED, SPOKEN, SHAPED] {
+                for piece in secret.as_bytes().windows(PIECE) {
+                    let piece = std::str::from_utf8(piece).unwrap();
+                    assert!(
+                        !scrubbed.contains(piece),
+                        "a cut at {limit} kept {piece:?} of a secret: {scrubbed:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_cut_between_words_keeps_the_whole_of_what_follows() {
+        let scrubber = Scrubber::new([SecretValue::new(CONFIGURED)]);
+        let text = "old line\nthe end of it\n";
+
+        assert_eq!(
+            retained(text.as_bytes(), "the end of it\n".len(), &scrubber),
+            b"the end of it\n"
+        );
+        assert_eq!(
+            retained(text.as_bytes(), text.len(), &scrubber),
+            text.as_bytes()
+        );
+    }
 }
