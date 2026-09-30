@@ -17,14 +17,22 @@ const LINE_SEPARATORS: [char; 2] = ['\u{2028}', '\u{2029}'];
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SearchContext {
+    /// Search is off, or no query URL is configured, so no lookup can run.
     Disabled,
+    /// Search is available but this turn was not selected for a lookup.
     NotRequested,
+    /// A lookup ran and returned these hits.
     Results(Vec<SearchHit>),
+    /// A lookup ran and returned no usable hits.
     Empty,
+    /// A lookup was attempted and could not retrieve results.
     Failed,
 }
 
 impl SearchContext {
+    /// The state of a turn before any lookup: [`NotRequested`](Self::NotRequested)
+    /// when `config` enables search and names a non-blank query URL,
+    /// [`Disabled`](Self::Disabled) otherwise.
     pub fn new(config: &WebSearchConfig) -> Self {
         if config.enabled && !config.query_url.trim().is_empty() {
             Self::NotRequested
