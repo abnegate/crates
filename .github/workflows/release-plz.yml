@@ -40,6 +40,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     concurrency:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
@@ -54,8 +55,17 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Run release-plz
+        id: release-plz
         uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # prs_created is also true when release-plz updated an existing PR.
+      - name: Run CI on the release PR
+        if: steps.release-plz.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ fromJSON(steps.release-plz.outputs.pr).head_branch }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"

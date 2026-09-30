@@ -241,9 +241,14 @@ proposed bump is big enough. cargo-semver-checks refuses a crate that has never
 been published, so a new crate's first version reaches crates.io before the
 release pull request that includes it can pass.
 
-CI runs on the release pull request only if the release PR job gives
-release-plz a GitHub App token or a personal access token in place of
-`GITHUB_TOKEN`: a pull request opened with `GITHUB_TOKEN` triggers no
-workflows. The repository setting "Allow GitHub Actions to create and approve
-pull requests", under Settings, Actions, General, Workflow permissions, must be
-on, or the release PR job cannot open the pull request.
+release-plz opens and updates the release pull request with the workflow's own
+`GITHUB_TOKEN`, and a pull request or push made with `GITHUB_TOKEN` triggers no
+workflows. A `workflow_dispatch` is the exception, so once release-plz has
+opened or updated the pull request, the release PR job dispatches `ci.yml` on
+its `release-plz-` branch through `gh workflow run`, which is why that job alone
+holds `actions: write`. The dispatched run checks every crate and runs the
+`semver` job, and its checks attach to the branch's head commit, so they show on
+the release pull request. No personal access token or GitHub App is involved.
+The release PR job cannot open the pull request without the repository setting
+"Allow GitHub Actions to create and approve pull requests", under Settings,
+Actions, General, Workflow permissions. It is required, and it is on.
