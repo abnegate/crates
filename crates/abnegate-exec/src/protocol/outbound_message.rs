@@ -33,32 +33,48 @@ pub enum OutboundMessage {
 
     /// Command has started executing
     #[non_exhaustive]
-    RunStarted { job_id: String, pid: u32 },
+    RunStarted {
+        /// The job named by its `RunStart`
+        job_id: String,
+        /// The child's process ID, which also names the process group the
+        /// runner signals to cancel or time it out
+        pid: u32,
+    },
 
     /// Chunk of stdout output
     #[non_exhaustive]
     RunStdout {
+        /// The job the output belongs to
         job_id: String,
         /// Base64 encoded data
         data: String,
+        /// Position of this chunk in the job's stdout, counting from 1 with
+        /// no gaps
         sequence: u64,
     },
 
     /// Chunk of stderr output
     #[non_exhaustive]
     RunStderr {
+        /// The job the output belongs to
         job_id: String,
         /// Base64 encoded data
         data: String,
+        /// Position of this chunk in the job's stderr, counting from 1 with
+        /// no gaps
         sequence: u64,
     },
 
     /// Structured log message from the runner
     #[non_exhaustive]
     RunLog {
+        /// The job the entry is about
         job_id: String,
+        /// How serious the entry is
         level: LogLevel,
+        /// Human-readable text of the entry
         message: String,
+        /// Structured context, omitted from the wire when absent
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
     },
@@ -66,8 +82,12 @@ pub enum OutboundMessage {
     /// Command has exited normally
     #[non_exhaustive]
     RunExit {
+        /// The job that finished
         job_id: String,
+        /// The command's exit status, absent when a signal ended it
         exit_code: Option<i32>,
+        /// The signal that ended the command, absent when it exited on its
+        /// own
         #[serde(skip_serializing_if = "Option::is_none")]
         signal: Option<i32>,
         /// How long the command ran, from its spawn until its group was
@@ -79,14 +99,20 @@ pub enum OutboundMessage {
     /// Command encountered an error
     #[non_exhaustive]
     RunError {
+        /// The job that failed
         job_id: String,
+        /// What went wrong, as a stable code a client can branch on
         error_code: ErrorCode,
+        /// Human-readable detail of the failure
         message: String,
     },
 
     /// Response to Ping message
     #[non_exhaustive]
-    Pong { id: String },
+    Pong {
+        /// The [`id`](super::Ping::id) of the ping being answered
+        id: String,
+    },
 }
 
 impl OutboundMessage {
