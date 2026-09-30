@@ -144,9 +144,10 @@ impl ProcessGroup {
     }
 
     /// Stop every clone of this handle signalling the group, once any signal
-    /// already on its way has been sent. Call it just before reaping the
-    /// leader, after which the group's identifier can name an unrelated group.
-    pub(crate) fn release(&self) {
+    /// already on its way has been sent, the repeats a [`kill`](Self::kill)
+    /// left running included. Call it just before reaping the leader, after
+    /// which the group's identifier can name an unrelated group.
+    pub fn release(&self) {
         *self.released() = true;
     }
 

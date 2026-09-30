@@ -1,12 +1,4 @@
 use abnegate_exec::executor::ProcessGroup;
-#[cfg(feature = "mcp")]
-use nix::errno::Errno;
-#[cfg(feature = "mcp")]
-use nix::sys::signal::Signal;
-#[cfg(feature = "mcp")]
-use nix::sys::signal::killpg;
-#[cfg(feature = "mcp")]
-use nix::unistd::Pid;
 
 /// A child started as the leader of its own process group, and everything it
 /// went on to start.
@@ -38,31 +30,33 @@ impl Group {
         }
     }
 
-    /// Send the group one SIGKILL before returning, keeping the group to be
-    /// killed again: what a drop sends when the rest of its cleanup may never
-    /// get to run. Nothing repeats it in the background, so once a later
-    /// [`kill_until_gone`](Self::kill_until_gone) has resolved and the leader
-    /// is reaped, no signal is still on its way to an id another group may
-    /// have been given since.
+    /// Kill every process still in the group before returning, and go on
+    /// repeating the kill from a thread of its own, which a runtime that never
+    /// runs again cannot stop, keeping the group to be killed again: what a
+    /// drop sends when the rest of its cleanup may never get to run. A later
+    /// [`kill_until_gone`](Self::kill_until_gone) stops those repeats before it
+    /// resolves.
     #[cfg(feature = "mcp")]
     pub(crate) fn kill_now(&self) {
         if let Some(leader) = &self.leader
-            && let Err(error) = killpg(Pid::from_raw(leader.pgid()), Signal::SIGKILL)
-            && error != Errno::ESRCH
+            && let Err(error) = leader.kill()
         {
             tracing::warn!(group = leader.pgid(), %error, "Could not kill a process group");
         }
     }
 
     /// Kill every process still in the group, resolving once the kill has
-    /// stopped repeating itself, so a leader reaped next is reaped only after
-    /// the whole kill has landed. Later calls do nothing.
+    /// stopped repeating itself and the group is released, so no repeat, not
+    /// even one [`kill_now`](Self::kill_now) started, can land after a leader
+    /// reaped next has given up the group's id. Later calls do nothing.
     pub(crate) async fn kill_until_gone(&mut self) {
-        if let Some(leader) = self.leader.take()
-            && let Err(error) = leader.kill_until_gone().await
-        {
+        let Some(leader) = self.leader.take() else {
+            return;
+        };
+        if let Err(error) = leader.kill_until_gone().await {
             tracing::warn!(group = leader.pgid(), %error, "Could not kill a process group");
         }
+        leader.release();
     }
 }
 
@@ -143,5 +137,31 @@ mod tests {
             let _ = kill(Pid::from_raw(*pid), Signal::SIGKILL);
         }
         assert!(gone, "the group's kill missed {survivors:?}");
+    }
+
+    /// A kill's repeats went on from their own thread after the group had
+    /// been killed until gone, so one could land after the leader was reaped
+    /// and its id given to another group. Every handle to the group is now
+    /// released first, and a released group answers as gone even while its
+    /// leader, a zombie here, still holds the id.
+    #[tokio::test]
+    async fn a_group_killed_until_gone_is_released_for_every_handle() {
+        let mut leader = Command::new("sleep")
+            .arg("300")
+            .stdin(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("the leader starts");
+        let mut group = Group::led_by(Some(leader.id()));
+        let shared = group.leader.clone().expect("a group to kill");
+
+        group.kill_until_gone().await;
+        let released = !shared.is_alive();
+        leader.wait().expect("the leader is reaped");
+
+        assert!(
+            released,
+            "a handle the kill shared could still signal the group"
+        );
     }
 }
