@@ -6,7 +6,9 @@
 //! with the catalog by hand. File tools stay beneath [`ToolContext::working_directory`]
 //! unless the context is unrestricted, and every path they open is resolved
 //! once, against a descriptor for the root, so the path that was checked is the
-//! path that is opened.
+//! path that is opened. However unrestricted, they never reach what
+//! [`ToolContext::denied`] withholds, nor any process's `/proc` entry, and
+//! answer [`OFF_LIMITS`] instead.
 
 mod beneath;
 mod command;
@@ -27,6 +29,7 @@ mod tier;
 mod vision;
 mod wait;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use abnegate_exec::DEFAULT_ENVIRONMENT;
@@ -41,6 +44,7 @@ pub use context::ToolContext;
 pub use error::ToolError;
 pub use file::ApplyPatchTool;
 pub use file::ListFilesTool;
+pub use file::OFF_LIMITS;
 pub use file::ReadFileTool;
 pub use file::SearchCodeTool;
 pub use file::WriteFileTool;
@@ -64,6 +68,7 @@ pub(crate) use text::word;
 pub use tier::CONFIRMED_FROM;
 pub use tier::Tier;
 pub use vision::is_vision_url;
+pub use wait::WaitFor;
 pub use wait::WaitForTool;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -129,6 +134,15 @@ pub trait Tool: Send + Sync {
     /// holds can close. A tool that leaves this alone is shown as the call
     /// itself, its name and every argument.
     fn preview(&self, _parameters: &Value) -> Option<Rendering> {
+        None
+    }
+
+    /// This tool as a turn that is not offered [`WAIT_FOR`](job::WAIT_FOR) is
+    /// served it, or `None` when nothing it says sends the model to that tool.
+    ///
+    /// A [`ToolRegistry`] with no tool of that name registered serves this
+    /// form in place of the tool.
+    fn unwaited(&self) -> Option<Arc<dyn Tool>> {
         None
     }
 

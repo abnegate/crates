@@ -2,6 +2,9 @@
 
 pub mod claude;
 pub mod codex;
+mod turn;
+
+pub use crate::parser::turn::Turn;
 
 use std::ops::ControlFlow;
 
@@ -17,7 +20,7 @@ const TYPE: &str = "type";
 /// one quoted in a tool's output, is escaped there and never counted.
 pub(crate) fn types(prefix: &str) -> Vec<(usize, &str)> {
     let mut found = Vec::new();
-    visit(prefix, |depth, kind| {
+    visit(prefix, TYPE, |depth, kind| {
         found.push((depth, kind));
         ControlFlow::Continue(())
     });
@@ -27,20 +30,27 @@ pub(crate) fn types(prefix: &str) -> Vec<(usize, &str)> {
 /// The top-level `"type"` of the JSON object `line` holds, read no further
 /// than it takes to find it.
 pub(crate) fn kind(line: &str) -> Option<&str> {
+    field(line, TYPE)
+}
+
+/// The string the top-level `key` of the JSON object `line` holds, read no
+/// further than it takes to find it. A key holding anything but a string,
+/// `null` included, is not found.
+pub(crate) fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let mut top = None;
-    visit(line, |depth, kind| {
+    visit(line, key, |depth, value| {
         if depth != 1 {
             return ControlFlow::Continue(());
         }
-        top = Some(kind);
+        top = Some(value);
         ControlFlow::Break(())
     });
     top
 }
 
-/// Hand each `"type"` in `prefix` to `found` with its depth, in order, until
-/// it breaks.
-fn visit<'a>(prefix: &'a str, mut found: impl FnMut(usize, &'a str) -> ControlFlow<()>) {
+/// Hand the string each `key` in `prefix` holds to `found` with its depth,
+/// in order, until it breaks.
+fn visit<'a>(prefix: &'a str, key: &str, mut found: impl FnMut(usize, &'a str) -> ControlFlow<()>) {
     let bytes = prefix.as_bytes();
     let mut depth: usize = 0;
     let mut index = 0;
@@ -49,11 +59,11 @@ fn visit<'a>(prefix: &'a str, mut found: impl FnMut(usize, &'a str) -> ControlFl
             b'{' | b'[' => depth += 1,
             b'}' | b']' => depth = depth.saturating_sub(1),
             QUOTE => {
-                let Some((key, after)) = string(prefix, index) else {
+                let Some((name, after)) = string(prefix, index) else {
                     break;
                 };
                 index = after;
-                if key == TYPE
+                if name == key
                     && let Some(colon) = next(bytes, index).filter(|&at| bytes[at] == SEPARATOR)
                     && let Some(opening) = next(bytes, colon + 1).filter(|&at| bytes[at] == QUOTE)
                     && let Some((value, after)) = string(prefix, opening)
@@ -93,6 +103,7 @@ fn next(bytes: &[u8], index: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use super::field;
     use super::kind;
     use super::types;
 
@@ -143,5 +154,25 @@ mod tests {
         );
         assert_eq!(kind(r#"{"event":{"type":"content_block_delta"}}"#), None);
         assert_eq!(kind("not json"), None);
+    }
+
+    #[test]
+    fn a_top_level_field_is_found_only_when_it_holds_a_string() {
+        let line = r#"{"type":"assistant","message":{"parent_tool_use_id":"nested"},"parent_tool_use_id":"toolu_01"}"#;
+        assert_eq!(field(line, "parent_tool_use_id"), Some("toolu_01"));
+        assert_eq!(
+            field(
+                r#"{"type":"assistant","parent_tool_use_id":null}"#,
+                "parent_tool_use_id"
+            ),
+            None
+        );
+        assert_eq!(
+            field(
+                r#"{"type":"assistant","message":{"parent_tool_use_id":"nested"}}"#,
+                "parent_tool_use_id"
+            ),
+            None
+        );
     }
 }

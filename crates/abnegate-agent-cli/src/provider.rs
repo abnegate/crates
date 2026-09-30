@@ -27,7 +27,9 @@ use tokio::time::Instant;
 use tokio::time::timeout;
 use tokio::time::timeout_at;
 
+use crate::STDERR_HEADING;
 use crate::attachments::Attachments;
+use crate::diagnostics;
 use crate::diagnostics::Diagnostics;
 use crate::environment::Environment;
 use crate::execution::Execution;
@@ -39,6 +41,7 @@ use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
 use crate::log::preview;
+use crate::log::tail_preview;
 use crate::mcp::McpAttachment;
 use crate::outcome::Outcome;
 use crate::reader::Reader;
@@ -412,7 +415,7 @@ impl CliProvider {
         // The agent's own report of what went wrong beats an exit code, which
         // says only that something did.
         if let Some(message) = &stdout.failure {
-            return Err(ProviderError::agent(&self.name, message));
+            return Err(ProviderError::agent(&self.name, &report(message, &stderr)));
         }
 
         let unstopped = stopped.is_none();
@@ -422,7 +425,7 @@ impl CliProvider {
                 let message = if stderr.trim().is_empty() {
                     NO_DIAGNOSTICS.to_string()
                 } else {
-                    preview(&stderr, EXECUTION_LOG_PREVIEW_LIMIT)
+                    tail_preview(stderr.trim_end(), EXECUTION_LOG_PREVIEW_LIMIT)
                 };
                 return Err(ProviderError::exit(&self.name, status, &message));
             }
@@ -551,6 +554,16 @@ impl CompletionProvider for CliProvider {
     }
 }
 
+/// `words`, then [`STDERR_HEADING`] and the last whole lines of `stderr` that
+/// fit in 1 KiB: some agents give the reason for a failure only there.
+fn report(words: &str, stderr: &str) -> String {
+    let tail = diagnostics::tail(stderr);
+    if tail.is_empty() {
+        return words.to_string();
+    }
+    format!("{words}{STDERR_HEADING}{tail}")
+}
+
 /// Terminate the agent's group, and kill whatever is left of it once the
 /// grace period runs out.
 ///
@@ -631,17 +644,24 @@ mod tests {
     use abnegate_llm::RequestOptions;
     use abnegate_secret::SecretValue;
     use serde_json::Value;
+    use serde_json::json;
     use tempfile::TempDir;
 
     use super::CliProvider;
+    use super::report;
+    use crate::PROSE_EXCEEDED;
+    use crate::STDERR_HEADING;
     use crate::execution::Execution;
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
     use crate::mcp::McpTransport;
     use crate::mcp::expand;
+    use crate::parser::claude::CREDITS_REQUIRED;
+    use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
     use crate::settings::CliSettings;
     use crate::structured_result::StructuredResult;
     use crate::test_support::PATIENCE;
+    use crate::test_support::captured_logs;
     use crate::test_support::delegated;
     use crate::test_support::running;
 
@@ -670,11 +690,15 @@ mod tests {
         path
     }
 
+    /// Runs the fake once to completion, before a test's deadlines start.
+    ///
     /// Linux refuses to exec a file any process still holds open for writing.
     /// The descriptor here is closed, but a sibling test forking between its
     /// own open and exec inherits it for that window, so a freshly written
-    /// script can hit ETXTBSY under a parallel run. Production never meets
-    /// this: a provider execs an installed binary, not one it just wrote.
+    /// script can hit ETXTBSY under a parallel run. macOS assesses a new
+    /// executable on its first run, which can take seconds, and a run killed
+    /// at once leaves that to the next run. Production never meets either: a
+    /// provider execs an installed binary, not one it just wrote.
     fn wait_until_executable(path: &Path) {
         for _ in 0..50 {
             match std::process::Command::new(path)
@@ -682,17 +706,12 @@ mod tests {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .spawn()
+                .status()
             {
-                Ok(mut child) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return;
-                }
                 Err(error) if error.raw_os_error() == Some(ETXTBSY) => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                Err(_) => return,
+                _ => return,
             }
         }
     }
@@ -945,6 +964,7 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         let directory = TempDir::new().expect("a temporary directory");
         let script = r#"
 echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1772096400}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"You have hit your limit"}]},"parent_tool_use_id":null,"error":"rate_limit","is_api_error_message":true}'
 sleep 120
 "#;
         let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
@@ -962,6 +982,7 @@ sleep 120
         assert!(message.contains("rate limit reached"), "{message}");
         assert!(message.contains("five_hour"), "{message}");
         assert!(message.contains(r#""resetsAt":1772096400"#), "{message}");
+        assert!(message.ends_with(": You have hit your limit"), "{message}");
     }
 
     #[tokio::test]
@@ -1323,6 +1344,103 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         }
         assert!(names.contains(&"LINEAR_ISSUE_ID".to_string()));
         assert!(names.contains(&"PATH".to_string()));
+    }
+
+    /// What a host's environment can hold that no agent signed in with a
+    /// credential of its own may be handed. Every value says `notreal`, so a
+    /// leak shows up under any name.
+    const HOST_SECRETS: &[(&str, &str)] = &[
+        ("DATABASE_URL", "postgres://app:notrealpassword@db/app"),
+        ("SESSION_SECRET", "notreal-session-secret"),
+        ("ENCRYPTION_KEY", "notreal-encryption-key"),
+        ("ANTHROPIC_API_KEY", concat!("sk-ant-", "notreal-key")),
+        ("ANTHROPIC_AUTH_TOKEN", "notreal-auth-token"),
+        (
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            concat!("sk-ant-", "oat-notreal-token"),
+        ),
+        ("OPENAI_API_KEY", concat!("sk-", "notreal-openai-key")),
+        ("CLAUDECODE", "notreal-session"),
+    ];
+
+    /// The host's secrets are set in this test's own child process. The
+    /// caller signs the agent in with a key of its own and allows, beside a
+    /// harmless name, the other variables the agent signs in with and its
+    /// nested-session marker, none of which may pass.
+    #[tokio::test]
+    async fn the_hosts_secrets_never_reach_the_agent() {
+        const NAME: &str = "provider::tests::the_hosts_secrets_never_reach_the_agent";
+        const KEY: &str = concat!("sk-ant-", "explicit-key");
+        const CERTIFICATE: &str = "/etc/ssl/corporate.pem";
+        let mut host = HOST_SECRETS.to_vec();
+        host.push(("CORPORATE_CA", CERTIFICATE));
+        if delegated(NAME, &host).await {
+            return;
+        }
+        let directory = TempDir::new().expect("a temporary directory");
+        let recorded = directory.path().join("environment");
+        let settings = settings(&directory, &recording_environment(&recorded))
+            .with_credential(Credential::key("ANTHROPIC_API_KEY", KEY))
+            .allow([
+                "CORPORATE_CA",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDECODE",
+            ]);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let child = recorded_environment(&recorded);
+        let leaked: Vec<&str> = HOST_SECRETS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| *name != "ANTHROPIC_API_KEY" && child.contains_key(*name))
+            .collect();
+        assert!(leaked.is_empty(), "these reached the agent: {leaked:?}");
+        let carrying: Vec<&String> = child
+            .iter()
+            .filter(|(_, value)| value.contains("notreal"))
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            carrying.is_empty(),
+            "these carried a secret's value to the agent: {carrying:?}"
+        );
+        assert_eq!(
+            child.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some(KEY)
+        );
+        assert_eq!(
+            child.get("CORPORATE_CA").map(String::as_str),
+            Some(CERTIFICATE),
+            "the allowed name was not honoured"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_agent_still_finds_its_home_and_its_commands() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let recorded = directory.path().join("environment");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &recording_environment(&recorded)),
+        );
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let child = recorded_environment(&recorded);
+        for name in ["HOME", "PATH"] {
+            assert_eq!(
+                child.get(name),
+                std::env::var(name).ok().as_ref(),
+                "{name} did not reach the agent as it was"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2159,18 +2277,301 @@ printf '{"type":"result","subtype":"error_during_execution","is_error":true,"res
     async fn a_long_diagnostic_is_cut_down_in_the_error_but_kept_in_the_execution() {
         let directory = TempDir::new().expect("a temporary directory");
         let script = "head -c 10000 /dev/zero | tr '\\0' 'e' >&2
+printf 'the last word' >&2
 exit 2";
         let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
 
         let execution = execute(&provider, &[Message::user("hi")]).await;
-        assert_eq!(execution.stderr.len(), 10_000);
+        assert_eq!(execution.stderr.len(), 10_013);
 
         let error = provider.assemble(execution).expect_err("a failure");
         let ProviderError::Exit { message, .. } = &error else {
             panic!("expected an exit failure, got {error:?}");
         };
         assert!(message.len() <= 2000, "{} bytes", message.len());
-        assert!(message.ends_with("..."));
+        assert!(message.starts_with("..."), "{message}");
+        assert!(message.ends_with("the last word"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_codex_turn_carries_the_renewal_failure_codex_wrote_only_to_stderr() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let recording = directory.path().join("recording.jsonl");
+        std::fs::write(
+            &recording,
+            include_str!("../tests/fixtures/codex/refresh-invalidated.jsonl"),
+        )
+        .expect("the recording");
+        let diagnostics = directory.path().join("diagnostics.stderr");
+        std::fs::write(
+            &diagnostics,
+            include_str!("../tests/fixtures/codex/refresh-invalidated-errors.stderr"),
+        )
+        .expect("the diagnostics");
+        let script = format!(
+            "cat '{}' >&2\ncat '{}'\nexit 1",
+            diagnostics.display(),
+            recording.display()
+        );
+        let provider = CliProvider::agent(AgentKind::Codex, settings(&directory, &script));
+
+        let error = run(&provider, &[Message::user("Echo the nonce.")])
+            .await
+            .expect_err("a failed turn");
+
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("workspace routing discovery unauthorized (401)"),
+            "lost codex's own wording: {rendered}"
+        );
+        assert!(
+            rendered.contains("Your access token could not be refreshed"),
+            "lost the reason codex gave on stderr: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stderr_past_the_output_cap_is_still_drained() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+head -c 262144 /dev/zero | tr '\0' 'e' >&2
+echo 'still logging' >&2
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script).with_output_limit(4 * 1024),
+        );
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer from an agent that wrote 256 KiB to stderr");
+
+        assert_eq!(completion.message.content.as_deref(), Some("Done."));
+    }
+
+    #[tokio::test]
+    async fn a_failure_past_the_output_cap_reports_the_end_of_stderr() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+head -c 262144 /dev/zero | tr '\0' 'e' >&2
+echo >&2
+echo 'error: the real reason' >&2
+exit 3
+"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script).with_output_limit(4 * 1024),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+        assert!(
+            execution.stderr.len() <= 4 * 1024,
+            "{} bytes",
+            execution.stderr.len()
+        );
+        let error = provider.assemble(execution).expect_err("a failure");
+
+        let ProviderError::Exit {
+            status, message, ..
+        } = &error
+        else {
+            panic!("expected an exit failure, got {error:?}");
+        };
+        assert_eq!(*status, ExitStatus::Code(3));
+        assert!(
+            message.trim_end().ends_with("error: the real reason"),
+            "lost the end of stderr: {}",
+            &message[message.len().saturating_sub(200)..]
+        );
+        assert!(message.len() <= 4 * 1024 + 256, "{} bytes", message.len());
+    }
+
+    #[tokio::test]
+    async fn a_diagnostic_past_the_output_cap_still_trips_the_tripwire_and_reaches_the_journal() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let script = "head -c 8192 /dev/zero | tr '\\0' 'e' >&2
+echo >&2
+echo 'API Error: 429 Too Many Requests' >&2
+exit 0";
+        let settings = settings(&directory, script)
+            .with_output_limit(4 * 1024)
+            .with_tripwire(|line| line.contains("429"))
+            .with_log(&root);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert!(
+            execution
+                .failure
+                .as_deref()
+                .is_some_and(|failure| failure.contains("429 Too Many Requests")),
+            "{:?}",
+            execution.failure
+        );
+        let journal = std::fs::read_to_string(&execution.log.clone().expect("logs").events)
+            .expect("the journal");
+        assert!(
+            journal
+                .lines()
+                .any(|line| line.contains("stderr_line") && line.contains("429 Too Many Requests")),
+            "{journal}"
+        );
+    }
+
+    #[test]
+    fn a_failure_keeps_only_the_last_whole_lines_of_stderr() {
+        let lines: Vec<String> = (0..500)
+            .map(|number| format!("diagnostic line {number}"))
+            .collect();
+
+        let rendered = report("the turn failed", &lines.join("\n"));
+
+        let (message, tail) = rendered
+            .split_once(STDERR_HEADING)
+            .expect("the agent's words, then its stderr");
+        assert_eq!(message, "the turn failed");
+        assert!(tail.len() <= 1024, "{} bytes", tail.len());
+        assert!(tail.ends_with("diagnostic line 499"), "{tail}");
+        assert!(
+            tail.lines()
+                .all(|line| lines.iter().any(|whole| whole == line)),
+            "a line was cut short: {tail}"
+        );
+    }
+
+    #[test]
+    fn a_failure_whose_cut_falls_between_lines_keeps_the_line_after_it() {
+        let first = "a".repeat(1000);
+        let kept = format!("{}\n{}", "b".repeat(500), "c".repeat(523));
+
+        let rendered = report("the turn failed", &format!("{first}\n{kept}"));
+
+        assert_eq!(kept.len(), 1024);
+        assert_eq!(
+            rendered.split_once(STDERR_HEADING),
+            Some(("the turn failed", kept.as_str()))
+        );
+    }
+
+    #[test]
+    fn a_failure_cuts_one_long_stderr_line_between_characters() {
+        let rendered = report("the turn failed", &"\u{2014}".repeat(1000));
+
+        let (_, tail) = rendered
+            .split_once(STDERR_HEADING)
+            .expect("the agent's words, then its stderr");
+        assert!(!tail.is_empty() && tail.len() <= 1024);
+        assert!(
+            tail.chars().all(|character| character == '\u{2014}'),
+            "{tail}"
+        );
+    }
+
+    /// An agent's own report can run to several lines. None of them may read
+    /// as stderr, and no line of stderr as the agent's own words.
+    #[test]
+    fn a_failure_of_several_lines_stays_apart_from_the_stderr_after_it() {
+        let words = "tool call error: tool call failed for `docs/echo`\n\nCaused by:\n    \
+                     timed out awaiting tools/call after 2s";
+        let stderr = "2026-09-23T07:43:43Z WARN codex_mcp: docs: 401 Unauthorized";
+
+        let rendered = report(words, stderr);
+
+        assert_eq!(rendered.split_once(STDERR_HEADING), Some((words, stderr)));
+    }
+
+    #[test]
+    fn a_failure_with_nothing_on_stderr_is_the_agents_words_alone() {
+        assert_eq!(report("the turn failed", " \n\t"), "the turn failed");
+    }
+
+    #[tokio::test]
+    async fn a_reported_failure_names_the_agents_words_before_the_end_of_its_stderr() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo 'retrying the request' >&2
+echo 'the credential was revoked' >&2
+echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Invalid API key provided"}'"#;
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a failure");
+
+        let ProviderError::Agent { message, .. } = &error else {
+            panic!("expected the agent's own failure, got {error:?}");
+        };
+        assert_eq!(
+            message.split_once(STDERR_HEADING),
+            Some((
+                "Invalid API key provided",
+                "retrying the request\nthe credential was revoked"
+            ))
+        );
+    }
+
+    /// A caller tells a run stopped at the output cap from any other failure
+    /// by the wording it starts with, and the agent is stopped at once rather
+    /// than left to fill its pipe until the timeout.
+    #[tokio::test]
+    async fn an_answer_past_the_output_cap_stops_the_run_in_the_wording_callers_match() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+while :; do
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"xxxxxxxxxxxxxxxx"}]}}'
+done
+"#;
+        let settings = settings(&directory, script).with_output_limit(4 * 1024);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a failure");
+
+        let ProviderError::Malformed { message, .. } = &error else {
+            panic!("expected the overflow, got {error:?}");
+        };
+        assert!(message.starts_with(PROSE_EXCEEDED), "{message}");
+        assert!(message.contains("4096"), "{message}");
+    }
+
+    /// What a call was made with reaches no caller as prose, so calls whose
+    /// arguments add up to more than the cap still end in an answer.
+    #[tokio::test]
+    async fn tool_arguments_past_the_output_cap_do_not_end_its_turn() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+for part in 1 2 3 4 5 6 7 8; do
+  printf '{"type":"assistant","message":{"id":"msg_%s","type":"message","content":[{"type":"tool_use","id":"toolu_%s","name":"Write","input":{"file_path":"/w/part.rs","content":"' "$part" "$part"
+  head -c 1024 /dev/zero | tr '\0' 'x'
+  printf '"}}]}}\n'
+done
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Wrote every part."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script).with_output_limit(4 * 1024),
+        );
+
+        let execution = execute(&provider, &[Message::user("Write every part.")]).await;
+
+        assert_eq!(execution.stdout.tools.len(), 8);
+        let arguments: usize = execution
+            .stdout
+            .tools
+            .iter()
+            .map(|call| call.function.arguments.len())
+            .sum();
+        assert!(arguments > 4 * 1024, "{arguments} bytes of arguments");
+        let completion = provider.assemble(execution).expect("an answer");
+        assert_eq!(
+            completion.message.content.as_deref(),
+            Some("Wrote every part.")
+        );
     }
 
     #[tokio::test]
@@ -2932,5 +3333,206 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         assert_eq!(codex.name(), "reviewer");
         assert_eq!(codex.capabilities(), AgentKind::Codex.capabilities());
         assert_eq!(codex.settings().timeout, CliSettings::default().timeout);
+    }
+
+    /// A stand-in agent's script that writes `lines` as its output.
+    fn replaying(directory: &TempDir, lines: &[String]) -> String {
+        let recording = directory.path().join("recording.jsonl");
+        std::fs::write(&recording, format!("{}\n", lines.join("\n"))).expect("the recording");
+        format!("cat '{}'", recording.display())
+    }
+
+    /// A stand-in agent that replays `stream` as its output.
+    fn replayed(directory: &TempDir, stream: &str) -> CliSettings {
+        let lines: Vec<String> = stream.lines().map(str::to_string).collect();
+        settings(directory, &replaying(directory, &lines))
+    }
+
+    fn blocking<T>(work: impl Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(work)
+    }
+
+    #[tokio::test]
+    async fn a_turn_the_account_cannot_fund_fails_in_claudes_words_and_not_as_a_rate_limit() {
+        for (stream, failure) in [
+            (
+                include_str!("../tests/fixtures/claude/model-requires-usage-credits.jsonl"),
+                format!(
+                    "{CREDITS_REQUIRED}: Fable 5.1 requires usage credits. Switch to another model to continue."
+                ),
+            ),
+            (
+                include_str!("../tests/fixtures/claude/overage-included-window-spent.jsonl"),
+                format!(
+                    "{CREDITS_REQUIRED}: You've reached your Fable limit. Switch to another model to continue."
+                ),
+            ),
+            (
+                include_str!("../tests/fixtures/claude/long-context-credits-required.jsonl"),
+                format!(
+                    "{LONG_CONTEXT_CREDITS_REQUIRED}: API Error: Usage credits required for 1M context \u{b7} turn on usage credits at claude.ai/settings/usage?from=cc_cli_limit_message (they take effect in a new session)"
+                ),
+            ),
+        ] {
+            let directory = TempDir::new().expect("a temporary directory");
+            let provider = CliProvider::agent(AgentKind::Claude, replayed(&directory, stream));
+
+            let error = run(&provider, &[Message::user("Review the change.")])
+                .await
+                .expect_err("a refused turn");
+
+            let rendered = error.to_string();
+            assert_eq!(rendered, format!("claude: {failure}"));
+            assert!(
+                !rendered.to_ascii_lowercase().contains("rate limit"),
+                "{rendered}"
+            );
+        }
+    }
+
+    /// claude hands a subagent's refusal to the main agent as the result of
+    /// the call that started it, and the turn goes on to the main agent's
+    /// answer.
+    #[tokio::test]
+    async fn a_subagents_refusal_leaves_the_turn_to_the_main_agents_answer() {
+        const ANSWER: &str = "The subagent could not run on this account, so the review is mine.";
+        let stream = [
+            json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_01Agent", "name": "Agent", "input": {"description": "Ask for a review", "prompt": "Review the change.", "model": "fable"}}]}, "parent_tool_use_id": null}),
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "overageStatus": "rejected", "overageDisabledReason": "overage_not_provisioned", "isUsingOverage": false, "errorCode": "credits_required"}}),
+            json!({"type": "assistant", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "Fable 5.1 requires usage credits. Switch to another model to continue."}]}, "parent_tool_use_id": "toolu_01Agent", "is_api_error_message": true, "api_error": "model_requires_usage_credits"}),
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": ANSWER}]}, "parent_tool_use_id": null}),
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": ANSWER}),
+        ]
+        .map(|line| line.to_string());
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &replaying(&directory, &stream)),
+        );
+
+        let completion = run(
+            &provider,
+            &[Message::user("Ask for a review of the change.")],
+        )
+        .await
+        .expect("the main agent's answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some(ANSWER));
+    }
+
+    /// claude refuses a subagent's request past the plan's window on an
+    /// event that names no agent, and the turn goes on to the main agent's
+    /// answer.
+    #[tokio::test]
+    async fn a_subagents_refused_window_leaves_the_turn_to_the_main_agents_answer() {
+        const ANSWER: &str = "Opus is past its weekly limit, so the review is mine.";
+        let stream = [
+            json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_01Agent", "name": "Agent", "input": {"description": "Ask Opus", "prompt": "Review the change.", "model": "opus"}}]}, "parent_tool_use_id": null}),
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1_790_208_000, "rateLimitType": "seven_day_opus", "isUsingOverage": false}}),
+            json!({"type": "assistant", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "You've hit your Opus limit \u{b7} resets Mon 9am"}]}, "parent_tool_use_id": "toolu_01Agent", "error": "rate_limit", "is_api_error_message": true}),
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": ANSWER}]}, "parent_tool_use_id": null}),
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": ANSWER}),
+        ]
+        .map(|line| line.to_string());
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &replaying(&directory, &stream)),
+        );
+
+        let completion = run(
+            &provider,
+            &[Message::user("Ask Opus to review the change.")],
+        )
+        .await
+        .expect("the main agent's answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some(ANSWER));
+    }
+
+    /// A turn usage credits carry past the plan's window is logged once, with
+    /// the window, and never with its credential.
+    #[test]
+    fn a_turn_on_usage_credits_is_logged_once_with_its_window() {
+        const TOKEN: &str = concat!(
+            "sk-ant-",
+            "api03-",
+            "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+        );
+        let stream = [
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour", "overageStatus": "allowed", "isUsingOverage": true}}),
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "Reviewed."}]}}),
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour", "overageStatus": "allowed_warning", "isUsingOverage": true}}),
+            json!({"type": "result", "subtype": "success", "is_error": false}),
+        ]
+        .map(|line| line.to_string());
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &replaying(&directory, &stream))
+                .with_credential(Credential::key("ANTHROPIC_API_KEY", TOKEN)),
+        );
+
+        let (completion, logged) =
+            captured_logs(|| blocking(run(&provider, &[Message::user("Review the change.")])));
+
+        assert_eq!(
+            completion
+                .expect("a turn on usage credits")
+                .message
+                .content
+                .as_deref(),
+            Some("Reviewed.")
+        );
+        let credited: Vec<&str> = logged
+            .lines()
+            .filter(|line| line.contains("usage credits"))
+            .collect();
+        assert_eq!(credited.len(), 1, "{logged}");
+        assert!(credited[0].contains("INFO"), "{logged}");
+        assert!(credited[0].contains("five_hour"), "{logged}");
+        assert!(!logged.contains(TOKEN), "{logged}");
+    }
+
+    #[test]
+    fn a_turn_inside_the_plans_window_logs_no_usage_credits() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, CLAUDE_SESSION));
+
+        let (completion, logged) =
+            captured_logs(|| blocking(run(&provider, &[Message::user("What does a.rs do?")])));
+
+        completion.expect("an answer");
+        assert!(!logged.contains("usage credits"), "{logged}");
+    }
+
+    /// A signed-out claude speaks its refusal as assistant text first, and
+    /// only the result after it says the turn failed.
+    #[tokio::test]
+    async fn a_refusal_spoken_before_it_is_declared_still_fails_the_turn() {
+        const REFUSAL: &str = "Not logged in \u{b7} Please run /login";
+        let stream = [
+            json!({"type": "assistant", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-4", "content": [{"type": "text", "text": REFUSAL}], "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}}, "session_id": "s1"}),
+            json!({"type": "result", "subtype": "success", "is_error": true, "terminal_reason": "api_error", "result": REFUSAL}),
+        ]
+        .map(|line| line.to_string());
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &replaying(&directory, &stream)),
+        );
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a signed-out agent to fail the turn");
+
+        assert!(
+            error.to_string().contains(REFUSAL),
+            "lost the agent's wording: {error}"
+        );
     }
 }

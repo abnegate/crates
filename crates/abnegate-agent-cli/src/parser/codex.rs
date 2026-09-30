@@ -6,8 +6,12 @@ mod reason;
 mod token_counts;
 
 use abnegate_llm::Usage;
+use abnegate_secret::redact;
+use serde_json::Map;
+use serde_json::Value;
 
 use crate::event::AgentEvent;
+use crate::mcp::qualified;
 use crate::parser;
 use crate::parser::codex::event::Event;
 use crate::parser::codex::item::Item;
@@ -38,6 +42,31 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
             COMMAND.to_string(),
             serde_json::json!({ "command": command }).to_string(),
         )),
+        Event::Completed {
+            item:
+                Item::Call {
+                    id,
+                    server,
+                    tool,
+                    arguments,
+                    error,
+                },
+        } => {
+            if let Some(reason) = error.and_then(|error| error.message) {
+                tracing::warn!(
+                    %server,
+                    %tool,
+                    reason = %redact(&reason),
+                    "codex refused an MCP tool call"
+                );
+            }
+            let arguments = arguments.unwrap_or_else(|| Value::Object(Map::new()));
+            events.push(AgentEvent::tool(
+                id,
+                qualified(&server, &tool),
+                arguments.to_string(),
+            ));
+        }
         Event::Turn { usage } => {
             events.extend(usage.map(|usage| AgentEvent::Usage(Usage::from(usage))));
             events.push(AgentEvent::Finished {
@@ -83,6 +112,7 @@ mod tests {
     use super::interpret;
     use crate::event::AgentEvent;
     use crate::stdout_parse_result::StdoutParseResult;
+    use crate::test_support::captured_logs;
 
     /// Recorded from `codex exec --json --skip-git-repo-check -`.
     const SESSION: &str = r#"{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000001"}
@@ -105,12 +135,260 @@ mod tests {
 {"type":"error","message":"You have hit your usage limit. Try again later."}
 {"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again later."}}"#;
 
+    /// Codex calling a relay's MCP tool, driven by a scripted Responses
+    /// provider.
+    const TOOL_CALL: &str = include_str!("../../tests/fixtures/codex/tool-call.jsonl");
+
+    /// A call to an echo tool, then to a tool that takes no arguments.
+    const TWO_CALLS: &str = include_str!("../../tests/fixtures/codex/two-tool-calls.jsonl");
+
+    /// The provider dropped its first stream and codex reconnected.
+    const RECONNECTED_THEN_CALLED: &str =
+        include_str!("../../tests/fixtures/codex/reconnect-then-complete.jsonl");
+
+    /// Run without the approval key, so codex refused the call itself.
+    const REFUSED_BY_CODEX: &str =
+        include_str!("../../tests/fixtures/codex/tool-call-without-approval.jsonl");
+
+    /// The relay refused the call, as it does when the reader denies one.
+    const REFUSED_BY_SERVER: &str =
+        include_str!("../../tests/fixtures/codex/tool-call-denied-by-server.jsonl");
+
+    /// No sign-in, against the real API, retried until codex gave up.
+    const SIGNED_OUT: &str = include_str!("../../tests/fixtures/codex/unauthenticated.jsonl");
+
+    /// A real model, qwen2.5:7b-instruct on Ollama.
+    const LOCAL_MODEL: &str =
+        include_str!("../../tests/fixtures/codex/local-model-tool-call.jsonl");
+
+    /// The call is made from inside code mode's `exec`.
+    const CODE_MODE: &str = include_str!("../../tests/fixtures/codex/code-mode-tool-call.jsonl");
+
     fn interpret_all(sample: &str) -> Vec<AgentEvent> {
         let mut events = Vec::new();
         for line in sample.lines() {
             interpret(line, &mut events);
         }
         events
+    }
+
+    fn calls(events: &[AgentEvent]) -> Vec<(&str, &str, &str)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Tool(call) => Some((
+                    call.id.as_str(),
+                    call.function.name.as_str(),
+                    call.function.arguments.as_str(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn answer(events: &[AgentEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn failures(events: &[AgentEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Failed(message) => Some(message.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn finished(events: &[AgentEvent]) -> bool {
+        matches!(events.last(), Some(AgentEvent::Finished { .. }))
+    }
+
+    #[test]
+    fn a_call_to_an_mcp_tool_is_reported_under_the_name_the_model_saw() {
+        let events = interpret_all(TOOL_CALL);
+
+        assert_eq!(
+            calls(&events),
+            [(
+                "item_0",
+                "mcp__relay__echo",
+                r#"{"text":"r6-rung3-nonce-9b2d"}"#
+            )]
+        );
+        assert_eq!(
+            answer(&events),
+            "The echo tool returned: Wall time: 0.0035 seconds\nOutput: r6-rung3-nonce-9b2d"
+        );
+        assert!(failures(&events).is_empty(), "{:?}", failures(&events));
+        assert!(finished(&events), "{events:?}");
+    }
+
+    #[test]
+    fn every_call_is_reported_including_one_that_takes_no_arguments() {
+        let events = interpret_all(TWO_CALLS);
+
+        assert_eq!(
+            calls(&events),
+            [
+                (
+                    "item_0",
+                    "mcp__relay__echo",
+                    r#"{"text":"r6-rung3-nonce-9b2d"}"#
+                ),
+                ("item_1", "mcp__relay__memory_list", "{}"),
+            ]
+        );
+        assert!(finished(&events), "{events:?}");
+    }
+
+    #[test]
+    fn a_call_without_arguments_at_all_is_reported_with_empty_ones() {
+        let mut events = Vec::new();
+        interpret(
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"relay","tool":"memory_list","status":"completed"}}"#,
+            &mut events,
+        );
+
+        assert_eq!(
+            calls(&events),
+            [("item_0", "mcp__relay__memory_list", "{}")]
+        );
+    }
+
+    #[test]
+    fn a_call_codex_refused_itself_is_reported_and_the_turn_goes_on() {
+        let (events, logs) = captured_logs(|| interpret_all(REFUSED_BY_CODEX));
+
+        assert_eq!(
+            calls(&events),
+            [(
+                "item_0",
+                "mcp__relay__echo",
+                r#"{"text":"r6-rung3-nonce-9b2d"}"#
+            )]
+        );
+        assert!(
+            failures(&events).is_empty(),
+            "a refused call is the model's to answer, not the end of the turn: {:?}",
+            failures(&events)
+        );
+        assert!(finished(&events), "{events:?}");
+        assert!(
+            logs.contains("WARN")
+                && logs.contains("MCP tool call requires approval, but approval policy is never"),
+            "the refusal the server never saw went unlogged: {logs}"
+        );
+    }
+
+    #[test]
+    fn a_call_the_server_refused_is_reported_and_the_turn_goes_on() {
+        let events = interpret_all(REFUSED_BY_SERVER);
+
+        assert_eq!(
+            calls(&events),
+            [(
+                "item_0",
+                "mcp__relay__echo",
+                r#"{"text":"deny: r6-rung3-nonce-9b2d"}"#
+            )]
+        );
+        assert_eq!(
+            answer(&events),
+            "The relay refused the call: Wall time: 0.0014 seconds\nOutput: The user denied this tool call."
+        );
+        assert!(failures(&events).is_empty(), "{:?}", failures(&events));
+        assert!(finished(&events), "{events:?}");
+    }
+
+    #[test]
+    fn an_error_codex_recovers_from_still_ends_in_its_answer() {
+        let events = interpret_all(RECONNECTED_THEN_CALLED);
+
+        assert!(
+            failures(&events).is_empty(),
+            "a reconnect codex went on to recover from failed the turn: {:?}",
+            failures(&events)
+        );
+        assert_eq!(
+            answer(&events),
+            "The echo tool returned: Wall time: 0.0012 seconds\nOutput: r6-rung3-nonce-9b2d"
+        );
+        assert!(finished(&events), "{events:?}");
+
+        let mut result: StdoutParseResult = events.into_iter().collect();
+        result.conclude();
+        assert!(result.failure.is_none(), "{:?}", result.failure);
+    }
+
+    #[test]
+    fn an_error_line_on_its_own_ends_nothing() {
+        let mut events = Vec::new();
+        interpret(
+            r#"{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)"}"#,
+            &mut events,
+        );
+
+        assert!(
+            matches!(events.as_slice(), [AgentEvent::Diagnostic(_)]),
+            "{events:?}"
+        );
+        assert!(!events.iter().any(AgentEvent::terminal), "{events:?}");
+    }
+
+    #[test]
+    fn a_turn_that_fails_after_every_retry_fails_once_in_codexs_own_words() {
+        let events = interpret_all(SIGNED_OUT);
+
+        let failures = failures(&events);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].contains("401 Unauthorized: Missing bearer or basic authentication"),
+            "{failures:?}"
+        );
+        assert!(!finished(&events), "{events:?}");
+    }
+
+    #[test]
+    fn a_real_models_call_reads_like_a_scripted_one() {
+        let events = interpret_all(LOCAL_MODEL);
+
+        assert_eq!(
+            calls(&events),
+            [(
+                "item_1",
+                "mcp__relay__echo",
+                r#"{"text":"r6-rung2-nonce-4c1e"}"#
+            )]
+        );
+        assert_eq!(
+            answer(&events),
+            "The output of the echo tool is `r6-rung2-nonce-4c1e`."
+        );
+        assert!(failures(&events).is_empty(), "{:?}", failures(&events));
+        assert!(finished(&events), "{events:?}");
+    }
+
+    #[test]
+    fn a_call_made_from_code_mode_reads_like_a_direct_one() {
+        let events = interpret_all(CODE_MODE);
+
+        assert_eq!(
+            calls(&events),
+            [(
+                "item_0",
+                "mcp__relay__echo",
+                r#"{"text":"t6-a22-nonce-5e1f"}"#
+            )]
+        );
+        assert!(failures(&events).is_empty(), "{:?}", failures(&events));
+        assert!(finished(&events), "{events:?}");
     }
 
     #[test]

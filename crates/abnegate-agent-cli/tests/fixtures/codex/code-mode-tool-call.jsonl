@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a0cd55-9d16-7572-8575-4b7f4500b4b0"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"relay","tool":"echo","arguments":{"text":"t6-a22-nonce-5e1f"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"relay","tool":"echo","arguments":{"text":"t6-a22-nonce-5e1f"},"result":{"content":[{"type":"text","text":"t6-a22-nonce-5e1f"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Exec said: Script completed\nWall time 0.0 seconds\nOutput:\n {\"content\":[{\"type\":\"text\",\"text\":\"t6-a22-nonce-5e1f\"}],\"isError\":false}"}}
+{"type":"turn.completed","usage":{"input_tokens":240,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":24,"reasoning_output_tokens":0}}

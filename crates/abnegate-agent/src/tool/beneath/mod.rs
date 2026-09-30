@@ -45,13 +45,14 @@ use uuid::Uuid;
 
 use super::ToolContext;
 use super::ToolError;
+use super::file;
 
 /// `openat2` answers `EXDEV` when `RESOLVE_BENEATH` would be broken, so the
 /// walk answers the same and one mapping covers both resolutions.
 const ESCAPED: Errno = Errno::EXDEV;
 const FILE_MODE: Mode = Mode::from_bits_truncate(0o666);
 const DIRECTORY_MODE: Mode = Mode::from_bits_truncate(0o777);
-const LINKS: usize = 40;
+pub(super) const LINKS: usize = 40;
 const PERMISSION_BITS: u32 = 0o7777;
 
 /// Open the regular file at `path`, confined beneath the working directory
@@ -61,6 +62,7 @@ const PERMISSION_BITS: u32 = 0o7777;
 /// end a read would reach and no size to hold against a limit, and opening a
 /// FIFO blocks until something opens its other end.
 pub(crate) fn open(context: &ToolContext, path: &Path, access: Access) -> Result<File, ToolError> {
+    admitted(context, path)?;
     let file = if context.unrestricted {
         access.options().open(context.working_directory.join(path))
     } else {
@@ -77,6 +79,19 @@ pub(crate) fn open(context: &ToolContext, path: &Path, access: Access) -> Result
         .map_err(|error| failed("open file", error))
 }
 
+/// Refuse what the context withholds, and what leaves the working directory,
+/// before anything is opened or made.
+///
+/// What is withheld is judged by name, unlike the confinement the open itself
+/// holds to, so it holds against the path a caller names rather than against a
+/// symlink swapped in while the open runs.
+fn admitted(context: &ToolContext, path: &Path) -> Result<(), ToolError> {
+    file::confine(
+        &file::resolve(&context.working_directory.join(path))?,
+        context,
+    )
+}
+
 /// `file`, if it is a regular file, set back to blocking I/O.
 fn regular(file: File) -> io::Result<File> {
     if !file.metadata()?.is_file() {
@@ -91,6 +106,7 @@ fn regular(file: File) -> io::Result<File> {
 }
 
 pub(crate) fn create_dir_all(context: &ToolContext, path: &Path) -> Result<(), ToolError> {
+    admitted(context, path)?;
     if context.unrestricted {
         return fs::create_dir_all(context.working_directory.join(path))
             .map_err(|error| failed("create directory", error));
@@ -119,6 +135,7 @@ pub(crate) fn replace(
     path: &Path,
     contents: &[u8],
 ) -> Result<(), ToolError> {
+    admitted(context, path)?;
     if context.unrestricted {
         return replace_on_host(&context.working_directory.join(path), contents)
             .map_err(|error| failed("write file", error));

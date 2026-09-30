@@ -8,6 +8,8 @@ use nix::fcntl::OFlag;
 use nix::fcntl::open;
 use nix::fcntl::openat;
 use nix::sys::stat::Mode;
+use nix::sys::stat::SFlag;
+use nix::sys::stat::fstat;
 use nix::sys::stat::mkdirat;
 
 use super::EXCLUDE_PATH;
@@ -122,7 +124,8 @@ impl GitLayout {
 /// The exclude file under `repository`, each step opened through the
 /// descriptor of the directory before it and none through a link, so a run
 /// that swaps `info` or `exclude` for a link between steps is refused rather
-/// than followed.
+/// than followed. The open never waits, and anything but a regular file, a
+/// FIFO whose read would wait for a writer among them, is refused.
 fn open_exclude(repository: &Path) -> nix::Result<File> {
     let exclude = Path::new(EXCLUDE_PATH);
     let (Some(information), Some(name)) = (exclude.parent(), exclude.file_name()) else {
@@ -138,9 +141,18 @@ fn open_exclude(repository: &Path) -> nix::Result<File> {
     let file = openat(
         &information,
         name,
-        OFlag::O_RDWR | OFlag::O_APPEND | OFlag::O_CREAT | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        OFlag::O_RDWR
+            | OFlag::O_APPEND
+            | OFlag::O_CREAT
+            | OFlag::O_NOFOLLOW
+            | OFlag::O_NONBLOCK
+            | OFlag::O_CLOEXEC,
         Mode::from_bits_truncate(0o666),
     )?;
+    let kind = SFlag::from_bits_truncate(fstat(&file)?.st_mode) & SFlag::S_IFMT;
+    if kind != SFlag::S_IFREG {
+        return Err(Errno::EINVAL);
+    }
     Ok(File::from(file))
 }
 
@@ -154,6 +166,8 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
 
+    use nix::sys::stat::Mode;
+    use nix::unistd::mkfifo;
     use tempfile::TempDir;
 
     use super::GitLayout;
@@ -201,6 +215,23 @@ mod tests {
             FOREIGN,
             "the open followed a linked exclude file"
         );
+    }
+
+    /// A run can make its exclude a FIFO: the open for reading and appending
+    /// succeeded, and the read that looks for the line waited for a writer
+    /// that never came, holding the job's start. Only a regular file opens.
+    #[test]
+    fn an_exclude_that_is_not_a_regular_file_is_refused_by_the_open_itself() {
+        let (_root, repository, _outside) = planted();
+        let information = repository.join("info");
+        fs::create_dir(&information).expect("the info directory");
+        mkfifo(
+            &information.join("exclude"),
+            Mode::from_bits_truncate(0o666),
+        )
+        .expect("the planted FIFO");
+
+        assert!(open_exclude(&repository).is_err());
     }
 
     #[test]

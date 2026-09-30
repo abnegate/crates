@@ -59,6 +59,10 @@ pub enum AgentEvent {
     /// The counts behind [`AgentEvent::Usage`], with cache reads and cache
     /// writes kept apart from fresh input.
     Tokens(CliUsage),
+    /// The account's usage credits carried the turn past the plan's window
+    /// this names, which the agent spends without asking. Reported once per
+    /// turn.
+    Credits(String),
 }
 
 impl AgentEvent {
@@ -135,6 +139,7 @@ mod tests {
             AgentEvent::Latency(Duration::from_millis(7980)),
             AgentEvent::Tokens(CliUsage::default()),
             AgentEvent::Diagnostic("Reconnecting... 1/5".to_string()),
+            AgentEvent::Credits("five_hour".to_string()),
         ] {
             assert!(!event.terminal(), "{event:?} ended the run");
         }

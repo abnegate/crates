@@ -1,10 +1,12 @@
 //! Waiting for a background job to end.
 
+mod offer;
 mod parameters;
 
 use std::time::Duration;
 
 use async_trait::async_trait;
+pub use offer::WaitFor;
 use parameters::WaitForParameters;
 use serde_json::Value;
 use serde_json::json;

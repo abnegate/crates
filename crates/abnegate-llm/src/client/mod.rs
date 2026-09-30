@@ -109,41 +109,8 @@ impl LlmClient {
         Ok(body)
     }
 
-    fn validate(&self, url: &str) -> Result<(), Error> {
-        let parsed = Url::parse(url).map_err(|_| {
-            Error::InvalidConfig("LLM base_url must be a valid absolute URL".to_string())
-        })?;
-
-        match parsed.scheme() {
-            "http" | "https" => {}
-            _ => {
-                return Err(Error::InvalidConfig(
-                    "LLM base_url must use http or https".to_string(),
-                ));
-            }
-        }
-
-        if !parsed.username().is_empty() || parsed.password().is_some() {
-            return Err(Error::InvalidConfig(
-                "LLM base_url must not include userinfo".to_string(),
-            ));
-        }
-
-        if parsed.host_str().is_none() {
-            return Err(Error::InvalidConfig(
-                "LLM base_url must include a host".to_string(),
-            ));
-        }
-
-        // No private-network rule here on purpose. Every caller passes an
-        // operator-configured host, and a self-hosted deployment points at
-        // loopback, a LAN address or a compose service name. The check belongs
-        // where a tenant-supplied host is first accepted, against that value.
-        Ok(())
-    }
-
     async fn send(&self, url: &str, body: &serde_json::Value) -> Result<reqwest::Response, Error> {
-        self.validate(url)?;
+        let url = validate(url)?;
         let mut request = self.client.post(url).json(body);
         if !self.config.api_key.is_empty() {
             request = request.bearer_auth(self.config.api_key.expose());
@@ -293,6 +260,41 @@ impl LlmClient {
 
         Ok(events(response, read_timeout))
     }
+}
+
+/// Check an outbound request URL and hand back the URL to request, so a
+/// caller can only send the value that was checked.
+fn validate(url: &str) -> Result<Url, Error> {
+    let parsed = Url::parse(url).map_err(|_| {
+        Error::InvalidConfig("LLM base_url must be a valid absolute URL".to_string())
+    })?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => {
+            return Err(Error::InvalidConfig(
+                "LLM base_url must use http or https".to_string(),
+            ));
+        }
+    }
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(Error::InvalidConfig(
+            "LLM base_url must not include userinfo".to_string(),
+        ));
+    }
+
+    if parsed.host_str().is_none() {
+        return Err(Error::InvalidConfig(
+            "LLM base_url must include a host".to_string(),
+        ));
+    }
+
+    // No private-network rule here on purpose. Every caller passes an
+    // operator-configured host, and a self-hosted deployment points at
+    // loopback, a LAN address or a compose service name. The check belongs
+    // where a tenant-supplied host is first accepted, against that value.
+    Ok(parsed)
 }
 
 fn events(

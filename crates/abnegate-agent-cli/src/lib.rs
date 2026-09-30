@@ -29,7 +29,8 @@
 //! names [`CliSettings::allow`] adds, a proxy among them with
 //! [`CliSettings::with_proxy_variables`], and its own configuration
 //! variables, each from this process's environment; its sign-in variables
-//! when its credential is inherited; and what the settings hand it: public
+//! when its credential is inherited, and never otherwise, allowed or not;
+//! and what the settings hand it: public
 //! [variables](CliSettings::variables), secret
 //! [environment](CliSettings::environment) values, the credential, and what
 //! an [`mcp`] configuration moves out of its file.
@@ -80,7 +81,23 @@
 //! Nothing here decides whether a failure is worth retrying. A caller already
 //! owns that judgement and makes it by reading the failure text, so a provider
 //! reports what went wrong in the agent's own words, with any credential
-//! scrubbed out.
+//! scrubbed out. A failure the agent reported is followed by
+//! [`STDERR_HEADING`] and the last whole lines of its stderr that fit in
+//! 1 KiB, since some agents give the reason only there, so a caller splits on
+//! the heading to read the agent's words alone. An agent that exits with no
+//! report of its own fails with the end of its stderr, and a run stopped for
+//! prose past its output limit fails with a message starting with
+//! [`PROSE_EXCEEDED`].
+//!
+//! A Claude turn's failure begins with a marker ahead of those words when
+//! Claude says why it refused the request: `rate limit reached` and the CLI's
+//! own report for a refused plan window, [`CREDITS_REQUIRED`] or
+//! [`LONG_CONTEXT_CREDITS_REQUIRED`] for a model or a context the account's
+//! usage credits cannot fund, and [`CREDITS_UNCONFIRMED`] for such a refusal
+//! Claude could not look the credits up for. A subagent's refusal is never
+//! the turn's: Claude hands it to the main agent, which answers without it.
+//! A turn the account's usage credits carry past the plan's window is logged
+//! once, at info, and named in [`StdoutParseResult::credits`].
 //!
 //! # Platform support
 //!
@@ -136,9 +153,13 @@ pub use crate::mcp::McpConfigError;
 pub use crate::mcp::McpServer;
 pub use crate::mcp::McpTransport;
 pub use crate::overlong_error::OverlongError;
+pub use crate::parser::Turn;
+pub use crate::parser::claude::CREDITS_REQUIRED;
+pub use crate::parser::claude::CREDITS_UNCONFIRMED;
 pub use crate::parser::claude::CliContentBlock;
 pub use crate::parser::claude::CliMessage;
 pub use crate::parser::claude::CliUsage;
+pub use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
 pub use crate::parser::claude::RateLimitReport;
 pub use crate::parser::claude::StreamEvent;
 pub use crate::provider::CliProvider;
@@ -161,6 +182,14 @@ pub use crate::stream::ApiMessageDelta;
 pub use crate::stream::ApiStreamEvent;
 pub use crate::structured_result::StructuredResult;
 pub use crate::tripwire::Tripwire;
+
+/// Stands between an agent's own report of a failure and the end of its
+/// stderr that follows it, so a reader can tell the two apart.
+pub const STDERR_HEADING: &str = "\n\nThe end of the agent's stderr:\n";
+
+/// How the failure of a run stopped for prose past its output limit begins,
+/// before it names the limit.
+pub const PROSE_EXCEEDED: &str = "the agent's prose exceeded";
 
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]

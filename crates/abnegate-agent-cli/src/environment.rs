@@ -30,8 +30,11 @@ const REFRESH_TOKEN: &str = "CLAUDE_CODE_OAUTH_REFRESH_TOKEN";
 /// The child's environment: an allowlist of host variables, the caller's
 /// allowed names and the agent's own configuration variables, or the whole
 /// host environment when the caller opts in, with every explicit value set
-/// on top. Each allowed value but the proxy bypass list is a secret, since a
-/// proxy URL, say, can carry a password.
+/// on top. An allowed name the agent signs in with passes only when its
+/// credential is inherited: beside a credential of the caller's own, the
+/// host's would be one more the agent could sign in with. Each allowed
+/// value but the proxy bypass list is a secret, since a proxy URL, say, can
+/// carry a password.
 ///
 /// Explicit values go on in rising precedence: the agent's sign-in
 /// variables from the host when its credential is inherited, the caller's
@@ -69,6 +72,7 @@ impl Environment {
             variables: BTreeMap::new(),
             secrets: Vec::new(),
         };
+        let signed_in_on_host = matches!(settings.credential, Credential::Inherited);
         if !environment.inherit {
             for variable in DEFAULT_ENVIRONMENT.iter().chain(agent.configuration()) {
                 if let Some(value) = host(variable) {
@@ -76,12 +80,15 @@ impl Environment {
                 }
             }
             for variable in &settings.allowed {
-                if !environment.removed.contains(&variable.as_str()) {
+                let name = variable.as_str();
+                let refused = environment.removed.contains(&name)
+                    || (!signed_in_on_host && agent.credentials().contains(&name));
+                if !refused {
                     environment.allow(variable, host);
                 }
             }
         }
-        if matches!(settings.credential, Credential::Inherited) {
+        if signed_in_on_host {
             for variable in agent.credentials() {
                 environment.pass(variable, host);
             }
@@ -854,6 +861,123 @@ mod tests {
         let explicit = settings.with_environment("CLAUDECODE", "1");
         let environment = Environment::new(AgentKind::Claude, &explicit, None, &host());
         assert_eq!(set(&environment)["CLAUDECODE"].as_deref(), Some("1"));
+    }
+
+    /// A caller that allows a key the agent signs in with, for the agent's
+    /// own scripts say, and signs the agent in with a credential of its own
+    /// would otherwise hand the agent the host's key beside it, which the
+    /// agent may sign in with instead. With the credential inherited, the
+    /// host's keys are what the agent signs in with, so they still pass.
+    #[test]
+    fn a_passthrough_naming_a_credential_still_drops_it() {
+        const HOST: &str = "notreal-host-credential";
+        for (agent, credentials, variable, key) in [
+            (
+                AgentKind::Claude,
+                &[
+                    "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_AUTH_TOKEN",
+                    "CLAUDE_CODE_OAUTH_TOKEN",
+                ][..],
+                "ANTHROPIC_API_KEY",
+                concat!("sk-ant-", "explicit"),
+            ),
+            (
+                AgentKind::Codex,
+                &["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"][..],
+                "OPENAI_API_KEY",
+                concat!("sk-", "explicit"),
+            ),
+        ] {
+            let host = |name: &str| credentials.contains(&name).then(|| OsString::from(HOST));
+            let allowed = CliSettings::default().allow(credentials.iter().copied());
+            let explicit = allowed
+                .clone()
+                .with_credential(Credential::key(variable, key));
+
+            let variables = set(&Environment::new(agent, &explicit, None, &host));
+            let carrying: Vec<&String> = variables
+                .iter()
+                .filter(|(_, value)| value.as_deref() == Some(HOST))
+                .map(|(name, _)| name)
+                .collect();
+            assert!(
+                carrying.is_empty(),
+                "{agent} was handed the host's {carrying:?}"
+            );
+            assert_eq!(variables[variable].as_deref(), Some(key), "{agent}");
+
+            let variables = set(&Environment::new(agent, &allowed, None, &host));
+            for name in credentials {
+                assert_eq!(
+                    variables.get(*name).cloned().flatten().as_deref(),
+                    Some(HOST),
+                    "{agent} was not handed the host's {name} it signs in with"
+                );
+            }
+        }
+    }
+
+    /// Only the names the agent signs in with are dropped: whatever else the
+    /// caller allows beside them still passes.
+    #[test]
+    fn a_passthrough_naming_a_harmless_variable_still_passes_it() {
+        let settings = CliSettings::default()
+            .with_credential(Credential::key(
+                "ANTHROPIC_API_KEY",
+                concat!("sk-ant-", "explicit"),
+            ))
+            .allow([
+                "LINEAR_API_URL",
+                "CLAUDE_CONFIG_DIR",
+                "GITHUB_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+            ]);
+        let environment = Environment::new(AgentKind::Claude, &settings, None, &host());
+
+        let variables = set(&environment);
+        assert_eq!(
+            variables["LINEAR_API_URL"].as_deref(),
+            Some("https://linear.internal")
+        );
+        assert_eq!(
+            variables["CLAUDE_CONFIG_DIR"].as_deref(),
+            Some("/home/agent/.claude-work")
+        );
+        assert_eq!(variables["GITHUB_TOKEN"].as_deref(), Some("ghp-host-token"));
+        assert!(!variables.contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+    }
+
+    #[test]
+    fn the_credential_outranks_a_variable_of_the_same_name() {
+        const CREDENTIAL: &str = concat!("sk-ant-", "oat01-the-credential");
+        let settings = CliSettings::default()
+            .with_variable("CLAUDE_CODE_OAUTH_TOKEN", "set-as-a-variable")
+            .with_credential(Credential::key("CLAUDE_CODE_OAUTH_TOKEN", CREDENTIAL));
+        let environment = Environment::new(AgentKind::Claude, &settings, None, &host());
+
+        assert_eq!(
+            set(&environment)["CLAUDE_CODE_OAUTH_TOKEN"].as_deref(),
+            Some(CREDENTIAL)
+        );
+    }
+
+    #[test]
+    fn the_variables_the_caller_sets_reach_the_agent_over_what_it_would_inherit() {
+        let settings = CliSettings::default()
+            .with_variable("CLAUDE_CONFIG_DIR", "/state/tenant/claude")
+            .with_variable("DISABLE_AUTOUPDATER", "1")
+            .with_variable("HOME", "/state/tenant/home");
+        let environment = Environment::new(AgentKind::Claude, &settings, None, &host());
+
+        let variables = set(&environment);
+        for (name, value) in [
+            ("CLAUDE_CONFIG_DIR", "/state/tenant/claude"),
+            ("DISABLE_AUTOUPDATER", "1"),
+            ("HOME", "/state/tenant/home"),
+        ] {
+            assert_eq!(variables[name].as_deref(), Some(value), "{name}");
+        }
     }
 
     #[test]

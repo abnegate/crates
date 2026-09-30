@@ -15,6 +15,7 @@ use crate::log::Record;
 use crate::log::Sink;
 use crate::overlong_error::OverlongError;
 use crate::parser;
+use crate::parser::Turn;
 use crate::scrubber::Scrubber;
 use crate::stdout_parse_result::StdoutParseResult;
 use crate::verdict::Verdict;
@@ -36,8 +37,12 @@ const BUFFER: usize = 8 * 1024;
 /// A [partial message](AgentKind::partial) is counted but never journaled: a
 /// secret streamed across several pieces matches none of them, while the
 /// whole event that repeats them is scrubbed as one.
+///
+/// Its lines are read through one [`Turn`], and a turn the account's usage
+/// credits carry past the plan's window is logged once, at info.
 pub(crate) struct Reader {
     agent: AgentKind,
+    turn: Turn,
     lines: Lines,
     limiter: OutputLimiter,
     limit: usize,
@@ -65,6 +70,7 @@ impl Reader {
     ) -> Self {
         Self {
             agent,
+            turn: agent.turn(),
             lines: Lines::new(line_limit),
             limiter: OutputLimiter::new(output_limit),
             limit: output_limit,
@@ -174,13 +180,13 @@ impl Reader {
                 .await;
         }
 
-        self.agent.interpret(&line, &mut self.events);
+        self.turn.interpret(&line, &mut self.events);
         let events = std::mem::take(&mut self.events);
         for event in events {
             let event = match event {
                 AgentEvent::Text(text) => {
                     if self.limiter.admit(text.len()).accepted < text.len() {
-                        return Err(format!("the agent's prose exceeded {} bytes", self.limit));
+                        return Err(format!("{} {} bytes", crate::PROSE_EXCEEDED, self.limit));
                     }
                     self.prose
                         .write(self.scrubber.scrub(&text).as_bytes())
@@ -204,6 +210,10 @@ impl Reader {
                 AgentEvent::Finished { finish_reason } => {
                     self.settle(Verdict::Finished);
                     AgentEvent::finished(finish_reason)
+                }
+                AgentEvent::Credits(window) => {
+                    tracing::info!(agent = %self.agent, %window, "the turn runs on usage credits past the plan's window");
+                    AgentEvent::Credits(window)
                 }
                 event => event,
             };

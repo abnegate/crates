@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::fs::DirEntry;
 use std::fs::FileType;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,6 +11,9 @@ use std::time::Instant;
 
 pub(super) use visit::Visit;
 
+use super::identity::Identity;
+use super::withheld::Withheld;
+use crate::tool::ToolContext;
 use crate::tool::ToolError;
 
 /// Deepest a walk descends below the directory it started from.
@@ -19,10 +21,6 @@ pub(super) const MAXIMUM_WALK_DEPTH: usize = 64;
 
 /// Most entries one walk looks at before it gives up.
 pub(super) const MAXIMUM_WALK_ENTRIES: usize = 100_000;
-
-/// Longest one walk runs, kept inside the default tool timeout so a walk
-/// that runs out of time still reports what it found.
-pub(super) const WALK_TIME_LIMIT: Duration = Duration::from_secs(20);
 
 pub(super) const OUT_OF_TIME: &str = "out of time";
 
@@ -35,21 +33,25 @@ const TOO_DEEP: &str = "too deep";
 /// A symlinked directory is shown to the visitor as the link it is and never
 /// entered, and a directory reached twice by any route (a bind mount, a
 /// hard-linked directory) is entered once, so a tree that loops back on
-/// itself still ends. Depth, entry and time budgets bound whatever is left.
+/// itself still ends. An entry the context withholds is neither shown nor
+/// entered, whatever name the walk reaches it by. Depth, entry and time
+/// budgets bound whatever is left.
 pub(super) struct Walk {
     deadline: Instant,
     remaining: usize,
-    visited: HashSet<(u64, u64)>,
+    visited: HashSet<Identity>,
+    withheld: Withheld,
     stopped: Option<&'static str>,
     unreadable: bool,
 }
 
 impl Walk {
-    pub(super) fn new(limit: Duration) -> Self {
+    pub(super) fn new(limit: Duration, context: &ToolContext) -> Self {
         Self {
             deadline: Instant::now() + limit,
             remaining: MAXIMUM_WALK_ENTRIES,
             visited: HashSet::new(),
+            withheld: Withheld::of(context),
             stopped: None,
             unreadable: false,
         }
@@ -80,8 +82,8 @@ impl Walk {
     ) -> Result<(), ToolError> {
         let entries = fs::read_dir(root)
             .map_err(|error| ToolError::Execution(format!("Cannot read directory: {error}")))?;
-        if let Ok(metadata) = fs::metadata(root) {
-            self.visited.insert((metadata.dev(), metadata.ino()));
+        if let Some(identity) = Identity::of(root) {
+            self.visited.insert(identity);
         }
 
         let mut pending: Vec<(fs::ReadDir, usize)> = vec![(entries, 0)];
@@ -104,6 +106,9 @@ impl Walk {
                 self.unreadable = true;
                 continue;
             };
+            if self.withholds(&entry) {
+                continue;
+            }
             match visit(&entry, file_type) {
                 Visit::Stop => return Ok(()),
                 Visit::Skip => {}
@@ -132,6 +137,15 @@ impl Walk {
         None
     }
 
+    /// Whether the context withholds `entry` itself, judged by what it is on
+    /// disk rather than by its name.
+    fn withholds(&self, entry: &DirEntry) -> bool {
+        entry.metadata().is_ok_and(|metadata| {
+            self.withheld
+                .holds_entry(&entry.path(), Identity::from(&metadata))
+        })
+    }
+
     fn enter(&mut self, directory: PathBuf, depth: usize) -> Option<fs::ReadDir> {
         if depth + 1 > MAXIMUM_WALK_DEPTH {
             self.stopped = Some(TOO_DEEP);
@@ -141,7 +155,11 @@ impl Walk {
             self.unreadable = true;
             return None;
         };
-        if !metadata.is_dir() || !self.visited.insert((metadata.dev(), metadata.ino())) {
+        let identity = Identity::from(&metadata);
+        if !metadata.is_dir()
+            || self.withheld.holds_entry(&directory, identity)
+            || !self.visited.insert(identity)
+        {
             return None;
         }
         let entries = fs::read_dir(directory).ok();
@@ -157,7 +175,14 @@ mod tests {
     use super::*;
 
     fn names(root: &Path) -> (Vec<String>, Option<&'static str>) {
-        let mut walk = Walk::new(WALK_TIME_LIMIT);
+        names_withholding(root, &ToolContext::default())
+    }
+
+    fn names_withholding(
+        root: &Path,
+        context: &ToolContext,
+    ) -> (Vec<String>, Option<&'static str>) {
+        let mut walk = Walk::new(context.search_timeout, context);
         let mut seen = Vec::new();
         walk.run(root, |entry, _| {
             seen.push(
@@ -207,7 +232,7 @@ mod tests {
     fn a_walk_out_of_time_says_so() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("file"), "x").unwrap();
-        let mut walk = Walk::new(Duration::ZERO);
+        let mut walk = Walk::new(Duration::ZERO, &ToolContext::default());
 
         walk.run(root.path(), |_, _| Visit::Descend).unwrap();
 
@@ -221,7 +246,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("file"), "x").unwrap();
         let limit = Duration::from_millis(50);
-        let mut walk = Walk::new(limit);
+        let mut walk = Walk::new(limit, &ToolContext::default());
 
         walk.run(root.path(), |_, _| {
             std::thread::sleep(limit * 2);
@@ -230,5 +255,22 @@ mod tests {
         .unwrap();
 
         assert_eq!(walk.stopped(), Some("out of time"));
+    }
+
+    #[test]
+    fn a_denied_directory_is_neither_shown_nor_entered_under_any_name() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("state/inner")).unwrap();
+        std::fs::write(root.path().join("state/inner/file"), "x").unwrap();
+        std::fs::create_dir(root.path().join("beside")).unwrap();
+        std::fs::write(root.path().join("beside/file"), "x").unwrap();
+        let aliases = tempfile::tempdir().unwrap();
+        symlink(root.path().join("state"), aliases.path().join("alias")).unwrap();
+        let context = ToolContext::default().with_denied([aliases.path().join("alias")]);
+
+        let (seen, stopped) = names_withholding(root.path(), &context);
+
+        assert_eq!(seen, ["beside", "beside/file"]);
+        assert_eq!(stopped, None);
     }
 }

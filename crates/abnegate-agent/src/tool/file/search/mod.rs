@@ -1,8 +1,12 @@
 mod parameters;
 
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
+use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::Duration;
@@ -11,6 +15,7 @@ use async_trait::async_trait;
 use parameters::SearchCodeParameters;
 use serde_json::Value;
 use serde_json::json;
+use tokio::io::AsyncBufRead;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
@@ -23,6 +28,7 @@ use super::resolve;
 use super::walk::OUT_OF_TIME;
 use super::walk::Visit;
 use super::walk::Walk;
+use crate::tool::TIMEOUT_SLACK;
 use crate::tool::Tool;
 use crate::tool::ToolContext;
 use crate::tool::ToolError;
@@ -75,14 +81,18 @@ const CODE_EXTENSIONS: &[&str] = &[
 /// global excludes, the exclude file a linked worktree shares with its
 /// repository, or whether a repository encloses it.
 ///
+/// Each match is shown only when the file `rg` names for it lies under the
+/// searched directory and passes the same confinement every other file tool
+/// applies, judged once per file.
+///
 /// When `rg` cannot be started, or fails having printed nothing, the tree is
 /// walked instead. The walk searches code files only, those with a source,
 /// script, markup, configuration or text extension such as `rs`, `sh`,
 /// `json`, `md` or `txt`, and passes over hidden entries, build trees, links
-/// and files past the context's `maximum_file_size`. A search that runs out
-/// of time, that `rg` could not read all of, or whose walk could not read a
-/// directory or a code file, returns the matches it found, marked as stopped
-/// early.
+/// and files past the context's `maximum_file_size`. A search that runs past
+/// the context's [`search_timeout`](ToolContext::search_timeout), that `rg`
+/// could not read all of, or whose walk could not read a directory or a code
+/// file, returns the matches it found, marked as stopped early.
 pub struct SearchCodeTool;
 
 #[async_trait]
@@ -120,6 +130,10 @@ impl Tool for SearchCodeTool {
         })
     }
 
+    fn timeout(&self, context: &ToolContext) -> Duration {
+        context.search_timeout + TIMEOUT_SLACK
+    }
+
     async fn execute(
         &self,
         parameters: Value,
@@ -131,7 +145,7 @@ impl Tool for SearchCodeTool {
         let search_path = resolve(&match &parameters.path {
             Some(path) => context.working_directory.join(path),
             None => context.working_directory.clone(),
-        });
+        })?;
         confine(&search_path, context)?;
         let maximum_results = parameters
             .maximum_results
@@ -209,7 +223,7 @@ pub(super) fn search_tree(
     };
     let mut results = Vec::new();
     let mut unreadable = false;
-    let mut walk = Walk::new(context.search_timeout);
+    let mut walk = Walk::new(context.search_timeout, context);
     let walked = walk.run(root, |entry, file_type| {
         if results.len() >= maximum_results {
             return Visit::Stop;
@@ -270,7 +284,7 @@ fn search_file(
         return false;
     };
 
-    let relative = path.strip_prefix(root).unwrap_or(path);
+    let relative = escaped(path.strip_prefix(root).unwrap_or(path));
     for (index, line) in content.lines().enumerate() {
         if results.len() >= maximum_results {
             break;
@@ -281,12 +295,7 @@ fn search_file(
             line.to_lowercase().contains(pattern)
         };
         if matches {
-            results.push(format!(
-                "{}:{}: {}",
-                relative.display(),
-                index + 1,
-                line.trim()
-            ));
+            results.push(format!("{relative}:{}: {}", index + 1, line.trim()));
         }
     }
     true
@@ -303,13 +312,7 @@ async fn search_ripgrep(
 ) -> Option<ToolResult> {
     let mut command = process::command(RIPGREP, context);
     command.args(ripgrep_arguments(parameters, search_path, maximum_results));
-    ripgrep(
-        command,
-        search_path,
-        maximum_results,
-        context.search_timeout,
-    )
-    .await
+    ripgrep(command, search_path, maximum_results, context).await
 }
 
 /// The first four keep the host out of what a search reads: `--no-config` a
@@ -319,6 +322,10 @@ async fn search_ripgrep(
 /// excludes; and `--no-require-git` both whether a repository encloses the
 /// searched directory, which otherwise decides whether its `.gitignore` files
 /// count, and the exclude file a linked worktree shares with its repository.
+///
+/// `--null` ends each path with a NUL, which no file name can hold, so a name
+/// holding a `:` or a newline is read whole, and `--with-filename` keeps the
+/// path when the searched path is a single file.
 fn ripgrep_arguments(
     parameters: &SearchCodeParameters,
     search_path: &Path,
@@ -329,6 +336,8 @@ fn ripgrep_arguments(
         "--no-ignore-parent",
         "--no-ignore-global",
         "--no-require-git",
+        "--null",
+        "--with-filename",
         "-F",
         "-n",
         "--no-heading",
@@ -359,18 +368,18 @@ fn ripgrep_arguments(
 }
 
 /// Read `command`'s matches as they arrive, and stop it once
-/// `maximum_results` lines are in or `limit` has passed.
+/// `maximum_results` are in or the context's `search_timeout` has passed.
 ///
-/// Nothing is buffered beyond the lines kept: a search that matches every
+/// Nothing is buffered beyond the matches kept: a search that matches every
 /// line of a large tree costs `maximum_results` lines, not the whole of its
-/// output. Whatever it printed is reported, marked when it ran out of time or
-/// failed; only a failure that printed nothing returns `None`, handing the
+/// output. Whatever it found is reported, marked when it ran out of time or
+/// failed; only a failure that found nothing returns `None`, handing the
 /// search to the walk.
 async fn ripgrep(
     mut command: Command,
     search_path: &Path,
     maximum_results: usize,
-    limit: Duration,
+    context: &ToolContext,
 ) -> Option<ToolResult> {
     let mut child = command
         .stdin(Stdio::null())
@@ -380,28 +389,40 @@ async fn ripgrep(
         .spawn()
         .ok()?;
     let mut stdout = BufReader::new(child.stdout.take()?);
-    let deadline = Instant::now() + limit;
+    let deadline = Instant::now() + context.search_timeout;
 
     let mut results = Vec::new();
-    let mut line = Vec::new();
+    let mut judged: Option<(PathBuf, bool)> = None;
+    let mut name = Vec::new();
+    let mut found = Vec::new();
     let stopped = loop {
         if results.len() >= maximum_results {
             break None;
         }
-        line.clear();
-        match timeout_at(deadline, stdout.read_until(b'\n', &mut line)).await {
-            Ok(Ok(0)) => {
+        match timeout_at(deadline, next_match(&mut stdout, &mut name, &mut found)).await {
+            Ok(Ok(false)) => {
                 break match timeout_at(deadline, child.wait()).await {
                     Ok(Ok(status)) if searched_everything(status) => None,
                     Ok(_) => Some(UNREADABLE),
                     Err(_) => Some(OUT_OF_TIME),
                 };
             }
-            Ok(Ok(_)) => {
-                let text = String::from_utf8_lossy(&line);
-                let text = text.trim_end_matches(['\n', '\r']);
-                if !text.is_empty() {
-                    results.push(normalize_ripgrep_line(text, search_path));
+            Ok(Ok(true)) => {
+                let path = Path::new(OsStr::from_bytes(&name));
+                let shown = match &judged {
+                    Some((last, shown)) if last == path => *shown,
+                    _ => {
+                        let shown = reachable(path, search_path, context);
+                        judged = Some((path.to_path_buf(), shown));
+                        shown
+                    }
+                };
+                if shown {
+                    results.push(shown_match(
+                        path,
+                        &String::from_utf8_lossy(&found),
+                        search_path,
+                    ));
                 }
             }
             Ok(Err(_)) => break Some(UNREADABLE),
@@ -417,27 +438,69 @@ async fn ripgrep(
     Some(format_search_results(results, maximum_results, stopped))
 }
 
+/// Read ripgrep's next `path\0number:text` record into `name` and `found`,
+/// or return `false` once its output has ended.
+///
+/// The path runs to the NUL, so it is read whole whatever it holds, and what
+/// follows runs to the end of the line, which a matched line cannot hold. A
+/// record cut off before its NUL, such as the notice ripgrep prints for a
+/// binary file it was handed, ends the output.
+async fn next_match<Reader: AsyncBufRead + Unpin>(
+    stdout: &mut Reader,
+    name: &mut Vec<u8>,
+    found: &mut Vec<u8>,
+) -> io::Result<bool> {
+    name.clear();
+    found.clear();
+    stdout.read_until(b'\0', name).await?;
+    if name.pop() != Some(b'\0') {
+        return Ok(false);
+    }
+    stdout.read_until(b'\n', found).await?;
+    Ok(true)
+}
+
+/// Whether a match in the file ripgrep named `path` may be shown: only a
+/// path beneath the searched directory, which is all ripgrep was handed, and
+/// only when it stays confined once resolved.
+fn reachable(path: &Path, search_path: &Path, context: &ToolContext) -> bool {
+    path.is_absolute()
+        && path.starts_with(search_path)
+        && resolve(path).is_ok_and(|resolved| confine(&resolved, context).is_ok())
+}
+
 /// Whether ripgrep exited having searched all it was given, matching or not.
 fn searched_everything(status: ExitStatus) -> bool {
     status.success() || status.code() == Some(RIPGREP_NO_MATCHES)
 }
 
-/// A line ripgrep printed as `path:line:text`, with the path made relative
-/// to the search root.
-fn normalize_ripgrep_line(line: &str, search_path: &Path) -> String {
-    let Some((path_and_line, text)) = line.split_once(':').and_then(|(path, rest)| {
-        rest.split_once(':')
-            .map(|(number, text)| (format!("{path}:{number}"), text))
-    }) else {
-        return line.to_string();
+/// A match as the model reads it, `path:number: text`, the path relative to
+/// the search root unless the root is the file itself.
+fn shown_match(path: &Path, found: &str, search_path: &Path) -> String {
+    let shown = match path.strip_prefix(search_path) {
+        Ok(relative) if !relative.as_os_str().is_empty() => relative,
+        _ => path,
     };
-    let Some((path, number)) = path_and_line.rsplit_once(':') else {
-        return format!("{}: {}", path_and_line, text.trim());
-    };
-    let relative = Path::new(path)
-        .strip_prefix(search_path)
-        .unwrap_or(Path::new(path));
-    format!("{}:{}: {}", relative.display(), number, text.trim())
+    let shown = escaped(shown);
+    match found.split_once(':') {
+        Some((number, text)) => format!("{shown}:{number}: {}", text.trim()),
+        None => format!("{shown}: {}", found.trim()),
+    }
+}
+
+/// `path` with each control character in it escaped, so a name holding a
+/// newline stays on its match's line rather than passing for a match of its
+/// own.
+fn escaped(path: &Path) -> String {
+    let mut shown = String::new();
+    for character in path.to_string_lossy().chars() {
+        if character.is_control() {
+            shown.extend(character.escape_default());
+        } else {
+            shown.push(character);
+        }
+    }
+    shown
 }
 
 #[cfg(test)]
@@ -455,6 +518,7 @@ mod tests {
     use crate::test_support::assert_passed;
     use crate::test_support::expired;
     use crate::test_support::timed;
+    use crate::tool::EnvironmentPolicy;
 
     /// The variable ripgrep reads the path of its configuration file from.
     const CONFIGURATION: &str = "RIPGREP_CONFIG_PATH";
@@ -708,49 +772,61 @@ mod tests {
         }
     }
 
+    /// A context rooted at `root` that searches for as long as any test
+    /// waits.
+    fn patient(root: &Path) -> ToolContext {
+        ToolContext::default()
+            .within(root)
+            .with_search_timeout(TIMEOUT)
+    }
+
+    /// A shell line printing one match of ripgrep's `--null` output: `file`
+    /// under `root`, then `found`.
+    fn printed(root: &Path, file: &str, found: &str) -> String {
+        format!(
+            "printf '%s\\0%s\\n' '{}' '{found}'",
+            root.join(file).display()
+        )
+    }
+
     /// A search matching every line of a huge tree used to buffer every
     /// match ripgrep printed before keeping the first hundred. This one never
     /// stops printing, so only a reader that stops it returns at all.
     #[tokio::test]
     async fn a_search_stops_reading_once_it_has_its_results() {
-        let directory = TempDir::new().expect("a temporary directory");
-        let started = directory.path().join("started");
+        let (_tree, root) = tree();
+        let started = root.join("started");
         let line = format!(
-            "touch '{}'; while :; do echo 'src/a.rs:1:match'; done",
-            started.display()
+            "touch '{}'; while :; do {}; done",
+            started.display(),
+            printed(&root, "a.rs", "1:match")
         );
 
-        let (result, waited) = timed(
-            ripgrep(shell(&line), Path::new("src"), 5, TIMEOUT),
-            &started,
-        )
-        .await;
+        let (result, waited) =
+            timed(ripgrep(shell(&line), &root, 5, &patient(&root)), &started).await;
 
         let output = result
             .expect("the reader keeps what it read")
             .output
             .unwrap();
         assert!(output.starts_with("Found 5 matches"), "{output}");
+        assert!(output.contains("a.rs:1: match"), "{output}");
         assert!(output.contains("truncated at 5 results"), "{output}");
         assert!(waited < PATIENCE, "the reader went on reading: {waited:?}");
     }
 
     #[tokio::test]
     async fn a_search_that_runs_out_of_time_reports_what_it_found() {
-        let directory = TempDir::new().expect("a temporary directory");
-        let spoken = directory.path().join("spoken");
+        let (_tree, root) = tree();
+        let spoken = root.join("spoken");
         let line = format!(
-            "echo 'a.rs:3:first'; touch '{}'; exec sleep 120",
+            "{}; touch '{}'; exec sleep 120",
+            printed(&root, "a.rs", "3:first"),
             spoken.display()
         );
 
         let (result, waited) = expired(
-            ripgrep(
-                shell(&line),
-                Path::new("."),
-                MAXIMUM_SEARCH_RESULTS,
-                TIMEOUT,
-            ),
+            ripgrep(shell(&line), &root, MAXIMUM_SEARCH_RESULTS, &patient(&root)),
             &spoken,
         )
         .await;
@@ -774,20 +850,16 @@ mod tests {
     /// handed the search to the walk, throwing away every match it printed.
     #[tokio::test]
     async fn a_search_whose_rg_outlives_its_output_reports_what_it_found() {
-        let directory = TempDir::new().expect("a temporary directory");
-        let spoken = directory.path().join("spoken");
+        let (_tree, root) = tree();
+        let spoken = root.join("spoken");
         let line = format!(
-            "echo 'a.rs:3:first'; exec >&-; touch '{}'; exec sleep 120",
+            "{}; exec >&-; touch '{}'; exec sleep 120",
+            printed(&root, "a.rs", "3:first"),
             spoken.display()
         );
 
         let (result, waited) = expired(
-            ripgrep(
-                shell(&line),
-                Path::new("."),
-                MAXIMUM_SEARCH_RESULTS,
-                TIMEOUT,
-            ),
+            ripgrep(shell(&line), &root, MAXIMUM_SEARCH_RESULTS, &patient(&root)),
             &spoken,
         )
         .await;
@@ -813,14 +885,12 @@ mod tests {
     /// cannot read without a word, so the model heard of no matches at all.
     #[tokio::test]
     async fn a_search_that_could_not_read_everything_keeps_what_it_found() {
-        let result = ripgrep(
-            shell("echo 'a.rs:3:first'; exit 2"),
-            Path::new("."),
-            MAXIMUM_SEARCH_RESULTS,
-            TIMEOUT,
-        )
-        .await
-        .expect("the matches rg printed are kept");
+        let (_tree, root) = tree();
+        let line = format!("{}; exit 2", printed(&root, "a.rs", "3:first"));
+
+        let result = ripgrep(shell(&line), &root, MAXIMUM_SEARCH_RESULTS, &patient(&root))
+            .await
+            .expect("the matches rg printed are kept");
 
         let output = result.output.unwrap();
         assert!(output.starts_with("Found 1 matches"), "{output}");
@@ -980,14 +1050,158 @@ mod tests {
 
     #[tokio::test]
     async fn a_search_that_fails_hands_over_to_the_walk() {
+        let (_tree, root) = tree();
+
         let result = ripgrep(
             shell("exit 2"),
-            Path::new("."),
+            &root,
             MAXIMUM_SEARCH_RESULTS,
-            TIMEOUT,
+            &patient(&root),
         )
         .await;
 
         assert!(result.is_none());
+    }
+
+    /// An `rg` in `directory` that runs `script`.
+    fn impostor(directory: &Path, script: &str) {
+        let program = directory.join(RIPGREP);
+        fs::write(&program, format!("#!/bin/sh\n{script}\n")).expect("the impostor is written");
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755))
+            .expect("the impostor is made executable");
+    }
+
+    /// A context rooted at `tree` whose children find only what `directory`
+    /// holds on their `PATH`.
+    fn impersonated(tree: &Path, directory: &Path) -> ToolContext {
+        ToolContext::default().within(tree).with_environment(
+            EnvironmentPolicy::empty().with("PATH", directory.display().to_string()),
+        )
+    }
+
+    /// A temporary tree, and its canonical path.
+    fn tree() -> (TempDir, PathBuf) {
+        let tree = TempDir::new().expect("a tree to search");
+        let root = tree.path().canonicalize().expect("the tree resolves");
+        (tree, root)
+    }
+
+    async fn searched(parameters: Value, context: &ToolContext) -> String {
+        SearchCodeTool
+            .execute(parameters, context)
+            .await
+            .expect("the search answers")
+            .output
+            .unwrap_or_default()
+    }
+
+    /// ripgrep's `path:line:text` was split at its first `:`, so a file
+    /// whose name held one had its line number taken from its name.
+    #[tokio::test]
+    async fn a_match_in_a_file_named_with_a_colon_keeps_its_line() {
+        if !installed() {
+            eprintln!("skipping: ripgrep is not installed");
+            return;
+        }
+        let (_tree, root) = tree();
+        fs::write(root.join("a:1:b.rs"), format!("first\n{MARKER}\n"))
+            .expect("a file named with colons");
+
+        let output = searched(
+            json!({"pattern": MARKER}),
+            &ToolContext::default().within(&root),
+        )
+        .await;
+
+        assert!(
+            output.contains(&format!("a:1:b.rs:2: {MARKER}")),
+            "{output}"
+        );
+    }
+
+    /// ripgrep leaves the path out when it is handed a single file, so every
+    /// match of a search of one file came back without the file it was in.
+    #[tokio::test]
+    async fn a_search_of_one_file_reports_its_path() {
+        if !installed() {
+            eprintln!("skipping: ripgrep is not installed");
+            return;
+        }
+        let (_tree, root) = tree();
+        fs::write(root.join("notes.rs"), format!("first\n{MARKER}\n")).expect("a file to search");
+
+        let output = searched(
+            json!({"pattern": MARKER, "path": "notes.rs"}),
+            &ToolContext::default().within(&root),
+        )
+        .await;
+
+        assert!(
+            output.contains(&format!("{}:2: {MARKER}", root.join("notes.rs").display())),
+            "{output}"
+        );
+    }
+
+    /// ripgrep's output was cut into lines before the path was read, so a
+    /// file named with a newline yielded a match for a path made of the end
+    /// of its name, which may be another file or none. Only a path under the
+    /// searched directory is reported now, and a newline in a name is shown
+    /// escaped.
+    #[tokio::test]
+    async fn a_file_named_with_a_newline_yields_no_stray_match() {
+        let (_tree, root) = tree();
+        fs::write(root.join("a\nb.rs"), MARKER).expect("a file named with a newline");
+        let stray = |output: &str| output.lines().any(|line| line.starts_with("b.rs:"));
+
+        if installed() {
+            let output = searched(
+                json!({"pattern": MARKER}),
+                &ToolContext::default().within(&root),
+            )
+            .await;
+            assert!(
+                output.contains(&format!("a\\nb.rs:1: {MARKER}")),
+                "{output}"
+            );
+            assert!(!stray(&output), "{output}");
+        }
+
+        let directory = TempDir::new().expect("a directory for the impostor");
+        impostor(
+            directory.path(),
+            &format!("printf '%s\\0%s\\n' b.rs '1:{MARKER}' /elsewhere/b.rs '1:{MARKER}'"),
+        );
+        let output = searched(
+            json!({"pattern": MARKER}),
+            &impersonated(&root, directory.path()),
+        )
+        .await;
+        assert!(output.starts_with("No matches found"), "{output}");
+    }
+
+    /// A search ran `rg` for twenty seconds whatever its context said, so a
+    /// caller could neither shorten a search nor lengthen one past the
+    /// tool's default outer bound.
+    #[tokio::test(start_paused = true)]
+    async fn a_search_stops_at_the_limit_its_context_sets() {
+        const LIMIT: Duration = Duration::from_secs(1);
+        let (_tree, root) = tree();
+        let directory = TempDir::new().expect("a directory for the impostor");
+        impostor(directory.path(), "exec /bin/sleep 120");
+        let context = impersonated(&root, directory.path()).with_search_timeout(LIMIT);
+
+        let started = Instant::now();
+        let output = searched(json!({"pattern": MARKER}), &context).await;
+        let elapsed = started.elapsed();
+
+        assert!(output.contains("out of time"), "{output}");
+        assert!(
+            elapsed >= LIMIT && elapsed < Duration::from_secs(20),
+            "the search ran for {elapsed:?}"
+        );
+        assert_eq!(
+            SearchCodeTool.timeout(&context),
+            LIMIT + crate::tool::TIMEOUT_SLACK
+        );
     }
 }

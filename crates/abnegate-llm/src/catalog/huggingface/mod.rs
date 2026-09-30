@@ -283,8 +283,14 @@ fn sort_parameters(sort: ModelSort) -> (&'static str, i8) {
 }
 
 fn catalogue_url(catalog_url: &str) -> Result<Url, CatalogError> {
-    Url::parse(catalog_url)
-        .map_err(|error| CatalogError::InvalidUrl(format!("{catalog_url}: {error}")))
+    let url = Url::parse(catalog_url)
+        .map_err(|error| CatalogError::InvalidUrl(format!("{catalog_url}: {error}")))?;
+    match url.scheme() {
+        "http" | "https" => Ok(url),
+        scheme => Err(CatalogError::InvalidUrl(format!(
+            "{catalog_url}: the {scheme} scheme is not http or https"
+        ))),
+    }
 }
 
 /// The models API query for one page.
@@ -735,13 +741,16 @@ fn nonempty(sizes: Vec<ModelSize>) -> Option<Vec<ModelSize>> {
     (!sizes.is_empty()).then_some(sizes)
 }
 
-async fn fetch_adapter_page(
+/// The models API query for adapters of `base`.
+///
+/// `base` and `query` only ever become percent-encoded query values, so
+/// neither can move the request off the configured catalogue.
+fn adapter_url(
     catalog_url: &str,
-    client: &Client,
     query: Option<&str>,
     base: &str,
     limit: usize,
-) -> Result<Vec<ModelEntry>, CatalogError> {
+) -> Result<Url, CatalogError> {
     let mut url = catalogue_url(catalog_url)?;
     {
         let mut pairs = url.query_pairs_mut();
@@ -757,6 +766,17 @@ async fn fetch_adapter_page(
             pairs.append_pair("search", query);
         }
     }
+    Ok(url)
+}
+
+async fn fetch_adapter_page(
+    catalog_url: &str,
+    client: &Client,
+    query: Option<&str>,
+    base: &str,
+    limit: usize,
+) -> Result<Vec<ModelEntry>, CatalogError> {
+    let url = adapter_url(catalog_url, query, base, limit)?;
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
         return Err(CatalogError::Unavailable(format!(
@@ -1032,6 +1052,71 @@ mod tests {
         .unwrap();
         assert_eq!(values(&offset, "offset"), vec!["40"]);
         assert!(values(&offset, "cursor").is_empty());
+    }
+
+    #[test]
+    fn a_catalogue_url_with_another_scheme_is_refused() {
+        let options = browse(ModelSort::Relevance, None, ModelSizeFilter::All);
+        for catalog_url in [
+            "file:///etc/passwd",
+            "ftp://mirror.internal/api/models",
+            "data:text/plain,models",
+            "/api/models",
+            "not a url",
+        ] {
+            for error in [
+                search_url(catalog_url, &options, None, 20).unwrap_err(),
+                adapter_url(catalog_url, None, "meta/llama-3", 20).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, CatalogError::InvalidUrl(message) if message.contains(catalog_url)),
+                    "{catalog_url} is not a catalogue endpoint: {error:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_configured_catalog_is_reachable_wherever_the_operator_put_it() {
+        for catalog_url in [
+            DEFAULT_HUGGINGFACE_MODELS_URL,
+            "http://127.0.0.1:8080/api/models",
+            "http://catalog.test/huggingface",
+            "http://mirror.internal:9000/api/models",
+            "https://user:pass@mirror.internal/api/models",
+        ] {
+            let catalog = Url::parse(catalog_url).unwrap();
+            let url = adapter_url(catalog_url, Some("qwen"), "meta/llama-3", 20)
+                .unwrap_or_else(|error| panic!("{catalog_url} must stay reachable: {error}"));
+            assert_eq!(url.scheme(), catalog.scheme());
+            assert_eq!(url.username(), catalog.username());
+            assert_eq!(url.password(), catalog.password());
+            assert_eq!(url.host_str(), catalog.host_str());
+            assert_eq!(url.port(), catalog.port());
+            assert_eq!(url.path(), catalog.path());
+            assert_eq!(values(&url, "search"), vec!["qwen"]);
+        }
+    }
+
+    #[test]
+    fn a_base_model_cannot_carry_the_request_to_another_host() {
+        for base in [
+            "meta/llama-3",
+            "../../../etc/passwd",
+            "x@evil.example/models",
+            "x#@evil.example/models",
+            "x?filter=y",
+        ] {
+            let url = adapter_url(DEFAULT_HUGGINGFACE_MODELS_URL, None, base, 20)
+                .unwrap_or_else(|error| panic!("{base} must not break the request: {error}"));
+            assert_eq!(url.host_str(), Some("huggingface.co"), "{base}");
+            assert_eq!(url.path(), "/api/models", "{base}");
+            assert_eq!(url.fragment(), None, "{base}");
+            assert_eq!(
+                values(&url, "filter"),
+                vec![format!("base_model:adapter:{base}")]
+            );
+        }
     }
 
     #[test]

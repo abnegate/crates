@@ -130,6 +130,19 @@ pub fn preview(text: &str, limit: usize) -> String {
     format!("{}{ELLIPSIS}", &text[..end])
 }
 
+/// `text` cut to its last `limit` bytes or fewer on a character boundary,
+/// starting with an ellipsis when anything was cut.
+pub(crate) fn tail_preview(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+    let mut start = text.len() - limit.saturating_sub(ELLIPSIS.len());
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("{ELLIPSIS}{}", &text[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -141,6 +154,7 @@ mod tests {
     use super::directory_from;
     use super::preview;
     use super::resolve_log_root;
+    use super::tail_preview;
 
     fn environment(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
         let variables: BTreeMap<String, OsString> = pairs
@@ -253,6 +267,31 @@ mod tests {
             assert!(cut.ends_with("..."), "{text:?} at {limit}: {cut:?}");
             assert!(cut.len() <= limit.max(3), "{text:?} at {limit}: {cut:?}");
             assert!(std::str::from_utf8(cut.as_bytes()).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_tail_preview_keeps_the_end_and_starts_with_an_ellipsis() {
+        assert_eq!(tail_preview("hello", 5), "hello");
+        assert_eq!(tail_preview("abcdef", 5), "...ef");
+        assert_eq!(tail_preview("abcdef", 2), "...");
+
+        let long = tail_preview(&format!("{}end", "a".repeat(10_000)), 100);
+        assert!(long.starts_with("...") && long.ends_with("aend"), "{long}");
+        assert_eq!(long.len(), 100);
+    }
+
+    #[test]
+    fn a_tail_preview_never_splits_a_multibyte_character() {
+        for (text, limit) in [
+            ("abc\u{1F600}", 5),
+            ("\u{00e9}\u{00e9}\u{00e9}\u{00e9}", 6),
+            ("hello\u{4e16}\u{754c}", 8),
+        ] {
+            let cut = tail_preview(text, limit);
+            assert!(cut.starts_with("..."), "{text:?} at {limit}: {cut:?}");
+            assert!(cut.len() <= limit.max(3), "{text:?} at {limit}: {cut:?}");
+            assert!(text.ends_with(&cut[3..]), "{text:?} at {limit}: {cut:?}");
         }
     }
 }

@@ -68,6 +68,40 @@ impl Scrubber {
         }
     }
 
+    /// The length of the longest form of any configured secret.
+    pub(crate) fn longest(&self) -> usize {
+        self.forms()
+            .map(|form| form.expose().len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// `at`, moved past the end of every form of a configured secret in
+    /// `text` that starts before it and ends after it, so a cut there leaves
+    /// no piece of one on either side.
+    pub(crate) fn past(&self, text: &[u8], mut at: usize) -> usize {
+        loop {
+            let spanning = self
+                .forms()
+                .map(|form| form.expose().as_bytes())
+                .flat_map(|form| {
+                    (at.saturating_sub(form.len().saturating_sub(1))..at)
+                        .filter(move |start| text[*start..].starts_with(form))
+                        .map(move |start| start + form.len())
+                })
+                .filter(|end| *end > at)
+                .max();
+            match spanning {
+                Some(end) => at = end,
+                None => return at,
+            }
+        }
+    }
+
+    fn forms(&self) -> impl Iterator<Item = &SecretValue> {
+        self.anywhere.iter().chain(self.words.iter())
+    }
+
     /// `text` with every configured secret replaced, longest first, and
     /// then anything else credential-shaped. The configured secrets go
     /// first so that pattern redaction cannot take part of one and leave the

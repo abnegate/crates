@@ -12,6 +12,7 @@ use crate::delivery::Delivery;
 use crate::event::AgentEvent;
 use crate::mcp::McpServer;
 use crate::parser;
+use crate::parser::Turn;
 use crate::settings::CliSettings;
 use crate::settings::READ_ONLY_OPTIONS;
 use crate::settings::READ_ONLY_SWITCHES;
@@ -109,7 +110,8 @@ impl AgentKind {
     }
 
     /// Variables the agent may sign in with, which it is given from the host
-    /// when its credential is [inherited](abnegate_llm::Credential::Inherited).
+    /// when its credential is [inherited](abnegate_llm::Credential::Inherited),
+    /// and never otherwise, even when [allowed](crate::CliSettings::allow).
     pub fn credentials(self) -> &'static [&'static str] {
         match self {
             Self::Claude => &[
@@ -160,9 +162,12 @@ impl AgentKind {
 
     /// A non-interactive invocation that streams newline-delimited JSON.
     ///
-    /// No permission-bypass flag is passed to any agent. These commands run
-    /// with the user's own credentials and file access, so the agent's own
-    /// approval behaviour is left exactly as the user configured it.
+    /// No permission-bypass flag is passed to any agent, and nothing is
+    /// approved in advance but what the settings allow. Claude's own tools
+    /// keep Claude's own permission checks, as the user configured them.
+    /// Codex's do not: `codex exec` never asks for approval, so only its
+    /// sandbox confines them, whichever one the user's configuration or a
+    /// `--sandbox` argument names, and `danger-full-access` confines nothing.
     pub fn arguments(self, model: Option<&str>) -> Vec<String> {
         self.invocation(model, Vec::new())
     }
@@ -236,16 +241,21 @@ impl AgentKind {
         }
     }
 
-    /// Translate one output line, appending whatever it means.
+    /// Translate one output line, appending whatever it means on its own, as
+    /// the first line of a [`turn`](AgentKind::turn).
     ///
     /// A line this agent has no opinion about appends nothing rather than
     /// failing: agents add event types between releases, and a stream that
     /// aborted on the first unrecognised line would lose the whole answer.
     pub fn interpret(self, line: &str, events: &mut Vec<AgentEvent>) {
-        match self {
-            Self::Claude => parser::claude::interpret(line, events),
-            Self::Codex => parser::codex::interpret(line, events),
-        }
+        self.turn().interpret(line, events);
+    }
+
+    /// A reader for one turn of this agent's output, through which a run
+    /// reads its lines, since a line's meaning can hang on the lines before
+    /// it.
+    pub fn turn(self) -> Turn {
+        Turn::new(self)
     }
 
     /// Whether an event too long to read, of which only `prefix` is known,
@@ -528,17 +538,23 @@ mod tests {
         }
     }
 
+    const PERMISSION_BYPASSES: &[&str] = &[
+        "--dangerously-skip-permissions",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--full-auto",
+        "--always-approve",
+        "--approve-for-me",
+        "--yolo",
+        "--permission-mode",
+        "--permission-prompts",
+        "--ask-for-approval",
+    ];
+
     #[test]
     fn no_agent_is_ever_asked_to_skip_its_permission_prompts() {
         for agent in [AgentKind::Claude, AgentKind::Codex] {
             let arguments = AgentKind::arguments(agent, Some("model")).join(" ");
-            for bypass in [
-                "--dangerously-skip-permissions",
-                "--full-auto",
-                "--always-approve",
-                "--yolo",
-                "--permission-mode",
-            ] {
+            for bypass in PERMISSION_BYPASSES {
                 assert!(
                     !arguments.contains(bypass),
                     "{agent} was handed {bypass}: {arguments}"
@@ -554,6 +570,10 @@ mod tests {
             agent.interpret(r#"{"type":"something_added_next_release"}"#, &mut events);
             agent.interpret("not json at all", &mut events);
             agent.interpret("", &mut events);
+            let mut turn = agent.turn();
+            turn.interpret(r#"{"type":"something_added_next_release"}"#, &mut events);
+            turn.interpret("not json at all", &mut events);
+            turn.interpret("", &mut events);
             assert!(events.is_empty(), "{agent} reacted to noise");
         }
     }

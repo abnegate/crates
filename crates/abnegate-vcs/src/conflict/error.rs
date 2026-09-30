@@ -42,6 +42,11 @@ pub enum ConflictError {
     #[error("The branch merges cleanly; there is no conflict to repair")]
     NoConflict,
 
+    /// The branch conflicts with its base, so it cannot be refreshed without
+    /// a repair.
+    #[error("The branch conflicts with its base and cannot be refreshed without a repair")]
+    Conflicted,
+
     /// A conflicted file is not UTF-8 text with conflict markers, so it
     /// cannot be repaired as text.
     #[error("Conflicted file {0} carries no conflict markers and cannot be repaired as text")]

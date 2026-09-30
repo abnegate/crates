@@ -18,7 +18,9 @@ pub struct Execution {
     /// What the agent streamed. Its failure is scrubbed of every secret the
     /// run was given; its prose is the agent's answer, left as written.
     pub stdout: StdoutParseResult,
-    /// The agent's diagnostics, scrubbed of every secret the run was given.
+    /// The end of the agent's diagnostics: their last
+    /// [`output_limit`](crate::CliSettings::output_limit) bytes, starting on
+    /// a character, scrubbed of every secret the run was given.
     pub stderr: String,
     pub status: ExitStatus,
     /// Why the agent was stopped rather than left to exit, when it was: the

@@ -14,6 +14,7 @@ use crate::recipe::RecipeCatalog;
 use crate::recipe::RequiredFile;
 use crate::recipe::sanitize_weight_filename;
 use crate::train::Contract;
+use crate::train::is_single_component;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -143,7 +144,8 @@ pub fn write_sidecar(
     fs::write(sidecar_path(path, contract), encoded)
 }
 
-/// Where a weight of `kind` sits under the models directory.
+/// Where a weight of `kind` sits under the models directory, or `None` for an
+/// unknown kind or a `filename` that is not exactly one entry of its directory.
 pub fn relative_weight_path(kind: &str, filename: &str) -> Option<PathBuf> {
     let directory = match kind {
         "checkpoint" => "checkpoints",
@@ -153,7 +155,13 @@ pub fn relative_weight_path(kind: &str, filename: &str) -> Option<PathBuf> {
         "text_encoder" => "text_encoders",
         _ => return None,
     };
-    Some(PathBuf::from(directory).join(filename))
+    weight_filename(filename).then(|| PathBuf::from(directory).join(filename))
+}
+
+/// Whether `filename` is exactly one entry of a weight directory and passes
+/// the weight-filename rules every other weight path is held to.
+fn weight_filename(filename: &str) -> bool {
+    is_single_component(filename) && sanitize_weight_filename(filename).is_ok()
 }
 
 fn resolve_recipe<'a>(
@@ -212,14 +220,14 @@ fn publication_pending(models_directory: &Path, filename: &str, contract: &Contr
 fn missing_required(models_directory: &Path, required: &[RequiredFile]) -> Vec<String> {
     required
         .iter()
-        .filter(|file| {
-            !models_directory
-                .join(&file.directory)
-                .join(&file.filename)
-                .is_file()
-        })
+        .filter(|file| !required_path(models_directory, file).is_some_and(|path| path.is_file()))
         .map(|file| file.filename.clone())
         .collect()
+}
+
+fn required_path(models_directory: &Path, file: &RequiredFile) -> Option<PathBuf> {
+    (is_single_component(&file.directory) && weight_filename(&file.filename))
+        .then(|| models_directory.join(&file.directory).join(&file.filename))
 }
 
 fn inventory_label(recipe: &Recipe, filename: &str) -> String {
@@ -414,6 +422,71 @@ mod tests {
             .is_empty()
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_required_file_reached_through_a_traversal_is_reported_missing() {
+        let root = temp_models();
+        fs::write(root.join("vae/base.safetensors"), b"vae").unwrap();
+        let named = RequiredFile {
+            filename: "base.safetensors".into(),
+            directory: "vae".into(),
+        };
+        assert!(
+            missing_required(&root, std::slice::from_ref(&named)).is_empty(),
+            "the file sits exactly where the catalog names it"
+        );
+
+        for (directory, filename) in [
+            ("loras/../vae", "base.safetensors"),
+            ("..", "base.safetensors"),
+            (".", "base.safetensors"),
+            ("", "base.safetensors"),
+            ("vae", "../vae/base.safetensors"),
+            ("vae", "./base.safetensors"),
+            ("vae/", "base.safetensors"),
+            ("vae", "base..safetensors"),
+        ] {
+            let traversed = RequiredFile {
+                filename: filename.into(),
+                directory: directory.into(),
+            };
+            assert_eq!(
+                missing_required(&root, std::slice::from_ref(&traversed)),
+                vec![filename.to_string()],
+                "{directory:?}/{filename:?} is not one segment of the models directory"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_weight_path_through_a_traversal_is_refused() {
+        assert_eq!(
+            relative_weight_path("lora", "style.safetensors"),
+            Some(PathBuf::from("loras/style.safetensors"))
+        );
+        let overlong = format!("{}.safetensors", "a".repeat(256));
+        for filename in [
+            "",
+            ".",
+            "..",
+            "style..v2.safetensors",
+            overlong.as_str(),
+            "../style.safetensors",
+            "../../etc/passwd",
+            "nested/style.safetensors",
+            "style.safetensors/",
+            "./style.safetensors",
+            "/style.safetensors",
+            "..\\style.safetensors",
+        ] {
+            assert_eq!(
+                relative_weight_path("lora", filename),
+                None,
+                "{filename:?} is not one entry of the weight directory"
+            );
+        }
     }
 
     #[test]

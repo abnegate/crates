@@ -1331,3 +1331,166 @@ fn the_application_directory_is_one_hidden_name_inside_the_checkout() {
         assert!(crate::Application::new(name).is_err(), "{name:?}");
     }
 }
+
+/// A chat reads its jobs back out of the results its turns were handed, and a
+/// turn that is offered wait_for and one that is not were handed different
+/// receipts.
+#[test]
+fn a_receipt_reads_back_whether_or_not_its_turn_could_wait() {
+    let first = "Started job_9f3c1a7b2e04 (pid 48213). Log: \
+                 /tmp/work/.abnegate/jobs/job_9f3c1a7b2e04.log";
+
+    for (wait_for, advice) in [
+        (
+            WaitFor::Offered,
+            "Wait for it with wait_for, or read it with tail_job.",
+        ),
+        (
+            WaitFor::Withheld,
+            "Wait for it with wait_for when you have that tool, or read it with tail_job.",
+        ),
+    ] {
+        let receipt = format!("{first}\n{advice}");
+        assert_eq!(super::receipt(&job(), wait_for), receipt);
+        assert_eq!(parse_receipt(&receipt), Some(job()), "{advice}");
+    }
+    assert_eq!(
+        started_text(&job()),
+        super::receipt(&job(), WaitFor::Offered)
+    );
+}
+
+/// A `commondir` in a checkout's own `.git` sends every path git shares
+/// between worktrees, the exclude file among them, into whichever repository
+/// it names, so git resolves the checkout's exclude inside a stranger's.
+#[tokio::test]
+async fn a_task_job_leaves_a_planted_commondir_alone() {
+    let root = directory();
+    let stranger = root.path().join("stranger");
+    let checkout = root.path().join("checkout");
+    for created in [&stranger, &checkout] {
+        std::fs::create_dir(created).expect("the fixture's directories are created");
+        repository(created);
+    }
+    std::fs::write(
+        checkout.join(".git").join("commondir"),
+        format!("{}\n", stranger.join(".git").display()),
+    )
+    .expect("the common directory is planted");
+    let theirs = exclude_path(&checkout);
+    assert_eq!(
+        std::fs::canonicalize(&theirs).ok(),
+        std::fs::canonicalize(stranger.join(".git").join(EXCLUDE_PATH)).ok(),
+        "the fixture sends git's exclude lookup into the stranger's repository"
+    );
+    let before = std::fs::read_to_string(&theirs).unwrap_or_default();
+
+    excluded_from(&checkout).await;
+
+    assert_eq!(
+        std::fs::read_to_string(&theirs).unwrap_or_default(),
+        before,
+        "a run's job wrote into the exclude of a repository it does not own"
+    );
+}
+
+/// Where the stand-in `git` writes down the environment it was started with.
+const RECORD: &str = "ABNEGATE_AGENT_TEST_GIT_RECORD";
+
+/// The stand-in's file of environments, every variable of every start.
+const RECORDED_ENVIRONMENT: &str = "environment";
+
+/// What the host holds and no child of a job may be handed. Every value says
+/// `notreal`, so a leak shows under any name.
+const HOST_SECRETS: &[(&str, &str)] = &[
+    (
+        "DATABASE_URL",
+        concat!("postgres://agent:", "notreal-password", "@database/agent"),
+    ),
+    (
+        "OPENAI_API_KEY",
+        concat!("sk-", "notreal-", "host-only-key"),
+    ),
+    ("ENCRYPTION_KEY", concat!("notreal-", "encryption-key")),
+];
+
+/// A `git` in `directory` that writes its environment to `record` and finds
+/// no repository.
+fn recording_git(directory: &Path, record: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let program = directory.join("git");
+    std::fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\n/usr/bin/env >> '{}'\nexit 1\n",
+            record.display()
+        ),
+    )
+    .expect("the stand-in is written");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("the stand-in is made executable");
+}
+
+/// A child's environment is readable by anything running as the same user,
+/// so git, asked where a run's exclude file is, is handed the context's
+/// environment and none of the host's. A stand-in `git` first on the path
+/// writes down what it was handed, in a re-run whose environment alone holds
+/// the secrets.
+#[tokio::test]
+async fn the_exclude_lookup_never_sees_a_host_only_secret() {
+    const NAME: &str = "tool::job::tests::the_exclude_lookup_never_sees_a_host_only_secret";
+    if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
+        let record = directory();
+        let programs = record.path().join("programs");
+        std::fs::create_dir(&programs).expect("a directory for the stand-in");
+        recording_git(&programs, &record.path().join(RECORDED_ENVIRONMENT));
+        let checkout = record.path().join("checkout");
+        std::fs::create_dir(&checkout).expect("the run's own checkout is created");
+        repository(&checkout);
+        let path = std::env::join_paths(std::iter::once(programs).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .expect("the path joins");
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD_TEST, NAME)
+            .env(RECORD, record.path())
+            .envs(HOST_SECRETS.iter().copied())
+            .env("PATH", path)
+            .output()
+            .await
+            .unwrap();
+        assert_passed(&output);
+        return;
+    }
+    let record = PathBuf::from(std::env::var_os(RECORD).expect("the parent names the record"));
+    let session = task();
+    let started = Jobs::spawn(
+        &JobCommand::shell("exit 0"),
+        &ToolContext::default()
+            .within(record.join("checkout"))
+            .with_session(session),
+    )
+    .await
+    .expect("the job starts");
+    assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
+    Jobs::kill_session(session).await;
+
+    let handed = std::fs::read_to_string(record.join(RECORDED_ENVIRONMENT))
+        .expect("the exclude lookup started git");
+    let names: Vec<&str> = handed
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(name, _)| name))
+        .collect();
+    for (name, value) in HOST_SECRETS {
+        assert!(
+            !handed.contains(value),
+            "the exclude lookup was handed the host's {name}, among {names:?}"
+        );
+    }
+    assert!(
+        names.contains(&"PATH"),
+        "the exclude lookup was not handed the context's environment: {names:?}"
+    );
+}

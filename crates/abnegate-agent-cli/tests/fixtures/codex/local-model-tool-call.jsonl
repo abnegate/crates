@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a0cd2b-9df6-7552-9e72-fb1454ef762c"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `qwen2.5:7b-instruct` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"relay","tool":"echo","arguments":{"text":"r6-rung2-nonce-4c1e"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"relay","tool":"echo","arguments":{"text":"r6-rung2-nonce-4c1e"},"result":{"content":[{"type":"text","text":"r6-rung2-nonce-4c1e"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"The output of the echo tool is `r6-rung2-nonce-4c1e`."}}
+{"type":"turn.completed","usage":{"input_tokens":15774,"cached_input_tokens":15534,"cache_write_input_tokens":0,"output_tokens":56,"reasoning_output_tokens":0}}

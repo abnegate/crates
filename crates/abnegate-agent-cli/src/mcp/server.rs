@@ -571,6 +571,12 @@ fn server_name(name: &str) -> bool {
     valid_name(name) && !name.contains(SEPARATOR) && !name.ends_with(UNDERSCORE)
 }
 
+/// The name a model is given for `server`'s tool `tool`, as a CLI spells
+/// it: `mcp__<server>__<tool>`.
+pub(crate) fn qualified(server: &str, tool: &str) -> String {
+    format!("{PREFIX}{}{SEPARATOR}{}", cli_name(server), cli_name(tool))
+}
+
 /// Whether `name` is safe to place in an `--allowedTools` entry, which the
 /// CLI splits on commas and whitespace.
 pub(crate) fn valid_name(name: &str) -> bool {
@@ -638,6 +644,7 @@ mod tests {
     use serde_json::Value;
 
     use super::McpServer;
+    use super::qualified;
     use crate::mcp::placeholders::Placeholders;
     use crate::mcp::placeholders::expand;
     use crate::mcp::refusal::Refusal;
@@ -1628,5 +1635,14 @@ mod tests {
 
         assert!(entry.get("inherit_environment").is_none(), "{entry}");
         assert!(entry.get("disabled").is_none(), "{entry}");
+    }
+
+    #[test]
+    fn a_qualified_name_spells_the_server_and_tool_as_the_cli_does() {
+        assert_eq!(qualified("relay", "echo"), "mcp__relay__echo");
+        assert_eq!(
+            qualified("relay", "list/files.all"),
+            "mcp__relay__list_files_all"
+        );
     }
 }

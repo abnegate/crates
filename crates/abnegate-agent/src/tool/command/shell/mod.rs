@@ -1,6 +1,7 @@
 mod parameters;
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 pub(super) use parameters::RunShellParameters;
@@ -11,6 +12,8 @@ use tokio::time::Duration;
 use super::BACKGROUND_PARAMETER;
 use super::MAXIMUM_OUTPUT_PARAMETER;
 use super::MAXIMUM_SHELL_TIMEOUT;
+use super::Unwaited;
+use super::Waiting;
 use super::background;
 use super::background_property;
 use super::call_limit;
@@ -26,6 +29,7 @@ use crate::tool::Tool;
 use crate::tool::ToolContext;
 use crate::tool::ToolError;
 use crate::tool::ToolResult;
+use crate::tool::WaitFor;
 use crate::tool::job::JobCommand;
 use crate::tool::job::SHELL;
 use crate::tool::job::SHELL_COMMAND_FLAG;
@@ -117,7 +121,7 @@ fn sleep_seconds(operand: &str) -> Option<f64> {
 /// advice it has already taken, and a model handed advice it has already
 /// followed repeats the call until the loop's no-progress detector ends the
 /// turn with nothing to show.
-fn sleep_refusal(seconds: f64, backgrounded: bool) -> String {
+fn sleep_refusal(seconds: f64, backgrounded: bool, wait_for: WaitFor) -> String {
     let (remedy, tail) = if backgrounded {
         (
             Cow::Borrowed(
@@ -134,8 +138,9 @@ fn sleep_refusal(seconds: f64, backgrounded: bool) -> String {
     };
     format!(
         "This command sleeps for {seconds} seconds, and a call may block on sleep for at most \
-         {}. {remedy} wait for it with {WAIT_FOR}{tail}",
-        MAXIMUM_SLEEP.as_secs()
+         {}. {remedy} wait for it with {WAIT_FOR}{}{tail}",
+        MAXIMUM_SLEEP.as_secs(),
+        wait_for.condition()
     )
 }
 
@@ -167,7 +172,30 @@ impl Tool for RunShellTool {
         ))
     }
 
+    fn timeout(&self, _context: &ToolContext) -> Duration {
+        MAXIMUM_SHELL_TIMEOUT + TIMEOUT_SLACK
+    }
+
     fn parameters_schema(&self) -> Value {
+        Self::schema(WaitFor::Offered)
+    }
+
+    async fn execute(
+        &self,
+        parameters: Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        self.run(parameters, context, WaitFor::Offered).await
+    }
+
+    fn unwaited(&self) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Unwaited(Self)))
+    }
+}
+
+#[async_trait]
+impl Waiting for RunShellTool {
+    fn schema(wait_for: WaitFor) -> Value {
         json!({
             "type": "object",
             "properties": {
@@ -176,8 +204,9 @@ impl Tool for RunShellTool {
                     "description": format!(
                         "Shell command to run, e.g. 'cargo test 2>&1 | tail -40'. It may not \
                          block on sleep for more than {} seconds: to wait longer, start it with \
-                         {BACKGROUND_PARAMETER}: true and wait for it with {WAIT_FOR}.",
-                        MAXIMUM_SLEEP.as_secs()
+                         {BACKGROUND_PARAMETER}: true and wait for it with {WAIT_FOR}{}.",
+                        MAXIMUM_SLEEP.as_secs(),
+                        wait_for.condition()
                     )
                 },
                 "cwd": {
@@ -188,7 +217,7 @@ impl Tool for RunShellTool {
                     "type": "integer",
                     "description": "Wall-clock limit in seconds. Default 120, maximum 900."
                 },
-                BACKGROUND_PARAMETER: background_property(),
+                BACKGROUND_PARAMETER: background_property(wait_for),
                 MAXIMUM_OUTPUT_PARAMETER: maximum_output_property(),
                 REASON_PARAMETER: reason_property()
             },
@@ -196,14 +225,11 @@ impl Tool for RunShellTool {
         })
     }
 
-    fn timeout(&self, _context: &ToolContext) -> Duration {
-        MAXIMUM_SHELL_TIMEOUT + TIMEOUT_SLACK
-    }
-
-    async fn execute(
+    async fn run(
         &self,
         parameters: Value,
         context: &ToolContext,
+        wait_for: WaitFor,
     ) -> Result<ToolResult, ToolError> {
         let parameters: RunShellParameters = serde_json::from_value(parameters)
             .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
@@ -227,6 +253,7 @@ impl Tool for RunShellTool {
             return Err(ToolError::Execution(sleep_refusal(
                 seconds,
                 parameters.background,
+                wait_for,
             )));
         }
 
@@ -234,7 +261,7 @@ impl Tool for RunShellTool {
 
         if parameters.background {
             let command = JobCommand::shell(&parameters.command).within(&directory);
-            return background(&command, context).await;
+            return background(&command, context, wait_for).await;
         }
 
         let limit = call_limit(parameters.timeout_seconds, DEFAULT_SHELL_TIMEOUT);

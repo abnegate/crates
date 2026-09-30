@@ -16,11 +16,18 @@ use super::Tool;
 use super::ToolContext;
 use super::ToolError;
 use super::ToolResult;
+use super::WaitFor;
 use super::WriteFileTool;
+use super::job::WAIT_FOR;
 use super::tail::TailJobTool;
 use super::wait::WaitForTool;
 
 /// The tools an agent may call, by name.
+///
+/// A registry with no [`WAIT_FOR`] tool serves turns that cannot wait, so it
+/// serves each tool in its [unwaited](Tool::unwaited) form, whichever was
+/// registered first: what the model is offered, what a caller looks up and
+/// what a call runs all say that waiting needs a tool the turn does not have.
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     /// Servers whose tools were attached over MCP, for prompt guidance.
@@ -84,15 +91,17 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.get(name).cloned()
+        let wait_for = self.wait_for();
+        self.tools.get(name).map(|tool| served(tool, wait_for))
     }
 
     /// Every tool's definition, sorted by name.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
+        let wait_for = self.wait_for();
         let mut definitions: Vec<ToolDefinition> = self
             .tools
             .values()
-            .map(|tool| tool.to_definition())
+            .map(|tool| served(tool, wait_for).to_definition())
             .collect();
         // A stable order keeps the tools prefix identical across turns, so a
         // local server can reuse its prompt cache.
@@ -110,7 +119,18 @@ impl ToolRegistry {
             .tools
             .get(name)
             .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
-        tool.execute(parameters, context).await
+        served(tool, self.wait_for())
+            .execute(parameters, context)
+            .await
+    }
+
+    /// Whether the turns this registry serves are offered [`WAIT_FOR`].
+    fn wait_for(&self) -> WaitFor {
+        if self.tools.contains_key(WAIT_FOR) {
+            WaitFor::Offered
+        } else {
+            WaitFor::Withheld
+        }
     }
 
     pub fn names(&self) -> Vec<&str> {
@@ -173,6 +193,15 @@ impl ToolRegistry {
             self.mcp_servers.push(server);
         }
     }
+}
+
+/// A registered tool in the form a turn that `wait_for` describes is served it.
+fn served(tool: &Arc<dyn Tool>, wait_for: WaitFor) -> Arc<dyn Tool> {
+    match wait_for {
+        WaitFor::Offered => None,
+        WaitFor::Withheld => tool.unwaited(),
+    }
+    .unwrap_or_else(|| Arc::clone(tool))
 }
 
 /// The [`read_only`](ToolRegistry::read_only) tools: a registry built by
