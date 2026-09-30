@@ -1,5 +1,6 @@
 //! What a third-party notifier can do with an `Endpoint` and a `Webhook`.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use abnegate_notify::Endpoint;
@@ -78,4 +79,24 @@ async fn a_failed_post_names_the_host_and_never_the_url() {
     let rendered = format!("{error} {error:?}");
     assert!(!rendered.contains(SECRET), "leaked: {rendered}");
     assert!(!rendered.contains("/services/"), "leaked: {rendered}");
+}
+
+/// A payload that cannot be serialized was reported by the transport as
+/// unreachable, and so as worth retrying, when sending it again unchanged can
+/// never succeed.
+#[tokio::test]
+async fn a_payload_that_cannot_be_serialized_is_malformed_and_never_retried() {
+    let webhook = Webhook::new(endpoint()).expect("client");
+    let payload = BTreeMap::from([((1_u8, 2_u8), "a key JSON cannot hold")]);
+
+    let error = webhook
+        .post(&payload)
+        .await
+        .expect_err("a tuple key has no JSON form");
+
+    assert!(
+        matches!(error, Error::Malformed { .. }),
+        "unexpected {error:?}"
+    );
+    assert!(!error.is_retryable());
 }

@@ -7,6 +7,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use reqwest::Response;
 use reqwest::StatusCode;
+use reqwest::header::CONTENT_TYPE;
 use reqwest::redirect::Policy;
 use serde::Serialize;
 
@@ -21,6 +22,7 @@ const USER_AGENT: &str = concat!("abnegate-notify/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAXIMUM_ERROR_BODY_BYTES: usize = 2_048;
 const RETRY_AFTER: &str = "retry-after";
+const JSON: &str = "application/json";
 
 /// A JSON POST to one validated [`Endpoint`], the client [`Slack`](crate::Slack)
 /// and [`Discord`](crate::Discord) deliver through.
@@ -108,14 +110,17 @@ impl Webhook {
 
     /// POST `payload` as JSON, and succeed only on a `2xx` answer.
     ///
-    /// A redirect is reported as [`Error::Rejected`], never followed.
+    /// A redirect is reported as [`Error::Rejected`], never followed. A
+    /// payload with no JSON form is [`Error::Malformed`] and sends nothing.
     pub async fn post<T: Serialize + ?Sized + Sync>(&self, payload: &T) -> Result<(), Error> {
+        let body = serde_json::to_vec(payload).map_err(Error::malformed)?;
         let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
         let response = self
             .endpoint
             .post(&self.client)
             .timeout(timeout)
-            .json(payload)
+            .header(CONTENT_TYPE, JSON)
+            .body(body)
             .send()
             .await
             .map_err(|error| self.unsent(error, timeout))?;
