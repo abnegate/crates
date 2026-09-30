@@ -390,10 +390,10 @@ jobs:
 
   semver:
     name: Semver
+    if: >-
+      (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-plz-'))
+      || (github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'release-plz-'))
     runs-on: ubuntu-latest
-    # Enabled in the first release cycle: cargo-semver-checks has no published
-    # baseline to compare against while these crates are unpublished.
-    if: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
