@@ -1,4 +1,12 @@
 use abnegate_exec::executor::ProcessGroup;
+#[cfg(feature = "mcp")]
+use nix::errno::Errno;
+#[cfg(feature = "mcp")]
+use nix::sys::signal::Signal;
+#[cfg(feature = "mcp")]
+use nix::sys::signal::killpg;
+#[cfg(feature = "mcp")]
+use nix::unistd::Pid;
 
 /// A child started as the leader of its own process group, and everything it
 /// went on to start.
@@ -30,13 +38,17 @@ impl Group {
         }
     }
 
-    /// Send the group its first SIGKILL before returning, and repeat it from
-    /// a thread of its own, keeping the group to be killed again: what a
-    /// drop sends when the rest of its cleanup may never get to run.
+    /// Send the group one SIGKILL before returning, keeping the group to be
+    /// killed again: what a drop sends when the rest of its cleanup may never
+    /// get to run. Nothing repeats it in the background, so once a later
+    /// [`kill_until_gone`](Self::kill_until_gone) has resolved and the leader
+    /// is reaped, no signal is still on its way to an id another group may
+    /// have been given since.
     #[cfg(feature = "mcp")]
     pub(crate) fn kill_now(&self) {
         if let Some(leader) = &self.leader
-            && let Err(error) = leader.kill()
+            && let Err(error) = killpg(Pid::from_raw(leader.pgid()), Signal::SIGKILL)
+            && error != Errno::ESRCH
         {
             tracing::warn!(group = leader.pgid(), %error, "Could not kill a process group");
         }
