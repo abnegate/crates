@@ -67,3 +67,5 @@ and `with_result_count` and `with_timeout` adjust them.
   `WebSearchConfig::from_environment` reads the variables, `timeout` is a
   `Duration`, and `WebSearchConfig` and `SearchHit` are built with their
   constructors rather than struct literals.
+
+<!-- Throwaway change proving per-crate CI; never merged. -->
