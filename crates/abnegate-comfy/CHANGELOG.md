@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-comfy-v0.1.1...abnegate-comfy-v0.1.2) - 2026-09-30
+
+### Fixed
+
+- *(comfy)* refuse a blank or control-character decoder name
+- *(comfy)* join only single path segments onto the models directory
+
+### Other
+
+- describe four items as the merged port left them
+- *(comfy)* document every public item
+
 ## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-comfy-v0.1.0...abnegate-comfy-v0.1.1) - 2026-09-30
 
 ### Other

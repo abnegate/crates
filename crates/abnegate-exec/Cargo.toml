@@ -4,7 +4,7 @@ description = "Sandboxed command execution with streaming output: seatbelt on ma
 keywords = ["sandbox", "seatbelt", "bubblewrap", "process", "executor"]
 categories = ["asynchronous", "os::unix-apis", "development-tools"]
 readme = "README.md"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -18,7 +18,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-abnegate-secret = { path = "../abnegate-secret", version = "0.1.1" }
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.2" }
 base64 = { workspace = true }
 bytes = { workspace = true }
 dashmap = { workspace = true }

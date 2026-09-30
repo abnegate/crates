@@ -4,7 +4,7 @@ description = "Coding agent CLIs (Claude Code, Codex) driven as child processes 
 keywords = ["llm", "agent", "claude", "codex", "cli"]
 categories = ["asynchronous", "command-line-interface", "development-tools"]
 readme = "README.md"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -18,9 +18,9 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-abnegate-exec = { path = "../abnegate-exec", version = "0.1.1" }
-abnegate-llm = { path = "../abnegate-llm", version = "0.1.1" }
-abnegate-secret = { path = "../abnegate-secret", version = "0.1.1" }
+abnegate-exec = { path = "../abnegate-exec", version = "0.1.2" }
+abnegate-llm = { path = "../abnegate-llm", version = "0.1.2" }
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.2" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
