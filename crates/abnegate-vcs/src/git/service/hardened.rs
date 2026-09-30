@@ -1160,10 +1160,8 @@ mod checkout_tests {
             "{environment:?}"
         );
         let outside = tempfile::tempdir().unwrap();
-        let listed = std::process::Command::new("git")
+        let listed = crate::worktree::fixtures::git_command()
             .current_dir(outside.path())
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_CONFIG_PARAMETERS")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_COUNT", "1")
@@ -2221,7 +2219,7 @@ mod branch_tests {
             ],
             [OsStr::new("symbolic-ref"), OsStr::new("HEAD"), name],
         ] {
-            let status = std::process::Command::new("git")
+            let status = crate::worktree::fixtures::git_command()
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .args(arguments)

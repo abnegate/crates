@@ -12,6 +12,7 @@ use crate::git::IGNORE_SUBMODULES;
 use crate::git::LOCATING;
 use crate::git::NO_FETCH_HEAD;
 use crate::git::PINS;
+use crate::git::REPOSITORY_ENVIRONMENT;
 use crate::git::RemoteHead;
 use crate::git::authentication::authenticate;
 #[cfg(unix)]
