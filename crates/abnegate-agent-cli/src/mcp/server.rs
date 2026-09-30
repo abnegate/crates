@@ -364,10 +364,7 @@ impl McpServer {
     /// server `x`'s tool `_tool`, so that one server's rule can never cover
     /// another's tools.
     pub fn nameable(&self, name: &str) -> bool {
-        valid_name(name)
-            && !name.contains(SEPARATOR)
-            && !name.ends_with(UNDERSCORE)
-            && self.tools.iter().all(|tool| valid_name(tool))
+        server_name(name) && self.tools.iter().all(|tool| valid_name(tool))
     }
 
     /// Whether this server allows `tool`, as the server itself names it:
@@ -408,10 +405,23 @@ impl McpServer {
     /// Why this server, configured under `name`, never attaches to a CLI's
     /// run, or none when it does.
     pub(crate) fn refusal(&self, name: &str) -> Option<Refusal> {
+        self.refusal_unless_nameable(self.nameable(name))
+    }
+
+    /// Why this server, configured under `name`, never attaches to a run
+    /// that takes its [`tools`](McpServer::tools) as data, as Codex takes
+    /// `enabled_tools`, rather than as `--allowedTools` entries: as
+    /// [`refusal`](Self::refusal), except that a tool may be named as the
+    /// server itself names it, `list.files` included.
+    pub(crate) fn listed_refusal(&self, name: &str) -> Option<Refusal> {
+        self.refusal_unless_nameable(server_name(name))
+    }
+
+    fn refusal_unless_nameable(&self, nameable: bool) -> Option<Refusal> {
         if !self.valid() {
             return Some(Refusal::Invalid);
         }
-        if !self.nameable(name) {
+        if !nameable {
             return Some(Refusal::Unnameable);
         }
         let Some(url) = &self.url else {
@@ -553,6 +563,12 @@ fn cli_name(name: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Whether `name` can name a server: safe in `--allowedTools`, and holding
+/// no `__` and no trailing `_`, as [`McpServer::nameable`] explains.
+fn server_name(name: &str) -> bool {
+    valid_name(name) && !name.contains(SEPARATOR) && !name.ends_with(UNDERSCORE)
 }
 
 /// Whether `name` is safe to place in an `--allowedTools` entry, which the

@@ -319,7 +319,8 @@ impl McpConfig {
     ///   server, a URL that is not blank once resolved either;
     /// - with a name and tool names safe to place in `--allowedTools`, which
     ///   the CLI splits on commas and whitespace, so a name holding either
-    ///   could allow a tool nobody named;
+    ///   could allow a tool nobody named; Codex, which takes the tool names
+    ///   as data in `enabled_tools`, needs only the name to be;
     /// - and, for a remote server, with every reference in its URL and header
     ///   values to a variable it has a [secret](McpServer::secrets) for or
     ///   with a default, nothing holding `${` once resolved, which the CLI
@@ -423,10 +424,12 @@ impl McpConfig {
 /// Why `server`, configured under `name`, never attaches to `agent`'s run,
 /// or none when it does.
 fn refusal(agent: AgentKind, name: &str, server: &McpServer) -> Option<Refusal> {
-    server.refusal(name).or_else(|| match agent {
-        AgentKind::Claude => None,
-        AgentKind::Codex => CodexServer::new(server).refusal(),
-    })
+    match agent {
+        AgentKind::Claude => server.refusal(name),
+        AgentKind::Codex => server
+            .listed_refusal(name)
+            .or_else(|| CodexServer::new(server).refusal()),
+    }
 }
 
 /// The object of servers in `document`: under `mcpServers`, under `servers`
@@ -917,6 +920,33 @@ mod tests {
         assert!(config.allowed_tools(AgentKind::Codex).is_empty());
         assert!(config.scoped_tools(AgentKind::Codex).is_empty());
         assert_eq!(config.attachable(AgentKind::Claude).count(), 1);
+    }
+
+    /// Codex matches `enabled_tools` against the names a server gives its
+    /// tools: an entry `list.files` enables the server's `list.files`, and
+    /// the name a CLI gives it, `list_files`, enables nothing (checked
+    /// against codex-cli 0.159.2). So Codex takes each `tools` entry as
+    /// written, while Claude still refuses an entry `--allowedTools` cannot
+    /// hold.
+    #[test]
+    fn codex_is_given_each_tools_entry_as_written() {
+        let config = McpConfig::default().with_server(
+            "files",
+            McpServer::command("files-server", Vec::<String>::new())
+                .with_tools(["list.files", "read_file"]),
+        );
+
+        assert_eq!(config.attachable(AgentKind::Codex).count(), 1);
+        assert_eq!(config.attachable(AgentKind::Claude).count(), 0);
+        let attachment = config
+            .render(AgentKind::Codex)
+            .expect("rendered")
+            .expect("an attachment");
+        let overrides = attachment.overrides.join(" ");
+        assert!(
+            overrides.contains(r#""enabled_tools" = ["list.files", "read_file"]"#),
+            "{overrides}"
+        );
     }
 
     /// Codex expands no reference and takes a server only on its command

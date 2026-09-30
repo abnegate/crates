@@ -27,8 +27,12 @@
 //! cannot attach a remote server over `sse`, one whose URL refers to a
 //! variable, or a stdio server whose `env` names a variable other than as a
 //! shell identifier, and each is left out with a warning. A server's
-//! [`tools`](McpServer::tools) become its `enabled_tools`, and its
-//! [working directory](McpServer::working_directory) its `cwd`.
+//! [`tools`](McpServer::tools) become its `enabled_tools` as written, since
+//! Codex matches them against the names the server gives its tools, not the
+//! names a CLI gives them: `list.files` enables a tool the server calls
+//! `list.files`, where `list_files` enables nothing, and Claude refuses the
+//! first. Its [working directory](McpServer::working_directory) becomes its
+//! `cwd`.
 //!
 //! The file holds no literal environment or header value. Each environment
 //! and header value, and each URL, stdio command or argument that refers to
