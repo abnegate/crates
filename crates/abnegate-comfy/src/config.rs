@@ -265,8 +265,9 @@ impl Config {
     }
 
     /// Refuses settings that would fail every request, poll ComfyUI in a busy
-    /// loop, wait past the ceiling each timeout's documentation names, or send
-    /// a token no proxy could read. [`Client::new`](crate::Client::new),
+    /// loop, wait past the ceiling each timeout's documentation names, send a
+    /// token no proxy could read, or run a decoder whose name is blank or
+    /// carries a control character. [`Client::new`](crate::Client::new),
     /// [`lora::train`](crate::lora::train) and [`train::run`](crate::train::run)
     /// call it first.
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -332,6 +333,20 @@ impl Config {
             return Err(ConfigError::new(
                 "COMFYUI_API_TOKEN is not a valid header value",
             ));
+        }
+        for (decoder, message) in [
+            (
+                &self.ffmpeg,
+                "COMFYUI_FFMPEG must name a program, without control characters",
+            ),
+            (
+                &self.ffprobe,
+                "COMFYUI_FFPROBE must name a program, without control characters",
+            ),
+        ] {
+            if decoder.trim().is_empty() || decoder.chars().any(char::is_control) {
+                return Err(ConfigError::new(message));
+            }
         }
         self.contract.validate()
     }
@@ -866,6 +881,54 @@ mod tests {
         let mut config = Config::default();
         config.contract.folder_prefix = "../escape-".into();
         assert!(config.validate().is_err());
+    }
+
+    fn decoders(name: &str) -> [(Config, &'static str); 2] {
+        [
+            (
+                Config {
+                    ffmpeg: name.into(),
+                    ..Config::default()
+                },
+                "COMFYUI_FFMPEG",
+            ),
+            (
+                Config {
+                    ffprobe: name.into(),
+                    ..Config::default()
+                },
+                "COMFYUI_FFPROBE",
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_decoder_name_with_a_control_character_is_refused() {
+        for name in ["ffmpeg\nrm -rf /", "ffmpeg\0", "\tffmpeg", "ff\u{7f}mpeg"] {
+            for (config, variable) in decoders(name) {
+                let error = config.validate().unwrap_err();
+                assert!(
+                    error.message().contains(variable),
+                    "{name:?} as {variable}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_decoder_name_is_refused() {
+        for name in ["", "   "] {
+            for (config, variable) in decoders(name) {
+                let error = config.validate().unwrap_err();
+                assert!(
+                    error.message().contains(variable),
+                    "{name:?} as {variable}: {error}"
+                );
+            }
+        }
+        for (config, variable) in decoders("/usr/local/bin/ffmpeg") {
+            assert_eq!(config.validate(), Ok(()), "a path is a name, as {variable}");
+        }
     }
 
     #[test]
