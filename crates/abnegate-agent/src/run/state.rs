@@ -13,7 +13,9 @@ use crate::context::Summary;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct AgentState {
+    /// The run's identity, fixed for its whole life.
     pub id: Uuid,
+    /// What the run is doing now.
     pub phase: AgentPhase,
     /// The conversation as sent to the model. Append-only: compaction folds
     /// history into [`summary`](Self::summary) and never edits these.
@@ -26,17 +28,21 @@ pub struct AgentState {
     /// appended after this is protected from compaction.
     #[serde(default)]
     pub consumed: usize,
+    /// Every model round, across every turn, in order.
     pub steps: Vec<AgentStep>,
     /// Model rounds spent in the current turn, counted against
     /// [`AgentConfig::maximum_iterations`](super::AgentConfig::maximum_iterations).
     pub iteration: usize,
     /// Tokens the provider reported spending, across every turn.
     pub tokens_used: u32,
+    /// Whether the current turn has ended, in an answer or a failure.
+    /// Cleared when the run continues with another turn.
     pub finished: bool,
     /// The answer that ended the turn, once there is one.
     pub final_response: Option<String>,
     /// Why the turn failed, when it did.
     pub error: Option<String>,
+    /// When the run was created.
     pub started_at: DateTime<Utc>,
     /// When the last turn ended, and `None` while a turn is under way.
     pub finished_at: Option<DateTime<Utc>>,

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 //! The parts an LLM agent is built from: a tool registry the model acts
 //! through, a ReAct loop that drives it, and the context, history and session
 //! handling a long conversation needs.

@@ -5,10 +5,14 @@ use uuid::Uuid;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum SessionError {
+    /// No session with this id is stored.
     #[error("Session not found: {0}")]
     NotFound(Uuid),
+    /// Reading or writing the store failed.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// A stored session is not valid session JSON, or a session could not be
+    /// encoded as JSON.
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 }

@@ -46,6 +46,7 @@ const LAST: &str = "@last";
 pub struct TemplateRenderer;
 
 impl TemplateRenderer {
+    /// A renderer. It holds no state, so one can be shared freely.
     pub fn new() -> Self {
         Self
     }

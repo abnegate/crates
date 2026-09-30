@@ -72,6 +72,11 @@ impl Resolver {
         })
     }
 
+    /// The effective context capacity of the deployment `model` routes to,
+    /// falling back to the proxy's wildcard route when `model` has none.
+    ///
+    /// Never fails: when metadata cannot be fetched or the route is
+    /// ambiguous, the capacity's limit is unknown and its reason says why.
     pub async fn resolve(&self, model: &str) -> Capacity {
         let Some(mut routes) = self.routes(model).await else {
             return Capacity::unknown(

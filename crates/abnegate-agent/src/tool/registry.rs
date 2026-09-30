@@ -35,6 +35,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// A registry holding no tools.
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
@@ -90,6 +91,7 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// The tool registered under `name`, if any.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let wait_for = self.wait_for();
         self.tools.get(name).map(|tool| served(tool, wait_for))
@@ -109,6 +111,9 @@ impl ToolRegistry {
         definitions
     }
 
+    /// Run the tool registered under `name`, or fail with
+    /// [`ToolError::NotFound`]. The tool's own time limit is not applied
+    /// here.
     pub async fn execute(
         &self,
         name: &str,
@@ -133,6 +138,7 @@ impl ToolRegistry {
         }
     }
 
+    /// Every registered tool's name, in no particular order.
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(String::as_str).collect()
     }

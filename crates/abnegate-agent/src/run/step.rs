@@ -13,6 +13,7 @@ use super::ToolCallResult;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct AgentStep {
+    /// The round's identity.
     pub id: Uuid,
     /// The phase the round was in when it was recorded.
     pub phase: AgentPhase,
@@ -20,6 +21,7 @@ pub struct AgentStep {
     pub message: Option<Message>,
     /// Every call the round made, in the order the model made them.
     pub tool_calls: Option<Vec<ToolCallResult>>,
+    /// When the round began.
     pub started_at: DateTime<Utc>,
     /// Unset while the round is still running.
     pub completed_at: Option<DateTime<Utc>>,

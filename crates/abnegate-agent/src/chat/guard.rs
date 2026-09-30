@@ -19,18 +19,27 @@ pub struct Guard {
 }
 
 impl Guard {
+    /// Stop renewing and wait for the renewal task to wind down. The lease is
+    /// not released; it lapses at its expiry unless the caller releases it.
     pub async fn stop(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort();
             let _ = task.await;
         }
     }
+    /// The lease as it was handed to [`keep_alive`]. Its owner and fence name
+    /// every renewal too, but its expiry is not moved forward by them.
     pub fn lease(&self) -> &Lease {
         &self.lease
     }
+    /// Whether a renewal has failed for good: the store reported the lease
+    /// lost, or it expired before a retry succeeded.
     pub fn is_lost(&self) -> bool {
         *self.lost.borrow()
     }
+    /// Wait until the lease is lost, returning at once if it already is. It
+    /// never returns while renewal keeps succeeding, so race it against the
+    /// turn.
     pub async fn lost(&mut self) {
         if self.is_lost() {
             return;

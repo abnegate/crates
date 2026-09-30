@@ -15,6 +15,7 @@ pub struct TemplateContext {
 }
 
 impl TemplateContext {
+    /// A context holding no keys.
     pub fn new() -> Self {
         Self::default()
     }
@@ -55,6 +56,7 @@ impl TemplateContext {
         }
     }
 
+    /// The value `key` holds, if any.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.values.get(key)
     }

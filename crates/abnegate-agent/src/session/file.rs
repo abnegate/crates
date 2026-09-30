@@ -28,6 +28,8 @@ pub struct FileSessionStore {
 }
 
 impl FileSessionStore {
+    /// A store in `directory`, which is created, readable by its owner alone,
+    /// on the first save.
     pub fn new(directory: PathBuf) -> Self {
         Self { directory }
     }

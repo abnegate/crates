@@ -80,6 +80,8 @@ pub(crate) const TIMEOUT_SLACK: Duration = Duration::from_secs(30);
 /// Something the agent can call.
 #[async_trait]
 pub trait Tool: Send + Sync {
+    /// The name the model calls the tool by. A registry holds one tool per
+    /// name.
     fn name(&self) -> &str;
 
     /// What the tool does, as the model reads it.
@@ -88,6 +90,11 @@ pub trait Tool: Send + Sync {
     /// JSON Schema for the call's arguments.
     fn parameters_schema(&self) -> Value;
 
+    /// Carry out one call with the model's `parameters`.
+    ///
+    /// A failure the model should read and react to is an `Ok` holding
+    /// [`ToolResult::error`]; an `Err` is for a call that could not run at
+    /// all.
     async fn execute(
         &self,
         parameters: Value,

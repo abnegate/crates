@@ -9,9 +9,16 @@ use super::JobExited;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum JobStatus {
+    /// Still running.
     Running,
+    /// Exited on its own with this code.
     Exited(i32),
+    /// Stopped without an exit code: cancelled, past
+    /// [`MAXIMUM_JOB_LIFETIME`](super::MAXIMUM_JOB_LIFETIME), or ended by a
+    /// signal.
     Killed,
+    /// Killed for writing more than
+    /// [`MAXIMUM_JOB_LOG_BYTES`](super::MAXIMUM_JOB_LOG_BYTES) of log.
     Flooded,
 }
 
@@ -27,6 +34,7 @@ impl fmt::Display for JobStatus {
 }
 
 impl JobStatus {
+    /// Whether the job has stopped, one way or another.
     pub fn settled(self) -> bool {
         !matches!(self, Self::Running)
     }

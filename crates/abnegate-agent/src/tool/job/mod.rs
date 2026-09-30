@@ -41,6 +41,8 @@ use uuid::Uuid;
 use super::WaitFor;
 use crate::Application;
 
+/// The tool that reads a slice of a background job's log and reports where
+/// the job stands, as receipts and wait results name it.
 pub const TAIL_JOB: &str = "tail_job";
 
 /// The tool an embedding application registers to block until a background
