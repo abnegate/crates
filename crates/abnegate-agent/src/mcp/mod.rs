@@ -5,11 +5,14 @@
 //! advertises, keeping only the tools the server
 //! [allows](McpServer::allows), as a CLI allows them. [`register`] then adds
 //! each remote tool to a registry as `server__tool`, so one server cannot
-//! answer for another's tools or for a built-in. A server that fails to start
-//! or to answer in time is logged and skipped, and so is a
+//! answer for another's tools or for a built-in. That is the name a CLI gives
+//! it, `mcp__server__tool`, without the `mcp__`, so one `tools` list scopes
+//! both alike (see [`qualified_tool_name`]). A server that fails to start or
+//! to answer in time is logged and skipped, and so is a
 //! [disabled](McpServer::disabled) one, one that is not
-//! [valid](McpServer::valid), or one reached by URL, which only a CLI can
-//! attach.
+//! [valid](McpServer::valid), one a CLI would refuse because it is not
+//! [nameable](McpServer::nameable), or one reached by URL, which only a CLI
+//! can attach.
 //!
 //! The configuration is `abnegate-agent-cli`'s, re-exported here, so one
 //! `mcp.json` drives both this client and a coding agent CLI.

@@ -30,8 +30,9 @@ impl McpHub {
     /// keeping only the tools each server [allows](McpServer::allows).
     ///
     /// A [disabled](McpServer::disabled) server is skipped. So is one reached
-    /// by URL, which only a CLI attaches, and one that is not
-    /// [valid](McpServer::valid), each with a warning. A server that fails to
+    /// by URL, which only a CLI attaches, one that is not
+    /// [valid](McpServer::valid), and one a CLI would refuse because it is not
+    /// [nameable](McpServer::nameable), each with a warning. A server that fails to
     /// start or to answer in time is logged and skipped.
     pub async fn connect(config: &McpConfig) -> Self {
         Self::connect_with_timeout(config, CONNECT_TIMEOUT).await
@@ -127,6 +128,13 @@ fn launchable(name: &str, server: &McpServer) -> bool {
         tracing::warn!(
             server = %name,
             "skipping a remote MCP server: only stdio servers are launched here"
+        );
+        return false;
+    }
+    if !server.nameable(name) {
+        tracing::warn!(
+            server = %name,
+            "skipping an MCP server a CLI would refuse: its name and tool names may hold only letters, digits, `_` and `-`, and its name neither `__` nor a trailing `_`"
         );
         return false;
     }
@@ -629,6 +637,45 @@ mod tests {
             logs.matches("skipping an MCP server: set exactly one of")
                 .count(),
             2,
+            "{logs}"
+        );
+    }
+
+    /// A CLI refuses a server whose name, or a tool it names, could widen
+    /// `--allowedTools`, so the hub refuses it too, or one `mcp.json` would
+    /// attach through the hub what a CLI never runs.
+    #[tokio::test]
+    async fn connect_skips_a_server_a_cli_would_refuse_to_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let named = directory.path().join("named");
+        let dotted = directory.path().join("dotted");
+        let separated = directory.path().join("separated");
+        let trailing = directory.path().join("trailing");
+        let listed = directory.path().join("listed");
+        let config = McpConfig::default()
+            .with_server("named", recorder(":", &named))
+            .with_server("my.server", recorder(":", &dotted))
+            .with_server("a__b", recorder(":", &separated))
+            .with_server("run_", recorder(":", &trailing))
+            .with_server("files", recorder(":", &listed).with_tools(["list.files"]));
+
+        let (hub, logs) =
+            crate::test_support::captured_logs(McpHub::connect_with_timeout(&config, LIMIT)).await;
+
+        assert!(hub.is_empty());
+        assert!(named.exists(), "a nameable server never started");
+        for (refused, path) in [
+            ("my.server", &dotted),
+            ("a__b", &separated),
+            ("run_", &trailing),
+            ("files", &listed),
+        ] {
+            assert!(!path.exists(), "{refused} started");
+        }
+        assert_eq!(
+            logs.matches("skipping an MCP server a CLI would refuse")
+                .count(),
+            4,
             "{logs}"
         );
     }
