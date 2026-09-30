@@ -20,6 +20,15 @@ pub(crate) enum Refusal {
     /// A header name holding `${`, which the CLI never expands and would
     /// send as it is.
     HeaderName,
+    /// A remote server over server-sent events, which Codex never reaches:
+    /// it speaks streamable HTTP alone.
+    ServerSentEvents,
+    /// A remote URL that refers to a variable, which Codex could be given
+    /// only on its command line, where what it resolves to would show.
+    ReferringUrl,
+    /// A stdio server's variable named other than as a shell identifier,
+    /// which the shell Codex starts the server through could not set.
+    VariableName,
 }
 
 impl fmt::Display for Refusal {
@@ -39,6 +48,15 @@ impl fmt::Display for Refusal {
             }
             Self::HeaderName => {
                 "a header name holds `${`, which the CLI never expands and would send as it is"
+            }
+            Self::ServerSentEvents => {
+                "it is reached over `sse`, and Codex reaches a remote server over streamable HTTP alone"
+            }
+            Self::ReferringUrl => {
+                "its URL refers to a variable, and Codex takes a URL only on its command line, where what it resolves to would show"
+            }
+            Self::VariableName => {
+                "a variable in its `env` is not named as a shell identifier, which Codex needs to hand its value over under a generated name"
             }
         })
     }

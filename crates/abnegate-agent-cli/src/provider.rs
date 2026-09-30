@@ -126,7 +126,10 @@ impl CliProvider {
             .map_err(|error| ExecutionError::new(error, None))?;
         let mut attachments = Attachments::default();
         if let Some(mcp) = &mcp {
-            attachments = attachments.with_mcp(mcp.file.path());
+            if let Some(file) = &mcp.file {
+                attachments = attachments.with_mcp(file.path());
+            }
+            attachments = attachments.with_mcp_overrides(&mcp.overrides);
         }
         if let Some(instructions) = &instructions {
             attachments = attachments.with_instructions(instructions.path());
@@ -452,7 +455,7 @@ impl CliProvider {
                 );
                 tracing::debug!(
                     provider = %self.name,
-                    path = %attachment.file.path().display(),
+                    path = ?attachment.file.as_ref().map(|file| file.path().display().to_string()),
                     config = %mcp.redacted(self.agent),
                     "rendered MCP config, secret values redacted"
                 );
@@ -634,6 +637,7 @@ mod tests {
     use crate::execution::Execution;
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
+    use crate::mcp::McpTransport;
     use crate::mcp::expand;
     use crate::settings::CliSettings;
     use crate::structured_result::StructuredResult;
@@ -2338,6 +2342,174 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             !arguments
                 .iter()
                 .any(|argument| argument.starts_with("mcp__")),
+            "{arguments:?}"
+        );
+    }
+
+    /// A stand-in for Codex that records its arguments and environment, then
+    /// answers as `codex exec --json` does.
+    fn recording_codex(arguments: &Path, environment: &Path) -> String {
+        format!(
+            r#"printf '%s\n' "$@" > '{arguments}'
+env > '{environment}'
+echo '{{"type":"thread.started","thread_id":"t1"}}'
+echo '{{"type":"item.completed","item":{{"id":"item_1","type":"agent_message","text":"done"}}}}'
+echo '{{"type":"turn.completed","usage":{{"input_tokens":1,"output_tokens":1}}}}'"#,
+            arguments = arguments.display(),
+            environment = environment.display(),
+        )
+    }
+
+    fn recorded_arguments(path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .expect("the captured arguments")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The `mcp_servers.<name>` override Codex was given, if it was given one.
+    fn codex_override<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
+        let prefix = format!("mcp_servers.{name}=");
+        arguments
+            .windows(2)
+            .find(|pair| pair[0] == "-c" && pair[1].starts_with(&prefix))
+            .map(|pair| pair[1].as_str())
+    }
+
+    const CODEX_STRICT_MCP: [&str; 5] = [
+        "--ignore-user-config",
+        "--disable",
+        "apps",
+        "--disable",
+        "plugins",
+    ];
+
+    /// Codex is given each server as an override of its own configuration,
+    /// loads no server of the user's, a plugin's or an app's beside it, and
+    /// is handed a stdio server's literal value only in a generated variable
+    /// its override names, never on its command line or under the value's
+    /// own name.
+    #[tokio::test]
+    async fn a_codex_run_is_given_its_servers_strictly_with_no_secret_on_its_command_line() {
+        const LITERAL: &str = "glsa-realsecret-codex";
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let recorded = directory.path().join("environment");
+        let settings = settings(&directory, &recording_codex(&captured, &recorded))
+            .with_mcp_server(
+                "grafana",
+                McpServer::command("uvx", ["mcp-grafana"])
+                    .with_environment("GRAFANA_TOKEN", LITERAL)
+                    .with_tools(["list_datasources"]),
+            );
+        let provider = CliProvider::agent(AgentKind::Codex, settings);
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some("done"));
+        let arguments = recorded_arguments(&captured);
+        assert_eq!(&arguments[..3], ["exec", "--json", "--skip-git-repo-check"]);
+        assert_eq!(&arguments[3..8], CODEX_STRICT_MCP);
+        assert!(
+            !arguments.iter().any(|argument| argument.contains(LITERAL)),
+            "{arguments:?}"
+        );
+        let grafana = codex_override(&arguments, "grafana").expect("a grafana override");
+        assert!(grafana.contains(r#""command" = "/bin/sh""#), "{grafana}");
+        assert!(
+            grafana.contains(r#""enabled_tools" = ["list_datasources"]"#),
+            "{grafana}"
+        );
+        let child = recorded_environment(&recorded);
+        let (variable, _) = child
+            .iter()
+            .find(|(_, value)| value.as_str() == LITERAL)
+            .expect("the literal reaches the child");
+        assert!(variable.starts_with("ABNEGATE_MCP_"), "{variable}");
+        assert!(
+            grafana.contains(&format!(r#""env_vars" = ["{variable}"]"#)),
+            "{grafana}"
+        );
+        assert!(!child.contains_key("GRAFANA_TOKEN"), "{child:?}");
+    }
+
+    /// A remote server's reference resolves to the secret bound to it, which
+    /// reaches Codex only in the generated variable its `env_http_headers`
+    /// names, never under its own name, and never reaches a log.
+    #[tokio::test]
+    async fn a_secret_bound_to_a_remote_server_reaches_codex_and_never_a_log() {
+        const TOKEN: &str = "lin-api-codex-marker-7b21";
+        let directory = TempDir::new().expect("a temporary directory");
+        let root = directory.path().join("logs");
+        let captured = directory.path().join("arguments");
+        let recorded = directory.path().join("environment");
+        let settings = settings(&directory, &recording_codex(&captured, &recorded))
+            .with_log(&root)
+            .with_mcp_server(
+                "linear",
+                McpServer::remote("https://mcp.linear.app/mcp")
+                    .with_header("Authorization", "Bearer ${LINEAR_TOKEN}")
+                    .with_secret("LINEAR_TOKEN", TOKEN),
+            );
+        let provider = CliProvider::agent(AgentKind::Codex, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        let arguments = recorded_arguments(&captured);
+        assert!(
+            !arguments.iter().any(|argument| argument.contains(TOKEN)),
+            "{arguments:?}"
+        );
+        let linear = codex_override(&arguments, "linear").expect("a linear override");
+        let child = recorded_environment(&recorded);
+        let variable = linear
+            .split_once(r#""env_http_headers" = { "Authorization" = ""#)
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(variable, _)| variable)
+            .expect("a generated variable");
+        assert_eq!(
+            child.get(variable).map(String::as_str),
+            Some(format!("Bearer {TOKEN}").as_str())
+        );
+        assert!(!child.contains_key("LINEAR_TOKEN"), "{child:?}");
+        let files = execution.log.clone().expect("log files");
+        for path in [&files.stdout, &files.stderr, &files.events] {
+            let contents = std::fs::read_to_string(path).expect("a log file");
+            assert!(
+                !contents.contains(TOKEN),
+                "{} leaked the token: {contents}",
+                path.display()
+            );
+        }
+    }
+
+    /// A caller that configured servers chose which ones load, so a Codex
+    /// run whose every server is refused still loads none of the user's.
+    #[tokio::test]
+    async fn a_codex_run_whose_every_server_is_refused_loads_no_server_of_its_own() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let recorded = directory.path().join("environment");
+        let settings = settings(&directory, &recording_codex(&captured, &recorded))
+            .with_mcp_server(
+                "events",
+                McpServer::remote("https://mcp.example.com/sse").with_transport(McpTransport::Sse),
+            );
+        let provider = CliProvider::agent(AgentKind::Codex, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        let arguments = recorded_arguments(&captured);
+        assert_eq!(&arguments[3..8], CODEX_STRICT_MCP);
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.starts_with("mcp_servers.")),
             "{arguments:?}"
         );
     }

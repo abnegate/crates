@@ -1,11 +1,34 @@
-//! Model Context Protocol servers attached to a Claude run.
+//! Model Context Protocol servers attached to a Claude or Codex run.
 //!
-//! The servers are rendered into a private temporary file that the CLI reads
-//! through `--mcp-config`, and only that file is loaded: `--strict-mcp-config`
-//! keeps a repository's own `.mcp.json` from adding servers the caller never
-//! chose. A run whose configuration holds an enabled server loads strictly
-//! even when no server attaches, every one refused or the file impossible to
-//! write, and then loads none.
+//! For Claude the servers are rendered into a private temporary file that
+//! the CLI reads through `--mcp-config`, and only that file is loaded:
+//! `--strict-mcp-config` keeps a repository's own `.mcp.json` from adding
+//! servers the caller never chose. A run whose configuration holds an enabled
+//! server loads strictly even when no server attaches, every one refused or
+//! the file impossible to write, and then loads none.
+//!
+//! Codex reads MCP servers from its `config.toml` alone, so each server
+//! reaches it as a `-c mcp_servers.<name>={...}` override, and a run whose
+//! configuration holds an enabled server passes `--ignore-user-config`,
+//! `--disable apps` and `--disable plugins`, so no server from the user's or
+//! the repository's configuration, a plugin or a connected app loads beside
+//! them. That leaves out the whole of the user's `config.toml`, its model
+//! provider and profiles included, since Codex has no switch that leaves out
+//! its MCP servers alone; its sign-in is still read. The overrides hold what
+//! the file would, and show on Codex's command line: every value that may be
+//! secret moves into a generated variable as it does for Claude. Codex never
+//! expands a reference and starts a stdio server with a handful of its own
+//! variables and those it is told to pass on, under their own names, so a
+//! stdio server with an `env` or a reference in its command is started
+//! through `/bin/sh`, which sets each of its variables from the generated one
+//! holding its value and then replaces itself with the server; only that
+//! server is handed its generated variables. A remote server's header values
+//! reach Codex as generated variables its `env_http_headers` names. Codex
+//! cannot attach a remote server over `sse`, one whose URL refers to a
+//! variable, or a stdio server whose `env` names a variable other than as a
+//! shell identifier, and each is left out with a warning. A server's
+//! [`tools`](McpServer::tools) become its `enabled_tools`, and its
+//! [working directory](McpServer::working_directory) its `cwd`.
 //!
 //! The file holds no literal environment or header value. Each environment
 //! and header value, and each URL, stdio command or argument that refers to
@@ -45,9 +68,12 @@
 //! [disabled](McpServer::disabled) server is left out of all of them.
 
 mod attachment;
+mod codex_server;
 mod config;
 mod config_error;
 mod entry;
+mod inline_table;
+mod launch;
 mod mismatch;
 mod placeholders;
 mod refusal;

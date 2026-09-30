@@ -143,8 +143,9 @@ pub struct McpServer {
     /// chooses when unset.
     ///
     /// A rendered file never carries it, since Claude Code's MCP
-    /// configuration has no such field: only a launcher that starts the
-    /// server itself, such as the MCP hub in `abnegate-agent`, honours it.
+    /// configuration has no such field: a Codex run, whose configuration has
+    /// one, and a launcher that starts the server itself, such as the MCP
+    /// hub in `abnegate-agent`, honour it.
     #[serde(rename = "cwd", skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<PathBuf>,
     /// Give a stdio server its launcher's whole environment rather than
@@ -453,7 +454,7 @@ impl McpServer {
     /// `value` as the server is sent it: resolved, or nothing at all when it
     /// cannot be, so a server that could not attach is never sent anything
     /// for the CLI to expand.
-    fn sent(&self, value: &str) -> String {
+    pub(crate) fn sent(&self, value: &str) -> String {
         self.resolved(value)
             .filter(|resolved| !resolved.contains(OPENING))
             .unwrap_or_default()

@@ -36,6 +36,17 @@ const NOBODY: &str = "none";
 const FLAG: &str = "-";
 const INLINE_VALUE: char = '=';
 
+/// What makes a Codex run load only the MCP servers its caller configured:
+/// no user configuration, which also leaves out any trust it grants the
+/// repository's own, and no plugin or connected app.
+const CODEX_STRICT_MCP: &[&str] = &[
+    "--ignore-user-config",
+    "--disable",
+    "apps",
+    "--disable",
+    "plugins",
+];
+
 /// The one rule a read-only run allows its file tools under: a read of
 /// anything inside the working directory. The CLI matches file paths against
 /// `Read` rules alone, for `Grep` and `Glob` too, and a path given to either
@@ -107,13 +118,20 @@ impl AgentKind {
                 "CLAUDE_CODE_OAUTH_TOKEN",
                 "ANTHROPIC_BASE_URL",
             ],
-            Self::Codex => &["OPENAI_API_KEY", "OPENAI_BASE_URL"],
+            Self::Codex => &[
+                "OPENAI_API_KEY",
+                "OPENAI_BASE_URL",
+                "CODEX_API_KEY",
+                "CODEX_ACCESS_TOKEN",
+            ],
         }
     }
 
     /// Whether this agent reads MCP servers from a file named on its command
     /// line, the file [`McpConfig::render`](crate::McpConfig::render)
-    /// writes. Codex reads its servers from its own `config.toml` only.
+    /// writes, and allows their tools with `--allowedTools`. Codex reads its
+    /// servers from its own `config.toml` only, and takes them as `-c`
+    /// overrides of it.
     pub(crate) fn reads_mcp_file(self) -> bool {
         match self {
             Self::Claude => true,
@@ -172,10 +190,13 @@ impl AgentKind {
     /// [`AgentKind::invocation`]. `attachments` names the rendered MCP
     /// configuration when any server attaches, whose servers' tools join the
     /// allowed set, and the file holding the settings' instructions, which
-    /// must be given when there are any. A read-only run, and any run whose
-    /// settings configure an enabled MCP server, attached or not, loads MCP
-    /// servers from that configuration alone: with none attached, it loads
-    /// none, never the user's or the repository's own.
+    /// must be given when there are any. For Codex, `attachments` carries the
+    /// `-c` overrides that attach the servers instead. A read-only run, and
+    /// any run whose settings configure an enabled MCP server, attached or
+    /// not, loads MCP servers from that configuration alone: with none
+    /// attached, it loads none, never the user's or the repository's own. A
+    /// Codex run does so by ignoring the user's whole `config.toml`, see
+    /// [`mcp`](crate::mcp).
     ///
     /// A setting this agent has no flag for is refused rather than dropped,
     /// since a run that silently ignored its tool restrictions or its answer
@@ -196,16 +217,21 @@ impl AgentKind {
                         ALLOWED_TOOLS,
                     ),
                     (settings.read_only, TOOLS),
-                    (!settings.mcp.is_empty(), MCP_CONFIG),
                 ]
                 .into_iter()
                 .find_map(|(requested, flag)| requested.then_some(flag));
-                match unsupported {
-                    Some(flag) => Err(ProviderError::unsupported(format!(
+                if let Some(flag) = unsupported {
+                    return Err(ProviderError::unsupported(format!(
                         "{self} has no equivalent of claude's {flag}"
-                    ))),
-                    None => Ok(settings.arguments.clone()),
+                    )));
                 }
+                let mut options = Vec::new();
+                if !settings.mcp.is_empty() {
+                    options.extend(CODEX_STRICT_MCP.iter().map(|option| option.to_string()));
+                }
+                options.extend(attachments.mcp_overrides.iter().cloned());
+                options.extend(settings.arguments.iter().cloned());
+                Ok(options)
             }
         }
     }
@@ -1019,6 +1045,46 @@ mod tests {
         );
     }
 
+    /// A caller that configured servers chose which ones load, so Codex
+    /// loads none of the user's, a plugin's or a connected app's beside
+    /// them, whether any attached or not.
+    #[test]
+    fn codex_loads_only_the_servers_its_caller_configured() {
+        let overrides = [
+            "-c".to_string(),
+            r#"mcp_servers.appwrite={ "command" = "uvx" }"#.to_string(),
+        ];
+        let settings = CliSettings::default()
+            .with_mcp_server("appwrite", McpServer::command("uvx", Vec::<String>::new()))
+            .with_arguments(["--sandbox", "read-only"]);
+
+        for attachments in [
+            Attachments::default().with_mcp_overrides(&overrides),
+            Attachments::default(),
+        ] {
+            let options = AgentKind::Codex
+                .options(&settings, &attachments)
+                .expect("options");
+
+            let mut expected = vec![
+                "--ignore-user-config",
+                "--disable",
+                "apps",
+                "--disable",
+                "plugins",
+            ];
+            expected.extend(attachments.mcp_overrides.iter().map(String::as_str));
+            expected.extend(["--sandbox", "read-only"]);
+            assert_eq!(options, expected);
+        }
+        assert_eq!(
+            AgentKind::Codex
+                .options(&CliSettings::default(), &Attachments::default())
+                .expect("options"),
+            Vec::<String>::new()
+        );
+    }
+
     #[test]
     fn codex_passes_extra_arguments_through() {
         let settings = CliSettings::default().with_arguments(["--sandbox", "read-only"]);
@@ -1047,10 +1113,6 @@ mod tests {
                     ..CliSettings::default()
                 },
                 "--tools",
-            ),
-            (
-                CliSettings::default().with_mcp_server("appwrite", McpServer::default()),
-                "--mcp-config",
             ),
         ] {
             let error = AgentKind::Codex
