@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a0cd32-ddb6-7270-9273-376064d12874"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"relay","tool":"echo","arguments":{"text":"r6-rung3-nonce-9b2d"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"relay","tool":"echo","arguments":{"text":"r6-rung3-nonce-9b2d"},"result":{"content":[{"type":"text","text":"r6-rung3-nonce-9b2d"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"The echo tool returned: Wall time: 0.0035 seconds\nOutput: r6-rung3-nonce-9b2d"}}
+{"type":"turn.completed","usage":{"input_tokens":240,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":24,"reasoning_output_tokens":0}}

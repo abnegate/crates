@@ -96,5 +96,6 @@ pub(crate) use crate::mcp::placeholders::expand;
 pub(crate) use crate::mcp::placeholders::references;
 pub(crate) use crate::mcp::placeholders::whole_reference;
 pub use crate::mcp::server::McpServer;
+pub(crate) use crate::mcp::server::qualified;
 pub(crate) use crate::mcp::template::Template;
 pub use crate::mcp::transport::McpTransport;
