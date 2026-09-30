@@ -92,19 +92,25 @@ fn server_identifier(server: &str) -> String {
     }
 }
 
-/// `value` with everything but ASCII letters, digits, `_` and `-` replaced by
-/// `_`, as a tool name has to be, or `fallback` when nothing is left.
-fn sanitize_identifier(value: &str, fallback: &str) -> String {
-    let sanitized: String = value
+/// `value` as a CLI names a server or a tool: everything but ASCII letters,
+/// digits, `_` and `-` replaced by `_`.
+pub(super) fn cli_name(value: &str) -> String {
+    value
         .chars()
         .map(|character| {
             if character.is_ascii_alphanumeric() || character == UNDERSCORE || character == '-' {
                 character
             } else {
-                '_'
+                UNDERSCORE
             }
         })
-        .collect();
+        .collect()
+}
+
+/// `value` with everything but ASCII letters, digits, `_` and `-` replaced by
+/// `_`, as a tool name has to be, or `fallback` when nothing is left.
+fn sanitize_identifier(value: &str, fallback: &str) -> String {
+    let sanitized = cli_name(value);
     if sanitized.is_empty() {
         fallback.to_string()
     } else {

@@ -10,9 +10,10 @@
 //! both alike (see [`qualified_tool_name`]). A server that fails to start or
 //! to answer in time is logged and skipped, and so is a
 //! [disabled](McpServer::disabled) one, one that is not
-//! [valid](McpServer::valid), one a CLI would refuse because it is not
-//! [nameable](McpServer::nameable), or one reached by URL, which only a CLI
-//! can attach.
+//! [valid](McpServer::valid), or one reached by URL, which only a CLI can
+//! attach. One a CLI would refuse because it is not
+//! [nameable](McpServer::nameable) still starts, with a warning, its name
+//! and the tools it names sanitized as a CLI names them.
 //!
 //! The configuration is `abnegate-agent-cli`'s, re-exported here, so one
 //! `mcp.json` drives both this client and a coding agent CLI.

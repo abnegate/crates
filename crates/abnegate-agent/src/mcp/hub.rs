@@ -6,6 +6,7 @@ use futures::future::join_all;
 
 use super::McpConfig;
 use super::McpServer;
+use super::name::cli_name;
 use super::session::McpSession;
 use crate::tool::Tool;
 
@@ -30,10 +31,12 @@ impl McpHub {
     /// keeping only the tools each server [allows](McpServer::allows).
     ///
     /// A [disabled](McpServer::disabled) server is skipped. So is one reached
-    /// by URL, which only a CLI attaches, one that is not
-    /// [valid](McpServer::valid), and one a CLI would refuse because it is not
-    /// [nameable](McpServer::nameable), each with a warning. A server that fails to
-    /// start or to answer in time is logged and skipped.
+    /// by URL, which only a CLI attaches, and one that is not
+    /// [valid](McpServer::valid), each with a warning. One a CLI would refuse
+    /// because it is not [nameable](McpServer::nameable) still starts, with a
+    /// warning, its name and the tools it names sanitized as a CLI names them.
+    /// A server that fails to start or to answer in time is logged and
+    /// skipped.
     pub async fn connect(config: &McpConfig) -> Self {
         Self::connect_with_timeout(config, CONNECT_TIMEOUT).await
     }
@@ -44,7 +47,10 @@ impl McpHub {
                 .servers
                 .iter()
                 .filter(|(name, server)| launchable(name, server))
-                .map(|(name, server)| McpSession::connect_with_timeout(name, server, limit)),
+                .map(|(name, server)| {
+                    let server = named(name, server);
+                    async move { McpSession::connect_with_timeout(name, &server, limit).await }
+                }),
         )
         .await;
 
@@ -131,14 +137,24 @@ fn launchable(name: &str, server: &McpServer) -> bool {
         );
         return false;
     }
-    if !server.nameable(name) {
-        tracing::warn!(
-            server = %name,
-            "skipping an MCP server a CLI would refuse: its name and tool names may hold only letters, digits, `_` and `-`, and its name neither `__` nor a trailing `_`"
-        );
-        return false;
-    }
     true
+}
+
+/// `server` with every tool it names sanitized as a CLI names a tool, so it
+/// allows the same tools once its tools are, and a warning when a CLI would
+/// refuse its name or a tool it names. Its name is sanitized where its tools
+/// are named.
+fn named(name: &str, server: &McpServer) -> McpServer {
+    let mut named = server.clone();
+    if server.nameable(name) {
+        return named;
+    }
+    tracing::warn!(
+        server = %name,
+        "starting an MCP server a CLI would refuse to name, under a sanitized name: a server's name and tool names may hold only letters, digits, `_` and `-`, and its name neither `__` nor a trailing `_`"
+    );
+    named.tools = server.tools.iter().map(|tool| cli_name(tool)).collect();
+    named
 }
 
 #[cfg(test)]
@@ -641,10 +657,11 @@ mod tests {
     }
 
     /// A CLI refuses a server whose name, or a tool it names, could widen
-    /// `--allowedTools`, so the hub refuses it too, or one `mcp.json` would
-    /// attach through the hub what a CLI never runs.
+    /// `--allowedTools`. The hub started such a server in 0.1.0, so it still
+    /// does, under a sanitized name, and warns that a CLI given the same
+    /// `mcp.json` does not attach it.
     #[tokio::test]
-    async fn connect_skips_a_server_a_cli_would_refuse_to_name() {
+    async fn connect_starts_a_server_a_cli_would_refuse_to_name_and_warns() {
         let directory = tempfile::tempdir().unwrap();
         let named = directory.path().join("named");
         let dotted = directory.path().join("dotted");
@@ -662,21 +679,41 @@ mod tests {
             crate::test_support::captured_logs(McpHub::connect_with_timeout(&config, LIMIT)).await;
 
         assert!(hub.is_empty());
-        assert!(named.exists(), "a nameable server never started");
-        for (refused, path) in [
+        for (server, path) in [
+            ("named", &named),
             ("my.server", &dotted),
             ("a__b", &separated),
             ("run_", &trailing),
             ("files", &listed),
         ] {
-            assert!(!path.exists(), "{refused} started");
+            assert!(path.exists(), "{server} never started");
         }
         assert_eq!(
-            logs.matches("skipping an MCP server a CLI would refuse")
+            logs.matches("starting an MCP server a CLI would refuse to name")
                 .count(),
             4,
             "{logs}"
         );
+    }
+
+    /// A `tools` entry a CLI would refuse is compared as a CLI names it, so
+    /// `list.files` still allows the tool the server calls `list.files`.
+    #[test]
+    fn a_tool_a_cli_would_refuse_to_name_is_allowed_under_its_sanitized_name() {
+        let server = McpServer::command("files", Vec::<String>::new())
+            .with_tools(["list.files", "read_file"]);
+
+        let sanitized = named("files", &server);
+        let untouched = named(
+            "docs",
+            &McpServer::command("docs", Vec::<String>::new()).with_tools(["search"]),
+        );
+
+        assert_eq!(sanitized.tools, ["list_files", "read_file"]);
+        assert!(sanitized.allows("list.files"));
+        assert!(sanitized.allows("read_file"));
+        assert!(!sanitized.allows("write_file"));
+        assert_eq!(untouched.tools, ["search"]);
     }
 
     /// Set, in this test's own child process, to a value only a server
