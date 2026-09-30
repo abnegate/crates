@@ -21,6 +21,8 @@ const BUFFER: usize = 8 * 1024;
 /// lines of a verbose agent's errors, which it tends to repeat on every retry.
 const TAIL: usize = 1024;
 
+const TOKEN_PUNCTUATION: &[u8] = b"-_.~+/=%";
+
 /// Reads one run's stderr to its end, keeping its last output limit's worth.
 ///
 /// Stderr is drained whether or not it is ever read back, and past the limit
@@ -170,25 +172,41 @@ pub(crate) fn tail(stderr: &str) -> &str {
 }
 
 /// At most the last `limit` bytes of `collected`, starting past any secret
-/// the cut would split and past the rest of any word it falls in.
+/// the cut would split and past the rest of any token it falls in.
 ///
 /// The scrubber sees only what is kept, and recognises a secret, or a
-/// credential-shaped word, whole: a piece of one left at the start would pass
-/// it untouched.
+/// credential-shaped token, whole: a piece of one left at the start would
+/// pass it untouched. A window that is one token from end to end is kept
+/// whole, since dropping it would lose the end of stderr altogether.
 fn retained<'a>(collected: &'a [u8], limit: usize, scrubber: &Scrubber) -> &'a [u8] {
     let cut = collected.len().saturating_sub(limit);
     if cut == 0 {
         return collected;
     }
     let cut = scrubber.past(collected, cut);
-    if cut >= collected.len() || collected[cut - 1].is_ascii_whitespace() {
-        return &collected[cut..];
-    }
-    let start = collected[cut..]
-        .iter()
-        .position(u8::is_ascii_whitespace)
-        .map_or(collected.len(), |offset| cut + offset + 1);
+    let start = match collected.get(cut - 1) {
+        Some(before) if is_token(*before) => collected[cut..]
+            .iter()
+            .position(|byte| !is_token(*byte))
+            .map_or(cut, |offset| cut + offset + 1),
+        _ => cut,
+    };
+    let start = (start..collected.len())
+        .find(|index| !is_continuation(collected[*index]))
+        .unwrap_or(collected.len());
     &collected[start..]
+}
+
+/// Whether `byte` can sit inside a credential-shaped token: a letter, a
+/// digit, or punctuation a key, a token or its base64 or percent-encoded form
+/// is written with.
+fn is_token(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || TOKEN_PUNCTUATION.contains(&byte)
+}
+
+/// Whether `byte` continues a UTF-8 character rather than starting one.
+fn is_continuation(byte: u8) -> bool {
+    byte & 0b1100_0000 == 0b1000_0000
 }
 
 #[cfg(test)]
@@ -230,6 +248,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A line past the limit with no space in what was kept, say a long run of
+    /// JSON, came back empty, and the failure lost its reason; so did one that
+    /// is a single run of word characters.
+    #[test]
+    fn a_cut_through_a_line_without_spaces_keeps_its_end() {
+        let scrubber = Scrubber::new([SecretValue::new(CONFIGURED)]);
+        let json = br#"{"error":{"code":"quota","message":"the_real_reason"}}"#;
+        let run = [b'e'; 64];
+
+        assert_eq!(
+            retained(json, 40, &scrubber),
+            br#":"quota","message":"the_real_reason"}}"#
+        );
+        assert_eq!(retained(&run, 16, &scrubber), &run[..16]);
     }
 
     #[test]

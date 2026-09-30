@@ -65,8 +65,9 @@ for a failure, such as a sign-in that could not be renewed, only on stderr.
 Split on `STDERR_HEADING` to read the agent's words alone. An agent that exits
 nonzero with no report of its own fails with the end of its stderr. Stderr is
 read to its end, every line of it checked against the tripwire, and at most
-its last `output_limit` bytes are kept in `Execution::stderr`, starting at a
-whole word, so no piece of a secret the cut would split is kept unscrubbed. A run stopped for
+its last `output_limit` bytes are kept in `Execution::stderr`, starting past
+any secret or credential-shaped token the cut would split, so no piece of one
+is kept unscrubbed. A run stopped for
 prose past its output limit fails with a message starting with
 `PROSE_EXCEEDED`, so a caller can tell it from any other failure.
 
