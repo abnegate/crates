@@ -6,7 +6,9 @@
 //! with the catalog by hand. File tools stay beneath [`ToolContext::working_directory`]
 //! unless the context is unrestricted, and every path they open is resolved
 //! once, against a descriptor for the root, so the path that was checked is the
-//! path that is opened.
+//! path that is opened. However unrestricted, they never reach what
+//! [`ToolContext::denied`] withholds, nor any process's `/proc` entry, and
+//! answer [`OFF_LIMITS`] instead.
 
 mod beneath;
 mod command;
@@ -41,6 +43,7 @@ pub use context::ToolContext;
 pub use error::ToolError;
 pub use file::ApplyPatchTool;
 pub use file::ListFilesTool;
+pub use file::OFF_LIMITS;
 pub use file::ReadFileTool;
 pub use file::SearchCodeTool;
 pub use file::WriteFileTool;

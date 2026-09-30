@@ -81,7 +81,8 @@ impl Tool for ListFilesTool {
             .map_err(|error| ToolError::Execution(format!("Cannot resolve path: {error}")))?;
         confine(&full_path, context)?;
 
-        tokio::task::spawn_blocking(move || list(&full_path, &parameters))
+        let context = context.clone();
+        tokio::task::spawn_blocking(move || list(&full_path, &parameters, &context))
             .await
             .map_err(|error| ToolError::Execution(format!("The listing did not finish: {error}")))?
     }
@@ -89,10 +90,14 @@ impl Tool for ListFilesTool {
 
 /// Every entry under `root` that `parameters` asks for, capped at
 /// [`LIST_FILES_CAP`].
-fn list(root: &Path, parameters: &ListFilesParameters) -> Result<ToolResult, ToolError> {
+fn list(
+    root: &Path,
+    parameters: &ListFilesParameters,
+    context: &ToolContext,
+) -> Result<ToolResult, ToolError> {
     let mut files = Vec::new();
     let mut total = 0;
-    let mut walk = Walk::new(WALK_TIME_LIMIT);
+    let mut walk = Walk::new(WALK_TIME_LIMIT, context);
     walk.run(root, |entry, file_type| {
         let path = entry.path();
         let relative = path.strip_prefix(root).unwrap_or(&path).display();

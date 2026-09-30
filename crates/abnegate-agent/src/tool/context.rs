@@ -38,9 +38,22 @@ pub struct ToolContext {
     /// Whether tools may act outside `working_directory`.
     ///
     /// Off by default: file tools stay inside the working directory. On, they
-    /// address the host directly and paths are taken at face value. Only turn
-    /// this on where the caller has asked for it and knows what it means.
+    /// address the host directly, apart from what [`denied`](Self::denied)
+    /// withholds from them. Only turn this on where the caller has asked for it
+    /// and knows what it means.
     pub unrestricted: bool,
+    /// Paths no file tool reads, lists, searches or writes beneath, however the
+    /// path it is given reaches them. Nor may a command call name a directory
+    /// beneath one to run in. A relative entry is taken from
+    /// `working_directory`.
+    ///
+    /// Each is compared by what it is on disk, so another spelling of it, in
+    /// another case, another Unicode normalization or through a firmlink or a
+    /// bind mount, is refused too. Every process's `/proc` entry, the reader's
+    /// own descriptors under `/dev/fd` and macOS's `/.vol` are withheld the
+    /// same way without being listed here. A refused path is answered with
+    /// [`OFF_LIMITS`](super::OFF_LIMITS).
+    pub denied: Vec<PathBuf>,
     /// Which chat or task run this tool call belongs to.
     pub session: Session,
     /// The name the tools keep their own files under, as `.{application}/`
@@ -101,6 +114,23 @@ impl ToolContext {
         self
     }
 
+    /// The same context, withholding `paths` from every file tool in place of
+    /// what it withheld before. A relative path is taken from
+    /// `working_directory`.
+    ///
+    /// ```
+    /// use abnegate_agent::ToolContext;
+    ///
+    /// let context = ToolContext::default()
+    ///     .within("/srv/checkout")
+    ///     .with_denied(["/srv/secrets", ".env"]);
+    /// assert_eq!(context.denied.len(), 2);
+    /// ```
+    pub fn with_denied(mut self, paths: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
+        self.denied = paths.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// The same context, giving children exactly `environment`.
     pub fn with_environment(mut self, environment: EnvironmentPolicy) -> Self {
         self.environment = environment;
@@ -127,6 +157,7 @@ impl Default for ToolContext {
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
             search_timeout: DEFAULT_SEARCH_TIMEOUT,
             unrestricted: false,
+            denied: Vec::new(),
             session: Session::Detached,
             application: Application::default(),
         }
@@ -148,6 +179,23 @@ mod tests {
         assert_eq!(context.search_timeout, Duration::from_secs(20));
         assert_eq!(context.application, Application::default());
         assert!(!context.environment.inherits());
+    }
+
+    #[test]
+    fn the_default_context_denies_nothing_of_its_own() {
+        assert!(ToolContext::default().denied.is_empty());
+    }
+
+    #[test]
+    fn with_denied_replaces_what_was_denied_and_keeps_relative_entries_as_given() {
+        let context = ToolContext::default()
+            .with_denied(["/first"])
+            .with_denied([PathBuf::from("/second"), PathBuf::from("relative")]);
+
+        assert_eq!(
+            context.denied,
+            [PathBuf::from("/second"), PathBuf::from("relative")]
+        );
     }
 
     /// The default used to be the process's whole environment, database URL

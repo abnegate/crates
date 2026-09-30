@@ -1,5 +1,7 @@
 //! Tools that read, write, list and search files beneath the working directory.
 
+mod denied;
+mod identity;
 mod list;
 mod patch;
 mod read;
@@ -7,9 +9,11 @@ mod search;
 #[cfg(test)]
 mod tests;
 mod walk;
+mod withheld;
 mod write;
 
-use std::ffi::OsStr;
+use std::collections::VecDeque;
+use std::fs;
 use std::io;
 use std::io::Read;
 use std::path::Component;
@@ -20,6 +24,8 @@ pub use list::ListFilesTool;
 pub use patch::ApplyPatchTool;
 pub use read::ReadFileTool;
 pub use search::SearchCodeTool;
+use withheld::Withheld;
+use withheld::per_process;
 pub use write::WriteFileTool;
 
 use super::ToolContext;
@@ -27,12 +33,22 @@ use super::ToolError;
 use super::beneath;
 use super::beneath::Access;
 
-/// Refuse a resolved path that leaves `context.working_directory`.
+/// What a file tool answers for a path in [`ToolContext::denied`], or in a
+/// directory that reaches a file by identity, however unrestricted its
+/// context.
+pub const OFF_LIMITS: &str = "Path is off limits to file tools";
+
+/// Refuse a resolved path a file tool may not reach: one that is withheld from
+/// every file tool, and unless the context is unrestricted, one that leaves
+/// `context.working_directory`.
 ///
 /// The comparison is against the *canonical* `cwd`: a caller's `cwd` may itself
 /// contain a symlink (`/var` -> `/private/var` on macOS), and a resolved path
 /// compared against an unresolved root refuses every legitimate path in it.
 pub(crate) fn confine(resolved: &Path, context: &ToolContext) -> Result<(), ToolError> {
+    if Withheld::of(context).holds(resolved) {
+        return Err(ToolError::Execution(OFF_LIMITS.to_string()));
+    }
     if context.unrestricted {
         return Ok(());
     }
@@ -99,43 +115,55 @@ pub(super) async fn blocking<Value: Send + 'static>(
     })?
 }
 
-/// `path` with `.`, `..` and symlinks resolved as far as the filesystem allows.
+/// `path` with `.`, `..` and symlinks resolved the way the kernel resolves
+/// them, as far as the filesystem allows.
 ///
-/// A path that does not exist cannot be canonicalized, so its deepest existing
-/// ancestor is resolved and the remaining names re-attached. That is what makes
-/// a symlinked ancestor leaving `cwd` visible to [`confine`] *before* the
-/// directories under it are created.
+/// Each name is looked up where the names before it really led, so a `..`
+/// after a symlink leaves the link's target rather than the link. A link is
+/// followed whether or not its target exists, since a create through it lands
+/// there, and names past the deepest one that exists are taken as written.
+/// That is what makes a symlinked ancestor leaving the working directory
+/// visible to [`confine`] *before* the directories under it are created.
+/// Nothing past a process's `/proc` entry is resolved, since [`confine`]
+/// refuses it whole.
 pub(crate) fn resolve(path: &Path) -> PathBuf {
-    let lexical = normalize(path);
-    let mut names: Vec<&OsStr> = Vec::new();
-    let mut cursor = lexical.as_path();
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut pending = steps(&absolute);
+    let mut resolved = PathBuf::new();
+    let mut links = beneath::LINKS;
 
-    loop {
-        if let Ok(canonical) = cursor.canonicalize() {
-            let mut resolved = canonical;
-            resolved.extend(names.iter().rev());
-            return resolved;
+    while let Some(step) = pending.pop_front() {
+        if per_process(&resolved) {
+            resolved.push(step);
+            resolved.extend(pending);
+            break;
         }
-        match (cursor.parent(), cursor.file_name()) {
-            (Some(parent), Some(name)) => {
-                names.push(name);
-                cursor = parent;
+        match step.components().next() {
+            Some(Component::ParentDir) => {
+                resolved.pop();
             }
-            _ => return lexical,
+            Some(Component::Normal(name)) => {
+                let candidate = resolved.join(name);
+                match fs::read_link(&candidate) {
+                    Ok(target) if links > 0 => {
+                        links -= 1;
+                        for step in steps(&target).into_iter().rev() {
+                            pending.push_front(step);
+                        }
+                    }
+                    _ => resolved = candidate,
+                }
+            }
+            Some(Component::CurDir) | None => {}
+            Some(root) => resolved.push(root),
         }
     }
+    resolved
 }
 
-fn normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::CurDir => {}
-            other => normalized.push(other),
-        }
-    }
-    normalized
+/// Each component of `path`, owned, so a link's target can be spliced in.
+fn steps(path: &Path) -> VecDeque<PathBuf> {
+    path.components()
+        .map(|component| PathBuf::from(component.as_os_str()))
+        .collect()
 }

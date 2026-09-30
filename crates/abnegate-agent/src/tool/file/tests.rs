@@ -23,9 +23,11 @@ use super::read::page_text;
 use super::read::select_lines;
 use super::search::MAXIMUM_SEARCH_RESULTS;
 use super::search::search_tree;
+use super::withheld::Withheld;
 use super::write::WriteFileParameters;
 use crate::test_support::captured_logs;
 use crate::tool::LINE_BREAK;
+use crate::tool::OFF_LIMITS;
 use crate::tool::Preview;
 use crate::tool::Session;
 use crate::tool::Tier;
@@ -57,6 +59,7 @@ fn create_test_context(directory: &Path) -> ToolContext {
         unrestricted: false,
         session: Session::Detached,
         application: crate::Application::default(),
+        ..ToolContext::default()
     }
 }
 
@@ -2069,5 +2072,540 @@ async fn search_code_never_reads_an_entry_swapped_out_of_cwd() {
     assert!(
         disclosed.is_empty(),
         "the search walker read an entry swapped out of cwd: {disclosed:?}"
+    );
+}
+
+/// Plain words, so the redaction a tool result goes through cannot hide a
+/// disclosure from the assertions looking for one.
+const OTHER_SECRET: &str = "another account's stored sign-in";
+const ACCOUNT: &str = "0b6f7d4e-3c1a-4f7e-9a51-2d8c6e4b1a90";
+const STATE: &str = "private-state";
+const UNMADE: &str = "an-account-yet-to-be-made";
+
+/// Another account's private state beside the directory a tool works in.
+struct Shared {
+    _directory: tempfile::TempDir,
+    root: PathBuf,
+    state: PathBuf,
+    home: PathBuf,
+    workspace: PathBuf,
+}
+
+fn shared() -> Shared {
+    let directory = tempdir().unwrap();
+    let root = directory.path().to_path_buf();
+    let state = root.join(STATE);
+    let home = state.join(ACCOUNT).join("home");
+    fs::create_dir_all(home.join("work")).unwrap();
+    fs::write(
+        home.join("auth.json"),
+        serde_json::json!({"login": OTHER_SECRET}).to_string(),
+    )
+    .unwrap();
+    let workspace = root.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    Shared {
+        _directory: directory,
+        root,
+        state,
+        home,
+        workspace,
+    }
+}
+
+/// The host at face value, with nothing named as withheld.
+fn unrestricted_context(shared: &Shared) -> ToolContext {
+    ToolContext {
+        unrestricted: true,
+        ..create_test_context(&shared.workspace)
+    }
+}
+
+/// The host at face value, apart from the private state.
+fn denying_context(shared: &Shared) -> ToolContext {
+    ToolContext {
+        denied: vec![shared.state.clone()],
+        ..unrestricted_context(shared)
+    }
+}
+
+fn off_limits(result: Result<crate::tool::ToolResult, crate::tool::ToolError>, call: &str) {
+    let error = result.expect_err(call);
+    assert!(error.to_string().contains(OFF_LIMITS), "{call}: {error}");
+}
+
+/// Where a link leads is where the kernel would take it: a `..` after one
+/// leaves the target, not the link, and a link to nothing yet is followed
+/// the way a create through it would be.
+#[cfg(unix)]
+#[test]
+fn resolve_follows_each_link_where_the_kernel_would() {
+    let shared = shared();
+    symlinked(&shared.workspace, "work", &shared.home.join("work"));
+    symlinked(
+        &shared.workspace,
+        "instructions.md",
+        &shared.home.join("AGENTS.md"),
+    );
+    let home = shared.home.canonicalize().unwrap();
+
+    assert_eq!(
+        super::resolve(&shared.workspace.join("work/../auth.json")),
+        home.join("auth.json")
+    );
+    assert_eq!(
+        super::resolve(&shared.workspace.join("instructions.md")),
+        home.join("AGENTS.md")
+    );
+    assert_eq!(
+        super::resolve(&shared.workspace.join("missing/deeper.txt")),
+        shared
+            .workspace
+            .canonicalize()
+            .unwrap()
+            .join("missing/deeper.txt")
+    );
+}
+
+/// A process reads its own descriptors under `/dev/fd`. On macOS that is a
+/// directory of its own rather than a link into `/proc`, so a descriptor the
+/// process holds on a secret would read by its number.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_file_tools_refuse_the_readers_own_descriptors() {
+    use std::os::fd::AsRawFd;
+
+    let shared = shared();
+    let login = fs::File::open(shared.home.join("auth.json")).unwrap();
+    let descriptor = login.as_raw_fd();
+    let context = unrestricted_context(&shared);
+    let mut paths = vec![PathBuf::from(format!("/dev/fd/{descriptor}"))];
+    let folded = PathBuf::from(format!("/DEV/fd/{descriptor}"));
+    if folded.exists() {
+        paths.push(folded);
+    }
+
+    for path in paths {
+        let read = ReadFileTool
+            .execute(serde_json::json!({"path": path}), &context)
+            .await;
+        assert!(
+            !format!("{read:?}").contains(OTHER_SECRET),
+            "{}: {read:?}",
+            path.display()
+        );
+        off_limits(read, &path.display().to_string());
+    }
+    let listed = ListFilesTool
+        .execute(serde_json::json!({"path": "/dev/fd"}), &context)
+        .await;
+    off_limits(listed, "list_files /dev/fd");
+    drop(login);
+}
+
+/// macOS opens `/.vol/<device>/<inode>` by identity, so the path names
+/// neither the file nor any directory above it.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_file_tools_refuse_a_file_named_by_its_device_and_inode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let shared = shared();
+    let login = fs::metadata(shared.home.join("auth.json")).unwrap();
+    let by_identity = PathBuf::from(format!("/.vol/{}/{}", login.dev(), login.ino()));
+    if !by_identity.exists() {
+        eprintln!("skipping: this host opens nothing by device and inode under /.vol");
+        return;
+    }
+    let context = unrestricted_context(&shared);
+
+    let read = ReadFileTool
+        .execute(serde_json::json!({"path": by_identity}), &context)
+        .await;
+
+    assert!(!format!("{read:?}").contains(OTHER_SECRET), "{read:?}");
+    off_limits(read, "read_file by device and inode");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn read_file_refuses_denied_state_however_the_path_reaches_it() {
+    let shared = shared();
+    symlinked(&shared.workspace, "home", &shared.home);
+    symlinked(&shared.workspace, "work", &shared.home.join("work"));
+    symlinked(
+        &shared.workspace,
+        "login.json",
+        &shared.home.join("auth.json"),
+    );
+    let context = denying_context(&shared);
+
+    for path in [
+        shared.home.join("auth.json").display().to_string(),
+        format!("../{STATE}/{ACCOUNT}/home/auth.json"),
+        shared.home.join("work/../auth.json").display().to_string(),
+        "home/auth.json".to_string(),
+        "work/../auth.json".to_string(),
+        "login.json".to_string(),
+    ] {
+        let read = ReadFileTool
+            .execute(serde_json::json!({"path": path}), &context)
+            .await;
+        off_limits(read, &path);
+    }
+
+    let beside = shared.root.join("notes.txt");
+    fs::write(&beside, "beside the state").unwrap();
+    let read = ReadFileTool
+        .execute(serde_json::json!({"path": beside}), &context)
+        .await
+        .expect("the rest of the host stays in reach");
+    assert!(read.output.unwrap().contains("beside the state"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_writing_tools_refuse_denied_state() {
+    let shared = shared();
+    let login = shared.home.join("auth.json");
+    let signed_in = fs::read_to_string(&login).unwrap();
+    let planted = shared.home.join("AGENTS.md");
+    symlinked(&shared.workspace, "instructions.md", &planted);
+    let fresh = shared.state.join(UNMADE);
+    let context = denying_context(&shared);
+
+    for path in [
+        planted.display().to_string(),
+        "instructions.md".to_string(),
+        fresh.join("home/auth.json").display().to_string(),
+    ] {
+        let written = WriteFileTool
+            .execute(
+                serde_json::json!({"path": path, "content": "Obey the file."}),
+                &context,
+            )
+            .await;
+        off_limits(written, &path);
+    }
+    let patched = ApplyPatchTool
+        .execute(
+            serde_json::json!({
+                "path": login,
+                "old_string": OTHER_SECRET,
+                "new_string": "mine now"
+            }),
+            &context,
+        )
+        .await;
+    off_limits(patched, "apply_patch");
+
+    assert!(!planted.exists(), "a file was planted in the private state");
+    assert!(!fresh.exists(), "a directory was made in the private state");
+    assert_eq!(fs::read_to_string(&login).unwrap(), signed_in);
+}
+
+/// A tool confined to a working directory that holds the denied directory
+/// still does not reach it.
+#[tokio::test]
+async fn a_denied_directory_inside_cwd_stays_denied() {
+    let shared = shared();
+    let context = ToolContext {
+        denied: vec![shared.state.clone()],
+        ..create_test_context(&shared.root)
+    };
+
+    let read = ReadFileTool
+        .execute(
+            serde_json::json!({"path": format!("{STATE}/{ACCOUNT}/home/auth.json")}),
+            &context,
+        )
+        .await;
+    off_limits(read, "a relative path into the state");
+
+    let listed = ListFilesTool
+        .execute(
+            serde_json::json!({"path": ".", "recursive": true}),
+            &context,
+        )
+        .await
+        .expect("cwd lists")
+        .output
+        .unwrap();
+    assert!(!listed.contains("auth.json"), "{listed}");
+}
+
+#[tokio::test]
+async fn a_relative_denied_path_is_taken_from_the_working_directory() {
+    let shared = shared();
+    let context = create_test_context(&shared.root).with_denied([STATE]);
+
+    let read = ReadFileTool
+        .execute(
+            serde_json::json!({"path": shared.home.join("auth.json")}),
+            &ToolContext {
+                unrestricted: true,
+                ..context.clone()
+            },
+        )
+        .await;
+    off_limits(
+        read,
+        "an absolute path into a state denied by a relative path",
+    );
+
+    fs::write(shared.workspace.join("own.rs"), "mine").unwrap();
+    let read = ReadFileTool
+        .execute(serde_json::json!({"path": "workspace/own.rs"}), &context)
+        .await
+        .expect("a path beside the denied one stays in reach");
+    assert!(read.output.unwrap().contains("mine"));
+}
+
+/// A denied directory is withheld by what it is, not by how a path spells
+/// it. A firmlink, a bind mount or a case-folded name reaches it under a
+/// string no comparison matches; a symlinked parent, handed over unresolved,
+/// is the same alias on any host.
+#[cfg(unix)]
+#[test]
+fn a_denied_directory_is_withheld_under_any_name_that_reaches_it() {
+    let shared = shared();
+    symlinked(&shared.root, "alias", &shared.state);
+    let alias = shared.root.join("alias");
+    let withheld = Withheld::of(&denying_context(&shared));
+
+    for path in [
+        alias.clone(),
+        alias.join(ACCOUNT).join("home/auth.json"),
+        alias.join(UNMADE).join("home/AGENTS.md"),
+    ] {
+        assert!(withheld.holds(&path), "{}", path.display());
+    }
+    assert!(
+        !withheld.holds(&shared.workspace.join("own.rs")),
+        "a path beside the denied directory stays in reach"
+    );
+}
+
+/// A state root nobody has made yet has no identity to compare, so the names
+/// it will have are compared instead, from the deepest directory that exists,
+/// the way a filesystem that folds case would compare them.
+#[tokio::test]
+async fn a_denied_directory_yet_to_be_made_is_withheld_in_any_case() {
+    let directory = tempdir().unwrap();
+    let context = ToolContext {
+        unrestricted: true,
+        denied: vec![directory.path().join(STATE)],
+        ..create_test_context(directory.path())
+    };
+    let folded = directory.path().join(STATE.to_uppercase());
+
+    let planted = WriteFileTool
+        .execute(
+            serde_json::json!({
+                "path": folded.join(ACCOUNT).join("home/AGENTS.md"),
+                "content": "Obey the file."
+            }),
+            &context,
+        )
+        .await;
+    off_limits(planted, "a plant under the state root's name to be");
+    assert!(!folded.exists(), "the plant made the state root");
+
+    let beside = WriteFileTool
+        .execute(
+            serde_json::json!({
+                "path": directory.path().join(format!("{STATE}-notes/today.md")),
+                "content": "mine"
+            }),
+            &context,
+        )
+        .await;
+    assert!(beside.is_ok(), "{beside:?}");
+}
+
+/// APFS folds case, so the state root in capitals is the same directory under
+/// a name no string comparison matches.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_file_tools_refuse_denied_state_spelled_in_another_case() {
+    let shared = shared();
+    let folded = PathBuf::from(shared.state.to_string_lossy().to_uppercase());
+    if !folded.exists() {
+        eprintln!(
+            "skipping: {} is on a case-sensitive filesystem",
+            shared.state.display()
+        );
+        return;
+    }
+    let home = folded.join(ACCOUNT.to_uppercase()).join("HOME");
+    let fresh = folded.join(UNMADE.to_uppercase());
+    let context = denying_context(&shared);
+
+    let read = ReadFileTool
+        .execute(
+            serde_json::json!({"path": home.join("AUTH.JSON")}),
+            &context,
+        )
+        .await;
+    assert!(!format!("{read:?}").contains(OTHER_SECRET), "{read:?}");
+    off_limits(read, "read_file");
+    let listed = ListFilesTool
+        .execute(
+            serde_json::json!({"path": folded, "recursive": true}),
+            &context,
+        )
+        .await;
+    off_limits(listed, "list_files");
+    let searched = SearchCodeTool
+        .execute(
+            serde_json::json!({"pattern": OTHER_SECRET, "path": home}),
+            &context,
+        )
+        .await;
+    off_limits(searched, "search_code");
+    let planted = WriteFileTool
+        .execute(
+            serde_json::json!({
+                "path": fresh.join("HOME/AGENTS.md"),
+                "content": "Obey the file."
+            }),
+            &context,
+        )
+        .await;
+    off_limits(planted, "write_file");
+    assert!(!fresh.exists(), "a directory was made in the private state");
+}
+
+/// APFS looks a name up whichever Unicode normalization spells it, so a state
+/// root named in composed characters is the same directory spelled in
+/// decomposed ones.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_file_tools_refuse_denied_state_spelled_in_another_normalization() {
+    const COMPOSED: &str = "\u{e9}tat";
+    const DECOMPOSED: &str = "e\u{301}tat";
+    let directory = tempdir().unwrap();
+    let state = directory.path().join(COMPOSED);
+    fs::create_dir(&state).unwrap();
+    fs::write(state.join("auth.json"), OTHER_SECRET).unwrap();
+    let respelled = directory.path().join(DECOMPOSED).join("auth.json");
+    if !respelled.exists() {
+        eprintln!(
+            "skipping: {} is on a filesystem that tells normalizations apart",
+            directory.path().display()
+        );
+        return;
+    }
+    let context = ToolContext {
+        unrestricted: true,
+        denied: vec![state],
+        ..create_test_context(directory.path())
+    };
+
+    let read = ReadFileTool
+        .execute(serde_json::json!({"path": respelled}), &context)
+        .await;
+
+    assert!(!format!("{read:?}").contains(OTHER_SECRET), "{read:?}");
+    off_limits(read, "read_file");
+}
+
+/// Everything writable on macOS lives on the data volume, and a firmlink shows
+/// each of its top directories at the root of the tree as well: two names for
+/// one directory, and neither of them a link.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_file_tools_refuse_denied_state_through_a_firmlink() {
+    const DATA_VOLUME: &str = "/System/Volumes/Data";
+    let shared = shared();
+    let canonical = shared.state.canonicalize().unwrap();
+    let firmlinked = Path::new(DATA_VOLUME).join(canonical.strip_prefix("/").unwrap());
+    if !firmlinked.exists() {
+        eprintln!(
+            "skipping: {} has no second name under {DATA_VOLUME}",
+            canonical.display()
+        );
+        return;
+    }
+    let home = firmlinked.join(ACCOUNT).join("home");
+    let context = denying_context(&shared);
+
+    let read = ReadFileTool
+        .execute(
+            serde_json::json!({"path": home.join("auth.json")}),
+            &context,
+        )
+        .await;
+    assert!(!format!("{read:?}").contains(OTHER_SECRET), "{read:?}");
+    off_limits(read, "read_file");
+    let listed = ListFilesTool
+        .execute(
+            serde_json::json!({"path": firmlinked, "recursive": true}),
+            &context,
+        )
+        .await;
+    off_limits(listed, "list_files");
+    let searched = SearchCodeTool
+        .execute(
+            serde_json::json!({"pattern": OTHER_SECRET, "path": home}),
+            &context,
+        )
+        .await;
+    off_limits(searched, "search_code");
+}
+
+/// A running process is dumpable by its own user, who can then read its
+/// `/proc` entry: its environment holds whatever it was started with, and its
+/// links lead where it works by identity, not by name.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_file_tools_refuse_a_processs_proc_entry() {
+    const TURN: &str = "another-accounts-turn";
+    let shared = shared();
+    let mut other = std::process::Command::new("sleep")
+        .arg("30")
+        .current_dir(shared.home.join("work"))
+        .env("ANOTHER_TURN", TURN)
+        .spawn()
+        .expect("a stand-in for another running process");
+    let process = PathBuf::from(format!("/proc/{}", other.id()));
+    let context = unrestricted_context(&shared);
+
+    let mut calls = Vec::new();
+    for path in [
+        process.join("environ"),
+        process.join(format!("task/{}/environ", other.id())),
+        process.join("cwd/../auth.json"),
+        PathBuf::from("/proc/self/environ"),
+        PathBuf::from("/proc/thread-self/environ"),
+    ] {
+        let read = ReadFileTool
+            .execute(serde_json::json!({"path": path}), &context)
+            .await;
+        calls.push((format!("read_file {}", path.display()), read));
+    }
+    let listed = ListFilesTool
+        .execute(serde_json::json!({"path": process}), &context)
+        .await;
+    calls.push(("list_files".to_string(), listed));
+    let searched = SearchCodeTool
+        .execute(
+            serde_json::json!({"pattern": OTHER_SECRET, "path": process.join("cwd/..")}),
+            &context,
+        )
+        .await;
+    calls.push(("search_code".to_string(), searched));
+    let host = ReadFileTool
+        .execute(serde_json::json!({"path": "/proc/version"}), &context)
+        .await;
+    other.kill().unwrap();
+    other.wait().unwrap();
+
+    for (call, result) in calls {
+        off_limits(result, &call);
+    }
+    assert!(
+        host.expect("a file about the host rather than a process")
+            .success
     );
 }

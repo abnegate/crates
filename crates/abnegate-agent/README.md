@@ -65,6 +65,31 @@ agents. When the provider stops on custom sequences or asks for reasoning, give
 compaction a provider that does neither with `Agent::with_summarizer`: a summary
 is a structured rewrite, asked for at temperature 0.
 
+## Withheld paths
+
+`ToolContext::with_denied` names paths no file tool reads, lists, searches or
+writes beneath, even in an unrestricted context, and that `run_command` and
+`run_shell` refuse as a `cwd`. A relative entry is taken from the working
+directory. Each is compared by what it is on disk rather than by how a path
+spells it: every link on the way is followed where the kernel would follow it,
+a dangling one included, and each directory is matched by its device and
+inode, so another case, another Unicode normalization, a firmlink or a bind
+mount reaches nothing. A denied path nobody has made yet is matched by the
+names it will have, case-folded, from the deepest directory that exists. A
+walk shows a denied directory and never enters it. Every process's `/proc`
+entry, the reader's own descriptors under `/dev/fd` and macOS's `/.vol` are
+withheld from every context the same way. A refused call answers
+`tool::OFF_LIMITS`.
+
+```rust
+use abnegate_agent::ToolContext;
+
+let mut context = ToolContext::default()
+    .within("/srv/checkout")
+    .with_denied(["/srv/state", ".env"]);
+context.unrestricted = true;
+```
+
 ## MCP
 
 With the `mcp` feature, `McpConfig::from_environment` reads the servers an

@@ -209,7 +209,7 @@ pub(super) fn search_tree(
     };
     let mut results = Vec::new();
     let mut unreadable = false;
-    let mut walk = Walk::new(context.search_timeout);
+    let mut walk = Walk::new(context.search_timeout, context);
     let walked = walk.run(root, |entry, file_type| {
         if results.len() >= maximum_results {
             return Visit::Stop;

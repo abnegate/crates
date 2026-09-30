@@ -34,6 +34,7 @@ fn create_test_context() -> ToolContext {
         unrestricted: false,
         session: Session::Detached,
         application: crate::Application::default(),
+        ..ToolContext::default()
     }
 }
 
@@ -1389,6 +1390,53 @@ async fn a_directory_outside_the_tree_is_refused_the_same_way_in_both_modes() {
                 .expect_err("a directory outside the tree is refused");
                 assert!(
                     refused.to_string().contains("escapes working directory"),
+                    "{tool} answered {named} with background={background} in other words: \
+                     {refused}"
+                );
+            }
+        }
+    }
+
+    assert!(
+        !logs(&elsewhere).exists() && !logs(&checkout).exists(),
+        "a refusal came after something was already spawned"
+    );
+}
+
+/// A directory the context denies is no place to run a command from, even
+/// when the context is otherwise unrestricted.
+#[tokio::test]
+async fn a_directory_under_a_denied_path_is_refused_in_both_modes() {
+    let (_root, checkout, elsewhere) = neighbours();
+    let mut context = create_test_context();
+    context.working_directory = checkout.clone();
+    context.unrestricted = true;
+    context.denied = vec![elsewhere.clone()];
+    context.session = Session::Task(uuid::Uuid::new_v4());
+    context.environment.set(
+        "PATH".to_string(),
+        std::env::var("PATH").unwrap_or_default(),
+    );
+
+    for named in [
+        elsewhere.to_string_lossy().into_owned(),
+        "../elsewhere".to_string(),
+    ] {
+        for background in [false, true] {
+            let call = json!({
+                "command": "ls",
+                "cwd": named,
+                "background": background,
+                "reason": "Look next door."
+            });
+            for tool in ["run_command", "run_shell"] {
+                let refused = match tool {
+                    "run_command" => RunCommandTool.execute(call.clone(), &context).await,
+                    _ => RunShellTool.execute(call.clone(), &context).await,
+                }
+                .expect_err("a denied directory is refused");
+                assert!(
+                    refused.to_string().contains(crate::tool::OFF_LIMITS),
                     "{tool} answered {named} with background={background} in other words: \
                      {refused}"
                 );
