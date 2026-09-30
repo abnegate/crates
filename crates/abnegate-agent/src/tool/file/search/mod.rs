@@ -1,6 +1,7 @@
 mod parameters;
 
 use std::ffi::OsString;
+use std::fs;
 use std::path::Path;
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -41,8 +42,9 @@ const RIPGREP_NO_MATCHES: i32 = 1;
 const RIPGREP_MAXIMUM_COLUMNS: &str = "400";
 
 /// Why a search reports only part of the tree when ripgrep fails after
-/// printing matches: a file or directory it could not read makes it exit 2
-/// once it has searched the rest.
+/// printing matches, a file or directory it could not read making it exit 2
+/// once it has searched the rest, or when the walk could not read a
+/// directory or a code file.
 const UNREADABLE: &str = "some files could not be read";
 
 /// Build output and dependency trees a search walks past.
@@ -55,7 +57,7 @@ const SKIPPED_DIRECTORIES: &[&str] = &[
     "__pycache__",
 ];
 
-/// Extensions of the files a search reads.
+/// Extensions of the files a walk reads; ripgrep reads every file.
 const CODE_EXTENSIONS: &[&str] = &[
     "rs", "py", "js", "ts", "jsx", "tsx", "go", "java", "c", "cpp", "h", "hpp", "rb", "php",
     "swift", "kt", "scala", "cs", "fs", "ex", "exs", "erl", "gleam", "hs", "ml", "sql", "sh",
@@ -75,9 +77,13 @@ const CODE_EXTENSIONS: &[&str] = &[
 /// repository, or whether a repository encloses it.
 ///
 /// When `rg` cannot be started, or fails having printed nothing, the tree is
-/// walked instead, passing over hidden entries, build trees and links. A
-/// search that runs out of time, or that `rg` could not read all of, returns
-/// the matches `rg` printed, marked as stopped early.
+/// walked instead. The walk searches code files only, those with a source,
+/// script, markup, configuration or text extension such as `rs`, `sh`,
+/// `json`, `md` or `txt`, and passes over hidden entries, build trees, links
+/// and files past the context's `maximum_file_size`. A search that runs out
+/// of time, that `rg` could not read all of, or whose walk could not read a
+/// directory or a code file, returns the matches it found, marked as stopped
+/// early.
 pub struct SearchCodeTool;
 
 #[async_trait]
@@ -87,7 +93,7 @@ impl Tool for SearchCodeTool {
     }
 
     fn description(&self) -> &str {
-        "Search for a literal pattern in code files. Uses ripgrep when available, otherwise walks the tree. Returns matching lines with file paths and line numbers."
+        "Search for a literal pattern in code files. Uses ripgrep when available, otherwise walks the tree, reading only files with a code extension. Returns matching lines with file paths and line numbers."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -183,9 +189,12 @@ fn format_search_results(
 /// Lines under `root` holding `pattern`, as `path:line: text`, and why the
 /// walk stopped short of the whole tree if it did.
 ///
-/// Hidden entries, build trees and links are passed over, as is any file past
-/// the context's `maximum_file_size`, and every file is opened through the working
-/// directory's own descriptor.
+/// Only code files are searched: a file whose extension is not one of
+/// [`CODE_EXTENSIONS`] is never read. Hidden entries, build trees and links
+/// are passed over, as is any file past the context's `maximum_file_size`,
+/// and every file is opened through the working directory's own descriptor.
+/// A directory, or a code file, that could not be read is left out, and the
+/// search says so with [`UNREADABLE`], as a search through `rg` does.
 pub(super) fn search_tree(
     root: &Path,
     pattern: &str,
@@ -199,6 +208,7 @@ pub(super) fn search_tree(
         pattern.to_lowercase()
     };
     let mut results = Vec::new();
+    let mut unreadable = false;
     let mut walk = Walk::new(WALK_TIME_LIMIT);
     let _ = walk.run(root, |entry, file_type| {
         if results.len() >= maximum_results {
@@ -216,7 +226,7 @@ pub(super) fn search_tree(
             };
         }
         if file_type.is_file() {
-            search_file(
+            unreadable |= !search_file(
                 &entry.path(),
                 root,
                 &pattern,
@@ -228,9 +238,13 @@ pub(super) fn search_tree(
         }
         Visit::Skip
     });
-    (results, walk.stopped())
+    let unreadable = unreadable || walk.unreadable();
+    (results, walk.stopped().or(unreadable.then_some(UNREADABLE)))
 }
 
+/// Add the lines of the file at `path` holding `pattern` to `results`.
+/// Returns false only when it is a code file within the size limit that
+/// could not be read.
 fn search_file(
     path: &Path,
     root: &Path,
@@ -239,22 +253,27 @@ fn search_file(
     results: &mut Vec<String>,
     maximum_results: usize,
     context: &ToolContext,
-) {
+) -> bool {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
         .unwrap_or_default();
     if !CODE_EXTENSIONS.contains(&extension) {
-        return;
+        return true;
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.len() > context.maximum_file_size as u64 => return true,
+        Ok(_) => {}
+        Err(_) => return false,
     }
     let Ok(content) = read_text(context, path) else {
-        return;
+        return false;
     };
 
     let relative = path.strip_prefix(root).unwrap_or(path);
     for (index, line) in content.lines().enumerate() {
         if results.len() >= maximum_results {
-            return;
+            break;
         }
         let matches = if case_sensitive {
             line.contains(pattern)
@@ -270,6 +289,7 @@ fn search_file(
             ));
         }
     }
+    true
 }
 
 /// Search with `rg` started through `process::command`. `None`, when it
@@ -803,6 +823,104 @@ mod tests {
             output.contains("search stopped early: some files could not be read"),
             "{output}"
         );
+    }
+
+    /// Take every permission away from `path`, and say whether that made it
+    /// unreadable: a process running as root reads it regardless.
+    fn lock(path: &Path) -> bool {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000))
+            .expect("the permissions change");
+        if path.is_dir() {
+            fs::read_dir(path).is_err()
+        } else {
+            fs::read(path).is_err()
+        }
+    }
+
+    fn unlock(path: &Path, mode: u32) {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            .expect("the permissions are restored");
+    }
+
+    /// A tree with one readable match and `locked`, whatever `plant` makes of
+    /// it, and what a walk of it found and why it stopped, if it did. `None`
+    /// when `locked` could not be made unreadable.
+    fn walked(
+        locked: &str,
+        plant: impl FnOnce(&Path),
+        mode: u32,
+    ) -> Option<(Vec<String>, Option<&'static str>)> {
+        let tree = TempDir::new().expect("a tree to search");
+        fs::write(tree.path().join("found.rs"), MARKER).expect("a file to search");
+        let locked = tree.path().join(locked);
+        plant(&locked);
+        if !lock(&locked) {
+            unlock(&locked, mode);
+            eprintln!("skipping: {} stayed readable", locked.display());
+            return None;
+        }
+
+        let walked = search_tree(
+            tree.path(),
+            MARKER,
+            false,
+            MAXIMUM_SEARCH_RESULTS,
+            &ToolContext::default().within(tree.path()),
+        );
+
+        unlock(&locked, mode);
+        Some(walked)
+    }
+
+    /// The walk passed over a file or a directory it could not read without
+    /// a word, so a search that missed part of the tree reported what it
+    /// found as the whole answer. It now says so, as a search through `rg`
+    /// does.
+    #[test]
+    fn a_walk_that_could_not_read_a_code_file_says_so() {
+        let Some((results, stopped)) = walked(
+            "locked.rs",
+            |path| fs::write(path, MARKER).expect("a file to lock"),
+            0o644,
+        ) else {
+            return;
+        };
+
+        assert_eq!(files(&results.join("\n")), ["found.rs"]);
+        assert_eq!(stopped, Some(UNREADABLE));
+    }
+
+    #[test]
+    fn a_walk_that_could_not_read_a_directory_says_so() {
+        let Some((results, stopped)) = walked(
+            "closed",
+            |path| {
+                fs::create_dir(path).expect("a directory to lock");
+                fs::write(path.join("inside.rs"), MARKER).expect("a file inside it");
+            },
+            0o755,
+        ) else {
+            return;
+        };
+
+        assert_eq!(files(&results.join("\n")), ["found.rs"]);
+        assert_eq!(stopped, Some(UNREADABLE));
+    }
+
+    /// The walk searches code files only, so a file with any other extension
+    /// was never going to be read, and not reading it misses nothing.
+    #[test]
+    fn a_walk_passes_over_an_unreadable_file_it_would_not_search_in_silence() {
+        let Some((results, stopped)) = walked(
+            "locked.bin",
+            |path| fs::write(path, MARKER).expect("a file to lock"),
+            0o644,
+        ) else {
+            return;
+        };
+
+        assert_eq!(files(&results.join("\n")), ["found.rs"]);
+        assert_eq!(stopped, None);
     }
 
     #[tokio::test]

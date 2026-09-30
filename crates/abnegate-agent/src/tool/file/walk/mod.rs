@@ -41,6 +41,7 @@ pub(super) struct Walk {
     remaining: usize,
     visited: HashSet<(u64, u64)>,
     stopped: Option<&'static str>,
+    unreadable: bool,
 }
 
 impl Walk {
@@ -50,6 +51,7 @@ impl Walk {
             remaining: MAXIMUM_WALK_ENTRIES,
             visited: HashSet::new(),
             stopped: None,
+            unreadable: false,
         }
     }
 
@@ -58,11 +60,18 @@ impl Walk {
         self.stopped
     }
 
+    /// Whether an entry, or a directory the visitor asked to enter, could not
+    /// be read and was left out.
+    pub(super) fn unreadable(&self) -> bool {
+        self.unreadable
+    }
+
     /// Show `visit` every entry beneath `root`, entering the directories it
     /// asks to.
     ///
     /// Only a `root` that cannot be read is an error: a directory further down
-    /// that cannot be read is left out, as the entries it held would be.
+    /// that cannot be read is left out, as the entries it held would be, and
+    /// [`unreadable`](Self::unreadable) says so.
     pub(super) fn run(
         &mut self,
         root: &Path,
@@ -87,10 +96,11 @@ impl Walk {
             }
             self.remaining -= 1;
 
-            let Ok(entry) = entry else {
-                continue;
-            };
-            let Ok(file_type) = entry.file_type() else {
+            let Some((entry, file_type)) = entry
+                .ok()
+                .and_then(|entry| entry.file_type().ok().map(|file_type| (entry, file_type)))
+            else {
+                self.unreadable = true;
                 continue;
             };
             match visit(&entry, file_type) {
@@ -122,11 +132,16 @@ impl Walk {
             self.stopped = Some(TOO_DEEP);
             return None;
         }
-        let metadata = fs::symlink_metadata(&directory).ok()?;
+        let Ok(metadata) = fs::symlink_metadata(&directory) else {
+            self.unreadable = true;
+            return None;
+        };
         if !metadata.is_dir() || !self.visited.insert((metadata.dev(), metadata.ino())) {
             return None;
         }
-        fs::read_dir(directory).ok()
+        let entries = fs::read_dir(directory).ok();
+        self.unreadable |= entries.is_none();
+        entries
     }
 }
 
