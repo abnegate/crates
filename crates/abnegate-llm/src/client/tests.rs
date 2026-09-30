@@ -13,6 +13,7 @@ use wiremock::matchers::method;
 
 use super::LlmClient;
 use super::LlmConfig;
+use super::validate;
 use crate::error::Error;
 use crate::reasoning::Effort;
 use crate::wire::ChatRequest;
@@ -357,18 +358,12 @@ async fn an_error_frame_mid_stream_ends_it_with_a_failure() {
 
 #[test]
 fn a_public_https_host_is_accepted() {
-    assert!(
-        client_for("https://api.openai.com/v1")
-            .validate("https://api.openai.com/v1/chat/completions")
-            .is_ok()
-    );
+    assert!(validate("https://api.openai.com/v1/chat/completions").is_ok());
 }
 
 #[test]
 fn a_non_http_scheme_is_refused() {
-    let error = client_for("file:///etc/passwd")
-        .validate("file:///etc/passwd")
-        .unwrap_err();
+    let error = validate("file:///etc/passwd").unwrap_err();
     assert!(
         matches!(&error, Error::InvalidConfig(message) if message.contains("http or https")),
         "the refusal has to name the scheme rule: {error}"
@@ -377,9 +372,7 @@ fn a_non_http_scheme_is_refused() {
 
 #[test]
 fn credentials_in_the_url_are_refused() {
-    let error = client_for("https://user:pass@api.openai.com/v1")
-        .validate("https://user:pass@api.openai.com/v1")
-        .unwrap_err();
+    let error = validate("https://user:pass@api.openai.com/v1").unwrap_err();
     assert!(
         matches!(&error, Error::InvalidConfig(message) if message.contains("userinfo")),
         "the refusal has to name the userinfo rule: {error}"
@@ -397,7 +390,7 @@ fn the_hosts_a_self_hosted_deployment_runs_on_are_accepted() {
         "http://[::1]:4000",
     ] {
         assert!(
-            client_for(base_url).validate(base_url).is_ok(),
+            validate(base_url).is_ok(),
             "{base_url} is a supported way to reach a self-hosted model server"
         );
     }
@@ -405,11 +398,18 @@ fn the_hosts_a_self_hosted_deployment_runs_on_are_accepted() {
 
 #[test]
 fn a_relative_url_is_refused() {
-    let error = client_for("/v1/chat/completions")
-        .validate("/v1/chat/completions")
-        .unwrap_err();
+    let error = validate("/v1/chat/completions").unwrap_err();
     assert!(
         matches!(&error, Error::InvalidConfig(message) if message.contains("absolute URL")),
         "the refusal has to name the absolute-URL rule: {error}"
     );
+}
+
+#[test]
+fn the_checked_url_is_the_one_handed_back() {
+    let checked = validate("http://gateway:4000/v1/chat/completions")
+        .expect("a compose service host is reachable");
+    assert_eq!(checked.as_str(), "http://gateway:4000/v1/chat/completions");
+    assert_eq!(checked.host_str(), Some("gateway"));
+    assert_eq!(checked.port(), Some(4000));
 }
