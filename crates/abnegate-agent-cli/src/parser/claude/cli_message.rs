@@ -13,6 +13,19 @@ pub struct CliMessage {
     pub usage: Option<CliUsage>,
 }
 
+impl CliMessage {
+    /// The message's text blocks, joined.
+    pub(crate) fn words(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                CliContentBlock::Text { text } => Some(text.as_str()),
+                CliContentBlock::ToolUse { .. } | CliContentBlock::Other => None,
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::CliMessage;
@@ -64,6 +77,22 @@ mod tests {
             }]
         );
         assert_eq!(message.usage.and_then(|usage| usage.output_tokens), Some(6));
+    }
+
+    #[test]
+    fn its_words_are_its_text_blocks_alone() {
+        let message: CliMessage = serde_json::from_str(
+            r#"{"content":[
+                {"type":"text","text":"Reading "},
+                {"type":"tool_use","id":"t1","name":"Read"},
+                {"type":"thinking","thinking":"hmm"},
+                {"type":"text","text":"the file."}
+            ]}"#,
+        )
+        .expect("a message");
+
+        assert_eq!(message.words(), "Reading the file.");
+        assert_eq!(CliMessage::default().words(), "");
     }
 
     #[test]

@@ -3,14 +3,17 @@
 mod cli_content_block;
 mod cli_message;
 mod cli_usage;
+mod credits_refusal;
 mod rate_limit_report;
 mod stream_event;
+mod turn;
 
 pub use crate::parser::claude::cli_content_block::CliContentBlock;
 pub use crate::parser::claude::cli_message::CliMessage;
 pub use crate::parser::claude::cli_usage::CliUsage;
 pub use crate::parser::claude::rate_limit_report::RateLimitReport;
 pub use crate::parser::claude::stream_event::StreamEvent;
+pub use crate::parser::claude::turn::Turn;
 
 use serde_json::Value;
 
@@ -23,21 +26,30 @@ const ENDS_TURN: &str = "result";
 const ASSISTANT: &str = "assistant";
 const TEXT: &str = "text";
 const PARTIAL: &str = "stream_event";
+const PARENT: &str = "parent_tool_use_id";
+
+/// Begins the failure of a turn on a model the signed-in account cannot
+/// spend usage credits on, before claude's own words, which say why and what
+/// the account's owner can do. No retry gets past it.
+pub const CREDITS_REQUIRED: &str = "usage credits required for this model";
+
+/// [`CREDITS_REQUIRED`] for a context longer than the plan covers.
+pub const LONG_CONTEXT_CREDITS_REQUIRED: &str = "usage credits required for this context length";
+
+/// Begins such a refusal instead when claude could not look the account's
+/// usage credits up, followed by its reason in brackets. A later attempt may
+/// get past it.
+pub const CREDITS_UNCONFIRMED: &str = "usage credits could not be confirmed";
 
 /// How deep a content block's own `"type"` sits: in the block, in the
 /// message's `content` array, in the message, in the event.
 const BLOCK_DEPTH: usize = 4;
 
-/// Translate one line of the stream, appending whatever it means.
+/// Translate one line of the stream, appending whatever it means on its
+/// own, as the first line of a [`Turn`]. A run reads its lines through one
+/// [`Turn`], since a line's meaning can hang on the lines before it.
 pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
-    let line = line.trim();
-    if line.is_empty() {
-        return;
-    }
-    match serde_json::from_str::<StreamEvent>(line) {
-        Ok(event) => event.interpret(events),
-        Err(_) => salvage(line, events),
-    }
+    Turn::default().interpret(line, events);
 }
 
 /// Whether `line` is a partial message, which `--include-partial-messages`
@@ -47,10 +59,11 @@ pub fn partial(line: &str) -> bool {
 }
 
 /// Whether an event too long to read, of which only `prefix` is known, is
-/// one the run cannot do without: the result that ends the turn, or a reply
-/// that holds prose or whose first block is not known yet. A reply known to
-/// hold only a tool call or thinking is dropped like a tool result, since the
-/// agent makes the call whether or not it is read here.
+/// one the run cannot do without: the result that ends the turn, or a main
+/// agent's reply that holds prose or whose first block is not known yet. A
+/// reply known to hold only a tool call or thinking is dropped like a tool
+/// result, since the agent makes the call whether or not it is read here,
+/// and so is a subagent's, whose words are never the turn's.
 pub fn essential(prefix: &str) -> bool {
     let types = parser::types(prefix);
     let top = |kind: &str| {
@@ -66,7 +79,9 @@ pub fn essential(prefix: &str) -> bool {
         .filter(|(depth, _)| *depth == BLOCK_DEPTH)
         .map(|(_, kind)| *kind)
         .peekable();
-    top(ASSISTANT) && (blocks.peek().is_none() || blocks.any(|kind| kind == TEXT))
+    top(ASSISTANT)
+        && parser::field(prefix, PARENT).is_none()
+        && (blocks.peek().is_none() || blocks.any(|kind| kind == TEXT))
 }
 
 /// A line that is not a stream event can still be the CLI's final JSON
@@ -92,6 +107,7 @@ mod tests {
     use std::time::Duration;
 
     use super::CliUsage;
+    use super::Turn;
     use super::essential;
     use super::interpret;
     use super::partial;
@@ -106,9 +122,10 @@ mod tests {
 {"type":"result","subtype":"success","is_error":false,"duration_ms":8421,"duration_api_ms":7980,"num_turns":3,"result":"The entry point is empty.","session_id":"6f1","total_cost_usd":0.0412,"usage":{"input_tokens":9,"cache_creation_input_tokens":1200,"cache_read_input_tokens":27700,"output_tokens":77}}"#;
 
     fn interpret_all(sample: &str) -> Vec<AgentEvent> {
+        let mut turn = Turn::default();
         let mut events = Vec::new();
         for line in sample.lines() {
-            interpret(line, &mut events);
+            turn.interpret(line, &mut events);
         }
         events
     }
@@ -233,8 +250,11 @@ mod tests {
         }
     }
 
+    /// The main agent's account of the request a refused window stopped.
+    const REFUSED: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"You've hit your limit"}]},"parent_tool_use_id":null,"is_api_error_message":true}"#;
+
     #[test]
-    fn a_rate_limit_event_with_no_report_at_all_is_a_refusal() {
+    fn a_rate_limit_event_with_no_report_at_all_is_remembered_as_a_refusal() {
         for line in [
             r#"{"type":"rate_limit_event"}"#,
             r#"{"type":"rate_limit_event","rate_limit_info":{}}"#,
@@ -242,29 +262,28 @@ mod tests {
         ] {
             let mut events = Vec::new();
             interpret(line, &mut events);
-
-            let [AgentEvent::Failed(message)] = events.as_slice() else {
-                panic!("expected a refusal for {line}, got {events:?}");
+            let [AgentEvent::Diagnostic(remembered)] = events.as_slice() else {
+                panic!("expected a remembered refusal for {line}, got {events:?}");
             };
-            assert!(message.starts_with("rate limit reached: {"), "{message}");
+            assert!(
+                remembered.starts_with("rate limit reached: {"),
+                "{remembered}"
+            );
+
+            let events = interpret_all(&format!("{line}\n{REFUSED}"));
+            let failures: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    AgentEvent::Failed(message) => Some(message.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let [failure] = failures.as_slice() else {
+                panic!("expected one failure for {line}, got {events:?}");
+            };
+            assert!(failure.starts_with("rate limit reached: {"), "{failure}");
+            assert!(failure.ends_with(": You've hit your limit"), "{failure}");
         }
-    }
-
-    #[test]
-    fn a_refused_request_reads_as_a_rate_limit_to_the_caller() {
-        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"seven_day"}}"#;
-        let mut events = Vec::new();
-        interpret(line, &mut events);
-
-        let [AgentEvent::Failed(message)] = events.as_slice() else {
-            panic!("expected one failure, got {events:?}");
-        };
-        assert!(
-            message.to_ascii_lowercase().contains("rate limit"),
-            "the caller cannot classify {message:?}"
-        );
-        assert!(message.contains("seven_day"));
-        assert!(message.contains("rejected"));
     }
 
     #[test]
@@ -273,10 +292,9 @@ mod tests {
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"exceeded","resetsAt":"2026-02-23T06:00:00Z","rateLimitType":"seven_day","utilization":1.0}}"#,
             r#"{"type":"rate_limit_event","resetsAt":"2026-02-23T06:00:00Z"}"#,
         ] {
-            let mut events = Vec::new();
-            interpret(line, &mut events);
+            let events = interpret_all(&format!("{line}\n{REFUSED}"));
 
-            let [AgentEvent::Failed(message)] = events.as_slice() else {
+            let [AgentEvent::Diagnostic(_), AgentEvent::Failed(message)] = events.as_slice() else {
                 panic!("expected one failure for {line}, got {events:?}");
             };
             assert!(message.starts_with("rate limit reached: {"), "{message}");
@@ -286,14 +304,13 @@ mod tests {
             );
         }
 
-        let mut events = Vec::new();
-        interpret(
-            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1772096400}}"#,
-            &mut events,
-        );
+        let events = interpret_all(&format!(
+            "{}\n{REFUSED}",
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1772096400}}"#
+        ));
         assert!(matches!(
             events.as_slice(),
-            [AgentEvent::Failed(message)] if message.contains(r#""resetsAt":1772096400"#)
+            [AgentEvent::Diagnostic(_), AgentEvent::Failed(message)] if message.contains(r#""resetsAt":1772096400"#)
         ));
     }
 
@@ -472,6 +489,16 @@ mod tests {
         ] {
             assert!(!essential(prefix), "{prefix}");
         }
+    }
+
+    #[test]
+    fn a_subagents_reply_too_long_to_read_is_never_essential() {
+        assert!(!essential(
+            r#"{"type":"assistant","parent_tool_use_id":"toolu_01Agent","message":{"content":[{"type":"text","text":"#
+        ));
+        assert!(essential(
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"#
+        ));
     }
 
     #[test]

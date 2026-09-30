@@ -1,24 +1,10 @@
-use std::time::Duration;
-
-use abnegate_llm::Usage;
 use serde::Deserialize;
 
 use crate::event::AgentEvent;
-use crate::parser::claude::cli_content_block::CliContentBlock;
 use crate::parser::claude::cli_message::CliMessage;
 use crate::parser::claude::cli_usage::CliUsage;
 use crate::parser::claude::rate_limit_report::RateLimitReport;
-
-/// The wording a throttled run is reported with.
-///
-/// A caller recognises a throttled run by the words in the failure, and finds
-/// when to try again in the `"resetsAt"` of the report quoted after them, so
-/// both are load-bearing and not decoration.
-const THROTTLED: &str = "rate limit reached";
-
-const FAILED: &str = "the agent reported a failed run";
-
-const NO_ARGUMENTS: &str = "{}";
+use crate::parser::claude::turn::Turn;
 
 /// One line of `claude --output-format stream-json`.
 ///
@@ -56,6 +42,18 @@ pub enum StreamEvent {
     Assistant {
         #[serde(default)]
         message: Option<CliMessage>,
+        /// The call that started the subagent whose line this is, or `None`
+        /// on the main agent's own line.
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
+        /// Whether the message is the CLI's account of a failed request
+        /// rather than anything the model said.
+        #[serde(default)]
+        is_api_error_message: bool,
+        /// The CLI's own kind for that failure, such as
+        /// `model_requires_usage_credits`.
+        #[serde(default)]
+        api_error: Option<String>,
     },
     #[serde(rename = "user")]
     #[non_exhaustive]
@@ -84,10 +82,11 @@ pub enum StreamEvent {
         #[serde(default)]
         usage: Option<CliUsage>,
     },
-    /// A throttling report. Anything but explicit headroom fails the run,
-    /// a report with no status at all included: the event exists to
-    /// announce a limit being hit, and waiting out a refused run costs far
-    /// more than stopping one.
+    /// A throttling report. Anything but [headroom](RateLimitReport::allowed)
+    /// is a refused window, a report with no status at all included, since
+    /// the event exists to announce a limit being hit. The event names no
+    /// agent, so the window fails the turn only when the main agent's next
+    /// line is a failed request, or the turn's result a failure.
     #[serde(rename = "rate_limit_event")]
     #[non_exhaustive]
     RateLimit {
@@ -103,98 +102,13 @@ pub enum StreamEvent {
 }
 
 impl StreamEvent {
-    /// Append what this event means, whichever of it this crate understands.
+    /// Append what this event means on its own, as the first line of a
+    /// [`Turn`](crate::parser::claude::Turn). A refused window waits for the
+    /// line after it, so here it is only a
+    /// [diagnostic](AgentEvent::Diagnostic).
     pub fn interpret(self, events: &mut Vec<AgentEvent>) {
-        match self {
-            Self::System { session_id, .. } => events.extend(session_id.map(AgentEvent::Session)),
-            Self::Assistant {
-                message: Some(message),
-            } => assistant(message, events),
-            Self::Result {
-                subtype,
-                is_error,
-                result,
-                structured_output,
-                total_cost_usd,
-                turns,
-                session_id,
-                api_milliseconds,
-                usage,
-            } => {
-                events.extend(session_id.map(AgentEvent::Session));
-                events.extend(structured_output.map(AgentEvent::Structured));
-                events.extend(total_cost_usd.map(AgentEvent::Cost));
-                events.extend(
-                    turns
-                        .and_then(|turns| u32::try_from(turns).ok())
-                        .map(AgentEvent::Turns),
-                );
-                events.extend(
-                    api_milliseconds
-                        .and_then(|milliseconds| u64::try_from(milliseconds).ok())
-                        .map(|milliseconds| {
-                            AgentEvent::Latency(Duration::from_millis(milliseconds))
-                        }),
-                );
-                if let Some(usage) = usage {
-                    events.push(AgentEvent::Usage(Usage::from(&usage)));
-                    events.push(AgentEvent::Tokens(usage));
-                }
-                events.push(conclusion(subtype, is_error, result));
-            }
-            Self::RateLimit { report, resets_at } => {
-                let report = report.unwrap_or_default();
-                if !report.allowed() {
-                    events.push(AgentEvent::Failed(throttled(report, resets_at)));
-                }
-            }
-            Self::Assistant { message: None } | Self::User {} | Self::Unknown => {}
-        }
+        Turn::default().read(self, events);
     }
-}
-
-fn assistant(message: CliMessage, events: &mut Vec<AgentEvent>) {
-    for block in message.content {
-        match block {
-            CliContentBlock::Text { text } => events.push(AgentEvent::Text(text)),
-            CliContentBlock::ToolUse { id, name, input } => {
-                let arguments = if input.is_null() {
-                    NO_ARGUMENTS.to_string()
-                } else {
-                    input.to_string()
-                };
-                events.push(AgentEvent::tool(id, name, arguments));
-            }
-            CliContentBlock::Other => {}
-        }
-    }
-    if let Some(usage) = message.usage {
-        events.push(AgentEvent::Usage(Usage::from(&usage)));
-    }
-}
-
-fn conclusion(subtype: Option<String>, is_error: bool, result: Option<String>) -> AgentEvent {
-    let failed = is_error
-        || subtype
-            .as_deref()
-            .is_some_and(|subtype| subtype.starts_with("error"));
-    if !failed {
-        return AgentEvent::finished(subtype);
-    }
-    AgentEvent::Failed(
-        result
-            .filter(|result| !result.trim().is_empty())
-            .or(subtype)
-            .unwrap_or_else(|| FAILED.to_string()),
-    )
-}
-
-fn throttled(mut report: RateLimitReport, resets_at: Option<serde_json::Value>) -> String {
-    if report.resets_at.is_none() {
-        report.resets_at = resets_at;
-    }
-    let quoted = serde_json::to_string(&report).unwrap_or_default();
-    format!("{THROTTLED}: {quoted}")
 }
 
 #[cfg(test)]
@@ -202,6 +116,7 @@ mod tests {
     use serde_json::json;
 
     use super::StreamEvent;
+    use crate::event::AgentEvent;
     use crate::parser::claude::cli_content_block::CliContentBlock;
 
     fn parse(line: &str) -> StreamEvent {
@@ -215,6 +130,7 @@ mod tests {
         );
         let StreamEvent::Assistant {
             message: Some(message),
+            ..
         } = event
         else {
             panic!("unexpected event: {event:?}");
@@ -234,6 +150,7 @@ mod tests {
         );
         let StreamEvent::Assistant {
             message: Some(message),
+            ..
         } = event
         else {
             panic!("unexpected event: {event:?}");
@@ -251,6 +168,7 @@ mod tests {
         );
         let StreamEvent::Assistant {
             message: Some(message),
+            ..
         } = event
         else {
             panic!("unexpected event: {event:?}");
@@ -271,6 +189,7 @@ mod tests {
         );
         let StreamEvent::Assistant {
             message: Some(message),
+            ..
         } = event
         else {
             panic!("unexpected event: {event:?}");
@@ -282,14 +201,50 @@ mod tests {
     fn an_assistant_event_may_carry_no_message_or_no_content() {
         assert_eq!(
             parse(r#"{"type":"assistant"}"#),
-            StreamEvent::Assistant { message: None }
+            StreamEvent::Assistant {
+                message: None,
+                parent_tool_use_id: None,
+                is_api_error_message: false,
+                api_error: None,
+            }
         );
 
         let event = parse(r#"{"type":"assistant","message":{"content":[]}}"#);
         assert!(matches!(
             event,
-            StreamEvent::Assistant { message: Some(ref message) } if message.content.is_empty()
+            StreamEvent::Assistant { message: Some(ref message), .. } if message.content.is_empty()
         ));
+    }
+
+    #[test]
+    fn a_subagents_api_error_line_names_its_parent_and_its_kind() {
+        let event = parse(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Usage credits required."}]},"parent_tool_use_id":"toolu_01Agent","is_api_error_message":true,"api_error":"model_requires_usage_credits"}"#,
+        );
+        let StreamEvent::Assistant {
+            parent_tool_use_id,
+            is_api_error_message,
+            api_error,
+            ..
+        } = event
+        else {
+            panic!("unexpected event: {event:?}");
+        };
+        assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_01Agent"));
+        assert!(is_api_error_message);
+        assert_eq!(api_error.as_deref(), Some("model_requires_usage_credits"));
+    }
+
+    #[test]
+    fn a_lone_refused_window_is_remembered_rather_than_failed() {
+        let mut events = Vec::new();
+        parse(r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}"#)
+            .interpret(&mut events);
+
+        assert!(
+            matches!(events.as_slice(), [AgentEvent::Diagnostic(message)] if message.starts_with("rate limit reached: {")),
+            "{events:?}"
+        );
     }
 
     #[test]

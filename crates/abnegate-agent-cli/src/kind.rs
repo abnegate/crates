@@ -12,6 +12,7 @@ use crate::delivery::Delivery;
 use crate::event::AgentEvent;
 use crate::mcp::McpServer;
 use crate::parser;
+use crate::parser::Turn;
 use crate::settings::CliSettings;
 use crate::settings::READ_ONLY_OPTIONS;
 use crate::settings::READ_ONLY_SWITCHES;
@@ -236,16 +237,21 @@ impl AgentKind {
         }
     }
 
-    /// Translate one output line, appending whatever it means.
+    /// Translate one output line, appending whatever it means on its own, as
+    /// the first line of a [`turn`](AgentKind::turn).
     ///
     /// A line this agent has no opinion about appends nothing rather than
     /// failing: agents add event types between releases, and a stream that
     /// aborted on the first unrecognised line would lose the whole answer.
     pub fn interpret(self, line: &str, events: &mut Vec<AgentEvent>) {
-        match self {
-            Self::Claude => parser::claude::interpret(line, events),
-            Self::Codex => parser::codex::interpret(line, events),
-        }
+        self.turn().interpret(line, events);
+    }
+
+    /// A reader for one turn of this agent's output, through which a run
+    /// reads its lines, since a line's meaning can hang on the lines before
+    /// it.
+    pub fn turn(self) -> Turn {
+        Turn::new(self)
     }
 
     /// Whether an event too long to read, of which only `prefix` is known,
@@ -554,6 +560,10 @@ mod tests {
             agent.interpret(r#"{"type":"something_added_next_release"}"#, &mut events);
             agent.interpret("not json at all", &mut events);
             agent.interpret("", &mut events);
+            let mut turn = agent.turn();
+            turn.interpret(r#"{"type":"something_added_next_release"}"#, &mut events);
+            turn.interpret("not json at all", &mut events);
+            turn.interpret("", &mut events);
             assert!(events.is_empty(), "{agent} reacted to noise");
         }
     }

@@ -38,6 +38,9 @@ pub struct StdoutParseResult {
     /// Events too long to read that the run could do without, such as a
     /// tool result holding an image, which were skipped.
     pub dropped: u64,
+    /// The plan's window the account's usage credits carried the run past,
+    /// when the agent said they did.
+    pub credits: Option<String>,
 }
 
 impl StdoutParseResult {
@@ -61,6 +64,9 @@ impl StdoutParseResult {
             AgentEvent::Turns(turns) => self.turns = Some(turns),
             AgentEvent::Latency(latency) => self.latency = Some(latency),
             AgentEvent::Diagnostic(message) => self.diagnostic = Some(message),
+            AgentEvent::Credits(window) => {
+                self.credits.get_or_insert(window);
+            }
         }
     }
 
@@ -127,6 +133,7 @@ mod tests {
         assert!(result.turns.is_none());
         assert!(result.latency.is_none());
         assert_eq!(result.dropped, 0);
+        assert!(result.credits.is_none());
         assert!(format!("{result:?}").contains("StdoutParseResult"));
     }
 
@@ -247,6 +254,20 @@ mod tests {
             result.failure.as_deref(),
             Some("You have hit your usage limit.")
         );
+    }
+
+    #[test]
+    fn the_first_window_usage_credits_carried_the_run_past_is_kept() {
+        let result: StdoutParseResult = [
+            AgentEvent::Credits("five_hour".to_string()),
+            AgentEvent::Credits("seven_day".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(result.credits.as_deref(), Some("five_hour"));
+        assert!(!result.finished);
+        assert!(result.failure.is_none());
     }
 
     #[test]

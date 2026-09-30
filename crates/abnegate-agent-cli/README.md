@@ -32,6 +32,23 @@ bound secret: each reaches the agent in a generated variable of its environment,
 which its tools and stdio servers can read too, so binding keeps a secret from
 every other remote server, not from them.
 
+## Claude turns
+
+A Claude run reads its stream through one `Turn` (from `AgentKind::turn`), since
+a line's meaning can hang on the lines before it. Claude reports a refused plan
+window on a `rate_limit_event` that names no agent, so the window is remembered
+and fails the turn, as `rate limit reached: {report}: <Claude's words>`, only
+when the main agent's next line is a failed request or the result a failure. A
+stream that ends on the window alone still fails with it. A request the
+account's usage credits carry past the window is headroom, and the turn is
+logged once at info and named in `StdoutParseResult::credits`. A model or a
+context the account cannot fund fails in Claude's own words after
+`CREDITS_REQUIRED` or `LONG_CONTEXT_CREDITS_REQUIRED`, or after
+`CREDITS_UNCONFIRMED` when Claude could not look the credits up. A subagent's
+lines contribute only the tools it calls: its words, token counts and refusals
+stay in its own conversation, and the main agent answers without them. Nothing
+names a failure by the words it is written in.
+
 ## Features
 
 None.

@@ -82,6 +82,16 @@
 //! reports what went wrong in the agent's own words, with any credential
 //! scrubbed out.
 //!
+//! A Claude turn's failure begins with a marker ahead of those words when
+//! Claude says why it refused the request: `rate limit reached` and the CLI's
+//! own report for a refused plan window, [`CREDITS_REQUIRED`] or
+//! [`LONG_CONTEXT_CREDITS_REQUIRED`] for a model or a context the account's
+//! usage credits cannot fund, and [`CREDITS_UNCONFIRMED`] for such a refusal
+//! Claude could not look the credits up for. A subagent's refusal is never
+//! the turn's: Claude hands it to the main agent, which answers without it.
+//! A turn the account's usage credits carry past the plan's window is logged
+//! once, at info, and named in [`StdoutParseResult::credits`].
+//!
 //! # Platform support
 //!
 //! Unix only, like the process-group handling it borrows from
@@ -136,9 +146,13 @@ pub use crate::mcp::McpConfigError;
 pub use crate::mcp::McpServer;
 pub use crate::mcp::McpTransport;
 pub use crate::overlong_error::OverlongError;
+pub use crate::parser::Turn;
+pub use crate::parser::claude::CREDITS_REQUIRED;
+pub use crate::parser::claude::CREDITS_UNCONFIRMED;
 pub use crate::parser::claude::CliContentBlock;
 pub use crate::parser::claude::CliMessage;
 pub use crate::parser::claude::CliUsage;
+pub use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
 pub use crate::parser::claude::RateLimitReport;
 pub use crate::parser::claude::StreamEvent;
 pub use crate::provider::CliProvider;
