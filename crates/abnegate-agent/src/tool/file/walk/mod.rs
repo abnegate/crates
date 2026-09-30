@@ -22,10 +22,6 @@ pub(super) const MAXIMUM_WALK_DEPTH: usize = 64;
 /// Most entries one walk looks at before it gives up.
 pub(super) const MAXIMUM_WALK_ENTRIES: usize = 100_000;
 
-/// Longest one walk runs, kept inside the default tool timeout so a walk
-/// that runs out of time still reports what it found.
-pub(super) const WALK_TIME_LIMIT: Duration = Duration::from_secs(20);
-
 pub(super) const OUT_OF_TIME: &str = "out of time";
 
 const TOO_MANY_ENTRIES: &str = "too many entries";
@@ -174,7 +170,7 @@ mod tests {
         root: &Path,
         context: &ToolContext,
     ) -> (Vec<String>, Option<&'static str>) {
-        let mut walk = Walk::new(WALK_TIME_LIMIT, context);
+        let mut walk = Walk::new(context.search_timeout, context);
         let mut seen = Vec::new();
         walk.run(root, |entry, _| {
             seen.push(

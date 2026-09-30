@@ -60,6 +60,12 @@ async fn list() -> Result<(), RunError> {
 `NoOpCallback` approves nothing that needs confirming: the model can read, list
 and search, and any write or command it asks for is refused.
 
+A search or a listing walks for the context's `search_timeout`, 20 seconds
+unless `ToolContext::with_search_timeout` sets another, and then reports what
+it found so far, marked as stopped early. `search_code` shows a match only when
+the file it is in lies beneath the searched directory and stays beneath the
+working directory once its links are resolved.
+
 The model is named when the agent is built, so one provider can serve several
 agents. When the provider stops on custom sequences or asks for reasoning, give
 compaction a provider that does neither with `Agent::with_summarizer`: a summary

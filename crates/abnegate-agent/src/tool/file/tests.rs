@@ -940,6 +940,63 @@ async fn list_files_does_not_follow_a_symlink_out_of_cwd() {
     assert!(!output.contains("id_rsa"), "the walk left cwd: {output}");
 }
 
+/// A missing path outside cwd used to be answered with "Path does not
+/// exist", so a call could probe the host for paths it was never allowed
+/// to list. The refusal now comes before the answer about existence.
+#[tokio::test]
+async fn list_files_refuses_before_saying_whether_a_path_exists() {
+    let outside = tempdir().unwrap();
+    let inside = tempdir().unwrap();
+    let context = create_test_context(inside.path());
+
+    for path in [
+        outside.path().join("nothing-here"),
+        PathBuf::from("../../../../../../nothing-here"),
+    ] {
+        let error = ListFilesTool
+            .execute(serde_json::json!({"path": path}), &context)
+            .await
+            .expect_err("a missing directory outside cwd");
+        assert!(
+            error.to_string().contains("escapes working directory"),
+            "{}: {error}",
+            path.display()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_walk_stops_at_the_limit_its_context_sets() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join("found.rs"), "needle").unwrap();
+    let context = create_test_context(directory.path()).with_search_timeout(Duration::ZERO);
+
+    let listed = ListFilesTool
+        .execute(serde_json::json!({"path": "."}), &context)
+        .await
+        .expect("a listing out of time still answers")
+        .output
+        .unwrap();
+    let (_, stopped) = search_tree(
+        &context.working_directory,
+        "needle",
+        true,
+        MAXIMUM_SEARCH_RESULTS,
+        &context,
+    );
+
+    assert!(
+        listed.contains("listing stopped early: out of time"),
+        "{listed}"
+    );
+    assert_eq!(stopped, Some("out of time"));
+    assert_eq!(
+        ListFilesTool.timeout(&context),
+        crate::tool::TIMEOUT_SLACK,
+        "the listing's outer bound ignores its context"
+    );
+}
+
 /// Run `tool` on a thread of its own and give up on it after `limit`.
 ///
 /// A walk that never ends also never yields, so a timeout on the same
@@ -2332,6 +2389,41 @@ async fn a_denied_directory_inside_cwd_stays_denied() {
         .output
         .unwrap();
     assert!(!listed.contains("auth.json"), "{listed}");
+}
+
+/// `rg` searches the whole tree it is handed, so a match inside a denied
+/// directory under the searched one reached the model unless each file it
+/// named was judged the way every other file tool judges a path.
+#[tokio::test]
+async fn a_denied_file_stays_out_of_a_search_around_it() {
+    let shared = shared();
+    fs::write(shared.home.join("leak.rs"), SECRET).unwrap();
+    fs::write(shared.workspace.join("own.rs"), SECRET).unwrap();
+    let context = ToolContext {
+        denied: vec![shared.state.clone()],
+        environment: ToolContext::default().environment,
+        ..create_test_context(&shared.root)
+    };
+
+    let searched = SearchCodeTool
+        .execute(serde_json::json!({"pattern": SECRET}), &context)
+        .await
+        .expect("cwd searches")
+        .output
+        .unwrap();
+    assert!(searched.contains("own.rs"), "{searched}");
+    assert!(!searched.contains("leak.rs"), "{searched}");
+
+    let (walked, _) = search_tree(
+        &context.working_directory,
+        SECRET,
+        true,
+        MAXIMUM_SEARCH_RESULTS,
+        &context,
+    );
+    let walked = walked.join("\n");
+    assert!(walked.contains("own.rs"), "{walked}");
+    assert!(!walked.contains("leak.rs"), "{walked}");
 }
 
 #[tokio::test]

@@ -1,6 +1,7 @@
 mod parameters;
 
 use std::path::Path;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use parameters::ListFilesParameters;
@@ -8,9 +9,10 @@ use serde_json::Value;
 use serde_json::json;
 
 use super::confine;
+use super::resolve;
 use super::walk::Visit;
-use super::walk::WALK_TIME_LIMIT;
 use super::walk::Walk;
+use crate::tool::TIMEOUT_SLACK;
 use crate::tool::Tool;
 use crate::tool::ToolContext;
 use crate::tool::ToolError;
@@ -59,6 +61,10 @@ impl Tool for ListFilesTool {
         })
     }
 
+    fn timeout(&self, context: &ToolContext) -> Duration {
+        context.search_timeout + TIMEOUT_SLACK
+    }
+
     async fn execute(
         &self,
         parameters: Value,
@@ -67,19 +73,14 @@ impl Tool for ListFilesTool {
         let parameters: ListFilesParameters = serde_json::from_value(parameters)
             .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
-        let full_path = context.working_directory.join(&parameters.path);
-
+        let full_path = resolve(&context.working_directory.join(&parameters.path));
+        confine(&full_path, context)?;
         if !full_path.exists() {
             return Err(ToolError::Execution(format!(
                 "Path does not exist: {}",
                 parameters.path
             )));
         }
-
-        let full_path = full_path
-            .canonicalize()
-            .map_err(|error| ToolError::Execution(format!("Cannot resolve path: {error}")))?;
-        confine(&full_path, context)?;
 
         let context = context.clone();
         tokio::task::spawn_blocking(move || list(&full_path, &parameters, &context))
@@ -89,7 +90,7 @@ impl Tool for ListFilesTool {
 }
 
 /// Every entry under `root` that `parameters` asks for, capped at
-/// [`LIST_FILES_CAP`].
+/// [`LIST_FILES_CAP`], for as long as the context's `search_timeout` allows.
 fn list(
     root: &Path,
     parameters: &ListFilesParameters,
@@ -97,7 +98,7 @@ fn list(
 ) -> Result<ToolResult, ToolError> {
     let mut files = Vec::new();
     let mut total = 0;
-    let mut walk = Walk::new(WALK_TIME_LIMIT, context);
+    let mut walk = Walk::new(context.search_timeout, context);
     walk.run(root, |entry, file_type| {
         let path = entry.path();
         let relative = path.strip_prefix(root).unwrap_or(&path).display();

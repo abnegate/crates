@@ -31,9 +31,10 @@ pub struct ToolContext {
     pub maximum_file_size: usize,
     /// How long a command runs when its call names no limit of its own.
     pub command_timeout: Duration,
-    /// How long `search_code` searches before it returns the matches it has,
-    /// marked as stopped early. Twenty seconds by default, inside the default
-    /// [`command_timeout`](Self::command_timeout).
+    /// How long `search_code` or `list_files` walks, or waits on `rg`, before
+    /// it reports what it found so far as stopped early. Twenty seconds by
+    /// default. The tools' outer bound runs past it, so a search out of time
+    /// still answers.
     pub search_timeout: Duration,
     /// Whether tools may act outside `working_directory`.
     ///
@@ -99,7 +100,7 @@ impl ToolContext {
         self
     }
 
-    /// The same context, giving `search_code` `timeout` to search in.
+    /// The same context, stopping a search or a listing after `timeout`.
     ///
     /// ```
     /// use std::time::Duration;
