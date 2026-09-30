@@ -30,6 +30,18 @@ impl Group {
         }
     }
 
+    /// Send the group its first SIGKILL before returning, and repeat it from
+    /// a thread of its own, keeping the group to be killed again: what a
+    /// drop sends when the rest of its cleanup may never get to run.
+    #[cfg(feature = "mcp")]
+    pub(crate) fn kill_now(&self) {
+        if let Some(leader) = &self.leader
+            && let Err(error) = leader.kill()
+        {
+            tracing::warn!(group = leader.pgid(), %error, "Could not kill a process group");
+        }
+    }
+
     /// Kill every process still in the group, resolving once the kill has
     /// stopped repeating itself, so a leader reaped next is reaped only after
     /// the whole kill has landed. Later calls do nothing.
