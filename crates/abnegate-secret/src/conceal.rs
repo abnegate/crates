@@ -67,15 +67,38 @@ fn unechoed<'a>(word: &'a str, key: &str) -> &'a str {
     let (Some(first), Some(last)) = (word.find(MASK), word.rfind(MASK)) else {
         return word;
     };
-    let prefix = word[..first].trim_start_matches(|character: char| !character.is_alphanumeric());
-    let suffix = word[last + MASK.len_utf8()..]
-        .trim_end_matches(|character: char| !character.is_alphanumeric());
-    let echoes = |part: &str| part.len() >= MINIMUM_ECHO;
-    if (echoes(prefix) && key.starts_with(prefix)) || (echoes(suffix) && key.ends_with(suffix)) {
+    let prefix = &word[..first];
+    let suffix = &word[last + MASK.len_utf8()..];
+    if leading(prefix).any(|run| key.starts_with(run))
+        || trailing(suffix).any(|run| key.ends_with(run))
+    {
         REDACTED
     } else {
         word
     }
+}
+
+fn leading(prefix: &str) -> impl Iterator<Item = &str> {
+    let unquoted = prefix.trim_start_matches(|character: char| !character.is_alphanumeric());
+    prefix
+        .char_indices()
+        .map(|(start, _)| &prefix[start..])
+        .take_while(move |run| run.len() >= unquoted.len())
+        .filter(|run| echoes(run))
+}
+
+fn trailing(suffix: &str) -> impl Iterator<Item = &str> {
+    let unquoted = suffix.trim_end_matches(|character: char| !character.is_alphanumeric());
+    suffix
+        .char_indices()
+        .map(|(end, character)| &suffix[..end + character.len_utf8()])
+        .rev()
+        .take_while(move |run| run.len() >= unquoted.len())
+        .filter(|run| echoes(run))
+}
+
+fn echoes(run: &str) -> bool {
+    run.len() >= MINIMUM_ECHO
 }
 
 #[cfg(test)]
@@ -102,6 +125,24 @@ mod tests {
             assert!(!concealed.contains(KEY), "{concealed}");
             assert!(!concealed.contains("wxyz"), "{concealed}");
             assert!(!concealed.contains("sk-proj-Ab"), "{concealed}");
+            assert!(concealed.contains(REDACTED), "{concealed}");
+        }
+    }
+
+    #[test]
+    fn an_echo_keeps_the_punctuation_the_key_starts_or_ends_with() {
+        let key = "_sk-proj-abc123wxyz_";
+
+        for reported in [
+            "****wxyz_",
+            "rejected ****wxyz_.",
+            "\"_sk-p****\"",
+            "(_sk-p****)",
+        ] {
+            let concealed = conceal(reported, key);
+
+            assert!(!concealed.contains("wxyz"), "{concealed}");
+            assert!(!concealed.contains("_sk-p"), "{concealed}");
             assert!(concealed.contains(REDACTED), "{concealed}");
         }
     }
