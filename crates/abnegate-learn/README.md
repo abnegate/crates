@@ -2,12 +2,15 @@
 
 In-memory trial memory. `Memory` records what was tried and how it turned out,
 finds similar past trials by cosine similarity on caller-supplied embeddings,
-and turns those neighbours into avoid/context suggestions the next round can
-read. Persistence and embedding stay in the application: this crate is the
-mechanism.
+and turns those neighbours into avoid/context/instruction suggestions the next
+round can read.
 
-The donor is claudear's feedback loop (`FeedbackAnalyzer`, `OutcomeTracker`,
-`LogExtractor`) with the issue/PR types left behind.
+Persistence and embedding stay in the application: implement [`Archive`] and
+[`Embedder`] against the host store and model. This crate is the mechanism.
+
+A host maps its own outcomes onto [`Verdict`], supplies embeddings, and reads
+[`Digest`] entries or [`Advisor`] suggestions. Application types stay in the
+host.
 
 ## Features
 
@@ -44,10 +47,18 @@ sees its own failures and the other does not have to.
 (`learn_failed`, `learn_avoid_0`, `learn_cluster_0_strategy`, …). `as_prompt`
 renders the same digest as text for a model.
 
+Hydrate with [`Trial::from_input`](https://docs.rs/abnegate-learn/latest/abnegate_learn/struct.Trial.html#method.from_input)
+and [`Memory::load`](https://docs.rs/abnegate-learn/latest/abnegate_learn/struct.Memory.html#method.load),
+or implement `Archive` and call `Memory::restore`. Classify skip reasons with
+`ErrorClass::classify`. Parse attempt logs with `Fingerprint::parse`, passing
+the host's own action names.
+
 ## Moving from an in-house feedback module
 
 - Outcomes are [`Verdict`] values (`Success`, `Partial`, `Failure`, `Skip`,
   `Empty`), not application enums such as merged/closed PRs.
-- Embeddings are supplied on the trial. This crate does not call an embedder.
-- There is no store. A host that wants durability hydrates [`Memory::load`]
-  from its own database and records each new trial as it happens.
+- Embeddings are supplied on the trial, or through an [`Embedder`] the host
+  implements. This crate does not load a model.
+- There is no store. A host that wants durability implements [`Archive`] or
+  hydrates [`Memory::load`] from its own database and records each new trial
+  as it happens.

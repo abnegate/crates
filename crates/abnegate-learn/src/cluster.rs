@@ -4,7 +4,7 @@ use crate::trial::Trial;
 use crate::verdict::Verdict;
 
 /// A group of trials that failed the same way.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Cluster {
     /// Stable key for the group.

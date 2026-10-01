@@ -5,7 +5,7 @@ use crate::kind::SuggestionKind;
 use crate::suggestion::Suggestion;
 
 /// Scoped picture of what already failed, for the next round.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Digest {
     /// Suggestions drawn from similar trials.

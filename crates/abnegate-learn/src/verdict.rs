@@ -5,7 +5,8 @@
 /// [`is_positive`](Self::is_positive) is success or partial progress.
 /// [`is_negative`](Self::is_negative) is a failure, a skip, or an empty result
 /// the next round should not blindly repeat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Verdict {
     /// The attempt produced the result it was after.
@@ -85,5 +86,15 @@ mod tests {
         assert!(Verdict::Success.is_positive());
         assert!(Verdict::Skip.is_negative());
         assert!(!Verdict::Empty.is_positive());
+    }
+
+    #[test]
+    fn serde_uses_the_snake_case_label() {
+        let json = serde_json::to_string(&Verdict::Skip).unwrap();
+        assert_eq!(json, "\"skip\"");
+        assert_eq!(
+            serde_json::from_str::<Verdict>("\"skip\"").unwrap(),
+            Verdict::Skip
+        );
     }
 }

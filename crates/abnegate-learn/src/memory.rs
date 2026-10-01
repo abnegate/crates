@@ -3,21 +3,26 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::advisor::Advisor;
+use crate::archive::Archive;
 use crate::cluster::Cluster;
 use crate::config::Config;
 use crate::digest::Digest;
+use crate::embedder::Embedder;
+use crate::error::Result;
 use crate::similar::SimilarTrial;
 use crate::similarity::cosine_similarity;
 use crate::suggestion::Suggestion;
 use crate::trial::Trial;
 use crate::trial_input::TrialInput;
+use crate::verdict::Verdict;
 
 /// In-memory trial store.
 ///
-/// Record each attempt, hydrate from a host database with [`load`](Self::load),
-/// and ask [`digest`](Self::digest) for the scoped picture of what already
-/// failed. Similarity uses embeddings the host attaches; a trial with no
-/// embedding still contributes to clusters and the failed-strategy list.
+/// Record each attempt, hydrate from a host database with [`load`](Self::load)
+/// or [`restore`](Self::restore), and ask [`digest`](Self::digest) for the
+/// scoped picture of what already failed. Similarity uses embeddings the host
+/// attaches; a trial with no embedding still contributes to clusters and the
+/// failed-strategy list.
 #[derive(Debug, Clone)]
 pub struct Memory {
     trials: Vec<Trial>,
@@ -52,6 +57,20 @@ impl Memory {
         &self.config
     }
 
+    /// Drop every trial and reset ids.
+    pub fn clear(&mut self) {
+        self.trials.clear();
+        self.next_id = 1;
+    }
+
+    /// Replace every trial with `trials`.
+    ///
+    /// The next [`record`](Self::record) id is one past the highest loaded id.
+    pub fn replace(&mut self, trials: impl IntoIterator<Item = Trial>) {
+        self.clear();
+        self.load(trials);
+    }
+
     /// Append previously recorded trials, such as rows loaded from a database.
     ///
     /// The next [`record`](Self::record) id is one past the highest loaded id.
@@ -62,12 +81,26 @@ impl Memory {
         }
     }
 
+    /// Replace in-memory trials with whatever `archive` has stored.
+    pub fn restore(&mut self, archive: &dyn Archive) -> Result<()> {
+        self.replace(archive.load()?);
+        Ok(())
+    }
+
+    /// Persist every in-memory trial through `archive`.
+    pub fn persist(&self, archive: &mut dyn Archive) -> Result<()> {
+        for trial in &self.trials {
+            archive.save(trial)?;
+        }
+        Ok(())
+    }
+
     /// Record `input` and return its id.
     ///
     /// [`TrialInput::with_id`] keeps a host-assigned id. Otherwise the next
     /// id in this memory is used. A zero `recorded_at` is replaced with the
     /// current unix seconds.
-    pub fn record(&mut self, input: TrialInput) -> i64 {
+    pub fn record(&mut self, mut input: TrialInput) -> i64 {
         let id = match input.id {
             Some(id) if id > 0 => {
                 if id >= self.next_id {
@@ -81,24 +114,39 @@ impl Memory {
                 id
             }
         };
-        let recorded_at = if input.recorded_at == 0 {
-            unix_seconds()
-        } else {
-            input.recorded_at
-        };
-        self.trials.push(Trial::from_parts(
-            id,
-            input.scope,
-            input.strategy,
-            input.action,
-            input.verdict,
-            input.summary,
-            input.error,
-            input.lesson,
-            input.embedding,
-            recorded_at,
-        ));
+        input.id = Some(id);
+        if input.recorded_at == 0 {
+            input.recorded_at = unix_seconds();
+        }
+        self.trials.push(Trial::from_input(input));
         id
+    }
+
+    /// Record `input` after embedding its text when no vector was supplied.
+    pub fn record_embedded(
+        &mut self,
+        mut input: TrialInput,
+        embedder: &dyn Embedder,
+    ) -> Result<i64> {
+        if input.embedding.is_none() {
+            let text = Trial::from_input(input.clone()).embed_text();
+            if !text.is_empty() {
+                let mut vectors = embedder.embed(&[&text])?;
+                if let Some(vector) = vectors.pop() {
+                    input = input.with_embedding(vector);
+                }
+            }
+        }
+        Ok(self.record(input))
+    }
+
+    /// Record `input` and persist the resulting trial through `archive`.
+    pub fn record_into(&mut self, input: TrialInput, archive: &mut dyn Archive) -> Result<i64> {
+        let id = self.record(input);
+        if let Some(trial) = self.get(id) {
+            archive.save(trial)?;
+        }
+        Ok(id)
     }
 
     /// Attach `embedding` to the trial `id`, if it exists.
@@ -109,6 +157,20 @@ impl Memory {
         if let Some(trial) = self.trials.iter_mut().find(|trial| trial.id == id) {
             trial.embedding = Some(embedding);
         }
+    }
+
+    /// Attach `embedding` to the trial `id` and persist it through `archive`.
+    pub fn attach_embedding_into(
+        &mut self,
+        id: i64,
+        embedding: Vec<f32>,
+        archive: &mut dyn Archive,
+    ) -> Result<()> {
+        self.attach_embedding(id, embedding);
+        if let Some(vector) = self.get(id).and_then(|trial| trial.embedding.as_deref()) {
+            archive.save_embedding(id, vector)?;
+        }
+        Ok(())
     }
 
     /// Attach `lesson` to the trial `id`, if it exists.
@@ -122,6 +184,41 @@ impl Memory {
         }
     }
 
+    /// Attach `lesson` to the trial `id` and persist it through `archive`.
+    pub fn attach_lesson_into(
+        &mut self,
+        id: i64,
+        lesson: impl Into<String>,
+        archive: &mut dyn Archive,
+    ) -> Result<()> {
+        let lesson = lesson.into();
+        self.attach_lesson(id, lesson.clone());
+        if !lesson.is_empty() {
+            archive.save_lesson(id, &lesson)?;
+        }
+        Ok(())
+    }
+
+    /// Embed every trial that has no vector yet. Returns how many were filled.
+    pub fn embed_missing(&mut self, embedder: &dyn Embedder) -> Result<usize> {
+        let missing: Vec<(i64, String)> = self
+            .trials
+            .iter()
+            .filter(|trial| trial.embedding.is_none())
+            .map(|trial| (trial.id, trial.embed_text()))
+            .collect();
+        if missing.is_empty() {
+            return Ok(0);
+        }
+        let texts: Vec<&str> = missing.iter().map(|(_, text)| text.as_str()).collect();
+        let vectors = embedder.embed(&texts)?;
+        let filled = missing.len().min(vectors.len());
+        for ((id, _), vector) in missing.into_iter().zip(vectors) {
+            self.attach_embedding(id, vector);
+        }
+        Ok(filled)
+    }
+
     /// The trial `id`, when it exists.
     pub fn get(&self, id: i64) -> Option<&Trial> {
         self.trials.iter().find(|trial| trial.id == id)
@@ -132,11 +229,39 @@ impl Memory {
         &self.trials
     }
 
+    /// How many trials are stored.
+    pub fn len(&self) -> usize {
+        self.trials.len()
+    }
+
+    /// Whether no trials have been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.trials.is_empty()
+    }
+
     /// Trials in `scope`, oldest first.
     pub fn in_scope(&self, scope: &str) -> Vec<&Trial> {
         self.trials
             .iter()
             .filter(|trial| trial.scope == scope)
+            .collect()
+    }
+
+    /// Trials with `verdict`, optionally restricted to `scope`.
+    pub fn by_verdict(&self, verdict: Verdict, scope: Option<&str>) -> Vec<&Trial> {
+        self.trials
+            .iter()
+            .filter(|trial| trial.verdict == verdict)
+            .filter(|trial| scope.is_none_or(|scope| trial.scope == scope))
+            .collect()
+    }
+
+    /// Trials with a positive verdict, optionally restricted to `scope`.
+    pub fn positive(&self, scope: Option<&str>) -> Vec<&Trial> {
+        self.trials
+            .iter()
+            .filter(|trial| trial.verdict.is_positive())
+            .filter(|trial| scope.is_none_or(|scope| trial.scope == scope))
             .collect()
     }
 
@@ -172,6 +297,11 @@ impl Memory {
     /// Neighbours of `embedding` restricted to `scope`.
     pub fn similar_in_scope(&self, scope: &str, embedding: &[f32]) -> Vec<SimilarTrial> {
         self.similar_filtered(embedding, |trial| trial.scope == scope)
+    }
+
+    /// Neighbours of `embedding` excluding the trial `id`.
+    pub fn similar_except(&self, embedding: &[f32], id: i64) -> Vec<SimilarTrial> {
+        self.similar_filtered(embedding, |trial| trial.id != id)
     }
 
     /// Suggestions from neighbours of `embedding`.
@@ -369,17 +499,12 @@ mod tests {
     #[test]
     fn load_keeps_host_ids_and_the_next_record_does_not_collide() {
         let mut memory = Memory::new();
-        memory.load([Trial::from_parts(
-            40,
-            "lab".into(),
-            "fuzz".into(),
-            String::new(),
-            Verdict::Skip,
-            String::new(),
-            Some("missing".into()),
-            None,
-            None,
-            1,
+        memory.load([Trial::from_input(
+            TrialInput::new("lab", "fuzz")
+                .with_id(40)
+                .with_verdict(Verdict::Skip)
+                .with_error("missing")
+                .with_recorded_at(1),
         )]);
         let id = memory.record(TrialInput::new("lab", "jit").with_verdict(Verdict::Empty));
         assert_eq!(id, 41);
@@ -387,8 +512,69 @@ mod tests {
     }
 
     #[test]
+    fn replace_clears_previous_trials() {
+        let mut memory = Memory::new();
+        memory.record(TrialInput::new("lab", "fuzz").with_verdict(Verdict::Skip));
+        memory.replace([]);
+        assert!(memory.all().is_empty());
+        assert_eq!(
+            memory.record(TrialInput::new("lab", "jit").with_verdict(Verdict::Empty)),
+            1
+        );
+    }
+
+    #[test]
+    fn by_verdict_and_positive_filter_scope() {
+        let mut memory = Memory::new();
+        memory.record(
+            TrialInput::new("lab", "fuzz")
+                .with_verdict(Verdict::Success)
+                .with_embedding(vec![1.0, 0.0]),
+        );
+        memory.record(
+            TrialInput::new("lab", "jit")
+                .with_verdict(Verdict::Failure)
+                .with_embedding(vec![0.9, 0.1]),
+        );
+        assert_eq!(memory.positive(Some("lab")).len(), 1);
+        assert_eq!(memory.by_verdict(Verdict::Failure, Some("lab")).len(), 1);
+        assert_eq!(memory.similar_except(&[1.0, 0.0], 1).len(), 1);
+    }
+
+    #[test]
     fn enhance_leaves_the_base_prompt_when_nothing_is_similar() {
         let memory = Memory::new();
         assert_eq!(memory.enhance("try fuzz", &[1.0, 0.0]), "try fuzz");
+    }
+
+    #[test]
+    fn success_rate_and_common_errors_are_scoped() {
+        let mut memory = Memory::new();
+        memory.record(
+            TrialInput::new("lab", "fuzz")
+                .with_verdict(Verdict::Success)
+                .with_error("none"),
+        );
+        memory.record(
+            TrialInput::new("lab", "jit")
+                .with_verdict(Verdict::Skip)
+                .with_error("reprl-unavailable"),
+        );
+        memory.record(
+            TrialInput::new("lab", "sanitizer")
+                .with_verdict(Verdict::Skip)
+                .with_error("reprl-unavailable"),
+        );
+        memory.record(
+            TrialInput::new("other", "boot")
+                .with_verdict(Verdict::Failure)
+                .with_error("blocked"),
+        );
+        assert_eq!(memory.len(), 4);
+        assert!(!memory.is_empty());
+        assert!((memory.success_rate(Some("lab")) - 1.0 / 3.0).abs() < 1e-9);
+        assert_eq!(memory.success_rate(Some("missing")), 0.0);
+        let errors = memory.common_errors(Some("lab"), 1);
+        assert_eq!(errors, vec![("reprl-unavailable".to_string(), 2)]);
     }
 }

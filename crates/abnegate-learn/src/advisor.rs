@@ -5,7 +5,7 @@ use crate::kind::SuggestionKind;
 use crate::similar::SimilarTrial;
 use crate::suggestion::Suggestion;
 
-/// Turns similar trials into avoid/context/warning suggestions.
+/// Turns similar trials into avoid/context/instruction/warning suggestions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Advisor {
     config: Config,
@@ -48,6 +48,12 @@ impl Advisor {
                 suggestions.push(Suggestion::new(
                     SuggestionKind::Context,
                     format!("{} succeeded. Learning: {lesson}", item.trial.strategy),
+                    item.score,
+                    vec![item.trial.id],
+                ));
+                suggestions.push(Suggestion::new(
+                    SuggestionKind::Instruction,
+                    format!("Apply: {lesson}"),
                     item.score,
                     vec![item.trial.id],
                 ));
@@ -169,6 +175,30 @@ mod tests {
                 .iter()
                 .any(|item| item.kind == SuggestionKind::Avoid
                     && item.text.contains("webkit.fuzz"))
+        );
+    }
+
+    #[test]
+    fn successful_lessons_become_context_and_instruction() {
+        let mut memory = Memory::new();
+        memory.record(
+            TrialInput::new("src", "issue-1")
+                .with_verdict(Verdict::Success)
+                .with_lesson("check token expiration")
+                .with_embedding(vec![1.0, 0.0]),
+        );
+        let suggestions = Advisor::new().suggestions(&memory.similar(&[1.0, 0.0]));
+        assert!(
+            suggestions
+                .iter()
+                .any(|item| item.kind == SuggestionKind::Context
+                    && item.text.contains("token expiration"))
+        );
+        assert!(
+            suggestions
+                .iter()
+                .any(|item| item.kind == SuggestionKind::Instruction
+                    && item.text.contains("Apply: check token expiration"))
         );
     }
 }

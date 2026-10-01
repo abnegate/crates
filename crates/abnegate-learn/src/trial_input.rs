@@ -15,6 +15,7 @@ pub struct TrialInput {
     pub(crate) error: Option<String>,
     pub(crate) lesson: Option<String>,
     pub(crate) embedding: Option<Vec<f32>>,
+    pub(crate) tags: Vec<String>,
     pub(crate) recorded_at: i64,
 }
 
@@ -31,6 +32,7 @@ impl TrialInput {
             error: None,
             lesson: None,
             embedding: None,
+            tags: Vec::new(),
             recorded_at: 0,
         }
     }
@@ -87,6 +89,12 @@ impl TrialInput {
         self
     }
 
+    /// Keyword tags for this trial.
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
+    }
+
     /// Unix seconds when the trial happened. Zero lets
     /// [`Memory::record`](crate::Memory::record) stamp the current time.
     pub fn with_recorded_at(mut self, recorded_at: i64) -> Self {
@@ -108,5 +116,6 @@ mod tests {
         assert!(input.error.is_none());
         assert!(input.lesson.is_none());
         assert!(input.embedding.is_none());
+        assert!(input.tags.is_empty());
     }
 }

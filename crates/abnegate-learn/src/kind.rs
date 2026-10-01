@@ -1,7 +1,10 @@
 //! Kind of suggestion drawn from similar trials.
 
 /// Kind of suggestion drawn from similar trials.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SuggestionKind {
     /// What worked on a similar attempt.

@@ -134,6 +134,11 @@ dependencies = [
 [[package]]
 name = "abnegate-learn"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "abnegate-llm"

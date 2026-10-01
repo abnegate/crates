@@ -2,15 +2,15 @@
 
 const SIMILARITY_FLOOR: f64 = 0.1;
 const SIMILAR_COUNT: usize = 5;
-const SUGGESTION_COUNT: usize = 3;
+const SUGGESTION_COUNT: usize = 8;
 
 /// Limits for similarity search and the digest it feeds.
 ///
 /// Built with [`new`](Self::new) or [`Default`], then `with_*`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Config {
-    /// Lowest cosine score that still counts as similar, in `0.0..=1.0`.
+    /// Lowest cosine score that still counts as similar, in `-1.0..=1.0`.
     pub minimum_similarity: f64,
     /// Most similar trials kept for suggestions.
     pub similar_limit: usize,
@@ -25,7 +25,7 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Default floor `0.1`, five similar trials, three suggestions.
+    /// Default floor `0.1`, five similar trials, eight suggestions.
     pub fn new() -> Self {
         Self {
             minimum_similarity: SIMILARITY_FLOOR,
@@ -34,9 +34,9 @@ impl Config {
         }
     }
 
-    /// This config with `minimum_similarity` held to `0.0..=1.0`.
+    /// This config with `minimum_similarity` held to `-1.0..=1.0`.
     pub fn with_minimum_similarity(mut self, minimum_similarity: f64) -> Self {
-        self.minimum_similarity = minimum_similarity.clamp(0.0, 1.0);
+        self.minimum_similarity = minimum_similarity.clamp(-1.0, 1.0);
         self
     }
 
@@ -58,7 +58,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn similarity_is_held_to_the_unit_interval() {
+    fn similarity_is_held_to_the_cosine_interval() {
         assert_eq!(
             Config::new()
                 .with_minimum_similarity(1.5)
@@ -67,9 +67,10 @@ mod tests {
         );
         assert_eq!(
             Config::new()
-                .with_minimum_similarity(-1.0)
+                .with_minimum_similarity(-1.5)
                 .minimum_similarity,
-            0.0
+            -1.0
         );
+        assert_eq!(Config::new().suggestion_limit, 8);
     }
 }

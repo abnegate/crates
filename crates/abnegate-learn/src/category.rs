@@ -3,7 +3,7 @@
 use crate::similarity::cosine_similarity;
 
 /// A named reference embedding used to classify an error or skip reason.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Category {
     /// Category name, such as `timeout` or `not_found`.
