@@ -4,7 +4,7 @@ description = "One notification delivered to every channel at once, with per-cha
 keywords = ["notifications", "slack", "discord", "webhook", "smtp"]
 categories = ["asynchronous", "email", "network-programming"]
 readme = "README.md"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -23,7 +23,7 @@ smtp = ["dep:lettre"]
 testing = ["tokio/sync"]
 
 [dependencies]
-abnegate-secret = { path = "../abnegate-secret", version = "0.1.2" }
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.3" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }

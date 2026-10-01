@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abnegate-agent"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "abnegate-agent-cli",
  "abnegate-config",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-agent-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "abnegate-exec",
  "abnegate-llm",
@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-comfy"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "abnegate-exec",
  "abnegate-llm",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-config"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "abnegate-secret",
  "chrono",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-exec"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "abnegate-secret",
  "base64 0.23.1",
@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-llm"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "abnegate-http",
  "abnegate-secret",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-notify"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "abnegate-secret",
  "async-trait",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-search"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "abnegate-secret",
  "reqwest 0.13.5",
@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-secret"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-vcs"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "abnegate-secret",
  "base64 0.23.1",
