@@ -27,6 +27,7 @@ default = []
 anthropic = ["tokio/io-util", "tokio/macros", "tokio/process"]
 catalog = ["dep:regex", "dep:scraper"]
 download = ["tokio/fs", "tokio/sync"]
+fastembed = ["dep:fastembed"]
 google = []
 openai = ["dep:base64", "reqwest/multipart", "tokio/fs"]
 testing = []
@@ -37,6 +38,7 @@ abnegate-secret = { path = "../abnegate-secret", version = "0.1.2" }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true, optional = true }
+fastembed = { workspace = true, optional = true, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
 futures = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true, optional = true }

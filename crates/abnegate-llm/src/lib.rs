@@ -32,11 +32,12 @@
 //! # Vendors
 //!
 //! The vendor-native clients shipped here are Anthropic (the messages API, or
-//! the Claude Code CLI for an OAuth token), Gemini and OpenAI, each behind its
-//! feature. Every OpenAI-compatible server — Ollama, LiteLLM, vLLM, a gateway —
-//! is reached through [`HttpProvider`] instead. [`ProviderConfig`] can name
-//! any provider, but it is configuration only: nothing here constructs a
-//! provider from it, and a name outside this set is one the caller supplies.
+//! the Claude Code CLI for an OAuth token), Gemini, OpenAI, and local ONNX
+//! embeddings through fastembed, each behind its feature. Every
+//! OpenAI-compatible server — Ollama, LiteLLM, vLLM, a gateway — is reached
+//! through [`HttpProvider`] instead. [`ProviderConfig`] can name any
+//! provider, but it is configuration only: nothing here constructs a provider
+//! from it, and a name outside this set is one the caller supplies.
 //!
 //! ```no_run
 //! use abnegate_llm::{LlmClient, LlmConfig, Message};
@@ -56,6 +57,7 @@
 //! - `google`: the Gemini client behind [`TextProvider`].
 //! - `openai`: the OpenAI client behind the text, image, embedding and
 //!   transcription traits.
+//! - `fastembed`: local ONNX embeddings behind [`EmbeddingProvider`].
 //! - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter
 //!   catalogues through one `catalog::ModelProvider` trait.
 //! - `download`: resumable GGUF downloads that only splice a resume onto the
