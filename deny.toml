@@ -6,7 +6,9 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "all"
 yanked = "deny"
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is pulled by tokenizers via fastembed; no safe upgrade" },
+]
 
 [licenses]
 allow = [
@@ -28,6 +30,7 @@ exceptions = [
     { crate = "quoted_printable", allow = ["0BSD"] },
     { crate = "selectors", allow = ["MPL-2.0"] },
     { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [bans]
