@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-llm-v0.1.2...abnegate-llm-v0.1.3) - 2026-10-01
+
+### Added
+
+- *(llm)* load local ONNX embeddings through fastembed
+
 ### Added
 
 - *(llm)* local ONNX embeddings through fastembed behind the `fastembed` feature

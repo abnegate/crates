@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-notify-v0.1.2...abnegate-notify-v0.1.3) - 2026-10-01
+
+### Other
+
+- updated the following local packages: abnegate-secret
+
 ## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-notify-v0.1.1...abnegate-notify-v0.1.2) - 2026-09-30
 
 ### Other
