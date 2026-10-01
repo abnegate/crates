@@ -3,6 +3,7 @@
 use crate::cluster::Cluster;
 use crate::kind::SuggestionKind;
 use crate::suggestion::Suggestion;
+use crate::trial::Trial;
 
 /// Scoped picture of what already failed, for the next round.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
@@ -14,6 +15,8 @@ pub struct Digest {
     pub clusters: Vec<Cluster>,
     /// Distinct strategies that have a negative verdict, most recent first.
     pub failed_strategies: Vec<String>,
+    /// Trials in this scope, most recent first, embeddings omitted.
+    pub recent: Vec<Trial>,
 }
 
 impl Digest {
@@ -24,7 +27,10 @@ impl Digest {
 
     /// Whether there is nothing to stamp onto the next attempt.
     pub fn is_empty(&self) -> bool {
-        self.suggestions.is_empty() && self.clusters.is_empty() && self.failed_strategies.is_empty()
+        self.suggestions.is_empty()
+            && self.clusters.is_empty()
+            && self.failed_strategies.is_empty()
+            && self.recent.is_empty()
     }
 
     /// `(key, value)` rows a host can stamp onto the next attempt.
@@ -35,6 +41,31 @@ impl Digest {
         let mut entries = Vec::new();
         if !self.failed_strategies.is_empty() {
             entries.push(("learn_failed".into(), self.failed_strategies.join(",")));
+        }
+        for (index, trial) in self.recent.iter().enumerate() {
+            let mut line = trial.strategy.clone();
+            if !trial.action.is_empty() && trial.action != trial.strategy {
+                line.push(' ');
+                line.push_str(&trial.action);
+            }
+            line.push(' ');
+            line.push_str(trial.verdict.as_str());
+            if !trial.summary.is_empty() {
+                line.push_str(": ");
+                line.push_str(&trial.summary);
+            } else if let Some(error) = &trial.error {
+                line.push_str(": ");
+                line.push_str(error);
+            }
+            entries.push((format!("learn_tried_{index}"), line));
+            if let Some(lesson) = &trial.lesson
+                && !lesson.is_empty()
+            {
+                entries.push((format!("learn_tried_{index}_lesson"), lesson.clone()));
+            }
+            if !trial.tags.is_empty() {
+                entries.push((format!("learn_tried_{index}_tags"), trial.tags.join(",")));
+            }
         }
         for (index, cluster) in self.clusters.iter().enumerate() {
             entries.push((
@@ -80,6 +111,19 @@ impl Digest {
                 self.failed_strategies.join(", ")
             ));
         }
+        for trial in &self.recent {
+            let mut line = format!("- {} {}", trial.strategy, trial.verdict);
+            if !trial.summary.is_empty() {
+                line.push_str(": ");
+                line.push_str(&trial.summary.replace('\n', "; "));
+            } else if let Some(error) = &trial.error {
+                line.push_str(" (");
+                line.push_str(error);
+                line.push(')');
+            }
+            line.push('.');
+            lines.push(line);
+        }
         for cluster in &self.clusters {
             let mut line = format!(
                 "- {} {} {} time{}",
@@ -120,14 +164,26 @@ mod tests {
         let mut memory = Memory::new();
         memory.record(
             TrialInput::new("webkit", "webkit.fuzz")
+                .with_action("fuzz")
                 .with_verdict(Verdict::Skip)
-                .with_error("reprl-unavailable"),
+                .with_summary("jsc_path=/lab/jsc fuzzilli=reprl-unavailable")
+                .with_error("reprl-unavailable")
+                .with_tags(vec!["reprl".into()]),
         );
         let entries = memory.digest("webkit", None).entries();
         assert!(
             entries
                 .iter()
                 .any(|(key, value)| key == "learn_failed" && value.contains("webkit.fuzz"))
+        );
+        assert!(entries.iter().any(|(key, value)| key == "learn_tried_0"
+            && value.contains("webkit.fuzz")
+            && value.contains("jsc_path=/lab/jsc")
+            && value.contains("fuzzilli=reprl-unavailable")));
+        assert!(
+            entries
+                .iter()
+                .any(|(key, value)| key == "learn_tried_0_tags" && value.contains("reprl"))
         );
         assert!(
             entries

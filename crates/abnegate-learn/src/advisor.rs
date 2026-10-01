@@ -74,6 +74,11 @@ impl Advisor {
         for item in &failed {
             let text = if let Some(lesson) = &item.trial.lesson {
                 format!("{} already failed: {lesson}", item.trial.strategy)
+            } else if !item.trial.summary.is_empty() {
+                format!(
+                    "{} already {}: {}",
+                    item.trial.strategy, item.trial.verdict, item.trial.summary
+                )
             } else if let Some(error) = &item.trial.error {
                 format!(
                     "{} already {} with {error}",

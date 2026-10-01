@@ -6,9 +6,10 @@
 //!
 //! [`Memory`] holds [`Trial`] rows. A host records each attempt with
 //! [`TrialInput`], optionally attaches an embedding (or an [`Embedder`]), and
-//! asks [`Memory::digest`] for the scoped picture of what already failed.
-//! Similarity uses cosine on those embeddings; a trial with no embedding still
-//! contributes to clusters and the failed-strategy list. Persistence is an
+//! asks [`Memory::digest`] for the scoped picture of what already failed,
+//! including each recent trial's summary of where it looked. Similarity uses
+//! cosine on those embeddings; a trial with no embedding still contributes to
+//! clusters, failed strategies, and `learn_tried_*` rows. Persistence is an
 //! [`Archive`] the host implements; this crate never opens a database.
 //!
 //! ```

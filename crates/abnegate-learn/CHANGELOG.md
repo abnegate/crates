@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Digest stamps each recent trial as `learn_tried_N` with its summary, lesson, and tags
+
 ## [0.1.0] - 2026-10-01
 
 ### Added

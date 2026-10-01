@@ -44,8 +44,10 @@ lab's scope, then asks only for that scope before the next attempt, so one lab
 sees its own failures and the other does not have to.
 
 `entries` returns `(key, value)` rows a host can stamp onto the next attempt
-(`learn_failed`, `learn_avoid_0`, `learn_cluster_0_strategy`, …). `as_prompt`
-renders the same digest as text for a model.
+(`learn_failed`, `learn_tried_0`, `learn_tried_0_tags`, `learn_avoid_0`,
+`learn_cluster_0_strategy`, …). `learn_tried_N` is the recent trial itself:
+strategy, action, verdict, and the host-supplied summary of where it looked.
+`as_prompt` renders the same digest as text for a model.
 
 Hydrate with [`Trial::from_input`](https://docs.rs/abnegate-learn/latest/abnegate_learn/struct.Trial.html#method.from_input)
 and [`Memory::load`](https://docs.rs/abnegate-learn/latest/abnegate_learn/struct.Memory.html#method.load),

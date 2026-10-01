@@ -389,6 +389,16 @@ impl Memory {
             suggestions,
             clusters: self.clusters(Some(scope)),
             failed_strategies: self.failed_strategies(scope),
+            recent: self
+                .in_scope(scope)
+                .into_iter()
+                .rev()
+                .map(|trial| {
+                    let mut item = trial.clone();
+                    item.embedding = None;
+                    item
+                })
+                .collect(),
         }
     }
 
@@ -480,6 +490,9 @@ mod tests {
             webkit.failed_strategies,
             vec!["webkit.sanitizer".to_string(), "webkit.fuzz".to_string()]
         );
+        assert_eq!(webkit.recent.len(), 2);
+        assert_eq!(webkit.recent[0].strategy, "webkit.sanitizer");
+        assert!(webkit.recent.iter().all(|trial| trial.embedding.is_none()));
         assert!(
             webkit
                 .suggestions
