@@ -3,8 +3,9 @@
 Credential handling. `SecretValue` holds a credential without letting it reach a
 log line by accident: it zeroizes on drop and redacts itself in `Debug`.
 `encrypt_value` wraps one in an AES-256-GCM `ENC[v1:...]` envelope for storage,
-`redact` scrubs credentials out of text on its way back to a model, and
-`sanitize` does the same to text that has been through a terminal.
+`redact` scrubs credentials out of text on its way back to a model, `conceal`
+removes one known key however a provider echoes it back, and `sanitize` scrubs
+text that has been through a terminal.
 
 ## Features
 

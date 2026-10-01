@@ -6,8 +6,8 @@
 //! [`SecretValue`] holds a credential without letting it reach a log line by
 //! accident, [`encrypt_value`] wraps one in an `ENC[v1:...]` envelope for
 //! storage, [`redact`] scrubs credentials out of text on its way back to a
-//! model, and [`sanitize`] does the same to text that has been through a
-//! terminal.
+//! model, [`conceal`] removes one known key however a provider echoes it, and
+//! [`sanitize`] scrubs text that has been through a terminal.
 //!
 //! ```
 //! use abnegate_secret::{MasterKey, SecretValue, decrypt_value, encrypt_value, redact};
@@ -37,6 +37,7 @@
 //! `sqlx/runtime-tokio`, `rusqlite/bundled`, and so on); Cargo unifies them with
 //! the bare dependency this crate declares.
 
+mod conceal;
 mod database;
 mod encryption;
 mod error;
@@ -48,6 +49,7 @@ mod sanitize;
 mod value;
 mod work;
 
+pub use crate::conceal::conceal;
 pub use crate::encryption::decrypt_value;
 pub use crate::encryption::encrypt_value;
 pub use crate::encryption::is_encrypted;
