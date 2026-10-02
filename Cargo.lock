@@ -132,6 +132,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "abnegate-index"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "abnegate-learn"
 version = "0.1.0"
 dependencies = [
