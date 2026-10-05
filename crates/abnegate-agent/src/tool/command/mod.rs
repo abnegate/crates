@@ -10,6 +10,7 @@ mod waiting;
 use std::path::PathBuf;
 use std::time::Duration;
 
+pub use run::DEFAULT_COMMANDS;
 pub use run::RunCommandTool;
 use serde_json::Value;
 use serde_json::json;

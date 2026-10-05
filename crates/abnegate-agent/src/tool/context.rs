@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::EnvironmentPolicy;
+use super::PublicWeb;
 use super::Session;
 use crate::Application;
 
@@ -61,6 +63,10 @@ pub struct ToolContext {
     /// inside `working_directory`: background job logs live in
     /// `.{application}/jobs`.
     pub application: Application,
+    /// Whether `run_command` may start `curl` or `wget`, asked before each
+    /// such call; nothing else consults it (see [`PublicWeb`]). Nothing by
+    /// default, which lets every such call through.
+    pub public_web: Option<Arc<dyn PublicWeb>>,
 }
 
 impl ToolContext {
@@ -147,6 +153,19 @@ impl ToolContext {
         self.environment = self.environment.inheriting();
         self
     }
+
+    /// The same context, asking `public_web` before `run_command` starts
+    /// `curl` or `wget`.
+    pub fn with_public_web(mut self, public_web: Arc<dyn PublicWeb>) -> Self {
+        self.public_web = Some(public_web);
+        self
+    }
+
+    /// Why `curl` and `wget` must not start from this context, or nothing when
+    /// they may.
+    pub(crate) fn public_web_refusal(&self) -> Option<String> {
+        self.public_web.as_ref()?.refusal()
+    }
 }
 
 impl Default for ToolContext {
@@ -161,6 +180,7 @@ impl Default for ToolContext {
             denied: Vec::new(),
             session: Session::Detached,
             application: Application::default(),
+            public_web: None,
         }
     }
 }
@@ -219,6 +239,41 @@ mod tests {
                 .environment
                 .inherits()
         );
+    }
+
+    #[derive(Debug)]
+    struct Refusing;
+
+    impl PublicWeb for Refusing {
+        fn refusal(&self) -> Option<String> {
+            Some("offline".to_string())
+        }
+    }
+
+    #[test]
+    fn the_default_context_lets_the_public_web_through() {
+        let context = ToolContext::default();
+        assert!(context.public_web.is_none());
+        assert_eq!(context.public_web_refusal(), None);
+    }
+
+    #[test]
+    fn with_public_web_asks_the_gate_it_was_given() {
+        let context = ToolContext::default().with_public_web(Arc::new(Refusing));
+        assert_eq!(context.public_web_refusal().as_deref(), Some("offline"));
+        assert_eq!(
+            context.clone().public_web_refusal().as_deref(),
+            Some("offline")
+        );
+    }
+
+    /// A gate held behind `dyn` would drop the context's unwind safety unless
+    /// the trait asks for it, and a caller catching a panic around a tool call
+    /// relied on it.
+    #[test]
+    fn a_context_holding_a_gate_stays_unwind_safe() {
+        fn unwind_safe<T: std::panic::UnwindSafe + std::panic::RefUnwindSafe>(_: &T) {}
+        unwind_safe(&ToolContext::default().with_public_web(Arc::new(Refusing)));
     }
 
     #[test]

@@ -91,6 +91,40 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Take the tool registered under `name` out of the catalog, the prompt
+    /// and dispatch alike, and hand it back.
+    ///
+    /// Removing [`WAIT_FOR`] serves every tool left in its
+    /// [unwaited](Tool::unwaited) form.
+    ///
+    /// Removing the last tool an MCP server attached detaches the server too.
+    pub fn remove(&mut self, name: &str) -> Option<Arc<dyn Tool>> {
+        let removed = self.tools.remove(name)?;
+        #[cfg(feature = "mcp")]
+        self.detach_emptied(name);
+        Some(removed)
+    }
+
+    /// Forget the server `removed` came from once none of its tools is left.
+    #[cfg(feature = "mcp")]
+    fn detach_emptied(&mut self, removed: &str) {
+        let tools = &self.tools;
+        self.mcp_servers.retain(|server| {
+            let prefix = crate::mcp::server_prefix(server);
+            !removed.starts_with(&prefix) || tools.keys().any(|name| name.starts_with(&prefix))
+        });
+    }
+
+    /// Every registered tool, as it was registered, in no particular order.
+    ///
+    /// For folding these tools into a registry of another's: whether one is
+    /// served unwaited is for the registry it lands in to decide. The MCP
+    /// servers they came from are not carried; [`merge`](Self::merge) keeps
+    /// them.
+    pub fn into_tools(self) -> Vec<Arc<dyn Tool>> {
+        self.tools.into_values().collect()
+    }
+
     /// The tool registered under `name`, if any.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let wait_for = self.wait_for();
@@ -874,6 +908,100 @@ mod tests {
         assert_eq!(into.mcp_servers(), ["notes", "docs"]);
         assert!(into.has_mcp());
         assert!(into.get("read_file").is_some());
+    }
+
+    /// A host whose turns cannot wait takes `wait_for` out of the defaults,
+    /// and every tool that would have sent the model to it says it needs it.
+    #[test]
+    fn removing_wait_for_serves_every_tool_left_without_it() {
+        let mut registry = ToolRegistry::with_defaults();
+
+        let removed = registry
+            .remove(WAIT_FOR)
+            .expect("the defaults hold wait_for");
+
+        assert_eq!(removed.name(), WAIT_FOR);
+        assert!(registry.remove(WAIT_FOR).is_none());
+        assert!(registry.get(WAIT_FOR).is_none());
+        assert!(!registry.names().contains(&WAIT_FOR));
+        assert_eq!(registry.definitions().len(), 7);
+        let command = registry.get("run_command").expect("run_command stays");
+        let schema = command.parameters_schema().to_string();
+        assert!(schema.contains(WaitFor::Withheld.condition()), "{schema}");
+        assert!(registry.remove("nonexistent").is_none());
+    }
+
+    #[cfg(feature = "mcp")]
+    struct Attached(String);
+
+    #[cfg(feature = "mcp")]
+    #[async_trait::async_trait]
+    impl Tool for Attached {
+        fn name(&self) -> &str {
+            &self.0
+        }
+
+        fn description(&self) -> &str {
+            "A tool an MCP server attached."
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        async fn execute(
+            &self,
+            _parameters: serde_json::Value,
+            _context: &crate::tool::ToolContext,
+        ) -> Result<crate::tool::ToolResult, crate::tool::ToolError> {
+            Ok(crate::tool::ToolResult::success("ran"))
+        }
+    }
+
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn removing_a_servers_last_tool_detaches_the_server() {
+        let mut registry = ToolRegistry::new();
+        for (server, tool) in [("notes", "search"), ("notes", "read"), ("docs", "find")] {
+            registry.register(Arc::new(Attached(crate::mcp::qualified_tool_name(
+                server, tool,
+            ))));
+            registry.attach(server.to_string());
+        }
+
+        registry.remove("notes__search").expect("registered");
+        assert_eq!(registry.mcp_servers(), ["notes", "docs"]);
+
+        registry.remove("notes__read").expect("registered");
+        assert_eq!(registry.mcp_servers(), ["docs"]);
+        assert!(registry.has_mcp());
+
+        registry.remove("docs__find").expect("registered");
+        assert!(registry.mcp_servers().is_empty());
+        assert!(!registry.has_mcp());
+        assert!(crate::mcp::guidance(&registry, &[]).is_none());
+    }
+
+    #[test]
+    fn into_tools_hands_back_every_tool_as_it_was_registered() {
+        let registry = ToolRegistry::with_host_tools();
+        let mut expected: Vec<String> = registry.names().into_iter().map(String::from).collect();
+        expected.sort_unstable();
+
+        let tools = registry.into_tools();
+        let mut names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
+        names.sort_unstable();
+
+        assert_eq!(names, expected);
+        assert_eq!(names.len(), 9);
+        let command = tools
+            .iter()
+            .find(|tool| tool.name() == "run_command")
+            .expect("run_command is registered");
+        assert_eq!(
+            command.parameters_schema(),
+            RunCommandTool.parameters_schema()
+        );
     }
 
     #[test]

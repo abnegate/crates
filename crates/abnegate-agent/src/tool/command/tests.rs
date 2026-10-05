@@ -8,7 +8,7 @@ use nix::unistd::Pid;
 use serde_json::json;
 use tokio::process::Command;
 
-use super::run::ALLOWED_COMMANDS;
+use super::run::DEFAULT_COMMANDS;
 use super::run::RunCommandParameters;
 use super::shell::RunShellParameters;
 use super::shell::total_sleep;
@@ -1591,7 +1591,7 @@ async fn a_program_that_runs_any_code_it_is_given_is_not_on_the_list() {
         "docker",
     ];
     for program in EXECUTORS {
-        assert!(!ALLOWED_COMMANDS.contains(program), "{program} is allowed");
+        assert!(!DEFAULT_COMMANDS.contains(program), "{program} is allowed");
         let error = RunCommandTool
             .execute(
                 json!({"command": program, "args": ["-c", "true"]}),
@@ -1807,4 +1807,199 @@ fn an_unwaited_shell_tool_is_otherwise_the_same_tool() {
             tool.parameters_schema().to_string()
         );
     }
+}
+
+#[derive(Debug)]
+struct Refusing {
+    message: &'static str,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl Refusing {
+    fn new(message: &'static str) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            message,
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl crate::tool::PublicWeb for Refusing {
+    fn refusal(&self) -> Option<String> {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(self.message.to_string())
+    }
+}
+
+/// A host that keeps a chat off the public web, or keeps the public web shut
+/// while its tunnel is down, has `curl` and `wget` fail with its own words,
+/// whichever list the tool runs from and whether or not the call backgrounds.
+#[tokio::test]
+async fn curl_and_wget_fail_with_the_public_webs_refusal() {
+    const REFUSALS: &[&str] = &[
+        "Public web access is offline until the VPN is enabled.",
+        "This chat is offline and does not use the public web.",
+    ];
+    let tools: [std::sync::Arc<dyn Tool>; 2] = [
+        std::sync::Arc::new(RunCommandTool),
+        std::sync::Arc::new(RunCommandTool::with_commands(DEFAULT_COMMANDS)),
+    ];
+    for tool in &tools {
+        for refusal in REFUSALS {
+            let context = create_test_context().with_public_web(Refusing::new(refusal));
+            for command in ["curl", "wget"] {
+                for background in [false, true] {
+                    let error = tool
+                        .execute(
+                            json!({
+                                "command": command,
+                                "args": ["https://example.com"],
+                                "background": background,
+                            }),
+                            &context,
+                        )
+                        .await
+                        .expect_err(command);
+                    assert!(
+                        matches!(&error, ToolError::Execution(message) if message == refusal),
+                        "{command}: {error}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A host that lists curl or wget by path still has them gated: the gate
+/// reads the program's name, not the string the host listed.
+#[tokio::test]
+async fn curl_and_wget_listed_by_path_still_ask_the_public_web() {
+    let gate = Refusing::new("offline");
+    let context = create_test_context().with_public_web(gate.clone());
+    let tool = RunCommandTool::with_commands(&["/usr/bin/curl", "/usr/local/bin/wget"]);
+
+    for command in ["/usr/bin/curl", "/usr/local/bin/wget"] {
+        let error = tool
+            .execute(json!({"command": command, "args": ["--version"]}), &context)
+            .await
+            .expect_err(command);
+        assert!(
+            matches!(&error, ToolError::Execution(message) if message == "offline"),
+            "{command}: {error}"
+        );
+    }
+    assert_eq!(gate.asked(), 2);
+}
+
+/// Only a program that reaches the public web asks, so a host whose gate is
+/// shut still runs everything else.
+#[tokio::test]
+async fn only_curl_and_wget_ask_the_public_web() {
+    let gate = Refusing::new("offline");
+    let context = create_test_context().with_public_web(gate.clone());
+
+    let echoed = RunCommandTool
+        .execute(json!({"command": "echo", "args": ["hello"]}), &context)
+        .await
+        .expect("echo is not public web");
+    assert!(echoed.success, "{echoed:?}");
+    assert_eq!(gate.asked(), 0);
+
+    let refused = RunCommandTool
+        .execute(json!({"command": "curl", "args": ["--version"]}), &context)
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(gate.asked(), 1);
+}
+
+/// The gate covers `run_command`'s curl and wget alone. A host serves its
+/// chats a shell through the same context, so asking it here would take the
+/// shell from every chat while the host's tunnel is down.
+#[tokio::test]
+async fn run_shell_never_asks_the_public_web() {
+    let gate = Refusing::new("offline");
+    let context = shell_test_context().with_public_web(gate.clone());
+
+    let ran = RunShellTool
+        .execute(
+            json!({"command": "echo hello", "reason": "Say hello."}),
+            &context,
+        )
+        .await
+        .expect("a shell is not gated");
+
+    assert!(ran.success, "{ran:?}");
+    assert_eq!(gate.asked(), 0);
+}
+
+/// The default list holds no interpreter. A host that wants one names its own
+/// list, which replaces the default rather than adding to it.
+#[tokio::test]
+async fn a_configured_list_runs_what_it_names_and_nothing_else() {
+    let context = shell_test_context();
+    let python = json!({"command": "python3", "args": ["--version"]});
+    let tool = RunCommandTool::with_commands(&["python3"]);
+
+    let ran = tool
+        .execute(python.clone(), &context)
+        .await
+        .expect("python3 is on the configured list");
+    assert!(ran.success, "{ran:?}");
+    assert!(ran.output.unwrap().contains("Python 3"));
+
+    let unwaited = tool
+        .unwaited()
+        .expect("a configured run_command has a form without waits");
+    let ran = unwaited
+        .execute(python.clone(), &context)
+        .await
+        .expect("the unwaited form keeps the configured list");
+    assert!(ran.success, "{ran:?}");
+
+    for (tool, command) in [
+        (&tool as &dyn Tool, "cargo"),
+        (unwaited.as_ref(), "cargo"),
+        (&RunCommandTool as &dyn Tool, "python3"),
+    ] {
+        let error = tool
+            .execute(json!({"command": command, "args": ["--version"]}), &context)
+            .await
+            .expect_err(command);
+        assert!(
+            error.to_string().contains("not in the allowed list"),
+            "{command}: {error}"
+        );
+    }
+}
+
+/// A configured `run_command` differs from the default in its list alone:
+/// the model calls it by the same name and schema, a reader approves the
+/// same card, and a turn without wait_for is served the same unwaited form.
+#[test]
+fn a_configured_run_command_is_otherwise_the_default_tool() {
+    let context = create_test_context();
+    let call = json!({"command": "cargo", "args": ["test"], "reason": "Run the tests."});
+    let configured = RunCommandTool::with_commands(&["cargo"]);
+
+    assert_eq!(configured.name(), RunCommandTool.name());
+    assert_eq!(configured.description(), RunCommandTool.description());
+    assert_eq!(configured.tier(), RunCommandTool.tier());
+    assert_eq!(configured.ends_turn(), RunCommandTool.ends_turn());
+    assert_eq!(
+        configured.timeout(&context),
+        RunCommandTool.timeout(&context)
+    );
+    assert_eq!(configured.preview(&call), RunCommandTool.preview(&call));
+    assert_eq!(
+        configured.parameters_schema(),
+        RunCommandTool.parameters_schema()
+    );
+    assert_eq!(
+        unwaited(configured).parameters_schema(),
+        unwaited(RunCommandTool).parameters_schema()
+    );
 }

@@ -104,6 +104,7 @@ pub use hub::McpHub;
 pub use name::MAXIMUM_TOOL_NAME_CHARACTERS;
 pub use name::SEPARATOR;
 pub use name::qualified_tool_name;
+pub(crate) use name::server_prefix;
 pub use name::unique_qualified_tool_name;
 pub use register::register;
 pub use register::with_defaults_and_mcp;

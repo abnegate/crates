@@ -1,8 +1,11 @@
+mod allowlisted;
 mod parameters;
 
 use std::iter::once;
+use std::path::Path;
 use std::sync::Arc;
 
+use allowlisted::Allowlisted;
 use async_trait::async_trait;
 pub(super) use parameters::RunCommandParameters;
 use serde_json::Value;
@@ -37,7 +40,8 @@ use crate::tool::reason_property;
 use crate::tool::trim_middle;
 use crate::tool::word;
 
-/// Programs [`RunCommandTool`] may spawn, resolved on the child's `PATH`.
+/// Programs [`RunCommandTool`] may spawn, resolved on the child's `PATH`,
+/// unless [`RunCommandTool::with_commands`] names others.
 ///
 /// Matched against the whole `command`, never its last path segment: an agent
 /// may write a file into the working directory, so a basename match would
@@ -48,7 +52,7 @@ use crate::tool::word;
 /// name, which would make the list a formality. What is left still runs
 /// code from the tree - a build script, a test, a git hook - so the list
 /// narrows which program starts, not what it can do.
-pub(super) const ALLOWED_COMMANDS: &[&str] = &[
+pub const DEFAULT_COMMANDS: &[&str] = &[
     "cargo", "rustc", "npm", "npx", "yarn", "pnpm", "make", "cmake", "gradle", "mvn", "maven",
     "go", "pip", "pip3", "poetry", "uv", "gem", "bundle", "rake", "dotnet", "msbuild", "git", "gh",
     "hub", "ls", "cat", "head", "tail", "grep", "find", "wc", "sort", "uniq", "diff", "tree",
@@ -56,21 +60,58 @@ pub(super) const ALLOWED_COMMANDS: &[&str] = &[
     "echo", "printf", "date", "true", "false", "test", "curl", "wget", "jq", "yq",
 ];
 
+/// The programs the context's [`PublicWeb`](crate::tool::PublicWeb) gates:
+/// they run only while it has no refusal. Other programs that reach the
+/// network are not gated.
+const PUBLIC_WEB_COMMANDS: &[&str] = &["curl", "wget"];
+
+/// The name the model calls the tool by, however its list is configured.
+const NAME: &str = "run_command";
+
+/// What the model is told the tool does.
+const DESCRIPTION: &str = "Execute a shell command. Returns stdout/stderr output. Use for running tests, builds, git commands, etc.";
+
 /// Shell syntax an argument may not carry, because an argument is handed to the
 /// child whole and must never be read as a second command.
 const SHELL_METACHARACTERS: &[&str] = &["$(", "`", "&&", "||", ";", "|", ">", "<", "\n", "\r"];
 
-/// Run a program from a fixed allow-list, with no shell in between.
+/// Run a program from [`DEFAULT_COMMANDS`], with no shell in between.
 pub struct RunCommandTool;
+
+impl RunCommandTool {
+    /// `run_command` spawning only `commands`, in place of
+    /// [`DEFAULT_COMMANDS`], and otherwise the same tool.
+    ///
+    /// Each name is matched against the whole `command` a call names, so list
+    /// programs, never paths. Listing an interpreter lets a call run whatever
+    /// code it hands that interpreter.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// use abnegate_agent::Tool;
+    /// use abnegate_agent::ToolRegistry;
+    /// use abnegate_agent::tool::DEFAULT_COMMANDS;
+    /// use abnegate_agent::tool::RunCommandTool;
+    ///
+    /// let commands = [DEFAULT_COMMANDS, &["python3"]].concat();
+    /// let mut registry = ToolRegistry::with_defaults();
+    /// registry.register(Arc::new(RunCommandTool::with_commands(&commands)));
+    /// assert_eq!(registry.get("run_command").unwrap().name(), "run_command");
+    /// ```
+    pub fn with_commands(commands: &[&str]) -> impl Tool + use<> {
+        Allowlisted::new(commands)
+    }
+}
 
 #[async_trait]
 impl Tool for RunCommandTool {
     fn name(&self) -> &str {
-        "run_command"
+        NAME
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command. Returns stdout/stderr output. Use for running tests, builds, git commands, etc."
+        DESCRIPTION
     }
 
     fn tier(&self) -> Tier {
@@ -152,86 +193,108 @@ impl Waiting for RunCommandTool {
         context: &ToolContext,
         wait_for: WaitFor,
     ) -> Result<ToolResult, ToolError> {
-        let parameters: RunCommandParameters = serde_json::from_value(parameters)
-            .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
+        run_allowed(DEFAULT_COMMANDS, parameters, context, wait_for).await
+    }
+}
 
-        tracing::debug!(
-            tool = self.name(),
-            reason_given = parameters
-                .reason
-                .as_deref()
-                .is_some_and(|why| !why.trim().is_empty()),
-            "Running tool"
-        );
+/// Run a call to `run_command` that may spawn only what `commands` lists.
+async fn run_allowed(
+    commands: &[impl AsRef<str>],
+    parameters: Value,
+    context: &ToolContext,
+    wait_for: WaitFor,
+) -> Result<ToolResult, ToolError> {
+    let parameters: RunCommandParameters = serde_json::from_value(parameters)
+        .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
-        if !ALLOWED_COMMANDS.contains(&parameters.command.as_str()) {
+    tracing::debug!(
+        tool = NAME,
+        reason_given = parameters
+            .reason
+            .as_deref()
+            .is_some_and(|why| !why.trim().is_empty()),
+        "Running tool"
+    );
+
+    if !commands
+        .iter()
+        .any(|command| command.as_ref() == parameters.command)
+    {
+        return Err(ToolError::Execution(format!(
+            "Command '{}' is not in the allowed list. Name a program, not a path: cargo, npm, git, etc.",
+            parameters.command
+        )));
+    }
+
+    let program = Path::new(&parameters.command)
+        .file_name()
+        .and_then(|name| name.to_str());
+    if program.is_some_and(|program| PUBLIC_WEB_COMMANDS.contains(&program))
+        && let Some(refusal) = context.public_web_refusal()
+    {
+        return Err(ToolError::Execution(refusal));
+    }
+
+    for argument in &parameters.arguments {
+        if let Some(pattern) = SHELL_METACHARACTERS
+            .iter()
+            .find(|pattern| argument.contains(*pattern))
+        {
             return Err(ToolError::Execution(format!(
-                "Command '{}' is not in the allowed list. Name a program, not a path: cargo, npm, git, etc.",
-                parameters.command
+                "Argument contains potentially dangerous pattern: '{pattern}'"
             )));
         }
+    }
 
-        for argument in &parameters.arguments {
-            if let Some(pattern) = SHELL_METACHARACTERS
-                .iter()
-                .find(|pattern| argument.contains(*pattern))
-            {
-                return Err(ToolError::Execution(format!(
-                    "Argument contains potentially dangerous pattern: '{pattern}'"
-                )));
-            }
+    let directory = working_directory(context, parameters.working_directory.as_deref())?;
+
+    if parameters.background {
+        let command =
+            JobCommand::new(&parameters.command, parameters.arguments.clone()).within(&directory);
+        return background(&command, context, wait_for).await;
+    }
+
+    let mut process = process::command(&parameters.command, context);
+    process.args(&parameters.arguments).current_dir(&directory);
+
+    let limit = call_limit(parameters.timeout_seconds, context.command_timeout);
+    let output = process::run(process, limit).await?;
+    let (stdout, stderr) = (output.stdout, output.stderr);
+
+    let mut result = String::new();
+
+    if !stdout.is_empty() {
+        result.push_str("stdout:\n");
+        result.push_str(&stdout);
+    }
+
+    if !stderr.is_empty() {
+        if !result.is_empty() {
+            result.push_str("\n\n");
         }
+        result.push_str("stderr:\n");
+        result.push_str(&stderr);
+    }
 
-        let directory = working_directory(context, parameters.working_directory.as_deref())?;
+    if result.is_empty() {
+        result = "(no output)".to_string();
+    }
 
-        if parameters.background {
-            let command = JobCommand::new(&parameters.command, parameters.arguments.clone())
-                .within(&directory);
-            return background(&command, context, wait_for).await;
-        }
+    let output_characters = clamp_output_characters(parameters.maximum_output_characters);
 
-        let mut process = process::command(&parameters.command, context);
-        process.args(&parameters.arguments).current_dir(&directory);
-
-        let limit = call_limit(parameters.timeout_seconds, context.command_timeout);
-        let output = process::run(process, limit).await?;
-        let (stdout, stderr) = (output.stdout, output.stderr);
-
-        let mut result = String::new();
-
-        if !stdout.is_empty() {
-            result.push_str("stdout:\n");
-            result.push_str(&stdout);
-        }
-
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push_str("\n\n");
-            }
-            result.push_str("stderr:\n");
-            result.push_str(&stderr);
-        }
-
-        if result.is_empty() {
-            result = "(no output)".to_string();
-        }
-
-        let output_characters = clamp_output_characters(parameters.maximum_output_characters);
-
-        if output.status.success() {
-            Ok(ToolResult::success(trim_middle(&result, output_characters)))
-        } else {
-            let code = output
-                .status
-                .code()
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            // `to_message` prefixes a failure, so the cap the caller asked for
-            // has to cover that too.
-            Ok(ToolResult::error(trim_middle(
-                &format!("Command exited with code {}\n\n{}", code, result),
-                output_characters.saturating_sub(ERROR_PREFIX.chars().count()),
-            )))
-        }
+    if output.status.success() {
+        Ok(ToolResult::success(trim_middle(&result, output_characters)))
+    } else {
+        let code = output
+            .status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        // `to_message` prefixes a failure, so the cap the caller asked for
+        // has to cover that too.
+        Ok(ToolResult::error(trim_middle(
+            &format!("Command exited with code {}\n\n{}", code, result),
+            output_characters.saturating_sub(ERROR_PREFIX.chars().count()),
+        )))
     }
 }
