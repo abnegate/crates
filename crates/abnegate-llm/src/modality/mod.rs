@@ -26,6 +26,7 @@ mod image_edit_request;
 mod image_provider;
 mod image_request;
 mod image_response;
+mod log;
 mod model3d_format;
 mod model3d_provider;
 mod model3d_request;
