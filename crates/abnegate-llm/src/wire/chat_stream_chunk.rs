@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use crate::provider::Window;
 use crate::wire::stream_choice::StreamChoice;
 use crate::wire::usage::Usage;
 
@@ -8,6 +9,9 @@ use crate::wire::usage::Usage;
 /// Only `choices` carries content. The envelope fields are optional because
 /// OpenAI-compatible providers do not all send them on every chunk, and a
 /// chunk that fails to deserialise aborts the whole stream, losing the reply.
+///
+/// `window` and `session` are never read from an endpoint: only a chunk built
+/// from a coding agent's events carries them.
 #[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct ChatStreamChunk {
@@ -29,12 +33,136 @@ pub struct ChatStreamChunk {
     /// The tokens the whole completion took, usually only on the last chunk.
     #[serde(default)]
     pub usage: Option<Usage>,
+    /// A usage window a coding agent reported spending on this chunk.
+    #[serde(skip)]
+    pub window: Option<Window>,
+    /// The session a coding agent announced it is running this turn under.
+    #[serde(skip)]
+    pub session: Option<String>,
+}
+
+impl ChatStreamChunk {
+    /// A chunk adding `choices`, with no envelope.
+    pub fn new(choices: Vec<StreamChoice>) -> Self {
+        Self {
+            id: None,
+            object: None,
+            created: None,
+            model: None,
+            choices,
+            usage: None,
+            window: None,
+            session: None,
+        }
+    }
+
+    /// The same chunk, of the completion `id`.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// The same chunk, of the object type `object`.
+    pub fn with_object(mut self, object: impl Into<String>) -> Self {
+        self.object = Some(object.into());
+        self
+    }
+
+    /// The same chunk, created at `created` Unix seconds.
+    pub fn with_created(mut self, created: i64) -> Self {
+        self.created = Some(created);
+        self
+    }
+
+    /// The same chunk, answered by `model`.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    /// The same chunk, reporting `usage`.
+    pub fn with_usage(mut self, usage: Usage) -> Self {
+        self.usage = Some(usage);
+        self
+    }
+
+    /// The same chunk, reporting `window`.
+    pub fn with_window(mut self, window: Window) -> Self {
+        self.window = Some(window);
+        self
+    }
+
+    /// The same chunk, announcing `session`.
+    pub fn with_session(mut self, session: impl Into<String>) -> Self {
+        self.session = Some(session.into());
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::ChatStreamChunk;
+    use crate::provider::Window;
     use crate::wire::role::Role;
+    use crate::wire::stream_choice::StreamChoice;
+    use crate::wire::stream_delta::StreamDelta;
+    use crate::wire::usage::Usage;
+
+    #[test]
+    fn an_endpoint_cannot_set_an_agent_window_or_session() {
+        let json = r#"{
+            "choices": [],
+            "window": {"name": "5h", "used_percent": 99.0},
+            "session": "forged"
+        }"#;
+
+        let chunk: ChatStreamChunk = serde_json::from_str(json).unwrap();
+        assert!(chunk.window.is_none());
+        assert!(chunk.session.is_none());
+    }
+
+    #[test]
+    fn a_built_chunk_carries_what_an_agent_reported() {
+        let delta = StreamDelta {
+            content: Some("Done.".to_string()),
+            ..StreamDelta::default()
+        };
+        let window = Window::new("five_hour").with_used_percent(43.0);
+
+        let chunk =
+            ChatStreamChunk::new(vec![StreamChoice::new(0, delta).with_finish_reason("stop")])
+                .with_id("claude-1")
+                .with_object("chat.completion.chunk")
+                .with_created(1_677_652_288)
+                .with_model("sonnet")
+                .with_usage(Usage::new(9, 24))
+                .with_window(window.clone())
+                .with_session("6f1");
+
+        assert_eq!(chunk.id.as_deref(), Some("claude-1"));
+        assert_eq!(chunk.object.as_deref(), Some("chat.completion.chunk"));
+        assert_eq!(chunk.created, Some(1_677_652_288));
+        assert_eq!(chunk.model.as_deref(), Some("sonnet"));
+        assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("Done."));
+        assert_eq!(chunk.choices[0].finish_reason.as_deref(), Some("stop"));
+        assert_eq!(chunk.usage, Some(Usage::new(9, 24)));
+        assert_eq!(chunk.window, Some(window));
+        assert_eq!(chunk.session.as_deref(), Some("6f1"));
+    }
+
+    #[test]
+    fn a_new_chunk_has_no_envelope() {
+        let chunk = ChatStreamChunk::new(Vec::new());
+
+        assert!(chunk.id.is_none());
+        assert!(chunk.object.is_none());
+        assert!(chunk.created.is_none());
+        assert!(chunk.model.is_none());
+        assert!(chunk.choices.is_empty());
+        assert!(chunk.usage.is_none());
+        assert!(chunk.window.is_none());
+        assert!(chunk.session.is_none());
+    }
 
     #[test]
     fn a_chunk_carries_its_content_delta() {

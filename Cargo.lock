@@ -159,6 +159,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "base64 0.23.1",
+ "chrono",
  "fastembed",
  "futures",
  "rand 0.10.3",

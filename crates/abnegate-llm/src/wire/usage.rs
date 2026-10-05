@@ -58,6 +58,18 @@ impl Usage {
         self.total_tokens = total_tokens;
         self
     }
+
+    /// This usage and `other` together, counter by counter, each stopping at
+    /// `u32::MAX` rather than wrapping.
+    pub fn plus(self, other: Self) -> Self {
+        Self {
+            prompt_tokens: self.prompt_tokens.saturating_add(other.prompt_tokens),
+            completion_tokens: self
+                .completion_tokens
+                .saturating_add(other.completion_tokens),
+            total_tokens: self.total_tokens.saturating_add(other.total_tokens),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -98,6 +110,26 @@ mod tests {
     fn a_usage_that_is_not_an_object_is_refused() {
         assert!(serde_json::from_str::<Usage>("\"lots\"").is_err());
         assert_eq!(serde_json::from_str::<Option<Usage>>("null").unwrap(), None);
+    }
+
+    #[test]
+    fn usage_from_two_turns_adds_up_field_by_field() {
+        let first = Usage::new(100, 50);
+        let second = Usage::new(7, 3);
+
+        assert_eq!(first.plus(second), Usage::new(107, 53));
+        assert_eq!(first.plus(second).total_tokens, 160);
+    }
+
+    #[test]
+    fn usage_that_would_overflow_stops_at_the_largest_count() {
+        let full = Usage::new(u32::MAX, u32::MAX - 1).with_total(u32::MAX);
+        let more = Usage::new(1, 5).with_total(2);
+
+        assert_eq!(
+            full.plus(more),
+            Usage::new(u32::MAX, u32::MAX).with_total(u32::MAX)
+        );
     }
 
     #[test]
