@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use abnegate_secret::SecretValue;
 
+use crate::dialect::Dialect;
+
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_MODEL: &str = "gpt-4";
 const DEFAULT_TEMPERATURE: f32 = 0.7;
@@ -26,8 +28,8 @@ pub struct LlmConfig {
     /// override it.
     pub temperature: f32,
     /// The most tokens an answer may use, for a request that does not reserve
-    /// its own through [`RequestOptions`](crate::RequestOptions). Sent as
-    /// `max_tokens`.
+    /// its own through [`RequestOptions`](crate::RequestOptions). Sent in the
+    /// field [`Self::dialect`] names for the model.
     pub maximum_tokens: u32,
     /// The deadline for a whole non-streaming completion, from sending the
     /// request to reading the last byte of its body.
@@ -35,6 +37,9 @@ pub struct LlmConfig {
     /// The longest a streamed completion may go without a byte, including the
     /// wait for the first. A stream as a whole has no deadline.
     pub read_timeout: Duration,
+    /// Which API sits behind [`Self::base_url`], and so how each request is
+    /// shaped before it is sent.
+    pub dialect: Dialect,
 }
 
 impl LlmConfig {
@@ -76,6 +81,12 @@ impl LlmConfig {
         self.read_timeout = read_timeout;
         self
     }
+
+    /// Set [`Self::dialect`].
+    pub fn with_dialect(mut self, dialect: Dialect) -> Self {
+        self.dialect = dialect;
+        self
+    }
 }
 
 impl Default for LlmConfig {
@@ -88,6 +99,7 @@ impl Default for LlmConfig {
             maximum_tokens: DEFAULT_MAXIMUM_TOKENS,
             timeout: DEFAULT_TIMEOUT,
             read_timeout: DEFAULT_READ_TIMEOUT,
+            dialect: Dialect::Compatible,
         }
     }
 }
@@ -97,6 +109,7 @@ mod tests {
     use std::time::Duration;
 
     use super::LlmConfig;
+    use crate::dialect::Dialect;
 
     #[test]
     fn a_default_config_points_at_openai() {
@@ -109,6 +122,7 @@ mod tests {
         assert_eq!(config.maximum_tokens, 4096);
         assert_eq!(config.timeout, Duration::from_secs(600));
         assert_eq!(config.read_timeout, Duration::from_secs(300));
+        assert_eq!(config.dialect, Dialect::Compatible);
     }
 
     #[test]
@@ -121,7 +135,8 @@ mod tests {
         .with_temperature(0.5)
         .with_maximum_tokens(2048)
         .with_timeout(Duration::from_secs(30))
-        .with_read_timeout(Duration::from_secs(5));
+        .with_read_timeout(Duration::from_secs(5))
+        .with_dialect(Dialect::Anthropic);
 
         assert_eq!(config.base_url, "https://custom.api.com/v1");
         assert_eq!(config.api_key.expose(), "sk-test-key-123");
@@ -130,6 +145,7 @@ mod tests {
         assert_eq!(config.maximum_tokens, 2048);
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.read_timeout, Duration::from_secs(5));
+        assert_eq!(config.dialect, Dialect::Anthropic);
     }
 
     #[test]

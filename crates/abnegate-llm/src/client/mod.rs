@@ -17,7 +17,9 @@ pub use crate::client::config::LlmConfig;
 pub use crate::client::options::RequestOptions;
 pub(crate) use crate::client::pool::Pool;
 
+use crate::budget::Budget;
 use crate::client::events::EventDecoder;
+use crate::dialect::Dialect;
 use crate::error::Error;
 use crate::provider::CompletionRequest;
 use crate::reasoning::Effort;
@@ -28,6 +30,11 @@ use crate::wire::Message;
 use crate::wire::ToolDefinition;
 
 /// A client for an OpenAI-compatible chat completions endpoint.
+///
+/// Every request is shaped for [`LlmConfig::dialect`] before it is sent: the
+/// stops, temperature, output budget field, messages and tools a provider's
+/// own API would refuse are adjusted, and a compatible endpoint is sent the
+/// request unchanged.
 ///
 /// A non-streaming completion must finish within [`LlmConfig::timeout`]; a
 /// streamed one may run as long as it keeps sending, but fails once it goes
@@ -70,14 +77,16 @@ impl LlmClient {
 
     /// Set a verified Ollama route's context capacity. The alias guard prevents
     /// forwarding provider-specific options after changing models; `num_ctx` is
-    /// accepted as a top-level non-OpenAI option.
+    /// accepted as a top-level non-OpenAI option, so it is sent only to a
+    /// [`Dialect::Compatible`](crate::Dialect::Compatible) endpoint.
     pub fn with_ollama_context(mut self, model: impl Into<String>, limit: u64) -> Self {
         self.ollama = Some((model.into(), limit));
         self
     }
 
     /// Enable thinking for this alias. `reasoning_effort` maps onto Ollama
-    /// `think`, Anthropic extended thinking, and OpenAI o-series.
+    /// `think`, Anthropic extended thinking, and OpenAI o-series; it is sent
+    /// only where [`Dialect::effort`](crate::Dialect::effort) allows it.
     pub fn with_reasoning(mut self, model: impl Into<String>, effort: Effort) -> Self {
         self.reasoning = Some((model.into(), effort));
         self
@@ -95,18 +104,43 @@ impl LlmClient {
     }
 
     fn body(&self, request: ChatRequest<'_>) -> Result<serde_json::Value, Error> {
-        let mut body = serde_json::to_value(&request)?;
-        if let Some((model, limit)) = &self.ollama
-            && model == request.model
+        let dialect = self.config.dialect;
+        let model = request.model;
+        let stops = dialect.stops(model, request.stop.unwrap_or_default());
+        let stop = match dialect {
+            Dialect::Compatible => request.stop,
+            _ => (!stops.is_empty()).then_some(&*stops),
+        };
+        let messages = dialect.messages(request.messages);
+        let tools = dialect.tools(request.tools);
+        let response_format = dialect.response_format(request.response_format);
+        let (maximum_tokens, maximum_completion_tokens) = budgeted(dialect, &request);
+        let shaped = ChatRequest {
+            messages: &messages,
+            tools: tools.as_deref(),
+            temperature: request
+                .temperature
+                .and_then(|temperature| dialect.temperature(model, temperature)),
+            maximum_tokens,
+            maximum_completion_tokens,
+            stop,
+            response_format,
+            ..request
+        };
+        let mut body = serde_json::to_value(&shaped)?;
+        if let Some((alias, limit)) = &self.ollama
+            && alias == model
+            && dialect.extended()
         {
             body["num_ctx"] = (*limit).into();
         }
-        if let Some((model, effort)) = &self.reasoning
-            && model == request.model
+        if let Some((alias, effort)) = &self.reasoning
+            && alias == model
+            && dialect.effort(model)
         {
             body["reasoning_effort"] = effort.as_str().into();
         }
-        if request.stream == Some(true) {
+        if shaped.stream == Some(true) {
             body["stream_options"] = serde_json::json!({ "include_usage": true });
         }
         Ok(body)
@@ -152,6 +186,7 @@ impl LlmClient {
             tool_choice: None,
             temperature: Some(self.config.temperature),
             maximum_tokens: Some(options.reserved),
+            maximum_completion_tokens: None,
             stream: Some(stream),
             stop: (!self.stop.is_empty()).then_some(self.stop.as_slice()),
             response_format: None,
@@ -268,6 +303,20 @@ impl LlmClient {
         .map_err(|_| Error::Timeout(read_timeout))??;
 
         Ok(events(response, read_timeout))
+    }
+}
+
+/// The `max_tokens` and `max_completion_tokens` `request` is sent with: as the
+/// caller set them for a compatible endpoint, and otherwise the budget moved
+/// into the one field the model reads.
+fn budgeted(dialect: Dialect, request: &ChatRequest<'_>) -> (Option<u32>, Option<u32>) {
+    if dialect == Dialect::Compatible {
+        return (request.maximum_tokens, request.maximum_completion_tokens);
+    }
+    let reserved = request.maximum_tokens.or(request.maximum_completion_tokens);
+    match dialect.budget(request.model) {
+        Budget::MaximumTokens => (reserved, None),
+        Budget::MaximumCompletionTokens => (None, reserved),
     }
 }
 
