@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::public::request::PublicRequest;
-use crate::url::validate_public_url;
+use crate::public::target_policy::TargetPolicy;
 use reqwest::Client;
 use reqwest::Method;
 use reqwest::Request;
@@ -10,13 +10,16 @@ use reqwest::Response;
 /// A reqwest client for fetching caller-supplied URLs without reaching back
 /// inside the deployment.
 ///
-/// Every request is checked by [`validate_public_url`] before it is started
-/// and again before it is sent, so an IP literal, which reqwest connects to
-/// without consulting any resolver, is refused before a connection is
-/// attempted. Every name the client resolves is refused if it answers only
-/// with addresses that must not be fetched, and every redirect hop is checked
-/// again before it is followed. The reqwest client underneath is never handed
-/// out, not even through the [`PublicRequest`] a request method returns.
+/// Every request is checked by [`validate_public_url`](crate::validate_public_url)
+/// before it is started and again before it is sent, so an IP literal, which
+/// reqwest connects to without consulting any resolver, is refused before a
+/// connection is attempted. Every name the client resolves is refused if it
+/// answers only with addresses that must not be fetched, and every redirect
+/// hop is checked again before it is followed. A client built with
+/// [`TargetPolicy::ExceptMetadata`] applies the same three checks with the
+/// narrower rule of [`metadata`](crate::metadata), so loopback and the LAN
+/// stay reachable. The reqwest client underneath is never handed out, not even
+/// through the [`PublicRequest`] a request method returns.
 ///
 /// Build one with [`public_client`](crate::public_client) or
 /// [`public_client_builder`](crate::public_client_builder).
@@ -37,23 +40,25 @@ use reqwest::Response;
 #[derive(Debug, Clone)]
 pub struct PublicClient {
     client: Client,
+    policy: TargetPolicy,
 }
 
 impl PublicClient {
-    pub(crate) fn new(client: Client) -> Self {
-        Self { client }
+    pub(crate) fn new(client: Client, policy: TargetPolicy) -> Self {
+        Self { client, policy }
     }
 
     /// Start a `method` request to `url`, refusing a URL that must not be
     /// fetched before anything is sent.
     pub fn request(&self, method: Method, url: &str) -> Result<PublicRequest> {
-        self.prepare(method, url).map(PublicRequest::new)
+        self.prepare(method, url)
+            .map(|builder| PublicRequest::new(builder, self.policy))
     }
 
     /// Start a `method` request to `url` as a reqwest builder, which carries
     /// the client underneath and so must not leave this crate.
     pub(crate) fn prepare(&self, method: Method, url: &str) -> Result<RequestBuilder> {
-        Ok(self.client.request(method, validate_public_url(url)?))
+        Ok(self.client.request(method, self.policy.validate(url)?))
     }
 
     /// Start a GET request to `url`.
@@ -89,7 +94,7 @@ impl PublicClient {
     /// Send a request built elsewhere, refusing its URL first if it must not
     /// be fetched.
     pub async fn execute(&self, request: Request) -> Result<Response> {
-        validate_public_url(request.url().as_str())?;
+        self.policy.validate(request.url().as_str())?;
         Ok(self.client.execute(request).await?)
     }
 }

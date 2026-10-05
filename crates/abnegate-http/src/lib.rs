@@ -8,7 +8,11 @@
 //! transport itself. [`PublicClient`], built by [`public_client`], fetches a
 //! caller-supplied URL without reaching back inside the deployment: it checks
 //! the URL with [`validate_public_url`] before every request, every address a
-//! name resolves to, and every redirect hop. [`RateLimiter`] counts requests
+//! name resolves to, and every redirect hop. [`TargetPolicy::ExceptMetadata`]
+//! narrows that guard to the [`metadata`] targets alone, for an endpoint an
+//! operator or a tenant configured on loopback or the LAN, and
+//! [`metadata::MetadataResolver`] guards a reqwest client of the caller's own
+//! the same way. [`RateLimiter`] counts requests
 //! against whatever key a caller limits by, [`Backoff`] spaces retries out, and
 //! [`is_rate_limit_error`] and [`is_hard_error`] read a failure message to
 //! decide which of the two a failure deserves.
@@ -36,6 +40,7 @@ mod classify;
 mod client;
 mod error;
 mod limit;
+pub mod metadata;
 mod public;
 mod response;
 #[cfg(test)]
@@ -56,6 +61,7 @@ pub use crate::limit::RateLimiter;
 pub use crate::public::PublicClient;
 pub use crate::public::PublicClientBuilder;
 pub use crate::public::PublicRequest;
+pub use crate::public::TargetPolicy;
 pub use crate::public::public_client;
 pub use crate::public::public_client_builder;
 pub use crate::response::HttpResponse;

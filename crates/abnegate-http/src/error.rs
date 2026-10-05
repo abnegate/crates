@@ -6,8 +6,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// A variant may gain a field in a minor release, so an
 /// [`HttpClient`](crate::HttpClient) implemented outside this crate, a test
 /// double included, fails through a constructor rather than a literal:
-/// [`Error::unfetchable_resolution`] or [`Error::oversized_body`]. A pattern
-/// outside this crate ends in `..`.
+/// [`Error::unfetchable_resolution`], [`Error::metadata_resolution`] or
+/// [`Error::oversized_body`]. A pattern outside this crate ends in `..`.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -66,6 +66,21 @@ pub enum Error {
         host: String,
     },
 
+    /// The URL named a link-local address or a cloud provider's metadata
+    /// service, which [`TargetPolicy::ExceptMetadata`](crate::TargetPolicy)
+    /// refuses.
+    #[error("Link-local and cloud metadata targets are not allowed.")]
+    MetadataTarget,
+
+    /// Every address the host resolved to is link-local or a cloud provider's
+    /// metadata service.
+    #[error("{host} resolves only to link-local or cloud metadata addresses")]
+    #[non_exhaustive]
+    MetadataResolution {
+        /// The host that was resolved.
+        host: String,
+    },
+
     /// The redirect chain outran its bound.
     #[error("Too many redirects.")]
     TooManyRedirects,
@@ -88,6 +103,12 @@ impl Error {
     /// name alone, never the URL it came from.
     pub fn unfetchable_resolution(host: impl Into<String>) -> Self {
         Self::UnfetchableResolution { host: host.into() }
+    }
+
+    /// Every address `host` resolved to is link-local or a cloud provider's
+    /// metadata service. `host` is the name alone, never the URL it came from.
+    pub fn metadata_resolution(host: impl Into<String>) -> Self {
+        Self::MetadataResolution { host: host.into() }
     }
 
     /// A response body outgrew `limit`, the most bytes it was read under.
@@ -142,6 +163,13 @@ mod tests {
             matches!(
                 Error::unfetchable_resolution("inside.example"),
                 Error::UnfetchableResolution { host } if host == "inside.example"
+            ),
+            "the host is kept"
+        );
+        assert!(
+            matches!(
+                Error::metadata_resolution("rebound.example"),
+                Error::MetadataResolution { host } if host == "rebound.example"
             ),
             "the host is kept"
         );

@@ -15,13 +15,7 @@ const INTERNAL_SUFFIXES: [&str; 3] = [".localhost", ".local", ".internal"];
 /// fetch also needs [`PublicClient`](crate::PublicClient), which refuses the
 /// resolved addresses as well.
 pub fn validate_public_url(raw: &str) -> Result<Url> {
-    let url = Url::parse(raw).map_err(|_| Error::InvalidUrl)?;
-    if !SCHEMES.contains(&url.scheme()) {
-        return Err(Error::UnsupportedScheme);
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(Error::EmbeddedCredentials);
-    }
+    let url = parse(raw)?;
     let host = url.host_str().ok_or(Error::MissingHost)?;
 
     if let Some(ip) = literal(host) {
@@ -38,6 +32,22 @@ pub fn validate_public_url(raw: &str) -> Result<Url> {
             .any(|suffix| name.ends_with(suffix))
     {
         return Err(Error::InternalHost);
+    }
+    Ok(url)
+}
+
+/// Parse `raw` and reject what no fetch may carry, whatever its target: a
+/// scheme other than `http` or `https`, embedded credentials, or no host.
+pub(crate) fn parse(raw: &str) -> Result<Url> {
+    let url = Url::parse(raw).map_err(|_| Error::InvalidUrl)?;
+    if !SCHEMES.contains(&url.scheme()) {
+        return Err(Error::UnsupportedScheme);
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::EmbeddedCredentials);
+    }
+    if url.host_str().is_none() {
+        return Err(Error::MissingHost);
     }
     Ok(url)
 }

@@ -6,9 +6,15 @@ the transport, and `ReqwestHttpClient` is the transport itself. `PublicClient`,
 built by `public_client`, fetches a caller-supplied URL without reaching back
 inside the deployment: it checks the URL with `validate_public_url` before every
 request, every address a name resolves to, and every redirect hop.
-`RateLimiter` counts requests against whatever key a caller limits by, `Backoff`
-spaces retries out, and `is_rate_limit_error` and `is_hard_error` read a failure
-message to decide which of the two a failure deserves.
+`TargetPolicy::ExceptMetadata` narrows that guard to link-local addresses and
+the cloud metadata services alone, for an endpoint an operator or a tenant
+configured on loopback or the LAN. `metadata::MetadataResolver` drops those
+addresses from every name a reqwest client of your own resolves; reqwest never
+consults a resolver for an IP literal, so such a client also checks each URL
+with `metadata::is_url` and switches proxies off. `RateLimiter` counts requests
+against whatever key a caller limits by, `Backoff` spaces retries out, and
+`is_rate_limit_error` and `is_hard_error` read a failure message to decide which
+of the two a failure deserves.
 
 ## Features
 
