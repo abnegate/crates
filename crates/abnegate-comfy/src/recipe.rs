@@ -20,14 +20,20 @@ pub use training_adapter::TrainingAdapter;
 pub use training_model::TrainingModel;
 
 use serde::Deserialize;
+use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::client::Error;
 
 const PACKAGED_CATALOG: &str = include_str!("../comfyui/recipes/catalog.json");
+const ENCODER: &str = "VAEEncode";
+const LATENT_INPUTS: &[&str] = &["latent_image", "samples"];
+const CONDITIONING_CLASSES: &[&str] = &["FluxGuidance"];
+const CONDITIONING_CLASS_PREFIXES: &[&str] = &["CLIPTextEncode", "Conditioning", "ControlNetApply"];
 
 fn packaged_workflow(name: &str) -> Option<&'static str> {
     match name {
@@ -555,6 +561,7 @@ fn validate_graph(workflow: &Value, slots: &RecipeSlots, with_source: bool) -> R
                 "source graph must load a source image",
             ));
         }
+        validate_source_encode(workflow, source)?;
     }
     let output_class = format!("/{}/class_type", slots.output_node);
     match slots.output {
@@ -573,6 +580,102 @@ fn source_class_pointer(source_slot: &str) -> String {
     match source_slot.rsplit_once("/inputs/") {
         Some((prefix, _)) => format!("{prefix}/class_type"),
         None => source_slot.to_string(),
+    }
+}
+
+fn validate_source_encode(workflow: &Value, source: &str) -> Result<(), Error> {
+    let nodes = workflow
+        .as_object()
+        .ok_or(Error::Configuration("workflow is not an object"))?;
+    let source_node = source
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    for encoder in sampled_encoders(nodes) {
+        let (pixels, image) = encoder
+            .pointer("/inputs/pixels")
+            .and_then(link_node)
+            .and_then(|id| nodes.get(id).map(|node| (id, node)))
+            .ok_or(Error::Configuration(
+                "VAEEncode pixels must come from an image node",
+            ))?;
+        if class_type(image).is_some_and(produces_conditioning) {
+            return Err(Error::Configuration(
+                "VAEEncode pixels must not read conditioning",
+            ));
+        }
+        if !ancestors(nodes, pixels).contains(source_node) {
+            return Err(Error::Configuration(
+                "VAEEncode pixels must descend from the source image",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn sampled_encoders(nodes: &Map<String, Value>) -> Vec<&Value> {
+    let mut pending: Vec<&str> = nodes
+        .values()
+        .filter_map(|node| node.pointer("/inputs/latent_image"))
+        .filter_map(link_node)
+        .collect();
+    let mut visited = HashSet::new();
+    let mut encoders = Vec::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let Some(node) = nodes.get(id) else {
+            continue;
+        };
+        if class_type(node) == Some(ENCODER) {
+            encoders.push(node);
+            continue;
+        }
+        pending.extend(
+            LATENT_INPUTS
+                .iter()
+                .filter_map(|input| node.get("inputs")?.get(*input))
+                .filter_map(link_node),
+        );
+    }
+    encoders
+}
+
+fn ancestors<'a>(nodes: &'a Map<String, Value>, start: &'a str) -> HashSet<&'a str> {
+    let mut pending = vec![start];
+    let mut visited = HashSet::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if let Some(inputs) = nodes
+            .get(id)
+            .and_then(|node| node.get("inputs"))
+            .and_then(Value::as_object)
+        {
+            pending.extend(inputs.values().filter_map(link_node));
+        }
+    }
+    visited
+}
+
+fn produces_conditioning(class: &str) -> bool {
+    CONDITIONING_CLASSES.contains(&class)
+        || CONDITIONING_CLASS_PREFIXES
+            .iter()
+            .any(|prefix| class.starts_with(prefix))
+}
+
+fn class_type(node: &Value) -> Option<&str> {
+    node.get("class_type").and_then(Value::as_str)
+}
+
+fn link_node(value: &Value) -> Option<&str> {
+    match value.as_array()?.as_slice() {
+        [Value::String(node), Value::Number(_)] => Some(node),
+        _ => None,
     }
 }
 
@@ -692,6 +795,8 @@ mod tests {
         let catalog = catalog();
         assert!(catalog.get("flux-schnell").is_some());
         assert!(catalog.get("flux-schnell-adapter").is_some());
+        assert!(catalog.get("flux-dev").is_some());
+        assert!(catalog.get("flux-dev-adapter").is_some());
         assert!(catalog.get("sd15").is_some());
         assert!(catalog.get("sdxl").is_some());
         assert!(catalog.get("qwen-image-edit").is_some());
@@ -705,6 +810,10 @@ mod tests {
             "sdxl-img2img-api.json",
             "flux1-schnell-fp8-adapter-api.json",
             "flux1-schnell-fp8-adapter-img2img-api.json",
+            "flux1-dev-fp8-api.json",
+            "flux1-dev-fp8-img2img-api.json",
+            "flux1-dev-fp8-adapter-api.json",
+            "flux1-dev-fp8-adapter-img2img-api.json",
             "qwen-image-edit-2511-api.json",
             "qwen-image-edit-2511-edit-api.json",
             "qwen-image-edit-2511-adapter-api.json",
@@ -712,6 +821,196 @@ mod tests {
         ] {
             assert!(packaged_workflow(name).is_some(), "{name}");
         }
+    }
+
+    fn class_of<'a>(workflow: &'a Value, link: &Value) -> Option<&'a str> {
+        let node = link.get(0).and_then(Value::as_str)?;
+        workflow
+            .get(node)
+            .and_then(|source| source.get("class_type"))
+            .and_then(Value::as_str)
+    }
+
+    fn nodes_of<'a>(workflow: &'a Value, class: &str) -> Vec<&'a Value> {
+        workflow
+            .as_object()
+            .unwrap()
+            .values()
+            .filter(|node| node.get("class_type").and_then(Value::as_str) == Some(class))
+            .collect()
+    }
+
+    /// Flux-dev graphs give FluxGuidance its own node. When the image-to-image
+    /// graph reused the id of the scale node, VAEEncode read conditioning
+    /// instead of pixels and ComfyUI refused every flux-dev edit with a 400.
+    #[test]
+    fn packaged_flux_dev_source_graphs_encode_pixels_and_guide_the_sampler() {
+        for name in [
+            "flux1-dev-fp8-img2img-api.json",
+            "flux1-dev-fp8-adapter-img2img-api.json",
+        ] {
+            let workflow: Value = serde_json::from_str(packaged_workflow(name).unwrap()).unwrap();
+            let encoders = nodes_of(&workflow, "VAEEncode");
+            assert_eq!(encoders.len(), 1, "{name}");
+            let pixels = &encoders[0]["inputs"]["pixels"];
+            assert_ne!(
+                class_of(&workflow, pixels),
+                Some("FluxGuidance"),
+                "{name}: VAEEncode.pixels must not read conditioning"
+            );
+            assert!(
+                matches!(
+                    class_of(&workflow, pixels),
+                    Some("LoadImage" | "ImageScale")
+                ),
+                "{name}: VAEEncode.pixels must read an image"
+            );
+            let samplers = nodes_of(&workflow, "KSampler");
+            assert_eq!(samplers.len(), 1, "{name}");
+            let positive = &samplers[0]["inputs"]["positive"];
+            assert_eq!(
+                class_of(&workflow, positive),
+                Some("FluxGuidance"),
+                "{name}: KSampler.positive must read the guided conditioning"
+            );
+            assert_ne!(
+                positive.get(0),
+                pixels.get(0),
+                "{name}: KSampler.positive and VAEEncode.pixels must not share a node"
+            );
+        }
+    }
+
+    #[test]
+    fn flux_dev_source_graph_encodes_the_starting_image() {
+        let catalog = catalog();
+        for (id, selected) in [
+            ("flux-dev", "flux1-dev-fp8.safetensors"),
+            ("flux-dev-adapter", "identity.safetensors"),
+        ] {
+            let recipe = catalog.get(id).unwrap();
+            let weights = recipe.weight_map(selected).unwrap();
+            let owned: HashMap<&str, &str> = weights
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str()))
+                .collect();
+            let workflow = recipe
+                .apply(Fill::new("make the frog fat", 7, owned).with_source("img2img-source.png"))
+                .unwrap();
+            assert_eq!(workflow["10"]["class_type"], "LoadImage");
+            assert_eq!(workflow["10"]["inputs"]["image"], "img2img-source.png");
+            assert_eq!(workflow["11"]["class_type"], "ImageScale");
+            assert_eq!(workflow["11"]["inputs"]["image"], json!(["10", 0]));
+            assert_eq!(workflow["12"]["class_type"], "VAEEncode");
+            assert_eq!(workflow["12"]["inputs"]["pixels"], json!(["11", 0]));
+            assert_eq!(workflow["14"]["class_type"], "FluxGuidance");
+            assert_eq!(workflow["3"]["inputs"]["positive"], json!(["14", 0]));
+            assert_eq!(workflow["3"]["inputs"]["latent_image"], json!(["12", 0]));
+            assert_eq!(workflow["3"]["inputs"]["steps"], 20);
+            assert_eq!(workflow["3"]["inputs"]["denoise"], 0.75);
+            if id == "flux-dev-adapter" {
+                assert_eq!(workflow["13"]["class_type"], "LoraLoaderModelOnly");
+                assert_eq!(workflow["3"]["inputs"]["model"], json!(["13", 0]));
+                assert_eq!(
+                    workflow["13"]["inputs"]["lora_name"],
+                    "identity.safetensors"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_graph_rejects_conditioning_as_encode_pixels() {
+        let mut workflow: Value = serde_json::from_str(
+            packaged_workflow("flux1-dev-fp8-img2img-api.json").expect("packaged flux-dev img2img"),
+        )
+        .unwrap();
+        workflow["12"]["inputs"]["pixels"] = json!(["14", 0]);
+        let slots = RecipeSlots {
+            prompt: "/6/inputs/text".into(),
+            seed: "/3/inputs/seed".into(),
+            source: Some("/10/inputs/image".into()),
+            weights: HashMap::from([("checkpoint".into(), "/4/inputs/ckpt_name".into())]),
+            output_node: "9".into(),
+            output: RecipeOutput::PreviewImage,
+        };
+        assert!(
+            validate_graph(&workflow, &slots, true)
+                .unwrap_err()
+                .to_string()
+                .contains("VAEEncode")
+        );
+    }
+
+    const FLUX_DEV_SOURCE: &str = "/10/inputs/image";
+
+    fn flux_dev_source_graph() -> Value {
+        serde_json::from_str(packaged_workflow("flux1-dev-fp8-img2img-api.json").unwrap()).unwrap()
+    }
+
+    /// Overlay graphs resize, upscale and crop the starting image in many
+    /// ways; any chain that still starts at the source image encodes it.
+    #[test]
+    fn source_encode_accepts_any_image_chain_from_the_source() {
+        let mut workflow = flux_dev_source_graph();
+        workflow["11"] = json!({ "class_type": "ImageScaleBy", "inputs": {
+            "image": ["10", 0], "upscale_method": "lanczos", "scale_by": 0.5
+        }});
+        validate_source_encode(&workflow, FLUX_DEV_SOURCE).unwrap();
+
+        workflow["30"] = json!({ "class_type": "ImageScaleToTotalPixels", "inputs": {
+            "image": ["11", 0], "upscale_method": "lanczos", "megapixels": 1.0
+        }});
+        workflow["31"] = json!({ "class_type": "ImageCrop", "inputs": {
+            "image": ["30", 0], "width": 1024, "height": 1024, "x": 0, "y": 0
+        }});
+        workflow["12"]["inputs"]["pixels"] = json!(["31", 0]);
+        validate_source_encode(&workflow, FLUX_DEV_SOURCE).unwrap();
+    }
+
+    /// An encoder outside the sampled latent, such as one encoding a reference
+    /// image for conditioning, is not the starting image.
+    #[test]
+    fn source_encode_ignores_encoders_the_sampler_does_not_start_from() {
+        let mut workflow = flux_dev_source_graph();
+        workflow["30"] =
+            json!({ "class_type": "LoadImage", "inputs": { "image": "reference.png" } });
+        workflow["31"] = json!({ "class_type": "ImageInvert", "inputs": { "image": ["30", 0] } });
+        workflow["32"] = json!({ "class_type": "VAEEncode", "inputs": {
+            "pixels": ["31", 0], "vae": ["4", 2]
+        }});
+        validate_source_encode(&workflow, FLUX_DEV_SOURCE).unwrap();
+    }
+
+    #[test]
+    fn source_encode_refuses_an_image_that_is_not_the_source() {
+        let mut workflow = flux_dev_source_graph();
+        workflow["30"] = json!({ "class_type": "LoadImage", "inputs": { "image": "other.png" } });
+        workflow["11"]["inputs"]["image"] = json!(["30", 0]);
+        assert!(
+            validate_source_encode(&workflow, FLUX_DEV_SOURCE)
+                .unwrap_err()
+                .to_string()
+                .contains("source image")
+        );
+    }
+
+    #[test]
+    fn source_encode_follows_the_latent_through_latent_nodes() {
+        let mut workflow = flux_dev_source_graph();
+        workflow["30"] = json!({ "class_type": "RepeatLatentBatch", "inputs": {
+            "samples": ["12", 0], "amount": 2
+        }});
+        workflow["3"]["inputs"]["latent_image"] = json!(["30", 0]);
+        validate_source_encode(&workflow, FLUX_DEV_SOURCE).unwrap();
+
+        workflow["12"]["inputs"]["pixels"] = json!(["14", 0]);
+        assert!(
+            validate_source_encode(&workflow, FLUX_DEV_SOURCE)
+                .unwrap_err()
+                .to_string()
+                .contains("conditioning")
+        );
     }
 
     #[test]
