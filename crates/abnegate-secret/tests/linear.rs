@@ -44,6 +44,7 @@ const REDACTED: &[(&str, &str)] = &[
     ("", " \"!"),
     ("", "a"),
     ("", "ghp_"),
+    ("max_tokens=", "1,"),
     ("", "eyJ"),
     ("", "password "),
     ("", "\""),
