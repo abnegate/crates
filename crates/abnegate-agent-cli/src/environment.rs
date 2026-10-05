@@ -15,6 +15,7 @@ use crate::mcp::Template;
 use crate::mcp::expand;
 use crate::mcp::references;
 use crate::mcp::whole_reference;
+use crate::settings::CLOUD_CREDENTIALS;
 use crate::settings::CliSettings;
 
 /// The proxy bypass list, which names hosts rather than holding a
@@ -27,14 +28,38 @@ const BYPASS: &[&str] = &["NO_PROXY", "no_proxy"];
 /// which the agent is never given.
 const REFRESH_TOKEN: &str = "CLAUDE_CODE_OAUTH_REFRESH_TOKEN";
 
-/// The child's environment: an allowlist of host variables, the caller's
-/// allowed names and the agent's own configuration variables, or the whole
-/// host environment when the caller opts in, with every explicit value set
-/// on top. An allowed name the agent signs in with passes only when its
+/// The locale categories POSIX and glibc define, which name a locale and
+/// nothing secret. Named one by one rather than by their `LC_` prefix, since
+/// any variable can be given that prefix to ride along wherever locales are
+/// passed, as SSH's `AcceptEnv LC_*` passes them.
+pub(crate) const LOCALE: &[&str] = &[
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_COLLATE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_ADDRESS",
+    "LC_IDENTIFICATION",
+    "LC_MEASUREMENT",
+    "LC_NAME",
+    "LC_PAPER",
+    "LC_TELEPHONE",
+];
+
+/// The child's environment: an allowlist of host variables, the
+/// [locale](LOCALE) categories, the caller's allowed names and the agent's
+/// own configuration variables, or the whole host
+/// environment when the caller opts in, with every explicit value set on
+/// top. An allowed name the agent signs in with passes only when its
 /// credential is inherited: beside a credential of the caller's own, the
-/// host's would be one more the agent could sign in with. Each allowed
-/// value but the proxy bypass list is a secret, since a proxy URL, say, can
-/// carry a password.
+/// host's would be one more the agent could sign in with. With the host's
+/// credentials withheld, no name any agent signs in with, and no
+/// [cloud sign-in](CLOUD_CREDENTIALS), passes from the host however it is
+/// allowed or inherited, and no agent's configuration
+/// variable passes unless it is allowed. Each allowed value but the proxy
+/// bypass list is a secret, since a proxy URL, say, can carry a password.
 ///
 /// Explicit values go on in rising precedence: the agent's sign-in
 /// variables from the host when its credential is inherited, the caller's
@@ -51,7 +76,7 @@ const REFRESH_TOKEN: &str = "CLAUDE_CODE_OAUTH_REFRESH_TOKEN";
 /// a proxy URL say, can carry a password.
 pub(crate) struct Environment {
     inherit: bool,
-    removed: &'static [&'static str],
+    removed: Vec<&'static str>,
     inherited: BTreeMap<String, OsString>,
     variables: BTreeMap<String, SecretValue>,
     secrets: Vec<SecretValue>,
@@ -67,14 +92,24 @@ impl Environment {
     ) -> Self {
         let mut environment = Self {
             inherit: settings.inherit_environment,
-            removed: agent.scrubbed(),
+            removed: removed(agent, settings),
             inherited: BTreeMap::new(),
             variables: BTreeMap::new(),
             secrets: Vec::new(),
         };
-        let signed_in_on_host = matches!(settings.credential, Credential::Inherited);
+        let signed_in_on_host = matches!(settings.credential, Credential::Inherited)
+            && !settings.withhold_host_credentials;
         if !environment.inherit {
-            for variable in DEFAULT_ENVIRONMENT.iter().chain(agent.configuration()) {
+            let configuration = if settings.withhold_host_credentials {
+                &[]
+            } else {
+                agent.configuration()
+            };
+            for variable in DEFAULT_ENVIRONMENT
+                .iter()
+                .chain(LOCALE)
+                .chain(configuration)
+            {
                 if let Some(value) = host(variable) {
                     environment.inherited.insert(variable.to_string(), value);
                 }
@@ -129,14 +164,21 @@ impl Environment {
         host: &dyn Fn(&str) -> Option<OsString>,
     ) {
         let public = |name: &str| {
-            DEFAULT_ENVIRONMENT.contains(&name) || settings.variables.contains_key(name)
+            DEFAULT_ENVIRONMENT.contains(&name)
+                || LOCALE.contains(&name)
+                || settings.variables.contains_key(name)
         };
         let lookup = |name: &str| {
-            if withheld(agent, &settings.credential, name) {
-                Some(String::new())
-            } else {
-                self.lookup(name, host)
+            if withheld(agent, settings, name) {
+                return Some(String::new());
             }
+            if let Some(value) = self.variables.get(name) {
+                return Some(value.expose().to_string());
+            }
+            if unlent_configuration(settings, name) {
+                return Some(String::new());
+            }
+            self.lookup(name, host)
         };
         let resolved: Vec<(&String, &Template, SecretValue)> = mcp
             .templates
@@ -183,7 +225,7 @@ impl Environment {
 
     pub(crate) fn apply(&self, command: &mut Command) {
         if self.inherit {
-            for variable in self.removed {
+            for variable in &self.removed {
                 command.env_remove(variable);
             }
         } else {
@@ -246,20 +288,70 @@ impl Environment {
     }
 }
 
+/// The host variables the child never inherits, and never passes when
+/// allowed: the agent's nested-session marker, and with the host's
+/// credentials withheld, every [sign-in](host_sign_in) the host could lend
+/// it, and every agent's configuration variable the caller has not allowed
+/// when the child inherits the host's whole environment.
+fn removed(agent: AgentKind, settings: &CliSettings) -> Vec<&'static str> {
+    let mut removed = agent.scrubbed().to_vec();
+    if settings.withhold_host_credentials {
+        removed.extend(host_sign_in());
+        if settings.inherit_environment {
+            removed.extend(
+                AgentKind::ALL
+                    .iter()
+                    .flat_map(|agent| agent.configuration())
+                    .filter(|name| !settings.allowed.contains(**name)),
+            );
+        }
+    }
+    removed
+}
+
+/// Every variable through which the host could lend an agent its own
+/// sign-in: those any agent signs in with, Claude Code's OAuth refresh token
+/// and the [cloud sign-ins](CLOUD_CREDENTIALS).
+fn host_sign_in() -> impl Iterator<Item = &'static str> {
+    AgentKind::ALL
+        .iter()
+        .flat_map(|agent| agent.credentials())
+        .chain([REFRESH_TOKEN].iter())
+        .chain(CLOUD_CREDENTIALS)
+        .copied()
+}
+
 /// Whether a stdio server's reference to `variable` reads it as set but
-/// empty: a variable `agent` signs in with, the one `credential` occupies,
-/// or Claude Code's OAuth refresh token, in any case. Claude Code reads its
-/// own OAuth tokens that way in a stdio server's values, and a value resolved
-/// here reaches the child under a generated name that every stdio server and
-/// the agent's own tools can read.
-fn withheld(agent: AgentKind, credential: &Credential, variable: &str) -> bool {
+/// empty: a variable `agent` signs in with, or with the host's credentials
+/// withheld, every [sign-in](host_sign_in) the host could lend it, the one
+/// the credential occupies, or Claude Code's OAuth refresh token, in any
+/// case. Claude Code reads its own OAuth tokens that way in a stdio server's
+/// values, and a value resolved here reaches the child under a generated
+/// name that every stdio server and the agent's own tools can read.
+fn withheld(agent: AgentKind, settings: &CliSettings, variable: &str) -> bool {
+    let matches = |name: &str| name.eq_ignore_ascii_case(variable);
+    if settings.withhold_host_credentials && host_sign_in().any(matches) {
+        return true;
+    }
     agent
         .credentials()
         .iter()
         .copied()
-        .chain(credential.variable())
+        .chain(settings.credential.variable())
         .chain([REFRESH_TOKEN])
-        .any(|name| name.eq_ignore_ascii_case(variable))
+        .any(matches)
+}
+
+/// Whether a stdio server's reference to `variable`, which the caller has
+/// not set, reads it as set but empty rather than from the host: with the
+/// host's credentials withheld, an agent's configuration variable the caller
+/// has not allowed, in any case.
+fn unlent_configuration(settings: &CliSettings, variable: &str) -> bool {
+    settings.withhold_host_credentials
+        && AgentKind::ALL
+            .iter()
+            .flat_map(|agent| agent.configuration())
+            .any(|name| name.eq_ignore_ascii_case(variable) && !settings.allowed.contains(*name))
 }
 
 impl fmt::Debug for Environment {
@@ -287,12 +379,14 @@ mod tests {
     use tokio::process::Command;
 
     use super::Environment;
+    use super::REFRESH_TOKEN;
     use crate::kind::AgentKind;
     use crate::mcp::McpAttachment;
     use crate::mcp::McpConfig;
     use crate::mcp::McpServer;
     use crate::mcp::expand;
     use crate::scrubber::Scrubber;
+    use crate::settings::CLOUD_CREDENTIALS;
     use crate::settings::CliSettings;
 
     fn host() -> impl Fn(&str) -> Option<OsString> {
@@ -915,7 +1009,268 @@ mod tests {
                     "{agent} was not handed the host's {name} it signs in with"
                 );
             }
+
+            let withheld = allowed.clone().withhold_host_credentials();
+            let variables = set(&Environment::new(agent, &withheld, None, &host));
+            let carrying: Vec<&String> = variables
+                .iter()
+                .filter(|(_, value)| value.as_deref() == Some(HOST))
+                .map(|(name, _)| name)
+                .collect();
+            assert!(
+                carrying.is_empty(),
+                "{agent} was handed the host's {carrying:?} though they were withheld"
+            );
         }
+    }
+
+    /// Every variable an agent signs in with, its own or another agent's, or
+    /// a cloud provider signs it in with, and Claude Code's refresh token, is
+    /// refused from the host once the host's credentials are withheld, so an
+    /// agent's credential cannot reach it by naming it, by inheriting the
+    /// host's whole environment, or by being inherited. Only what the caller
+    /// hands the run itself still does.
+    #[test]
+    fn every_variable_an_agent_signs_in_with_is_refused() {
+        const HOST: &str = "notreal-host-credential";
+        let credentials: Vec<&str> = AgentKind::ALL
+            .iter()
+            .flat_map(|agent| agent.credentials())
+            .chain(CLOUD_CREDENTIALS)
+            .chain([REFRESH_TOKEN].iter())
+            .copied()
+            .collect();
+        let host = |name: &str| credentials.contains(&name).then(|| OsString::from(HOST));
+
+        for agent in AgentKind::ALL {
+            for inherit in [false, true] {
+                let mut settings = CliSettings::default()
+                    .allow(credentials.iter().copied())
+                    .withhold_host_credentials();
+                if inherit {
+                    settings = settings.inherit_environment();
+                }
+
+                let environment = Environment::new(*agent, &settings, None, &host);
+                let variables = set(&environment);
+                for name in &credentials {
+                    let value = variables.get(*name);
+                    assert!(
+                        if inherit {
+                            value == Some(&None)
+                        } else {
+                            value.is_none()
+                        },
+                        "{agent}, inheriting {inherit}, can be handed the host's {name}: {value:?}"
+                    );
+                }
+                assert!(exposed(&environment).is_empty(), "{agent}");
+
+                let explicit = settings.with_credential(Credential::key(
+                    agent.variable(),
+                    concat!("sk-", "explicit"),
+                ));
+                let variables = set(&Environment::new(*agent, &explicit, None, &host));
+                assert_eq!(
+                    variables[agent.variable()].as_deref(),
+                    Some(concat!("sk-", "explicit")),
+                    "{agent}"
+                );
+            }
+        }
+    }
+
+    /// The configuration variables point an agent at the host's stored
+    /// sign-in, so with the host's credentials withheld they pass only when
+    /// the caller names them, which is how a host points the agent at a
+    /// sign-in kept somewhere else.
+    #[test]
+    fn a_withheld_hosts_configuration_passes_only_when_allowed() {
+        let withheld = CliSettings::default().withhold_host_credentials();
+        let variables = set(&Environment::new(
+            AgentKind::Claude,
+            &withheld,
+            None,
+            &host(),
+        ));
+        assert!(
+            !variables.contains_key("CLAUDE_CONFIG_DIR"),
+            "{variables:?}"
+        );
+        assert!(
+            !variables.contains_key("ANTHROPIC_API_KEY"),
+            "{variables:?}"
+        );
+        assert_eq!(variables["HOME"].as_deref(), Some("/home/agent"));
+
+        let allowed = withheld.clone().allow(["CLAUDE_CONFIG_DIR"]);
+        let variables = set(&Environment::new(
+            AgentKind::Claude,
+            &allowed,
+            None,
+            &host(),
+        ));
+        assert_eq!(
+            variables["CLAUDE_CONFIG_DIR"].as_deref(),
+            Some("/home/agent/.claude-work")
+        );
+
+        let inheriting = withheld.clone().inherit_environment();
+        let variables = set(&Environment::new(
+            AgentKind::Claude,
+            &inheriting,
+            None,
+            &host(),
+        ));
+        assert_eq!(variables.get("CLAUDE_CONFIG_DIR"), Some(&None));
+        assert_eq!(variables.get("CODEX_HOME"), Some(&None));
+
+        let explicit = withheld.with_variable("CLAUDE_CONFIG_DIR", "/state/tenant/claude");
+        let variables = set(&Environment::new(
+            AgentKind::Claude,
+            &explicit,
+            None,
+            &host(),
+        ));
+        assert_eq!(
+            variables["CLAUDE_CONFIG_DIR"].as_deref(),
+            Some("/state/tenant/claude")
+        );
+    }
+
+    /// A stdio server's reference to a variable any agent signs in with
+    /// reads as set but empty once the host's credentials are withheld, or
+    /// the generated variable it resolves to would hand the agent the host's.
+    #[test]
+    fn a_stdio_reference_to_any_agents_sign_in_reads_as_empty_when_withheld() {
+        const OPENAI: &str = "notreal-openai-host-key";
+        let shared = host();
+        let host = |name: &str| match name {
+            "OPENAI_API_KEY" => Some(OsString::from(OPENAI)),
+            _ => shared(name),
+        };
+        let server = McpServer::command("notes-server", Vec::<String>::new())
+            .with_environment("OPENAI", "${OPENAI_API_KEY}");
+        let inherited = CliSettings::default().with_mcp_server("notes", server);
+        let withheld = inherited.clone().withhold_host_credentials();
+
+        for (settings, resolved) in [(inherited, OPENAI), (withheld, "")] {
+            let attachment = attached(&settings);
+            let environment =
+                Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host);
+            let variables = set(&environment);
+            let notes = &document(&attachment)["mcpServers"]["notes"];
+            assert_eq!(expanded(&notes["env"]["OPENAI"], &variables), resolved);
+        }
+    }
+
+    #[test]
+    fn a_stdio_reference_to_an_agents_configuration_reads_as_empty_when_withheld_unless_allowed() {
+        const CONFIGURATION: &str = "/home/host/.claude";
+        let shared = host();
+        let host = |name: &str| match name {
+            "CLAUDE_CONFIG_DIR" => Some(OsString::from(CONFIGURATION)),
+            _ => shared(name),
+        };
+        let server = McpServer::command("notes-server", Vec::<String>::new())
+            .with_environment("CONFIGURATION", "${CLAUDE_CONFIG_DIR}");
+        let withheld = CliSettings::default()
+            .with_mcp_server("notes", server)
+            .withhold_host_credentials();
+
+        for (settings, resolved) in [
+            (withheld.clone(), ""),
+            (withheld.clone().inherit_environment(), ""),
+            (withheld.clone().allow(["CLAUDE_CONFIG_DIR"]), CONFIGURATION),
+            (
+                withheld
+                    .clone()
+                    .with_environment("CLAUDE_CONFIG_DIR", "/tenant"),
+                "/tenant",
+            ),
+            (
+                withheld.with_variable("CLAUDE_CONFIG_DIR", "/tenant"),
+                "/tenant",
+            ),
+        ] {
+            let attachment = attached(&settings);
+            let environment =
+                Environment::new(AgentKind::Codex, &settings, Some(&attachment), &host);
+            let variables = set(&environment);
+            let notes = &document(&attachment)["mcpServers"]["notes"];
+            assert_eq!(
+                expanded(&notes["env"]["CONFIGURATION"], &variables),
+                resolved,
+                "{settings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_azure_identity_is_withheld_with_the_other_cloud_sign_ins() {
+        for name in [
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_CLIENT_CERTIFICATE_PATH",
+            "AZURE_CLIENT_CERTIFICATE_PASSWORD",
+            "AZURE_USERNAME",
+            "AZURE_PASSWORD",
+            "AZURE_FEDERATED_TOKEN_FILE",
+        ] {
+            assert!(CLOUD_CREDENTIALS.contains(&name), "{name} is not withheld");
+        }
+    }
+
+    /// Only the locale categories pass, each by name: a variable merely
+    /// given their prefix, as a token can be to ride along with them, does
+    /// not.
+    #[test]
+    fn locale_variables_pass_through_as_a_set() {
+        let host = |name: &str| {
+            let value = match name {
+                "LC_ALL" => "C.UTF-8",
+                "LC_CTYPE" => "UTF-8",
+                "LC_TELEPHONE" => "en_GB.UTF-8",
+                "LC_TIME" => "C",
+                "LC_TERMINAL" => "iTerm2",
+                "LC_SECRET_TOKEN" => "notreal-smuggled-token",
+                "LCX" => "not-a-locale",
+                "DATABASE_URL" => "postgres://app:notrealpassword@db/app",
+                _ => return None,
+            };
+            Some(OsString::from(value))
+        };
+        let settings = CliSettings::default().with_variable("LC_TIME", "en_GB.UTF-8");
+        let environment = Environment::new(AgentKind::Claude, &settings, None, &host);
+
+        let variables = set(&environment);
+        assert_eq!(variables["LC_ALL"].as_deref(), Some("C.UTF-8"));
+        assert_eq!(variables["LC_CTYPE"].as_deref(), Some("UTF-8"));
+        assert_eq!(variables["LC_TELEPHONE"].as_deref(), Some("en_GB.UTF-8"));
+        assert_eq!(
+            variables["LC_TIME"].as_deref(),
+            Some("en_GB.UTF-8"),
+            "the explicit value lost to the host's"
+        );
+        for name in ["LC_TERMINAL", "LC_SECRET_TOKEN", "LCX", "DATABASE_URL"] {
+            assert!(
+                !variables.contains_key(name),
+                "{name} passed: {variables:?}"
+            );
+        }
+        assert!(exposed(&environment).is_empty(), "a locale is no secret");
+
+        let inheriting = Environment::new(
+            AgentKind::Claude,
+            &CliSettings::default().inherit_environment(),
+            None,
+            &host,
+        );
+        assert!(
+            !set(&inheriting).contains_key("LC_CTYPE"),
+            "inherited, not set"
+        );
     }
 
     /// Only the names the agent signs in with are dropped: whatever else the

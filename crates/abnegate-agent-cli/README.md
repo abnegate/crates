@@ -7,17 +7,22 @@ conversation flattened into one prompt on stdin, reads the agent's
 newline-delimited JSON as it streams with a cap on any one event, and returns its
 final prose as a completion; `CliProvider::execute` returns the whole
 `Execution` for a caller that needs the structured answer, the session to
-resume, the cost, or the run's log files. A run can start the agent's own
+resume, the cost, or the run's log files, and `CliProvider::stream` yields the
+run's `AgentEvent`s as the agent emits them, ending in the error `complete`
+would have returned when the run failed. A run can start the agent's own
 `Session` under an id of the caller's choosing, or resume one. A Claude or Codex
 run can attach MCP servers, and a Claude run can restrict its tools, or be
 confined to reading its working directory, and a run
 that fails in any way takes every process the agent forked with it. The agent is
-given an allowlisted part of this process's environment, the names
+given an allowlisted part of this process's environment and its locale
+categories (`LC_CTYPE`, `LC_TIME` and the rest), the names
 `CliSettings::allow` adds (a proxy among them with
 `CliSettings::with_proxy_variables`) and what the settings hand it, or this
 process's whole environment with `CliSettings::inherit_environment`. A name the
 agent signs in with (`AgentKind::credentials`) passes only when the credential is
-inherited, however `CliSettings::allow` names it. Every value it is handed but
+inherited, however `CliSettings::allow` names it, and never, nor a cloud
+sign-in in `CLOUD_CREDENTIALS` nor its configuration variables unless allowed,
+under `CliSettings::withhold_host_credentials`. Every value it is handed but
 the allowlisted names, its configuration variables, the public variables, the
 proxy bypass list and what it inherits is scrubbed from what the run writes
 down, as written, JSON-escaped or percent-encoded; a secret the agent re-encodes

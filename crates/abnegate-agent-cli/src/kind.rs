@@ -78,6 +78,9 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
+    /// Every agent this crate drives.
+    pub const ALL: &'static [Self] = &[Self::Claude, Self::Codex];
+
     /// The agent's lowercase name, which is also its serialized form and the
     /// default provider name.
     pub fn as_str(self) -> &'static str {
@@ -85,6 +88,15 @@ impl AgentKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
         }
+    }
+
+    /// The agent whose [name](AgentKind::as_str) is `name`, exactly as it is
+    /// spelled there, or `None` for any other name.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|agent| agent.as_str() == name)
     }
 
     /// The command looked up on `PATH` unless the settings override it.
@@ -542,6 +554,27 @@ mod tests {
     fn the_prompt_is_never_placed_on_the_command_line() {
         for agent in [AgentKind::Claude, AgentKind::Codex] {
             assert_eq!(agent.delivery(), Delivery::Stdin, "{agent}");
+        }
+    }
+
+    #[test]
+    fn every_agent_is_listed() {
+        assert_eq!(AgentKind::ALL, [AgentKind::Claude, AgentKind::Codex]);
+    }
+
+    #[test]
+    fn an_agent_is_found_by_the_name_it_goes_by_and_no_other() {
+        for agent in AgentKind::ALL {
+            assert_eq!(AgentKind::named(agent.as_str()), Some(*agent));
+            assert_eq!(
+                serde_json::to_string(agent).expect("a serialized agent"),
+                format!("\"{agent}\""),
+                "{agent} is named differently on the wire"
+            );
+        }
+
+        for name in ["gemini", "", "Claude", "CODEX", " claude", "claude_code"] {
+            assert_eq!(AgentKind::named(name), None, "{name:?}");
         }
     }
 

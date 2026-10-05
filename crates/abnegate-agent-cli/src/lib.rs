@@ -27,9 +27,17 @@
 //! [`BlockingQuestion`] recovers a question the agent stopped to ask.
 //! [`stream`] reads the raw Messages API stream the CLI is built on.
 //!
+//! [`CliProvider::stream`] yields a run's [`AgentEvent`]s as the agent emits
+//! them, in an [`AgentStream`] that ends in the error
+//! [`complete`](abnegate_llm::CompletionProvider::complete) would have
+//! returned when the run failed; `complete` is that stream read to its end.
+//! [`AgentKind::ALL`] lists the agents, and [`AgentKind::named`] finds one by
+//! its name.
+//!
 //! The agent is given the
 //! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names, the
-//! names [`CliSettings::allow`] adds, a proxy among them with
+//! locale categories (`LC_CTYPE`, `LC_TIME` and the rest), the names
+//! [`CliSettings::allow`] adds, a proxy among them with
 //! [`CliSettings::with_proxy_variables`], and its own configuration
 //! variables, each from this process's environment; its sign-in variables
 //! when its credential is inherited, and never otherwise, allowed or not;
@@ -38,7 +46,11 @@
 //! [environment](CliSettings::environment) values, the credential, and what
 //! an [`mcp`] configuration moves out of its file.
 //! [`CliSettings::inherit_environment`] gives it this process's whole
-//! environment in place of the names. Every value it is handed is scrubbed
+//! environment in place of the names.
+//! [`CliSettings::withhold_host_credentials`] keeps this process's own
+//! sign-in from it whichever way it is given: no agent's sign-in variable,
+//! no [cloud sign-in](CLOUD_CREDENTIALS), and no agent's configuration
+//! variable it was not allowed by name. Every value it is handed is scrubbed
 //! from what the run writes down, as written, JSON-escaped or
 //! percent-encoded, except the allowlisted names, its configuration
 //! variables, the public variables, the proxy bypass list and whatever it
@@ -107,6 +119,7 @@
 //! Unix only, like the process-group handling it borrows from
 //! `abnegate-exec`.
 
+mod agent_stream;
 mod attachments;
 mod codex_sandbox;
 mod delivery;
@@ -126,6 +139,7 @@ mod provider;
 mod question;
 mod reader;
 mod reaper;
+mod run;
 mod scrubber;
 mod session;
 mod settings;
@@ -138,6 +152,7 @@ pub mod transcript;
 mod tripwire;
 mod verdict;
 
+pub use crate::agent_stream::AgentStream;
 pub use crate::attachments::Attachments;
 pub use crate::codex_sandbox::CodexSandbox;
 pub use crate::delivery::Delivery;
@@ -171,6 +186,7 @@ pub use crate::parser::claude::StreamEvent;
 pub use crate::provider::CliProvider;
 pub use crate::question::BlockingQuestion;
 pub use crate::session::Session;
+pub use crate::settings::CLOUD_CREDENTIALS;
 pub use crate::settings::CliSettings;
 pub use crate::settings::DEFAULT_JOURNAL_LIMIT;
 pub use crate::settings::DEFAULT_LINE_LIMIT;

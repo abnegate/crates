@@ -4,7 +4,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 
-use abnegate_exec::executor::GRACE_PERIOD;
 use abnegate_exec::executor::ProcessGroup;
 use abnegate_llm::Capabilities;
 use abnegate_llm::Completion;
@@ -15,23 +14,23 @@ use abnegate_llm::Message;
 use abnegate_llm::ProviderError;
 use abnegate_llm::ProviderKind;
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde_json::json;
 use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tokio::time::timeout;
-use tokio::time::timeout_at;
 
 use crate::STDERR_HEADING;
+use crate::agent_stream::AgentStream;
 use crate::attachments::Attachments;
 use crate::diagnostics;
 use crate::diagnostics::Diagnostics;
 use crate::environment::Environment;
+use crate::event::AgentEvent;
 use crate::execution::Execution;
 use crate::execution_error::ExecutionError;
 use crate::kind::AgentKind;
@@ -40,22 +39,18 @@ use crate::log::ExecutionLogFiles;
 use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
-use crate::log::preview;
 use crate::log::tail_preview;
 use crate::mcp::McpAttachment;
-use crate::outcome::Outcome;
 use crate::reader::Reader;
 use crate::reaper::Reaper;
+use crate::run::Run;
 use crate::scrubber::Scrubber;
 use crate::settings::CliSettings;
+use crate::stdout_parse_result::StdoutParseResult;
 use crate::transcript;
-use crate::verdict::Verdict;
 
 const NO_DIAGNOSTICS: &str = "the agent produced no diagnostics";
 const UNFINISHED: &str = "the agent exited without completing its event stream";
-const UNCLOSED: &str = "the agent's output stayed open after it exited";
-const UNSTOPPABLE: &str = "the agent could not be stopped";
-const LINGERED: &str = "the agent finished its turn but did not exit";
 const INSTRUCTIONS_PREFIX: &str = "instructions-";
 const INSTRUCTIONS_SUFFIX: &str = ".md";
 
@@ -67,6 +62,10 @@ const INSTRUCTIONS_SUFFIX: &str = ".md";
 /// so a stream full of it cannot derail the run, but it is not returned as
 /// tool calls: the agent already executed them, and replaying them through the
 /// caller's registry would run each one a second time.
+///
+/// [`CliProvider::stream`] is the primary form: a turn takes minutes, and its
+/// events exist long before the agent exits. [`CompletionProvider::complete`]
+/// is that stream read to its end.
 ///
 /// # Confinement
 ///
@@ -126,6 +125,67 @@ impl CliProvider {
         request: CompletionRequest<'_>,
         label: &str,
     ) -> Result<Execution, ExecutionError> {
+        self.start(request, label, None).await?.finish().await
+    }
+
+    /// Start the agent and yield its events as it emits them, each the moment
+    /// its line is read.
+    ///
+    /// The agent is spawned before this returns, so settings it cannot
+    /// honour and an agent that cannot be started are this call's error,
+    /// never a stream that fails on its first item. The run is the one
+    /// [`CompletionProvider::complete`] makes, logged under the provider's
+    /// name: its timeout counts from the spawn and covers the whole stream,
+    /// and once the agent has exited, or been stopped, the stream ends, with
+    /// the error `complete` would have returned when the run failed. A
+    /// failure the agent reported ends it that way, carrying the end of the
+    /// agent's stderr, and nothing it emitted after that failure is yielded.
+    ///
+    /// The run is waited on by a task of its own from the moment this
+    /// returns, whether or not the stream is read: the agent is stopped at
+    /// its timeout, or once its output settles the run, even while nobody
+    /// polls the stream, and what it emitted waits in the stream, followed by
+    /// the run's error, until it is read. Dropping the stream while the agent
+    /// still runs, read or not, stops it and every process it forked.
+    ///
+    /// Call it within a Tokio runtime, which runs that task.
+    pub async fn stream(
+        &self,
+        request: CompletionRequest<'_>,
+    ) -> Result<AgentStream, ProviderError> {
+        let (forward, mut events) = mpsc::unbounded_channel();
+        let run = self.start(request, &self.name, Some(forward)).await?;
+        let name = self.name.clone();
+        let mut finishing = JoinSet::new();
+        finishing.spawn(run.finish());
+        Ok(Box::pin(async_stream::try_stream! {
+            let joined = loop {
+                tokio::select! {
+                    biased;
+                    Some(joined) = finishing.join_next() => break joined,
+                    Some(event) = events.recv() => yield event,
+                }
+            };
+            while let Ok(event) = events.try_recv() {
+                yield event;
+            }
+            let ended = match joined {
+                Ok(ended) => ended,
+                Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+                Err(error) => Err(ExecutionError::new(ProviderError::malformed(&name, error), None)),
+            };
+            assemble(&name, ended?)?;
+        }))
+    }
+
+    /// Spawn the agent with the reading of its output under way, forwarding
+    /// each event read to `events` when given.
+    async fn start(
+        &self,
+        request: CompletionRequest<'_>,
+        label: &str,
+        events: Option<mpsc::UnboundedSender<AgentEvent>>,
+    ) -> Result<Run, ExecutionError> {
         let mcp = self.attach();
         let instructions = self
             .instructions()
@@ -215,11 +275,11 @@ impl CliProvider {
             }
         });
 
-        let (verdicts, mut settled) = mpsc::channel(2);
+        let (verdicts, settled) = mpsc::channel(2);
         let (cancel, cancelled) = watch::channel(false);
         let prose = Sink::open(files.as_ref().map(|files| files.stdout.as_path())).await;
         let raw = Sink::open(files.as_ref().map(|files| files.stderr.as_path())).await;
-        let mut reader = tokio::spawn(
+        let reader = tokio::spawn(
             Reader::new(
                 self.agent,
                 self.settings.line_limit,
@@ -230,9 +290,10 @@ impl CliProvider {
                 verdicts.clone(),
                 cancelled.clone(),
             )
+            .forwarding(events)
             .run(child.stdout.take()),
         );
-        let mut diagnostics = tokio::spawn(
+        let diagnostics = tokio::spawn(
             Diagnostics::new(
                 self.settings.line_limit,
                 self.settings.output_limit,
@@ -246,203 +307,23 @@ impl CliProvider {
             .run(child.stderr.take()),
         );
 
-        let deadline = Instant::now().checked_add(self.settings.timeout);
-        let expiry = async {
-            match deadline {
-                Some(deadline) => tokio::time::sleep_until(deadline).await,
-                None => std::future::pending().await,
-            }
-        };
-        let outcome = tokio::select! {
-            biased;
-            status = child.wait() => Outcome::Exited(status),
-            Some(verdict) = settled.recv() => Outcome::Settled(verdict),
-            () = expiry => Outcome::TimedOut,
-        };
-
-        let (status, stopped, failure) = match self
-            .settle(
-                outcome,
-                &mut child,
-                reaper.group(),
-                &journal,
-                deadline,
-                label,
-            )
-            .await
-        {
-            Ok(settlement) => settlement,
-            Err(error) => {
-                writer.abort();
-                let _ = drain(&mut reader, reaper.group(), &cancel).await;
-                let _ = drain(&mut diagnostics, reaper.group(), &cancel).await;
-                return Err(ExecutionError::new(error, files));
-            }
-        };
-        let status = ExitStatus::from(status);
-        journal
-            .append(Record::Exited, json!({ "status": status.to_string() }))
-            .await;
-
-        writer.abort();
-        let stdout = match drain(&mut reader, reaper.group(), &cancel).await {
-            Ok(Ok(stdout)) => stdout,
-            Ok(Err(message)) | Err(message) => {
-                let _ = drain(&mut diagnostics, reaper.group(), &cancel).await;
-                return Err(ExecutionError::new(
-                    ProviderError::malformed(&self.name, message),
-                    files,
-                ));
-            }
-        };
-        let stderr = drain(&mut diagnostics, reaper.group(), &cancel)
-            .await
-            .unwrap_or_default();
-        let failure = failure.or_else(|| {
-            std::iter::from_fn(|| settled.try_recv().ok()).find_map(|verdict| match verdict {
-                Verdict::Failed(reason) => Some(reason),
-                Verdict::Finished => None,
-            })
-        });
-        if status == ExitStatus::Code(0)
-            && stdout.finished
-            && stdout.failure.is_none()
-            && stopped.is_none()
-        {
-            reaper.disarm();
-        }
-
-        let reported = stdout
-            .failure
-            .as_deref()
-            .or(failure.as_deref())
-            .map(|reported| preview(reported, EXECUTION_LOG_PREVIEW_LIMIT));
-        journal
-            .append(
-                Record::Completed,
-                json!({
-                    "status": status.to_string(),
-                    "stdout_bytes": stdout.text.len(),
-                    "stderr_bytes": stderr.len(),
-                    "finished": stdout.finished,
-                    "has_structured_result": stdout.structured.is_some(),
-                    "failure": reported,
-                    "stopped": stopped,
-                }),
-            )
-            .await;
-
-        Ok(Execution {
-            stdout,
-            stderr,
-            status,
-            stopped,
-            failure,
-            log: files,
+        Ok(Run {
+            name: self.name.clone(),
+            label: label.to_string(),
+            timeout: self.settings.timeout,
+            deadline: Instant::now().checked_add(self.settings.timeout),
+            journal,
+            files,
+            reaper,
+            child,
+            writer,
+            reader,
+            diagnostics,
+            settled,
+            cancel,
+            _mcp: mcp,
+            _instructions: instructions,
         })
-    }
-
-    /// Carry the wait through to an exit status, stopping the agent when the
-    /// wait ended without one, and say why it was stopped when it was and
-    /// what failure settled the run when one did.
-    async fn settle(
-        &self,
-        outcome: Outcome,
-        child: &mut Child,
-        group: Option<&ProcessGroup>,
-        journal: &Journal,
-        deadline: Option<Instant>,
-        label: &str,
-    ) -> Result<(std::process::ExitStatus, Option<String>, Option<String>), ProviderError> {
-        let verdict = match outcome {
-            Outcome::Exited(Ok(status)) => return Ok((status, None, None)),
-            Outcome::Exited(Err(error)) => {
-                journal
-                    .append(Record::WaitFailed, json!({ "error": error.to_string() }))
-                    .await;
-                stop_agent(child, group).await;
-                return Err(ProviderError::malformed(&self.name, error));
-            }
-            Outcome::TimedOut => {
-                journal
-                    .append(
-                        Record::TimedOut,
-                        json!({ "timeout_seconds": self.settings.timeout.as_secs_f64() }),
-                    )
-                    .await;
-                tracing::warn!(provider = %self.name, label, "agent timed out; stopping its process group");
-                stop_agent(child, group).await;
-                return Err(ProviderError::timeout(&self.name, self.settings.timeout));
-            }
-            Outcome::Settled(verdict) => verdict,
-        };
-
-        let (reason, failure) = match verdict {
-            Verdict::Finished => (LINGERED.to_string(), None),
-            Verdict::Failed(reason) => {
-                let reason = preview(&reason, EXECUTION_LOG_PREVIEW_LIMIT);
-                journal
-                    .append(Record::Abandoned, json!({ "reason": reason }))
-                    .await;
-                tracing::warn!(provider = %self.name, label, "the run failed while the agent was running; stopping it");
-                (reason.clone(), Some(reason))
-            }
-        };
-
-        let grace = Instant::now() + GRACE_PERIOD;
-        let patience = deadline.map_or(grace, |deadline| deadline.min(grace));
-        if let Ok(Ok(status)) = timeout_at(patience, child.wait()).await {
-            return Ok((status, None, failure));
-        }
-
-        let status = stop_agent(child, group)
-            .await
-            .ok_or_else(|| ProviderError::malformed(&self.name, UNSTOPPABLE))?;
-        journal
-            .append(
-                Record::Stopped,
-                json!({ "exit_code": status.code(), "reason": reason }),
-            )
-            .await;
-        Ok((status, Some(reason), failure))
-    }
-
-    fn assemble(&self, execution: Execution) -> Result<Completion, ProviderError> {
-        let Execution {
-            stdout,
-            stderr,
-            status,
-            stopped,
-            failure,
-            ..
-        } = execution;
-
-        // The agent's own report of what went wrong beats an exit code, which
-        // says only that something did.
-        if let Some(message) = &stdout.failure {
-            return Err(ProviderError::agent(&self.name, &report(message, &stderr)));
-        }
-
-        let unstopped = stopped.is_none();
-        match (failure.or(stopped), stdout.finished) {
-            (Some(reason), false) => return Err(ProviderError::agent(&self.name, &reason)),
-            _ if unstopped && status != ExitStatus::Code(0) => {
-                let message = if stderr.trim().is_empty() {
-                    NO_DIAGNOSTICS.to_string()
-                } else {
-                    tail_preview(stderr.trim_end(), EXECUTION_LOG_PREVIEW_LIMIT)
-                };
-                return Err(ProviderError::exit(&self.name, status, &message));
-            }
-            // A clean exit is not proof of a finished turn. An agent killed
-            // between its last token and its result line still exits zero.
-            (None, false) => return Err(ProviderError::agent(&self.name, UNFINISHED)),
-            (_, true) => {}
-        }
-
-        Ok(Completion::new(&self.name, Message::assistant(stdout.text))
-            .with_usage(stdout.usage)
-            .with_finish_reason(stdout.finish_reason))
     }
 
     /// Render the MCP servers to attach, or attach none when rendering fails:
@@ -554,9 +435,58 @@ impl CompletionProvider for CliProvider {
     }
 
     async fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, ProviderError> {
-        let execution = self.execute(request, &self.name).await?;
-        self.assemble(execution)
+        let mut events = self.stream(request).await?;
+        let mut stdout = StdoutParseResult::default();
+        while let Some(event) = events.next().await {
+            stdout.record(event?);
+        }
+        Ok(completion(&self.name, stdout))
     }
+}
+
+/// Judge `execution` as [`CompletionProvider::complete`] does, and return
+/// the answer when it succeeded.
+fn assemble(name: &str, execution: Execution) -> Result<Completion, ProviderError> {
+    let Execution {
+        stdout,
+        stderr,
+        status,
+        stopped,
+        failure,
+        ..
+    } = execution;
+
+    // The agent's own report of what went wrong beats an exit code, which
+    // says only that something did.
+    if let Some(message) = &stdout.failure {
+        return Err(ProviderError::agent(name, &report(message, &stderr)));
+    }
+
+    let unstopped = stopped.is_none();
+    match (failure.or(stopped), stdout.finished) {
+        (Some(reason), false) => return Err(ProviderError::agent(name, &reason)),
+        _ if unstopped && status != ExitStatus::Code(0) => {
+            let message = if stderr.trim().is_empty() {
+                NO_DIAGNOSTICS.to_string()
+            } else {
+                tail_preview(stderr.trim_end(), EXECUTION_LOG_PREVIEW_LIMIT)
+            };
+            return Err(ProviderError::exit(name, status, &message));
+        }
+        // A clean exit is not proof of a finished turn. An agent killed
+        // between its last token and its result line still exits zero.
+        (None, false) => return Err(ProviderError::agent(name, UNFINISHED)),
+        (_, true) => {}
+    }
+
+    Ok(completion(name, stdout))
+}
+
+/// The answer `stdout` amounts to, from the provider called `name`.
+fn completion(name: &str, stdout: StdoutParseResult) -> Completion {
+    Completion::new(name, Message::assistant(stdout.text))
+        .with_usage(stdout.usage)
+        .with_finish_reason(stdout.finish_reason)
 }
 
 /// `words`, then [`STDERR_HEADING`] and the last whole lines of `stderr` that
@@ -567,61 +497,6 @@ fn report(words: &str, stderr: &str) -> String {
         return words.to_string();
     }
     format!("{words}{STDERR_HEADING}{tail}")
-}
-
-/// Terminate the agent's group, and kill whatever is left of it once the
-/// grace period runs out.
-///
-/// A group is identified by its leader's process id, which the system may
-/// hand to a new process once the leader is reaped and no member is left.
-/// So the group is killed while the leader is still unreaped whenever it
-/// outlives the grace period. When the leader exits within it, reaping comes
-/// first, and the kill that follows reaches stragglers safely only because a
-/// straggler still alive keeps the group's id from being reused; a group
-/// that empties in the instant between the two leaves the kill to land on
-/// whatever took the id, a race this cannot close without a process handle
-/// the platform does not offer here.
-async fn stop_agent(
-    child: &mut Child,
-    group: Option<&ProcessGroup>,
-) -> Option<std::process::ExitStatus> {
-    let Some(group) = group else {
-        let _ = child.start_kill();
-        return child.wait().await.ok();
-    };
-    let _ = group.terminate();
-    if let Ok(Ok(status)) = timeout(GRACE_PERIOD, child.wait()).await {
-        let _ = group.kill_until_gone().await;
-        return Some(status);
-    }
-    let _ = group.kill_until_gone().await;
-    child.wait().await.ok()
-}
-
-/// A reader's result once the agent has exited.
-///
-/// A descendant that outlived the agent can still hold its output open, and a
-/// reader waiting for that end of file would wait forever. Such stragglers get
-/// the grace period to finish, then the rest of the group is killed, and a
-/// reader still held open by something outside the group is told to stop with
-/// what it has.
-async fn drain<T>(
-    task: &mut JoinHandle<T>,
-    group: Option<&ProcessGroup>,
-    cancel: &watch::Sender<bool>,
-) -> Result<T, String> {
-    if let Ok(joined) = timeout(GRACE_PERIOD, &mut *task).await {
-        return joined.map_err(|error| error.to_string());
-    }
-    if let Some(group) = group {
-        let _ = group.kill_until_gone().await;
-    }
-    if let Ok(joined) = timeout(GRACE_PERIOD, &mut *task).await {
-        return joined.map_err(|error| error.to_string());
-    }
-    tracing::warn!("{UNCLOSED}; keeping what was read");
-    let _ = cancel.send(true);
-    task.await.map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -648,14 +523,19 @@ mod tests {
     use abnegate_llm::ProviderKind;
     use abnegate_llm::RequestOptions;
     use abnegate_secret::SecretValue;
+    use futures::StreamExt;
     use serde_json::Value;
     use serde_json::json;
     use tempfile::TempDir;
 
     use super::CliProvider;
+    use super::assemble;
     use super::report;
     use crate::PROSE_EXCEEDED;
     use crate::STDERR_HEADING;
+    use crate::agent_stream::AgentStream;
+    use crate::environment::LOCALE;
+    use crate::event::AgentEvent;
     use crate::execution::Execution;
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
@@ -664,7 +544,9 @@ mod tests {
     use crate::parser::claude::CREDITS_REQUIRED;
     use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
     use crate::session::Session;
+    use crate::settings::CLOUD_CREDENTIALS;
     use crate::settings::CliSettings;
+    use crate::stdout_parse_result::StdoutParseResult;
     use crate::structured_result::StructuredResult;
     use crate::test_support::PATIENCE;
     use crate::test_support::captured_logs;
@@ -887,6 +769,30 @@ echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0
         assert_eq!(report.confidence, 90);
     }
 
+    /// A turn that finished on stdout still fails when its diagnostics could
+    /// not be read to the end, rather than passing as a success whose
+    /// diagnostics were lost.
+    #[tokio::test]
+    async fn a_run_whose_diagnostics_reader_panicked_fails() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+cat >/dev/null
+echo 'the line that breaks the reader' >&2
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}'
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let settings = settings(&directory, script).with_tripwire(|line| {
+            assert!(!line.contains("breaks the reader"), "the tripwire broke");
+            false
+        });
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("the diagnostics were never read to the end");
+        assert!(error.to_string().contains("panic"), "{error:?}");
+    }
+
     #[tokio::test]
     async fn the_prompt_reaches_the_agent_on_stdin() {
         let directory = TempDir::new().expect("a temporary directory");
@@ -984,7 +890,7 @@ sleep 120
             execution.stopped.is_some(),
             "the throttled agent was waited on until it exited"
         );
-        let error = provider.assemble(execution).expect_err("a failure");
+        let error = assemble(provider.name(), execution).expect_err("a failure");
         let ProviderError::Agent { message, .. } = &error else {
             panic!("expected the agent's own failure, got {error:?}");
         };
@@ -1206,6 +1112,320 @@ sleep 120"#,
         assert_eq!(executable, "/nonexistent/abnegate/codex");
     }
 
+    async fn streamed(provider: &CliProvider, messages: &[Message]) -> AgentStream {
+        provider
+            .stream(request(messages))
+            .await
+            .expect("a running agent")
+    }
+
+    /// Every event `events` yields, and the error it ended with, if any, with
+    /// how many events followed that error.
+    async fn collected(mut events: AgentStream) -> (Vec<AgentEvent>, Option<ProviderError>, usize) {
+        let mut delivered = Vec::new();
+        let mut failure = None;
+        let mut after = 0;
+        while let Some(event) = events.next().await {
+            match event {
+                Ok(event) if failure.is_none() => delivered.push(event),
+                Ok(_) => after += 1,
+                Err(error) => failure = Some(error),
+            }
+        }
+        (delivered, failure, after)
+    }
+
+    #[tokio::test]
+    async fn a_missing_agent_fails_the_stream_before_it_starts() {
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            CliSettings::default().with_executable("/nonexistent/abnegate/claude"),
+        );
+
+        let Err(error) = provider.stream(request(&[Message::user("hi")])).await else {
+            panic!("a missing agent was started");
+        };
+
+        let ProviderError::Unavailable { executable, .. } = &error else {
+            panic!("expected an unavailable agent, got {error:?}");
+        };
+        assert_eq!(executable, "/nonexistent/abnegate/claude");
+    }
+
+    #[tokio::test]
+    async fn settings_the_agent_cannot_honour_fail_the_stream_before_it_starts() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("started");
+        let settings =
+            settings(&directory, &format!("touch '{}'", marker.display())).with_schema("{}");
+        let provider = CliProvider::agent(AgentKind::Codex, settings);
+
+        let Err(error) = provider.stream(request(&[Message::user("hi")])).await else {
+            panic!("codex was started with a claude-only setting");
+        };
+
+        assert!(
+            matches!(error, ProviderError::Unsupported { .. }),
+            "{error:?}"
+        );
+        assert!(!marker.exists(), "the agent was started anyway");
+    }
+
+    #[tokio::test]
+    async fn a_streamed_turn_yields_every_event_in_order_and_ends_cleanly() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, CLAUDE_SESSION));
+        let messages = [Message::user("What does a.rs do?")];
+
+        let (delivered, failure, _) = collected(streamed(&provider, &messages).await).await;
+
+        assert!(failure.is_none(), "{failure:?}");
+        let texts: Vec<&str> = delivered
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["Looking now. ", "It is empty."]);
+        let tool = delivered
+            .iter()
+            .position(
+                |event| matches!(event, AgentEvent::Tool(call) if call.function.name == "Read"),
+            )
+            .expect("the tool call");
+        let second = delivered
+            .iter()
+            .position(|event| matches!(event, AgentEvent::Text(text) if text == "It is empty."))
+            .expect("the second text");
+        assert!(tool < second, "{delivered:?}");
+        assert!(
+            delivered
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Finished { .. })),
+            "{delivered:?}"
+        );
+
+        let folded: StdoutParseResult = delivered.into_iter().collect();
+        let executed = execute(&provider, &messages).await.stdout;
+        assert_eq!(folded.text, executed.text);
+        assert_eq!(folded.usage, executed.usage);
+        assert_eq!(folded.finish_reason, executed.finish_reason);
+        assert_eq!(folded.session, executed.session);
+        assert_eq!(folded.structured, executed.structured);
+        assert_eq!(folded.cost, executed.cost);
+    }
+
+    #[tokio::test]
+    async fn events_reach_the_consumer_before_the_agent_exits() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Looking now."}]}}'
+sleep 120
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
+
+        let mut events = streamed(&provider, &[Message::user("What does a.rs do?")]).await;
+        let first = tokio::time::timeout(PATIENCE, events.next())
+            .await
+            .expect("the text to arrive while the agent is still running")
+            .expect("an event")
+            .expect("a readable event");
+
+        assert!(
+            matches!(&first, AgentEvent::Text(text) if text == "Looking now."),
+            "expected the agent's text, got {first:?}"
+        );
+    }
+
+    /// The process id the fake agent writes to `path`, once it has.
+    async fn written_pid(path: &Path) -> u32 {
+        let started = Instant::now();
+        loop {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|written| written.trim().parse().ok())
+            {
+                return pid;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "the agent never wrote {}",
+                path.display()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// The members of `group` still running once it has had [`PATIENCE`] to
+    /// empty, each killed so that no test leaves one behind.
+    async fn survivors(group: u32) -> Vec<String> {
+        let started = Instant::now();
+        while !running(group).is_empty() && started.elapsed() < PATIENCE {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let survivors = running(group);
+        for pid in &survivors {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", pid])
+                .status();
+        }
+        survivors
+    }
+
+    /// An agent that writes its group to `leader`, forks a long sleep, says
+    /// one thing and then sleeps past every test's patience.
+    fn lingering(leader: &Path) -> String {
+        format!(
+            r#"echo $$ > '{}'
+sleep 120 >/dev/null 2>&1 &
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Working."}}]}}}}'
+sleep 120"#,
+            leader.display()
+        )
+    }
+
+    #[tokio::test]
+    async fn dropping_the_stream_stops_the_agent_and_what_it_forked() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let leader = directory.path().join("leader");
+        let provider =
+            CliProvider::agent(AgentKind::Claude, settings(&directory, &lingering(&leader)));
+
+        let mut events = streamed(&provider, &[Message::user("hi")]).await;
+        tokio::time::timeout(PATIENCE, events.next())
+            .await
+            .expect("the agent's first event")
+            .expect("an event")
+            .expect("a readable event");
+        let group = written_pid(&leader).await;
+        assert!(running(group).len() > 1, "the agent never forked");
+
+        drop(events);
+
+        let survivors = survivors(group).await;
+        assert!(
+            survivors.is_empty(),
+            "dropping the stream left {survivors:?} running"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_a_stream_never_read_stops_the_agent_and_what_it_forked() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let leader = directory.path().join("leader");
+        let provider =
+            CliProvider::agent(AgentKind::Claude, settings(&directory, &lingering(&leader)));
+
+        let events = streamed(&provider, &[Message::user("hi")]).await;
+        let group = written_pid(&leader).await;
+        let started = Instant::now();
+        while running(group).len() < 2 && started.elapsed() < PATIENCE {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        drop(events);
+
+        let survivors = survivors(group).await;
+        assert!(
+            survivors.is_empty(),
+            "dropping the unread stream left {survivors:?} running"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_nobody_reads_still_stops_its_agent_at_the_timeout() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let leader = directory.path().join("leader");
+        let settings =
+            settings(&directory, &lingering(&leader)).with_timeout(Duration::from_secs(1));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let mut events = streamed(&provider, &[Message::user("hi")]).await;
+        let group = written_pid(&leader).await;
+        let survivors = survivors(group).await;
+        assert!(
+            survivors.is_empty(),
+            "the unread stream left {survivors:?} running past its timeout"
+        );
+
+        let first = events.next().await.expect("an event");
+        assert!(
+            matches!(&first, Ok(AgentEvent::Text(text)) if text == "Working."),
+            "{first:?}"
+        );
+        let second = events.next().await.expect("the run's error");
+        assert!(
+            matches!(second, Err(ProviderError::Timeout { .. })),
+            "{second:?}"
+        );
+        assert!(events.next().await.is_none(), "the stream went on");
+    }
+
+    #[tokio::test]
+    async fn the_timeout_covers_the_whole_stream_not_each_event() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+while :; do
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"."}]}}'
+  sleep 0.1
+done
+"#;
+        let settings = settings(&directory, script).with_timeout(Duration::from_secs(1));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let started = Instant::now();
+        let (delivered, failure, after) =
+            collected(streamed(&provider, &[Message::user("hi")]).await).await;
+
+        assert!(
+            matches!(failure, Some(ProviderError::Timeout { .. })),
+            "expected a timeout, got {failure:?}"
+        );
+        assert!(!delivered.is_empty(), "nothing arrived before the timeout");
+        assert_eq!(after, 0, "the stream went on past its error");
+        assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_ends_the_stream_in_the_agents_words_and_the_end_of_its_stderr() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Halfway there."}]}}'
+echo 'could not refresh the session' >&2
+echo '{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","result":"Not logged in · Please run /login"}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"After the failure."}]}}'
+"#;
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
+
+        let (delivered, failure, after) =
+            collected(streamed(&provider, &[Message::user("hi")]).await).await;
+
+        assert!(
+            matches!(delivered.as_slice(), [AgentEvent::Text(text)] if text == "Halfway there."),
+            "{delivered:?}"
+        );
+        assert_eq!(after, 0, "the stream went on past its error");
+        let failure = failure.expect("a failed turn ends in an error");
+        assert!(
+            matches!(failure, ProviderError::Agent { .. }),
+            "{failure:?}"
+        );
+        let message = failure.to_string();
+        assert!(
+            message.contains("Not logged in · Please run /login"),
+            "lost the agent's words: {message}"
+        );
+        let (_, stderr) = message
+            .split_once(STDERR_HEADING)
+            .expect("the end of stderr");
+        assert!(
+            stderr.contains("could not refresh the session"),
+            "lost the end of stderr: {message}"
+        );
+    }
+
     #[tokio::test]
     async fn a_missing_working_directory_fails_to_start() {
         let directory = TempDir::new().expect("a temporary directory");
@@ -1347,6 +1567,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
                 DEFAULT_ENVIRONMENT.contains(&name.as_str())
                     || AgentKind::Claude.configuration().contains(&name.as_str())
                     || shell.contains(&name.as_str())
+                    || LOCALE.contains(&name.as_str())
                     || ["LINEAR_ISSUE_ID", "ANTHROPIC_API_KEY"].contains(&name.as_str()),
                 "the child was handed {name} from the host: {names:?}"
             );
@@ -1427,6 +1648,117 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             Some(CERTIFICATE),
             "the allowed name was not honoured"
         );
+    }
+
+    /// What a server's environment holds that an agent it runs under a
+    /// sign-in of the server's choosing may never be handed, its own
+    /// sign-in and the agents' stored state included. Every value says
+    /// `notreal`, so a leak shows up under any name.
+    const SERVER_SECRETS: &[(&str, &str)] = &[
+        ("DATABASE_URL", "postgres://app:notrealpassword@db/app"),
+        ("JWT_SECRET", "jwt-notrealsecret"),
+        ("ENCRYPTION_KEY", "encryption-notrealkey"),
+        ("LITELLM_KEY", concat!("sk-", "litellm-notrealkey")),
+        ("ANTHROPIC_API_KEY", concat!("sk-ant-", "notreal-key")),
+        ("ANTHROPIC_AUTH_TOKEN", "notreal-auth-token"),
+        (
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            concat!("sk-ant-", "oat-notreal-token"),
+        ),
+        ("ANTHROPIC_BASE_URL", "https://notreal-gateway.internal"),
+        ("OPENAI_API_KEY", concat!("sk-", "notreal-openai-key")),
+        ("CODEX_API_KEY", "notreal-codex-key"),
+        ("CODEX_ACCESS_TOKEN", "notreal-codex-token"),
+        ("CLAUDE_CONFIG_DIR", "/home/server/.claude-notreal"),
+        ("CODEX_HOME", "/home/server/.codex-notreal"),
+        ("CLAUDECODE", "notreal-session"),
+        ("CLAUDE_CODE_ENTRYPOINT", "notreal-entrypoint"),
+        ("CLAUDE_CODE_USE_BEDROCK", "1"),
+        ("AWS_BEARER_TOKEN_BEDROCK", "notreal-bedrock-token"),
+        ("AWS_SECRET_ACCESS_KEY", "notreal-aws-secret"),
+        ("CLAUDE_CODE_USE_VERTEX", "1"),
+        ("ANTHROPIC_VERTEX_PROJECT_ID", "notreal-project"),
+        (
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "/home/server/notreal-gcp.json",
+        ),
+        ("LC_GITHUB_TOKEN", "notreal-smuggled-token"),
+    ];
+
+    /// The server's secrets are set in this test's own child process, and
+    /// the caller allows every variable an agent or a cloud provider signs
+    /// it in with by name.
+    /// Whichever agent runs, with its credential inherited and the host's
+    /// withheld, no sign-in and no agent's stored state passes, inheriting
+    /// the host's whole environment or not, while the locale does.
+    #[tokio::test]
+    async fn the_servers_secrets_and_the_agents_own_state_are_never_inherited() {
+        const NAME: &str =
+            "provider::tests::the_servers_secrets_and_the_agents_own_state_are_never_inherited";
+        const LOCALES: &[(&str, &str)] = &[
+            ("LC_ALL", "C.UTF-8"),
+            ("LC_CTYPE", "UTF-8"),
+            ("LC_MESSAGES", "en_GB.UTF-8"),
+        ];
+        let host: Vec<(&str, &str)> = SERVER_SECRETS.iter().chain(LOCALES).copied().collect();
+        if delegated(NAME, &host).await {
+            return;
+        }
+        let directory = TempDir::new().expect("a temporary directory");
+        let recorded = directory.path().join("environment");
+        let script = recording_environment(&recorded);
+        let credentials = AgentKind::ALL
+            .iter()
+            .flat_map(|agent| agent.credentials())
+            .chain(CLOUD_CREDENTIALS)
+            .copied();
+
+        for agent in AgentKind::ALL {
+            for inherit in [false, true] {
+                let mut settings = settings(&directory, &script)
+                    .allow(credentials.clone())
+                    .withhold_host_credentials();
+                if inherit {
+                    settings = settings.inherit_environment();
+                }
+                let provider = CliProvider::agent(*agent, settings);
+
+                execute(&provider, &[Message::user("hi")]).await;
+
+                let child = recorded_environment(&recorded);
+                let withheld: Vec<&str> = AgentKind::ALL
+                    .iter()
+                    .flat_map(|agent| agent.credentials().iter().chain(agent.configuration()))
+                    .chain(CLOUD_CREDENTIALS)
+                    .chain(agent.scrubbed())
+                    .copied()
+                    .filter(|name| child.contains_key(*name))
+                    .collect();
+                assert!(
+                    withheld.is_empty(),
+                    "{agent}, inheriting {inherit}, was handed the host's {withheld:?}"
+                );
+                if inherit {
+                    continue;
+                }
+                let carrying: Vec<&String> = child
+                    .iter()
+                    .filter(|(_, value)| value.contains("notreal"))
+                    .map(|(name, _)| name)
+                    .collect();
+                assert!(
+                    carrying.is_empty(),
+                    "{agent} was handed {carrying:?} from the host"
+                );
+                for (name, value) in LOCALES {
+                    assert_eq!(
+                        child.get(*name).map(String::as_str),
+                        Some(*value),
+                        "{agent} lost the host's {name}"
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -1872,7 +2204,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         let journal = std::fs::read_to_string(&execution.log.clone().expect("logs").events)
             .expect("the journal");
         assert!(journal.contains("stdout_line_dropped"), "{journal}");
-        let completion = provider.assemble(execution).expect("an answer");
+        let completion = assemble(provider.name(), execution).expect("an answer");
         assert_eq!(
             completion.message.content.as_deref(),
             Some("Read the image.")
@@ -1898,7 +2230,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
 
         assert_eq!(execution.stdout.dropped, 1);
         assert!(execution.stdout.finished);
-        let completion = provider.assemble(execution).expect("an answer");
+        let completion = assemble(provider.name(), execution).expect("an answer");
         assert_eq!(
             completion.message.content.as_deref(),
             Some("Wrote the file.")
@@ -2052,7 +2384,7 @@ sleep 120
         );
         assert_eq!(execution.stdout.text, "Done.");
 
-        let completion = provider.assemble(execution).expect("the finished answer");
+        let completion = assemble(provider.name(), execution).expect("the finished answer");
         assert_eq!(completion.message.content.as_deref(), Some("Done."));
     }
 
@@ -2191,7 +2523,7 @@ sleep 120";
             execution.stopped.is_some(),
             "the agent retrying against a limit was waited on until it exited"
         );
-        let error = provider.assemble(execution).expect_err("a failure");
+        let error = assemble(provider.name(), execution).expect_err("a failure");
         let ProviderError::Agent { message, .. } = &error else {
             panic!("expected the tripped line as the failure, got {error:?}");
         };
@@ -2218,7 +2550,7 @@ sleep 120";
                 "{script}: {:?}",
                 execution.failure
             );
-            let error = provider.assemble(execution).expect_err("a failure");
+            let error = assemble(provider.name(), execution).expect_err("a failure");
             let ProviderError::Agent { message, .. } = &error else {
                 panic!("expected the tripped line as the failure, got {error:?}");
             };
@@ -2278,7 +2610,7 @@ printf '{"type":"result","subtype":"error_during_execution","is_error":true,"res
                 path.display()
             );
         }
-        let error = provider.assemble(execution).expect_err("a failure");
+        let error = assemble(provider.name(), execution).expect_err("a failure");
         assert!(!error.to_string().contains("correct-horse-battery"));
     }
 
@@ -2293,7 +2625,7 @@ exit 2";
         let execution = execute(&provider, &[Message::user("hi")]).await;
         assert_eq!(execution.stderr.len(), 10_013);
 
-        let error = provider.assemble(execution).expect_err("a failure");
+        let error = assemble(provider.name(), execution).expect_err("a failure");
         let ProviderError::Exit { message, .. } = &error else {
             panic!("expected an exit failure, got {error:?}");
         };
@@ -2380,7 +2712,7 @@ exit 3
             "{} bytes",
             execution.stderr.len()
         );
-        let error = provider.assemble(execution).expect_err("a failure");
+        let error = assemble(provider.name(), execution).expect_err("a failure");
 
         let ProviderError::Exit {
             status, message, ..
@@ -2576,7 +2908,7 @@ echo '{"type":"result","subtype":"success","is_error":false}'
             .map(|call| call.function.arguments.len())
             .sum();
         assert!(arguments > 4 * 1024, "{arguments} bytes of arguments");
-        let completion = provider.assemble(execution).expect("an answer");
+        let completion = assemble(provider.name(), execution).expect("an answer");
         assert_eq!(
             completion.message.content.as_deref(),
             Some("Wrote every part.")
@@ -3269,7 +3601,7 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
             );
         }
         assert!(!execution.stderr.contains("zq7x"), "{}", execution.stderr);
-        let error = provider.assemble(execution).expect_err("a failure");
+        let error = assemble(provider.name(), execution).expect_err("a failure");
         let rendered = error.to_string();
         assert!(!rendered.contains("word-123"), "{rendered}");
         assert!(!rendered.contains("zq7x"), "{rendered}");

@@ -119,6 +119,56 @@ pub const READ_ONLY_OPTIONS: &[&str] = &[
     "--session-id",
 ];
 
+/// Variables that sign an agent in to a cloud provider's hosting of its
+/// model, or point it at one: Amazon Bedrock and the AWS credentials it
+/// reads, Google Vertex AI and the Google credentials it reads, and
+/// Microsoft Foundry with the Azure identity it signs in through.
+/// [`CliSettings::withhold_host_credentials`] withholds
+/// them with every agent's own sign-in.
+pub const CLOUD_CREDENTIALS: &[&str] = &[
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "AZURE_CLIENT_ID",
+    "AZURE_TENANT_ID",
+    "AZURE_CLIENT_SECRET",
+    "AZURE_CLIENT_CERTIFICATE_PATH",
+    "AZURE_CLIENT_CERTIFICATE_PASSWORD",
+    "AZURE_CLIENT_SEND_CERTIFICATE_CHAIN",
+    "AZURE_FEDERATED_TOKEN_FILE",
+    "AZURE_AUTHORITY_HOST",
+    "AZURE_USERNAME",
+    "AZURE_PASSWORD",
+];
+
 /// How a [`CliProvider`](crate::CliProvider) runs its agent.
 ///
 /// `Debug` is safe to log: the credential, every injected environment value
@@ -132,7 +182,9 @@ pub struct CliSettings {
     /// The child's working directory. `None` inherits this process's.
     pub working_directory: Option<PathBuf>,
     /// The key the agent signs in with, or [`Credential::Inherited`] to use
-    /// the host's existing session.
+    /// the host's existing session, which
+    /// [`withhold_host_credentials`](CliSettings::withhold_host_credentials)
+    /// narrows to the one the agent finds under its `HOME`.
     pub credential: Credential,
     /// How long one run may take in all, after which the agent's process
     /// group is stopped and the run fails as timed out.
@@ -186,9 +238,10 @@ pub struct CliSettings {
     /// [nested-session marker](crate::AgentKind::scrubbed) is never passed
     /// this way: a run that must see it sets it explicitly. Nor is a
     /// variable the agent [signs in with](crate::AgentKind::credentials),
-    /// unless its [credential](CliSettings::credential) is inherited: beside
-    /// a credential of the caller's own, the host's would be one more the
-    /// agent could sign in with. A gateway such as `ANTHROPIC_BASE_URL` for
+    /// unless its [credential](CliSettings::credential) is inherited and the
+    /// host's are not [withheld](CliSettings::withhold_host_credentials):
+    /// beside a credential of the caller's own, the host's would be one more
+    /// the agent could sign in with. A gateway such as `ANTHROPIC_BASE_URL` for
     /// a run given its own key is set explicitly.
     pub allowed: BTreeSet<String>,
     /// Give the child the host's whole environment, less the agent's
@@ -205,6 +258,31 @@ pub struct CliSettings {
     /// [`mcp`](crate::mcp). Anything else it needs, such as a proxy, is
     /// [allowed](CliSettings::allow) or set explicitly.
     pub inherit_environment: bool,
+    /// Give the child none of the host's own sign-in, even when its
+    /// [credential](CliSettings::credential) is inherited. These never pass
+    /// from the host, whether [allowed](CliSettings::allowed) by name or
+    /// [inherited](CliSettings::inherit_environment):
+    ///
+    /// - every variable any [agent](crate::AgentKind::ALL)
+    ///   [signs in with](crate::AgentKind::credentials);
+    /// - Claude Code's OAuth refresh token, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`;
+    /// - the cloud sign-ins in [`CLOUD_CREDENTIALS`].
+    ///
+    /// Nor does any agent's [configuration](crate::AgentKind::configuration)
+    /// variable, which points it at the host's stored sign-in, unless it is
+    /// allowed by name. A stdio MCP server's reference to any variable in the
+    /// list reads as set but empty, unless a secret is bound to the server
+    /// under that name. Any other variable the host's sign-in lives in, and
+    /// anything the agent finds in files under its `HOME`, such as
+    /// `~/.aws/credentials`, is not withheld.
+    ///
+    /// Off by default. For a host whose own keys must never stand in for the
+    /// sign-in it hands each run, such as a server running agents for several
+    /// organisations: an inherited credential is then the one the agent finds
+    /// under its `HOME`, and any other reaches it only through the
+    /// credential, [`variables`](CliSettings::variables) or
+    /// [`environment`](CliSettings::environment).
+    pub withhold_host_credentials: bool,
     /// Extra flags passed through verbatim, after the streaming flags and
     /// before the model. Nothing here is checked against the agent, except
     /// in a [read-only](CliSettings::read_only) run, which refuses anything
@@ -276,7 +354,9 @@ pub struct CliSettings {
     /// A stderr line this returns true for settles the run as failed, in the
     /// line's own words, and the agent is stopped: an agent retrying against
     /// a rate limit is stopped instead of waited on until the timeout. Stdout
-    /// is never checked, since the agent's prose can quote anything.
+    /// is never checked, since the agent's prose can quote anything. A turn
+    /// that finished anyway, its result read, still answers: the tripwire
+    /// ends a wait, it never discards an answer the agent gave.
     pub tripwire: Option<Tripwire>,
 }
 
@@ -293,6 +373,7 @@ impl Default for CliSettings {
             variables: BTreeMap::new(),
             allowed: BTreeSet::new(),
             inherit_environment: false,
+            withhold_host_credentials: false,
             arguments: Vec::new(),
             session: None,
             sandbox: None,
@@ -415,6 +496,12 @@ impl CliSettings {
     /// Opt in to [`CliSettings::inherit_environment`].
     pub fn inherit_environment(mut self) -> Self {
         self.inherit_environment = true;
+        self
+    }
+
+    /// Opt in to [`CliSettings::withhold_host_credentials`].
+    pub fn withhold_host_credentials(mut self) -> Self {
+        self.withhold_host_credentials = true;
         self
     }
 
@@ -659,6 +746,7 @@ mod tests {
         assert!(settings.variables.is_empty());
         assert!(settings.allowed.is_empty());
         assert!(!settings.inherit_environment);
+        assert!(!settings.withhold_host_credentials);
         assert!(settings.arguments.is_empty());
         assert!(settings.session.is_none());
         assert!(settings.sandbox.is_none());
@@ -741,7 +829,8 @@ mod tests {
             .with_log("/var/log/agents")
             .with_journal_limit(4096)
             .with_variable("DISABLE_AUTOUPDATER", "1")
-            .inherit_environment();
+            .inherit_environment()
+            .withhold_host_credentials();
 
         assert_eq!(settings.arguments, ["--json-schema", "{}", "--verbose"]);
         assert_eq!(settings.permissions, ["Read", "Edit"]);
@@ -752,6 +841,7 @@ mod tests {
         assert_eq!(settings.working_directory, Some(PathBuf::from("/w")));
         assert_eq!(settings.log, Some(PathBuf::from("/var/log/agents")));
         assert!(settings.inherit_environment);
+        assert!(settings.withhold_host_credentials);
         assert_eq!(settings.journal_limit, 4096);
         assert_eq!(
             settings
