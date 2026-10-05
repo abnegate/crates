@@ -112,6 +112,7 @@ pub use crate::report::Report;
 pub use crate::severity::Severity;
 pub use crate::smtp::Sender;
 pub use crate::smtp::SmtpConfig;
+pub use crate::smtp::SmtpSecurity;
 
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
