@@ -29,10 +29,8 @@ impl<'path> PrivateFile<'path> {
     }
 
     pub(crate) fn write(&self, contents: &[u8]) -> Result<(), Error> {
-        self.replace(contents).map_err(|source| Error::Write {
-            path: self.path.to_path_buf(),
-            source,
-        })
+        self.replace(contents)
+            .map_err(|source| Error::write(self.path, source))
     }
 
     fn replace(&self, contents: &[u8]) -> io::Result<()> {

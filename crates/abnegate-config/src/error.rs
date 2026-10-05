@@ -135,6 +135,90 @@ pub enum Error {
     Metadata(#[from] serde_json::Error),
 }
 
+impl Error {
+    /// No configuration file exists at `path`.
+    #[must_use]
+    pub fn missing(path: impl Into<PathBuf>) -> Self {
+        Self::Missing { path: path.into() }
+    }
+
+    /// The file at `path` exists but reading it failed with `source`.
+    #[must_use]
+    pub fn read(path: impl Into<PathBuf>, source: io::Error) -> Self {
+        Self::Read {
+            path: path.into(),
+            source,
+        }
+    }
+
+    /// Writing the file at `path`, or its directory, failed with `source`.
+    #[must_use]
+    pub fn write(path: impl Into<PathBuf>, source: io::Error) -> Self {
+        Self::Write {
+            path: path.into(),
+            source,
+        }
+    }
+
+    /// The file at `path` was rejected as TOML or as settings by `source`.
+    #[must_use]
+    pub fn parse(path: impl Into<PathBuf>, source: toml::de::Error) -> Self {
+        Self::Parse {
+            path: path.into(),
+            source,
+        }
+    }
+
+    /// `key` is not a valid environment variable name.
+    #[must_use]
+    pub fn invalid_key(key: impl Into<String>) -> Self {
+        Self::InvalidKey { key: key.into() }
+    }
+
+    /// The sealed value at `field` could not be opened, for `source`.
+    #[must_use]
+    pub fn decrypt(field: impl Into<String>, source: abnegate_secret::Error) -> Self {
+        Self::Decrypt {
+            field: field.into(),
+            source,
+        }
+    }
+
+    /// The value at `field` could not be sealed again, for `source`.
+    #[must_use]
+    pub fn encrypt(field: impl Into<String>, source: abnegate_secret::Error) -> Self {
+        Self::Encrypt {
+            field: field.into(),
+            source,
+        }
+    }
+
+    /// The value at `field` arrived sealed and there is no master key to seal
+    /// it again.
+    #[must_use]
+    pub fn sealed_without_key(field: impl Into<String>) -> Self {
+        Self::SealedWithoutKey {
+            field: field.into(),
+        }
+    }
+
+    /// The value that arrived sealed at `field` is gone or no longer a string.
+    #[must_use]
+    pub fn sealed_shape_changed(field: impl Into<String>) -> Self {
+        Self::SealedShapeChanged {
+            field: field.into(),
+        }
+    }
+
+    /// The keyring holds no credential called `name`.
+    #[cfg(feature = "keyring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "keyring")))]
+    #[must_use]
+    pub fn no_credential(name: impl Into<String>) -> Self {
+        Self::NoCredential { name: name.into() }
+    }
+}
+
 #[cfg(feature = "keyring")]
 impl From<keyring::Error> for Error {
     fn from(error: keyring::Error) -> Self {
@@ -155,9 +239,7 @@ mod tests {
 
     #[test]
     fn missing_files_are_named() {
-        let error = Error::Missing {
-            path: PathBuf::from("/tmp/example/config.toml"),
-        };
+        let error = Error::missing("/tmp/example/config.toml");
         assert_eq!(
             error.to_string(),
             "Configuration file '/tmp/example/config.toml' does not exist"
@@ -166,10 +248,10 @@ mod tests {
 
     #[test]
     fn read_failures_are_named() {
-        let error = Error::Read {
-            path: PathBuf::from("/tmp/example/config.toml"),
-            source: io::Error::new(io::ErrorKind::NotFound, "File not found"),
-        };
+        let error = Error::read(
+            "/tmp/example/config.toml",
+            io::Error::new(io::ErrorKind::NotFound, "File not found"),
+        );
         assert_eq!(
             error.to_string(),
             "Failed to read '/tmp/example/config.toml'"
@@ -202,10 +284,7 @@ mod tests {
     #[test]
     fn parse_failures_carry_the_source() {
         let source = toml::from_str::<toml::Value>("invalid { toml").unwrap_err();
-        let error = Error::Parse {
-            path: PathBuf::from("config.toml"),
-            source,
-        };
+        let error = Error::parse("config.toml", source);
         assert!(matches!(error, Error::Parse { .. }));
         assert!(error.to_string().contains("config.toml"));
     }
@@ -219,18 +298,13 @@ mod tests {
 
     #[test]
     fn decryption_failures_name_the_field() {
-        let error = Error::Decrypt {
-            field: "database.password".to_string(),
-            source: abnegate_secret::Error::Decryption,
-        };
+        let error = Error::decrypt("database.password", abnegate_secret::Error::Decryption);
         assert_eq!(error.to_string(), "Failed to decrypt 'database.password'");
     }
 
     #[test]
     fn a_sealed_field_without_a_key_is_named() {
-        let error = Error::SealedWithoutKey {
-            field: "database.password".to_string(),
-        };
+        let error = Error::sealed_without_key("database.password");
         assert_eq!(
             error.to_string(),
             "'database.password' arrived sealed and there is no master key to seal it again"
@@ -240,25 +314,94 @@ mod tests {
     #[test]
     fn every_error_is_debuggable() {
         let errors = [
-            Error::Missing {
-                path: PathBuf::from("config.toml"),
-            },
+            Error::missing("config.toml"),
             Error::NoHomeDirectory,
-            Error::Encrypt {
-                field: "token".to_string(),
-                source: abnegate_secret::Error::Encryption,
-            },
-            Error::InvalidKey {
-                key: "1KEY".to_string(),
-            },
-            Error::SealedShapeChanged {
-                field: "hosts[0]".to_string(),
-            },
+            Error::encrypt("token", abnegate_secret::Error::Encryption),
+            Error::invalid_key("1KEY"),
+            Error::sealed_shape_changed("hosts[0]"),
         ];
 
         for error in errors {
             assert!(!format!("{error:?}").is_empty());
         }
+    }
+
+    #[test]
+    fn every_constructor_builds_its_variant() {
+        let unparsable = toml::from_str::<toml::Value>("invalid { toml").unwrap_err();
+        let cases = [
+            (
+                Error::missing("config.toml"),
+                "Configuration file 'config.toml' does not exist",
+            ),
+            (
+                Error::read(
+                    "config.toml",
+                    io::Error::new(io::ErrorKind::PermissionDenied, "denied"),
+                ),
+                "Failed to read 'config.toml'",
+            ),
+            (
+                Error::write(
+                    "config.toml",
+                    io::Error::new(io::ErrorKind::PermissionDenied, "denied"),
+                ),
+                "Failed to write 'config.toml'",
+            ),
+            (
+                Error::parse("config.toml", unparsable),
+                "Failed to parse 'config.toml'",
+            ),
+            (
+                Error::invalid_key("1KEY"),
+                "'1KEY' is not an environment variable name",
+            ),
+            (
+                Error::decrypt("database.password", abnegate_secret::Error::Decryption),
+                "Failed to decrypt 'database.password'",
+            ),
+            (
+                Error::encrypt("database.password", abnegate_secret::Error::Encryption),
+                "Failed to encrypt 'database.password'",
+            ),
+            (
+                Error::sealed_without_key("token"),
+                "'token' arrived sealed and there is no master key to seal it again",
+            ),
+            (
+                Error::sealed_shape_changed("hosts[0]"),
+                "'hosts[0]' arrived sealed and is no longer a string that can be sealed again",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected, "{error:?}");
+        }
+    }
+
+    #[test]
+    fn constructors_keep_their_fields() {
+        assert!(
+            matches!(Error::missing("config.toml"), Error::Missing { path } if path == std::path::Path::new("config.toml"))
+        );
+        assert!(matches!(
+            Error::read("config.toml", io::Error::new(io::ErrorKind::NotFound, "gone")),
+            Error::Read { path, source } if path == std::path::Path::new("config.toml") && source.kind() == io::ErrorKind::NotFound
+        ));
+        assert!(matches!(
+            Error::decrypt("token", abnegate_secret::Error::Decryption),
+            Error::Decrypt { field, source: abnegate_secret::Error::Decryption } if field == "token"
+        ));
+        assert!(matches!(Error::invalid_key("1KEY"), Error::InvalidKey { key } if key == "1KEY"));
+    }
+
+    #[cfg(feature = "keyring")]
+    #[test]
+    fn a_missing_credential_is_built_and_named() {
+        let error = Error::no_credential("access-token");
+
+        assert_eq!(error.to_string(), "No credential stored for 'access-token'");
+        assert!(matches!(error, Error::NoCredential { name } if name == "access-token"));
     }
 
     #[cfg(feature = "keyring")]

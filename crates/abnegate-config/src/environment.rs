@@ -86,7 +86,7 @@ impl EnvironmentFile {
     /// not a shell variable name.
     pub fn update(&self, values: &BTreeMap<String, String>) -> Result<(), Error> {
         if let Some(key) = values.keys().find(|key| !is_key(key)) {
-            return Err(Error::InvalidKey { key: key.clone() });
+            return Err(Error::invalid_key(key.clone()));
         }
 
         PrivateFile::new(&self.path).write(apply(&self.content()?, values).as_bytes())
@@ -96,10 +96,7 @@ impl EnvironmentFile {
         match fs::read_to_string(&self.path) {
             Ok(content) => Ok(content),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-            Err(source) => Err(Error::Read {
-                path: self.path.clone(),
-                source,
-            }),
+            Err(source) => Err(Error::read(self.path.clone(), source)),
         }
     }
 }
