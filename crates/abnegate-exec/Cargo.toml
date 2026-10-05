@@ -33,4 +33,4 @@ uuid = { workspace = true, features = ["v4"] }
 [dev-dependencies]
 futures = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

@@ -9,7 +9,10 @@
 //! cancelled, whatever is left of its group is killed before the run is
 //! reported, so nothing it started outlives it. A [`JobRegistry`] tracks
 //! those runs by identifier so a caller can cancel one, or all of them, from
-//! elsewhere.
+//! elsewhere. A host that spawns process groups of its own keeps them, and the
+//! [`Marker`]s of the processes that may have left them, in a
+//! [`GroupRegistry`], so a shutdown can interrupt every run and kill whatever
+//! is left.
 //!
 //! A run may ask to be confined. [`Confinement`] translates a command plus its
 //! readable, writable and executable roots into an invocation of the host
@@ -101,6 +104,7 @@ pub mod proxy;
 pub use abnegate_secret::SecretValue;
 pub use error::DaemonError;
 pub use error::ExecutorError;
+pub use error::GroupRegistryError;
 pub use error::JobError;
 pub use error::MarkerError;
 pub use error::ProtocolError;
@@ -112,6 +116,7 @@ pub use executor::ConfinementMode;
 pub use executor::DEFAULT_ENVIRONMENT;
 pub use executor::EnvironmentPolicy;
 pub use executor::ExecutorConfig;
+pub use executor::GroupRegistry;
 pub use executor::HOST_BACKEND;
 pub use executor::Invocation;
 pub use executor::JobHandle;

@@ -14,7 +14,7 @@ mod linux;
 #[allow(unsafe_code)]
 mod macos;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
-mod straggler;
+pub(crate) mod straggler;
 mod sweep;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod unsupported;
