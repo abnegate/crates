@@ -459,6 +459,15 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_token_count_and_a_path_named_like_a_credential() {
+        let text = "\u{1b}[2mmax_tokens=200000 cwd=~/Local/sk-learn-experiments\u{1b}[0m";
+        assert_eq!(
+            sanitize(text),
+            "max_tokens=200000 cwd=~/Local/sk-learn-experiments"
+        );
+    }
+
+    #[test]
     fn sanitize_owned_keeps_the_original_buffer_when_clean() {
         let text = String::from("nothing to clean here");
         assert_eq!(sanitize_owned(text.clone()), text);

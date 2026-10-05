@@ -86,12 +86,13 @@ const SCANNER_DIRECTORIES: &[&str] = &["redact", "sanitize"];
 /// included: on a string, a slice or a vector, only its length, whether it is
 /// empty, a view of its bytes, one element or range of it, or one element
 /// pushed onto it, and otherwise methods of numbers, characters, ranges,
-/// flags and options, which the text has none of. `filter` and `map` also
-/// adapt an iterator, which walks nothing until a consumer drives it, and no
-/// consumer is on this list.
+/// flags and options, which the text has none of. `copied`, `filter` and
+/// `map` also adapt an iterator, which walks nothing until a consumer drives
+/// it, and no consumer is on this list.
 const CONSTANT_TIME: &[&str] = &[
     "as_bytes",
     "checked_sub",
+    "copied",
     "encode_utf8",
     "end",
     "filter",
@@ -146,6 +147,7 @@ const TABLE_LOOKUPS: &[&str] = &["contains", "get"];
 /// name with a method of a string, a slice, a vector, an option or an
 /// iterator, whose calls the rule could not then tell from these.
 const SCANNER_METHODS: &[&str] = &[
+    "covers",
     "device_control",
     "end_at",
     "operating_system_command",
