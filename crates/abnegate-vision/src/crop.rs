@@ -13,6 +13,7 @@ use crate::decode::MAXIMUM_PIXELS;
 use crate::decode::Orientation;
 use crate::decode::Raster;
 use crate::gravity::Point;
+use crate::gravity::Rectangle;
 use crate::preprocess::map_pixel;
 
 mod error;
@@ -124,6 +125,111 @@ pub fn render(raster: &Raster, region: Region, target: Target) -> Result<Rendere
             channels,
         ),
     ))
+}
+
+/// Renders the 8-bit luma mask of a crop: the saliency map's value under each
+/// pixel of `target`, 255 where the map is certain of the subject and 0 where
+/// it is certain of the background.
+///
+/// `map` holds `map_size.0` x `map_size.1` values row by row, and `content` is
+/// the rectangle of it the oriented image was letterboxed into, the one
+/// `preprocess` reports. `source` is the oriented image's size and `region`
+/// the crop in it, as [`plan`] gives it, so the mask lines up pixel for pixel
+/// with what [`render`] makes of the same region and target. A value that is
+/// not finite reads as background.
+pub fn render_mask(
+    map: &[f32],
+    map_size: (u32, u32),
+    content: Rectangle,
+    source: (u32, u32),
+    region: Region,
+    target: Target,
+) -> Result<Vec<u8>, CropError> {
+    let (map_width, map_height) = map_size;
+    let whole = Rectangle::new(
+        0,
+        0,
+        i32::try_from(map_width).unwrap_or(i32::MAX),
+        i32::try_from(map_height).unwrap_or(i32::MAX),
+    );
+    if map.len() as u64 != u64::from(map_width) * u64::from(map_height)
+        || whole.is_empty()
+        || content.is_empty()
+        || !content.contained_by(&whole)
+    {
+        return Err(CropError::Map {
+            length: map.len(),
+            size: map_size,
+            content,
+        });
+    }
+    if source.0 == 0 || source.1 == 0 {
+        return Err(CropError::EmptySource);
+    }
+    if target.width == 0 || target.height == 0 {
+        return Err(CropError::EmptyTarget);
+    }
+    if target.area() > MAXIMUM_PIXELS {
+        return Err(CropError::TargetTooLarge {
+            width: target.width,
+            height: target.height,
+        });
+    }
+    if !region.lies_within(source) {
+        return Err(CropError::Region {
+            region,
+            size: source,
+        });
+    }
+
+    let columns = cells(
+        region.x,
+        region.width,
+        target.width,
+        source.0,
+        content.left,
+        content.right,
+    );
+    let rows = cells(
+        region.y,
+        region.height,
+        target.height,
+        source.1,
+        content.top,
+        content.bottom,
+    );
+    let stride = map_width as usize;
+    let mut pixels = Vec::with_capacity(target.width as usize * target.height as usize);
+    for row in rows {
+        pixels.extend(
+            columns
+                .iter()
+                .map(|column| luma(map[row * stride + column])),
+        );
+    }
+    Ok(pixels)
+}
+
+/// The map cell under the centre of each of `samples` output pixels spread
+/// over `extent` image pixels from `start`, along one axis.
+fn cells(start: u32, extent: u32, samples: u32, size: u32, near: i32, far: i32) -> Vec<usize> {
+    let span = f64::from(far - near);
+    (0..samples)
+        .map(|sample| {
+            let image = f64::from(start)
+                + (f64::from(sample) + 0.5) * f64::from(extent) / f64::from(samples);
+            let cell = f64::from(near) + image * span / f64::from(size);
+            (cell.floor() as i64).clamp(i64::from(near), i64::from(far) - 1) as usize
+        })
+        .collect()
+}
+
+fn luma(value: f32) -> u8 {
+    if value.is_finite() {
+        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+    } else {
+        0
+    }
 }
 
 /// Maps a region of the oriented image back to the stored pixel buffer.
@@ -265,6 +371,132 @@ mod tests {
 
         assert_eq!((rendered.width, rendered.height), (32, 32));
         assert_eq!(rendered.pixels.len(), 32 * 32 * 3);
+    }
+
+    fn half_subject_map() -> Vec<f32> {
+        let mut map = vec![0.0f32; 8 * 8];
+        for row in map.chunks_mut(8) {
+            row[..4].fill(1.0);
+        }
+        map
+    }
+
+    #[test]
+    fn a_mask_matches_the_target_bucket() {
+        let target = Target::new(64, 96);
+        let mask = render_mask(
+            &half_subject_map(),
+            (8, 8),
+            Rectangle::new(0, 0, 8, 8),
+            (16, 16),
+            Region::new(0, 0, 16, 16),
+            target,
+        )
+        .unwrap();
+        assert_eq!(mask.len(), 64 * 96);
+        assert!(mask[0] > 200, "left side of the map is the subject");
+        assert!(
+            mask[63] < 32,
+            "right side of the map is background, got {}",
+            mask[63]
+        );
+    }
+
+    #[test]
+    fn a_mask_follows_the_crop_and_the_letterbox() {
+        let mut map = vec![0.0f32; 8 * 8];
+        for row in map.chunks_mut(8).skip(2).take(4) {
+            row[2..4].fill(1.0);
+        }
+        let content = Rectangle::new(2, 2, 6, 6);
+        let left = render_mask(
+            &map,
+            (8, 8),
+            content,
+            (40, 40),
+            Region::new(0, 0, 20, 40),
+            Target::new(4, 8),
+        )
+        .unwrap();
+        assert!(left.iter().all(|value| *value == 255), "{left:?}");
+        let right = render_mask(
+            &map,
+            (8, 8),
+            content,
+            (40, 40),
+            Region::new(20, 0, 20, 40),
+            Target::new(4, 8),
+        )
+        .unwrap();
+        assert!(right.iter().all(|value| *value == 0), "{right:?}");
+    }
+
+    #[test]
+    fn a_mask_reads_uncertain_and_broken_values_as_what_they_say() {
+        let map = [0.5, f32::NAN, -3.0, 7.0];
+        let mask = render_mask(
+            &map,
+            (2, 2),
+            Rectangle::new(0, 0, 2, 2),
+            (2, 2),
+            Region::new(0, 0, 2, 2),
+            Target::new(2, 2),
+        )
+        .unwrap();
+        assert_eq!(mask, [128, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_mask_is_refused_when_its_inputs_disagree() {
+        let map = half_subject_map();
+        let whole = Rectangle::new(0, 0, 8, 8);
+        let region = Region::new(0, 0, 16, 16);
+        let target = Target::square(8);
+        for (values, size, content) in [
+            (&map[..63], (8, 8), whole),
+            (&map[..], (8, 0), whole),
+            (&map[..], (8, 8), Rectangle::new(4, 4, 4, 8)),
+            (&map[..], (8, 8), Rectangle::new(-1, 0, 8, 8)),
+            (&map[..], (8, 8), Rectangle::new(0, 0, 9, 8)),
+        ] {
+            assert!(
+                matches!(
+                    render_mask(values, size, content, (16, 16), region, target),
+                    Err(CropError::Map { .. })
+                ),
+                "{size:?} with {content:?} was accepted"
+            );
+        }
+        assert!(matches!(
+            render_mask(&map, (8, 8), whole, (0, 16), region, target),
+            Err(CropError::EmptySource)
+        ));
+        assert!(matches!(
+            render_mask(&map, (8, 8), whole, (16, 16), region, Target::new(0, 8)),
+            Err(CropError::EmptyTarget)
+        ));
+        assert!(matches!(
+            render_mask(
+                &map,
+                (8, 8),
+                whole,
+                (16, 16),
+                region,
+                Target::new(5_000, 4_001)
+            ),
+            Err(CropError::TargetTooLarge { .. })
+        ));
+        assert!(matches!(
+            render_mask(
+                &map,
+                (8, 8),
+                whole,
+                (16, 16),
+                Region::new(8, 0, 16, 16),
+                target
+            ),
+            Err(CropError::Region { size: (16, 16), .. })
+        ));
     }
 
     #[test]

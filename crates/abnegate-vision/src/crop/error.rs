@@ -2,6 +2,7 @@
 
 use crate::crop::region::Region;
 use crate::decode::MAXIMUM_PIXELS;
+use crate::gravity::Rectangle;
 
 /// A failure planning or rendering a crop.
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +31,22 @@ pub enum CropError {
         width: u32,
         /// The target's height.
         height: u32,
+    },
+    /// The saliency map does not hold one value per cell of its size, or the
+    /// content rectangle is empty or reaches outside it.
+    #[error(
+        "saliency map of {length} values does not cover a {}x{} grid around content {content:?}",
+        .size.0,
+        .size.1
+    )]
+    #[non_exhaustive]
+    Map {
+        /// The number of values the map holds.
+        length: usize,
+        /// The map's width and height, in cells.
+        size: (u32, u32),
+        /// The rectangle of the map the image occupies.
+        content: Rectangle,
     },
     /// Resampling the region failed.
     #[error("render crop: {0}")]
