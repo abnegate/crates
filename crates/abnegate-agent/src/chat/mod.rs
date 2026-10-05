@@ -10,9 +10,12 @@
 //! independent of the provider's wire format; [`validate`] checks a
 //! [`Summary`] against it before the summary may stand in for any evidence.
 //! [`Resolver`] finds the effective context [`Capacity`] of the deployment a
-//! model alias routes to.
+//! model alias routes to, and whether its engine thinks or reads images; an
+//! endpoint that publishes no deployment metadata is given a configured
+//! context instead.
 
 mod capacity;
+mod deployment;
 mod entry;
 mod error;
 mod evidence;

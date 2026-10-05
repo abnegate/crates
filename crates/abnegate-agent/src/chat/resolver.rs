@@ -1,21 +1,11 @@
-use std::time::Duration;
-
-use reqwest::Client;
-use serde_json::Value;
-
 use super::Capacity;
 use super::ChatError;
-use super::Source;
-use super::route::Route;
-use super::routes::Routes;
+use super::deployment::Deployment;
 
 /// Fallback allocation when a deployment has not reported native capacity.
 /// Production callers supply validated typed configuration through
 /// [`Resolver::with_context`].
 pub const DEFAULT_CONTEXT: u64 = 32_768;
-
-/// How long a metadata request may take before capacity is reported unknown.
-const METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Finds the effective context limit of the deployment a model alias routes
 /// to, from the deployment itself and never from the model's name.
@@ -24,7 +14,8 @@ const METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 /// `/api/ps` runtime still wins, and an explicit LiteLLM route `num_ctx` is an
 /// operator request bounded by that native window. A configured context is a
 /// fallback only when native capacity is unknown, never a ceiling on a larger
-/// advertised window.
+/// advertised window. The same `/api/show` response says whether the engine
+/// thinks and whether it reads images.
 ///
 /// LiteLLM 1.99.1 accepts top-level `num_ctx` and forwards it to Ollama's
 /// `options.num_ctx`, so ordinary inference and summarization must both apply
@@ -32,13 +23,13 @@ const METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 /// <https://docs.litellm.ai/docs/proxy/model_management> and
 /// <https://docs.ollama.com/api/ps>.
 ///
+/// An endpoint that is not such a deployment is resolved with
+/// [`Resolver::undisclosed`], which asks it nothing.
+///
 /// Refreshed per preparation: no stale cross-provider or unloaded-runtime cache.
 pub struct Resolver {
-    client: Client,
-    host: String,
-    key: String,
-    ollama: String,
     configured: Option<u64>,
+    deployment: Option<Deployment>,
 }
 
 impl Resolver {
@@ -59,17 +50,23 @@ impl Resolver {
         ollama: &str,
         configured: Option<u64>,
     ) -> Result<Self, ChatError> {
-        let client = Client::builder()
-            .connect_timeout(METADATA_TIMEOUT)
-            .timeout(METADATA_TIMEOUT)
-            .build()?;
         Ok(Self {
-            client,
-            host: host.trim_end_matches('/').into(),
-            key: key.into(),
-            ollama: ollama.trim_end_matches('/').into(),
             configured: configured.filter(|value| *value > 0),
+            deployment: Some(Deployment::new(host, key, ollama)?),
         })
+    }
+
+    /// A resolver for an endpoint that is not a LiteLLM deployment of this
+    /// instance.
+    ///
+    /// Nothing is requested to learn a model's capacity: every model is given
+    /// `configured`, or an unknown capacity when that is unset or zero, and no
+    /// Ollama `num_ctx` is ever set for it.
+    pub fn undisclosed(configured: Option<u64>) -> Self {
+        Self {
+            configured: configured.filter(|value| *value > 0),
+            deployment: None,
+        }
     }
 
     /// The effective context capacity of the deployment `model` routes to,
@@ -78,333 +75,26 @@ impl Resolver {
     /// Never fails: when metadata cannot be fetched or the route is
     /// ambiguous, the capacity's limit is unknown and its reason says why.
     pub async fn resolve(&self, model: &str) -> Capacity {
-        let Some(mut routes) = self.routes(model).await else {
-            return Capacity::unknown(
-                model,
-                "The selected model's deployment metadata is unavailable.",
-            );
-        };
-        if routes.is_empty() {
-            let Some(wildcard) = self.routes("*").await else {
-                return Capacity::unknown(
-                    model,
-                    "The wildcard deployment metadata is unavailable.",
-                );
-            };
-            routes = wildcard;
+        match &self.deployment {
+            Some(deployment) => deployment.resolve(model, self.configured).await,
+            None => Capacity::assumed(model, self.configured),
         }
-        let route = match select(&routes, model) {
-            Ok(route) => route,
-            Err(reason) => return Capacity::unknown(model, reason),
-        };
-        let identity = format!(
-            "{}|{}|{}",
-            model,
-            route.litellm_params.model,
-            route.litellm_params.api_base.as_deref().unwrap_or("")
-        );
-        let native = route
-            .litellm_params
-            .model
-            .strip_prefix("ollama_chat/")
-            .or_else(|| route.litellm_params.model.strip_prefix("ollama/"));
-        let Some(native) = native else {
-            let limit = route
-                .model_info
-                .get("max_input_tokens")
-                .and_then(Value::as_u64)
-                .filter(|value| *value > 0);
-            return Capacity {
-                limit,
-                source: if limit.is_some() {
-                    Source::Provider
-                } else {
-                    Source::Unknown
-                },
-                ollama: None,
-                reasoning: provider_reasoning(&route.model_info),
-                reason: limit.is_none().then(|| {
-                    "The selected provider has not reported an input context limit.".into()
-                }),
-                identity,
-            };
-        };
-        if route
-            .litellm_params
-            .api_base
-            .as_deref()
-            .map(|base| base.trim_end_matches('/'))
-            != Some(self.ollama.as_str())
-        {
-            return Capacity::unknown(
-                model,
-                "The model's Ollama deployment does not match the configured metadata endpoint.",
-            );
-        }
-        if native.is_empty() || native.contains('*') {
-            return Capacity::unknown(
-                model,
-                "The selected model's native deployment could not be resolved.",
-            );
-        }
-        let (running, shown) = tokio::join!(self.running(), self.show(native));
-        let runtime = running
-            .as_ref()
-            .and_then(|body| body.get("models"))
-            .and_then(Value::as_array)
-            .and_then(|models| {
-                models.iter().find(|entry| {
-                    ["name", "model"]
-                        .into_iter()
-                        .filter_map(|key| entry.get(key).and_then(Value::as_str))
-                        .any(|name| normalize(name) == normalize(native))
-                })
-            })
-            .and_then(|entry| entry.get("context_length"))
-            .and_then(Value::as_u64)
-            .filter(|value| *value > 0);
-        let advertised = shown.as_ref().and_then(native_limit);
-        let requested = route.litellm_params.num_ctx.filter(|value| *value > 0);
-        let reasoning = shown.as_ref().is_some_and(ollama_thinking);
-        if let Some(runtime) = runtime {
-            let limit = advertised.map_or(runtime, |advertised| runtime.min(advertised));
-            return Capacity {
-                limit: Some(limit),
-                source: if limit == runtime {
-                    Source::Runtime
-                } else {
-                    Source::Configured
-                },
-                ollama: Some(limit),
-                reasoning,
-                reason: (limit != runtime).then(|| {
-                    "The loaded context exceeds native capacity; this request uses the supported bound.".into()
-                }),
-                identity,
-            };
-        }
-        if let Some(advertised) = advertised {
-            if let Some(requested) = requested {
-                let limit = requested.min(advertised);
-                return Capacity {
-                    limit: Some(limit),
-                    source: Source::Configured,
-                    ollama: Some(limit),
-                    reasoning,
-                    reason: (limit < requested).then(|| {
-                        "The requested context allocation is bounded by the model's reported native capacity.".into()
-                    }),
-                    identity,
-                };
-            }
-            return Capacity {
-                limit: Some(advertised),
-                source: Source::Provider,
-                ollama: Some(advertised),
-                reasoning,
-                reason: None,
-                identity,
-            };
-        }
-        let Some(limit) = requested
-            .or_else(|| {
-                shown
-                    .as_ref()
-                    .and_then(|body| body.get("parameters"))
-                    .and_then(Value::as_str)
-                    .and_then(configured_limit)
-            })
-            .or(self.configured)
-        else {
-            return Capacity::unknown(
-                model,
-                "The cold model has not reported a native capacity that can safely bound its runtime configuration.",
-            );
-        };
-        Capacity {
-            limit: Some(limit),
-            source: Source::Configured,
-            ollama: Some(limit),
-            reasoning,
-            reason: None,
-            identity,
-        }
-    }
-
-    async fn routes(&self, model: &str) -> Option<Vec<Route>> {
-        // v1 expands wildcard deployments to example models, losing route identity.
-        // Installed 1.99.1 v2 returns the actual deployment for this filter.
-        tokio::time::timeout(METADATA_TIMEOUT, async {
-            let mut page = 1_u64;
-            let mut routes = Vec::new();
-            loop {
-                let body = self
-                    .client
-                    .get(format!(
-                        "{}/v2/model/info?model={}&page={}",
-                        self.host,
-                        urlencoding::encode(model),
-                        page
-                    ))
-                    .bearer_auth(&self.key)
-                    .send()
-                    .await
-                    .ok()?
-                    .error_for_status()
-                    .ok()?
-                    .json::<Routes>()
-                    .await
-                    .ok()?;
-                let pages = body.total_pages.unwrap_or(1);
-                routes.extend(
-                    body.data
-                        .into_iter()
-                        .filter(|route| route.model_name == model),
-                );
-                if page >= pages {
-                    return Some(routes);
-                }
-                page = page.checked_add(1)?;
-            }
-        })
-        .await
-        .ok()
-        .flatten()
-    }
-
-    async fn running(&self) -> Option<Value> {
-        self.client
-            .get(format!("{}/api/ps", self.ollama))
-            .send()
-            .await
-            .ok()?
-            .error_for_status()
-            .ok()?
-            .json()
-            .await
-            .ok()
-    }
-
-    async fn show(&self, model: &str) -> Option<Value> {
-        self.client
-            .post(format!("{}/api/show", self.ollama))
-            .json(&serde_json::json!({"model": model}))
-            .send()
-            .await
-            .ok()?
-            .error_for_status()
-            .ok()?
-            .json()
-            .await
-            .ok()
-    }
-}
-
-fn select(routes: &[Route], model: &str) -> Result<Route, &'static str> {
-    let exact: Vec<&Route> = routes
-        .iter()
-        .filter(|route| route.model_name == model)
-        .collect();
-    let matches = if exact.is_empty() {
-        routes
-            .iter()
-            .filter(|route| route.model_name == "*")
-            .collect::<Vec<_>>()
-    } else {
-        exact
-    };
-    let Some(first) = matches.first() else {
-        return Err("The selected alias has no verified deployment route.");
-    };
-    if matches.iter().any(|route| {
-        route.litellm_params != first.litellm_params
-            || route.model_info.get("max_input_tokens") != first.model_info.get("max_input_tokens")
-    }) {
-        return Err("The selected alias routes to deployments with different context settings.");
-    }
-    let mut route = (*first).clone();
-    if route.model_name == "*" {
-        // The configured simple catch-all substitutes the entire submitted alias.
-        if !matches!(
-            route.litellm_params.model.as_str(),
-            "ollama_chat/*" | "ollama/*"
-        ) {
-            return Err("The wildcard deployment does not expose a verifiable native model.");
-        }
-        route.litellm_params.model = route.litellm_params.model.replace('*', model);
-    }
-    Ok(route)
-}
-
-fn ollama_thinking(shown: &Value) -> bool {
-    shown
-        .get("capabilities")
-        .and_then(Value::as_array)
-        .is_some_and(|capabilities| {
-            capabilities
-                .iter()
-                .any(|capability| capability.as_str() == Some("thinking"))
-        })
-}
-
-fn provider_reasoning(model: &Value) -> bool {
-    if model.get("supports_reasoning").and_then(Value::as_bool) == Some(true) {
-        return true;
-    }
-    model
-        .get("supported_openai_params")
-        .and_then(Value::as_array)
-        .is_some_and(|parameters| {
-            parameters.iter().any(|parameter| {
-                matches!(
-                    parameter.as_str(),
-                    Some("reasoning_effort" | "thinking" | "reasoning")
-                )
-            })
-        })
-}
-
-fn native_limit(body: &Value) -> Option<u64> {
-    let metadata = body.get("model_info")?;
-    let architecture = metadata.get("general.architecture")?.as_str()?;
-    metadata
-        .get(format!("{architecture}.context_length"))?
-        .as_u64()
-        .filter(|value| *value > 0)
-}
-
-fn configured_limit(parameters: &str) -> Option<u64> {
-    parameters.lines().find_map(|line| {
-        let mut words = line.split_whitespace();
-        (words.next()? == "num_ctx")
-            .then(|| words.next()?.parse::<u64>().ok().filter(|value| *value > 0))
-            .flatten()
-    })
-}
-
-fn normalize(name: &str) -> String {
-    if name
-        .rsplit('/')
-        .next()
-        .is_some_and(|name| name.contains(':'))
-    {
-        name.into()
-    } else {
-        format!("{name}:latest")
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
     use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::body_json;
+    use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
 
-    use super::super::parameters::Parameters;
+    use super::super::Source;
     use super::*;
 
     async fn fixture(parameters: Value, running: Value, shown: Value) -> (MockServer, Resolver) {
@@ -570,6 +260,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_provider_route_reports_the_vision_its_model_info_declares() {
+        for (declared, vision) in [
+            (
+                json!({"max_input_tokens": 128000, "supports_vision": true}),
+                Some(true),
+            ),
+            (
+                json!({"max_input_tokens": 128000, "supports_vision": false}),
+                Some(false),
+            ),
+            (json!({"max_input_tokens": 128000}), None),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(path("/v2/model/info"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"model_name":"alias","litellm_params":{"model":"openai/remote"},"model_info":declared}]})))
+                .mount(&server)
+                .await;
+            let resolver = Resolver::new(&server.uri(), "key", &server.uri()).unwrap();
+            assert_eq!(resolver.resolve("alias").await.vision, vision, "{declared}");
+        }
+    }
+
+    #[tokio::test]
     async fn provider_changes_invalidate_runtime_observation_immediately() {
         let (server, resolver) = fixture(
             json!({"model":"ollama_chat/native:latest"}),
@@ -585,32 +298,6 @@ mod tests {
         assert_eq!(capacity.ollama, None);
     }
 
-    #[test]
-    fn wildcard_selection_does_not_override_exact_alias_or_guess_ambiguous_routes() {
-        let routes: Routes = serde_json::from_value(json!({"data":[{"model_name":"*","litellm_params":{"model":"ollama_chat/*"}},{"model_name":"alias","litellm_params":{"model":"openai/remote"}}]})).unwrap();
-        assert_eq!(
-            select(&routes.data, "alias").unwrap().litellm_params.model,
-            "openai/remote"
-        );
-        assert_eq!(
-            select(&routes.data, "local:1b")
-                .unwrap()
-                .litellm_params
-                .model,
-            "ollama_chat/local:1b"
-        );
-        let mut duplicates = routes.data;
-        duplicates.push(Route {
-            model_name: "alias".into(),
-            litellm_params: Parameters {
-                model: "ollama_chat/unrelated".into(),
-                api_base: None,
-                num_ctx: None,
-            },
-            model_info: Value::Null,
-        });
-        assert!(select(&duplicates, "alias").is_err());
-    }
     #[tokio::test]
     async fn wildcard_metadata_resolves_cold_nonpreset_model_without_v1_example_substitution() {
         use wiremock::matchers::query_param;
@@ -673,14 +360,125 @@ mod tests {
         assert_eq!(capacity.ollama, None);
     }
 
-    #[test]
-    fn thinking_is_only_the_engine_declared_capability() {
-        assert!(ollama_thinking(&json!({"capabilities":["thinking"]})));
-        assert!(!ollama_thinking(&json!({"capabilities":["completion"]})));
-        assert!(!provider_reasoning(&json!({"supports_reasoning":false})));
-        assert!(provider_reasoning(&json!({"supports_reasoning":true})));
-        assert!(provider_reasoning(&json!({
-            "supported_openai_params": ["temperature", "reasoning_effort"]
-        })));
+    #[tokio::test]
+    async fn an_undisclosed_endpoint_is_given_the_configured_context_without_a_num_ctx() {
+        let capacity = Resolver::undisclosed(Some(DEFAULT_CONTEXT))
+            .resolve("gpt-4o")
+            .await;
+
+        assert_eq!(capacity.limit, Some(DEFAULT_CONTEXT));
+        assert_eq!(capacity.source, Source::Configured);
+        assert_eq!(capacity.ollama, None, "no num_ctx may reach a third party");
+        assert!(!capacity.reasoning);
+        assert_eq!(capacity.vision, None);
+        assert_eq!(capacity.identity, "gpt-4o");
+        assert!(capacity.reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_undisclosed_endpoint_without_a_configured_context_is_unknown() {
+        for configured in [None, Some(0)] {
+            let capacity = Resolver::undisclosed(configured).resolve("gpt-4o").await;
+
+            assert_eq!(capacity.source, Source::Unknown, "{configured:?}");
+            assert_eq!(capacity.limit, None, "{configured:?}");
+            assert_eq!(capacity.ollama, None, "{configured:?}");
+            assert!(capacity.reason.is_some(), "{configured:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn ollama_vision_capability_is_read_from_the_same_show_response() {
+        let (server, resolver) = fixture(
+            json!({"model":"ollama_chat/native:latest"}),
+            json!({"models":[]}),
+            json!({
+                "capabilities": ["completion", "vision"],
+                "model_info": {"general.architecture":"gemma3","gemma3.context_length":16384}
+            }),
+        )
+        .await;
+        assert_eq!(resolver.resolve("alias").await.vision, Some(true));
+        let shows = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/api/show")
+            .count();
+        assert_eq!(shows, 1, "Vision must not cost a second /api/show");
+    }
+
+    #[tokio::test]
+    async fn a_text_only_ollama_model_reports_no_vision() {
+        let (_server, resolver) = fixture(
+            json!({"model":"ollama_chat/native:latest"}),
+            json!({"models":[]}),
+            json!({
+                "capabilities": ["completion", "tools"],
+                "model_info": {"general.architecture":"qwen3","qwen3.context_length":16384}
+            }),
+        )
+        .await;
+        assert_eq!(resolver.resolve("alias").await.vision, Some(false));
+    }
+
+    #[tokio::test]
+    async fn a_loaded_runtime_still_reports_vision() {
+        let (_server, resolver) = fixture(
+            json!({"model":"ollama_chat/native:latest"}),
+            json!({"models":[{"name":"native:latest","context_length":8192}]}),
+            json!({"capabilities": ["completion", "vision"]}),
+        )
+        .await;
+        let capacity = resolver.resolve("alias").await;
+        assert_eq!(capacity.source, Source::Runtime);
+        assert_eq!(capacity.vision, Some(true));
+    }
+
+    #[tokio::test]
+    async fn vision_is_unknown_without_capabilities() {
+        let (_server, resolver) = fixture(
+            json!({"model":"ollama_chat/native:latest"}),
+            json!({"models":[]}),
+            json!({"model_info": {"general.architecture":"qwen3","qwen3.context_length":16384}}),
+        )
+        .await;
+        assert_eq!(resolver.resolve("alias").await.vision, None);
+    }
+
+    #[tokio::test]
+    async fn vision_is_unknown_for_a_provider_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(path("/v2/model/info"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data":[{
+                    "model_name":"alias",
+                    "litellm_params":{"model":"openai/remote"},
+                    "model_info":{"max_input_tokens":128000}
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let resolver = Resolver::new(&server.uri(), "key", &server.uri()).unwrap();
+        assert_eq!(resolver.resolve("alias").await.vision, None);
+    }
+
+    #[tokio::test]
+    async fn the_metadata_request_carries_the_key_as_a_bearer_token() {
+        let server = MockServer::start().await;
+        Mock::given(path("/v2/model/info"))
+            .and(header("authorization", "Bearer key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data":[{
+                    "model_name":"alias",
+                    "litellm_params":{"model":"openai/remote"},
+                    "model_info":{"max_input_tokens":128000}
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let resolver = Resolver::new(&server.uri(), "key", &server.uri()).unwrap();
+        assert_eq!(resolver.resolve("alias").await.limit, Some(128000));
     }
 }
