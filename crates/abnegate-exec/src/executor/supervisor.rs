@@ -75,7 +75,7 @@ impl Supervisor {
 
         let remaining = self.timeout.saturating_sub(self.started_at.elapsed());
         let ending = tokio::select! {
-            exited = exit.wait() => Ending::Exited(exited),
+            exited = exit.wait() => Ending::Exited(exited.map(drop)),
             () = tokio::time::sleep(remaining) => Ending::TimedOut,
             () = cancellation.cancelled() => Ending::Cancelled,
         };

@@ -1,47 +1,31 @@
 use std::io;
+use std::process::ExitStatus;
 
 use nix::sys::wait::Id;
 use nix::sys::wait::WaitPidFlag;
-use nix::sys::wait::WaitStatus;
 use nix::sys::wait::waitid;
 use nix::unistd::Pid;
-use tokio::signal::unix::Signal;
-use tokio::signal::unix::SignalKind;
-use tokio::signal::unix::signal;
 
-/// Resolves once a child has exited, leaving it unreaped.
-pub(in crate::executor) struct LeaderExit {
+/// Checks whether a child has exited, leaving it unreaped, and keeps the
+/// status it exited with.
+pub(super) struct Probe {
     pid: Pid,
-    signals: Signal,
-    exited: bool,
+    status: Option<ExitStatus>,
 }
 
-impl LeaderExit {
-    pub(in crate::executor) fn watch(pid: Pid) -> io::Result<Self> {
-        Ok(Self {
-            pid,
-            signals: signal(SignalKind::child())?,
-            exited: false,
-        })
+impl Probe {
+    pub(super) fn watch(pid: Pid) -> io::Result<Self> {
+        Ok(Self { pid, status: None })
     }
 
-    pub(in crate::executor) async fn wait(&mut self) -> io::Result<()> {
-        while !self.has_exited()? {
-            if self.signals.recv().await.is_none() {
-                return Err(io::Error::other("the SIGCHLD stream ended"));
-            }
-        }
-        Ok(())
-    }
-
-    fn has_exited(&mut self) -> io::Result<bool> {
-        if !self.exited {
-            let status = waitid(
+    /// The status the child exited with, or `None` while it runs.
+    pub(super) fn exit(&mut self) -> io::Result<Option<ExitStatus>> {
+        if self.status.is_none() {
+            self.status = super::reported(waitid(
                 Id::Pid(self.pid),
                 WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT,
-            )?;
-            self.exited = !matches!(status, WaitStatus::StillAlive);
+            )?);
         }
-        Ok(self.exited)
+        Ok(self.status)
     }
 }

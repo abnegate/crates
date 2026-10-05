@@ -6,6 +6,19 @@ use std::process::Stdio;
 
 use super::process_group::ProcessGroup;
 
+/// A shell leading its own process group that exits with `3` once its stdin
+/// closes, so a test chooses when its leader exits.
+pub(crate) fn exits_on_close() -> Child {
+    Command::new("sh")
+        .args(["-c", "read -r line; exit 3"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("the shell starts")
+}
+
 /// A real `sleep` leading its own process group, for tests that signal one.
 /// Dropping it kills and reaps the child.
 pub(crate) struct Sleeper {

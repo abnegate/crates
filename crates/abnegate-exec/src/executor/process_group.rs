@@ -3,6 +3,8 @@
 //! On Unix systems, we create a new process group for each spawned command,
 //! allowing us to send signals to the entire process tree when cancelling.
 
+use std::io;
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -17,8 +19,11 @@ use nix::sys::signal::Signal;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 use nix::unistd::getpgrp;
+use tokio::sync::watch;
 
 use crate::error::ExecutorError;
+
+use super::leader_exit::LeaderExit;
 
 /// The lowest process identifier that can lead a job's group. `0` names the
 /// caller's own group and `1` is init, and `kill(-1, ...)` signals every
@@ -55,6 +60,7 @@ pub struct ProcessGroup {
     /// Process group ID (same as the leader process PID)
     pgid: i32,
     released: Arc<Mutex<bool>>,
+    releases: Arc<watch::Sender<bool>>,
 }
 
 impl TryFrom<u32> for ProcessGroup {
@@ -69,6 +75,7 @@ impl TryFrom<u32> for ProcessGroup {
         Ok(Self {
             pgid,
             released: Arc::new(Mutex::new(false)),
+            releases: Arc::new(watch::Sender::new(false)),
         })
     }
 }
@@ -88,6 +95,12 @@ impl ProcessGroup {
     /// Get the process group ID
     pub fn pgid(&self) -> i32 {
         self.pgid
+    }
+
+    /// Send SIGINT to the entire process group, as a terminal's Ctrl-C would,
+    /// so each member can wind down and clean up what it started.
+    pub fn interrupt(&self) -> Result<(), ExecutorError> {
+        self.signal(Signal::SIGINT)
     }
 
     /// Send SIGTERM to the entire process group.
@@ -135,6 +148,46 @@ impl ProcessGroup {
         Ok(())
     }
 
+    /// Resolve once the group's leader has exited, leaving it unreaped, with
+    /// the status it exited with.
+    ///
+    /// Until the leader is reaped it keeps the group's id from being reused,
+    /// so a caller can wait here, decide from the status what to stop,
+    /// [`kill_until_gone`](Self::kill_until_gone) whatever the leader left
+    /// running in its group, then [`release`](Self::release) the group and
+    /// reap the leader. The leader must be a child of this process, and
+    /// nothing may reap it during the wait.
+    ///
+    /// The exit is checked on every `SIGCHLD` and every quarter of a second,
+    /// so it is seen even when its `SIGCHLD` never arrives. The future is
+    /// cancel safe. It resolves as soon as any clone releases the group,
+    /// before or during the wait, whatever the leader is doing: the leader of
+    /// a released group is no longer this handle's to watch.
+    ///
+    /// Returns the leader's exit status, or `None` when a clone released the
+    /// group before its leader's exit was seen.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecutorError::ProcessGroupFailed`] when the leader cannot be
+    /// watched: when no `SIGCHLD` listener can be registered, or when the
+    /// leader is not a child of this process, or has been reaped.
+    pub async fn leader_exited(&self) -> Result<Option<ExitStatus>, ExecutorError> {
+        let mut releases = self.releases.subscribe();
+        tokio::select! {
+            biased;
+            _ = releases.wait_for(|released| *released) => Ok(None),
+            watched = self.watch_leader() => match watched {
+                Ok(status) => Ok(Some(status)),
+                Err(_) if self.is_released() => Ok(None),
+                Err(error) => Err(ExecutorError::ProcessGroupFailed(format!(
+                    "Failed to watch the leader of process group {}: {error}",
+                    self.pgid
+                ))),
+            },
+        }
+    }
+
     /// Check if the process group is still running.
     ///
     /// Returns true if any process in the group is still alive, and false
@@ -149,9 +202,9 @@ impl ProcessGroup {
     /// which the group's identifier can name an unrelated group.
     pub fn release(&self) {
         *self.released() = true;
+        self.releases.send_replace(true);
     }
 
-    #[cfg(test)]
     pub(crate) fn is_released(&self) -> bool {
         *self.released()
     }
@@ -212,6 +265,10 @@ impl ProcessGroup {
         !*released && again(self)
     }
 
+    async fn watch_leader(&self) -> io::Result<ExitStatus> {
+        LeaderExit::watch(Pid::from_raw(self.pgid))?.wait().await
+    }
+
     fn released(&self) -> MutexGuard<'_, bool> {
         self.released.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -234,6 +291,8 @@ impl ProcessGroup {
 #[cfg(test)]
 mod tests {
     use std::os::unix::process::CommandExt;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Child;
     use std::process::Command;
     use std::process::Stdio;
     #[cfg(not(target_os = "linux"))]
@@ -246,6 +305,7 @@ mod tests {
     use std::time::Instant;
 
     use crate::executor::sleeper::Sleeper;
+    use crate::executor::sleeper::exits_on_close;
 
     use super::*;
 
@@ -448,6 +508,133 @@ mod tests {
         let group = ProcessGroup::try_from(sleeper.pid()).unwrap();
 
         assert_eq!(group.pgid(), i32::try_from(sleeper.pid()).unwrap());
+    }
+
+    /// A member that joined the leader's group, the way a child the leader
+    /// forks starts out.
+    fn member_of(group: &ProcessGroup) -> Child {
+        Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(group.pgid())
+            .spawn()
+            .expect("the member starts")
+    }
+
+    #[test]
+    fn interrupt_reaches_every_member_with_sigint() {
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+        let mut member = member_of(&group);
+
+        group.interrupt().unwrap();
+
+        assert_eq!(sleeper.wait(), Some(Signal::SIGINT as i32));
+        assert_eq!(
+            member.wait().expect("the member is reaped").signal(),
+            Some(Signal::SIGINT as i32)
+        );
+    }
+
+    #[test]
+    fn a_released_group_is_not_interrupted() {
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+
+        group.release();
+        group.interrupt().unwrap();
+        kill(Pid::from_raw(-group.pgid()), Signal::SIGTERM).unwrap();
+
+        assert_eq!(sleeper.wait(), Some(Signal::SIGTERM as i32));
+    }
+
+    /// The order a caller that reaps the leader itself follows: wait for the
+    /// leader, kill what it left in its group, then release and reap it.
+    #[tokio::test]
+    async fn leader_exited_leaves_the_group_to_kill_and_the_leader_to_reap() {
+        let mut leader = exits_on_close();
+        let group = ProcessGroup::try_from(leader.id()).expect("a child leading its own group");
+        let mut member = member_of(&group);
+        let exited = group.leader_exited();
+        tokio::pin!(exited);
+        assert!(
+            futures::poll!(&mut exited).is_pending(),
+            "the leader exit resolved while the leader ran"
+        );
+
+        drop(leader.stdin.take());
+        let exited = tokio::time::timeout(PATIENCE, exited)
+            .await
+            .expect("the leader exit never resolved")
+            .unwrap();
+
+        assert_eq!(exited.and_then(|status| status.code()), Some(3));
+        assert!(
+            member.try_wait().unwrap().is_none(),
+            "the member was stopped"
+        );
+        group.kill_until_gone().await.unwrap();
+        assert_eq!(
+            member.wait().expect("the member is reaped").signal(),
+            Some(Signal::SIGKILL as i32)
+        );
+        group.release();
+        let status = leader
+            .try_wait()
+            .expect("the leader is still there to reap")
+            .expect("the leader has exited");
+        assert_eq!(status.code(), Some(3));
+    }
+
+    #[tokio::test]
+    async fn a_release_during_the_wait_resolves_it_while_the_leader_runs() {
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+        let exited = group.leader_exited();
+        tokio::pin!(exited);
+        assert!(
+            futures::poll!(&mut exited).is_pending(),
+            "the leader exit resolved while the leader ran"
+        );
+
+        group.clone().release();
+
+        assert!(
+            matches!(
+                futures::poll!(&mut exited),
+                std::task::Poll::Ready(Ok(None))
+            ),
+            "the release did not end the wait"
+        );
+        kill(Pid::from_raw(-group.pgid()), Signal::SIGTERM).unwrap();
+        assert_eq!(
+            sleeper.wait(),
+            Some(Signal::SIGTERM as i32),
+            "the leader did not run on until the test stopped it"
+        );
+    }
+
+    #[tokio::test]
+    async fn leader_exited_resolves_at_once_for_a_released_group() {
+        let mut sleeper = Sleeper::start();
+        let group = sleeper.group();
+        group.release();
+
+        let exited = group.leader_exited();
+        tokio::pin!(exited);
+
+        assert!(
+            matches!(
+                futures::poll!(&mut exited),
+                std::task::Poll::Ready(Ok(None))
+            ),
+            "a released group's leader was watched"
+        );
+
+        kill(Pid::from_raw(-group.pgid()), Signal::SIGTERM).unwrap();
+        assert_eq!(sleeper.wait(), Some(Signal::SIGTERM as i32));
     }
 
     #[test]
