@@ -14,6 +14,10 @@ pub enum CatalogError {
     /// The catalogue refused the request or is unknown, as the text says.
     #[error("Provider unavailable: {0}")]
     Unavailable(String),
+    /// The catalogue answered with this failing HTTP status, such as `404`
+    /// for a repository that does not exist.
+    #[error("Catalogue returned HTTP status {0}")]
+    Status(u16),
     /// Reading or writing a local file failed.
     #[error("Filesystem error: {0}")]
     Io(#[from] std::io::Error),
@@ -42,6 +46,10 @@ mod tests {
         assert_eq!(
             CatalogError::Unavailable("Service down".to_string()).to_string(),
             "Provider unavailable: Service down"
+        );
+        assert_eq!(
+            CatalogError::Status(404).to_string(),
+            "Catalogue returned HTTP status 404"
         );
     }
 }
