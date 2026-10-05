@@ -176,6 +176,39 @@ fn person(photo: Vec<u8>) -> Result<TrainRequest, TrainError> {
 }
 ```
 
+## Training a person
+
+A request whose subject is `TrainSubject::Person` is framed for a person
+rather than squared. Each photo becomes a body crop in a bucket of its own
+aspect and about a megapixel, on the 64-pixel grid SDXL needs, a head and
+shoulders square unless the photo is already one, and a square on each hand
+when its caption names hands. Photos are screened against 1024 pixels rather
+than the packaged graph's resolution. Captions bind the trigger to the class
+word, `ohwx person, standing in a kitchen`, and the vision model is asked for
+the pose first, so the weight does not learn one pose as part of the person. A
+person set the captions read as several people is refused before anything
+trains; for any other subject that finding stays advice.
+
+Beside every `NNNN.png` and its caption the dataset carries companions for the
+trainer, named by `abnegate_comfy::dataset`:
+
+| File | Holds |
+|---|---|
+| `NNNN.kind` | `body`, `head` or `hand` (`dataset::FrameKind`) |
+| `NNNN.pose` | the pose its caption names, such as `standing` or `on back`, the first in `dataset::pose_clusters` order when it names several, or `unknown` (`dataset::pose_cluster`) |
+| `NNNN.mask.png` | the subject as an 8-bit mask, 255 on the subject, when the `saliency` model located it |
+| `rebalance.json` | `{"clusters": {pose: frames}, "weights": {stem: weight}}` (`dataset::Rebalance`) |
+
+A set where one pose holds more than 40% of the frames (`REBALANCE_SHARE`)
+draws each frame in inverse proportion to its pose's size, so the rarest pose
+keeps weight 1; otherwise every weight is 1. A video window in `clips/` is
+described by `dataset::ClipWindow`, `{"start_s", "end_s", "pose"}`.
+
+`Config::poses_directory` (`COMFYUI_POSES_DIRECTORY`) names a directory of
+OpenPose images a person's generation can be posed with, one per pose cluster,
+named by `dataset::pose_filename`: `standing.png`, `on_back.png`,
+`all_fours.png`. The crate ships none.
+
 ## Watching a run
 
 `lora::train_reporting` is `lora::train` with a `tokio::sync::watch` channel

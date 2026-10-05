@@ -48,7 +48,7 @@ pub(crate) const SCAN_DIRECTORIES: &[(&str, &str)] = &[
 /// `contract` publication directory is replacing it.
 ///
 /// `contract` is expected to pass [`Contract::validate`], as it does in any
-/// [`Config`](crate::Config) that passes [`Config::validate`](crate::Config::validate):
+/// [`Config`] that passes [`Config::validate`]:
 /// an unchecked suffix or publication directory can point the scan's reads
 /// outside `models_directory`.
 pub fn scan(

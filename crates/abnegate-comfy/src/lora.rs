@@ -36,6 +36,9 @@ use crate::caption::Draft;
 use crate::client::Client;
 use crate::client::SourceImage;
 use crate::config::Config;
+use crate::dataset;
+use crate::dataset::Concern;
+use crate::dataset::FrameKind;
 use crate::host;
 use crate::host::JobDirectory;
 use crate::inventory::WeightDocument;
@@ -43,6 +46,7 @@ use crate::inventory::WeightSidecar;
 use crate::inventory::contains_phrase;
 use crate::inventory::publication_marker;
 use crate::inventory::sidecar_path;
+use crate::person;
 use crate::recipe::Recipe;
 use crate::recipe::RecipeCatalog;
 use crate::recipe::TrainingModel;
@@ -125,6 +129,10 @@ struct ScreenedImage {
     /// Base64 of the crop, kept only for identity runs, which caption it.
     encoded: Option<String>,
     group: usize,
+    /// The part of the person a person crop frames.
+    kind: Option<FrameKind>,
+    /// The person crop's subject mask, as an 8-bit PNG.
+    mask: Option<Vec<u8>>,
 }
 
 struct RemediationAttempt {
@@ -160,6 +168,10 @@ const HOST_SECRET: &str = "a host secret needs a plain file name the job does no
 const HOST_FIELD: &str = "a host field may not replace a key the host job gives a meaning";
 const HOST_EDIT: &str = "an edit base trains on the host only once the host-job contract carries its references; train it through a training command or the packaged graph";
 const HOST_RENAMED: &str = "the host job names a weight file other than the one its name gives";
+const MIXED_PERSON: &str =
+    "these images look like different people, and a person weight can only learn one";
+/// The class word a person's captions bind the trigger to.
+const PERSON_CLASS: &str = "person";
 
 /// Bytes of a trainer's stderr kept to explain a failure.
 const STDERR_TAIL: usize = 4096;
@@ -341,6 +353,12 @@ pub fn trainable_bases(config: &Config) -> Result<Vec<TrainBase>, TrainError> {
 /// to their subject and captioned through `litellm_host` where a caption was
 /// left blank; then the packaged graph trains on ComfyUI, or
 /// [`Config::train_command`] runs instead, and every checkpoint is scored.
+///
+/// A [`TrainSubject::Person`] set is framed for a person instead: every photo
+/// becomes a body crop of its own aspect, a head square and, when its caption
+/// names hands, a square on each hand, captioned as [`person_caption`] does,
+/// with the companions [`dataset`] names beside each crop. A person set the
+/// captions read as several people is refused.
 ///
 /// Fails with [`TrainError::Disabled`] when neither ComfyUI nor a training
 /// command is configured, [`TrainError::Invalid`] for a request that cannot
@@ -746,8 +764,13 @@ async fn train_with_pipeline(
     } = plan(config, &request)?;
     let trigger = trigger.as_str();
     let edit = matches!(&model, TrainingModel::QwenEdit { .. });
+    let person = request.subject == TrainSubject::Person && !edit;
     let settings = crate::train::packaged_config()?;
-    let side = settings.resolution();
+    let side = if person {
+        person::SIDE
+    } else {
+        settings.resolution()
+    };
     let budget = |count: usize| match (route, &config.host_trainer) {
         (Route::Host, Some(trainer)) => trainer.steps_for(count),
         _ => settings.steps(count),
@@ -792,11 +815,14 @@ async fn train_with_pipeline(
         verdict.keep.clone(),
         side,
         edit,
+        person,
         progress.clone(),
     )
     .await?;
     let progress = progress.with_total(budget(survivors.len()));
-    if survivors.len() != verdict.keep.len() {
+    let mut framed: Vec<usize> = survivors.iter().map(|image| image.original).collect();
+    framed.dedup();
+    if framed != verdict.keep {
         return Err(TrainError::Failed(
             "screening returned an invalid survivor index".to_string(),
         ));
@@ -831,7 +857,14 @@ async fn train_with_pipeline(
         }
         described
     };
-    let findings = crate::dataset::inspect(&described, survivors.len());
+    let findings = dataset::inspect(&described, survivors.len());
+    if person
+        && findings
+            .iter()
+            .any(|finding| finding.concern == Concern::MixedSubjects)
+    {
+        return Err(TrainError::Invalid(MIXED_PERSON));
+    }
     let mut attempt = Attempt::create(&config.models_directory)?;
     let published = ensure_child_directory(&config.models_directory, &destination.directory)?;
     let output = validate_output(&published, &published.join(&filename))?;
@@ -841,8 +874,8 @@ async fn train_with_pipeline(
         .then(|| ensure_child_directory(&attempt.root, "control_1"))
         .transpose()?;
     let mut captions = HashMap::with_capacity(survivors.len());
+    let mut poses: Vec<(String, &str)> = Vec::new();
     for (index, image) in survivors.iter().enumerate() {
-        debug_assert_eq!(image.original, verdict.keep[index]);
         let stem = format!("{index:04}");
         write_new(
             &attempt.root,
@@ -851,6 +884,8 @@ async fn train_with_pipeline(
         )?;
         let text = if edit {
             image.text.clone()
+        } else if person {
+            person_caption(&image.text, trigger)
         } else {
             identity_caption(&image.text, trigger)
         };
@@ -859,6 +894,11 @@ async fn train_with_pipeline(
             &targets.join(format!("{stem}.txt")),
             text.as_bytes(),
         )?;
+        if person {
+            let pose = dataset::pose_cluster(&text);
+            write_companions(&attempt.root, &targets, &stem, image, pose)?;
+            poses.push((stem.clone(), pose));
+        }
         captions.insert(format!("{stem}.png"), text);
         if let (Some(controls), Some(reference)) = (&controls, &image.reference) {
             write_new(
@@ -867,6 +907,15 @@ async fn train_with_pipeline(
                 reference,
             )?;
         }
+    }
+    if person {
+        let rebalance = serde_json::to_vec_pretty(&dataset::rebalance(&poses))
+            .map_err(|error| TrainError::Failed(error.to_string()))?;
+        write_new(
+            &attempt.root,
+            &dataset::rebalance_path(&targets),
+            &rebalance,
+        )?;
     }
     let screened = Screening {
         kept: verdict.keep.len(),
@@ -1455,7 +1504,8 @@ async fn decodable(bytes: bytes::Bytes) -> bool {
 }
 
 /// Crops every image in `keep` onto its subject: a decode, a pass of the
-/// saliency model and a PNG encode each.
+/// saliency model and a PNG encode each. A `person`'s photo becomes every
+/// crop [`person::frames`] takes of it, in the order it takes them.
 async fn frame_survivors(
     subject: Subject,
     images: Arc<[TrainImage]>,
@@ -1463,35 +1513,48 @@ async fn frame_survivors(
     keep: Vec<usize>,
     side: u32,
     edit: bool,
+    person: bool,
     progress: Reporter,
 ) -> Result<Vec<ScreenedImage>, TrainError> {
     blocking(move || {
         let count = keep.len();
-        images
+        let mut survivors = Vec::with_capacity(count);
+        for (cropped, (original, (image, group))) in images
             .iter()
             .zip(shots(&images))
             .enumerate()
             .filter(|(index, _)| keep.binary_search(index).is_ok())
             .enumerate()
-            .map(|(cropped, (original, (image, group)))| {
-                let done = cropped + 1;
-                progress.phase(
-                    Phase::Screening,
-                    format!("Cropping image {done} of {count}"),
-                    done,
-                    count,
-                );
-                let framed = frame_with_target(&subject, image, &decoded[original], side)?;
-                Ok(ScreenedImage {
-                    original,
-                    encoded: (!edit).then(|| framed.encoded()),
-                    target: framed.target,
-                    reference: framed.control,
-                    text: image.caption.clone(),
-                    group,
-                })
-            })
-            .collect()
+        {
+            let done = cropped + 1;
+            progress.phase(
+                Phase::Screening,
+                format!("Cropping image {done} of {count}"),
+                done,
+                count,
+            );
+            let frames = if person {
+                frame_person(&subject, image, &decoded[original])?
+            } else {
+                vec![frame_with_target(
+                    &subject,
+                    image,
+                    &decoded[original],
+                    side,
+                )?]
+            };
+            survivors.extend(frames.into_iter().map(|framed| ScreenedImage {
+                original,
+                encoded: (!edit).then(|| framed.encoded()),
+                target: framed.target,
+                reference: framed.control,
+                text: image.caption.clone(),
+                group,
+                kind: framed.kind,
+                mask: framed.mask,
+            }));
+        }
+        Ok(survivors)
     })
     .await?
 }
@@ -1663,6 +1726,36 @@ pub fn identity_caption(caption: &str, trigger: &str) -> String {
             format!("{trigger}, {}", caption.trim())
         }
         _ => caption.trim().to_string(),
+    }
+}
+
+/// [`identity_caption`] for a person's set: the trigger bound to the class
+/// word `person`, `ohwx person, standing in a kitchen`, so the weight learns
+/// the trigger as one person rather than as whatever the photos share. A
+/// caption that already says `person` keeps its own wording.
+pub fn person_caption(caption: &str, trigger: &str) -> String {
+    let trigger = trigger.trim();
+    let scene = identity_caption(caption, trigger);
+    if contains_phrase(&scene, PERSON_CLASS) {
+        return scene;
+    }
+    if trigger.is_empty() {
+        return format!("{PERSON_CLASS}, {scene}");
+    }
+    let rest = scene
+        .get(..trigger.len())
+        .filter(|head| head.eq_ignore_ascii_case(trigger))
+        .map(|_| &scene[trigger.len()..])
+        .filter(|rest| {
+            rest.chars()
+                .next()
+                .is_none_or(|next| next == ',' || next.is_whitespace())
+        })
+        .map(|rest| rest.trim_start_matches(',').trim());
+    match rest {
+        Some("") => format!("{trigger} {PERSON_CLASS}"),
+        Some(rest) => format!("{trigger} {PERSON_CLASS}, {rest}"),
+        None => format!("{trigger} {PERSON_CLASS}, {scene}"),
     }
 }
 
@@ -2218,6 +2311,8 @@ const CROP: &str = "crop.png";
 struct Framed {
     target: Vec<u8>,
     control: Option<Vec<u8>>,
+    kind: Option<FrameKind>,
+    mask: Option<Vec<u8>>,
 }
 
 impl Framed {
@@ -2255,7 +2350,58 @@ fn frame_with_target(
     Ok(Framed {
         target: square(subject, &raster, side, focus)?,
         control,
+        kind: None,
+        mask: None,
     })
+}
+
+/// Crops one person's photo as [`person::frames`] does, each crop with its
+/// kind and its mask as an 8-bit PNG. The caption the photo was uploaded
+/// with decides whether the hands get crops of their own.
+fn frame_person(
+    subject: &Subject,
+    image: &TrainImage,
+    target: &[u8],
+) -> Result<Vec<Framed>, TrainError> {
+    let raster = decode_bytes(target)?;
+    person::frames(subject, &raster, &image.caption)
+        .map_err(|error| TrainError::Failed(error.to_string()))?
+        .into_iter()
+        .map(|frame| {
+            let mask = frame
+                .mask
+                .map(|mask| luma_png(&mask, frame.rendered.width, frame.rendered.height))
+                .transpose()?;
+            Ok(Framed {
+                target: png(&frame.rendered)?,
+                control: None,
+                kind: Some(frame.kind),
+                mask,
+            })
+        })
+        .collect()
+}
+
+/// Writes the companions of the person crop `stem` in `targets`: its kind,
+/// its `pose` and, when the model located the subject, its mask.
+fn write_companions(
+    root: &Path,
+    targets: &Path,
+    stem: &str,
+    image: &ScreenedImage,
+    pose: &str,
+) -> Result<(), TrainError> {
+    let kind = image.kind.unwrap_or(FrameKind::Body);
+    write_new(
+        root,
+        &dataset::kind_path(targets, stem),
+        kind.as_str().as_bytes(),
+    )?;
+    write_new(root, &dataset::pose_path(targets, stem), pose.as_bytes())?;
+    if let Some(mask) = &image.mask {
+        write_new(root, &dataset::mask_path(targets, stem), mask)?;
+    }
+    Ok(())
 }
 
 fn square(
@@ -2274,6 +2420,21 @@ fn square(
 fn decode_bytes(bytes: &[u8]) -> Result<Raster, TrainError> {
     decode::decode(bytes)
         .map_err(|_| TrainError::Invalid("training images must be PNG, JPEG, or WebP"))
+}
+
+/// Encodes an 8-bit luma image as PNG.
+fn luma_png(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TrainError> {
+    use image::ImageEncoder;
+    if pixels.len() as u64 != u64::from(width) * u64::from(height) {
+        return Err(TrainError::Failed(
+            "a subject mask does not cover its crop".to_string(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut bytes)
+        .write_image(pixels, width, height, image::ExtendedColorType::L8)
+        .map_err(|error| TrainError::Failed(error.to_string()))?;
+    Ok(bytes)
 }
 
 /// Encodes a rendered RGB image as PNG.
@@ -5069,6 +5230,7 @@ mod tests {
             vec![1],
             side(),
             false,
+            false,
             Reporter::default(),
         ))
         .await;
@@ -6045,8 +6207,14 @@ mod tests {
         assert_eq!(job.fields["provider"], "runpod");
         assert_eq!(
             picked.dataset,
-            ["0000.png", "0000.txt"],
-            "the dataset is complete before the job appears"
+            [
+                "0000.kind",
+                "0000.png",
+                "0000.pose",
+                "0000.txt",
+                "rebalance.json"
+            ],
+            "the person's dataset is complete, companions and all, before the job appears"
         );
         assert_eq!(picked.secret.as_deref(), Some("rp-secret\n"));
 
@@ -6751,5 +6919,270 @@ mod tests {
         );
 
         trained_by(&config).await;
+    }
+
+    fn person_policy() -> TrainPolicy {
+        TrainPolicy::new().with_rule(
+            TrainRule::new(
+                "flux-schnell",
+                TrainMethod::Finetune,
+                "flux-schnell",
+                "checkpoints",
+            )
+            .with_subjects([TrainSubject::Person]),
+        )
+    }
+
+    fn photo(width: u32, height: u32) -> Vec<u8> {
+        png(&Rendered::new(
+            width,
+            height,
+            (0..width * height)
+                .flat_map(|index| [(index % 251) as u8, 40, 90])
+                .collect(),
+        ))
+        .unwrap()
+    }
+
+    fn person(images: Vec<TrainImage>) -> TrainRequest {
+        TrainRequest::new("jerry", "flux-schnell", images)
+            .with_trigger("ohwx")
+            .with_subject(TrainSubject::Person)
+            .with_method(TrainMethod::Finetune)
+    }
+
+    #[test]
+    fn person_caption_binds_the_class_token() {
+        for (caption, trigger, bound) in [
+            (
+                "standing in a kitchen",
+                "ohwx",
+                "ohwx person, standing in a kitchen",
+            ),
+            (
+                "ohwx, standing in a kitchen",
+                "ohwx",
+                "ohwx person, standing in a kitchen",
+            ),
+            (
+                "a person standing in a kitchen",
+                "ohwx",
+                "ohwx, a person standing in a kitchen",
+            ),
+            ("ohwx", "ohwx", "ohwx person"),
+            ("OHWX, on a beach", " ohwx ", "ohwx person, on a beach"),
+            (
+                "ohwxy and ohwx on a beach",
+                "ohwx",
+                "ohwx person, ohwxy and ohwx on a beach",
+            ),
+            ("on a beach", "", "person, on a beach"),
+        ] {
+            assert_eq!(
+                person_caption(caption, trigger),
+                bound,
+                "{caption:?} with {trigger:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_person_frame_keeps_the_body_and_adds_a_head_square() {
+        let bytes = photo(48, 84);
+        let image = TrainImage::from_bytes("body.png", "standing outside", bytes.clone());
+        let frames = frame_person(&Subject::none(), &image, &bytes).unwrap();
+        assert_eq!(
+            frames.iter().map(|frame| frame.kind).collect::<Vec<_>>(),
+            [Some(FrameKind::Body), Some(FrameKind::Head)]
+        );
+        assert!(frames.iter().all(|frame| frame.mask.is_none()));
+        assert!(frames.iter().all(|frame| frame.control.is_none()));
+        let body = decode::decode(&frames[0].target).unwrap();
+        let head = decode::decode(&frames[1].target).unwrap();
+        assert!(body.oriented_size().1 > body.oriented_size().0);
+        assert_eq!(head.oriented_size().0, head.oriented_size().1);
+    }
+
+    #[test]
+    fn a_person_frame_that_names_hands_adds_a_hand_crop() {
+        let bytes = photo(96, 160);
+        let image =
+            TrainImage::from_bytes("body.png", "standing with hands on hips", bytes.clone());
+        let frames = frame_person(&Subject::none(), &image, &bytes).unwrap();
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[2].kind, Some(FrameKind::Hand));
+    }
+
+    #[test]
+    fn a_mask_png_matches_the_crop_size() {
+        use image::ImageDecoder;
+
+        let (width, height) = (768, 1024);
+        let pixels = vec![200u8; width as usize * height as usize];
+        let encoded = luma_png(&pixels, width, height).unwrap();
+        let decoder = image::codecs::png::PngDecoder::new(std::io::Cursor::new(&encoded)).unwrap();
+        assert_eq!(decoder.dimensions(), (width, height));
+        assert_eq!(decoder.color_type(), image::ColorType::L8);
+        assert!(
+            luma_png(&pixels[1..], width, height).is_err(),
+            "a mask that does not cover its crop is not encoded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_person_set_is_written_with_its_companions_and_draw_weights() {
+        let command = r#"
+            cd "$TRAIN_DIRECTORY/targets" || exit 70
+            test "$(cat 0000.kind)" = body || exit 71
+            test "$(cat 0001.kind)" = head || exit 72
+            test "$(cat 0000.pose)" = standing || exit 73
+            test "$(cat 0001.pose)" = standing || exit 74
+            test ! -e 0000.mask.png || exit 75
+            grep -q '"standing": 2' rebalance.json || exit 76
+            test "$(cat 0000.txt)" = "ohwx person, standing outside" || exit 77
+            test ! -e 0002.png || exit 78
+            test "$TRAIN_IMAGE_COUNT" = 2 || exit 79
+            printf tuned > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, mut config) = harness(command);
+        config.train_policy = person_policy();
+
+        let outcome = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            person(vec![TrainImage::from_bytes(
+                "body.png",
+                "standing outside",
+                photo(48, 84),
+            )]),
+            keep_all,
+        )
+        .await
+        .expect("the person set trains");
+
+        assert_eq!(fs::read(&outcome.path).unwrap(), b"tuned");
+        assert_eq!(
+            outcome.screening.kept, 1,
+            "one photo was kept, framed twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_set_that_is_not_a_person_gets_no_person_companions() {
+        let command = r#"
+            cd "$TRAIN_DIRECTORY/targets" || exit 70
+            test ! -e 0000.kind || exit 71
+            test ! -e 0000.pose || exit 72
+            test ! -e rebalance.json || exit 73
+            test ! -e 0001.png || exit 74
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+        train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            TrainRequest::new(
+                "my-style",
+                "flux-schnell",
+                vec![TrainImage::from_bytes(
+                    "body.png",
+                    "standing with hands on hips",
+                    photo(48, 84),
+                )],
+            )
+            .with_trigger("ohwx"),
+            keep_all,
+        )
+        .await
+        .expect("an identity set trains as it did");
+    }
+
+    /// A vision model that names one subject and then describes every shot
+    /// as somewhere with nothing in common with the last.
+    struct Elsewhere(std::sync::atomic::AtomicUsize);
+
+    impl wiremock::Respond for Elsewhere {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            const PLACES: &[&str] = &[
+                "copper kitchen pans",
+                "sandy beach palms",
+                "snowy mountain ridge",
+                "neon arcade cabinets",
+            ];
+            let content = if String::from_utf8_lossy(&request.body).contains("main object") {
+                "someone".to_string()
+            } else {
+                let next = self.0.fetch_add(1, Ordering::SeqCst);
+                PLACES[next % PLACES.len()].to_string()
+            };
+            ResponseTemplate::new(200).set_body_json(json!({
+                "id": "caption",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "vision",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop"
+                }]
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_person_set_of_different_people_is_refused_before_training() {
+        let (_root, mut config) = harness("printf tuned > \"$TRAIN_OUTPUT\"");
+        config.caption_model = "vision".to_string();
+        config.train_policy = person_policy();
+        let captioner = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(Elsewhere(std::sync::atomic::AtomicUsize::new(0)))
+            .mount(&captioner)
+            .await;
+        let images = || {
+            ["first", "second", "third", "fourth"]
+                .into_iter()
+                .map(|name| image(name, "", None))
+                .collect::<Vec<TrainImage>>()
+        };
+
+        let refused = train_with_screening(
+            &config,
+            captioner.uri(),
+            SecretValue::new("key"),
+            person(images()),
+            keep_all,
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(TrainError::Invalid(MIXED_PERSON))),
+            "{refused:?}"
+        );
+        assert!(
+            !config.models_directory.join("checkpoints").exists(),
+            "nothing is published for a refused set"
+        );
+
+        config.train_policy = TrainPolicy::default();
+        let advised = train_with_screening(
+            &config,
+            captioner.uri(),
+            SecretValue::new("key"),
+            TrainRequest::new("my-style", "flux-schnell", images()).with_trigger("ohwx"),
+            keep_all,
+        )
+        .await
+        .expect("any other subject is only advised");
+        assert!(
+            advised
+                .dataset
+                .iter()
+                .any(|finding| finding.concern == Concern::MixedSubjects),
+            "{:?}",
+            advised.dataset
+        );
     }
 }

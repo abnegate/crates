@@ -218,6 +218,10 @@ pub struct Config {
     /// U2-Net weights that locate the subject of a training image. `None`
     /// crops photos on their centre and video frames on whatever moved.
     pub vision_model: Option<PathBuf>,
+    /// Directory of OpenPose images, one per pose cluster, named as
+    /// [`dataset::pose_filename`](crate::dataset::pose_filename) names it,
+    /// that a person's generation can be posed with. `None` poses nothing.
+    pub poses_directory: Option<PathBuf>,
     /// Node and namespace names the training graphs and training command are
     /// built with.
     pub contract: Contract,
@@ -262,6 +266,7 @@ impl Default for Config {
             frame_rate: 4,
             frame_limit: 48,
             vision_model: None,
+            poses_directory: None,
             contract: Contract::default(),
         }
     }
@@ -388,6 +393,13 @@ impl Config {
         self
     }
 
+    /// The same settings, posing a person's generation with the OpenPose
+    /// images in `directory`.
+    pub fn with_poses_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.poses_directory = Some(directory.into());
+        self
+    }
+
     /// Settings from whatever `environment` answers for each variable, so the
     /// names are testable without touching the process environment.
     fn from_variables(environment: impl Fn(&str) -> Option<String>, vision_model: &str) -> Self {
@@ -485,6 +497,7 @@ impl Config {
                 .map(PathBuf::from)
                 .or_else(|| Some(models_directory.join("vision/u2net.onnx")))
                 .filter(|path| path.is_file()),
+            poses_directory: text(environment("COMFYUI_POSES_DIRECTORY")).map(PathBuf::from),
             models_directory,
             train_command: text(environment("COMFYUI_TRAIN_COMMAND")),
             trainer_environment: defaults.trainer_environment,
@@ -607,6 +620,7 @@ mod tests {
             ("COMFYUI_MODELS_DIRECTORY", "/srv/comfyui/models"),
             ("COMFYUI_TRAIN_FRAME_RATE", "6"),
             ("COMFYUI_ARTIFACT_ROOT", "/srv/artifacts"),
+            ("COMFYUI_POSES_DIRECTORY", "/srv/comfyui/poses"),
         ]);
         assert_eq!(config.classifier_timeout, Duration::from_secs(7));
         assert_eq!(config.caption_timeout, Duration::from_secs(70));
@@ -623,6 +637,26 @@ mod tests {
         );
         assert_eq!(config.frame_rate, 6);
         assert_eq!(config.artifact_root, PathBuf::from("/srv/artifacts"));
+        assert_eq!(
+            config.poses_directory,
+            Some(PathBuf::from("/srv/comfyui/poses"))
+        );
+    }
+
+    #[test]
+    fn nothing_is_posed_until_a_deployment_names_its_poses() {
+        assert_eq!(Config::default().poses_directory, None);
+        assert_eq!(configured(&[]).poses_directory, None);
+        assert_eq!(
+            configured(&[("COMFYUI_POSES_DIRECTORY", "  ")]).poses_directory,
+            None
+        );
+        assert_eq!(
+            Config::default()
+                .with_poses_directory("/srv/poses")
+                .poses_directory,
+            Some(PathBuf::from("/srv/poses"))
+        );
     }
 
     #[test]
@@ -654,6 +688,7 @@ mod tests {
             "COMFYUI_GENERATION_TIMEOUT_SECONDS",
             "COMFYUI_MODELS_DIRECTORY",
             "COMFYUI_POLL_INTERVAL_MILLISECONDS",
+            "COMFYUI_POSES_DIRECTORY",
             "COMFYUI_REQUEST_TIMEOUT_SECONDS",
             "COMFYUI_TOKEN_HEADER",
             "COMFYUI_TRAIN_COMMAND",

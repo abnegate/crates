@@ -72,6 +72,8 @@
 //! What the packaged graph cannot train, a fine-tune or an SDXL base, can go
 //! to a trainer running on the host instead: [`Config::host_trainer`] turns
 //! it on, and the [`host`] module documents the job directory the two share.
+//! A person's set is framed and captioned for a person, and the [`dataset`]
+//! module names the companions it carries for the trainer.
 //!
 //! A host that collects metrics installs [`observe_requests`] once at startup;
 //! without it the crate records nothing and pulls in no metrics stack.
@@ -94,7 +96,7 @@ mod caption;
 mod child;
 mod client;
 mod config;
-mod dataset;
+pub mod dataset;
 mod excerpt;
 pub mod host;
 mod http;
@@ -102,6 +104,7 @@ pub mod inventory;
 pub mod lora;
 mod media;
 mod observe;
+mod person;
 pub mod quality;
 pub mod recipe;
 mod screening;
