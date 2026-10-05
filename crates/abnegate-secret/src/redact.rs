@@ -65,6 +65,10 @@ const NAMED_SECRET_KEY_WORDS: &[&str] = &[
 /// credential itself, as `MASTER_KEY_FILE=/etc/example/master.key` does.
 const REFERENCE_KEY_SUFFIXES: &[&str] = &["dir", "directory", "file", "path"];
 
+/// Key words that name a count rather than a credential when the value is a
+/// number, as `max_tokens=200000` does.
+const COUNT_KEY_WORDS: &[&str] = &["tokens"];
+
 /// The authorization scheme that introduces a credential in a header and as a
 /// flag, as `Authorization: Bearer <token>` and `--oauth2-bearer <token>` do,
 /// and that names the credential assigned to it, as `--oauth2-bearer=<token>`
@@ -307,7 +311,19 @@ fn assigned_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<us
         return None;
     }
     let end = value_end(bytes, index, quote);
-    (end - index >= MINIMUM_NAMED_LENGTH).then_some(end)
+    if end - index < MINIMUM_NAMED_LENGTH
+        || (is_number(&bytes[index..end]) && assigned_to(bytes, index, COUNT_KEY_WORDS))
+    {
+        return None;
+    }
+    Some(end)
+}
+
+/// Whether a value is digits, grouped as `200000`, `200_000` or `200,000`.
+fn is_number(value: &[u8]) -> bool {
+    work::all(value, |byte| {
+        byte.is_ascii_digit() || matches!(byte, b'_' | b',')
+    })
 }
 
 /// A value introduced by the word before it rather than assigned.
@@ -1386,6 +1402,36 @@ mod tests {
                 "{:?}",
                 String::from_utf8_lossy(&candidate)
             );
+        }
+    }
+
+    #[test]
+    fn a_count_of_tokens_is_not_a_token() {
+        for text in [
+            "max_tokens=200000",
+            "\"max_tokens\": 200000,",
+            "max_tokens: 200_000",
+            "max_tokens=200,000 temperature=0.2",
+            "maxTokens=200000",
+            "--max-tokens=200000",
+            "max_tokens_to_sample=200000",
+            "usage: input_tokens=123456 output_tokens=654321",
+        ] {
+            assert!(matches!(redact(text), Cow::Borrowed(_)), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_credential_assigned_to_a_tokens_key_is_still_redacted() {
+        for (text, expected) in [
+            (
+                "ACCESS_TOKENS=hunter2abc",
+                format!("ACCESS_TOKENS={REDACTED}"),
+            ),
+            ("TOKEN=12345678", format!("TOKEN={REDACTED}")),
+            ("max_tokens=200000abc", format!("max_tokens={REDACTED}")),
+        ] {
+            assert_eq!(redact(text), expected);
         }
     }
 
