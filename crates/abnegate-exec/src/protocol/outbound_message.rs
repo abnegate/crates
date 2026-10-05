@@ -12,7 +12,7 @@ use super::milliseconds;
 /// Each variant is `#[non_exhaustive]`: match it with `..`, since a field
 /// can be added to any of them. Outside this crate a variant is built only
 /// by deserializing a runner's line through serde, or by
-/// [`error`](Self::error), [`log`](Self::log) and
+/// [`error`](Self::error), [`log`](Self::log), [`pong`](Self::pong) and
 /// [`hello_acknowledged`](Self::hello_acknowledged).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
@@ -139,10 +139,18 @@ impl OutboundMessage {
             details,
         }
     }
+
+    /// Create the Pong answering the [`Ping`](super::Ping) whose
+    /// [`id`](super::Ping::id) is `id`
+    pub fn pong(id: impl Into<String>) -> Self {
+        OutboundMessage::Pong { id: id.into() }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::protocol::Ping;
+
     use super::*;
 
     #[test]
@@ -166,12 +174,24 @@ mod tests {
 
     #[test]
     fn test_pong_roundtrip() {
-        let original = OutboundMessage::Pong {
-            id: "test-pong-456".to_string(),
-        };
+        let original = OutboundMessage::pong("test-pong-456");
         let json = serde_json::to_string(&original).unwrap();
         let decoded: OutboundMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn a_pong_answers_its_ping_on_the_wire() {
+        let ping: Ping = serde_json::from_str(r#"{"id":"ping-7"}"#).unwrap();
+
+        let written = serde_json::to_string(&OutboundMessage::pong(ping.id)).unwrap();
+
+        assert_eq!(written, r#"{"type":"Pong","id":"ping-7"}"#);
+        let read: OutboundMessage = serde_json::from_str(&written).unwrap();
+        assert!(
+            matches!(&read, OutboundMessage::Pong { id, .. } if id == "ping-7"),
+            "{written} is not a Pong: {read:?}"
+        );
     }
 
     #[test]

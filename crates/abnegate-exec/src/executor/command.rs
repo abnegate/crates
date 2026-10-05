@@ -15,7 +15,6 @@ use tokio_util::sync::CancellationToken;
 use crate::error::ExecutorError;
 use crate::protocol::OutboundMessage;
 use crate::protocol::RunStart;
-use crate::proxy::Proxy;
 
 use super::config::ExecutorConfig;
 use super::confinement::Confinement;
@@ -135,7 +134,7 @@ impl CommandExecutor {
                 process.args(arguments);
                 self.config.environment.apply(&mut process);
                 process.envs(environment);
-                Proxy::from_environment().apply(&mut process);
+                self.config.proxy.apply(&mut process);
                 configure(&mut process);
                 session::lead(&mut process, None);
                 process.spawn()
@@ -237,6 +236,7 @@ mod tests {
     use crate::protocol::ConfinementRequest;
     use crate::protocol::ErrorCode;
     use crate::protocol::LogLevel;
+    use crate::proxy::Proxy;
 
     use super::*;
 
@@ -696,6 +696,106 @@ mod tests {
                 .any(|line| line == "NO_PROXY=*" || line == "no_proxy=*")
         );
         assert!(output.contains("NO_PROXY=localhost,127.0.0.1,::1"));
+    }
+
+    const CONFIGURED_PROXY: &str = "http://proxy.invalid:3128";
+
+    fn routed() -> CommandExecutor {
+        CommandExecutor::with_config(
+            ExecutorConfig::default()
+                .with_proxy(Proxy::new(CONFIGURED_PROXY).with_bypass(["ollama"])),
+        )
+    }
+
+    fn assert_routed(output: &str) {
+        let lines: Vec<&str> = output.lines().collect();
+        for name in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            crate::proxy::PROXY_URL_VARIABLE,
+        ] {
+            assert!(
+                lines.contains(&format!("{name}={CONFIGURED_PROXY}").as_str()),
+                "{name}: {output}"
+            );
+        }
+        for name in ["NO_PROXY", "no_proxy", crate::proxy::PROXY_BYPASS_VARIABLE] {
+            assert!(
+                lines.contains(&format!("{name}=ollama").as_str()),
+                "{name}: {output}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_configured_proxy_reaches_an_unconfined_command() {
+        let output = environment_of(
+            &routed(),
+            environment_listing(HashMap::from([(
+                "HTTPS_PROXY".to_string(),
+                "http://wrong:8888".to_string(),
+            )])),
+        )
+        .await;
+
+        assert_routed(&output);
+    }
+
+    /// Confinement denies all network, so the proxy would route nothing,
+    /// while its URL can carry credentials the least-trusted code must not
+    /// read.
+    #[tokio::test]
+    async fn a_configured_proxy_never_reaches_a_confined_command() {
+        if !sandbox::proven(ConfinementMode::SingleCommand).await {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let request = confined("confined-proxy", &root, "/usr/bin/env");
+
+        let output = environment_of(&routed(), request).await;
+
+        let leaked: Vec<&str> = output
+            .lines()
+            .filter(|line| {
+                line.split_once('=').is_some_and(|(name, _)| {
+                    let name = name.to_ascii_uppercase();
+                    name.ends_with("_PROXY") || name.starts_with("ABNEGATE_EXEC_PROXY_")
+                })
+            })
+            .collect();
+        assert!(leaked.is_empty(), "{leaked:?}");
+        assert!(!output.contains(CONFIGURED_PROXY), "{output}");
+    }
+
+    /// The executor's environment names a proxy, set on the child test
+    /// process, and the config's own proxy replaces it.
+    #[tokio::test]
+    async fn a_configured_proxy_replaces_the_executor_environments() {
+        const NAME: &str =
+            "executor::command::tests::a_configured_proxy_replaces_the_executor_environments";
+        if child::delegated(
+            NAME,
+            &[(crate::proxy::PROXY_URL_VARIABLE, "http://127.0.0.1:28888")],
+        )
+        .await
+        {
+            return;
+        }
+        let unrouted =
+            CommandExecutor::with_config(ExecutorConfig::default().with_proxy(Proxy::default()));
+
+        let unrouted = environment_of(&unrouted, environment_listing(HashMap::new())).await;
+        let rerouted = environment_of(&routed(), environment_listing(HashMap::new())).await;
+
+        assert!(!unrouted.contains("28888"), "{unrouted}");
+        assert!(!unrouted.contains("_PROXY"), "{unrouted}");
+        assert!(!rerouted.contains("28888"), "{rerouted}");
+        assert_routed(&rerouted);
     }
 
     #[tokio::test]

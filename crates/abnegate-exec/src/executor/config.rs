@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::proxy::Proxy;
+
 use super::environment_policy::EnvironmentPolicy;
 
 /// How long a command may run when its `RunStart` sets no timeout: five
@@ -42,6 +44,12 @@ pub struct ExecutorConfig {
     /// Defaults to the [`allowlist`](EnvironmentPolicy::allowlist) of
     /// [`DEFAULT_ENVIRONMENT`](super::DEFAULT_ENVIRONMENT).
     pub environment: EnvironmentPolicy,
+
+    /// Where an unconfined command's HTTP clients are routed, set over its
+    /// environment last so the request cannot route around it. A confined
+    /// command reaches no network and never sees it. Defaults to
+    /// [`Proxy::from_environment`], read when the config is built.
+    pub proxy: Proxy,
 }
 
 impl Default for ExecutorConfig {
@@ -52,6 +60,7 @@ impl Default for ExecutorConfig {
             buffer_size: DEFAULT_BUFFER_SIZE,
             grace_period: GRACE_PERIOD,
             environment: EnvironmentPolicy::default(),
+            proxy: Proxy::from_environment(),
         }
     }
 }
@@ -90,6 +99,14 @@ impl ExecutorConfig {
     /// Set which of the executor's own environment variables a command sees
     pub fn with_environment(mut self, environment: EnvironmentPolicy) -> Self {
         self.environment = environment;
+        self
+    }
+
+    /// Route every unconfined command's HTTP clients through `proxy` instead
+    /// of the one the executor's environment names; [`Proxy::default`] routes
+    /// nothing.
+    pub fn with_proxy(mut self, proxy: Proxy) -> Self {
+        self.proxy = proxy;
         self
     }
 }
