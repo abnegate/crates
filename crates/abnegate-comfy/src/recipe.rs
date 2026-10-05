@@ -466,6 +466,22 @@ impl RecipeCatalog {
                 .is_some_and(|default| default == selected)
     }
 
+    /// Whether a recipe's defaults, its required files or the catalog's own
+    /// file list name `filename`, ignoring ASCII case: a weight some graph
+    /// loads, which nothing else may be written over.
+    pub(crate) fn needs_weight(&self, filename: &str) -> bool {
+        let named = |name: &str| name.eq_ignore_ascii_case(filename);
+        self.files.keys().any(|name| named(name))
+            || self.recipes.iter().any(|recipe| {
+                recipe.defaults.values().any(|name| named(name))
+                    || recipe
+                        .required_files
+                        .iter()
+                        .chain(&recipe.pose_required_files)
+                        .any(|file| named(&file.filename))
+            })
+    }
+
     /// The image recipe that loads a LoRA over `huggingface_base`, matched
     /// ignoring ASCII case, if any.
     pub fn adapter_recipe_for_base(&self, huggingface_base: &str) -> Option<&Recipe> {
@@ -533,6 +549,11 @@ impl Recipe {
     /// Whether its graph has a slot for a LoRA file.
     pub fn has_lora_slot(&self) -> bool {
         self.slots.weights.contains_key("lora")
+    }
+
+    /// Whether its graph has a slot named `slot` for a weight file.
+    pub(crate) fn has_weight_slot(&self, slot: &str) -> bool {
+        self.slots.weights.contains_key(slot)
     }
 
     /// Whether its graph has a ControlNet branch steered by a pose image.

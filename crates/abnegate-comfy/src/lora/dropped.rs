@@ -2,7 +2,7 @@ use crate::screening::Rejection;
 use serde::Serialize;
 
 /// An image left out of the training set.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
 pub struct Dropped {
     /// The image's name, as submitted.

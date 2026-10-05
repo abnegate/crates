@@ -11,7 +11,8 @@ use std::path::PathBuf;
 pub struct TrainOutcome {
     /// Where the adapter was installed.
     pub path: PathBuf,
-    /// How it scored against its base, when ComfyUI could score it.
+    /// How it scored against its base, when ComfyUI could score it. Only a
+    /// [`TrainMethod::Lora`](crate::lora::TrainMethod::Lora) is scored.
     pub quality: Option<Quality>,
     /// Advisories about the training set.
     pub dataset: Vec<Finding>,

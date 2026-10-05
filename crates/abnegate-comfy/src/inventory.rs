@@ -33,8 +33,8 @@ const SCAN_DIRECTORIES: &[(&str, &str)] = &[
 /// Every checkpoint, diffusion model and LoRA under `models_directory` that a
 /// recipe in `catalog` can run, sorted by filename. A LoRA is listed only when
 /// its sidecar, named with `contract`'s suffix, binds it to an adapter recipe
-/// for its base, and never while a publication in `contract`'s publication
-/// directory is replacing it.
+/// for its base. No weight is listed while a publication in its directory's
+/// `contract` publication directory is replacing it.
 ///
 /// `contract` is expected to pass [`Contract::validate`], as it does in any
 /// [`Config`](crate::Config) that passes [`Config::validate`](crate::Config::validate):
@@ -66,7 +66,7 @@ pub fn scan(
             if sanitize_weight_filename(filename).is_err() {
                 continue;
             }
-            if *kind == "lora" && publication_pending(models_directory, filename, contract) {
+            if publication_pending(&folder, filename, contract) {
                 continue;
             }
             let metadata = fs::metadata(&path).ok();
@@ -82,9 +82,6 @@ pub fn scan(
             let Some(recipe) = recipe else {
                 continue;
             };
-            if *kind == "lora" && publication_pending(models_directory, filename, contract) {
-                continue;
-            }
             let missing = missing_required(models_directory, &recipe.required_files);
             let mut required: Vec<String> = recipe
                 .required_files
@@ -200,20 +197,54 @@ fn resolve_recipe<'a>(
 }
 
 pub(crate) fn publication_marker(
-    loras: &Path,
+    directory: &Path,
     filename: &str,
     contract: &Contract,
 ) -> Option<PathBuf> {
     let filename = sanitize_weight_filename(filename).ok()?;
     Some(
-        loras
+        directory
             .join(&contract.publication_directory)
             .join(format!("{filename}{PUBLICATION_SUFFIX}")),
     )
 }
 
-fn publication_pending(models_directory: &Path, filename: &str, contract: &Contract) -> bool {
-    publication_marker(&models_directory.join("loras"), filename, contract)
+/// Whether a publication is replacing `filename` in any directory [`scan`]
+/// reads under `models_directory`.
+pub(crate) fn publishing(models_directory: &Path, filename: &str, contract: &Contract) -> bool {
+    SCAN_DIRECTORIES.iter().any(|(directory, _)| {
+        publication_pending(&models_directory.join(directory), filename, contract)
+    })
+}
+
+/// Whether a weight named `filename`, in any ASCII case, sits in or is being
+/// published to a directory [`scan`] reads under `models_directory` other
+/// than `directory`.
+pub(crate) fn named_elsewhere(
+    models_directory: &Path,
+    directory: &str,
+    filename: &str,
+    contract: &Contract,
+) -> bool {
+    SCAN_DIRECTORIES
+        .iter()
+        .filter(|(scanned, _)| *scanned != directory)
+        .map(|(scanned, _)| models_directory.join(scanned))
+        .any(|folder| {
+            publication_pending(&folder, filename, contract)
+                || fs::read_dir(&folder).is_ok_and(|entries| {
+                    entries.flatten().any(|entry| {
+                        entry
+                            .file_name()
+                            .to_str()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(filename))
+                    })
+                })
+        })
+}
+
+fn publication_pending(directory: &Path, filename: &str, contract: &Contract) -> bool {
+    publication_marker(directory, filename, contract)
         .is_some_and(|path| fs::symlink_metadata(path).is_ok())
 }
 
@@ -610,6 +641,46 @@ mod tests {
 
         assert!(scan(&root, &catalog, &overridden()).is_empty());
         assert_eq!(scan(&root, &catalog, &Contract::default()).len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_torn_publication_hides_a_checkpoint_as_it_hides_a_lora() {
+        let root = temp_models();
+        let checkpoint = root.join("checkpoints/jerry.safetensors");
+        fs::write(&checkpoint, b"tuned").unwrap();
+        write_sidecar(
+            &checkpoint,
+            &WeightSidecar::new("flux-schnell"),
+            &Contract::default(),
+        )
+        .unwrap();
+        let catalog = RecipeCatalog::packaged().unwrap();
+        assert!(
+            find(
+                &scan(&root, &catalog, &Contract::default()),
+                "jerry.safetensors"
+            )
+            .is_some()
+        );
+
+        let marker = publication_marker(
+            &root.join("checkpoints"),
+            "jerry.safetensors",
+            &Contract::default(),
+        )
+        .unwrap();
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(marker, b"pending").unwrap();
+
+        assert!(
+            find(
+                &scan(&root, &catalog, &Contract::default()),
+                "jerry.safetensors"
+            )
+            .is_none(),
+            "a fine-tune mid-publication is listed as ready"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

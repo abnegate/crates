@@ -129,6 +129,47 @@ slots, a recipe may declare:
 - `training.architecture`: `flux`, `qwen_edit` or `sdxl`. SDXL has no packaged
   ComfyUI training graph and trains only through `Config::train_command`.
 
+## Deciding what each base trains
+
+By default every trainable base trains a LoRA on any subject that is not a
+person, published in `loras/`. A deployment that trains more says so per base
+and method in `Config::train_policy`: the subjects a method accepts, the
+directory and recipe its weight is published under, and the files that have to
+be installed first. A rule's recipe has to run what it publishes: an adapter
+over the same base for a LoRA, a base recipe with a checkpoint or UNet slot for
+a fine-tune. Training never publishes over a weight a recipe or rule needs, nor
+over one that no training run published, so a fine-tune cannot replace its own
+base checkpoint. Only a LoRA is scored against its base. The external trainer
+reads the request's choice from `<prefix>_SUBJECT` and `<prefix>_METHOD`.
+Uploads arrive as raw bytes, so a large set never round-trips through base64,
+and `lora::validate_request` refuses a bad request before any image is read:
+
+```rust,no_run
+use abnegate_comfy::Config;
+use abnegate_comfy::lora::{
+    self, TrainError, TrainImage, TrainMethod, TrainPolicy, TrainRequest, TrainRule, TrainSubject,
+};
+
+fn person(photo: Vec<u8>) -> Result<TrainRequest, TrainError> {
+    let mut config = Config::from_environment();
+    config.train_policy = TrainPolicy::new().with_rule(
+        TrainRule::new("flux-schnell", TrainMethod::Finetune, "flux-schnell", "checkpoints")
+            .with_subjects([TrainSubject::Person])
+            .with_required("checkpoints/flux1-schnell-fp8.safetensors"),
+    );
+    let request = TrainRequest::new(
+        "jerry",
+        "flux-schnell",
+        vec![TrainImage::from_bytes("photo.jpg", "", photo)],
+    )
+    .with_trigger("ohwx")
+    .with_subject(TrainSubject::Person)
+    .with_method(TrainMethod::Finetune);
+    lora::validate_request(&config, &request)?;
+    Ok(request)
+}
+```
+
 ## Migrating from the pre-release defaults
 
 Earlier builds defaulted to one application's node pack and container layout.

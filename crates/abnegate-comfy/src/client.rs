@@ -240,11 +240,17 @@ impl Client {
             {
                 return Ok(recipe);
             }
+            if crate::inventory::publishing(
+                &self.config.models_directory,
+                selected,
+                &self.config.contract,
+            ) {
+                return Err(Error::Configuration(
+                    "selected weight is still being published",
+                ));
+            }
             let loras = self.config.models_directory.join("loras");
-            let pending =
-                crate::inventory::publication_marker(&loras, selected, &self.config.contract)
-                    .is_some_and(|marker| std::fs::symlink_metadata(marker).is_ok());
-            if pending || std::fs::symlink_metadata(loras.join(selected)).is_ok() {
+            if std::fs::symlink_metadata(loras.join(selected)).is_ok() {
                 return Err(Error::Configuration(
                     "selected LoRA has no complete, coherent sidecar",
                 ));
@@ -1598,6 +1604,41 @@ mod tests {
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(marker, b"pending").unwrap();
         assert!(Client::new(config).is_err());
+    }
+
+    #[test]
+    fn a_checkpoint_mid_publication_is_not_selected() {
+        let root = tempfile::tempdir().unwrap();
+        let models = root.path().join("models");
+        let checkpoints = models.join("checkpoints");
+        std::fs::create_dir_all(&checkpoints).unwrap();
+        let weight = checkpoints.join("jerry.safetensors");
+        std::fs::write(&weight, b"tuned").unwrap();
+        crate::inventory::write_sidecar(
+            &weight,
+            &crate::inventory::WeightSidecar::new("flux-schnell"),
+            &crate::train::Contract::default(),
+        )
+        .unwrap();
+        let config = Config {
+            checkpoint: "jerry.safetensors".into(),
+            models_directory: models,
+            ..Default::default()
+        };
+        assert!(Client::new(config.clone()).is_ok());
+
+        let marker = crate::inventory::publication_marker(
+            &checkpoints,
+            "jerry.safetensors",
+            &config.contract,
+        )
+        .unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(marker, b"pending").unwrap();
+        assert!(
+            Client::new(config).is_err(),
+            "a checkpoint mid-publication was selected"
+        );
     }
 
     fn models_with(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {

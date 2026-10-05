@@ -331,16 +331,52 @@ mod tests {
     }
 
     #[test]
+    fn an_uploaded_image_is_drafted_like_its_base64() {
+        use base64::Engine;
+        let bytes = b"\x89PNG not really".to_vec();
+        let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let expected = Draft::new("a.png", &base64, "kept", 3);
+
+        let uploaded = CaptionImage::from_bytes("a.png", bytes.clone()).with_caption("kept");
+        let both = CaptionImage {
+            bytes: Some(bytes.clone()),
+            ..CaptionImage::new("a.png", "not base64").with_caption("kept")
+        };
+        for drafted in [
+            Draft::from_bytes("a.png", &bytes, "kept", 3),
+            uploaded.draft(3),
+            both.draft(3),
+            CaptionImage::new("a.png", base64.clone())
+                .with_caption("kept")
+                .draft(3),
+        ] {
+            assert_eq!(drafted.image, expected.image);
+            assert_eq!(drafted.caption, "kept");
+            assert_eq!(drafted.group, 3);
+        }
+
+        let request: CaptionRequest = serde_json::from_value(serde_json::json!({
+            "images": [{"filename": "a.png", "bytes": [1, 2, 3]}],
+        }))
+        .unwrap();
+        assert!(request.images[0].bytes.is_none());
+        assert!(request.images[0].bytes_base64.is_empty());
+        let built = CaptionRequest::new(vec![uploaded.with_group(1)]).with_trigger("ohwx");
+        assert_eq!(built.trigger.as_deref(), Some("ohwx"));
+        assert_eq!(built.images[0].group, Some(1));
+    }
+
+    #[test]
     fn images_print_their_size_rather_than_their_bytes() {
         let upload = "A".repeat(1 << 20);
-        let image = CaptionImage {
-            filename: "a.png".into(),
-            bytes_base64: upload.clone(),
-            caption: String::new(),
-            group: None,
-        };
+        let image = CaptionImage::new("a.png", upload.clone());
         let draft = Draft::new("a.png", &upload, "", 0);
-        for rendered in [format!("{image:?}"), format!("{draft:?}")] {
+        let uploaded = CaptionImage::from_bytes("a.png", vec![0; 1 << 20]);
+        for rendered in [
+            format!("{image:?}"),
+            format!("{draft:?}"),
+            format!("{uploaded:?}"),
+        ] {
             assert!(rendered.len() < 200, "{} characters", rendered.len());
         }
     }

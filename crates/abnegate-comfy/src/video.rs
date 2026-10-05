@@ -912,14 +912,50 @@ mod tests {
     }
 
     #[test]
+    fn an_uploaded_clip_wins_over_its_base64() {
+        let uploaded = FrameRequest::from_bytes("clip.mp4", b"clip".to_vec())
+            .with_fps(2)
+            .with_mirror(false);
+        assert_eq!(uploaded.encoded().unwrap().as_ref(), b"clip");
+        assert_eq!((uploaded.fps, uploaded.mirror), (Some(2), Some(false)));
+        let both = FrameRequest {
+            bytes: Some(b"clip".to_vec()),
+            ..FrameRequest::new("clip.mp4", "not base64")
+        };
+        assert_eq!(both.encoded().unwrap().as_ref(), b"clip");
+        assert_eq!(
+            FrameRequest::new("clip.mp4", " Y2xpcA== ")
+                .encoded()
+                .unwrap()
+                .as_ref(),
+            b"clip"
+        );
+        for (request, message) in [
+            (
+                FrameRequest::from_bytes("clip.mp4", Vec::new()),
+                "video is empty",
+            ),
+            (FrameRequest::new("clip.mp4", ""), "video is empty"),
+            (
+                FrameRequest::new("clip.mp4", "not base64"),
+                "video is not valid base64",
+            ),
+        ] {
+            assert!(
+                matches!(request.encoded(), Err(TrainError::Invalid(found)) if found == message),
+                "{request:?}"
+            );
+        }
+        let parsed: FrameRequest =
+            serde_json::from_value(serde_json::json!({"filename": "clip.mp4", "bytes": [1]}))
+                .unwrap();
+        assert!(parsed.bytes.is_none());
+    }
+
+    #[test]
     fn clips_and_frames_print_their_size_rather_than_their_bytes() {
         let upload = "A".repeat(1 << 20);
-        let request = FrameRequest {
-            filename: "clip.mp4".into(),
-            bytes_base64: upload.clone(),
-            fps: None,
-            mirror: None,
-        };
+        let request = FrameRequest::new("clip.mp4", upload.clone());
         let frame = Frame {
             filename: "frame-0000.png".into(),
             bytes_base64: upload,
@@ -931,6 +967,12 @@ mod tests {
             assert!(rendered.len() < 200, "{} characters", rendered.len());
             assert!(rendered.contains("bytes_base64: 1048576"), "{rendered}");
         }
+        let uploaded = format!(
+            "{:?}",
+            FrameRequest::from_bytes("clip.mp4", vec![0; 1 << 20])
+        );
+        assert!(uploaded.len() < 200, "{} characters", uploaded.len());
+        assert!(uploaded.contains("bytes: Some(1048576)"), "{uploaded}");
     }
 
     #[test]

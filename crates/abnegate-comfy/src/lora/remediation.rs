@@ -3,7 +3,7 @@ use crate::screening::Rejection;
 use serde::Serialize;
 
 /// One target the pipeline tried to repair before selecting the training set.
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct Remediation {
     /// The image's position in the request.

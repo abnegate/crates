@@ -4,6 +4,7 @@ mod error;
 
 pub use error::ConfigError;
 
+use crate::lora::TrainPolicy;
 use crate::train::Contract;
 use abnegate_secret::SecretValue;
 use reqwest::header::HeaderName;
@@ -190,6 +191,9 @@ pub struct Config {
     /// Wall clock budget for a training run, graph or command, at most four
     /// hours.
     pub train_timeout: Duration,
+    /// Which subjects and methods each base trains and where each method's
+    /// weight is published. Empty trains a LoRA on every trainable base.
+    pub train_policy: TrainPolicy,
     /// Decoder that turns a submitted clip into training frames. It sees only
     /// the names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT)
     /// of this process's environment.
@@ -240,6 +244,7 @@ impl Default for Config {
             models_directory: PathBuf::from(DEFAULT_MODELS_DIRECTORY),
             train_command: None,
             train_timeout: Duration::from_secs(3600),
+            train_policy: TrainPolicy::default(),
             ffmpeg: "ffmpeg".to_string(),
             ffprobe: "ffprobe".to_string(),
             frame_rate: 4,
@@ -266,8 +271,9 @@ impl Config {
 
     /// Refuses settings that would fail every request, poll ComfyUI in a busy
     /// loop, wait past the ceiling each timeout's documentation names, send a
-    /// token no proxy could read, or run a decoder whose name is blank or
-    /// carries a control character. [`Client::new`](crate::Client::new),
+    /// token no proxy could read, run a decoder whose name is blank or
+    /// carries a control character, or publish a trained weight outside the
+    /// models directory. [`Client::new`](crate::Client::new),
     /// [`lora::train`](crate::lora::train) and [`train::run`](crate::train::run)
     /// call it first.
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -348,6 +354,7 @@ impl Config {
                 return Err(ConfigError::new(message));
             }
         }
+        self.train_policy.validate()?;
         self.contract.validate()
     }
 
@@ -456,6 +463,7 @@ impl Config {
                 Duration::from_secs(60),
                 MAXIMUM_TRAIN_TIMEOUT,
             ),
+            train_policy: defaults.train_policy,
             ffmpeg: text(environment("COMFYUI_FFMPEG")).unwrap_or(defaults.ffmpeg),
             ffprobe: text(environment("COMFYUI_FFPROBE")).unwrap_or(defaults.ffprobe),
             frame_rate: frames(
