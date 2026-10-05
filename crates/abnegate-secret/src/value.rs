@@ -27,9 +27,9 @@ use crate::redact::REDACTED;
 ///
 /// `Serialize` writes the credential **in plaintext**, and `Deserialize` reads
 /// plaintext back, so a settings file that holds one round-trips. Redaction
-/// covers `Debug` and `Display` only: seal the value with
-/// [`encrypt_value`](crate::encrypt_value) before it reaches storage, and
-/// never serialize a `SecretValue` into a log line, an error report or a
+/// covers `Debug` and `Display` only: seal the value with `encrypt_value`,
+/// from the `encryption` feature, before it reaches storage, and never
+/// serialize a `SecretValue` into a log line, an error report or a
 /// response body.
 ///
 /// ```

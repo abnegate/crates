@@ -18,22 +18,31 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = []
+default = ["encryption"]
+encryption = [
+    "dep:aes-gcm",
+    "dep:base64",
+    "dep:dirs",
+    "dep:getrandom",
+    "dep:hex",
+    "dep:thiserror",
+    "dep:tracing",
+]
 rusqlite = ["dep:rusqlite"]
 sqlx = ["dep:sqlx"]
 
 [dependencies]
-aes-gcm = { workspace = true, features = ["zeroize"] }
-base64 = { workspace = true }
-dirs = { workspace = true }
-getrandom = { workspace = true, features = ["std"] }
-hex = { workspace = true }
+aes-gcm = { workspace = true, optional = true, features = ["zeroize"] }
+base64 = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true, features = ["std"] }
+hex = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 sqlx = { workspace = true, optional = true }
 subtle = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
+thiserror = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]

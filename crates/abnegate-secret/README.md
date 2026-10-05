@@ -9,11 +9,17 @@ text that has been through a terminal.
 
 ## Features
 
+- `encryption`, on by default: `encrypt_value`, `decrypt_value` and `MasterKey`, with the AES-256-GCM, random source and key file dependencies they need.
 - `sqlx`: `Encode`, `Decode` and `Type` for `SecretValue` over every database that stores a `String`.
 - `rusqlite`: `ToSql` and `FromSql` for `SecretValue`, the same for SQLite.
 
-Neither feature chooses a driver, runtime, TLS stack or SQLite build; enable
-those on your own `sqlx` or `rusqlite` dependency.
+Neither database feature chooses a driver, runtime, TLS stack or SQLite build;
+enable those on your own `sqlx` or `rusqlite` dependency. To only redact and
+sanitize, turn default features off and skip the cipher:
+
+```sh
+cargo add abnegate-secret --no-default-features
+```
 
 ## Usage
 

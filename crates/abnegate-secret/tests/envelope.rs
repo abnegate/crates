@@ -1,5 +1,7 @@
 //! The stored envelope format, held to values already sitting in storage.
 
+#![cfg(feature = "encryption")]
+
 use abnegate_secret::Error;
 use abnegate_secret::MasterKey;
 use abnegate_secret::SecretValue;
