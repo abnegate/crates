@@ -67,8 +67,10 @@ pub enum PullRequestError {
     InvalidRepositoryName,
 
     /// The configured API origin is not an HTTPS URL with nothing but a host
-    /// and a path.
-    #[error("Invalid API origin: expected an HTTPS URL with no query, fragment or credentials")]
+    /// and a path, nor, where plain HTTP was opted in to, an HTTP one.
+    #[error(
+        "Invalid API origin: expected an HTTPS (or opted-in HTTP) URL with no query, fragment or credentials"
+    )]
     InvalidOrigin,
 
     /// A value passed in, or one GitHub answered with, is not what it has to

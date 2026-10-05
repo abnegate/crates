@@ -43,6 +43,18 @@ mod branch_names {
             assert_eq!(generate(title), "task/12345678", "{title:?}");
         }
     }
+
+    #[test]
+    fn a_caller_can_hang_the_task_off_its_own_prefix() {
+        let service = GitService::new()
+            .with_branch_prefix(abnegate_vcs::BranchName::parse("zone/task").unwrap())
+            .with_branch_format(abnegate_vcs::BranchFormat::Joined);
+        let task = uuid::Uuid::parse_str("1a2b3c4d-1234-1234-1234-123456789abc").unwrap();
+
+        let branch = service.generate_branch_name(task, "slug").unwrap();
+
+        assert_eq!(branch.to_string(), "zone/task-1a2b3c4d-slug");
+    }
 }
 
 /// The title is the change's own subject in the format this history uses, so a
@@ -72,6 +84,7 @@ mod pull_requests {
     use abnegate_vcs::MergedPullRequest;
     use abnegate_vcs::PullRequestDetail;
     use abnegate_vcs::PullRequestService;
+    use abnegate_vcs::ReviewRecord;
     use abnegate_vcs::ReviewState;
     use abnegate_vcs::ReviewThreadRecord;
     use abnegate_vcs::SubmittedReview;
@@ -304,6 +317,42 @@ mod pull_requests {
         assert_eq!(
             merge,
             MergedPullRequest::new(Some(CommitSha::parse(&merged).unwrap()), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn reviews_read_back_as_the_values_a_caller_builds() {
+        let server = MockServer::start().await;
+        let head = "39edddf0d1abc06b84ebb74e8213c1fd41ec333e";
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/pulls/7/reviews"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 5,
+                "user": { "login": "review-bot" },
+                "body": "Score: 4/5",
+                "state": "COMMENTED",
+                "commit_id": head,
+                "submitted_at": "2026-09-28T02:51:09Z",
+            }])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::standing_in_for("github.com", &server.uri()).unwrap();
+        let reference = service
+            .pull_request("https://github.com/acme/project/pull/7")
+            .unwrap();
+
+        let reviews = service
+            .fetch_reviews(&reference, &SecretValue::new("token"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reviews,
+            [ReviewRecord::new(5, "review-bot", "Score: 4/5")
+                .with_commit(CommitSha::parse(head).unwrap())
+                .with_submitted_at("2026-09-28T02:51:09Z")]
         );
     }
 

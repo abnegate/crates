@@ -2,6 +2,7 @@ use super::*;
 use crate::commit_sha::CommitSha;
 use crate::pull_request::IssueComment;
 use crate::pull_request::ReviewEvent;
+use crate::pull_request::ReviewRecord;
 use crate::pull_request::comment_request::CommentRequest;
 use crate::pull_request::github_identified::GitHubIdentified;
 use crate::pull_request::github_issue_comment::GitHubIssueComment;
@@ -37,6 +38,38 @@ impl PullRequestService {
             .await?;
 
         Ok(comments.into_iter().map(IssueComment::from).collect())
+    }
+
+    /// Every review submitted on a pull request, oldest first, with the commit
+    /// each was submitted on, where a review bot on a paid plan posts its
+    /// score.
+    ///
+    /// Reads no further than the first thousand reviews. A review GitHub
+    /// gives no identifier is [`PullRequestError::GitHubApi`], and one
+    /// submitted on a commit this crate does not accept is
+    /// [`PullRequestError::Parse`]: never a partial list.
+    pub async fn fetch_reviews(
+        &self,
+        reference: &PullRequestReference,
+        token: &SecretValue,
+    ) -> PullRequestResult<Vec<ReviewRecord>> {
+        let number = reference.number().to_string();
+        let repository = reference.repository();
+        let reviews: Vec<GitHubReview> = self
+            .get_all(
+                &[
+                    "repos",
+                    repository.owner(),
+                    repository.name(),
+                    "pulls",
+                    &number,
+                    "reviews",
+                ],
+                token,
+            )
+            .await?;
+
+        reviews.into_iter().map(recorded).collect()
     }
 
     /// Comment on a pull request's conversation, which is how a review bot is
@@ -149,9 +182,29 @@ impl PullRequestService {
     }
 }
 
+/// A review as GitHub returned it, held to an identifier and to a commit this
+/// crate accepts.
+fn recorded(review: GitHubReview) -> PullRequestResult<ReviewRecord> {
+    let id = review
+        .id
+        .ok_or_else(|| PullRequestError::GitHubApi(UNREADABLE.to_string()))?;
+    Ok(ReviewRecord {
+        id,
+        author: review.user.and_then(|user| user.login).unwrap_or_default(),
+        body: review.body.unwrap_or_default(),
+        commit: review
+            .commit_id
+            .as_deref()
+            .map(CommitSha::parse)
+            .transpose()?,
+        submitted_at: review.submitted_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::seven;
     use crate::pull_request::service::fixtures::stand_in;
@@ -187,6 +240,151 @@ mod tests {
             "html_url": comment.url,
             "created_at": comment.created_at,
         })
+    }
+
+    fn reviewed(id: u64, body: &str) -> ReviewRecord {
+        ReviewRecord::new(id, "review-bot", body)
+            .with_commit(commit('a'))
+            .with_submitted_at("2026-09-28T02:51:09Z")
+    }
+
+    fn submitted(review: &ReviewRecord) -> Value {
+        json!({
+            "id": review.id,
+            "user": { "login": review.author },
+            "body": review.body,
+            "state": "COMMENTED",
+            "commit_id": review.commit.as_ref().map(CommitSha::as_str),
+            "submitted_at": review.submitted_at,
+        })
+    }
+
+    #[tokio::test]
+    async fn reviews_carry_the_commit_they_were_submitted_on_and_their_body() {
+        let server = MockServer::start().await;
+        let head = CommitSha::parse("39edddf0d1abc06b84ebb74e8213c1fd41ec333e").unwrap();
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/pulls/7/reviews"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "id": 5_333_502_514u64,
+                    "user": { "login": "coderabbitai[bot]" },
+                    "body": "**Actionable comments posted: 1**",
+                    "state": "COMMENTED",
+                    "commit_id": head.as_str(),
+                    "submitted_at": "2026-09-28T02:51:09Z",
+                },
+                {
+                    "id": 5_333_523_878u64,
+                    "user": null,
+                    "body": null,
+                    "state": "COMMENTED",
+                    "commit_id": head.as_str(),
+                    "submitted_at": "2026-09-28T02:55:47Z",
+                },
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let reviews = service
+            .fetch_reviews(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reviews,
+            [
+                ReviewRecord::new(
+                    5_333_502_514,
+                    "coderabbitai[bot]",
+                    "**Actionable comments posted: 1**",
+                )
+                .with_commit(head.clone())
+                .with_submitted_at("2026-09-28T02:51:09Z"),
+                ReviewRecord::new(5_333_523_878, "", "")
+                    .with_commit(head)
+                    .with_submitted_at("2026-09-28T02:55:47Z"),
+            ],
+            "a review from a deleted account with no body still names its commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_page_of_reviews_is_read_in_order() {
+        let server = MockServer::start().await;
+        let full: Vec<ReviewRecord> = (1..=u64::try_from(PAGE_SIZE).unwrap())
+            .map(|id| reviewed(id, &format!("Score {id}")))
+            .collect();
+        let pending = ReviewRecord::new(101, "review-bot", "Still reading.");
+        let reviews_path = "/repos/acme/project/pulls/7/reviews";
+        Mock::given(method("GET"))
+            .and(path(reviews_path))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(full.iter().map(submitted).collect::<Vec<Value>>()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(reviews_path))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": pending.id,
+                "user": { "login": pending.author },
+                "body": pending.body,
+                "state": "PENDING",
+            }])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let reviews = service
+            .fetch_reviews(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        let expected: Vec<ReviewRecord> = full.into_iter().chain([pending]).collect();
+        assert_eq!(reviews, expected);
+    }
+
+    #[tokio::test]
+    async fn a_review_without_an_identifier_or_on_a_commit_not_accepted_is_an_error() {
+        for (answer, expected) in [
+            (
+                json!([{ "body": SENTINEL, "commit_id": commit('a').as_str() }]),
+                (|failure: &PullRequestError| matches!(failure, PullRequestError::GitHubApi(text) if text == UNREADABLE))
+                    as Expected,
+            ),
+            (
+                json!([{ "id": 1, "body": SENTINEL, "commit_id": "HEAD" }]),
+                |failure: &PullRequestError| matches!(failure, PullRequestError::Parse(_)),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/acme/project/pulls/7/reviews"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&answer))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .fetch_reviews(&seven(&service), &token())
+                .await
+                .unwrap_err();
+
+            assert!(expected(&failure), "{answer}: {failure:?}");
+            assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+        }
     }
 
     #[tokio::test]

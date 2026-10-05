@@ -46,7 +46,7 @@ impl GitService {
         worktree_path: &Path,
         checkout_ref: &BranchName,
     ) -> GitResult<Checkout> {
-        Self::verify_base(path).await?;
+        self.verify_base(path).await?;
         let repository = Self::make_absolute(path)?;
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
@@ -67,13 +67,14 @@ impl GitService {
             "Creating worktree"
         );
 
-        let output = Self::output(
-            Self::managed_local(path)
-                .args(["worktree", "add", "--detach", "--"])
-                .arg(worktree_path)
-                .arg(checkout_ref.as_str()),
-        )
-        .await?;
+        let output = self
+            .output(
+                Self::managed_local(path)
+                    .args(["worktree", "add", "--detach", "--"])
+                    .arg(worktree_path)
+                    .arg(checkout_ref.as_str()),
+            )
+            .await?;
 
         if !output.status.success() {
             return Err(Self::failed("worktree add", &output));
@@ -102,8 +103,8 @@ impl GitService {
         branch: &BranchName,
         start_point: &BranchName,
     ) -> GitResult<Checkout> {
-        Self::verify_base(path).await?;
-        if Self::is_symbolic(path, branch.reference()).await? {
+        self.verify_base(path).await?;
+        if self.is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
         let repository = Self::make_absolute(path)?;
@@ -126,13 +127,14 @@ impl GitService {
             "Creating worktree on branch"
         );
 
-        let output = Self::output(
-            Self::managed_local(path)
-                .args(["worktree", "add", "--no-track", "-B", branch.as_str(), "--"])
-                .arg(worktree_path)
-                .arg(start_point.as_str()),
-        )
-        .await?;
+        let output = self
+            .output(
+                Self::managed_local(path)
+                    .args(["worktree", "add", "--no-track", "-B", branch.as_str(), "--"])
+                    .arg(worktree_path)
+                    .arg(start_point.as_str()),
+            )
+            .await?;
 
         if !output.status.success() {
             return Err(Self::failed("worktree add", &output));
@@ -151,7 +153,7 @@ impl GitService {
     /// not the repository itself, and not locked. Everything else is somewhere
     /// the caller did not declare disposable, and is refused.
     pub async fn remove_worktree(&self, path: &Path, worktree_path: &Path) -> GitResult<()> {
-        Self::verify_base(path).await?;
+        self.verify_base(path).await?;
         let worktree_path = Self::make_absolute(worktree_path)?;
         let worktree_path = worktree_path.as_path();
         if worktree_path.components().any(|component| {
@@ -170,12 +172,13 @@ impl GitService {
             Err(_) => None,
         };
 
-        let output = Self::output(
-            Self::managed_local(path)
-                .args(["worktree", "remove", "--force", "--"])
-                .arg(worktree_path),
-        )
-        .await?;
+        let output = self
+            .output(
+                Self::managed_local(path)
+                    .args(["worktree", "remove", "--force", "--"])
+                    .arg(worktree_path),
+            )
+            .await?;
 
         if !output.status.success() {
             tracing::debug!(
@@ -190,7 +193,9 @@ impl GitService {
             tokio::fs::remove_dir_all(&disposable).await?;
         }
 
-        let _ = Self::output(Self::managed_local(path).args(["worktree", "prune"])).await;
+        let _ = self
+            .output(Self::managed_local(path).args(["worktree", "prune"]))
+            .await;
 
         tracing::debug!(worktree = ?worktree_path, "Worktree removed");
         Ok(())
@@ -219,9 +224,9 @@ impl GitService {
             return Err(refuse());
         }
 
-        let listed =
-            Self::output(Self::managed_local(path).args(["worktree", "list", "--porcelain", "-z"]))
-                .await?;
+        let listed = self
+            .output(Self::managed_local(path).args(["worktree", "list", "--porcelain", "-z"]))
+            .await?;
         if !listed.status.success() {
             return Err(refuse());
         }
@@ -255,12 +260,13 @@ impl GitService {
         if !details.is_file() {
             return Ok(false);
         }
-        let common = Self::output(Self::managed_local(path).args([
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ]))
-        .await?;
+        let common = self
+            .output(Self::managed_local(path).args([
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ]))
+            .await?;
         if !common.status.success() {
             return Ok(false);
         }
@@ -289,13 +295,14 @@ impl GitService {
         start: &BranchName,
     ) -> GitResult<()> {
         let refuse = || GitError::UnsafeWorktree(worktree_path.to_path_buf());
-        let resolved = Self::output(Self::managed_local(path).args([
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            &format!("{start}^{{commit}}"),
-        ]))
-        .await?;
+        let resolved = self
+            .output(Self::managed_local(path).args([
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{start}^{{commit}}"),
+            ]))
+            .await?;
         if !resolved.status.success() {
             return Err(refuse());
         }
@@ -313,7 +320,7 @@ impl GitService {
 
         tracing::warn!(worktree = ?worktree_path, "Stale worktree found, removing");
         self.remove_worktree(path, worktree_path).await?;
-        Self::verify_base(path).await
+        self.verify_base(path).await
     }
 }
 

@@ -2,8 +2,11 @@ use crate::pull_request::PullRequestError;
 use crate::pull_request::PullRequestResult;
 use url::Url;
 
-/// The only scheme a configured origin may use.
+/// The scheme a configured origin uses.
 const HTTPS: &str = "https";
+
+/// The scheme an origin may use only when the operator opted in to it.
+const HTTP: &str = "http";
 
 /// The label GitHub's own API host and a subdomain-isolated Enterprise one
 /// carry ahead of the host their repositories live on.
@@ -28,17 +31,22 @@ const GRAPHQL: &str = "graphql";
 pub(super) struct Origin {
     url: Url,
     host: String,
+    plain: bool,
 }
 
 impl Origin {
     /// The origin an operator configured: an HTTPS URL with no credentials,
-    /// query or fragment. It answers for its own host, less the `api.` label
-    /// carried by GitHub's own API host and by a subdomain-isolated Enterprise
-    /// one; an Enterprise install without subdomain isolation answers for
-    /// itself under a `/api/v3` path.
-    pub(super) fn configured(url: &str) -> PullRequestResult<Self> {
+    /// query or fragment, or a plain HTTP one where `permit_http` says the
+    /// operator opted in to it. Only an origin that is itself plain HTTP
+    /// is reached over it and admits `http` links; an HTTPS one is the same
+    /// whether or not plain HTTP was permitted. It answers for its own host,
+    /// less the `api.` label carried by GitHub's own API host and by a
+    /// subdomain-isolated Enterprise one; an Enterprise install without
+    /// subdomain isolation answers for itself under a `/api/v3` path.
+    pub(super) fn configured(url: &str, permit_http: bool) -> PullRequestResult<Self> {
         let url = Self::parse(url)?;
-        if url.scheme() != HTTPS {
+        let plain = url.scheme() == HTTP;
+        if url.scheme() != HTTPS && !(permit_http && plain) {
             return Err(PullRequestError::InvalidOrigin);
         }
         let host = url
@@ -46,7 +54,7 @@ impl Origin {
             .ok_or(PullRequestError::InvalidOrigin)?
             .to_ascii_lowercase();
         let host = host.strip_prefix(API_LABEL).unwrap_or(&host).to_string();
-        Ok(Self { url, host })
+        Ok(Self { url, host, plain })
     }
 
     /// `url`, over whatever scheme it names, standing in for `host`.
@@ -55,7 +63,20 @@ impl Origin {
         Ok(Self {
             url: Self::parse(url)?,
             host: host.to_ascii_lowercase(),
+            plain: false,
         })
+    }
+
+    /// Whether the origin is plain HTTP, which only an operator's opt-in
+    /// admits.
+    pub(super) fn plain(&self) -> bool {
+        self.plain
+    }
+
+    /// Whether a link on this origin's host may use `scheme`: HTTPS always,
+    /// and plain HTTP only when the origin itself is plain HTTP.
+    pub(super) fn admits(&self, scheme: &str) -> bool {
+        scheme.eq_ignore_ascii_case(HTTPS) || (self.plain && scheme.eq_ignore_ascii_case(HTTP))
     }
 
     fn parse(url: &str) -> PullRequestResult<Url> {
@@ -135,7 +156,46 @@ mod tests {
             "file:///etc/passwd",
             "mailto:someone@github.com",
         ] {
-            assert!(Origin::configured(refused).is_err(), "{refused}");
+            assert!(Origin::configured(refused, false).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn plain_http_is_an_origin_only_once_the_operator_opts_in() {
+        let refused = Origin::configured("http://localhost:3000", false);
+        assert!(
+            matches!(refused, Err(PullRequestError::InvalidOrigin)),
+            "{refused:?}"
+        );
+
+        let admitted = Origin::configured("http://localhost:3000", true).unwrap();
+        assert!(admitted.plain());
+        assert!(admitted.answers_for("localhost"));
+        assert!(admitted.admits("http") && admitted.admits("https"));
+        assert_eq!(
+            admitted.endpoint(&["repos", "acme", "project"]).as_str(),
+            "http://localhost:3000/repos/acme/project"
+        );
+
+        for permit_http in [true, false] {
+            let secure = Origin::configured("https://api.github.com", permit_http).unwrap();
+            assert!(!secure.plain(), "{permit_http}");
+            assert!(secure.admits("https"), "{permit_http}");
+            assert!(!secure.admits("http"), "{permit_http}");
+        }
+    }
+
+    #[test]
+    fn opting_in_to_plain_http_admits_no_other_scheme_or_shape() {
+        for refused in [
+            "ftp://github.example.com",
+            "file:///etc/passwd",
+            "http://user:token@localhost:3000",
+            "http://localhost:3000/?token=x",
+            "http://localhost:3000/#x",
+            "localhost:3000",
+        ] {
+            assert!(Origin::configured(refused, true).is_err(), "{refused}");
         }
     }
 
@@ -146,7 +206,7 @@ mod tests {
             "https://github.example.com/api/v3/",
         ] {
             assert_eq!(
-                Origin::configured(configured)
+                Origin::configured(configured, false)
                     .unwrap()
                     .endpoint(&["repos", "acme", "project"])
                     .as_str(),
@@ -154,7 +214,7 @@ mod tests {
             );
         }
         assert_eq!(
-            Origin::configured("https://api.github.com/")
+            Origin::configured("https://api.github.com/", false)
                 .unwrap()
                 .endpoint(&["repos", "acme", "project"])
                 .as_str(),
@@ -181,7 +241,10 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                Origin::configured(configured).unwrap().graphql().as_str(),
+                Origin::configured(configured, false)
+                    .unwrap()
+                    .graphql()
+                    .as_str(),
                 graphql,
                 "{configured}"
             );

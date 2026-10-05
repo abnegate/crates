@@ -54,7 +54,7 @@ impl GitService {
                 source.as_str(),
             ])
             .arg(destination);
-        Self::finish(&mut command).await
+        self.finish(&mut command).await
     }
 
     /// Resume the task branch from a fresh clone without rewriting its history.
@@ -71,51 +71,55 @@ impl GitService {
         branch: &BranchName,
         required: bool,
     ) -> GitResult<()> {
-        Self::verify_config(checkout).await?;
+        self.verify_config(checkout).await?;
         let path = checkout.top();
         let reference = branch.reference();
-        if Self::is_symbolic(path, &reference).await? {
+        if self.is_symbolic(path, &reference).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
         let remote = format!("{REMOTE_TRACKING}{branch}");
-        let exists = Self::output(
-            Self::hardened()
-                .args(["show-ref", "--verify", "--quiet", &remote])
-                .current_dir(path),
-        )
-        .await?;
+        let exists = self
+            .output(
+                Self::hardened()
+                    .args(["show-ref", "--verify", "--quiet", &remote])
+                    .current_dir(path),
+            )
+            .await?;
         if !exists.status.success() && (required || exists.status.code() != Some(1)) {
             return Err(GitError::CommandFailed(
                 "Task branch is missing from the repository".into(),
             ));
         }
-        let checked_out = Self::output(
-            Self::hardened()
-                .args(["symbolic-ref", "--quiet", "HEAD"])
-                .current_dir(path)
-                .stdout(Stdio::piped()),
-        )
-        .await?;
-        if String::from_utf8_lossy(&checked_out.stdout).trim() == reference {
-            return Ok(());
-        }
-        let held = Self::output(
-            Self::hardened()
-                .args(["show-ref", "--verify", "--quiet", &reference])
-                .current_dir(path),
-        )
-        .await?;
-        if held.status.success() {
-            let mut prune = Self::hardened();
-            prune.args(["worktree", "prune"]).current_dir(path);
-            let _ = Self::finish(&mut prune).await;
-            let listed = Self::output(
+        let checked_out = self
+            .output(
                 Self::hardened()
-                    .args(["worktree", "list", "--porcelain", "-z"])
+                    .args(["symbolic-ref", "--quiet", "HEAD"])
                     .current_dir(path)
                     .stdout(Stdio::piped()),
             )
             .await?;
+        if String::from_utf8_lossy(&checked_out.stdout).trim() == reference {
+            return Ok(());
+        }
+        let held = self
+            .output(
+                Self::hardened()
+                    .args(["show-ref", "--verify", "--quiet", &reference])
+                    .current_dir(path),
+            )
+            .await?;
+        if held.status.success() {
+            let mut prune = Self::hardened();
+            prune.args(["worktree", "prune"]).current_dir(path);
+            let _ = self.finish(&mut prune).await;
+            let listed = self
+                .output(
+                    Self::hardened()
+                        .args(["worktree", "list", "--porcelain", "-z"])
+                        .current_dir(path)
+                        .stdout(Stdio::piped()),
+                )
+                .await?;
             if WorktreeEntry::parse(&listed.stdout)
                 .iter()
                 .any(|entry| entry.branch.as_deref() == Some(reference.as_str()))
@@ -126,7 +130,7 @@ impl GitService {
                         .into(),
                 ));
             }
-            let aside = Self::set_aside(path, branch).await?;
+            let aside = self.set_aside(path, branch).await?;
             tracing::warn!(
                 %branch,
                 %aside,
@@ -139,18 +143,23 @@ impl GitService {
             command.arg(&remote);
         }
         command.arg("--").current_dir(path);
-        Self::finish(&mut command).await
+        self.finish(&mut command).await
     }
 
     /// Whether `reference` is a symbolic ref, dangling or not.
-    pub(super) async fn is_symbolic(path: &Path, reference: impl AsRef<OsStr>) -> GitResult<bool> {
-        let read = Self::output(
-            Self::hardened()
-                .args(["symbolic-ref", "--quiet"])
-                .arg(reference)
-                .current_dir(path),
-        )
-        .await?;
+    pub(super) async fn is_symbolic(
+        &self,
+        path: &Path,
+        reference: impl AsRef<OsStr>,
+    ) -> GitResult<bool> {
+        let read = self
+            .output(
+                Self::hardened()
+                    .args(["symbolic-ref", "--quiet"])
+                    .arg(reference)
+                    .current_dir(path),
+            )
+            .await?;
         match read.status.code() {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
@@ -166,14 +175,15 @@ impl GitService {
     /// unnamed, since the repository chose its name. A HEAD whose branch this
     /// platform cannot name cannot be checked, and is refused as unreadable.
     /// A detached HEAD is its own ref.
-    async fn refuse_linked_head(path: &Path) -> GitResult<()> {
-        let head = Self::output(
-            Self::hardened()
-                .args(["symbolic-ref", "--quiet", "--no-recurse", "HEAD"])
-                .current_dir(path)
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+    async fn refuse_linked_head(&self, path: &Path) -> GitResult<()> {
+        let head = self
+            .output(
+                Self::hardened()
+                    .args(["symbolic-ref", "--quiet", "--no-recurse", "HEAD"])
+                    .current_dir(path)
+                    .stdout(Stdio::piped()),
+            )
+            .await?;
         match head.status.code() {
             Some(0) => {}
             Some(1) => return Ok(()),
@@ -189,7 +199,7 @@ impl GitService {
                 "Cannot read the checkout's HEAD".to_string(),
             ));
         };
-        match Self::is_symbolic(path, name).await? {
+        match self.is_symbolic(path, name).await? {
             true => Err(GitError::SymbolicHead),
             false => Ok(()),
         }
@@ -202,20 +212,21 @@ impl GitService {
     /// also move the branch's section of the configuration, and git does that
     /// by renaming a rewritten file over it, through a link wherever
     /// `.git/config` is one, even when there is no section to move.
-    async fn set_aside(path: &Path, branch: &BranchName) -> GitResult<BranchName> {
+    async fn set_aside(&self, path: &Path, branch: &BranchName) -> GitResult<BranchName> {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|since| format!("{}.{:09}", since.as_secs(), since.subsec_nanos()))
             .unwrap_or_else(|_| "0".to_string());
         let aside = BranchName::parse(&format!("{branch}{ABANDONED}{stamp}"))?;
         let reference = branch.reference();
-        let read = Self::output(
-            Self::hardened()
-                .args(["rev-parse", "--verify", &reference])
-                .current_dir(path)
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+        let read = self
+            .output(
+                Self::hardened()
+                    .args(["rev-parse", "--verify", &reference])
+                    .current_dir(path)
+                    .stdout(Stdio::piped()),
+            )
+            .await?;
         if !read.status.success() {
             return Err(GitError::CommandFailed(
                 "Cannot read the branch to set aside".to_string(),
@@ -226,13 +237,14 @@ impl GitService {
             "start\ncreate {} {commit}\ndelete {reference} {commit}\ncommit\n",
             aside.reference()
         );
-        let moved = Self::fed(
-            Self::hardened()
-                .args(["update-ref", "--no-deref", "--stdin"])
-                .current_dir(path),
-            transaction.as_bytes(),
-        )
-        .await?;
+        let moved = self
+            .fed(
+                Self::hardened()
+                    .args(["update-ref", "--no-deref", "--stdin"])
+                    .current_dir(path),
+                transaction.as_bytes(),
+            )
+            .await?;
         match moved.status.success() {
             true => Ok(aside),
             false => Err(GitError::CommandFailed(
@@ -247,19 +259,20 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn revision(&self, checkout: &Checkout, reference: &str) -> GitResult<CommitSha> {
-        Self::verify_config(checkout).await?;
-        let output = Self::output(
-            Self::hardened()
-                .args([
-                    "rev-parse",
-                    "--verify",
-                    "--end-of-options",
-                    &format!("{reference}^{{commit}}"),
-                ])
-                .current_dir(checkout.top())
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+        self.verify_config(checkout).await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args([
+                        "rev-parse",
+                        "--verify",
+                        "--end-of-options",
+                        &format!("{reference}^{{commit}}"),
+                    ])
+                    .current_dir(checkout.top())
+                    .stdout(Stdio::piped()),
+            )
+            .await?;
         if !output.status.success() {
             return Err(GitError::CommandFailed("Checkout commit is missing".into()));
         }
@@ -277,19 +290,20 @@ impl GitService {
         before: &CommitSha,
         after: &CommitSha,
     ) -> GitResult<bool> {
-        Self::verify_config(checkout).await?;
-        let output = Self::output(
-            Self::hardened()
-                .args([
-                    "merge-base",
-                    "--is-ancestor",
-                    "--end-of-options",
-                    before.as_str(),
-                    after.as_str(),
-                ])
-                .current_dir(checkout.top()),
-        )
-        .await?;
+        self.verify_config(checkout).await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args([
+                        "merge-base",
+                        "--is-ancestor",
+                        "--end-of-options",
+                        before.as_str(),
+                        after.as_str(),
+                    ])
+                    .current_dir(checkout.top()),
+            )
+            .await?;
         match output.status.code() {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
@@ -309,22 +323,23 @@ impl GitService {
         checkout: &Checkout,
         before: &CommitSha,
     ) -> GitResult<Vec<String>> {
-        Self::verify_config(checkout).await?;
-        let output = Self::output(
-            Self::hardened()
-                .args(DIFF_PREFIX)
-                .args([
-                    "--name-only",
-                    "-z",
-                    "--end-of-options",
-                    before.as_str(),
-                    "HEAD",
-                    "--",
-                ])
-                .current_dir(checkout.top())
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+        self.verify_config(checkout).await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args(DIFF_PREFIX)
+                    .args([
+                        "--name-only",
+                        "-z",
+                        "--end-of-options",
+                        before.as_str(),
+                        "HEAD",
+                        "--",
+                    ])
+                    .current_dir(checkout.top())
+                    .stdout(Stdio::piped()),
+            )
+            .await?;
         if !output.status.success() {
             return Err(GitError::CommandFailed(
                 "Cannot inspect task changes".into(),
@@ -338,14 +353,15 @@ impl GitService {
     /// that takes a [`Checkout`] refuses a path below it with
     /// [`GitError::NotACheckoutTop`].
     pub async fn is_git_repository(&self, path: &Path) -> GitResult<bool> {
-        let output = Self::output(
-            Self::hardened()
-                .args(["rev-parse", "--is-inside-work-tree"])
-                .current_dir(path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args(["rev-parse", "--is-inside-work-tree"])
+                    .current_dir(path)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped()),
+            )
+            .await?;
 
         Ok(output.status.success())
     }
@@ -356,15 +372,16 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn current_branch(&self, checkout: &Checkout) -> GitResult<String> {
-        Self::verify_config(checkout).await?;
-        let output = Self::output(
-            Self::hardened()
-                .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                .current_dir(checkout.top())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .await?;
+        self.verify_config(checkout).await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                    .current_dir(checkout.top())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped()),
+            )
+            .await?;
 
         if !output.status.success() {
             return Err(Self::failed("rev-parse", &output));
@@ -397,7 +414,7 @@ impl GitService {
     ) -> GitResult<()> {
         let mut attempts = 0;
         loop {
-            Self::verify_base(path).await?;
+            self.verify_base(path).await?;
             let mut command = Self::connected(url, token);
             command
                 .args([
@@ -409,7 +426,7 @@ impl GitService {
                     FETCH_REFSPEC,
                 ])
                 .current_dir(path);
-            match Self::finish(&mut command).await {
+            match self.finish(&mut command).await {
                 Ok(()) => return Ok(()),
                 Err(error) if attempts == 0 => {
                     attempts += 1;
@@ -436,13 +453,13 @@ impl GitService {
         url: &RepositoryUrl,
         token: Option<&SecretValue>,
     ) -> GitResult<RemoteHead> {
-        Self::verify_base(path).await?;
+        self.verify_base(path).await?;
         let mut command = Self::connected(url, token);
         command
             .args(["ls-remote", "--symref", "--", url.as_str(), "HEAD"])
             .current_dir(path)
             .stdout(Stdio::piped());
-        let output = Self::output(&mut command).await?;
+        let output = self.output(&mut command).await?;
         if !output.status.success() {
             return Err(GitError::CommandFailed(
                 "Git operation failed; verify repository access".to_string(),
@@ -492,14 +509,15 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`].
     pub async fn reset_config(&self, path: &Path, url: &RepositoryUrl) -> GitResult<()> {
         let file = Anchor::own(path)?.join(CONFIG_FILE);
-        let listed = Self::output(
-            Self::hardened()
-                .args(["config", "--file"])
-                .arg(&file)
-                .args(["--list", "-z"])
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+        let listed = self
+            .output(
+                Self::hardened()
+                    .args(["config", "--file"])
+                    .arg(&file)
+                    .args(["--list", "-z"])
+                    .stdout(Stdio::piped()),
+            )
+            .await?;
         let mut core = String::new();
         let mut extensions = String::new();
         if listed.status.success() {
@@ -539,13 +557,14 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn has_commit(&self, checkout: &Checkout, commit: &CommitSha) -> GitResult<bool> {
-        Self::verify_config(checkout).await?;
-        let output = Self::output(
-            Self::hardened()
-                .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
-                .current_dir(checkout.top()),
-        )
-        .await?;
+        self.verify_config(checkout).await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
+                    .current_dir(checkout.top()),
+            )
+            .await?;
         Ok(output.status.success())
     }
 
@@ -558,8 +577,8 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a linked worktree with
     /// [`GitError::RedirectedGitDirectory`].
     pub async fn set_remote_head(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
-        Self::verify_base(path).await?;
-        Self::finish(
+        self.verify_base(path).await?;
+        self.finish(
             Self::hardened()
                 .args([
                     "symbolic-ref",
@@ -577,8 +596,8 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn has_changes(&self, checkout: &Checkout) -> GitResult<bool> {
-        Self::verify_config(checkout).await?;
-        Ok(!Self::status(checkout.top()).await?.is_empty())
+        self.verify_config(checkout).await?;
+        Ok(!self.status(checkout.top()).await?.is_empty())
     }
 
     /// Summarise the uncommitted changes, with the diff itself truncated
@@ -588,18 +607,19 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn diff_summary(&self, checkout: &Checkout) -> GitResult<DiffSummary> {
-        Self::verify_config(checkout).await?;
+        self.verify_config(checkout).await?;
         let path = checkout.top();
-        let files_changed = changed_paths(&Self::status(path).await?);
+        let files_changed = changed_paths(&self.status(path).await?);
 
-        let shortstat = Self::output(
-            Self::hardened()
-                .args(DIFF_PREFIX)
-                .args(["--shortstat", "HEAD", "--"])
-                .current_dir(path)
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+        let shortstat = self
+            .output(
+                Self::hardened()
+                    .args(DIFF_PREFIX)
+                    .args(["--shortstat", "HEAD", "--"])
+                    .current_dir(path)
+                    .stdout(Stdio::piped()),
+            )
+            .await?;
 
         let mut insertions = 0;
         let mut deletions = 0;
@@ -620,14 +640,15 @@ impl GitService {
             }
         }
 
-        let (diff, overflowed) = Self::capped(
-            Self::hardened()
-                .args(DIFF_PREFIX)
-                .args(["HEAD", "--"])
-                .current_dir(path),
-            MAXIMUM_DIFF_BYTES,
-        )
-        .await?;
+        let (diff, overflowed) = self
+            .capped(
+                Self::hardened()
+                    .args(DIFF_PREFIX)
+                    .args(["HEAD", "--"])
+                    .current_dir(path),
+                MAXIMUM_DIFF_BYTES,
+            )
+            .await?;
 
         let diff_text = String::from_utf8_lossy(&diff);
         let diff_text = match overflowed || diff_text.len() > MAXIMUM_DIFF_BYTES {
@@ -652,15 +673,16 @@ impl GitService {
     /// `git status --porcelain -z` over every untracked file, whatever the
     /// repository's configuration says to show, without descending into a
     /// nested repository standing in the working tree.
-    async fn status(path: &Path) -> GitResult<Vec<u8>> {
-        let output = Self::output(
-            Self::hardened()
-                .args(STATUS)
-                .current_dir(path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .await?;
+    async fn status(&self, path: &Path) -> GitResult<Vec<u8>> {
+        let output = self
+            .output(
+                Self::hardened()
+                    .args(STATUS)
+                    .current_dir(path)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped()),
+            )
+            .await?;
 
         if !output.status.success() {
             return Err(Self::failed("status", &output));
@@ -676,30 +698,32 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn create_branch(&self, checkout: &Checkout, branch: &BranchName) -> GitResult<()> {
-        Self::verify_config(checkout).await?;
+        self.verify_config(checkout).await?;
         let path = checkout.top();
-        if Self::is_symbolic(path, branch.reference()).await? {
+        if self.is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
-        let check_output = Self::output(
-            Self::hardened()
-                .args(["show-ref", "--verify", "--quiet", &branch.reference()])
-                .current_dir(path),
-        )
-        .await?;
+        let check_output = self
+            .output(
+                Self::hardened()
+                    .args(["show-ref", "--verify", "--quiet", &branch.reference()])
+                    .current_dir(path),
+            )
+            .await?;
 
         if check_output.status.success() {
             return Err(GitError::BranchExists(branch.clone()));
         }
 
-        let output = Self::output(
-            Self::hardened()
-                .args(CREATE_BRANCH)
-                .args([branch.as_str(), "--"])
-                .current_dir(path)
-                .stderr(Stdio::piped()),
-        )
-        .await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args(CREATE_BRANCH)
+                    .args([branch.as_str(), "--"])
+                    .current_dir(path)
+                    .stderr(Stdio::piped()),
+            )
+            .await?;
 
         if !output.status.success() {
             return Err(Self::failed("checkout", &output));
@@ -718,19 +742,20 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn stage_all(&self, checkout: &Checkout) -> GitResult<()> {
-        Self::verify_config(checkout).await?;
+        self.verify_config(checkout).await?;
         let path = checkout.top();
-        if let Some(nested) = Self::populated_gitlink(path).await? {
+        if let Some(nested) = self.populated_gitlink(path).await? {
             return Err(GitError::NestedRepository(nested));
         }
-        let output = Self::output(
-            Self::hardened()
-                .args(["add", "-A"])
-                .current_dir(path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args(["add", "-A"])
+                    .current_dir(path)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped()),
+            )
+            .await?;
 
         if !output.status.success() {
             return Err(Self::failed("add", &output));
@@ -744,14 +769,15 @@ impl GitService {
     /// top of the working tree, because `add -A` stages all of it wherever it
     /// runs. Anything at a `.git` that cannot be looked at counts as standing
     /// there, and so does a gitlink whose path this platform cannot name.
-    async fn populated_gitlink(path: &Path) -> GitResult<Option<PathBuf>> {
-        let top = Self::output(
-            Self::hardened()
-                .args(["rev-parse", "--show-toplevel"])
-                .current_dir(path)
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+    async fn populated_gitlink(&self, path: &Path) -> GitResult<Option<PathBuf>> {
+        let top = self
+            .output(
+                Self::hardened()
+                    .args(["rev-parse", "--show-toplevel"])
+                    .current_dir(path)
+                    .stdout(Stdio::piped()),
+            )
+            .await?;
         if !top.status.success() {
             return Err(GitError::CommandFailed(
                 "Cannot find the top of the working tree".to_string(),
@@ -761,13 +787,14 @@ impl GitService {
             native(top.stdout.strip_suffix(b"\n").unwrap_or(&top.stdout)).ok_or_else(|| {
                 GitError::CommandFailed("Cannot find the top of the working tree".to_string())
             })?;
-        let listed = Self::output(
-            Self::hardened()
-                .args(["ls-files", "--stage", "-z"])
-                .current_dir(&top)
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+        let listed = self
+            .output(
+                Self::hardened()
+                    .args(["ls-files", "--stage", "-z"])
+                    .current_dir(&top)
+                    .stdout(Stdio::piped()),
+            )
+            .await?;
         if !listed.status.success() {
             return Err(GitError::CommandFailed("Cannot read the index".to_string()));
         }
@@ -801,16 +828,17 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn commit(&self, checkout: &Checkout, message: &str) -> GitResult<CommitSha> {
-        Self::verify_config(checkout).await?;
+        self.verify_config(checkout).await?;
         let path = checkout.top();
-        Self::refuse_linked_head(path).await?;
-        let staged = Self::output(
-            Self::hardened()
-                .args(DIFF_PREFIX)
-                .args(["--cached", "--quiet"])
-                .current_dir(path),
-        )
-        .await?;
+        self.refuse_linked_head(path).await?;
+        let staged = self
+            .output(
+                Self::hardened()
+                    .args(DIFF_PREFIX)
+                    .args(["--cached", "--quiet"])
+                    .current_dir(path),
+            )
+            .await?;
         match staged.status.code() {
             Some(0) => return Err(GitError::NoChanges),
             Some(1) => {}
@@ -821,28 +849,29 @@ impl GitService {
             }
         }
 
-        let output = Self::output(
-            Self::hardened()
-                .args([
-                    "-c",
-                    &format!("user.name={}", self.author_name),
-                    "-c",
-                    &format!("user.email={}", self.author_email),
-                    "commit",
-                    "-m",
-                    message,
-                ])
-                .envs([
-                    ("GIT_AUTHOR_NAME", &self.author_name),
-                    ("GIT_AUTHOR_EMAIL", &self.author_email),
-                    ("GIT_COMMITTER_NAME", &self.author_name),
-                    ("GIT_COMMITTER_EMAIL", &self.author_email),
-                ])
-                .current_dir(path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args([
+                        "-c",
+                        &format!("user.name={}", self.author_name),
+                        "-c",
+                        &format!("user.email={}", self.author_email),
+                        "commit",
+                        "-m",
+                        message,
+                    ])
+                    .envs([
+                        ("GIT_AUTHOR_NAME", &self.author_name),
+                        ("GIT_AUTHOR_EMAIL", &self.author_email),
+                        ("GIT_COMMITTER_NAME", &self.author_name),
+                        ("GIT_COMMITTER_EMAIL", &self.author_email),
+                    ])
+                    .current_dir(path)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped()),
+            )
+            .await?;
 
         if !output.status.success() {
             return Err(Self::failed("commit", &output));
@@ -868,7 +897,7 @@ impl GitService {
         remote: &RepositoryUrl,
         token: &SecretValue,
     ) -> GitResult<CommitSha> {
-        Self::verify_config(checkout).await?;
+        self.verify_config(checkout).await?;
         let path = checkout.top();
         let commit = self.revision(checkout, "HEAD").await?;
         let destination = format!("{PUBLISHING_REMOTE}{}", Uuid::new_v4().simple());
@@ -886,7 +915,7 @@ impl GitService {
             ])
             .current_dir(path)
             .stdout(Stdio::piped());
-        let output = Self::output(&mut command).await?;
+        let output = self.output(&mut command).await?;
         if output.status.success() {
             let mut tracking = Self::hardened();
             tracking
@@ -897,7 +926,7 @@ impl GitService {
                     commit.as_str(),
                 ])
                 .current_dir(path);
-            if let Err(error) = Self::finish(&mut tracking).await {
+            if let Err(error) = self.finish(&mut tracking).await {
                 tracing::warn!(%error, "Pushed, but could not record the remote-tracking ref");
             }
             return Ok(commit);
@@ -921,14 +950,15 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn get_remote_url(&self, checkout: &Checkout, remote: &str) -> GitResult<String> {
-        Self::verify_config(checkout).await?;
-        let output = Self::output(
-            Self::hardened()
-                .args(["remote", "get-url", "--", remote])
-                .current_dir(checkout.top())
-                .stdout(Stdio::piped()),
-        )
-        .await?;
+        self.verify_config(checkout).await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args(["remote", "get-url", "--", remote])
+                    .current_dir(checkout.top())
+                    .stdout(Stdio::piped()),
+            )
+            .await?;
 
         if !output.status.success() {
             return Err(GitError::NoRemote);
@@ -946,19 +976,20 @@ impl GitService {
     /// [`GitError::NotACheckoutTop`], and a checkout whose git directories
     /// are not its clone's with [`GitError::RedirectedGitDirectory`].
     pub async fn checkout(&self, checkout: &Checkout, branch: &BranchName) -> GitResult<()> {
-        Self::verify_config(checkout).await?;
+        self.verify_config(checkout).await?;
         let path = checkout.top();
-        if Self::is_symbolic(path, branch.reference()).await? {
+        if self.is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
-        let output = Self::output(
-            Self::hardened()
-                .args(SWITCH)
-                .args(["--", branch.as_str()])
-                .current_dir(path)
-                .stderr(Stdio::piped()),
-        )
-        .await?;
+        let output = self
+            .output(
+                Self::hardened()
+                    .args(SWITCH)
+                    .args(["--", branch.as_str()])
+                    .current_dir(path)
+                    .stderr(Stdio::piped()),
+            )
+            .await?;
 
         if !output.status.success() {
             return Err(Self::failed("switch", &output));
@@ -1785,7 +1816,8 @@ mod publication_tests {
             "the refused preparation moved the branch"
         );
 
-        let aside = GitService::set_aside(&base, &branch("task/one"))
+        let aside = GitService::new()
+            .set_aside(&base, &branch("task/one"))
             .await
             .unwrap();
 
@@ -1944,7 +1976,8 @@ mod publication_tests {
         let held = Held::new(root.path()).await;
         held.link("refs/heads/task/other");
 
-        let aside = GitService::set_aside(&held.base, &branch("task/one"))
+        let aside = GitService::new()
+            .set_aside(&held.base, &branch("task/one"))
             .await
             .unwrap();
 

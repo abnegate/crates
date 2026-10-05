@@ -25,6 +25,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::process::Output;
 use std::process::Stdio;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::process::Command;
 
@@ -59,6 +60,7 @@ const MERGED_STAGE: &str = " 0";
 pub struct ConflictService {
     author_name: String,
     author_email: String,
+    git: GitService,
 }
 
 impl Default for ConflictService {
@@ -75,6 +77,7 @@ impl ConflictService {
         Self {
             author_name: DEFAULT_AUTHOR_NAME.to_string(),
             author_email: DEFAULT_AUTHOR_EMAIL.to_string(),
+            git: GitService::new(),
         }
     }
 
@@ -83,6 +86,17 @@ impl ConflictService {
     pub fn with_author(mut self, name: impl Into<String>, email: impl Into<String>) -> Self {
         self.author_name = name.into();
         self.author_email = email.into();
+        self
+    }
+
+    /// Tear a git command down, with every helper it started, once it has run
+    /// for `timeout` rather than five minutes, and fail it with
+    /// [`GitError::TimedOut`](crate::GitError::TimedOut): fetching both sides
+    /// of a large repository, or pushing a repair, can need longer. A zero
+    /// `timeout` leaves a command no time to run, so every command fails.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.git = self.git.with_timeout(timeout);
         self
     }
 
@@ -466,7 +480,10 @@ impl ConflictService {
     /// reaches, that shares a git directory other than its own, or that has a
     /// symbolic link where git writes through one.
     pub(super) async fn verify_config(&self, layout: &Layout) -> ConflictResult<()> {
-        Ok(GitService::verify(|| self.bound(layout), Anchor::Bound(layout.git.clone())).await?)
+        Ok(self
+            .git
+            .verify(|| self.bound(layout), Anchor::Bound(layout.git.clone()))
+            .await?)
     }
 
     async fn run(&self, layout: &Layout, arguments: &[&str]) -> ConflictResult<()> {
@@ -527,7 +544,7 @@ impl ConflictService {
     /// Every command runs under the git service's timeout, in a process group
     /// torn down with it when it is abandoned.
     async fn execute(&self, command: &mut Command) -> ConflictResult<Output> {
-        Ok(GitService::output(command).await?)
+        Ok(self.git.output(command).await?)
     }
 
     /// A hardened command bound to the throwaway repository and work tree by
@@ -627,6 +644,33 @@ fn expect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::git::GitError;
+    #[cfg(unix)]
+    use crate::git::fixtures::SPAWN_BUDGET;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_repair_s_git_command_past_the_configured_timeout_is_stopped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = TempDir::new().unwrap();
+        let git = fixture.path().join("git");
+        std::fs::write(&git, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let service = ConflictService::new().with_timeout(Duration::from_secs(1));
+        let mut command = GitService::hardened();
+        command.env("PATH", fixture.path());
+
+        let result = tokio::time::timeout(SPAWN_BUDGET, service.execute(&mut command))
+            .await
+            .expect("the repair's command ran past the timeout it was given");
+
+        assert!(
+            matches!(result, Err(ConflictError::Git(GitError::TimedOut))),
+            "{result:?}"
+        );
+    }
 
     fn environment(command: &Command) -> Vec<(String, String)> {
         command

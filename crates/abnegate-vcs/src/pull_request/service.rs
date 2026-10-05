@@ -129,9 +129,6 @@ const ALREADY_EXISTS: &str = "A pull request already exists";
 /// The scp-like `git@host:owner/repo` has none and is read on its own terms.
 const SCHEMES: [&str; 2] = ["https", "ssh"];
 
-/// The only scheme a recorded pull request link may use.
-const HTTPS: &str = "https";
-
 /// The path segment between a repository and a pull request's number.
 const PULL: &str = "pull";
 
@@ -150,7 +147,8 @@ const GIT_SUFFIX: &str = ".git";
 ///   and [`Self::fetch_reception`].
 /// - Checking: [`Self::fetch_checks`].
 /// - Reviewing: [`Self::fetch_issue_comments`], [`Self::post_issue_comment`],
-///   [`Self::submit_review`], [`Self::fetch_review_threads`],
+///   [`Self::fetch_reviews`], [`Self::submit_review`],
+///   [`Self::fetch_review_threads`],
 ///   [`Self::reply_to_review_comment`] and [`Self::resolve_review_thread`].
 /// - Merging: [`Self::merge`], then [`Self::delete_branch`].
 /// - Creating a repository: [`Self::create_repository`].
@@ -222,7 +220,21 @@ impl PullRequestService {
     /// Address the origin an operator configured, for the repositories it
     /// answers for: an HTTPS URL, with or without a trailing slash.
     pub fn configured(url: &str) -> PullRequestResult<Self> {
-        Self::addressing(Origin::configured(url)?, true, REQUEST_TIMEOUT)
+        Self::addressing(Origin::configured(url, false)?, true, REQUEST_TIMEOUT)
+    }
+
+    /// Address the origin an operator configured, as [`Self::configured`]
+    /// does, but permit it to be plain HTTP: for a loopback or LAN host the
+    /// operator runs, such as a local GitHub Enterprise or a stand-in for one.
+    ///
+    /// An `http://` origin is then reached over plain HTTP, its token crosses
+    /// the network in the clear, and repository and pull request links on its
+    /// host may use `http://` as well; so this is never the default. An
+    /// `https://` origin is addressed exactly as [`Self::configured`] would.
+    pub fn configured_allowing_http(url: &str) -> PullRequestResult<Self> {
+        let origin = Origin::configured(url, true)?;
+        let https_only = !origin.plain();
+        Self::addressing(origin, https_only, REQUEST_TIMEOUT)
     }
 
     /// Address `url` as a stand-in for repositories on `host`, over whatever
@@ -260,13 +272,16 @@ impl PullRequestService {
     ///
     /// Supports, for the host it answers for:
     ///
-    /// - `https://host/owner/repo`, with or without `.git`
+    /// - `https://host/owner/repo`, with or without `.git`, and
+    ///   `http://host/owner/repo` when the origin is a plain HTTP one
+    ///   [`Self::configured_allowing_http`] permitted
     /// - `git@host:owner/repo.git`
     /// - `ssh://git@host/owner/repo.git`
     ///
     /// A scheme this does not speak is refused rather than discarded: reading
-    /// the owner and repo out of an `ftp://` or `http://` address treats it as
-    /// a repository this service publishes to, which is not what it is.
+    /// the owner and repo out of an `ftp://` address, or an `http://` one
+    /// unless plain HTTP was opted in to, treats it as a repository this
+    /// service publishes to, which is not what it is.
     pub fn parse_github_url(&self, url: &str) -> PullRequestResult<Repository> {
         let invalid = || PullRequestError::InvalidRepositoryUrl;
         let url = url.trim();
@@ -275,6 +290,7 @@ impl PullRequestService {
             if !SCHEMES
                 .iter()
                 .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+                && !self.origin.admits(scheme)
             {
                 return Err(invalid());
             }
@@ -303,7 +319,9 @@ impl PullRequestService {
 
     /// Recover where a pull request lives from the URL a run recorded.
     ///
-    /// Reads `https://host/owner/repo/pull/123`, with or without a trailing
+    /// Reads `https://host/owner/repo/pull/123`, or its `http://` form when
+    /// the origin is a plain HTTP one [`Self::configured_allowing_http`]
+    /// permitted, with or without a trailing
     /// segment such as `/files` that a person's copied link often carries. The
     /// host is held to the same origin as a repository URL, because the pull
     /// request is read back from `{origin}/repos/{owner}/{repo}/pulls/{number}`
@@ -312,7 +330,7 @@ impl PullRequestService {
     pub fn pull_request(&self, url: &str) -> PullRequestResult<PullRequestReference> {
         let invalid = || PullRequestError::InvalidRepositoryUrl;
         let url = Url::parse(url.trim()).map_err(|_| invalid())?;
-        if url.scheme() != HTTPS
+        if !self.origin.admits(url.scheme())
             || !url.username().is_empty()
             || url.password().is_some()
             || !url
@@ -574,8 +592,8 @@ impl PullRequestService {
 }
 
 /// A client that gives up on a request that stalls, that follows redirects as
-/// `redirect` says, and that refuses anything but HTTPS unless it is standing
-/// in for a test's mock server.
+/// `redirect` says, and that refuses anything but HTTPS unless the operator
+/// opted in to plain HTTP or it is standing in for a test's mock server.
 ///
 /// A redirect it will not follow comes back as the answer itself.
 fn client(https_only: bool, timeout: Duration, redirect: Policy) -> PullRequestResult<Client> {
@@ -1202,6 +1220,113 @@ mod tests {
                 "{origin}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_plain_http_origin_is_reached_only_once_the_operator_opts_in() {
+        let server = MockServer::start().await;
+        let origin = server.uri();
+        assert!(origin.starts_with("http://"), "{origin}");
+        assert!(
+            matches!(
+                PullRequestService::configured(&origin),
+                Err(PullRequestError::InvalidOrigin)
+            ),
+            "{origin}"
+        );
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "default_branch": "main" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::configured_allowing_http(&origin).unwrap();
+
+        let repository = service
+            .parse_github_url(&format!("{origin}/acme/project"))
+            .unwrap();
+        let branch = service
+            .get_default_branch(&repository, &token())
+            .await
+            .unwrap();
+        let reference = service
+            .pull_request(&format!("{origin}/acme/project/pull/7"))
+            .unwrap();
+
+        assert_eq!(branch.to_string(), "main");
+        assert_eq!(reference.repository(), &repository);
+        assert_eq!(reference.number().get(), 7);
+    }
+
+    #[test]
+    fn an_https_origin_permitted_plain_http_is_still_https_only() {
+        let service =
+            PullRequestService::configured_allowing_http("https://api.github.com").unwrap();
+
+        for refused in [
+            "http://github.com/acme/project/pull/7",
+            "http://github.com/acme/project",
+        ] {
+            assert!(service.pull_request(refused).is_err(), "{refused}");
+            assert!(service.parse_github_url(refused).is_err(), "{refused}");
+        }
+        assert_eq!(
+            service
+                .pull_request("https://github.com/acme/project/pull/7")
+                .unwrap(),
+            github()
+                .pull_request("https://github.com/acme/project/pull/7")
+                .unwrap()
+        );
+        assert_eq!(
+            service
+                .parse_github_url("https://github.com/acme/project")
+                .unwrap(),
+            github()
+                .parse_github_url("https://github.com/acme/project")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_refused_origin_says_what_an_origin_may_be() {
+        assert_eq!(
+            PullRequestService::configured("http://api.github.com")
+                .unwrap_err()
+                .to_string(),
+            "Invalid API origin: expected an HTTPS (or opted-in HTTP) URL with no query, \
+             fragment or credentials"
+        );
+    }
+
+    #[test]
+    fn opting_in_to_plain_http_still_holds_links_to_the_origin_s_host() {
+        let service =
+            PullRequestService::configured_allowing_http("http://localhost:3000").unwrap();
+
+        for refused in [
+            "http://github.com/acme/project/pull/7",
+            "ftp://localhost/acme/project/pull/7",
+            "http://token@localhost/acme/project/pull/7",
+        ] {
+            assert!(service.pull_request(refused).is_err(), "{refused}");
+        }
+        for refused in [
+            "http://github.com/acme/project",
+            "ftp://localhost/acme/project",
+        ] {
+            assert!(service.parse_github_url(refused).is_err(), "{refused}");
+        }
+        assert!(
+            github()
+                .parse_github_url("http://github.com/acme/project")
+                .is_err(),
+            "the default service still reads no plain HTTP repository link"
+        );
     }
 
     #[test]

@@ -14,8 +14,8 @@
 //! names one; [`discovery::DependencyDiscovery`] reads package manifests for
 //! the dependencies one organisation has on itself. With the `github` feature,
 //! `pull_request::PullRequestService` opens, reads, checks, reviews and merges
-//! pull requests, and creates repositories, over GitHub's REST and GraphQL
-//! APIs.
+//! pull requests, creates repositories and registers their webhooks, over
+//! GitHub's REST and GraphQL APIs.
 //!
 //! Nothing here holds application state, so a task runner can drive it directly.
 //!
@@ -41,8 +41,8 @@
 //!
 //! - `github`: `pull_request`, which opens, reads, checks, reviews and merges
 //!   pull requests on GitHub or a GitHub Enterprise install, reads back how
-//!   each one was received, and creates repositories there, over the REST and
-//!   GraphQL APIs.
+//!   each one was received, and creates repositories there and registers their
+//!   webhooks, over the REST and GraphQL APIs.
 //! - `testing`: `RepositoryUrl::local` and
 //!   `pull_request::PullRequestService::standing_in_for`, which reach a
 //!   repository on the local disk or a mock API server. Nothing a caller
@@ -76,6 +76,7 @@ pub use crate::conflict::Refreshed;
 pub use crate::discovery::DependencyDiscovery;
 pub use crate::discovery::DiscoveredDependency;
 pub use crate::discovery::Manifest;
+pub use crate::git::BranchFormat;
 pub use crate::git::DiffSummary;
 pub use crate::git::GitError;
 pub use crate::git::GitService;
@@ -152,6 +153,9 @@ pub use crate::pull_request::RepositoryPath;
 pub use crate::pull_request::ReviewEvent;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::ReviewRecord;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ReviewState;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -165,6 +169,9 @@ pub use crate::pull_request::SubmittedReview;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ThreadComment;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::WebhookEvent;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::minutes_between;
