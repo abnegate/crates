@@ -26,7 +26,8 @@ use reqwest::Url;
 #[non_exhaustive]
 pub enum TargetPolicy {
     /// Refuse every target inside the deployment, which suits a URL from the
-    /// open internet: whatever [`validate_public_url`] refuses, and every name
+    /// open internet: whatever [`validate_public_url`] refuses, every
+    /// [`TargetPolicy::ExceptMetadata`] target among them, and every name
     /// that resolves only to such addresses.
     #[default]
     Public,

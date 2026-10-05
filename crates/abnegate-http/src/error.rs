@@ -67,8 +67,7 @@ pub enum Error {
     },
 
     /// The URL named a link-local address or a cloud provider's metadata
-    /// service, which [`TargetPolicy::ExceptMetadata`](crate::TargetPolicy)
-    /// refuses.
+    /// service, which every [`TargetPolicy`](crate::TargetPolicy) refuses.
     #[error("Link-local and cloud metadata targets are not allowed.")]
     MetadataTarget,
 

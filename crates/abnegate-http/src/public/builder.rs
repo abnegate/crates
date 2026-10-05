@@ -111,7 +111,7 @@ mod tests {
         "all_proxy",
     ];
     const PROXY_EXCLUSIONS: [&str; 3] = ["NO_PROXY", "no_proxy", "REQUEST_METHOD"];
-    const METADATA_URLS: [&str; 9] = [
+    const METADATA_URLS: [&str; 10] = [
         "http://169.254.169.254/latest",
         "http://169.254.170.2/v1",
         "http://[fe80::1]:8080/v1",
@@ -121,6 +121,7 @@ mod tests {
         "http://168.63.129.16/machine",
         "http://metadata.google.internal/computeMetadata/v1",
         "http://METADATA.GOOGLE.INTERNAL./v1",
+        "http://metadata.goog/computeMetadata/v1",
     ];
 
     fn except_metadata() -> PublicClient {
@@ -278,6 +279,30 @@ mod tests {
                 "{url}: {refused:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_public_policy_refuses_every_target_except_metadata_refuses() {
+        let (proxy_listener, proxy_port) = loopback_listener();
+        let proxy = Proxy::all(format!("http://127.0.0.1:{proxy_port}")).expect("a proxy URL");
+        let proxied = public_client_builder(TIMEOUT)
+            .configure(|builder| builder.proxy(proxy))
+            .build()
+            .expect("a guarded client");
+        let direct = public_client(TIMEOUT).expect("a guarded client");
+
+        for url in METADATA_URLS {
+            assert!(
+                TargetPolicy::Public.validate(url).is_err(),
+                "{url} passed the public URL check"
+            );
+            for client in [&direct, &proxied] {
+                assert!(client.get(url).is_err(), "{url} was started");
+                let request = Request::new(Method::GET, Url::parse(url).expect("a URL"));
+                assert!(client.execute(request).await.is_err(), "{url} was sent");
+            }
+        }
+        assert_untouched(&proxy_listener);
     }
 
     #[tokio::test]
