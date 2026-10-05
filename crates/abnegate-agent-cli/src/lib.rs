@@ -18,7 +18,11 @@
 //!
 //! [`CliProvider::execute`] returns the whole [`Execution`] for a caller that
 //! needs more than prose: the answer to a [`StructuredResult::SCHEMA`], the
-//! session to resume, the cost, and where the run's [`log`] files are. A
+//! session to resume, the cost, and where the run's [`log`] files are.
+//! [`CliProvider::execute_prompt`] and [`CliProvider::stream_prompt`] send a
+//! prompt's bytes unchanged instead of a flattened conversation, so Claude
+//! reads a leading slash command as one; nothing in such a prompt is
+//! escaped. A
 //! run can start the agent's own [`Session`] under an id of the caller's
 //! choosing or resume one, and confine Codex to a [`CodexSandbox`]. A
 //! Claude or Codex run can attach [`mcp`] servers, and a Claude run can

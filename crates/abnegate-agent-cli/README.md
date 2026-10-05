@@ -9,7 +9,11 @@ final prose as a completion; `CliProvider::execute` returns the whole
 `Execution` for a caller that needs the structured answer, the session to
 resume, the cost, or the run's log files, and `CliProvider::stream` yields the
 run's `AgentEvent`s as the agent emits them, ending in the error `complete`
-would have returned when the run failed. A run can start the agent's own
+would have returned when the run failed. `CliProvider::execute_prompt` and
+`CliProvider::stream_prompt` write a prompt's bytes to stdin unchanged, with no
+role label, trimming or escaping, so Claude reads a leading slash command such
+as `/issue ENG-42` as one; text the caller does not control belongs in a
+conversation, whose role labels are escaped. A run can start the agent's own
 `Session` under an id of the caller's choosing, or resume one. A Claude or Codex
 run can attach MCP servers, and a Claude run can restrict its tools, or be
 confined to reading its working directory, and a run
