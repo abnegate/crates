@@ -113,9 +113,29 @@ impl Captioner {
     /// words are stripped from them, so a caller can measure how much of that
     /// vocabulary the set has in common.
     pub async fn fill(&self, drafts: &mut [Draft], trigger: &str) -> Vec<String> {
+        self.fill_with_progress(drafts, trigger, |_, _| {}).await
+    }
+
+    /// [`fill`](Self::fill), calling `progress` with how many of the shots
+    /// left blank have been described and how many there are: once with none
+    /// done before the first is sent to the vision model, then after each.
+    /// Never called when there is nothing to caption.
+    pub async fn fill_with_progress(
+        &self,
+        drafts: &mut [Draft],
+        trigger: &str,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Vec<String> {
         if !self.available() || drafts.iter().all(|draft| !draft.caption.trim().is_empty()) {
             return Vec::new();
         }
+        let blank = drafts
+            .iter()
+            .filter(|draft| draft.caption.trim().is_empty())
+            .map(|draft| draft.group)
+            .collect::<HashSet<usize>>()
+            .len();
+        progress(0, blank);
         let subject = self.subject(&drafts[0].image).await;
         let mut shots: Vec<usize> = Vec::new();
         let mut described: Vec<Option<String>> = Vec::new();
@@ -125,6 +145,7 @@ impl Captioner {
             }
             shots.push(draft.group);
             described.push(self.describe(&draft.image, subject.as_deref()).await);
+            progress(shots.len(), blank);
         }
         let banned = identity_words(&described, subject.as_deref(), trigger);
         let vocabulary: Vec<String> = described.iter().flatten().cloned().collect();
@@ -467,8 +488,18 @@ mod tests {
             Draft::new("a.png", "aaa", "", 0),
             Draft::new("b.png", "bbb", "hand written", 1),
         ];
-        captioner.fill(&mut images, "zrkxyz").await;
+        let mut ticks = Vec::new();
+        captioner
+            .fill_with_progress(&mut images, "zrkxyz", |done, total| {
+                ticks.push((done, total))
+            })
+            .await;
 
+        assert_eq!(
+            ticks,
+            vec![(0, 1), (1, 1)],
+            "one blank shot reports its start and its completion"
+        );
         assert_eq!(
             images[1].caption, "hand written",
             "written captions must survive"
@@ -583,8 +614,12 @@ mod tests {
     async fn fill_is_a_no_op_without_a_caption_model() {
         let captioner = Captioner::new(&config(""), "http://unused".into(), "key".into());
         let mut images = vec![Draft::new("a.png", "aaa", "", 0)];
-        captioner.fill(&mut images, "zrkxyz").await;
+        let mut ticks = 0;
+        captioner
+            .fill_with_progress(&mut images, "zrkxyz", |_, _| ticks += 1)
+            .await;
         assert_eq!(images[0].caption, "");
+        assert_eq!(ticks, 0, "nothing was captioned, so nothing is reported");
     }
 
     #[tokio::test]
@@ -623,7 +658,12 @@ mod tests {
         let mut frames: Vec<Draft> = (0..6)
             .map(|index| Draft::new(&format!("{index}.png"), "aaa", "", index / 3))
             .collect();
-        captioner.fill(&mut frames, "zrkxyz").await;
+        let mut ticks = Vec::new();
+        captioner
+            .fill_with_progress(&mut frames, "zrkxyz", |done, total| {
+                ticks.push((done, total))
+            })
+            .await;
 
         let described = server
             .received_requests()
@@ -635,6 +675,11 @@ mod tests {
             })
             .count();
         assert_eq!(described, 2, "six frames of two shots cost two round trips");
+        assert_eq!(
+            ticks,
+            vec![(0, 2), (1, 2), (2, 2)],
+            "progress counts shots, not frames"
+        );
         assert_eq!(frames[0].caption, frames[2].caption, "a shot reads alike");
         assert!(
             frames

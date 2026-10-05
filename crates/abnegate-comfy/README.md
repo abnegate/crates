@@ -73,6 +73,7 @@ async fn train(photo_base64: String) -> Result<(), TrainError> {
     contract.input_environment_prefix = "ACME_COMFY".into();
     contract.sidecar_suffix = ".acme.json".into();
     contract.publication_directory = ".acme-publish".into();
+    contract.progress_suffix = ".acme-progress.json".into();
 
     let mut config = Config::from_environment();
     config.contract = contract;
@@ -170,6 +171,57 @@ fn person(photo: Vec<u8>) -> Result<TrainRequest, TrainError> {
 }
 ```
 
+## Watching a run
+
+`lora::train_reporting` is `lora::train` with a `tokio::sync::watch` channel
+that always holds the latest `train::TrainProgress`: a `train::Phase` and how
+far through it the run is for every image loaded, cropped and captioned, then
+the step, loss and estimate the trainer writes to its progress file while it
+runs, then publishing. The packaged graph's training node writes
+`<artifact><Contract::progress_suffix>` in ComfyUI's LoRA output; a
+`Config::train_command` writes the path in `<prefix>_PROGRESS`, and trains for
+the host's own `<prefix>_STEPS` or, when the host sets none, the packaged
+budget handed to it under that name. An update identical to the one already in
+the channel is not sent again. The future is `Send`, so a host runs it as a
+background job and lets the request that started it go; dropping every
+receiver only stops the updates, and a host that keeps a clone of the sender
+can `subscribe` whenever someone looks.
+
+```rust,no_run
+use abnegate_comfy::Config;
+use abnegate_comfy::lora::{self, TrainRequest};
+use abnegate_secret::SecretValue;
+use tokio::sync::watch;
+
+async fn watch(config: Config, request: TrainRequest) {
+    let (progress, mut updates) = watch::channel(None);
+    let job = tokio::spawn(async move {
+        lora::train_reporting(
+            &config,
+            "http://127.0.0.1:4000".to_string(),
+            SecretValue::new("vision-model-key"),
+            request,
+            progress,
+        )
+        .await
+    });
+    while updates.changed().await.is_ok() {
+        if let Some(update) = updates.borrow_and_update().as_ref() {
+            let phase = update.phase.as_ref().map_or("", |phase| phase.as_str());
+            println!("{phase} {}/{} {:?}", update.step, update.total, update.percent);
+        }
+    }
+    let _ = job.await;
+}
+```
+
+A trainer outside ComfyUI writes the same object: `step`, `total`, and
+optionally `phase`, `message`, `percent`, `loss`, `eta_seconds` and `previews`.
+`percent` is how far through the current phase the run is, not through the
+whole run, and each preview is a path relative to the progress file's
+directory. `train::TrainProgress::parse` reads one, and serializing a
+`TrainProgress` writes one.
+
 ## Migrating from the pre-release defaults
 
 Earlier builds defaulted to one application's node pack and container layout.
@@ -179,7 +231,9 @@ deployment that relied on the old defaults sets them itself.
 - **Contract.** Set each `train::Contract` field the deployment relied on: the
   five node names, `folder_prefix`, `artifact_prefix`, `probe_prefix`,
   `environment_prefix`, `input_environment_prefix`, and the two that were
-  constants before, `sidecar_suffix` and `publication_directory`. Model volumes
+  constants before, `sidecar_suffix` and `publication_directory`, and
+  `progress_suffix` when the training node names its progress file other
+  than `<artifact>-progress.json`. Model volumes
   keep their bindings under the suffix they were written with, so keep the old
   suffix and publication directory or every existing LoRA drops out of the
   inventory.

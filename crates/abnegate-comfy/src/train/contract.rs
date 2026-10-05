@@ -8,6 +8,7 @@ use crate::train::INPUT_ENVIRONMENT_PREFIX;
 use crate::train::LOAD_TRAIN_DATASET_NODE;
 use crate::train::PROBE_LOSS_NODE;
 use crate::train::PROBE_PREFIX;
+use crate::train::PROGRESS_SUFFIX;
 use crate::train::PUBLICATION_DIRECTORY;
 use crate::train::SIDECAR_SUFFIX;
 use crate::train::STAGE_TRAINING_ARTIFACT_NODE;
@@ -17,11 +18,11 @@ use crate::train::TRAIN_LORA_NODE;
 /// and with an external training command. The nodes refuse a run namespace
 /// they do not recognise, so these have to match the deployment.
 ///
-/// The prefixes, the sidecar suffix and the publication directory become
-/// directory and file names under ComfyUI's directories, so
-/// [`Contract::validate`] holds each to one plain path component. The
-/// defaults name everything under a neutral `Abnegate` namespace; a deployment
-/// whose node pack and training script register other names sets them here.
+/// The prefixes, the sidecar and progress suffixes and the publication
+/// directory become directory and file names under ComfyUI's directories, so
+/// [`Contract::validate`] holds each to one plain path component. The defaults
+/// name everything under a neutral `Abnegate` namespace; a deployment whose
+/// node pack and training script register other names sets them here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Contract {
@@ -63,6 +64,13 @@ pub struct Contract {
     /// Directory under `loras/` whose markers hide a weight while it is
     /// replaced. Every process sharing a models directory has to agree on it.
     pub publication_directory: String,
+    /// Suffix of the progress file the training node writes beside a run's
+    /// checkpoints in ComfyUI's LoRA output, holding one
+    /// [`TrainProgress`](crate::train::TrainProgress). The node has to write it
+    /// as `<artifact><suffix>`, the name [`Contract::progress_filename`]
+    /// gives, or no progress is read, and the cleanup node has to remove it
+    /// with the run. It has to differ from `sidecar_suffix`.
+    pub progress_suffix: String,
 }
 
 impl Default for Contract {
@@ -80,6 +88,7 @@ impl Default for Contract {
             input_environment_prefix: INPUT_ENVIRONMENT_PREFIX.to_string(),
             sidecar_suffix: SIDECAR_SUFFIX.to_string(),
             publication_directory: PUBLICATION_DIRECTORY.to_string(),
+            progress_suffix: PROGRESS_SUFFIX.to_string(),
         }
     }
 }
@@ -149,7 +158,21 @@ impl Contract {
                 "the contract publication directory must be one plain directory name",
             ));
         }
+        if !is_name(&self.progress_suffix, is_file_character)
+            || self.progress_suffix.ends_with(WEIGHT_EXTENSION)
+            || self.progress_suffix == self.sidecar_suffix
+        {
+            return Err(ConfigError::new(
+                "the contract progress suffix must be one plain name that no weight ends in and the sidecar suffix is not",
+            ));
+        }
         Ok(())
+    }
+
+    /// The name of the progress file the training node writes for
+    /// `artifact`, a [`Run::artifact`](crate::train::Run::artifact).
+    pub fn progress_filename(&self, artifact: &str) -> String {
+        format!("{artifact}{}", self.progress_suffix)
     }
 
     pub(crate) fn variable(&self, name: &str) -> String {
@@ -290,6 +313,42 @@ mod tests {
                 "directory {name:?} was accepted"
             );
         }
+    }
+
+    #[test]
+    fn a_progress_suffix_that_is_not_one_plain_name_or_names_a_weight_is_refused() {
+        for suffix in [
+            "",
+            "/progress.json",
+            "../progress.json",
+            "back\\slash",
+            "space d",
+            ".safetensors",
+            "-step1.safetensors",
+            SIDECAR_SUFFIX,
+        ] {
+            let contract = Contract {
+                progress_suffix: suffix.into(),
+                ..Contract::default()
+            };
+            assert!(contract.validate().is_err(), "{suffix:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn the_progress_file_is_named_after_its_run() {
+        assert_eq!(
+            Contract::default().progress_filename("abnegate-lora-abcd"),
+            "abnegate-lora-abcd-progress.json"
+        );
+        let contract = Contract {
+            progress_suffix: ".progress.json".into(),
+            ..Contract::default()
+        };
+        assert_eq!(
+            contract.progress_filename("acme-lora-abcd"),
+            "acme-lora-abcd.progress.json"
+        );
     }
 
     #[test]

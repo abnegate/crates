@@ -174,8 +174,8 @@ pub struct Config {
     pub audio_generation_timeout: Duration,
     /// Deadline for one image or video upscale, at most an hour.
     pub upscale_generation_timeout: Duration,
-    /// Wait between two polls of a submitted graph's history, at most five
-    /// seconds.
+    /// Wait between two polls of a submitted graph's history, or of a
+    /// training command's progress file, at most five seconds.
     pub poll_interval: Duration,
     /// ComfyUI models root (`checkpoints/`, `loras/`, `diffusion_models/`, ...).
     pub models_directory: PathBuf,

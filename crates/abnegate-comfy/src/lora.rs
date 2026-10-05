@@ -47,7 +47,10 @@ use crate::recipe::sanitize_weight_filename;
 use crate::subject::CENTRE;
 use crate::subject::Subject;
 use crate::train::Contract;
+use crate::train::Phase;
+use crate::train::Reporter;
 use crate::train::Run;
+use crate::train::TrainProgress;
 use abnegate_exec::EnvironmentPolicy;
 use abnegate_secret::SecretValue;
 use abnegate_vision::Raster;
@@ -73,7 +76,9 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::ChildStderr;
 use tokio::process::Command;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 
 use uuid::Uuid;
 
@@ -266,6 +271,42 @@ pub async fn train(
         litellm_key,
         request,
         crate::screening::screen,
+        Reporter::default(),
+    )
+    .await
+}
+
+/// [`train`], keeping the latest [`TrainProgress`] in `progress` as the run
+/// moves through screening, captioning, training and publishing: a [`Phase`]
+/// and how far through it the run is per image loaded, cropped and captioned,
+/// then whatever the trainer writes to its progress file while it runs. An
+/// update identical to the one already there is not sent again.
+///
+/// The packaged graph's training node writes that file as
+/// [`Contract::progress_filename`] names it. A [`Config::train_command`] gets
+/// its path in `<prefix>_PROGRESS`, and its progress file is read every
+/// [`Config::poll_interval`] while it runs. Its step budget is the one the
+/// host keeps in `<prefix>_STEPS`, or, when the host keeps none, the one the
+/// packaged training config gives the set, handed to it in `<prefix>_STEPS`.
+///
+/// The future is `Send`, so a host can run it as a background job and let
+/// whoever asked for it go away: once no receiver is left and the host holds
+/// no other sender to subscribe one with, updates stop and the training
+/// carries on to the end.
+pub async fn train_reporting(
+    config: &Config,
+    litellm_host: String,
+    litellm_key: SecretValue,
+    request: TrainRequest,
+    progress: watch::Sender<Option<TrainProgress>>,
+) -> Result<TrainOutcome, TrainError> {
+    train_with_remediation(
+        config,
+        litellm_host,
+        litellm_key,
+        request,
+        crate::screening::screen,
+        Reporter::new(progress),
     )
     .await
 }
@@ -276,8 +317,18 @@ async fn train_with_remediation(
     litellm_key: SecretValue,
     request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
+    progress: Reporter,
 ) -> Result<TrainOutcome, TrainError> {
-    train_with_pipeline(config, litellm_host, litellm_key, request, screening, true).await
+    train_with_pipeline(
+        config,
+        litellm_host,
+        litellm_key,
+        request,
+        screening,
+        true,
+        progress,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -288,7 +339,16 @@ async fn train_with_screening(
     request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
 ) -> Result<TrainOutcome, TrainError> {
-    train_with_pipeline(config, litellm_host, litellm_key, request, screening, false).await
+    train_with_pipeline(
+        config,
+        litellm_host,
+        litellm_key,
+        request,
+        screening,
+        false,
+        Reporter::default(),
+    )
+    .await
 }
 
 /// Refuses a request [`train`] would refuse, before any image is decoded:
@@ -514,6 +574,7 @@ async fn train_with_pipeline(
     request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
     repair_rejections: bool,
+    progress: Reporter,
 ) -> Result<TrainOutcome, TrainError> {
     let Plan {
         filename,
@@ -524,20 +585,26 @@ async fn train_with_pipeline(
     } = plan(config, &request)?;
     let trigger = trigger.as_str();
     let edit = matches!(&model, TrainingModel::QwenEdit { .. });
-    let (images, decoded) = decode_uploads(request.images).await?;
-    let side = crate::train::packaged_config()?.resolution();
+    let settings = crate::train::packaged_config()?;
+    let side = settings.resolution();
+    let progress = progress.with_total(settings.steps(request.images.len()));
+    progress.phase(Phase::Screening, "Screening the dataset", 0, 1);
+    let (images, decoded) = decode_uploads(request.images, progress.clone()).await?;
     let http =
         crate::http::client(config).map_err(|error| TrainError::Failed(error.to_string()))?;
+    progress.phase(Phase::Screening, "Checking the images", 0, 1);
     let (mut decoded, mut verdict) = screen(screening, decoded, side).await?;
     validate_verdict(&verdict, images.len())?;
     let mut attempts = Vec::new();
     if repair_rejections {
-        loop {
+        while !verdict.drop.is_empty() {
+            progress.phase(Phase::Screening, "Repairing rejected images", 0, 1);
             let fresh = remediate(config, &http, &mut decoded, &images, &verdict, &attempts).await;
             if fresh.is_empty() {
                 break;
             }
             attempts.extend(fresh);
+            progress.phase(Phase::Screening, "Checking the repaired images", 0, 1);
             (decoded, verdict) = screen(screening, decoded, side).await?;
             validate_verdict(&verdict, images.len())?;
         }
@@ -553,8 +620,17 @@ async fn train_with_pipeline(
         .collect::<Vec<Dropped>>();
     // Crop before captioning, or the caption describes background the crop removes.
     let subject = Subject::shared(config).await;
-    let mut survivors =
-        frame_survivors(subject, images, decoded, verdict.keep.clone(), side, edit).await?;
+    let mut survivors = frame_survivors(
+        subject,
+        images,
+        decoded,
+        verdict.keep.clone(),
+        side,
+        edit,
+        progress.clone(),
+    )
+    .await?;
+    let progress = progress.with_total(settings.steps(survivors.len()));
     if survivors.len() != verdict.keep.len() {
         return Err(TrainError::Failed(
             "screening returned an invalid survivor index".to_string(),
@@ -575,8 +651,15 @@ async fn train_with_pipeline(
                 Ok::<Draft, TrainError>(Draft::new(CROP, encoded, &image.text, image.group))
             })
             .collect::<Result<Vec<Draft>, TrainError>>()?;
+        progress.phase(Phase::Captioning, "Captioning the dataset", 0, 1);
         let described = Captioner::new(config, litellm_host, litellm_key)
-            .fill(&mut drafts, trigger)
+            .fill_with_progress(&mut drafts, trigger, |done, shots| {
+                let message = match done {
+                    0 => "Captioning the dataset".to_string(),
+                    _ => format!("Captioning image {done} of {shots}"),
+                };
+                progress.phase(Phase::Captioning, message, done, shots);
+            })
             .await;
         for (image, draft) in survivors.iter_mut().zip(drafts) {
             image.text = draft.caption;
@@ -621,10 +704,23 @@ async fn train_with_pipeline(
         }
     }
     let staged = attempt.output();
+    let host_steps = config
+        .train_command
+        .as_ref()
+        .and_then(|_| std::env::var(config.contract.variable("STEPS")).ok());
+    let progress = match host_steps
+        .as_deref()
+        .and_then(|steps| steps.trim().parse::<u32>().ok())
+    {
+        Some(steps) => progress.with_total(steps),
+        None => progress,
+    };
+    progress.phase(Phase::Training, "Starting training", 0, 1);
     let run = if let Some(command) = config.train_command.as_deref() {
         let contract = &config.contract;
         let run = Run::new(contract);
         attempt.register(&run, contract)?;
+        let progress_file = attempt.root.join(contract.progress_filename(&run.artifact));
         let mut process = Command::new("sh");
         trainer_environment(config).apply(&mut process);
         process
@@ -649,6 +745,7 @@ async fn train_with_pipeline(
             )
             .env(contract.variable("FOLDER"), &run.folder)
             .env(contract.variable("ARTIFACT"), &run.artifact)
+            .env(contract.variable("PROGRESS"), &progress_file)
             .env(contract.variable("DEFER_CLEANUP"), "1")
             .env(
                 contract.variable("TIMEOUT"),
@@ -664,6 +761,9 @@ async fn train_with_pipeline(
                     .display()
                     .to_string(),
             );
+        if host_steps.is_none() {
+            process.env(contract.variable("STEPS"), progress.total().to_string());
+        }
         match &model {
             TrainingModel::Flux { checkpoint } | TrainingModel::Sdxl { checkpoint } => {
                 process.env(contract.variable("CHECKPOINT"), checkpoint);
@@ -675,7 +775,13 @@ async fn train_with_pipeline(
                     .env(contract.variable("VAE"), vae);
             }
         }
-        let trained = run_trainer(process, config.train_timeout).await;
+        let trained = forwarding(
+            run_trainer(process, config.train_timeout),
+            &progress_file,
+            config.poll_interval,
+            &progress,
+        )
+        .await;
         if let Err(error) = trained {
             crate::train::cleanup_with(&http, config, &run).await;
             return Err(error);
@@ -689,6 +795,7 @@ async fn train_with_pipeline(
             &attempt.root,
             &staged,
             survivors.len(),
+            &progress,
         )
         .await?
     };
@@ -700,6 +807,7 @@ async fn train_with_pipeline(
         ));
     }
     let quality = if request.method == TrainMethod::Lora {
+        progress.publishing("Choosing the best checkpoint", 0, 2);
         crate::quality::select_with(&http, config, &model, &run, &staged, &captions).await
     } else {
         crate::train::cleanup_with(&http, config, &run).await;
@@ -725,6 +833,7 @@ async fn train_with_pipeline(
     write_new(&attempt.root, &staged_sidecar, &bytes)?;
     validate_output(&published, &output)?;
     validate_output(&published, &output_sidecar)?;
+    progress.publishing("Publishing the weight", 1, 2);
     atomic_promote(
         &attempt.root,
         &staged,
@@ -767,6 +876,38 @@ fn trainer_environment(config: &Config) -> EnvironmentPolicy {
             .with("COMFYUI_TOKEN_HEADER", config.token_header.as_str()),
         None => environment,
     }
+}
+
+/// Runs `trainer` to the end, reading `progress_file` every `interval` while
+/// it runs and sending what it holds to `progress`. A file that is missing or
+/// cannot be read yet sends nothing.
+async fn forwarding<T>(
+    trainer: impl Future<Output = T>,
+    progress_file: &Path,
+    interval: Duration,
+    progress: &Reporter,
+) -> T {
+    let mut trainer = std::pin::pin!(trainer);
+    let mut ticks = tokio::time::interval(interval);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            finished = &mut trainer => return finished,
+            _ = ticks.tick() => {
+                if progress.listening()
+                    && let Some(update) = read_progress(progress_file).await
+                {
+                    progress.send(update);
+                }
+            }
+        }
+    }
+}
+
+async fn read_progress(progress_file: &Path) -> Option<TrainProgress> {
+    let progress_file = progress_file.to_path_buf();
+    let bytes = blocking(move || fs::read(progress_file)).await.ok()?.ok()?;
+    TrainProgress::parse(&bytes)
 }
 
 /// Runs the external trainer to completion within `budget`.
@@ -858,11 +999,24 @@ where
 /// Moves every upload's encoded image out of `images`, so the set is held once.
 async fn decode_uploads(
     mut images: Vec<TrainImage>,
+    progress: Reporter,
 ) -> Result<(Arc<[TrainImage]>, Vec<Vec<u8>>), TrainError> {
     blocking(move || {
+        let count = images.len();
         let decoded = images
             .iter_mut()
-            .map(TrainImage::take_encoded)
+            .enumerate()
+            .map(|(index, image)| {
+                let encoded = image.take_encoded()?;
+                let done = index + 1;
+                progress.phase(
+                    Phase::Screening,
+                    format!("Loading image {done} of {count}"),
+                    done,
+                    count,
+                );
+                Ok(encoded)
+            })
             .collect::<Result<Vec<Vec<u8>>, TrainError>>()?;
         Ok((images.into(), decoded))
     })
@@ -898,14 +1052,24 @@ async fn frame_survivors(
     keep: Vec<usize>,
     side: u32,
     edit: bool,
+    progress: Reporter,
 ) -> Result<Vec<ScreenedImage>, TrainError> {
     blocking(move || {
+        let count = keep.len();
         images
             .iter()
             .zip(shots(&images))
             .enumerate()
             .filter(|(index, _)| keep.binary_search(index).is_ok())
-            .map(|(original, (image, group))| {
+            .enumerate()
+            .map(|(cropped, (original, (image, group)))| {
+                let done = cropped + 1;
+                progress.phase(
+                    Phase::Screening,
+                    format!("Cropping image {done} of {count}"),
+                    done,
+                    count,
+                );
                 let framed = frame_with_target(&subject, image, &decoded[original], side)?;
                 Ok(ScreenedImage {
                     original,
@@ -1972,6 +2136,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn training_reports_each_phase_before_the_trainer_starts() {
+        let (_root, mut config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
+        config.caption_model = "vision".to_string();
+        let captioner = wiremock::MockServer::start().await;
+        let (reporter, published) = Reporter::recording();
+        train_with_remediation(
+            &config,
+            captioner.uri(),
+            SecretValue::new("key"),
+            TrainRequest::new(
+                "reported-style",
+                "flux-schnell",
+                vec![image("target", "", None)],
+            )
+            .with_trigger("ohwx"),
+            crate::screening::screen,
+            reporter,
+        )
+        .await
+        .unwrap();
+        let updates = published.lock().unwrap().clone();
+        let mut phases = updates
+            .iter()
+            .map(|update| update.phase.clone().expect("every update names its phase"))
+            .collect::<Vec<Phase>>();
+        phases.dedup();
+        assert_eq!(
+            phases,
+            vec![
+                Phase::Screening,
+                Phase::Captioning,
+                Phase::Training,
+                Phase::Publishing
+            ]
+        );
+        let budget = crate::train::packaged_config().unwrap().steps(1);
+        assert!(
+            updates.iter().all(|update| update.total == budget
+                && update.step
+                    == match update.phase {
+                        Some(Phase::Publishing) => budget,
+                        _ => 0,
+                    }),
+            "the budget is the one the trainer gets, and only publishing follows training: {updates:?}"
+        );
+        assert!(
+            updates.windows(2).all(|pair| pair[0] != pair[1]),
+            "an update was published twice in a row: {updates:?}"
+        );
+        let said = |message: &str| {
+            updates
+                .iter()
+                .find(|update| update.message.as_deref() == Some(message))
+                .unwrap_or_else(|| panic!("{message:?} was never reported in {updates:?}"))
+                .percent
+        };
+        assert_eq!(said("Screening the dataset"), Some(0));
+        assert_eq!(said("Loading image 1 of 1"), Some(100));
+        assert_eq!(said("Checking the images"), Some(0));
+        assert_eq!(said("Cropping image 1 of 1"), Some(100));
+        assert_eq!(said("Captioning the dataset"), Some(0));
+        assert_eq!(said("Captioning image 1 of 1"), Some(100));
+        assert_eq!(said("Starting training"), Some(0));
+        assert_eq!(said("Choosing the best checkpoint"), Some(0));
+        assert_eq!(said("Publishing the weight"), Some(50));
+        assert!(
+            !updates.iter().any(|update| update
+                .message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Captioning image 0"))),
+            "captioning reported an image before describing one: {updates:?}"
+        );
+        assert_eq!(
+            updates.last().unwrap().message.as_deref(),
+            Some("Publishing the weight")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_training_command_reports_what_it_writes_to_its_progress_file() {
+        let command = r#"
+            test "$TRAIN_STEPS" = "BUDGET" || exit 41
+            case "$TRAIN_PROGRESS" in "$TRAIN_DIRECTORY"/*) ;; *) exit 42 ;; esac
+            printf '{"step":5,"total":10,"phase":"training","loss":0.5}' > "$TRAIN_PROGRESS"
+            sleep 1
+            printf lora > "$TRAIN_OUTPUT"
+        "#
+        .replace(
+            "BUDGET",
+            &crate::train::packaged_config()
+                .unwrap()
+                .steps(1)
+                .to_string(),
+        );
+        let (_root, mut config) = harness(&command);
+        config.poll_interval = Duration::from_millis(50);
+        let (reporter, published) = Reporter::recording();
+        train_with_remediation(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("command-progress"),
+            crate::screening::screen,
+            reporter,
+        )
+        .await
+        .expect("the command trains");
+        let updates = published.lock().unwrap().clone();
+        assert!(
+            updates.contains(
+                &TrainProgress::new(5, 10)
+                    .with_phase(Phase::Training)
+                    .with_loss(0.5)
+            ),
+            "the command's progress file never arrived: {updates:?}"
+        );
+        assert_eq!(
+            updates.last(),
+            Some(
+                &TrainProgress::new(10, 10)
+                    .with_phase(Phase::Publishing)
+                    .with_message("Publishing the weight")
+                    .with_percent(50)
+            ),
+            "publishing counts the steps the command reported"
+        );
+    }
+
+    #[tokio::test]
+    async fn training_finishes_as_a_background_job_once_its_watcher_leaves() {
+        let (_root, config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        drop(receiver);
+        let job = tokio::spawn(async move {
+            train_reporting(
+                &config,
+                String::new(),
+                SecretValue::new(""),
+                identity("background-style"),
+                sender,
+            )
+            .await
+        });
+        let outcome = job
+            .await
+            .expect("the job runs to the end")
+            .expect("no one watching is not a failure");
+        assert_eq!(fs::read(&outcome.path).unwrap(), b"lora");
+    }
+
+    #[tokio::test]
+    async fn a_watcher_reads_the_latest_progress_of_a_run() {
+        let (_root, config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        train_reporting(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("watched-style"),
+            sender,
+        )
+        .await
+        .unwrap();
+        let latest = receiver
+            .borrow()
+            .clone()
+            .expect("the run published progress");
+        assert_eq!(latest.phase, Some(Phase::Publishing));
+        assert_eq!(latest.message.as_deref(), Some("Publishing the weight"));
+    }
+
+    #[tokio::test]
     async fn the_default_trainer_variables_are_the_ones_the_packaged_script_reads() {
         let command = format!(
             "test -n \"${INPUT_ENVIRONMENT_PREFIX}_INPUT\" || exit 51; \
@@ -2124,6 +2460,35 @@ mod tests {
         let (_root, config) = harness(command);
 
         trained_by(&config).await;
+    }
+
+    #[tokio::test]
+    async fn a_command_run_reports_the_step_budget_the_host_gave_its_trainer() {
+        const NAME: &str =
+            "lora::tests::a_command_run_reports_the_step_budget_the_host_gave_its_trainer";
+        if crate::child::delegated(NAME, &[("TRAIN_STEPS", "2000")]).await {
+            return;
+        }
+        let (_root, config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
+        let (reporter, published) = Reporter::recording();
+        train_with_remediation(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("host-budget"),
+            crate::screening::screen,
+            reporter,
+        )
+        .await
+        .expect("the command trains");
+        let started = published
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|update| update.message.as_deref() == Some("Starting training"))
+            .cloned()
+            .expect("training was reported");
+        assert_eq!(started.total, 2000);
     }
 
     #[tokio::test]
@@ -2717,7 +3082,7 @@ mod tests {
     }
 
     /// A deployment's own node pack: every node, namespace, variable prefix,
-    /// sidecar and publication directory under a brand of its own.
+    /// sidecar, progress file and publication directory under a brand of its own.
     fn acme() -> Contract {
         Contract {
             train_lora_node: "AcmeTrainLoRA".into(),
@@ -2732,6 +3097,7 @@ mod tests {
             input_environment_prefix: "ACME_COMFY".into(),
             sidecar_suffix: ".acme.json".into(),
             publication_directory: ".acme-publish".into(),
+            progress_suffix: ".acme-progress.json".into(),
         }
     }
 
@@ -3126,6 +3492,7 @@ mod tests {
             SecretValue::new(""),
             identity("repaired"),
             reject_tiny,
+            Reporter::default(),
         )
         .await
         .expect("repaired target trains");
@@ -4211,7 +4578,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn uploads_are_decoded_without_stalling_the_runtime() {
-        let (decoded, free) = beside(decode_uploads(uploads(8))).await;
+        let (decoded, free) = beside(decode_uploads(uploads(8), Reporter::default())).await;
 
         let (images, decoded) = decoded.expect("the uploads decode");
         assert_eq!(decoded.len(), 8);
@@ -4224,7 +4591,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_set_is_screened_without_stalling_the_runtime() {
-        let (_, decoded) = decode_uploads(uploads(8)).await.unwrap();
+        let (_, decoded) = decode_uploads(uploads(8), Reporter::default())
+            .await
+            .unwrap();
 
         let (screened, free) = beside(screen(crate::screening::screen, decoded, side())).await;
 
@@ -4236,7 +4605,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn survivors_are_framed_without_stalling_the_runtime() {
-        let (images, decoded) = decode_uploads(uploads(2)).await.unwrap();
+        let (images, decoded) = decode_uploads(uploads(2), Reporter::default())
+            .await
+            .unwrap();
 
         let (framed, free) = beside(frame_survivors(
             Subject::none(),
@@ -4245,6 +4616,7 @@ mod tests {
             vec![1],
             side(),
             false,
+            Reporter::default(),
         ))
         .await;
 
