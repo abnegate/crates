@@ -1,5 +1,4 @@
-use abnegate_secret::redact;
-
+use crate::client::reporter::Reporter;
 use crate::error::Error;
 use crate::wire::ChatStreamChunk;
 
@@ -20,8 +19,8 @@ const MAXIMUM_EVENT_BYTES: usize = 16 * 1024 * 1024;
 /// left open. Comments and every other field are skipped.
 ///
 /// `[DONE]` ends the stream, and so does a payload that is a top-level
-/// `error` object, which is reported as [`Error::Stream`] rather than read
-/// as an empty chunk. A stream that ends without a single event is a
+/// `error` object, which is reported as [`Error::Stream`], in the words the
+/// [`Reporter`] allows, rather than read as an empty chunk. A stream that ends without a single event is a
 /// failure too, not an empty answer.
 pub(crate) struct EventDecoder {
     buffer: Vec<u8>,
@@ -33,25 +32,27 @@ pub(crate) struct EventDecoder {
     dispatched: bool,
     limit: usize,
     finished: bool,
-}
-
-impl Default for EventDecoder {
-    fn default() -> Self {
-        Self::with_limit(MAXIMUM_EVENT_BYTES)
-    }
+    reporter: Reporter,
 }
 
 impl EventDecoder {
-    pub(crate) fn with_limit(limit: usize) -> Self {
+    pub(crate) fn new(reporter: Reporter) -> Self {
         Self {
             buffer: Vec::new(),
             scanned: 0,
             data: Vec::new(),
             received: 0,
             dispatched: false,
-            limit,
+            limit: MAXIMUM_EVENT_BYTES,
             finished: false,
+            reporter,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
     }
 
     /// Whether the stream has ended, cleanly or not. Nothing after this
@@ -163,11 +164,8 @@ impl EventDecoder {
             }
         };
         if let Some(error) = value.get("error") {
-            let message = error
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .map_or_else(|| error.to_string(), str::to_string);
-            self.fail(redact(&message).into_owned(), decoded);
+            let message = self.reporter.streamed(error);
+            self.fail(message, decoded);
             return;
         }
         decoded.push(serde_json::from_value(value).map_err(Error::Json));
@@ -186,11 +184,19 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use abnegate_secret::SecretValue;
+
     use super::EventDecoder;
+    use crate::client::reporter::Reporter;
+    use crate::client::trust::Trust;
     use crate::error::Error;
 
     const CHUNK: &str =
         r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}"#;
+
+    fn decoder() -> EventDecoder {
+        EventDecoder::new(Reporter::new(Trust::Operator, SecretValue::new("")))
+    }
 
     fn content(result: &Result<crate::wire::ChatStreamChunk, Error>) -> Option<&str> {
         result
@@ -205,7 +211,7 @@ mod tests {
 
     #[test]
     fn a_data_line_with_or_without_the_space_is_a_chunk() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         let decoded = decoder.push(format!("data: {CHUNK}\n\ndata:{CHUNK}\n\n").as_bytes());
 
@@ -215,7 +221,7 @@ mod tests {
 
     #[test]
     fn a_chunk_split_across_reads_is_reassembled() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
         let event = format!("data: {CHUNK}\r\n\r\n");
         let (head, tail) = event.as_bytes().split_at(17);
 
@@ -228,7 +234,7 @@ mod tests {
 
     #[test]
     fn done_ends_the_stream_and_nothing_after_it_is_read() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         let decoded = decoder.push(format!("data: [DONE]\n\ndata: {CHUNK}\n").as_bytes());
 
@@ -243,7 +249,7 @@ mod tests {
 
     #[test]
     fn an_error_payload_is_a_failure_not_an_empty_chunk() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         let decoded = decoder.push(
             concat!(
@@ -267,7 +273,7 @@ mod tests {
 
     #[test]
     fn a_final_line_without_a_newline_is_still_read() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         assert!(decoder.push(format!("data: {CHUNK}").as_bytes()).is_empty());
         let decoded = decoder.finish();
@@ -278,7 +284,7 @@ mod tests {
 
     #[test]
     fn a_line_that_never_ends_is_refused_once_it_passes_the_limit() {
-        let mut decoder = EventDecoder::with_limit(64);
+        let mut decoder = decoder().with_limit(64);
 
         let decoded = decoder.push(&[b'x'; 65]);
 
@@ -289,7 +295,7 @@ mod tests {
 
     #[test]
     fn comments_and_other_fields_are_skipped() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         let decoded = decoder
             .push(format!(": keep-alive\nevent: message\nid: 7\ndata: {CHUNK}\n\n").as_bytes());
@@ -299,7 +305,7 @@ mod tests {
 
     #[test]
     fn a_malformed_chunk_is_reported_and_the_stream_goes_on() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         let decoded = decoder.push(format!("data: {{not json\n\ndata: {CHUNK}\n\n").as_bytes());
 
@@ -310,7 +316,7 @@ mod tests {
 
     #[test]
     fn a_long_line_arriving_in_small_reads_is_scanned_once() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
         let padding = "x".repeat(8 * 1024 * 1024);
         let event = format!("data: {{\"choices\":[],\"model\":\"{padding}\"}}\n\n");
 
@@ -332,7 +338,7 @@ mod tests {
 
     #[test]
     fn the_data_lines_of_one_event_are_joined_with_newlines() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         let decoded = decoder.push(
             concat!(
@@ -349,7 +355,7 @@ mod tests {
 
     #[test]
     fn an_event_is_dispatched_at_the_blank_line_that_ends_it() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         assert!(
             decoder
@@ -364,7 +370,7 @@ mod tests {
 
     #[test]
     fn an_event_left_open_at_the_end_of_the_stream_is_dispatched() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         assert!(
             decoder
@@ -384,7 +390,7 @@ mod tests {
             b": keep-alive\n\n",
             b"",
         ] {
-            let mut decoder = EventDecoder::default();
+            let mut decoder = decoder();
 
             let mut decoded = decoder.push(body);
             decoded.extend(decoder.finish());
@@ -399,7 +405,7 @@ mod tests {
 
     #[test]
     fn a_stream_that_only_says_done_is_not_a_failure() {
-        let mut decoder = EventDecoder::default();
+        let mut decoder = decoder();
 
         assert!(decoder.push(b"data: [DONE]\n\n").is_empty());
         assert!(decoder.finish().is_empty());
@@ -407,7 +413,7 @@ mod tests {
 
     #[test]
     fn an_event_that_grows_past_the_limit_is_refused() {
-        let mut decoder = EventDecoder::with_limit(64);
+        let mut decoder = decoder().with_limit(64);
 
         let decoded = decoder.push("data: 0123456789abcdef\n".repeat(4).as_bytes());
 

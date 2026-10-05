@@ -4,10 +4,12 @@ mod config;
 mod events;
 mod options;
 mod pool;
+mod reporter;
+mod trust;
 
 use std::time::Duration;
 
-use abnegate_secret::redact;
+use abnegate_http::metadata;
 use futures::Stream;
 use futures::StreamExt;
 use reqwest::Client;
@@ -16,9 +18,11 @@ use reqwest::Url;
 pub use crate::client::config::LlmConfig;
 pub use crate::client::options::RequestOptions;
 pub(crate) use crate::client::pool::Pool;
+pub use crate::client::trust::Trust;
 
 use crate::budget::Budget;
 use crate::client::events::EventDecoder;
+use crate::client::reporter::Reporter;
 use crate::dialect::Dialect;
 use crate::error::Error;
 use crate::provider::CompletionRequest;
@@ -39,6 +43,11 @@ use crate::wire::ToolDefinition;
 /// A non-streaming completion must finish within [`LlmConfig::timeout`]; a
 /// streamed one may run as long as it keeps sending, but fails once it goes
 /// [`LlmConfig::read_timeout`] without a byte.
+///
+/// A refusal reaches the caller as [`Error::Api`], and an error sent in place
+/// of a streamed chunk as [`Error::Stream`], without the key the client sent;
+/// for an endpoint a [`Trust::Tenant`] chose, as nothing but its status and
+/// the endpoint's own error message.
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     client: Client,
@@ -51,10 +60,16 @@ pub struct LlmClient {
 
 impl LlmClient {
     /// A client for the endpoint `config` names. Every client in the process
-    /// shares one connection pool, so building one is cheap.
+    /// with the same [`LlmConfig::trust`] shares one connection pool, so
+    /// building one is cheap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no HTTP client can be built at all, as when no TLS backend
+    /// can be initialised, just as `reqwest::Client::new` does.
     pub fn new(config: LlmConfig) -> Self {
         Self {
-            client: Pool::client(),
+            client: Pool::client(config.trust),
             config,
             stop: Vec::new(),
             ollama: None,
@@ -148,9 +163,15 @@ impl LlmClient {
 
     async fn send(&self, url: &str, body: &serde_json::Value) -> Result<reqwest::Response, Error> {
         let url = validate(url)?;
+        if self.config.trust == Trust::Tenant && metadata::is_url(&url) {
+            return Err(Error::InvalidConfig(
+                "LLM base_url must not point at a link-local or cloud metadata address".to_string(),
+            ));
+        }
         let mut request = self.client.post(url).json(body);
-        if !self.config.api_key.is_empty() {
-            request = request.bearer_auth(self.config.api_key.expose());
+        let key = self.config.api_key.expose().trim();
+        if !key.is_empty() {
+            request = request.bearer_auth(key);
         }
         Ok(request.send().await?)
     }
@@ -159,16 +180,15 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.config.base_url);
         let response = self.send(&url, &self.body(request)?).await?;
 
-        let status = response.status();
-        if status.is_success() {
+        if response.status().is_success() {
             return Ok(response);
         }
 
-        let body = response.text().await.unwrap_or_default();
-        Err(Error::Api {
-            status: status.as_u16(),
-            message: redact(&body).into_owned(),
-        })
+        Err(self.reporter().rejected(response).await)
+    }
+
+    fn reporter(&self) -> Reporter {
+        Reporter::new(self.config.trust, self.config.api_key.clone())
     }
 
     fn request<'a>(
@@ -302,7 +322,7 @@ impl LlmClient {
         .await
         .map_err(|_| Error::Timeout(read_timeout))??;
 
-        Ok(events(response, read_timeout))
+        Ok(events(response, read_timeout, self.reporter()))
     }
 }
 
@@ -322,6 +342,10 @@ fn budgeted(dialect: Dialect, request: &ChatRequest<'_>) -> (Option<u32>, Option
 
 /// Check an outbound request URL and hand back the URL to request, so a
 /// caller can only send the value that was checked.
+///
+/// Loopback, LAN and single-label hosts pass: a self-hosted endpoint lives
+/// there. The metadata guard a [`Trust::Tenant`] endpoint needs is applied
+/// by the caller, against the URL this returns.
 fn validate(url: &str) -> Result<Url, Error> {
     let parsed = Url::parse(url).map_err(|_| {
         Error::InvalidConfig("LLM base_url must be a valid absolute URL".to_string())
@@ -348,20 +372,17 @@ fn validate(url: &str) -> Result<Url, Error> {
         ));
     }
 
-    // No private-network rule here on purpose. Every caller passes an
-    // operator-configured host, and a self-hosted deployment points at
-    // loopback, a LAN address or a compose service name. The check belongs
-    // where a tenant-supplied host is first accepted, against that value.
     Ok(parsed)
 }
 
 fn events(
     response: reqwest::Response,
     read_timeout: Duration,
+    reporter: Reporter,
 ) -> impl Stream<Item = Result<ChatStreamChunk, Error>> {
     async_stream::stream! {
         let mut bytes = response.bytes_stream();
-        let mut decoder = EventDecoder::default();
+        let mut decoder = EventDecoder::new(reporter);
 
         while !decoder.is_finished() {
             let Ok(next) = tokio::time::timeout(read_timeout, bytes.next()).await else {

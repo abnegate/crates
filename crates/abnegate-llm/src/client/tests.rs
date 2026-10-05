@@ -19,7 +19,10 @@ use crate::reasoning::Effort;
 use crate::wire::ChatRequest;
 use crate::wire::Message;
 
+mod authorization;
+mod refusal;
 mod shape;
+mod tenant;
 
 const CHUNK: &str = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}"#;
 const COMPLETION: &str = r#"{"id":"c","object":"chat.completion","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#;

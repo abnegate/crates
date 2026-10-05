@@ -94,6 +94,7 @@ pub use crate::budget::Budget;
 pub use crate::client::LlmClient;
 pub use crate::client::LlmConfig;
 pub use crate::client::RequestOptions;
+pub use crate::client::Trust;
 pub use crate::cost::CostEstimate;
 pub use crate::cost::CostEstimator;
 pub use crate::cost::CostLineItem;

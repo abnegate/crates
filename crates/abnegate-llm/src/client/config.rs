@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use abnegate_secret::SecretValue;
 
+use crate::client::trust::Trust;
 use crate::dialect::Dialect;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -20,7 +21,8 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub struct LlmConfig {
     /// Base URL for the API, such as `https://api.openai.com/v1`.
     pub base_url: String,
-    /// Sent as a bearer token. An empty key sends no `Authorization` header.
+    /// Sent, trimmed, as a bearer token. A key that is blank once trimmed
+    /// sends no `Authorization` header.
     pub api_key: SecretValue,
     /// The model asked when a call names none.
     pub default_model: String,
@@ -40,6 +42,9 @@ pub struct LlmConfig {
     /// Which API sits behind [`Self::base_url`], and so how each request is
     /// shaped before it is sent.
     pub dialect: Dialect,
+    /// Who chose [`Self::base_url`], which decides whether the endpoint is
+    /// guarded against metadata targets and how its refusals are reported.
+    pub trust: Trust,
 }
 
 impl LlmConfig {
@@ -87,6 +92,12 @@ impl LlmConfig {
         self.dialect = dialect;
         self
     }
+
+    /// Set [`Self::trust`].
+    pub fn with_trust(mut self, trust: Trust) -> Self {
+        self.trust = trust;
+        self
+    }
 }
 
 impl Default for LlmConfig {
@@ -100,6 +111,7 @@ impl Default for LlmConfig {
             timeout: DEFAULT_TIMEOUT,
             read_timeout: DEFAULT_READ_TIMEOUT,
             dialect: Dialect::Compatible,
+            trust: Trust::Operator,
         }
     }
 }
@@ -109,6 +121,7 @@ mod tests {
     use std::time::Duration;
 
     use super::LlmConfig;
+    use crate::client::trust::Trust;
     use crate::dialect::Dialect;
 
     #[test]
@@ -123,6 +136,7 @@ mod tests {
         assert_eq!(config.timeout, Duration::from_secs(600));
         assert_eq!(config.read_timeout, Duration::from_secs(300));
         assert_eq!(config.dialect, Dialect::Compatible);
+        assert_eq!(config.trust, Trust::Operator);
     }
 
     #[test]
@@ -136,7 +150,8 @@ mod tests {
         .with_maximum_tokens(2048)
         .with_timeout(Duration::from_secs(30))
         .with_read_timeout(Duration::from_secs(5))
-        .with_dialect(Dialect::Anthropic);
+        .with_dialect(Dialect::Anthropic)
+        .with_trust(Trust::Tenant);
 
         assert_eq!(config.base_url, "https://custom.api.com/v1");
         assert_eq!(config.api_key.expose(), "sk-test-key-123");
@@ -146,6 +161,7 @@ mod tests {
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.read_timeout, Duration::from_secs(5));
         assert_eq!(config.dialect, Dialect::Anthropic);
+        assert_eq!(config.trust, Trust::Tenant);
     }
 
     #[test]
