@@ -73,7 +73,8 @@
 //! process and [`McpServer::environment`], or the whole environment when
 //! [`McpServer::inherit_environment`] is set. When `ABNEGATE_EXEC_PROXY_URL`
 //! is set, the proxy variables it implies are then applied on top, so a
-//! server cannot route around it. Configure only trusted executables.
+//! server cannot route around it; [`McpHub::connect_through`] applies a proxy
+//! the caller hands it there instead. Configure only trusted executables.
 //!
 //! [`ToolRegistry`]: crate::tool::ToolRegistry
 
@@ -108,3 +109,4 @@ pub(crate) use name::server_prefix;
 pub use name::unique_qualified_tool_name;
 pub use register::register;
 pub use register::with_defaults_and_mcp;
+pub use register::with_defaults_and_mcp_through;

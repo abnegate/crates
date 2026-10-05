@@ -14,13 +14,19 @@ use super::shell::RunShellParameters;
 use super::shell::total_sleep;
 use super::*;
 use crate::test_support::CHILD_TEST;
+use crate::test_support::CONFIGURED_PROXY;
+use crate::test_support::ENVIRONMENT_PROXY;
 use crate::test_support::PATIENCE;
 use crate::test_support::TIMEOUT;
 use crate::test_support::assert_passed;
+use crate::test_support::assert_routed;
+use crate::test_support::assert_unrouted;
 use crate::test_support::captured_logs;
 use crate::test_support::gone;
+use crate::test_support::ran_in_child;
 use crate::test_support::timed;
 use crate::tool::MAXIMUM_TOOL_MESSAGE_CHARACTERS;
+use crate::tool::Proxy;
 use crate::tool::Session;
 use crate::tool::Tool;
 
@@ -204,6 +210,87 @@ async fn proxy_overrides_command_and_shell_environment() {
                 .any(|line| line == "NO_PROXY=*" || line == "no_proxy=*")
         );
         assert!(output.contains("NO_PROXY=localhost,127.0.0.1,::1"));
+    }
+}
+
+/// A host that routes its tools through a proxy of its own, rather than
+/// the one its environment names for its executor, used to have no way to
+/// hand it to them. A context's proxy now replaces the environment's for
+/// both shelling tools, one that routes nothing routes nothing, and a
+/// context with none still follows the environment.
+#[tokio::test]
+async fn a_context_proxy_replaces_the_one_the_environment_names() {
+    if ran_in_child(
+        "tool::command::tests::a_context_proxy_replaces_the_one_the_environment_names",
+        &[(PROXY_URL_VARIABLE, ENVIRONMENT_PROXY)],
+    )
+    .await
+    {
+        return;
+    }
+
+    let mut configured =
+        create_test_context().with_proxy(Proxy::new(CONFIGURED_PROXY).with_bypass(["ollama"]));
+    configured.environment = crate::tool::EnvironmentPolicy::from_iter([
+        ("HTTPS_PROXY".to_string(), "http://wrong:8888".to_string()),
+        ("NO_PROXY".to_string(), "*".to_string()),
+    ]);
+    for output in environments(&configured).await {
+        assert_routed(&output, CONFIGURED_PROXY, "ollama");
+    }
+    for output in environments(&create_test_context().with_proxy(Proxy::default())).await {
+        assert_unrouted(&output);
+    }
+    for output in environments(&create_test_context()).await {
+        assert_routed(&output, ENVIRONMENT_PROXY, "localhost,127.0.0.1,::1");
+    }
+}
+
+/// A proxy that routes nothing lays nothing over the child: a context that
+/// inherits this process's environment hands the child every proxy variable
+/// it holds, verbatim, and none of the ones a routed child is given.
+#[tokio::test]
+async fn a_context_proxy_that_routes_nothing_leaves_an_inherited_environment_as_it_is() {
+    const INHERITED: &str = "http://inherited:8888";
+    if ran_in_child(
+        "tool::command::tests::a_context_proxy_that_routes_nothing_leaves_an_inherited_environment_as_it_is",
+        &[
+            (PROXY_URL_VARIABLE, ENVIRONMENT_PROXY),
+            ("HTTPS_PROXY", INHERITED),
+        ],
+    )
+    .await
+    {
+        return;
+    }
+
+    let context = create_test_context()
+        .with_environment(crate::tool::EnvironmentPolicy::inherit())
+        .with_proxy(Proxy::default());
+    for output in environments(&context).await {
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(
+            lines.contains(&format!("HTTPS_PROXY={INHERITED}").as_str()),
+            "{output}"
+        );
+        assert!(
+            lines.contains(&format!("{PROXY_URL_VARIABLE}={ENVIRONMENT_PROXY}").as_str()),
+            "{output}"
+        );
+        for name in [
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.starts_with(&format!("{name}="))),
+                "{name} was laid over the child: {output}"
+            );
+        }
     }
 }
 

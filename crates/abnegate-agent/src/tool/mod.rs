@@ -35,6 +35,7 @@ use std::time::Duration;
 
 pub use abnegate_exec::DEFAULT_ENVIRONMENT;
 pub use abnegate_exec::EnvironmentPolicy;
+pub use abnegate_exec::Proxy;
 use abnegate_llm::ToolDefinition;
 pub use abnegate_secret::sanitize;
 use async_trait::async_trait;

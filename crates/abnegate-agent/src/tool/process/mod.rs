@@ -10,7 +10,6 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::time::Duration;
 
-use abnegate_exec::Proxy;
 pub(crate) use capture::Capture;
 pub(crate) use finished::Finished;
 pub(crate) use group::Group;
@@ -43,11 +42,11 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const READ_BUFFER_BYTES: usize = 8 * 1024;
 
 /// `program`, set to see the context's environment and nothing else, with the
-/// process-wide proxy policy applied last so no tool can route around it.
+/// context's proxy applied last so no tool can route around it.
 pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
     let mut command = Command::new(program);
     context.environment.apply(&mut command);
-    Proxy::from_environment().apply(&mut command);
+    context.route(&mut command);
     command
 }
 

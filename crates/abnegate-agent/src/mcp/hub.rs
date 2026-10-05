@@ -2,9 +2,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use abnegate_exec::Proxy;
 use futures::future::join_all;
 
 use super::McpConfig;
+use super::McpError;
 use super::McpServer;
 use super::name::cli_name;
 use super::session::McpSession;
@@ -37,20 +39,45 @@ impl McpHub {
     /// warning, its name and the tools it names sanitized as a CLI names them.
     /// A server that fails to start or to answer in time is logged and
     /// skipped.
+    ///
+    /// Each server is routed through the proxy [`Proxy::from_environment`]
+    /// reads.
     pub async fn connect(config: &McpConfig) -> Self {
-        Self::connect_with_timeout(config, CONNECT_TIMEOUT).await
+        Self::launch(config, &Proxy::from_environment(), CONNECT_TIMEOUT).await
     }
 
+    /// [`connect`](Self::connect), routing every server through `proxy`, laid
+    /// over its environment before its handshake, in place of the one this
+    /// process's environment names. With [`Proxy::default`], no proxy is laid
+    /// over a server, which then routes only as its own environment says.
+    ///
+    /// ```no_run
+    /// use abnegate_agent::McpConfig;
+    /// use abnegate_agent::McpHub;
+    /// use abnegate_agent::tool::Proxy;
+    ///
+    /// # async fn connect() {
+    /// let proxy = Proxy::new("http://proxy:3128").with_bypass(["localhost", ".svc"]);
+    /// let hub = McpHub::connect_through(&McpConfig::from_environment("ACME"), &proxy).await;
+    /// println!("{:?}", hub.server_names());
+    /// # }
+    /// ```
+    pub async fn connect_through(config: &McpConfig, proxy: &Proxy) -> Self {
+        Self::launch(config, proxy, CONNECT_TIMEOUT).await
+    }
+
+    #[cfg(test)]
     async fn connect_with_timeout(config: &McpConfig, limit: Duration) -> Self {
+        Self::launch(config, &Proxy::from_environment(), limit).await
+    }
+
+    async fn launch(config: &McpConfig, proxy: &Proxy, limit: Duration) -> Self {
         let results = join_all(
             config
                 .servers
                 .iter()
                 .filter(|(name, server)| launchable(name, server))
-                .map(|(name, server)| {
-                    let server = named(name, server);
-                    async move { McpSession::connect_with_timeout(name, &server, limit).await }
-                }),
+                .map(|(name, server)| start(name, server, proxy, limit)),
         )
         .await;
 
@@ -140,6 +167,18 @@ fn launchable(name: &str, server: &McpServer) -> bool {
     true
 }
 
+/// Start `server` under `name`, routed through `proxy`, and complete its
+/// handshake within `limit`.
+async fn start(
+    name: &str,
+    server: &McpServer,
+    proxy: &Proxy,
+    limit: Duration,
+) -> Result<McpSession, McpError> {
+    let server = named(name, server);
+    McpSession::connect_with_timeout(name, &server, proxy, limit).await
+}
+
 /// `server` with every tool it names sanitized as a CLI names a tool, so it
 /// allows the same tools once its tools are, and a warning when a CLI would
 /// refuse its name or a tool it names. Its name is sanitized where its tools
@@ -175,7 +214,12 @@ mod tests {
     use crate::mcp::recorder::recorder;
     use crate::mcp::register;
     use crate::test_support::CHILD_TEST;
+    use crate::test_support::CONFIGURED_PROXY;
+    use crate::test_support::ENVIRONMENT_PROXY;
     use crate::test_support::assert_passed;
+    use crate::test_support::assert_routed;
+    use crate::test_support::assert_unrouted;
+    use crate::test_support::ran_in_child;
     use crate::tool::Tier;
     use crate::tool::ToolContext;
     use crate::tool::ToolRegistry;
@@ -714,6 +758,51 @@ mod tests {
         assert!(sanitized.allows("read_file"));
         assert!(!sanitized.allows("write_file"));
         assert_eq!(untouched.tools, ["search"]);
+    }
+
+    /// A hub given a proxy lays it over each server's environment before the
+    /// handshake, in place of the one this process's environment names and
+    /// whatever the server's own `env` sets; one that routes nothing routes
+    /// nothing; and a hub given none still follows the environment.
+    #[tokio::test]
+    async fn a_hub_proxy_replaces_the_one_the_environment_names_before_handshake() {
+        if ran_in_child(
+            "mcp::hub::tests::a_hub_proxy_replaces_the_one_the_environment_names_before_handshake",
+            &[(abnegate_exec::PROXY_URL_VARIABLE, ENVIRONMENT_PROXY)],
+        )
+        .await
+        {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = |name: &str| directory.path().join(name);
+        let config = |name: &str| {
+            McpConfig::default().with_server(
+                name,
+                recorder("env", &path(name))
+                    .with_environment("HTTPS_PROXY", "http://wrong:8888")
+                    .with_environment("no_proxy", "*"),
+            )
+        };
+        let configured = Proxy::new(CONFIGURED_PROXY).with_bypass(["ollama"]);
+
+        let routed = McpHub::connect_through(&config("routed"), &configured).await;
+        let unrouted = McpHub::connect_through(
+            &McpConfig::default().with_server("unrouted", recorder("env", &path("unrouted"))),
+            &Proxy::default(),
+        )
+        .await;
+        let environment = McpHub::connect(&config("environment")).await;
+
+        assert!(routed.is_empty() && unrouted.is_empty() && environment.is_empty());
+        let read = |name: &str| std::fs::read_to_string(path(name)).unwrap();
+        assert_routed(&read("routed"), CONFIGURED_PROXY, "ollama");
+        assert_routed(
+            &read("environment"),
+            ENVIRONMENT_PROXY,
+            "localhost,127.0.0.1,::1",
+        );
+        assert_unrouted(&read("unrouted"));
     }
 
     /// Set, in this test's own child process, to a value only a server
