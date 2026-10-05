@@ -40,8 +40,9 @@
 //! - `smtp`: the `Email` channel, and `Mailer`, which sends one message through
 //!   a relay. Both pull in `lettre`. Slack, Discord and the shared webhook
 //!   client are always available.
-//! - `testing`: `MockMailer`, a [`Mail`] that records instead of sending, for
-//!   a caller's own tests.
+//! - `testing`: `MockMailer`, a [`Mail`] that records instead of sending, and
+//!   `Endpoint::for_test` and `Webhook::for_test`, which point a webhook at a
+//!   server on the local machine such as wiremock, for a caller's own tests.
 //!
 //! # Credentials
 //!
@@ -67,7 +68,8 @@
 //! `https` URLs whose host matches its provider exactly, and redirects are
 //! refused rather than followed. A [`Notifier`] of the caller's own gets the
 //! same guard by checking its URL with [`Endpoint::new`] and posting through a
-//! [`Webhook`].
+//! [`Webhook`], which also carries a bearer or basic credential, posts forms,
+//! and reads back a provider's answer without reading more than it allows.
 
 mod backend;
 mod channel;
