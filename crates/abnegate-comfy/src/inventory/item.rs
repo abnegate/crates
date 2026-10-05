@@ -28,4 +28,7 @@ pub struct InventoryItem {
     pub adapter: bool,
     /// How a prompt for it is written: `clip_scene` or `edit_instruction`.
     pub prompt_mode: String,
+    /// The trigger word its sidecar names, trimmed, when it names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
 }

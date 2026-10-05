@@ -10,6 +10,10 @@ pub struct WeightSidecar {
     /// The Hugging Face base model a LoRA was trained on.
     #[serde(default, rename = "hf_base")]
     pub huggingface_base: Option<String>,
+    /// The trigger word the weight was trained on, which selects it when a
+    /// prompt names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
 }
 
 impl WeightSidecar {
@@ -18,6 +22,7 @@ impl WeightSidecar {
         Self {
             recipe_id: recipe_id.into(),
             huggingface_base: None,
+            trigger: None,
         }
     }
 
@@ -25,6 +30,13 @@ impl WeightSidecar {
     /// LoRA's binding needs before the inventory lists it.
     pub fn with_huggingface_base(mut self, base: impl Into<String>) -> Self {
         self.huggingface_base = Some(base.into());
+        self
+    }
+
+    /// Names the trigger word the weight was trained on, so a prompt that
+    /// names it selects the weight.
+    pub fn with_trigger(mut self, trigger: impl Into<String>) -> Self {
+        self.trigger = Some(trigger.into());
         self
     }
 }

@@ -1,14 +1,20 @@
 //! Scan the ComfyUI models directory and join files to packaged recipes.
 
+mod identity;
 mod item;
+mod video_identity;
 mod weight_document;
 mod weight_sidecar;
 
+pub use identity::Identity;
 pub use item::InventoryItem;
+pub use video_identity::VideoIdentity;
 pub(crate) use weight_document::WeightDocument;
 pub use weight_sidecar::WeightSidecar;
 
+use crate::config::Config;
 use crate::recipe::MediaKind;
+use crate::recipe::PromptMode;
 use crate::recipe::Recipe;
 use crate::recipe::RecipeCatalog;
 use crate::recipe::RequiredFile;
@@ -23,11 +29,14 @@ use std::time::SystemTime;
 /// Extension of every weight the inventory lists.
 pub(crate) const WEIGHT_EXTENSION: &str = ".safetensors";
 const PUBLICATION_SUFFIX: &str = ".pending";
+const CHECKPOINT: &str = "checkpoint";
+const DIFFUSION_MODEL: &str = "diffusion_model";
+const LORA: &str = "lora";
 
 const SCAN_DIRECTORIES: &[(&str, &str)] = &[
-    ("checkpoints", "checkpoint"),
-    ("diffusion_models", "diffusion_model"),
-    ("loras", "lora"),
+    ("checkpoints", CHECKPOINT),
+    ("diffusion_models", DIFFUSION_MODEL),
+    ("loras", LORA),
 ];
 
 /// Every checkpoint, diffusion model and LoRA under `models_directory` that a
@@ -78,6 +87,7 @@ pub fn scan(
                 .and_then(|metadata| metadata.modified().ok())
                 .and_then(rfc3339);
             let sidecar = read_sidecar(&path, contract);
+            let trigger = sidecar.as_ref().and_then(document_trigger);
             let recipe = resolve_recipe(catalog, filename, kind, sidecar.as_ref());
             let Some(recipe) = recipe else {
                 continue;
@@ -88,7 +98,7 @@ pub fn scan(
                 .iter()
                 .map(|file| file.filename.clone())
                 .collect();
-            if *kind == "lora" {
+            if *kind == LORA {
                 required.insert(0, filename.to_string());
             }
             items.push(InventoryItem {
@@ -107,9 +117,10 @@ pub fn scan(
                 },
                 adapter: recipe.adapter,
                 prompt_mode: match recipe.prompt_mode {
-                    crate::recipe::PromptMode::ClipScene => "clip_scene".to_string(),
-                    crate::recipe::PromptMode::EditInstruction => "edit_instruction".to_string(),
+                    PromptMode::ClipScene => "clip_scene".to_string(),
+                    PromptMode::EditInstruction => "edit_instruction".to_string(),
                 },
+                trigger,
             });
         }
     }
@@ -120,6 +131,258 @@ pub fn scan(
 /// The item [`scan`] listed under `filename`.
 pub fn find<'a>(items: &'a [InventoryItem], filename: &str) -> Option<&'a InventoryItem> {
     items.iter().find(|item| item.filename == filename)
+}
+
+/// Every ready [`Identity`] under `config`'s models directory, in filename
+/// order, read with the recipe catalog `config` names. A catalog that cannot
+/// be loaded has none.
+///
+/// It reads the models directory and every sidecar in it, so it blocks: async
+/// code calls it inside `tokio::task::spawn_blocking`.
+pub fn identities(config: &Config) -> Vec<Identity> {
+    let Ok(catalog) = RecipeCatalog::load(config.workflow_path.as_deref()) else {
+        return Vec::new();
+    };
+    scan(&config.models_directory, &catalog, &config.contract)
+        .iter()
+        .filter(|item| is_image_identity(&catalog, item))
+        .filter_map(identity)
+        .collect()
+}
+
+/// Selects the identity `haystack` names as `config`'s checkpoint, so the
+/// next image generated with `config` loads it, and returns it. Nothing
+/// changes when `haystack` names no ready identity, or names none under the
+/// rules of [`identity_among`].
+///
+/// It reads the models directory and every sidecar in it, so it blocks: async
+/// code calls it inside `tokio::task::spawn_blocking`, or scans once and asks
+/// [`identity_among`].
+pub fn bind_identity(config: &mut Config, haystack: &str) -> Option<Identity> {
+    let catalog = RecipeCatalog::load(config.workflow_path.as_deref()).ok()?;
+    let identity = identity_for_prompt(
+        &config.models_directory,
+        &catalog,
+        &config.contract,
+        haystack,
+    )?;
+    config.checkpoint.clone_from(&identity.filename);
+    Some(identity)
+}
+
+/// The one ready image [`Identity`] under `models_directory` whose trigger
+/// `haystack` names, as [`scan`] reads it, chosen as [`identity_among`]
+/// chooses.
+///
+/// It reads the models directory and every sidecar in it, so it blocks: async
+/// code calls it inside `tokio::task::spawn_blocking`, or scans once and asks
+/// [`identity_among`].
+pub fn identity_for_prompt(
+    models_directory: &Path,
+    catalog: &RecipeCatalog,
+    contract: &Contract,
+    haystack: &str,
+) -> Option<Identity> {
+    identity_among(
+        &scan(models_directory, catalog, contract),
+        catalog,
+        haystack,
+    )
+}
+
+/// The one ready image [`Identity`] among `items`, as [`scan`] listed them
+/// with `catalog`, whose trigger `haystack` names, without touching the disk.
+///
+/// An image identity is a ready image LoRA, fine-tuned checkpoint or
+/// fine-tuned diffusion model with a trigger, whose recipe takes a scene
+/// prompt: an edit weight follows an instruction, so a trigger cannot select
+/// it. A trigger is named as a whole phrase, in any case, with any run of
+/// whitespace standing for one space. When `haystack` names triggers of
+/// different lengths the longest wins; when the longest is shared by two
+/// weights, or two different triggers share that length, it names none.
+pub fn identity_among(
+    items: &[InventoryItem],
+    catalog: &RecipeCatalog,
+    haystack: &str,
+) -> Option<Identity> {
+    let named = longest_triggers(
+        items
+            .iter()
+            .filter(|item| is_image_identity(catalog, item) && names_trigger(item, haystack))
+            .collect(),
+    );
+    match named.as_slice() {
+        [item] => identity(item),
+        _ => None,
+    }
+}
+
+/// The identity a video prompt in `haystack` names, read with the recipe
+/// catalog `config` names. See [`video_identity_among`].
+///
+/// It reads the models directory and every sidecar in it, so it blocks: async
+/// code calls it inside `tokio::task::spawn_blocking`, or scans once and asks
+/// [`video_identity_among`].
+pub fn bind_video_identity(config: &Config, haystack: &str) -> Option<VideoIdentity> {
+    let catalog = RecipeCatalog::load(config.workflow_path.as_deref()).ok()?;
+    video_identity_for_prompt(
+        &config.models_directory,
+        &catalog,
+        &config.contract,
+        haystack,
+    )
+}
+
+/// The identity a video prompt in `haystack` names among the weights under
+/// `models_directory`, as [`scan`] reads them, chosen as
+/// [`video_identity_among`] chooses.
+///
+/// It reads the models directory and every sidecar in it, so it blocks: async
+/// code calls it inside `tokio::task::spawn_blocking`, or scans once and asks
+/// [`video_identity_among`].
+pub fn video_identity_for_prompt(
+    models_directory: &Path,
+    catalog: &RecipeCatalog,
+    contract: &Contract,
+    haystack: &str,
+) -> Option<VideoIdentity> {
+    video_identity_among(
+        &scan(models_directory, catalog, contract),
+        catalog,
+        haystack,
+    )
+}
+
+/// The trigger a video prompt in `haystack` names among the ready video LoRAs
+/// and image identities in `items`, as [`scan`] listed them with `catalog`,
+/// with the video LoRA trained on it when exactly one is ready, without
+/// touching the disk.
+///
+/// Triggers are named and compared as [`identity_among`] names them, so
+/// weights whose triggers differ only in case or spacing share one trigger.
+/// When `haystack` names triggers of different lengths the longest wins; two
+/// different triggers of that length name none.
+pub fn video_identity_among(
+    items: &[InventoryItem],
+    catalog: &RecipeCatalog,
+    haystack: &str,
+) -> Option<VideoIdentity> {
+    let named = longest_triggers(
+        items
+            .iter()
+            .filter(|item| {
+                (is_video_adapter(catalog, item) || is_image_identity(catalog, item))
+                    && names_trigger(item, haystack)
+            })
+            .collect(),
+    );
+    let mut keys: Vec<String> = named
+        .iter()
+        .filter_map(|item| item.trigger.as_deref())
+        .map(phrase_key)
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if keys.len() != 1 {
+        return None;
+    }
+    let loras: Vec<&InventoryItem> = named
+        .iter()
+        .copied()
+        .filter(|item| is_video_adapter(catalog, item))
+        .collect();
+    let (lora, spoken) = match loras.as_slice() {
+        [lora] => (Some(lora.filename.clone()), *lora),
+        _ => (None, *named.first()?),
+    };
+    Some(VideoIdentity {
+        trigger: spoken.trigger.clone()?,
+        lora,
+    })
+}
+
+fn media(catalog: &RecipeCatalog, item: &InventoryItem) -> Option<MediaKind> {
+    catalog.get(&item.recipe_id).map(|recipe| recipe.kind)
+}
+
+fn is_image_identity(catalog: &RecipeCatalog, item: &InventoryItem) -> bool {
+    item.ready
+        && item.trigger.is_some()
+        && (item.adapter || item.kind == CHECKPOINT || item.kind == DIFFUSION_MODEL)
+        && catalog.get(&item.recipe_id).is_some_and(|recipe| {
+            recipe.kind == MediaKind::Image && recipe.prompt_mode == PromptMode::ClipScene
+        })
+}
+
+fn is_video_adapter(catalog: &RecipeCatalog, item: &InventoryItem) -> bool {
+    item.ready
+        && item.trigger.is_some()
+        && item.adapter
+        && item.kind == LORA
+        && media(catalog, item) == Some(MediaKind::Video)
+}
+
+fn names_trigger(item: &InventoryItem, haystack: &str) -> bool {
+    item.trigger
+        .as_deref()
+        .is_some_and(|trigger| contains_phrase(haystack, trigger))
+}
+
+fn longest_triggers(mut items: Vec<&InventoryItem>) -> Vec<&InventoryItem> {
+    let length = |item: &InventoryItem| {
+        item.trigger
+            .as_deref()
+            .map_or(0, |trigger| phrase_key(trigger).chars().count())
+    };
+    let longest = items.iter().map(|item| length(item)).max().unwrap_or(0);
+    items.retain(|item| length(item) == longest);
+    items
+}
+
+fn identity(item: &InventoryItem) -> Option<Identity> {
+    Some(Identity {
+        filename: item.filename.clone(),
+        trigger: item.trigger.clone()?,
+    })
+}
+
+fn document_trigger(document: &WeightDocument) -> Option<String> {
+    document
+        .sidecar
+        .trigger
+        .as_deref()
+        .map(str::trim)
+        .filter(|trigger| !trigger.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether `text` names `phrase` as a whole phrase, ignoring Unicode case and
+/// reading any run of whitespace as one space: a letter, digit or underscore
+/// on either side makes it part of another word.
+pub(crate) fn contains_phrase(text: &str, phrase: &str) -> bool {
+    let text = phrase_key(text);
+    let phrase = phrase_key(phrase);
+    if phrase.is_empty() {
+        return false;
+    }
+    text.match_indices(&phrase).any(|(start, matched)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + matched.len()..].chars().next();
+        !before.is_some_and(is_trigger_character) && !after.is_some_and(is_trigger_character)
+    })
+}
+
+fn is_trigger_character(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
+/// `text` as triggers are compared: Unicode lowercase, its words joined by
+/// single spaces.
+fn phrase_key(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Binds the weight at `path` to a recipe, in the sidecar beside it named with
@@ -167,7 +430,7 @@ fn resolve_recipe<'a>(
     kind: &str,
     document: Option<&WeightDocument>,
 ) -> Option<&'a Recipe> {
-    if kind == "lora" {
+    if kind == LORA {
         let document = document?;
         if document
             .generation
@@ -179,7 +442,7 @@ fn resolve_recipe<'a>(
         let sidecar = &document.sidecar;
         let recipe = catalog.get(&sidecar.recipe_id)?;
         let huggingface_base = sidecar.huggingface_base.as_deref()?;
-        return (recipe.kind == MediaKind::Image
+        return (matches!(recipe.kind, MediaKind::Image | MediaKind::Video)
             && recipe.adapter
             && recipe.has_lora_slot()
             && recipe
@@ -380,10 +643,8 @@ mod tests {
         fs::write(&lora, b"lora").unwrap();
         write_sidecar(
             &lora,
-            &WeightSidecar {
-                recipe_id: "qwen-image-edit-adapter".into(),
-                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
-            },
+            &WeightSidecar::new("qwen-image-edit-adapter")
+                .with_huggingface_base("Qwen/Qwen-Image-Edit-2511"),
             &Contract::default(),
         )
         .unwrap();
@@ -406,38 +667,29 @@ mod tests {
         }
         write_sidecar(
             &unbound,
-            &WeightSidecar {
-                recipe_id: "flux-schnell-adapter".into(),
-                huggingface_base: None,
-            },
+            &WeightSidecar::new("flux-schnell-adapter"),
             &Contract::default(),
         )
         .unwrap();
         write_sidecar(
             &mismatched,
-            &WeightSidecar {
-                recipe_id: "flux-schnell-adapter".into(),
-                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
-            },
+            &WeightSidecar::new("flux-schnell-adapter")
+                .with_huggingface_base("Qwen/Qwen-Image-Edit-2511"),
             &Contract::default(),
         )
         .unwrap();
         write_sidecar(
             &unknown,
-            &WeightSidecar {
-                recipe_id: "missing-adapter".into(),
-                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
-            },
+            &WeightSidecar::new("missing-adapter")
+                .with_huggingface_base("Qwen/Qwen-Image-Edit-2511"),
             &Contract::default(),
         )
         .unwrap();
         fs::write(
             sidecar_path(&malformed, &Contract::default()),
             serde_json::to_vec(&WeightDocument {
-                sidecar: WeightSidecar {
-                    recipe_id: "flux-schnell-adapter".into(),
-                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-                },
+                sidecar: WeightSidecar::new("flux-schnell-adapter")
+                    .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
                 generation: Some("not-a-generation".into()),
             })
             .unwrap(),
@@ -528,10 +780,8 @@ mod tests {
         fs::write(
             sidecar_path(&lora, &Contract::default()),
             serde_json::to_vec(&WeightDocument {
-                sidecar: WeightSidecar {
-                    recipe_id: "flux-schnell-adapter".into(),
-                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-                },
+                sidecar: WeightSidecar::new("flux-schnell-adapter")
+                    .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
                 generation: Some(uuid::Uuid::new_v4().to_string()),
             })
             .unwrap(),
@@ -598,10 +848,8 @@ mod tests {
         fs::write(&lora, b"lora").unwrap();
         write_sidecar(
             &lora,
-            &WeightSidecar {
-                recipe_id: "flux-schnell-adapter".into(),
-                huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-            },
+            &WeightSidecar::new("flux-schnell-adapter")
+                .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
             &overridden(),
         )
         .unwrap();
@@ -624,10 +872,8 @@ mod tests {
         for contract in [overridden(), Contract::default()] {
             write_sidecar(
                 &lora,
-                &WeightSidecar {
-                    recipe_id: "flux-schnell-adapter".into(),
-                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-                },
+                &WeightSidecar::new("flux-schnell-adapter")
+                    .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
                 &contract,
             )
             .unwrap();
@@ -682,5 +928,566 @@ mod tests {
             "a fine-tune mid-publication is listed as ready"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    const FLUX_SCHNELL_BASE: &str = "black-forest-labs/FLUX.1-schnell";
+    const WAN_BASE: &str = "Comfy-Org/Wan_2.2_ComfyUI_Repackaged";
+
+    fn write_identity(root: &Path, filename: &str, trigger: &str) {
+        let lora = root.join("loras").join(filename);
+        fs::write(&lora, b"lora").unwrap();
+        write_sidecar(
+            &lora,
+            &WeightSidecar::new("flux-schnell-adapter")
+                .with_huggingface_base(FLUX_SCHNELL_BASE)
+                .with_trigger(trigger),
+            &Contract::default(),
+        )
+        .unwrap();
+        let checkpoint = root.join("checkpoints/flux1-schnell-fp8.safetensors");
+        if !checkpoint.is_file() {
+            fs::write(checkpoint, b"checkpoint").unwrap();
+        }
+    }
+
+    fn write_video_identity(root: &Path, filename: &str, trigger: &str) {
+        let lora = root.join("loras").join(filename);
+        fs::write(&lora, b"lora").unwrap();
+        write_sidecar(
+            &lora,
+            &WeightSidecar::new("wan-adapter")
+                .with_huggingface_base(WAN_BASE)
+                .with_trigger(trigger),
+            &Contract::default(),
+        )
+        .unwrap();
+        for (directory, filename) in [
+            ("diffusion_models", "wan2.2_ti2v_5B_fp16.safetensors"),
+            ("text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+            ("vae", "wan2.2_vae.safetensors"),
+        ] {
+            fs::write(root.join(directory).join(filename), b"wan").unwrap();
+        }
+    }
+
+    #[test]
+    fn a_video_adapter_outside_loras_is_never_loaded_as_one() {
+        let root = temp_models();
+        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
+        fs::rename(
+            root.join("loras/jerry-wan.safetensors"),
+            root.join("checkpoints/jerry-wan.safetensors"),
+        )
+        .unwrap();
+        fs::rename(
+            sidecar_path(
+                &root.join("loras/jerry-wan.safetensors"),
+                &Contract::default(),
+            ),
+            sidecar_path(
+                &root.join("checkpoints/jerry-wan.safetensors"),
+                &Contract::default(),
+            ),
+        )
+        .unwrap();
+
+        let lora = video_identity_named(&root, "ohwx dancing").and_then(|identity| identity.lora);
+
+        assert_eq!(lora, None, "a checkpoint was bound as a video LoRA");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn identity_named(root: &Path, haystack: &str) -> Option<Identity> {
+        identity_for_prompt(
+            root,
+            &RecipeCatalog::packaged().unwrap(),
+            &Contract::default(),
+            haystack,
+        )
+    }
+
+    fn video_identity_named(root: &Path, haystack: &str) -> Option<VideoIdentity> {
+        video_identity_for_prompt(
+            root,
+            &RecipeCatalog::packaged().unwrap(),
+            &Contract::default(),
+            haystack,
+        )
+    }
+
+    fn configured(root: &Path) -> Config {
+        Config {
+            models_directory: root.to_path_buf(),
+            checkpoint: "flux1-schnell-fp8.safetensors".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_sidecar_trigger_is_optional_on_the_wire() {
+        let sidecar: WeightSidecar = serde_json::from_str(
+            r#"{"recipe_id":"flux-schnell-adapter","hf_base":"black-forest-labs/FLUX.1-schnell"}"#,
+        )
+        .unwrap();
+        assert_eq!(sidecar.trigger, None);
+        assert_eq!(
+            serde_json::to_value(&sidecar).unwrap(),
+            serde_json::json!({
+                "recipe_id": "flux-schnell-adapter",
+                "hf_base": FLUX_SCHNELL_BASE,
+            }),
+            "a sidecar without a trigger is written as before"
+        );
+        assert_eq!(
+            serde_json::to_value(sidecar.with_trigger("ohwx")).unwrap(),
+            serde_json::json!({
+                "recipe_id": "flux-schnell-adapter",
+                "hf_base": FLUX_SCHNELL_BASE,
+                "trigger": "ohwx",
+            })
+        );
+    }
+
+    #[test]
+    fn scan_exposes_the_trigger_written_on_a_ready_adapter() {
+        let root = temp_models();
+        write_identity(&root, "jake.safetensors", "  ohwx ");
+        write_identity(&root, "blank.safetensors", "   ");
+        let items = scan(
+            &root,
+            &RecipeCatalog::packaged().unwrap(),
+            &Contract::default(),
+        );
+        let jake = find(&items, "jake.safetensors").unwrap();
+        assert_eq!(jake.trigger.as_deref(), Some("ohwx"));
+        assert!(jake.ready);
+        assert_eq!(
+            find(&items, "blank.safetensors").unwrap().trigger,
+            None,
+            "a blank trigger is no trigger"
+        );
+        assert_eq!(
+            serde_json::to_value(find(&items, "blank.safetensors").unwrap())
+                .unwrap()
+                .get("trigger"),
+            None
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn identity_matching_picks_the_named_ready_adapter() {
+        let root = temp_models();
+        write_identity(&root, "jake.safetensors", "ohwx");
+        write_identity(&root, "teapot.safetensors", "zrkxyz");
+
+        let matched = identity_named(&root, "draw OHWX at the beach").unwrap();
+        assert_eq!(matched.filename, "jake.safetensors");
+        assert_eq!(matched.trigger, "ohwx");
+
+        assert!(
+            identity_named(&root, "a lighthouse at dusk").is_none(),
+            "a prompt that names no identity keeps the pin"
+        );
+        assert!(
+            identity_named(&root, "an ohwxian portrait").is_none(),
+            "a trigger must not match inside another word"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_longest_trigger_wins_and_a_tie_stays_on_the_pin() {
+        let root = temp_models();
+        write_identity(&root, "cat.safetensors", "cat");
+        write_identity(&root, "blue-cat.safetensors", "blue cat");
+        write_identity(&root, "other.safetensors", "ohwx");
+
+        let matched = identity_named(&root, "a blue cat on a sofa").unwrap();
+        assert_eq!(matched.filename, "blue-cat.safetensors");
+
+        write_identity(&root, "twin.safetensors", "ohwx");
+        assert!(
+            identity_named(&root, "ohwx waving").is_none(),
+            "two identities that share a trigger are ambiguous"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bind_identity_switches_the_checkpoint_only_when_named() {
+        let root = temp_models();
+        write_identity(&root, "jake.safetensors", "ohwx");
+        let mut config = configured(&root);
+
+        let identity = bind_identity(&mut config, "portrait of ohwx").unwrap();
+        assert_eq!(identity.filename, "jake.safetensors");
+        assert_eq!(config.checkpoint, "jake.safetensors");
+
+        config.checkpoint = "flux1-schnell-fp8.safetensors".into();
+        assert!(bind_identity(&mut config, "a lighthouse").is_none());
+        assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unloadable_catalog_binds_nothing() {
+        let root = temp_models();
+        write_identity(&root, "jake.safetensors", "ohwx");
+        let overlay = tempfile::tempdir().unwrap();
+        fs::create_dir_all(overlay.path().join("recipes")).unwrap();
+        fs::write(overlay.path().join("recipes/catalog.json"), b"{").unwrap();
+        let mut config = configured(&root);
+        config.workflow_path = Some(overlay.path().join("workflows/custom-api.json"));
+
+        assert!(identities(&config).is_empty());
+        assert!(bind_identity(&mut config, "portrait of ohwx").is_none());
+        assert!(bind_video_identity(&config, "portrait of ohwx").is_none());
+        assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_adapter_without_its_base_is_not_an_identity() {
+        let root = temp_models();
+        write_identity(&root, "jake.safetensors", "ohwx");
+        fs::remove_file(root.join("checkpoints/flux1-schnell-fp8.safetensors")).unwrap();
+        assert!(identity_named(&root, "ohwx").is_none());
+        assert!(identities(&configured(&root)).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_publication_hides_an_identity() {
+        let root = temp_models();
+        write_identity(&root, "jake.safetensors", "ohwx");
+        let marker = publication_marker(
+            &root.join("loras"),
+            "jake.safetensors",
+            &Contract::default(),
+        )
+        .unwrap();
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(marker, b"pending").unwrap();
+
+        assert!(identities(&configured(&root)).is_empty());
+        assert!(identity_named(&root, "ohwx").is_none());
+        assert!(video_identity_named(&root, "ohwx").is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_ready_checkpoint_with_a_trigger_is_an_identity() {
+        let root = temp_models();
+        for (filename, sidecar) in [
+            (
+                "jerry.safetensors",
+                WeightSidecar::new("sdxl").with_trigger("ohwx"),
+            ),
+            ("plain.safetensors", WeightSidecar::new("sdxl")),
+        ] {
+            let checkpoint = root.join("checkpoints").join(filename);
+            fs::write(&checkpoint, b"tuned").unwrap();
+            write_sidecar(&checkpoint, &sidecar, &Contract::default()).unwrap();
+        }
+
+        let matched = identity_named(&root, "portrait of ohwx").unwrap();
+        assert_eq!(matched.filename, "jerry.safetensors");
+        assert_eq!(matched.trigger, "ohwx");
+        assert_eq!(
+            identities(&configured(&root)),
+            vec![Identity {
+                filename: "jerry.safetensors".into(),
+                trigger: "ohwx".into(),
+            }],
+            "a checkpoint without a trigger is not an identity"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_video_adapter_is_inventoried_but_not_an_image_identity() {
+        let root = temp_models();
+        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
+        let items = scan(
+            &root,
+            &RecipeCatalog::packaged().unwrap(),
+            &Contract::default(),
+        );
+        let item = find(&items, "jerry-wan.safetensors").unwrap();
+        assert_eq!(item.recipe_id, "wan-adapter");
+        assert!(item.ready);
+        assert!(item.adapter);
+
+        assert!(identities(&configured(&root)).is_empty());
+        assert!(identity_named(&root, "portrait of ohwx").is_none());
+        let mut config = configured(&root);
+        assert!(bind_identity(&mut config, "portrait of ohwx").is_none());
+        assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
+
+        let bound = video_identity_named(&root, "portrait of ohwx").unwrap();
+        assert_eq!(bound.trigger, "ohwx");
+        assert_eq!(bound.lora.as_deref(), Some("jerry-wan.safetensors"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn video_bind_prefixes_a_still_identity_without_a_video_lora() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        let bound = bind_video_identity(&configured(&root), "ohwx walking on the beach").unwrap();
+        assert_eq!(
+            bound,
+            VideoIdentity {
+                trigger: "ohwx".into(),
+                lora: None,
+            }
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn video_bind_prefers_the_video_lora_when_both_exist() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
+
+        let bound = video_identity_named(&root, "ohwx at dusk").unwrap();
+        assert_eq!(bound.trigger, "ohwx");
+        assert_eq!(bound.lora.as_deref(), Some("jerry-wan.safetensors"));
+        assert!(
+            identities(&configured(&root))
+                .iter()
+                .any(|identity| identity.filename == "jerry.safetensors")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn video_bind_refuses_two_longest_triggers_and_keeps_a_shared_trigger_without_its_lora() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        write_video_identity(&root, "teapot-wan.safetensors", "zrkx");
+        assert!(
+            video_identity_named(&root, "ohwx holding zrkx").is_none(),
+            "two different triggers of the same length are ambiguous"
+        );
+
+        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
+        write_video_identity(&root, "twin-wan.safetensors", "ohwx");
+        let bound = video_identity_named(&root, "ohwx at dusk").unwrap();
+        assert_eq!(bound.trigger, "ohwx");
+        assert_eq!(
+            bound.lora, None,
+            "two video LoRAs on one trigger leave the choice to the trigger alone"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn write_edit_identity(root: &Path, filename: &str, trigger: &str) {
+        let lora = root.join("loras").join(filename);
+        fs::write(&lora, b"lora").unwrap();
+        write_sidecar(
+            &lora,
+            &WeightSidecar::new("qwen-image-edit-adapter")
+                .with_huggingface_base("Qwen/Qwen-Image-Edit-2511")
+                .with_trigger(trigger),
+            &Contract::default(),
+        )
+        .unwrap();
+        write_qwen_files(root);
+    }
+
+    fn write_qwen_files(root: &Path) {
+        for (directory, filename) in [
+            (
+                "diffusion_models",
+                "qwen_image_edit_2511_fp8mixed.safetensors",
+            ),
+            ("text_encoders", "qwen_2.5_vl_7b_fp8_scaled.safetensors"),
+            ("vae", "qwen_image_vae.safetensors"),
+        ] {
+            fs::write(root.join(directory).join(filename), b"qwen").unwrap();
+        }
+    }
+
+    /// A workflow path whose catalog adds `qwen-image-scene`: the packaged
+    /// Qwen UNet graph run from a scene prompt rather than an instruction.
+    fn scene_unet_workflow(overlay: &Path) -> PathBuf {
+        let mut catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../comfyui/recipes/catalog.json")).unwrap();
+        let recipes = catalog["recipes"].as_array_mut().unwrap();
+        let mut scene = recipes
+            .iter()
+            .find(|recipe| recipe["id"] == "qwen-image-edit")
+            .unwrap()
+            .clone();
+        let fields = scene.as_object_mut().unwrap();
+        for field in ["training", "files", "filename_hints"] {
+            fields.remove(field);
+        }
+        fields.insert("id".into(), "qwen-image-scene".into());
+        fields.insert("prompt_mode".into(), "clip_scene".into());
+        recipes.push(scene);
+        fs::create_dir_all(overlay.join("recipes")).unwrap();
+        fs::write(
+            overlay.join("recipes/catalog.json"),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        overlay.join("workflows/custom-api.json")
+    }
+
+    #[test]
+    fn an_edit_adapter_with_a_trigger_is_never_an_identity() {
+        let root = temp_models();
+        write_edit_identity(&root, "jerry-edit.safetensors", "ohwx");
+        let items = scan(
+            &root,
+            &RecipeCatalog::packaged().unwrap(),
+            &Contract::default(),
+        );
+        let item = find(&items, "jerry-edit.safetensors").unwrap();
+        assert!(item.ready);
+        assert_eq!(item.trigger.as_deref(), Some("ohwx"));
+
+        assert!(
+            identities(&configured(&root)).is_empty(),
+            "an edit weight follows an instruction, not a trigger"
+        );
+        assert!(identity_named(&root, "portrait of ohwx").is_none());
+        assert!(video_identity_named(&root, "ohwx walking").is_none());
+        let mut config = configured(&root);
+        assert!(bind_identity(&mut config, "portrait of ohwx").is_none());
+        assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_fine_tuned_diffusion_model_with_a_trigger_is_an_identity_unless_it_edits() {
+        let root = temp_models();
+        let overlay = tempfile::tempdir().unwrap();
+        let mut config = configured(&root);
+        config.workflow_path = Some(scene_unet_workflow(overlay.path()));
+        write_qwen_files(&root);
+        for (filename, recipe_id) in [
+            ("jerry-unet.safetensors", "qwen-image-scene"),
+            ("jerry-edit-unet.safetensors", "qwen-image-edit"),
+        ] {
+            let weight = root.join("diffusion_models").join(filename);
+            fs::write(&weight, b"tuned").unwrap();
+            write_sidecar(
+                &weight,
+                &WeightSidecar::new(recipe_id).with_trigger(if recipe_id == "qwen-image-scene" {
+                    "ohwx"
+                } else {
+                    "zrkx"
+                }),
+                &Contract::default(),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            identities(&config),
+            vec![Identity {
+                filename: "jerry-unet.safetensors".into(),
+                trigger: "ohwx".into(),
+            }]
+        );
+        let identity = bind_identity(&mut config, "portrait of ohwx").unwrap();
+        assert_eq!(identity.filename, "jerry-unet.safetensors");
+        assert_eq!(config.checkpoint, "jerry-unet.safetensors");
+        assert!(
+            bind_identity(&mut config, "portrait of zrkx").is_none(),
+            "a fine-tuned edit model is not selected by its trigger"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn two_different_triggers_of_one_length_name_no_identity() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        write_identity(&root, "teapot.safetensors", "zrkx");
+        write_identity(&root, "blue-teapot.safetensors", "blue zrkx");
+
+        assert!(
+            identity_named(&root, "ohwx holding zrkx").is_none(),
+            "two different triggers of the longest length are ambiguous"
+        );
+        assert_eq!(
+            identity_named(&root, "ohwx holding a blue zrkx")
+                .unwrap()
+                .filename,
+            "blue-teapot.safetensors",
+            "a longer trigger wins over a shorter one"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn video_triggers_that_differ_only_in_case_or_spacing_are_one_trigger() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "Blue OHWX");
+        write_identity(&root, "jerry-spaced.safetensors", "blue  ohwx");
+        write_video_identity(&root, "jerry-wan.safetensors", "blue ohwx");
+
+        let bound = video_identity_named(&root, "blue ohwx at dusk").unwrap();
+        assert_eq!(
+            bound.trigger, "blue ohwx",
+            "the video LoRA's own spelling leads"
+        );
+        assert_eq!(bound.lora.as_deref(), Some("jerry-wan.safetensors"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_trigger_matches_across_any_run_of_whitespace() {
+        assert!(contains_phrase("a blue   cat\non a sofa", "blue cat"));
+        assert!(contains_phrase("a blue cat", "blue \t cat"));
+        assert!(contains_phrase("blue\ncat", " Blue Cat "));
+        assert!(!contains_phrase("a blue catalogue", "blue cat"));
+        assert_eq!(
+            crate::lora::identity_caption("a blue  cat on a sofa ", "blue cat"),
+            "a blue  cat on a sofa",
+            "a caption that already names the trigger is not led by it again"
+        );
+
+        let root = temp_models();
+        write_identity(&root, "blue-cat.safetensors", "blue  cat");
+        assert_eq!(
+            identity_named(&root, "a Blue\tcat on a sofa")
+                .unwrap()
+                .filename,
+            "blue-cat.safetensors"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn identity_among_reads_only_the_items_it_is_given() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
+        let catalog = RecipeCatalog::packaged().unwrap();
+        let items = scan(&root, &catalog, &Contract::default());
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(
+            identity_among(&items, &catalog, "portrait of ohwx"),
+            Some(Identity {
+                filename: "jerry.safetensors".into(),
+                trigger: "ohwx".into(),
+            })
+        );
+        assert_eq!(
+            video_identity_among(&items, &catalog, "ohwx at dusk"),
+            Some(VideoIdentity {
+                trigger: "ohwx".into(),
+                lora: Some("jerry-wan.safetensors".into()),
+            })
+        );
+        assert!(identity_among(&items, &catalog, "a lighthouse").is_none());
     }
 }

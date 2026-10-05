@@ -28,6 +28,7 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::media::MediaType;
 use crate::recipe::Fill;
+use crate::recipe::MediaKind;
 use crate::recipe::PromptMode;
 use crate::recipe::Recipe;
 use crate::recipe::RecipeCatalog;
@@ -238,6 +239,11 @@ impl Client {
             if let Some(item) = crate::inventory::find(&items, selected)
                 && let Some(recipe) = self.catalog.get(&item.recipe_id)
             {
+                if recipe.kind != MediaKind::Image {
+                    return Err(Error::Configuration(
+                        "selected weight does not generate images",
+                    ));
+                }
                 return Ok(recipe);
             }
             if crate::inventory::publishing(
@@ -1578,10 +1584,8 @@ mod tests {
 
         crate::inventory::write_sidecar(
             &weight,
-            &crate::inventory::WeightSidecar {
-                recipe_id: "flux-schnell-adapter".into(),
-                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
-            },
+            &crate::inventory::WeightSidecar::new("flux-schnell-adapter")
+                .with_huggingface_base("Qwen/Qwen-Image-Edit-2511"),
             &crate::train::Contract::default(),
         )
         .unwrap();
@@ -1589,10 +1593,8 @@ mod tests {
 
         crate::inventory::write_sidecar(
             &weight,
-            &crate::inventory::WeightSidecar {
-                recipe_id: "flux-schnell-adapter".into(),
-                huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-            },
+            &crate::inventory::WeightSidecar::new("flux-schnell-adapter")
+                .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
             &crate::train::Contract::default(),
         )
         .unwrap();
@@ -1604,6 +1606,40 @@ mod tests {
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(marker, b"pending").unwrap();
         assert!(Client::new(config).is_err());
+    }
+
+    #[test]
+    fn a_video_lora_is_not_selected_for_images() {
+        let root = tempfile::tempdir().unwrap();
+        let models = root.path().join("models");
+        for (directory, filename) in [
+            ("diffusion_models", "wan2.2_ti2v_5B_fp16.safetensors"),
+            ("text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+            ("vae", "wan2.2_vae.safetensors"),
+            ("loras", "jerry-wan.safetensors"),
+        ] {
+            std::fs::create_dir_all(models.join(directory)).unwrap();
+            std::fs::write(models.join(directory).join(filename), b"wan").unwrap();
+        }
+        crate::inventory::write_sidecar(
+            &models.join("loras/jerry-wan.safetensors"),
+            &crate::inventory::WeightSidecar::new("wan-adapter")
+                .with_huggingface_base("Comfy-Org/Wan_2.2_ComfyUI_Repackaged")
+                .with_trigger("ohwx"),
+            &crate::train::Contract::default(),
+        )
+        .unwrap();
+        let config = Config {
+            checkpoint: "jerry-wan.safetensors".into(),
+            models_directory: models,
+            ..Default::default()
+        };
+        assert!(matches!(
+            Client::new(config),
+            Err(Error::Configuration(
+                "selected weight does not generate images"
+            ))
+        ));
     }
 
     #[test]
@@ -1712,10 +1748,8 @@ mod tests {
         ]);
         crate::inventory::write_sidecar(
             &models.join("loras/identity.safetensors"),
-            &crate::inventory::WeightSidecar {
-                recipe_id: "flux-schnell-adapter".into(),
-                huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-            },
+            &crate::inventory::WeightSidecar::new("flux-schnell-adapter")
+                .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
             &crate::train::Contract::default(),
         )
         .unwrap();
@@ -1745,10 +1779,8 @@ mod tests {
         ]);
         crate::inventory::write_sidecar(
             &models.join("checkpoints/jerry.safetensors"),
-            &crate::inventory::WeightSidecar {
-                recipe_id: "flux-schnell".into(),
-                huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-            },
+            &crate::inventory::WeightSidecar::new("flux-schnell")
+                .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
             &crate::train::Contract::default(),
         )
         .unwrap();
@@ -1991,10 +2023,8 @@ mod tests {
         std::fs::write(&weight, b"lora").unwrap();
         crate::inventory::write_sidecar(
             &weight,
-            &crate::inventory::WeightSidecar {
-                recipe_id: "qwen-image-edit-adapter".into(),
-                huggingface_base: Some("Qwen/Qwen-Image-Edit-2511".into()),
-            },
+            &crate::inventory::WeightSidecar::new("qwen-image-edit-adapter")
+                .with_huggingface_base("Qwen/Qwen-Image-Edit-2511"),
             &crate::train::Contract::default(),
         )
         .unwrap();

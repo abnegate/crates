@@ -38,6 +38,7 @@ use crate::client::SourceImage;
 use crate::config::Config;
 use crate::inventory::WeightDocument;
 use crate::inventory::WeightSidecar;
+use crate::inventory::contains_phrase;
 use crate::inventory::publication_marker;
 use crate::inventory::sidecar_path;
 use crate::recipe::Recipe;
@@ -826,6 +827,7 @@ async fn train_with_pipeline(
         sidecar: WeightSidecar {
             recipe_id: destination.recipe_id,
             huggingface_base: destination.huggingface_base,
+            trigger: (!edit && !trigger.is_empty()).then(|| trigger.to_string()),
         },
         generation: Some(attempt.id.clone()),
     })
@@ -1240,29 +1242,19 @@ fn finish_remediation(
         .collect()
 }
 
-fn identity_caption(caption: &str, trigger: &str) -> String {
+/// `caption`, trimmed, led by `trigger` unless it already names it as a whole
+/// phrase in any case and spacing. A blank trigger leaves the caption as it
+/// is, trimmed.
+/// Training captions every image this way, and a prompt that binds an
+/// [`Identity`](crate::inventory::Identity) is written the same way.
+pub fn identity_caption(caption: &str, trigger: &str) -> String {
+    let trigger = trigger.trim();
     match (!trigger.is_empty(), contains_phrase(caption, trigger)) {
         (true, false) => {
             format!("{trigger}, {}", caption.trim())
         }
         _ => caption.trim().to_string(),
     }
-}
-
-/// Trigger matching is Unicode-lowercase and requires a boundary around the
-/// complete phrase. It never treats a trigger as a substring of another token.
-fn contains_phrase(text: &str, phrase: &str) -> bool {
-    let text = text.to_lowercase();
-    let phrase = phrase.to_lowercase();
-    text.match_indices(&phrase).any(|(start, matched)| {
-        let before = text[..start].chars().next_back();
-        let after = text[start + matched.len()..].chars().next();
-        !before.is_some_and(is_trigger_character) && !after.is_some_and(is_trigger_character)
-    })
-}
-
-fn is_trigger_character(character: char) -> bool {
-    character.is_alphanumeric() || character == '_'
 }
 
 fn final_filename(name: &str) -> Result<String, TrainError> {
@@ -2075,10 +2067,8 @@ mod tests {
         fs::write(
             &sidecar,
             serde_json::to_vec(&WeightDocument {
-                sidecar: WeightSidecar {
-                    recipe_id: "flux-schnell-adapter".into(),
-                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-                },
+                sidecar: WeightSidecar::new("flux-schnell-adapter")
+                    .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
                 generation: Some(generation.to_string()),
             })
             .unwrap(),
@@ -2133,6 +2123,35 @@ mod tests {
             "a run with no reachable probe reports no score instead of failing"
         );
         assert!(training_entries(&config).is_empty());
+    }
+
+    #[tokio::test]
+    async fn train_writes_the_trigger_on_the_sidecar() {
+        let (_root, config) = harness("printf lora > \"$TRAIN_OUTPUT\"");
+        let outcome = train(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            identity("my-style"),
+        )
+        .await
+        .unwrap();
+        let document: WeightDocument = serde_json::from_slice(
+            &fs::read(sidecar_path(&outcome.path, &config.contract)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(document.sidecar.trigger.as_deref(), Some("ohwx"));
+        assert_eq!(document.sidecar.recipe_id, "flux-schnell-adapter");
+
+        let checkpoints = config.models_directory.join("checkpoints");
+        fs::create_dir_all(&checkpoints).unwrap();
+        fs::write(checkpoints.join("flux1-schnell-fp8.safetensors"), b"base").unwrap();
+        let mut bound = config.clone();
+        let identity = crate::inventory::bind_identity(&mut bound, "ohwx on a bicycle")
+            .expect("a trained adapter over an installed base is an identity");
+        assert_eq!(identity.filename, "my-style.safetensors");
+        assert_eq!(identity.trigger, "ohwx");
+        assert_eq!(bound.checkpoint, "my-style.safetensors");
     }
 
     #[tokio::test]
@@ -2900,6 +2919,31 @@ mod tests {
         train(&config, String::new(), SecretValue::new(""), pair)
             .await
             .expect("an edit base trains on before and after together");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn an_edit_training_writes_no_trigger_on_its_sidecar() {
+        let root = root();
+        let config = Config {
+            models_directory: root.clone(),
+            train_command: Some("printf lora > \"$TRAIN_OUTPUT\"".into()),
+            contract: contract(),
+            ..Default::default()
+        };
+        let mut pair = request("my-edit", "qwen-image-edit", Some("ohwx"));
+        pair.images[0].before_base64 = Some(encoded_at(8, 8));
+        let outcome = train(&config, String::new(), SecretValue::new(""), pair)
+            .await
+            .expect("an edit base trains on before and after together");
+        let document: WeightDocument = serde_json::from_slice(
+            &fs::read(sidecar_path(&outcome.path, &config.contract)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            document.sidecar.trigger, None,
+            "an edit weight follows an instruction, so no trigger selects it"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3970,10 +4014,8 @@ mod tests {
         fs::write(
             &output_sidecar,
             serde_json::to_vec(&WeightDocument {
-                sidecar: WeightSidecar {
-                    recipe_id: "flux-schnell-adapter".into(),
-                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-                },
+                sidecar: WeightSidecar::new("flux-schnell-adapter")
+                    .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
                 generation: Some(previous_generation.clone()),
             })
             .unwrap(),
@@ -4036,10 +4078,8 @@ mod tests {
         fs::write(
             &output_sidecar,
             serde_json::to_vec(&WeightDocument {
-                sidecar: WeightSidecar {
-                    recipe_id: "flux-schnell-adapter".into(),
-                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-                },
+                sidecar: WeightSidecar::new("flux-schnell-adapter")
+                    .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
                 generation: Some(previous_generation.clone()),
             })
             .unwrap(),
@@ -4090,10 +4130,8 @@ mod tests {
         fs::write(
             &sidecar,
             serde_json::to_vec(&WeightDocument {
-                sidecar: WeightSidecar {
-                    recipe_id: "flux-schnell-adapter".into(),
-                    huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
-                },
+                sidecar: WeightSidecar::new("flux-schnell-adapter")
+                    .with_huggingface_base("black-forest-labs/FLUX.1-schnell"),
                 generation: Some(wrong_generation),
             })
             .unwrap(),

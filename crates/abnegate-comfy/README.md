@@ -222,6 +222,51 @@ whole run, and each preview is a path relative to the progress file's
 directory. `train::TrainProgress::parse` reads one, and serializing a
 `TrainProgress` writes one.
 
+## Binding an identity
+
+Training writes the request's trigger word into the weight's sidecar, so a
+prompt can pick the weight by naming it. `inventory::identities` lists every
+ready image LoRA, fine-tuned checkpoint and fine-tuned diffusion model that
+has a trigger and takes a scene prompt; an edit weight follows an
+instruction, so a trigger never selects it. `inventory::bind_identity` makes
+the one a prompt names the `Config`'s checkpoint. A trigger matches as a whole
+phrase, in any case, with any run of whitespace standing for one space. When a
+prompt names triggers of different lengths the longest wins; a longest
+trigger two weights share, or two different triggers of that length, select
+neither. `lora::identity_caption` leads a rewritten prompt with the trigger
+when it no longer names it. For video, `inventory::bind_video_identity`
+returns the named trigger and the ready video LoRA trained on it, when there
+is exactly one.
+
+These calls read the models directory and every sidecar in it, so they block:
+call them inside `spawn_blocking`, or scan once with `inventory::scan` and ask
+`inventory::identity_among` or `inventory::video_identity_among`, which only
+read the items they are given.
+
+```rust,no_run
+use abnegate_comfy::{Client, Config, inventory, lora};
+use tokio::sync::{broadcast, mpsc};
+
+async fn draw(message: String, prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (config, identity) = tokio::task::spawn_blocking(move || {
+        let mut config = Config::from_environment();
+        let identity = inventory::bind_identity(&mut config, &message);
+        (config, identity)
+    })
+    .await?;
+    let prompt = match identity {
+        Some(identity) => lora::identity_caption(prompt, &identity.trigger),
+        None => prompt.to_string(),
+    };
+    let client = Client::new(config)?;
+    let (_stop, mut cancel) = broadcast::channel(1);
+    let (progress, _updates) = mpsc::unbounded_channel();
+    let images = client.generate(&prompt, None, &mut cancel, progress).await?;
+    let _ = images;
+    Ok(())
+}
+```
+
 ## Migrating from the pre-release defaults
 
 Earlier builds defaulted to one application's node pack and container layout.
