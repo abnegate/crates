@@ -74,6 +74,7 @@ async fn train(photo_base64: String) -> Result<(), TrainError> {
     contract.sidecar_suffix = ".acme.json".into();
     contract.publication_directory = ".acme-publish".into();
     contract.progress_suffix = ".acme-progress.json".into();
+    contract.host_directory = ".acme-train".into();
 
     let mut config = Config::from_environment();
     config.contract = contract;
@@ -128,7 +129,8 @@ slots, a recipe may declare:
   and `identity_refine` (one only when the selected weight is
   bound to an identity).
 - `training.architecture`: `flux`, `qwen_edit` or `sdxl`. SDXL has no packaged
-  ComfyUI training graph and trains only through `Config::train_command`.
+  ComfyUI training graph and trains only through `Config::train_command` or
+  the host trainer.
 
 ## Deciding what each base trains
 
@@ -142,6 +144,9 @@ a fine-tune. Training never publishes over a weight a recipe or rule needs, nor
 over one that no training run published, so a fine-tune cannot replace its own
 base checkpoint. Only a LoRA is scored against its base. The external trainer
 reads the request's choice from `<prefix>_SUBJECT` and `<prefix>_METHOD`.
+`lora::trainable_bases` lists each installed base with the subjects and
+methods its rules allow and that something configured can run, which is what
+a host offers the person choosing.
 Uploads arrive as raw bytes, so a large set never round-trips through base64,
 and `lora::validate_request` refuses a bad request before any image is read:
 
@@ -267,6 +272,150 @@ async fn draw(message: String, prompt: &str) -> Result<(), Box<dyn std::error::E
 }
 ```
 
+## Training on the host
+
+Some training runs too long, or needs more of the machine, than a ComfyUI
+graph should hold. `Config::host_trainer` hands it to a trainer that runs
+beside ComfyUI on the host and shares its models directory. When no
+`Config::train_command` is set, every method other than a LoRA and every SDXL
+base goes there; a LoRA on any other base still runs the packaged graph. An
+edit base is refused on the host, since the job does not carry its reference
+images or its text encoder and VAE; it trains through a training command or,
+as a LoRA, the packaged graph.
+Screening, cropping and captioning happen here as for any run; the trainer
+only trains. The finished weight is published here too, under the same
+protections as any other: the policy's directory and recipe, never over a
+weight a recipe or rule needs or one no training run published, behind the
+same publication lock and marker.
+
+The host trainer runs on its own, so it keeps its own environment. A
+`Config::train_command` is spawned from here instead, and gets only
+`Config::trainer_environment` of this process's environment: the default
+allowlist, unless a deployment allows the settings its trainer reads.
+
+```rust,no_run
+use abnegate_comfy::Config;
+use abnegate_comfy::host::{self, Trainer};
+use abnegate_comfy::lora::{self, TrainError, TrainMethod, TrainRequest, TrainSubject};
+use abnegate_exec::EnvironmentPolicy;
+use abnegate_secret::SecretValue;
+use std::time::Duration;
+
+fn configured() -> Config {
+    let mut config = Config::from_environment()
+        .with_host_trainer(Trainer::new().with_pickup(Duration::from_secs(300)))
+        .with_trainer_environment(EnvironmentPolicy::allowlist().allow(["ACME_PROBE_STEPS"]));
+    config.contract.host_directory = ".acme-train".into();
+    config
+}
+
+fn startup(config: &Config) {
+    for recovered in host::recover(config) {
+        println!("{recovered:?}");
+    }
+}
+
+async fn person(
+    config: &Config,
+    request: TrainRequest,
+    key: SecretValue,
+) -> Result<(), TrainError> {
+    let request = request
+        .with_subject(TrainSubject::Person)
+        .with_method(TrainMethod::Finetune)
+        .with_host_field("provider", "cloud")
+        .with_host_secret("cloud.key", key);
+    let outcome = lora::train(config, String::new(), SecretValue::new(""), request).await?;
+    println!("{}", outcome.path.display());
+    Ok(())
+}
+```
+
+### The job directory
+
+Each job is a directory named by its id under
+`<models>/<Contract::host_directory>/`, `.abnegate-train` by default, readable
+only by its owner, so the trainer runs as the same user. The crate writes
+everything else first and `job.json` last, so a trainer never finds half a
+job. Every file the crate writes there is written in full under a unique
+temporary name, flushed, and renamed into place:
+
+| Path | Written by | Holds |
+|---|---|---|
+| `job.json` | both | the job, below |
+| `progress.json` | both | one progress object, below; the crate writes the queued one |
+| `previews/` | trainer | the samples `progress.json` lists in `previews` |
+| `dataset/` | crate | `NNNN.png` with its caption `NNNN.txt`, and for a person set `NNNN.kind`, `NNNN.pose`, `NNNN.mask.png` and `rebalance.json` |
+| `clips/` | crate | reserved for video windows, `NNNN.mp4` described by `NNNN.json`; nothing writes it yet |
+| `data/` | host | text records, `train.jsonl` and `valid.jsonl`, laid out as `format.json` says |
+| `<filename>` | trainer | the trained weight, which the crate then publishes and removes |
+| `publish.lock` | crate | locked by whoever publishes the job, from queueing it until the weight is published; the trainer leaves it alone |
+| any other file | crate | a secret from `TrainRequest::with_host_secret`, one line, mode `0600`, listed in `secrets` and removed when the job ends |
+
+Once a job has failed, or its weight is published, `dataset/`, `clips/` and
+`data/` are removed; `job.json`, `progress.json` and `previews/` stay for a
+host to show until `host::remove` takes the whole job away.
+
+`job.json` is one object, `schema_version` 1:
+
+| Key | Meaning |
+|---|---|
+| `schema_version` | `1` |
+| `id` | the job's UUID, also its directory name |
+| `name` | the name the weight was requested under |
+| `method` | `lora`, `finetune`, or a method of the host's own |
+| `subject` | `other`, `person`, a subject of the host's own, or absent |
+| `trigger` | the identity weight's trigger word, or empty |
+| `architecture` | the base's model family, `flux` or `sdxl`, as `<prefix>_ARCHITECTURE` names it for a training command |
+| `checkpoint` | the base weight file to start from |
+| `base` | the base recipe id; empty for a job the crate does not publish |
+| `status` | `queued`, `running`, `succeeded` or `failed` |
+| `filename` | the file to write the weight to, and the name it is published under |
+| `recipe_id` | the recipe that runs the published weight |
+| `hf_base` | the Hugging Face model of the base, or empty |
+| `image_count` | images in `dataset/` |
+| `error` | why a `failed` job failed |
+| `pid` | the trainer process of a `running` job, `Job::process_id` |
+| `started_at` | RFC 3339 time the job was queued |
+| `published` | where the crate published the weight, relative to the models directory, once it has |
+| `secrets` | the secret files beside `job.json`, removed when the job ends |
+
+Any other key is the host's (`TrainRequest::with_host_field`) or the
+trainer's, and is kept when the crate rewrites the file. A `job.json` with a
+`schema_version` newer than the crate reads is refused. The trainer takes
+`queued` jobs oldest first, marks one `running` with its `pid`, then reads
+`job.json` back and leaves the job alone if it says `failed`, and ends it
+`succeeded` once the weight is at `<filename>`, or `failed` with an `error`. A
+`running` job whose process is gone is the trainer's to resume. A job no
+trainer starts within `Trainer::pickup`, counted from the last moment another
+job was `running`, is marked `failed` and the run fails; a job queued behind a
+running one waits as long as that one runs.
+
+`progress.json` is the same object a training node writes: `step` and
+`total`, and optionally `phase`, `message`, `percent`, `loss`,
+`eta_seconds` and `previews`, read and written as `train::TrainProgress`.
+`host::Trainer::steps_for` is the step budget a queued job reports before the
+trainer says otherwise; set it with `with_steps` to match the trainer's
+configuration.
+
+### After a restart
+
+The job outlives the process that queued it. `host::current_with_progress`
+returns the latest job with its progress for a host to show, and
+`host::preview` resolves one of its samples. `host::resume` waits on a job an
+earlier process queued and publishes it, and `host::resume_reporting` keeps
+its latest progress in a `watch` sender the way `lora::train_reporting` does;
+`host::wait` and `host::wait_reporting` wait without publishing.
+`host::recover`, called once at startup, publishes every job that succeeded
+while nobody waited, after checking its base, method, subject and weight name
+against the policy again, and removes the secrets of every job that ended.
+Whoever publishes a job holds its `publish.lock` and records `published` in
+`job.json` before removing the weight, so a job is published once: `recover`
+skips a job another waiter holds and one already published, and `resume` of a
+published job returns where it went. Either way the weight's sidecar carries
+the job's `trigger`, so a prompt that names it binds the weight as it would
+one trained here.
+
 ## Migrating from the pre-release defaults
 
 Earlier builds defaulted to one application's node pack and container layout.
@@ -278,7 +427,8 @@ deployment that relied on the old defaults sets them itself.
   `environment_prefix`, `input_environment_prefix`, and the two that were
   constants before, `sidecar_suffix` and `publication_directory`, and
   `progress_suffix` when the training node names its progress file other
-  than `<artifact>-progress.json`. Model volumes
+  than `<artifact>-progress.json`, and `host_directory` when a host trainer
+  watches a directory other than `.abnegate-train`. Model volumes
   keep their bindings under the suffix they were written with, so keep the old
   suffix and publication directory or every existing LoRA drops out of the
   inventory.
@@ -326,8 +476,8 @@ In Rust, `Config::from_environment` and `from_environment_with_vision_model`
 replace the constructors that abbreviated their name; the `*_timeout_seconds`
 fields and `poll_interval_milliseconds` are `Duration`s named `*_timeout` and
 `poll_interval`; and `frame_fps` is `frame_rate`. `inventory::scan`,
-`inventory::write_sidecar` and `lora::available_bases` take the `&Contract`
-they read under, and `subject::Error` is `SubjectError`. The workflow builders
+`inventory::write_sidecar` and the deprecated `lora::available_bases` take
+the `&Contract` they read under, and `subject::Error` is `SubjectError`. The workflow builders
 spell out what they build: `build_flux_schnell_image_to_image_workflow`,
 `build_wan_text_to_video_workflow` and `build_wan_image_to_video_workflow`.
 Structs with public fields are `#[non_exhaustive]`, so the ones a caller passes

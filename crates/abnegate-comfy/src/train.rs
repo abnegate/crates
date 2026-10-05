@@ -46,8 +46,7 @@ pub(crate) const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_co
 /// with a 200 error page, so size is what tells the two apart.
 pub(crate) const MINIMUM_WEIGHT_BYTES: usize = 10_000;
 const MANIFEST_VERSION: u32 = 1;
-const NO_TRAINING_GRAPH: &str =
-    "SDXL has no packaged ComfyUI training graph; train it through a training command";
+const NO_TRAINING_GRAPH: &str = "SDXL has no packaged ComfyUI training graph; train it through a training command or a host trainer";
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const TRAIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const TRAINER_ERROR: &str = "the trainer reported an error";
@@ -83,6 +82,10 @@ pub const PROGRESS_SUFFIX: &str = "-progress.json";
 /// Default directory under `loras/` whose markers hide a weight while it is
 /// replaced.
 pub const PUBLICATION_DIRECTORY: &str = ".abnegate-publish";
+/// Default directory under the models root that host training jobs live in.
+pub const HOST_DIRECTORY: &str = ".abnegate-train";
+/// The directory under the models root a training attempt is staged in.
+pub(crate) const TRAINING_DIRECTORY: &str = "training";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2011,6 +2014,7 @@ mod tests {
             sidecar_suffix: ".adapter.json".into(),
             publication_directory: ".adapter-publish".into(),
             progress_suffix: ".adapter-progress.json".into(),
+            host_directory: ".adapter-train".into(),
         }
     }
 

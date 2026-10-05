@@ -4,8 +4,10 @@ mod error;
 
 pub use error::ConfigError;
 
+use crate::host::Trainer;
 use crate::lora::TrainPolicy;
 use crate::train::Contract;
+use abnegate_exec::EnvironmentPolicy;
 use abnegate_secret::SecretValue;
 use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
@@ -182,12 +184,20 @@ pub struct Config {
     /// Optional command used to train a LoRA, run with `sh -c`. Empty runs the
     /// packaged training graph on ComfyUI.
     ///
-    /// The command never sees this process's whole environment. It gets the
-    /// names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT),
-    /// every variable this process has under
-    /// [`Contract::environment_prefix`], and the variables that prefix
+    /// The command never sees this process's whole environment. It gets
+    /// [`Config::trainer_environment`], every variable this process has
+    /// under [`Contract::environment_prefix`], and the variables that prefix
     /// documents; anything else it needs, it sets itself.
     pub train_command: Option<String>,
+    /// What [`Config::train_command`] is given of this process's environment
+    /// besides its own variables: by default the names in
+    /// [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) and nothing
+    /// else. A deployment whose trainer reads settings of its own allows
+    /// them here.
+    pub trainer_environment: EnvironmentPolicy,
+    /// A trainer on the host that takes the jobs the packaged graph cannot
+    /// run when no [`Config::train_command`] is set. `None` refuses them.
+    pub host_trainer: Option<Trainer>,
     /// Wall clock budget for a training run, graph or command, at most four
     /// hours.
     pub train_timeout: Duration,
@@ -243,6 +253,8 @@ impl Default for Config {
             poll_interval: Duration::from_millis(500),
             models_directory: PathBuf::from(DEFAULT_MODELS_DIRECTORY),
             train_command: None,
+            trainer_environment: EnvironmentPolicy::allowlist(),
+            host_trainer: None,
             train_timeout: Duration::from_secs(3600),
             train_policy: TrainPolicy::default(),
             ffmpeg: "ffmpeg".to_string(),
@@ -354,8 +366,26 @@ impl Config {
                 return Err(ConfigError::new(message));
             }
         }
+        if let Some(trainer) = &self.host_trainer {
+            trainer.validate()?;
+        }
         self.train_policy.validate()?;
         self.contract.validate()
+    }
+
+    /// The same settings, giving [`Config::train_command`] `environment` of
+    /// this process's environment besides its own variables, in place of the
+    /// default allowlist.
+    pub fn with_trainer_environment(mut self, environment: EnvironmentPolicy) -> Self {
+        self.trainer_environment = environment;
+        self
+    }
+
+    /// The same settings, handing what the packaged graph cannot train to
+    /// `trainer` on the host.
+    pub fn with_host_trainer(mut self, trainer: Trainer) -> Self {
+        self.host_trainer = Some(trainer);
+        self
     }
 
     /// Settings from whatever `environment` answers for each variable, so the
@@ -457,6 +487,8 @@ impl Config {
                 .filter(|path| path.is_file()),
             models_directory,
             train_command: text(environment("COMFYUI_TRAIN_COMMAND")),
+            trainer_environment: defaults.trainer_environment,
+            host_trainer: defaults.host_trainer,
             train_timeout: seconds(
                 environment("COMFYUI_TRAIN_TIMEOUT_SECONDS"),
                 defaults.train_timeout,
@@ -888,6 +920,31 @@ mod tests {
     fn a_contract_that_could_name_a_path_outside_comfyui_is_refused() {
         let mut config = Config::default();
         config.contract.folder_prefix = "../escape-".into();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn the_trainer_gets_the_allowlist_and_no_host_trainer_until_a_deployment_says_otherwise() {
+        let defaults = Config::default();
+        assert_eq!(defaults.trainer_environment, EnvironmentPolicy::allowlist());
+        assert_eq!(defaults.host_trainer, None);
+        let read = configured(&[]);
+        assert_eq!(read.trainer_environment, defaults.trainer_environment);
+        assert_eq!(read.host_trainer, None);
+
+        let environment = EnvironmentPolicy::allowlist().allow(["ACME_PROBE_STEPS"]);
+        let configured = Config::default()
+            .with_trainer_environment(environment.clone())
+            .with_host_trainer(Trainer::new());
+        assert_eq!(configured.trainer_environment, environment);
+        assert_eq!(configured.host_trainer, Some(Trainer::new()));
+        assert_eq!(configured.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_host_trainer_that_would_poll_in_a_busy_loop_is_refused() {
+        let config =
+            Config::default().with_host_trainer(Trainer::new().with_poll_interval(Duration::ZERO));
         assert!(config.validate().is_err());
     }
 

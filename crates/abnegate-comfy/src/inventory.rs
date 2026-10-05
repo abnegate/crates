@@ -33,7 +33,9 @@ const CHECKPOINT: &str = "checkpoint";
 const DIFFUSION_MODEL: &str = "diffusion_model";
 const LORA: &str = "lora";
 
-const SCAN_DIRECTORIES: &[(&str, &str)] = &[
+/// The directories under the models root the inventory lists weights from,
+/// with the kind of weight each holds.
+pub(crate) const SCAN_DIRECTORIES: &[(&str, &str)] = &[
     ("checkpoints", CHECKPOINT),
     ("diffusion_models", DIFFUSION_MODEL),
     ("loras", LORA),

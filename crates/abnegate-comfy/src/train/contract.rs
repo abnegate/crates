@@ -1,9 +1,11 @@
 use crate::config::ConfigError;
+use crate::inventory::SCAN_DIRECTORIES;
 use crate::inventory::WEIGHT_EXTENSION;
 use crate::train::ARTIFACT_PREFIX;
 use crate::train::CLEANUP_TRAINING_RUN_NODE;
 use crate::train::ENVIRONMENT_PREFIX;
 use crate::train::FOLDER_PREFIX;
+use crate::train::HOST_DIRECTORY;
 use crate::train::INPUT_ENVIRONMENT_PREFIX;
 use crate::train::LOAD_TRAIN_DATASET_NODE;
 use crate::train::PROBE_LOSS_NODE;
@@ -13,16 +15,18 @@ use crate::train::PUBLICATION_DIRECTORY;
 use crate::train::SIDECAR_SUFFIX;
 use crate::train::STAGE_TRAINING_ARTIFACT_NODE;
 use crate::train::TRAIN_LORA_NODE;
+use crate::train::TRAINING_DIRECTORY;
 
 /// The names a training run shares with the ComfyUI node pack that executes it
 /// and with an external training command. The nodes refuse a run namespace
 /// they do not recognise, so these have to match the deployment.
 ///
-/// The prefixes, the sidecar and progress suffixes and the publication
-/// directory become directory and file names under ComfyUI's directories, so
-/// [`Contract::validate`] holds each to one plain path component. The defaults
-/// name everything under a neutral `Abnegate` namespace; a deployment whose
-/// node pack and training script register other names sets them here.
+/// The prefixes, the sidecar and progress suffixes and the publication and
+/// host directories become directory and file names under ComfyUI's
+/// directories, so [`Contract::validate`] holds each to one plain path
+/// component. The defaults name everything under a neutral `Abnegate`
+/// namespace; a deployment whose node pack and training script register other
+/// names sets them here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Contract {
@@ -71,6 +75,10 @@ pub struct Contract {
     /// gives, or no progress is read, and the cleanup node has to remove it
     /// with the run. It has to differ from `sidecar_suffix`.
     pub progress_suffix: String,
+    /// Directory under the models root that host training jobs live in, one
+    /// per job, as the [`host`](crate::host) module lays them out. The host
+    /// trainer watches it, so both have to agree on it.
+    pub host_directory: String,
 }
 
 impl Default for Contract {
@@ -89,6 +97,7 @@ impl Default for Contract {
             sidecar_suffix: SIDECAR_SUFFIX.to_string(),
             publication_directory: PUBLICATION_DIRECTORY.to_string(),
             progress_suffix: PROGRESS_SUFFIX.to_string(),
+            host_directory: HOST_DIRECTORY.to_string(),
         }
     }
 }
@@ -164,6 +173,19 @@ impl Contract {
         {
             return Err(ConfigError::new(
                 "the contract progress suffix must be one plain name that no weight ends in and the sidecar suffix is not",
+            ));
+        }
+        let taken = SCAN_DIRECTORIES
+            .iter()
+            .map(|(directory, _)| *directory)
+            .chain([TRAINING_DIRECTORY, self.publication_directory.as_str()])
+            .any(|directory| directory.eq_ignore_ascii_case(&self.host_directory));
+        if !is_name(&self.host_directory, is_file_character)
+            || matches!(self.host_directory.as_str(), "." | "..")
+            || taken
+        {
+            return Err(ConfigError::new(
+                "the contract host directory must be one plain directory name that no weight, training attempt or publication uses",
             ));
         }
         Ok(())
@@ -333,6 +355,38 @@ mod tests {
             };
             assert!(contract.validate().is_err(), "{suffix:?} was accepted");
         }
+    }
+
+    #[test]
+    fn a_host_directory_that_is_not_one_plain_name_or_a_directory_already_in_use_is_refused() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "training",
+            "Training",
+            "loras",
+            "Checkpoints",
+            "diffusion_models",
+            ".abnegate-publish",
+            "/",
+            "../escape",
+            "nested/name",
+            "back\\slash",
+            "space d",
+        ] {
+            let contract = Contract {
+                host_directory: name.into(),
+                ..Contract::default()
+            };
+            assert!(contract.validate().is_err(), "{name:?} was accepted");
+        }
+        let contract = Contract {
+            host_directory: ".acme-train".into(),
+            ..Contract::default()
+        };
+        assert_eq!(contract.validate(), Ok(()));
+        assert_eq!(Contract::default().host_directory, ".abnegate-train");
     }
 
     #[test]

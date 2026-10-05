@@ -36,6 +36,8 @@ use crate::caption::Draft;
 use crate::client::Client;
 use crate::client::SourceImage;
 use crate::config::Config;
+use crate::host;
+use crate::host::JobDirectory;
 use crate::inventory::WeightDocument;
 use crate::inventory::WeightSidecar;
 use crate::inventory::contains_phrase;
@@ -51,6 +53,7 @@ use crate::train::Contract;
 use crate::train::Phase;
 use crate::train::Reporter;
 use crate::train::Run;
+use crate::train::TRAINING_DIRECTORY;
 use crate::train::TrainProgress;
 use abnegate_exec::EnvironmentPolicy;
 use abnegate_secret::SecretValue;
@@ -61,6 +64,7 @@ use abnegate_vision::gravity::Point;
 use process_group::ProcessGroup;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
@@ -90,13 +94,27 @@ struct Plan {
     model: TrainingModel,
     trigger: String,
     destination: Destination,
+    route: Route,
 }
 
-/// Where a finished weight is published, and what its sidecar says runs it.
+/// What trains a planned request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    /// [`Config::train_command`].
+    Command,
+    /// The packaged graph on ComfyUI.
+    Graph,
+    /// [`Config::host_trainer`], through a [`host::Job`].
+    Host,
+}
+
+/// Where a finished weight is published, what its sidecar says runs it, and
+/// the trigger word that selects it.
 struct Destination {
     directory: String,
     recipe_id: String,
     huggingface_base: Option<String>,
+    trigger: Option<String>,
 }
 
 struct ScreenedImage {
@@ -136,6 +154,12 @@ const UNRUNNABLE_RULE: &str = "training rule names a recipe that cannot run its 
 const NEEDED_WEIGHT: &str = "this name belongs to a weight the catalog or a training rule needs";
 const NAMED_ELSEWHERE: &str = "a weight in another model folder already has this name";
 const FOREIGN_WEIGHT: &str = "a weight training did not publish already has this name";
+const LORA_ONLY: &str = "the packaged training graph trains only a LoRA; configure a training command or a host trainer";
+const SDXL_UNSUPPORTED: &str = "SDXL trains only through a training command or a host trainer";
+const HOST_SECRET: &str = "a host secret needs a plain file name the job does not use";
+const HOST_FIELD: &str = "a host field may not replace a key the host job gives a meaning";
+const HOST_EDIT: &str = "an edit base trains on the host only once the host-job contract carries its references; train it through a training command or the packaged graph";
+const HOST_RENAMED: &str = "the host job names a weight file other than the one its name gives";
 
 /// Bytes of a trainer's stderr kept to explain a failure.
 const STDERR_TAIL: usize = 4096;
@@ -154,7 +178,7 @@ impl Attempt {
     fn create(models: &Path) -> Result<Self, TrainError> {
         let models = require_directory(models, "models directory")?;
         let id = Uuid::new_v4().to_string();
-        let training = ensure_child_directory(&models, "training")?;
+        let training = ensure_child_directory(&models, TRAINING_DIRECTORY)?;
         sync_directory(&models)?;
         let root = training.join(&id);
         fs::create_dir(&root).map_err(failed)?;
@@ -224,7 +248,14 @@ impl Drop for Attempt {
 
 /// The bases in `catalog` a LoRA can be trained on whose weights are installed
 /// under `models_directory`, as [`inventory::scan`](crate::inventory::scan)
-/// reads it under `contract`.
+/// reads it under `contract`, each offering the default LoRA on
+/// [`TrainSubject::Other`].
+///
+/// It reads no training policy and no trainer settings, so it lists bases
+/// that [`train`] would refuse and leaves out what a policy adds.
+#[deprecated(
+    note = "use trainable_bases, which reads the training policy and what the configuration can run"
+)]
 pub fn available_bases(
     catalog: &RecipeCatalog,
     models_directory: &Path,
@@ -244,8 +275,63 @@ pub fn available_bases(
             id: recipe.id.clone(),
             label: recipe.label.clone(),
             edit: matches!(recipe.training_model(), Ok(TrainingModel::QwenEdit { .. })),
+            subjects: vec![TrainSubject::Other],
+            methods: vec![TrainMethod::Lora],
         })
         .collect()
+}
+
+/// The bases a request can train on under `config`, each with the subjects
+/// and methods [`Config::train_policy`] allows on it, or the default LoRA on
+/// [`TrainSubject::Other`] where no rule names it. A base is listed when its
+/// weights are installed, and a method when its rule's recipe runs the
+/// weight, the files the rule requires are installed, and something
+/// configured trains it: [`Config::train_command`], the packaged graph on an
+/// enabled ComfyUI, or [`Config::host_trainer`].
+pub fn trainable_bases(config: &Config) -> Result<Vec<TrainBase>, TrainError> {
+    config.validate()?;
+    let catalog = RecipeCatalog::load(config.workflow_path.as_deref())
+        .map_err(|_| TrainError::Invalid("recipe catalog is missing"))?;
+    let items = crate::inventory::scan(&config.models_directory, &catalog, &config.contract);
+    Ok(catalog
+        .image_recipes()
+        .filter(|recipe| !recipe.adapter)
+        .filter(|recipe| {
+            items
+                .iter()
+                .any(|item| item.recipe_id == recipe.id && item.ready)
+        })
+        .filter_map(|recipe| {
+            let model = recipe.training_model().ok()?;
+            let runs = |method: TrainMethod| route(config, &model, method).is_ok();
+            let mut subjects = Vec::new();
+            let mut methods = Vec::new();
+            if config.train_policy.rules_for(&recipe.id).next().is_none()
+                && recipe.training_adapter().is_ok()
+                && runs(TrainMethod::Lora)
+            {
+                subjects.push(TrainSubject::Other);
+                methods.push(TrainMethod::Lora);
+            }
+            for rule in config.train_policy.rules_for(&recipe.id).filter(|rule| {
+                runs(rule.method) && rule_runs(&catalog, recipe, rule) && installed(config, rule)
+            }) {
+                methods.push(rule.method);
+                for subject in &rule.subjects {
+                    if !subjects.contains(subject) {
+                        subjects.push(*subject);
+                    }
+                }
+            }
+            (!methods.is_empty()).then(|| TrainBase {
+                id: recipe.id.clone(),
+                label: recipe.label.clone(),
+                edit: matches!(model, TrainingModel::QwenEdit { .. }),
+                subjects,
+                methods,
+            })
+        })
+        .collect())
 }
 
 /// Train a LoRA from `request` and install the best checkpoint it produced.
@@ -370,7 +456,7 @@ pub fn validate_request(config: &Config, request: &TrainRequest) -> Result<(), T
 }
 
 fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
-    if config.train_command.is_none() && !config.enabled {
+    if config.train_command.is_none() && !config.enabled && config.host_trainer.is_none() {
         return Err(TrainError::Disabled);
     }
     config.validate()?;
@@ -389,21 +475,15 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
         .map_err(|_| TrainError::Invalid("training base is not supported"))?;
     let destination = destination(config, &catalog, recipe, request)?;
     require_free_name(config, &catalog, &destination.directory, &filename)?;
-    if request.method != TrainMethod::Lora && config.train_command.is_none() {
-        return Err(TrainError::Invalid(
-            "the packaged training graph trains only a LoRA; configure a training command",
-        ));
+    let route = route(config, &model, request.method)?;
+    if route == Route::Host {
+        validate_host_settings(request)?;
     }
     let edit = matches!(&model, TrainingModel::QwenEdit { .. });
     let trigger = request.trigger.as_deref().unwrap_or_default().trim();
     if !edit && trigger.is_empty() {
         return Err(TrainError::Invalid(
             "trigger word is required so the weight can retain identity",
-        ));
-    }
-    if matches!(model, TrainingModel::Sdxl { .. }) && config.train_command.is_none() {
-        return Err(TrainError::Invalid(
-            "SDXL trains only through a training command",
         ));
     }
     validate_pairing(&request.images, &model)?;
@@ -413,7 +493,56 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
         model,
         trigger: trigger.to_string(),
         destination,
+        route,
     })
+}
+
+/// What trains `method` on `model` under `config`: the training command when
+/// one is set; the host trainer for what the packaged graph cannot train, a
+/// method other than a LoRA or an SDXL base, except an edit base, whose
+/// reference images the host job does not carry; otherwise the packaged
+/// graph, which needs ComfyUI enabled.
+fn route(config: &Config, model: &TrainingModel, method: TrainMethod) -> Result<Route, TrainError> {
+    if config.train_command.is_some() {
+        return Ok(Route::Command);
+    }
+    let sdxl = matches!(model, TrainingModel::Sdxl { .. });
+    if (method != TrainMethod::Lora || sdxl) && config.host_trainer.is_some() {
+        if matches!(model, TrainingModel::QwenEdit { .. }) {
+            return Err(TrainError::Invalid(HOST_EDIT));
+        }
+        return Ok(Route::Host);
+    }
+    if method != TrainMethod::Lora {
+        return Err(TrainError::Invalid(LORA_ONLY));
+    }
+    if sdxl {
+        return Err(TrainError::Invalid(SDXL_UNSUPPORTED));
+    }
+    if !config.enabled {
+        return Err(TrainError::Disabled);
+    }
+    Ok(Route::Graph)
+}
+
+/// Refuses a host field `job.json` already gives a meaning, and a host
+/// secret that is not one plain file name of its own beside it.
+fn validate_host_settings(request: &TrainRequest) -> Result<(), TrainError> {
+    if request
+        .host_fields
+        .keys()
+        .any(|name| host::is_reserved(name))
+    {
+        return Err(TrainError::Invalid(HOST_FIELD));
+    }
+    if !request
+        .host_secrets
+        .keys()
+        .all(|name| host::is_secret_name(name))
+    {
+        return Err(TrainError::Invalid(HOST_SECRET));
+    }
+    Ok(())
 }
 
 /// Where [`Config::train_policy`] publishes `request` trained on `recipe`,
@@ -441,34 +570,19 @@ fn destination(
             directory: LORAS.to_string(),
             recipe_id: adapter.recipe_id.clone(),
             huggingface_base: Some(adapter.huggingface_base.clone()),
+            trigger: trigger(recipe, request),
         });
     }
     let rule = policy
         .rule(&recipe.id, request.method)
         .ok_or(TrainError::Invalid(METHOD_UNAVAILABLE))?;
-    let huggingface_base = recipe
-        .training_adapter()
-        .ok()
-        .map(|adapter| adapter.huggingface_base.clone());
-    if !catalog.get(&rule.recipe_id).is_some_and(|runner| {
-        runs_weight(
-            runner,
-            recipe,
-            rule.method,
-            &rule.directory,
-            huggingface_base.as_deref(),
-        )
-    }) {
+    if !rule_runs(catalog, recipe, rule) {
         return Err(TrainError::Configuration(UNRUNNABLE_RULE));
     }
     if !rule.subjects.contains(&request.subject) {
         return Err(TrainError::Invalid(SUBJECT_UNAVAILABLE));
     }
-    if rule
-        .required
-        .iter()
-        .any(|file| !config.models_directory.join(file).is_file())
-    {
+    if !installed(config, rule) {
         return Err(TrainError::Invalid(
             "install the files this base needs before training on it",
         ));
@@ -476,8 +590,53 @@ fn destination(
     Ok(Destination {
         directory: rule.directory.clone(),
         recipe_id: rule.recipe_id.clone(),
-        huggingface_base,
+        huggingface_base: huggingface_base(recipe),
+        trigger: trigger(recipe, request),
     })
+}
+
+/// The request's trigger word, when it names one and `recipe` trains a
+/// weight a prompt selects: an edit weight follows an instruction, so it
+/// carries none.
+fn trigger(recipe: &Recipe, request: &TrainRequest) -> Option<String> {
+    if matches!(recipe.training_model(), Ok(TrainingModel::QwenEdit { .. })) {
+        return None;
+    }
+    request
+        .trigger
+        .as_deref()
+        .map(str::trim)
+        .filter(|trigger| !trigger.is_empty())
+        .map(str::to_string)
+}
+
+fn huggingface_base(recipe: &Recipe) -> Option<String> {
+    recipe
+        .training_adapter()
+        .ok()
+        .map(|adapter| adapter.huggingface_base.clone())
+}
+
+/// Whether the recipe `rule` names in `catalog` runs what it publishes from
+/// `recipe` in its directory.
+fn rule_runs(catalog: &RecipeCatalog, recipe: &Recipe, rule: &TrainRule) -> bool {
+    let huggingface_base = huggingface_base(recipe);
+    catalog.get(&rule.recipe_id).is_some_and(|runner| {
+        runs_weight(
+            runner,
+            recipe,
+            rule.method,
+            &rule.directory,
+            huggingface_base.as_deref(),
+        )
+    })
+}
+
+/// Whether every file `rule` requires is installed.
+fn installed(config: &Config, rule: &TrainRule) -> bool {
+    rule.required
+        .iter()
+        .all(|file| config.models_directory.join(file).is_file())
 }
 
 /// Whether `runner` loads a weight trained on `base` with `method` and
@@ -583,12 +742,17 @@ async fn train_with_pipeline(
         model,
         trigger,
         destination,
+        route,
     } = plan(config, &request)?;
     let trigger = trigger.as_str();
     let edit = matches!(&model, TrainingModel::QwenEdit { .. });
     let settings = crate::train::packaged_config()?;
     let side = settings.resolution();
-    let progress = progress.with_total(settings.steps(request.images.len()));
+    let budget = |count: usize| match (route, &config.host_trainer) {
+        (Route::Host, Some(trainer)) => trainer.steps_for(count),
+        _ => settings.steps(count),
+    };
+    let progress = progress.with_total(budget(request.images.len()));
     progress.phase(Phase::Screening, "Screening the dataset", 0, 1);
     let (images, decoded) = decode_uploads(request.images, progress.clone()).await?;
     let http =
@@ -631,7 +795,7 @@ async fn train_with_pipeline(
         progress.clone(),
     )
     .await?;
-    let progress = progress.with_total(settings.steps(survivors.len()));
+    let progress = progress.with_total(budget(survivors.len()));
     if survivors.len() != verdict.keep.len() {
         return Err(TrainError::Failed(
             "screening returned an invalid survivor index".to_string(),
@@ -671,7 +835,7 @@ async fn train_with_pipeline(
     let mut attempt = Attempt::create(&config.models_directory)?;
     let published = ensure_child_directory(&config.models_directory, &destination.directory)?;
     let output = validate_output(&published, &published.join(&filename))?;
-    let output_sidecar = validate_output(&published, &sidecar_path(&output, &config.contract))?;
+    validate_output(&published, &sidecar_path(&output, &config.contract))?;
     let targets = ensure_child_directory(&attempt.root, "targets")?;
     let controls = edit
         .then(|| ensure_child_directory(&attempt.root, "control_1"))
@@ -703,6 +867,48 @@ async fn train_with_pipeline(
                 reference,
             )?;
         }
+    }
+    let screened = Screening {
+        kept: verdict.keep.len(),
+        dropped,
+        attempted,
+    };
+    if route == Route::Host {
+        let job = host::Job::new(
+            request.name.as_str(),
+            request.method.as_str(),
+            base_weight(&model),
+        )
+        .with_subject(request.subject.as_str())
+        .with_trigger(trigger)
+        .with_architecture(crate::train::architecture(&model))
+        .with_base(base.as_str())
+        .with_filename(filename.as_str())
+        .with_recipe_id(destination.recipe_id.as_str())
+        .with_huggingface_base(destination.huggingface_base.clone().unwrap_or_default())
+        .with_image_count(survivors.len());
+        let job = request.host_fields.iter().fold(job, |job, (name, value)| {
+            job.with_field(name, value.clone())
+        });
+        let job = request
+            .host_secrets
+            .keys()
+            .fold(job, |job, name| job.with_secret(name));
+        let path = train_on_host(
+            config,
+            &attempt,
+            job,
+            &request.host_secrets,
+            &destination,
+            &progress,
+        )
+        .await?;
+        return Ok(TrainOutcome {
+            path,
+            quality: None,
+            dataset: findings,
+            screening: screened,
+        });
     }
     let staged = attempt.output();
     let host_steps = config
@@ -822,23 +1028,54 @@ async fn train_with_pipeline(
         );
         TrainError::Failed("quality selection did not leave a regular weight file".to_string())
     })?;
-    let staged_sidecar = sidecar_path(&staged, &config.contract);
+    let output = publish(
+        config,
+        &attempt,
+        &staged,
+        &destination,
+        &filename,
+        &progress,
+    )?;
+    Ok(TrainOutcome {
+        path: output,
+        quality,
+        dataset: findings,
+        screening: screened,
+    })
+}
+
+/// Binds the weight staged in `attempt` to `destination`'s recipe and trigger
+/// and promotes it to `filename` in `destination`'s directory. Returns where
+/// it went.
+fn publish(
+    config: &Config,
+    attempt: &Attempt,
+    staged: &Path,
+    destination: &Destination,
+    filename: &str,
+    progress: &Reporter,
+) -> Result<PathBuf, TrainError> {
+    let published = ensure_child_directory(&config.models_directory, &destination.directory)?;
+    let output = validate_output(&published, &published.join(filename))?;
+    let output_sidecar = validate_output(&published, &sidecar_path(&output, &config.contract))?;
+    let staged_sidecar = sidecar_path(staged, &config.contract);
+    let mut sidecar = WeightSidecar::new(destination.recipe_id.as_str());
+    if let Some(base) = &destination.huggingface_base {
+        sidecar = sidecar.with_huggingface_base(base.as_str());
+    }
+    if let Some(trigger) = &destination.trigger {
+        sidecar = sidecar.with_trigger(trigger.as_str());
+    }
     let bytes = serde_json::to_vec_pretty(&WeightDocument {
-        sidecar: WeightSidecar {
-            recipe_id: destination.recipe_id,
-            huggingface_base: destination.huggingface_base,
-            trigger: (!edit && !trigger.is_empty()).then(|| trigger.to_string()),
-        },
+        sidecar,
         generation: Some(attempt.id.clone()),
     })
     .map_err(|error| TrainError::Failed(error.to_string()))?;
     write_new(&attempt.root, &staged_sidecar, &bytes)?;
-    validate_output(&published, &output)?;
-    validate_output(&published, &output_sidecar)?;
     progress.publishing("Publishing the weight", 1, 2);
     atomic_promote(
         &attempt.root,
-        &staged,
+        staged,
         &staged_sidecar,
         &published,
         &output,
@@ -846,30 +1083,202 @@ async fn train_with_pipeline(
         &attempt.id,
         &config.contract,
     )?;
-    Ok(TrainOutcome {
-        path: output,
-        quality,
-        dataset: findings,
-        screening: Screening {
-            kept: verdict.keep.len(),
-            dropped,
-            attempted,
-        },
+    Ok(output)
+}
+
+/// The file the trainer starts from: the base's checkpoint, or its diffusion
+/// model when the base loads its parts separately.
+fn base_weight(model: &TrainingModel) -> &str {
+    match model {
+        TrainingModel::Flux { checkpoint } | TrainingModel::Sdxl { checkpoint } => checkpoint,
+        TrainingModel::QwenEdit { unet, .. } => unet,
+    }
+}
+
+/// Hands the dataset staged in `attempt` to the host trainer as `job`, waits
+/// for the weight, and publishes it where `destination` says.
+///
+/// The job directory is complete before `job.json` appears in it, so the
+/// trainer never starts on half a dataset, and its lock is held from then
+/// until the weight is published, so [`host::recover`] never publishes it
+/// beside this run. A failure or a drop before `job.json` is written removes
+/// the whole directory; after, the secrets go once the job ends, and a job
+/// the trainer still holds keeps them until it does.
+async fn train_on_host(
+    config: &Config,
+    attempt: &Attempt,
+    job: host::Job,
+    secrets: &BTreeMap<String, SecretValue>,
+    destination: &Destination,
+    progress: &Reporter,
+) -> Result<PathBuf, TrainError> {
+    let trainer = config.host_trainer.as_ref().ok_or(TrainError::Disabled)?;
+    let root = ensure_child_directory(&config.models_directory, &config.contract.host_directory)?;
+    let directory = JobDirectory::new(config, job.id);
+    let mut pending = host::Pending::new(directory.clone());
+    directory.create()?;
+    require_confined_directory(&root, directory.path())?;
+    let _lock = directory.try_lock()?.ok_or_else(|| {
+        TrainError::Failed("another process holds a job that was just created".to_string())
+    })?;
+    let targets = attempt.root.join("targets");
+    let dataset = directory.path().join(host::DATASET_DIRECTORY);
+    if fs::rename(&targets, &dataset).is_err() {
+        directory.stage(&targets, host::DATASET_DIRECTORY)?;
+    }
+    for (name, value) in secrets {
+        directory.write_secret(name, value)?;
+    }
+    progress.send(directory.write_queued_progress(trainer.steps_for(job.image_count))?);
+    directory.write_job(&job)?;
+    pending.queued();
+    let finished = host::wait_with(trainer, &directory, progress).await?;
+    if finished.filename != job.filename {
+        return Err(TrainError::Failed(
+            "the host trainer renamed the weight it was asked for".to_string(),
+        ));
+    }
+    let filename = final_filename(&job.name)?;
+    let weight = hosted_weight(&directory, &filename)?;
+    let staged = attempt.output();
+    let linked = staged.clone();
+    blocking(move || link_or_copy(&weight, &linked)).await??;
+    finish_hosted(
+        config,
+        attempt,
+        &directory,
+        finished,
+        &staged,
+        destination,
+        &filename,
+        progress,
+    )
+}
+
+/// Refuses publishing the host job `job` the way [`validate_request`] would
+/// have refused queueing it: an unknown base, a method or subject
+/// [`Config::train_policy`] no longer allows on it, a weight file other than
+/// the one its name gives, or a name that is not free.
+pub(crate) fn validate_host_job(config: &Config, job: &host::Job) -> Result<(), TrainError> {
+    host_destination(config, job).map(|_| ())
+}
+
+/// Publishes the weight the host job in `directory` finished with, bound to
+/// its trigger, once [`validate_host_job`] passes, and records where it went
+/// in `job.json`. A job already published returns where it went.
+pub(crate) fn publish_host_job(
+    config: &Config,
+    directory: &JobDirectory,
+    job: host::Job,
+    progress: &Reporter,
+) -> Result<PathBuf, TrainError> {
+    if let Some(path) = host::published(config, &job)? {
+        directory.remove_secrets(&job.secrets);
+        directory.prune();
+        return Ok(path);
+    }
+    let (destination, filename) = host_destination(config, &job)?;
+    let weight = hosted_weight(directory, &filename)?;
+    let attempt = Attempt::create(&config.models_directory)?;
+    let staged = attempt.output();
+    link_or_copy(&weight, &staged)?;
+    finish_hosted(
+        config,
+        &attempt,
+        directory,
+        job,
+        &staged,
+        &destination,
+        &filename,
+        progress,
+    )
+}
+
+/// Where `job` publishes under `config`, and the weight file it publishes.
+fn host_destination(config: &Config, job: &host::Job) -> Result<(Destination, String), TrainError> {
+    let catalog = RecipeCatalog::load(config.workflow_path.as_deref())
+        .map_err(|_| TrainError::Invalid("recipe catalog is missing"))?;
+    let recipe = catalog
+        .get(&job.base)
+        .filter(|recipe| !recipe.adapter)
+        .ok_or(TrainError::Invalid("unknown training base"))?;
+    let wire = |name: &str| serde_json::Value::String(name.to_string());
+    let method = serde_json::from_value::<TrainMethod>(wire(&job.method))
+        .map_err(|_| TrainError::Invalid("unknown training method"))?;
+    let subject = serde_json::from_value::<TrainSubject>(wire(&job.subject))
+        .map_err(|_| TrainError::Invalid("unknown training subject"))?;
+    let filename = final_filename(&job.name)?;
+    if job.filename.as_deref() != Some(filename.as_str()) {
+        return Err(TrainError::Invalid(HOST_RENAMED));
+    }
+    let request = TrainRequest::new(job.name.as_str(), job.base.as_str(), Vec::new())
+        .with_subject(subject)
+        .with_method(method)
+        .with_trigger(job.trigger.as_str());
+    let destination = destination(config, &catalog, recipe, &request)?;
+    require_free_name(config, &catalog, &destination.directory, &filename)?;
+    Ok((destination, filename))
+}
+
+/// The weight the host trainer wrote as `filename` in `directory`, when it is
+/// a regular file there.
+fn hosted_weight(directory: &JobDirectory, filename: &str) -> Result<PathBuf, TrainError> {
+    require_regular_file(directory.path(), &directory.path().join(filename)).map_err(|_| {
+        TrainError::Failed("the host trainer did not write a regular weight file".to_string())
     })
 }
 
-/// What the external trainer is given besides its run's own variables: the
-/// names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT), every
-/// variable this process has under the contract's environment prefix, and the
-/// ComfyUI server with the token and header that reach it. Nothing else of
-/// this process's environment, which holds credentials the trainer has no use
-/// for.
+/// Links `weight` in as `staged`, or copies it when the two are on different
+/// filesystems.
+fn link_or_copy(weight: &Path, staged: &Path) -> Result<(), TrainError> {
+    if fs::hard_link(weight, staged).is_err() {
+        fs::copy(weight, staged).map_err(failed)?;
+    }
+    Ok(())
+}
+
+/// Promotes the host job's weight staged in `attempt` to `destination`,
+/// records where it went in `job.json` before the job directory gives up its
+/// copy, and removes the job's secrets and what it trained on.
+fn finish_hosted(
+    config: &Config,
+    attempt: &Attempt,
+    directory: &JobDirectory,
+    mut job: host::Job,
+    staged: &Path,
+    destination: &Destination,
+    filename: &str,
+    progress: &Reporter,
+) -> Result<PathBuf, TrainError> {
+    let output = publish(config, attempt, staged, destination, filename, progress)?;
+    job.published = Some(format!("{}/{filename}", destination.directory));
+    if let Err(error) = directory.write_job(&job) {
+        tracing::warn!(
+            job = %job.id,
+            %error,
+            "the published host job could not be marked published"
+        );
+        return Ok(output);
+    }
+    let _ = fs::remove_file(directory.path().join(filename));
+    directory.remove_secrets(&job.secrets);
+    directory.prune();
+    Ok(output)
+}
+
+/// What the external trainer is given besides its run's own variables:
+/// [`Config::trainer_environment`], every variable this process has under the
+/// contract's environment prefix, and the ComfyUI server with the token and
+/// header that reach it. Nothing else of this process's environment, which
+/// holds credentials the trainer has no use for.
 fn trainer_environment(config: &Config) -> EnvironmentPolicy {
     let prefix = format!("{}_", config.contract.environment_prefix);
     let settings = std::env::vars_os()
         .filter_map(|(name, _)| name.into_string().ok())
         .filter(|name| name.starts_with(&prefix));
-    let environment = EnvironmentPolicy::allowlist()
+    let environment = config
+        .trainer_environment
+        .clone()
         .allow(settings)
         .with("COMFYUI_BASE_URL", config.base_url.as_str());
     match &config.api_token {
@@ -1619,7 +2028,7 @@ fn recover_publication(
     let models = parent
         .parent()
         .ok_or(TrainError::Invalid("publication directory has no parent"))?;
-    let training = require_directory(&models.join("training"), "training directory")?;
+    let training = require_directory(&models.join(TRAINING_DIRECTORY), "training directory")?;
     let attempt = require_confined_directory(&training, &training.join(&publication.generation))?;
     restore_snapshot(
         &attempt,
@@ -3033,6 +3442,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn only_installed_bases_are_offered_for_training() {
         let root = std::env::temp_dir().join(format!("training-bases-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("checkpoints")).unwrap();
@@ -3062,6 +3472,12 @@ mod tests {
         assert!(
             !bases.iter().any(|base| base.id.ends_with("-adapter")),
             "a LoRA slot is not something to train onto: {bases:?}"
+        );
+        assert!(
+            bases
+                .iter()
+                .all(|base| base.subjects == [TrainSubject::Other]
+                    && base.methods == [TrainMethod::Lora])
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -3142,6 +3558,7 @@ mod tests {
             sidecar_suffix: ".acme.json".into(),
             publication_directory: ".acme-publish".into(),
             progress_suffix: ".acme-progress.json".into(),
+            host_directory: ".acme-train".into(),
         }
     }
 
@@ -4370,9 +4787,7 @@ mod tests {
             b"vae",
         )
         .unwrap();
-        let catalog = RecipeCatalog::packaged().unwrap();
-
-        let bases = available_bases(&catalog, &config.models_directory, &config.contract);
+        let bases = trainable_bases(&config).unwrap();
 
         assert!(bases.iter().any(|base| base.id == "flux-schnell"));
         assert!(
@@ -4820,10 +5235,7 @@ mod tests {
             enabled: true,
             ..config.clone()
         };
-        assert_eq!(
-            refused(&graph, &finetuned("jerry")),
-            "the packaged training graph trains only a LoRA; configure a training command"
-        );
+        assert_eq!(refused(&graph, &finetuned("jerry")), LORA_ONLY);
 
         assert_eq!(
             refused(
@@ -5501,5 +5913,843 @@ mod tests {
             image.bytes_base64.is_empty(),
             "the base64 beside an upload is held for nothing"
         );
+    }
+
+    /// Trains fine-tunes of flux-schnell for a person on the host trainer,
+    /// with the base installed and nothing else configured to train.
+    fn hosted() -> (tempfile::TempDir, Config) {
+        let (root, mut config) = harness("unused");
+        config.train_command = None;
+        config.host_trainer = Some(
+            host::Trainer::new()
+                .with_poll_interval(Duration::from_millis(5))
+                .with_pickup(Duration::from_secs(10)),
+        );
+        config.train_policy = TrainPolicy::new().with_rule(person_finetune("flux-schnell"));
+        fs::create_dir_all(config.models_directory.join("checkpoints")).unwrap();
+        fs::write(
+            config
+                .models_directory
+                .join("checkpoints/flux1-schnell-fp8.safetensors"),
+            b"flux",
+        )
+        .unwrap();
+        (root, config)
+    }
+
+    /// What the host trainer found when it picked a job up.
+    struct PickedUp {
+        job: host::Job,
+        dataset: Vec<String>,
+        secret: Option<String>,
+    }
+
+    /// Plays the host trainer: waits for a job to appear under `config`,
+    /// records what it was handed, reports a step, then lets `finish` write
+    /// its weight and final status.
+    fn host_trainer(
+        config: &Config,
+        finish: impl FnOnce(&JobDirectory, &mut host::Job) + Send + 'static,
+    ) -> JoinHandle<PickedUp> {
+        let config = config.clone();
+        tokio::spawn(async move {
+            let mut job = loop {
+                if let Some(job) = host::current(&config) {
+                    break job;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            };
+            let directory = JobDirectory::new(&config, job.id);
+            let picked = job.clone();
+            let mut dataset: Vec<String> =
+                fs::read_dir(directory.path().join(host::DATASET_DIRECTORY))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect();
+            dataset.sort();
+            let secret = fs::read_to_string(directory.path().join("runpod.key")).ok();
+            job.status = host::Status::Running;
+            job.process_id = Some(4242);
+            directory.write_job(&job).unwrap();
+            directory
+                .write_progress(&TrainProgress::new(4, 500).with_phase(Phase::Training))
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            finish(&directory, &mut job);
+            directory.write_job(&job).unwrap();
+            PickedUp {
+                job: picked,
+                dataset,
+                secret,
+            }
+        })
+    }
+
+    fn succeed_with(weight: &'static [u8]) -> impl FnOnce(&JobDirectory, &mut host::Job) {
+        move |directory, job| {
+            fs::write(
+                directory.path().join(job.filename.as_deref().unwrap()),
+                weight,
+            )
+            .unwrap();
+            job.status = host::Status::Succeeded;
+            job.process_id = None;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fine_tune_without_a_command_trains_on_the_host_and_publishes_like_any_weight() {
+        let (_root, config) = hosted();
+        let trainer = host_trainer(&config, succeed_with(b"tuned"));
+        let (reporter, recorded) = Reporter::recording();
+        let request = finetuned("jerry")
+            .with_host_field("provider", "runpod")
+            .with_host_secret("runpod.key", SecretValue::new("rp-secret"));
+
+        let outcome = train_with_pipeline(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            request,
+            keep_all,
+            false,
+            reporter,
+        )
+        .await
+        .expect("the host trainer trains the fine-tune");
+        let picked = trainer.await.unwrap();
+
+        let job = &picked.job;
+        assert_eq!(
+            (
+                job.method.as_str(),
+                job.subject.as_str(),
+                job.base.as_str(),
+                job.trigger.as_str(),
+                job.checkpoint.as_str(),
+            ),
+            (
+                "finetune",
+                "person",
+                "flux-schnell",
+                "ohwx",
+                "flux1-schnell-fp8.safetensors"
+            )
+        );
+        assert_eq!(job.filename.as_deref(), Some("jerry.safetensors"));
+        assert_eq!(job.recipe_id, "flux-schnell");
+        assert_eq!(job.huggingface_base, "black-forest-labs/FLUX.1-schnell");
+        assert_eq!(job.image_count, 1);
+        assert_eq!(job.fields["provider"], "runpod");
+        assert_eq!(
+            picked.dataset,
+            ["0000.png", "0000.txt"],
+            "the dataset is complete before the job appears"
+        );
+        assert_eq!(picked.secret.as_deref(), Some("rp-secret\n"));
+
+        let published = config
+            .models_directory
+            .join("checkpoints/jerry.safetensors");
+        assert_eq!(outcome.path, published);
+        assert_eq!(fs::read(&published).unwrap(), b"tuned");
+        assert!(outcome.quality.is_none());
+        let sidecar = sidecar_path(&published, &config.contract);
+        let document: WeightDocument =
+            serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(document.sidecar.recipe_id, "flux-schnell");
+        assert!(
+            document
+                .generation
+                .is_some_and(|generation| Uuid::parse_str(&generation).is_ok()),
+            "a weight the host trained can be trained over again"
+        );
+        assert_eq!(job.architecture, "flux");
+        assert_eq!(job.secrets, ["runpod.key"]);
+        let directory = JobDirectory::new(&config, job.id);
+        assert!(!directory.path().join("jerry.safetensors").exists());
+        assert!(!directory.path().join("runpod.key").exists());
+        assert!(
+            !directory.path().join(host::DATASET_DIRECTORY).exists(),
+            "the dataset outlived the published job"
+        );
+        assert_eq!(
+            directory.read_job().unwrap().published.as_deref(),
+            Some("checkpoints/jerry.safetensors")
+        );
+        assert!(directory.path().join(host::PROGRESS_FILE).is_file());
+        assert!(training_entries(&config).is_empty());
+
+        let updates = recorded.lock().unwrap().clone();
+        assert!(
+            updates
+                .iter()
+                .any(|update| update.phase == Some(Phase::Queued)
+                    && update.total == 500
+                    && update.percent == Some(0)),
+            "{updates:?}"
+        );
+        assert!(
+            updates.contains(&TrainProgress::new(4, 500).with_phase(Phase::Training)),
+            "{updates:?}"
+        );
+        assert!(
+            host::recover(&config).is_empty(),
+            "nothing is left to publish"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_host_trainer_never_publishes_over_a_weight_training_did_not_publish() {
+        let (_root, config) = hosted();
+        assert_eq!(
+            refused(&config, &finetuned("flux1-schnell-fp8")),
+            NEEDED_WEIGHT
+        );
+        assert!(host::jobs(&config).is_empty(), "nothing was queued");
+
+        let foreign = config
+            .models_directory
+            .join("checkpoints/jerry.safetensors");
+        let installed = foreign.clone();
+        let trainer = host_trainer(&config, move |directory, job| {
+            fs::write(&installed, b"downloaded").unwrap();
+            succeed_with(b"tuned")(directory, job);
+        });
+
+        let error = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            finetuned("jerry"),
+            keep_all,
+        )
+        .await
+        .expect_err("a weight that appeared mid-run is not replaced");
+        let picked = trainer.await.unwrap();
+
+        assert!(
+            matches!(error, TrainError::Invalid(message) if message == FOREIGN_WEIGHT),
+            "{error:?}"
+        );
+        assert_eq!(fs::read(&foreign).unwrap(), b"downloaded");
+        assert!(
+            JobDirectory::new(&config, picked.job.id)
+                .path()
+                .join("jerry.safetensors")
+                .is_file(),
+            "the trained weight waits for recovery"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_job_that_fails_fails_the_run_with_the_trainers_reason() {
+        let (_root, config) = hosted();
+        let trainer = host_trainer(&config, |_, job| {
+            job.status = host::Status::Failed;
+            job.error = Some("MPS backend out of memory".into());
+        });
+
+        let error = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            finetuned("jerry").with_host_secret("runpod.key", SecretValue::new("rp")),
+            keep_all,
+        )
+        .await
+        .expect_err("the trainer failed");
+        let picked = trainer.await.unwrap();
+
+        assert!(
+            matches!(&error, TrainError::Failed(message) if message.contains("MPS backend out of memory")),
+            "{error}"
+        );
+        assert!(
+            !JobDirectory::new(&config, picked.job.id)
+                .path()
+                .join("runpod.key")
+                .exists(),
+            "the secret goes with the job"
+        );
+        assert!(
+            !config
+                .models_directory
+                .join("checkpoints/jerry.safetensors")
+                .exists()
+        );
+    }
+
+    fn finished(config: &Config, job: host::Job, weight: Option<&[u8]>) -> JobDirectory {
+        let mut job = job;
+        job.status = host::Status::Succeeded;
+        let directory = JobDirectory::new(config, job.id);
+        directory.write_job(&job).unwrap();
+        if let (Some(weight), Some(filename)) = (weight, &job.filename) {
+            fs::write(directory.path().join(filename), weight).unwrap();
+        }
+        directory
+    }
+
+    fn person_job(name: &str, method: &str) -> host::Job {
+        host::Job::new(name, method, "flux1-schnell-fp8.safetensors")
+            .with_subject("person")
+            .with_trigger("ohwx")
+            .with_base("flux-schnell")
+            .with_filename(format!("{name}.safetensors"))
+    }
+
+    #[test]
+    fn recovery_publishes_what_finished_while_nobody_waited() {
+        let (_root, config) = hosted();
+        let directory = finished(&config, person_job("jerry", "finetune"), Some(b"tuned"));
+        let mut refused_job = person_job("yvonne", "lora");
+        refused_job.started_at += chrono::Duration::seconds(1);
+        finished(&config, refused_job, Some(b"adapter"));
+        let mut language = host::Job::new("support-bot", "lora", "qwen2.5:7b")
+            .with_subject("language")
+            .with_filename("support-bot");
+        language.started_at += chrono::Duration::seconds(2);
+        let language = finished(&config, language, Some(b"mlx"));
+        finished(&config, person_job("ghost", "finetune"), None);
+
+        let recovered = host::recover(&config);
+
+        let published = config
+            .models_directory
+            .join("checkpoints/jerry.safetensors");
+        assert_eq!(recovered.len(), 2, "{recovered:?}");
+        assert_eq!(recovered[0].as_ref().unwrap(), &published);
+        assert!(
+            matches!(&recovered[1], Err(TrainError::Invalid(message)) if *message == METHOD_UNAVAILABLE),
+            "a job the policy no longer allows is not published: {recovered:?}"
+        );
+        assert_eq!(fs::read(&published).unwrap(), b"tuned");
+        assert!(read_generation(&sidecar_path(&published, &config.contract)).is_some());
+        assert!(!directory.path().join("jerry.safetensors").exists());
+        assert!(
+            language.path().join("support-bot").is_file(),
+            "a job with no base is the host's to publish"
+        );
+        assert_eq!(host::recover(&config).len(), 1, "jerry is published once");
+    }
+
+    #[tokio::test]
+    async fn a_resumed_job_is_published_once_the_host_trainer_finishes() {
+        let (_root, config) = hosted();
+        let job = person_job("jerry", "finetune");
+        let directory = JobDirectory::new(&config, job.id);
+        directory.write_job(&job).unwrap();
+        let trainer = host_trainer(&config, succeed_with(b"tuned"));
+
+        let path = host::resume(&config, job.id)
+            .await
+            .expect("the resumed job publishes");
+        trainer.await.unwrap();
+
+        assert_eq!(
+            path,
+            config
+                .models_directory
+                .join("checkpoints/jerry.safetensors")
+        );
+        assert_eq!(fs::read(path).unwrap(), b"tuned");
+    }
+
+    #[tokio::test]
+    async fn a_weight_the_host_trained_carries_its_trigger_so_a_prompt_selects_it() {
+        let (_root, mut config) = hosted();
+        let trainer = host_trainer(&config, succeed_with(b"tuned"));
+        train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            finetuned("jerry"),
+            keep_all,
+        )
+        .await
+        .expect("the host trainer trains the fine-tune");
+        trainer.await.unwrap();
+        finished(
+            &config,
+            person_job("yvonne", "finetune").with_trigger("zwx"),
+            Some(b"tuned"),
+        );
+
+        let recovered = host::recover(&config);
+
+        let trigger = |name: &str| {
+            let weight = config
+                .models_directory
+                .join("checkpoints")
+                .join(format!("{name}.safetensors"));
+            serde_json::from_slice::<WeightDocument>(
+                &fs::read(sidecar_path(&weight, &config.contract)).unwrap(),
+            )
+            .unwrap()
+            .sidecar
+            .trigger
+        };
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert_eq!(trigger("jerry").as_deref(), Some("ohwx"));
+        assert_eq!(trigger("yvonne").as_deref(), Some("zwx"));
+        let jerry = crate::inventory::bind_identity(&mut config, "a photo of OHWX at the beach")
+            .expect("the trained trigger names the weight");
+        assert_eq!(jerry.filename, "jerry.safetensors");
+        assert_eq!(config.checkpoint, "jerry.safetensors");
+        let yvonne = crate::inventory::bind_identity(&mut config, "zwx in the rain")
+            .expect("the recovered trigger names the weight");
+        assert_eq!(yvonne.filename, "yvonne.safetensors");
+    }
+
+    #[test]
+    fn a_recovered_edit_weight_carries_no_trigger() {
+        let (_root, config) = hosted();
+        finished(
+            &config,
+            host::Job::new("relight", "lora", "qwen-image-edit.safetensors")
+                .with_subject("other")
+                .with_trigger("ohwx")
+                .with_base("qwen-image-edit")
+                .with_filename("relight.safetensors"),
+            Some(b"adapter"),
+        );
+
+        let recovered = host::recover(&config);
+
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        let weight = recovered[0]
+            .as_ref()
+            .expect("the edit weight the host finished publishes");
+        let document: WeightDocument =
+            serde_json::from_slice(&fs::read(sidecar_path(weight, &config.contract)).unwrap())
+                .unwrap();
+        assert_eq!(
+            document.sidecar.trigger, None,
+            "an edit weight follows an instruction, so no trigger selects it"
+        );
+    }
+
+    fn published_generation(config: &Config, name: &str) -> Option<String> {
+        read_generation(&sidecar_path(
+            &config
+                .models_directory
+                .join("checkpoints")
+                .join(format!("{name}.safetensors")),
+            &config.contract,
+        ))
+    }
+
+    #[tokio::test]
+    async fn recovery_leaves_a_job_another_waiter_holds_to_that_waiter() {
+        let (_root, config) = hosted();
+        let job = person_job("jerry", "finetune");
+        let directory = finished(&config, job.clone(), Some(b"tuned"));
+        let waiter = directory.try_lock().unwrap().expect("nobody holds the job");
+
+        assert!(
+            host::recover(&config).is_empty(),
+            "the waiter's job was published"
+        );
+        assert!(directory.path().join("jerry.safetensors").is_file());
+        assert_eq!(published_generation(&config, "jerry"), None);
+
+        drop(waiter);
+        let path = host::resume(&config, job.id)
+            .await
+            .expect("the waiter publishes its job");
+        assert_eq!(fs::read(path).unwrap(), b"tuned");
+    }
+
+    #[tokio::test]
+    async fn a_job_whose_weight_outlived_its_publication_is_published_once() {
+        let (_root, config) = hosted();
+        let job = person_job("jerry", "finetune");
+        let directory = finished(&config, job.clone(), Some(b"tuned"));
+
+        let recovered = host::recover(&config);
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        let generation = published_generation(&config, "jerry").expect("jerry is published");
+        assert_eq!(
+            directory.read_job().unwrap().published.as_deref(),
+            Some("checkpoints/jerry.safetensors")
+        );
+        fs::write(directory.path().join("jerry.safetensors"), b"tuned").unwrap();
+
+        assert!(
+            host::recover(&config).is_empty(),
+            "jerry was published again"
+        );
+        assert_eq!(published_generation(&config, "jerry"), Some(generation));
+        let path = host::resume(&config, job.id)
+            .await
+            .expect("a published job returns where it went");
+        assert_eq!(
+            path,
+            config
+                .models_directory
+                .join("checkpoints/jerry.safetensors")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_secret_that_cannot_be_written_leaves_no_job_behind() {
+        let (_root, config) = hosted();
+        let attempt = Attempt::create(&config.models_directory).unwrap();
+        let targets = ensure_child_directory(&attempt.root, "targets").unwrap();
+        fs::write(targets.join("0000.png"), b"png").unwrap();
+        let job = person_job("jerry", "finetune");
+        let directory = JobDirectory::new(&config, job.id);
+        fs::create_dir_all(directory.path().join("second.key")).unwrap();
+        let secrets = BTreeMap::from([
+            ("first.key".to_string(), SecretValue::new("one")),
+            ("second.key".to_string(), SecretValue::new("two")),
+        ]);
+        let destination = Destination {
+            directory: "checkpoints".to_string(),
+            recipe_id: "flux-schnell".to_string(),
+            huggingface_base: None,
+            trigger: None,
+        };
+
+        train_on_host(
+            &config,
+            &attempt,
+            job,
+            &secrets,
+            &destination,
+            &Reporter::default(),
+        )
+        .await
+        .expect_err("the second secret cannot replace a directory");
+
+        assert!(!directory.path().exists(), "the half-made job was left");
+    }
+
+    #[tokio::test]
+    async fn a_run_dropped_mid_job_leaves_its_secret_to_the_trainer_until_the_job_ends() {
+        let (_root, config) = hosted();
+        let request =
+            finetuned("jerry").with_host_secret("runpod.key", SecretValue::new("rp-secret"));
+        let training = {
+            let config = config.clone();
+            tokio::spawn(async move {
+                train_with_screening(
+                    &config,
+                    String::new(),
+                    SecretValue::new(""),
+                    request,
+                    keep_all,
+                )
+                .await
+            })
+        };
+        let mut job = loop {
+            if let Some(job) = host::current(&config) {
+                break job;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        let directory = JobDirectory::new(&config, job.id);
+        assert_eq!(job.secrets, ["runpod.key"]);
+        assert_eq!(job.architecture, "flux");
+        job.status = host::Status::Running;
+        directory.write_job(&job).unwrap();
+
+        training.abort();
+        assert!(training.await.unwrap_err().is_cancelled());
+
+        let secret = directory.path().join("runpod.key");
+        assert!(secret.is_file(), "the trainer still needs its secret");
+        succeed_with(b"tuned")(&directory, &mut job);
+        directory.write_job(&job).unwrap();
+        let path = host::resume(&config, job.id)
+            .await
+            .expect("the resumed job publishes");
+
+        assert_eq!(fs::read(path).unwrap(), b"tuned");
+        assert!(!secret.exists(), "the secret outlived its job");
+        assert!(!directory.path().join(host::DATASET_DIRECTORY).exists());
+        assert!(directory.path().join(host::JOB_FILE).is_file());
+    }
+
+    #[test]
+    fn recovery_removes_the_secrets_of_every_job_that_ended() {
+        let (_root, config) = hosted();
+        let succeeded = finished(
+            &config,
+            person_job("jerry", "finetune").with_secret("runpod.key"),
+            Some(b"tuned"),
+        );
+        let mut failed = person_job("yvonne", "finetune").with_secret("runpod.key");
+        failed.status = host::Status::Failed;
+        let failed_directory = JobDirectory::new(&config, failed.id);
+        failed_directory.write_job(&failed).unwrap();
+        for directory in [&succeeded, &failed_directory] {
+            directory
+                .write_secret("runpod.key", &SecretValue::new("rp"))
+                .unwrap();
+        }
+
+        let recovered = host::recover(&config);
+
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert!(!succeeded.path().join("runpod.key").exists());
+        assert!(!failed_directory.path().join("runpod.key").exists());
+    }
+
+    #[tokio::test]
+    async fn only_the_weight_a_jobs_name_gives_is_published() {
+        let (_root, config) = hosted();
+        finished(
+            &config,
+            person_job("jerry", "finetune").with_filename("base.safetensors"),
+            Some(b"tuned"),
+        );
+
+        let recovered = host::recover(&config);
+
+        assert!(
+            matches!(&recovered[..], [Err(TrainError::Invalid(message))] if *message == HOST_RENAMED),
+            "{recovered:?}"
+        );
+        assert!(
+            !config
+                .models_directory
+                .join("checkpoints/base.safetensors")
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn resuming_a_job_this_crate_cannot_publish_fails_before_waiting() {
+        let (_root, config) = hosted();
+        let unpublished = host::Job::new("support-bot", "lora", "qwen2.5:7b");
+        JobDirectory::new(&config, unpublished.id)
+            .write_job(&unpublished)
+            .unwrap();
+        let error = host::resume(&config, unpublished.id).await.unwrap_err();
+        assert!(matches!(error, TrainError::Invalid(_)), "{error:?}");
+
+        let refused = person_job("jerry", "lora");
+        JobDirectory::new(&config, refused.id)
+            .write_job(&refused)
+            .unwrap();
+        let error = host::resume(&config, refused.id).await.unwrap_err();
+        assert!(
+            matches!(error, TrainError::Invalid(message) if message == METHOD_UNAVAILABLE),
+            "{error:?}"
+        );
+
+        let elsewhere = person_job("yvonne", "finetune");
+        let moved = Uuid::new_v4();
+        JobDirectory::new(&config, moved)
+            .write_job(&elsewhere)
+            .unwrap();
+        let error = host::resume(&config, moved).await.unwrap_err();
+        assert!(matches!(error, TrainError::Invalid(_)), "{error:?}");
+    }
+
+    #[test]
+    fn an_edit_base_is_never_handed_to_the_host_trainer() {
+        let (_root, mut config) = hosted();
+        config.train_policy = TrainPolicy::new().with_rule(TrainRule::new(
+            "qwen-image-edit",
+            TrainMethod::Finetune,
+            "qwen-image-edit",
+            "diffusion_models",
+        ));
+        let request = edit(vec![image("target", "replace the sky", Some("reference"))])
+            .with_method(TrainMethod::Finetune);
+
+        assert_eq!(refused(&config, &request), HOST_EDIT);
+        assert!(
+            trainable_bases(&config)
+                .unwrap()
+                .iter()
+                .all(|base| base.id != "qwen-image-edit"),
+            "an edit fine-tune is offered on the host"
+        );
+    }
+
+    #[test]
+    fn trainable_bases_refuse_a_configuration_that_cannot_work() {
+        let (_root, mut config) = hosted();
+        config.contract.host_directory = "loras".into();
+
+        assert!(matches!(
+            trainable_bases(&config),
+            Err(TrainError::Configuration(_))
+        ));
+    }
+
+    #[test]
+    fn what_the_packaged_graph_cannot_train_goes_to_the_host_trainer_or_is_refused() {
+        let (root, mut config) = hosted();
+        validate_request(&config, &finetuned("jerry")).expect("the host trains a fine-tune");
+        assert_eq!(
+            refused(
+                &config,
+                &finetuned("jerry").with_host_secret("job.json", SecretValue::new("x"))
+            ),
+            HOST_SECRET
+        );
+        assert_eq!(
+            refused(
+                &config,
+                &finetuned("jerry").with_host_field("status", "succeeded")
+            ),
+            HOST_FIELD
+        );
+
+        let graph = Config {
+            host_trainer: None,
+            enabled: true,
+            ..config.clone()
+        };
+        assert_eq!(refused(&graph, &finetuned("jerry")), LORA_ONLY);
+
+        config.train_policy = TrainPolicy::new();
+        let error = validate_request(&config, &identity("plain"))
+            .expect_err("a LoRA the graph trains needs ComfyUI");
+        assert!(matches!(error, TrainError::Disabled), "{error:?}");
+        config.enabled = true;
+        validate_request(
+            &config,
+            &identity("plain").with_host_field("status", "ignored"),
+        )
+        .expect("host settings are read only by the host trainer");
+
+        trainable_sdxl(root.path(), &mut config);
+        fs::write(
+            config
+                .models_directory
+                .join("checkpoints/RealVisXL_V5.0_fp16.safetensors"),
+            b"sdxl",
+        )
+        .unwrap();
+        let sdxl = TrainRequest::new("person", "sdxl", vec![image("target", "a portrait", None)])
+            .with_trigger("ohwx");
+        validate_request(&config, &sdxl).expect("the host trains SDXL");
+        config.host_trainer = None;
+        assert_eq!(refused(&config, &sdxl), SDXL_UNSUPPORTED);
+    }
+
+    #[test]
+    fn trainable_bases_offer_what_the_policy_allows_and_something_can_run() {
+        let (_root, mut config) = hosted();
+        let flux = |config: &Config| {
+            trainable_bases(config)
+                .unwrap()
+                .into_iter()
+                .find(|base| base.id == "flux-schnell")
+        };
+
+        let base = flux(&config).expect("the host trains the rule's fine-tune");
+        assert_eq!(base.subjects, [TrainSubject::Person]);
+        assert_eq!(base.methods, [TrainMethod::Finetune]);
+
+        config.train_policy = config.train_policy.clone().with_rule(TrainRule::new(
+            "flux-schnell",
+            TrainMethod::Lora,
+            "flux-schnell-adapter",
+            "loras",
+        ));
+        assert!(
+            flux(&config).is_none_or(|base| base.methods == [TrainMethod::Finetune]),
+            "a LoRA on the graph needs ComfyUI enabled"
+        );
+        config.enabled = true;
+        let base = flux(&config).unwrap();
+        assert_eq!(base.subjects, [TrainSubject::Person, TrainSubject::Other]);
+        assert_eq!(base.methods, [TrainMethod::Finetune, TrainMethod::Lora]);
+
+        let graph = Config {
+            host_trainer: None,
+            ..config.clone()
+        };
+        assert_eq!(flux(&graph).unwrap().methods, [TrainMethod::Lora]);
+        fs::remove_file(
+            config
+                .models_directory
+                .join("checkpoints/flux1-schnell-fp8.safetensors"),
+        )
+        .unwrap();
+        assert!(
+            flux(&config).is_none(),
+            "an uninstalled base trains nothing"
+        );
+
+        let unrunnable = Config {
+            train_policy: TrainPolicy::new().with_rule(TrainRule::new(
+                "flux-schnell",
+                TrainMethod::Finetune,
+                "flux-schnell-adapter",
+                "checkpoints",
+            )),
+            ..config.clone()
+        };
+        fs::write(
+            config
+                .models_directory
+                .join("checkpoints/flux1-schnell-fp8.safetensors"),
+            b"flux",
+        )
+        .unwrap();
+        assert!(
+            flux(&unrunnable).is_none(),
+            "a rule nothing can run offers nothing"
+        );
+
+        let disabled = Config {
+            enabled: false,
+            host_trainer: None,
+            train_policy: TrainPolicy::new(),
+            ..config.clone()
+        };
+        assert!(trainable_bases(&disabled).unwrap().is_empty());
+        let default = Config {
+            train_policy: TrainPolicy::new(),
+            ..config
+        };
+        let base = flux(&default).unwrap();
+        assert_eq!(base.subjects, [TrainSubject::Other]);
+        assert_eq!(base.methods, [TrainMethod::Lora]);
+    }
+
+    #[tokio::test]
+    async fn the_trainer_environment_passes_what_the_deployment_allows_and_nothing_else() {
+        const NAME: &str = "lora::tests::the_trainer_environment_passes_what_the_deployment_allows_and_nothing_else";
+        if crate::child::delegated(
+            NAME,
+            &[
+                ("DEPLOYMENT_PROBE_STEPS", "3"),
+                ("COMFYUI_MODELS_DIRECTORY", "/models"),
+                ("DEPLOYMENT_SECRET", "hidden"),
+            ],
+        )
+        .await
+        {
+            return;
+        }
+        let command = r#"
+            test "$DEPLOYMENT_PROBE_STEPS" = 3 || exit 31
+            test "$COMFYUI_MODELS_DIRECTORY" = /models || exit 32
+            test "$DEPLOYMENT_FIXED" = fixed || exit 33
+            test -z "${DEPLOYMENT_SECRET+set}" || exit 34
+            test -n "$PATH" || exit 35
+            test -n "$COMFYUI_BASE_URL" || exit 36
+            printf lora > "$TRAIN_OUTPUT"
+        "#;
+        let (_root, config) = harness(command);
+        let config = config.with_trainer_environment(
+            EnvironmentPolicy::allowlist()
+                .allow(["DEPLOYMENT_PROBE_STEPS", "COMFYUI_MODELS_DIRECTORY"])
+                .with("DEPLOYMENT_FIXED", "fixed"),
+        );
+
+        trained_by(&config).await;
     }
 }

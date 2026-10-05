@@ -69,6 +69,10 @@
 //! neutral `Abnegate` namespace, and a deployment whose node pack registers
 //! other names overrides them there.
 //!
+//! What the packaged graph cannot train, a fine-tune or an SDXL base, can go
+//! to a trainer running on the host instead: [`Config::host_trainer`] turns
+//! it on, and the [`host`] module documents the job directory the two share.
+//!
 //! A host that collects metrics installs [`observe_requests`] once at startup;
 //! without it the crate records nothing and pulls in no metrics stack.
 //!
@@ -92,6 +96,7 @@ mod client;
 mod config;
 mod dataset;
 mod excerpt;
+pub mod host;
 mod http;
 pub mod inventory;
 pub mod lora;
