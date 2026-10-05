@@ -41,6 +41,8 @@ pub(crate) const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_co
 /// with a 200 error page, so size is what tells the two apart.
 pub(crate) const MINIMUM_WEIGHT_BYTES: usize = 10_000;
 const MANIFEST_VERSION: u32 = 1;
+const NO_TRAINING_GRAPH: &str =
+    "SDXL has no packaged ComfyUI training graph; train it through a training command";
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const TRAIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -168,6 +170,9 @@ pub(crate) async fn run_with(
         return Err(TrainError::Disabled);
     }
     config.validate()?;
+    if matches!(model, TrainingModel::Sdxl { .. }) {
+        return Err(TrainError::Invalid(NO_TRAINING_GRAPH));
+    }
     let run = Run::new(&config.contract);
     match execute(client, config, model, work, output, image_count, &run).await {
         Ok(()) => Ok(run),
@@ -204,7 +209,7 @@ async fn execute(
         &settings,
         settings.steps(image_count),
         &config.contract,
-    );
+    )?;
     let prompt = queue(client, config, graph)
         .await
         .map_err(|failure| Failure {
@@ -415,14 +420,15 @@ pub(crate) fn train_graph(
     settings: &TrainConfig,
     steps: u32,
     contract: &Contract,
-) -> Value {
+) -> Result<Value, TrainError> {
     match model {
-        TrainingModel::Flux { checkpoint } => flux_graph(
+        TrainingModel::Flux { checkpoint } => Ok(flux_graph(
             checkpoint, folder, manifest, artifact, settings, steps, contract,
-        ),
-        TrainingModel::QwenEdit { unet, clip, vae } => qwen_graph(
+        )),
+        TrainingModel::QwenEdit { unet, clip, vae } => Ok(qwen_graph(
             unet, clip, vae, folder, manifest, artifact, settings, steps, contract,
-        ),
+        )),
+        TrainingModel::Sdxl { .. } => Err(TrainError::Invalid(NO_TRAINING_GRAPH)),
     }
 }
 
@@ -614,7 +620,7 @@ fn pairs(model: &TrainingModel, work: &Path) -> Result<Vec<Pair>, TrainError> {
             ));
         }
         let reference = match model {
-            TrainingModel::Flux { .. } => None,
+            TrainingModel::Flux { .. } | TrainingModel::Sdxl { .. } => None,
             TrainingModel::QwenEdit { .. } => {
                 let control = controls.get(index).ok_or(TrainError::Invalid(
                     "Qwen edit training needs one reference for every target",
@@ -688,7 +694,7 @@ async fn stage_remote(
     run: &Run,
 ) -> Result<(), TrainError> {
     for directory in ["targets", "control_1"] {
-        if directory == "control_1" && matches!(model, TrainingModel::Flux { .. }) {
+        if directory == "control_1" && !matches!(model, TrainingModel::QwenEdit { .. }) {
             continue;
         }
         for png in pngs(&work.join(directory))? {
@@ -1114,6 +1120,7 @@ pub(crate) fn architecture(model: &TrainingModel) -> &'static str {
     match model {
         TrainingModel::Flux { .. } => "flux",
         TrainingModel::QwenEdit { .. } => "qwen_edit",
+        TrainingModel::Sdxl { .. } => "sdxl",
     }
 }
 
@@ -1491,6 +1498,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_sdxl_model_is_refused_before_anything_reaches_comfyui() {
+        let server = MockServer::start().await;
+        let work = dataset();
+        let error = run(
+            &config(&server),
+            &TrainingModel::sdxl("RealVisXL_V5.0_fp16.safetensors").unwrap(),
+            work.path(),
+            &work.path().join("out.safetensors"),
+            2,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, TrainError::Invalid(message) if message == NO_TRAINING_GRAPH),
+            "{error:?}"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_graph_comfyui_will_not_accept_fails_the_job() {
         let server = MockServer::start().await;
         uploads(&server).await;
@@ -1773,7 +1800,8 @@ mod tests {
             &settings,
             12,
             &contract,
-        );
+        )
+        .unwrap();
         let qwen = train_graph(
             &qwen(),
             "folder",
@@ -1782,7 +1810,8 @@ mod tests {
             &settings,
             12,
             &contract,
-        );
+        )
+        .unwrap();
         assert_eq!(flux["2"]["class_type"], contract.load_train_dataset_node);
         assert_eq!(flux["3"]["class_type"], "VAEEncode");
         assert_eq!(flux["5"]["class_type"], contract.train_lora_node);
@@ -1870,7 +1899,8 @@ mod tests {
             &settings,
             12,
             &contract,
-        );
+        )
+        .unwrap();
         let qwen = train_graph(
             &qwen(),
             "folder",
@@ -1879,7 +1909,8 @@ mod tests {
             &settings,
             12,
             &contract,
-        );
+        )
+        .unwrap();
         assert_eq!(flux["2"]["class_type"], "LoadDataset");
         assert_eq!(flux["5"]["class_type"], "TrainAdapter");
         assert_eq!(qwen["4"]["class_type"], "LoadDataset");

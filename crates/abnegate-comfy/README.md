@@ -98,6 +98,37 @@ The adapter lands in `loras/acme-style.safetensors` with its recipe binding in
 `acme-style.safetensors.acme.json`, and `inventory::scan` lists it only when it
 is given the same contract.
 
+## Recipe catalog
+
+Every graph the client runs comes from a recipe in `comfyui/recipes/catalog.json`.
+A host replaces the packaged catalog by placing its own `recipes/catalog.json`
+beside the directory `Config::workflow_path` names; graphs of the same name in
+that directory replace the packaged copies. Besides the graph pair and its
+slots, a recipe may declare:
+
+- `edit_recipe`: the base recipe an edit of a source image switches to when
+  every file it requires is installed and the selected checkpoint is one of the
+  recipe's own stock files (its default or one its `files` list). The packaged
+  `flux-schnell` hands edits to `flux-dev`, so new pictures stay fast while
+  edits get Dev's sampler budget; a custom checkpoint that `flux-schnell` only
+  runs, such as a fine-tune, keeps its own weights. It must name a base image
+  recipe with a source graph and the same prompt mode.
+- `slots.pose`: the `LoadImage` input of an OpenPose ControlNet branch.
+  `recipe::Fill::with_pose` steers that branch; without a pose the branch is
+  removed and the sampler reads the plain prompt. The packaged `sdxl` and
+  `sdxl-adapter` graphs carry one.
+- `pose_required_files`: the files only that branch loads, which a host checks
+  are installed before it passes a pose. The packaged SDXL recipes declare
+  `controlnet/thibaud_xl_openpose.safetensors`; `inventory::scan` does not
+  count them, since a run without a pose never loads them.
+- `extras`: what the graph supports beyond its slots, as `recipe::RecipeExtra`
+  values (a value this version does not know is ignored): `face` (an
+  IP-Adapter face reference), `refine` (a face-refine pass on every result)
+  and `identity_refine` (one only when the selected weight is
+  bound to an identity).
+- `training.architecture`: `flux`, `qwen_edit` or `sdxl`. SDXL has no packaged
+  ComfyUI training graph and trains only through `Config::train_command`.
+
 ## Migrating from the pre-release defaults
 
 Earlier builds defaulted to one application's node pack and container layout.

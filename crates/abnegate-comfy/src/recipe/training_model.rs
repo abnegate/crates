@@ -5,10 +5,10 @@ use crate::recipe::sanitize_weight_filename;
 ///
 /// [`Recipe::training_model`](crate::recipe::Recipe::training_model) resolves
 /// one from the catalog's explicit `training` metadata; a caller that chooses
-/// the model to train instead names its files with [`TrainingModel::flux`] or
-/// [`TrainingModel::qwen_edit`]. A recipe id, prompt mode, or process-wide
-/// checkpoint is never enough to select a trainer because those are
-/// presentation and inference concerns.
+/// the model to train instead names its files with [`TrainingModel::flux`],
+/// [`TrainingModel::qwen_edit`] or [`TrainingModel::sdxl`]. A recipe id,
+/// prompt mode, or process-wide checkpoint is never enough to select a
+/// trainer because those are presentation and inference concerns.
 ///
 /// ```
 /// use abnegate_comfy::recipe::TrainingModel;
@@ -37,6 +37,14 @@ pub enum TrainingModel {
         /// The image autoencoder's filename.
         vae: String,
     },
+    /// An SDXL graph, which loads everything from one checkpoint. No
+    /// packaged ComfyUI training graph runs it, so it trains through
+    /// [`Config::train_command`](crate::Config::train_command).
+    #[non_exhaustive]
+    Sdxl {
+        /// The checkpoint's filename.
+        checkpoint: String,
+    },
 }
 
 impl TrainingModel {
@@ -61,6 +69,17 @@ impl TrainingModel {
             unet: sanitize_weight_filename(unet)?,
             clip: sanitize_weight_filename(clip)?,
             vae: sanitize_weight_filename(vae)?,
+        })
+    }
+
+    /// An SDXL graph that loads everything from the checkpoint named
+    /// `checkpoint`.
+    ///
+    /// Fails with [`Error::Configuration`] when `checkpoint` is empty, longer
+    /// than 256 bytes, or holds a `/`, a `\` or `..`.
+    pub fn sdxl(checkpoint: &str) -> Result<Self, Error> {
+        Ok(Self::Sdxl {
+            checkpoint: sanitize_weight_filename(checkpoint)?,
         })
     }
 }
@@ -92,6 +111,12 @@ mod tests {
                 vae: "qwen_image_vae.safetensors".to_string(),
             }
         );
+        assert_eq!(
+            TrainingModel::sdxl("RealVisXL_V5.0_fp16.safetensors").expect("a bare filename"),
+            TrainingModel::Sdxl {
+                checkpoint: "RealVisXL_V5.0_fp16.safetensors".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -105,6 +130,7 @@ mod tests {
             oversized.as_str(),
         ] {
             assert!(TrainingModel::flux(name).is_err(), "{name:?}");
+            assert!(TrainingModel::sdxl(name).is_err(), "sdxl {name:?}");
             assert!(
                 TrainingModel::qwen_edit(name, WEIGHT, WEIGHT).is_err(),
                 "unet {name:?}"

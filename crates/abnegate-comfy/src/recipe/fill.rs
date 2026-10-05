@@ -12,6 +12,9 @@ pub struct Fill<'a> {
     pub weights: HashMap<&'a str, &'a str>,
     /// The uploaded source image. `Some` selects the recipe's source-image graph.
     pub source: Option<&'a str>,
+    /// The uploaded pose image for the recipe's pose slot. `None` removes the
+    /// ControlNet branch that slot feeds.
+    pub pose: Option<&'a str>,
 }
 
 impl<'a> Fill<'a> {
@@ -22,6 +25,7 @@ impl<'a> Fill<'a> {
             seed,
             weights,
             source: None,
+            pose: None,
         }
     }
 
@@ -29,6 +33,15 @@ impl<'a> Fill<'a> {
     /// uploaded to ComfyUI.
     pub fn with_source(mut self, source: &'a str) -> Self {
         self.source = Some(source);
+        self
+    }
+
+    /// Steers the recipe's ControlNet branch with `pose`, an image already
+    /// uploaded to ComfyUI. That branch loads the recipe's
+    /// [`pose_required_files`](crate::recipe::Recipe::pose_required_files),
+    /// which the host makes sure are installed first.
+    pub fn with_pose(mut self, pose: &'a str) -> Self {
+        self.pose = Some(pose);
         self
     }
 }

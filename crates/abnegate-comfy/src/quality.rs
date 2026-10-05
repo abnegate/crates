@@ -268,7 +268,9 @@ impl<'a> Selection<'a> {
             measured,
             calibration: match self.probe.model {
                 TrainingModel::Flux { .. } => QualityCalibration::FluxHealthBands,
-                TrainingModel::QwenEdit { .. } => QualityCalibration::Uncalibrated,
+                TrainingModel::QwenEdit { .. } | TrainingModel::Sdxl { .. } => {
+                    QualityCalibration::Uncalibrated
+                }
             },
         })
     }
@@ -671,6 +673,9 @@ pub(crate) fn graph(
         TrainingModel::QwenEdit { unet, clip, vae } => qwen_graph(
             unet, clip, vae, folder, manifest, resolution, lora, percents, contract,
         ),
+        TrainingModel::Sdxl { checkpoint } => flux_graph(
+            checkpoint, folder, manifest, resolution, lora, percents, contract,
+        ),
     }
 }
 
@@ -889,7 +894,7 @@ fn subsample(
     let result = (|| {
         let mut selected = HashMap::new();
         for directory in ["targets", "control_1"] {
-            if directory == "control_1" && matches!(model, TrainingModel::Flux { .. }) {
+            if directory == "control_1" && !matches!(model, TrainingModel::QwenEdit { .. }) {
                 continue;
             }
             let source_directory = child_directory(&source, directory)?;

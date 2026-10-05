@@ -286,6 +286,11 @@ async fn train_with_pipeline(
             "trigger word is required so the LoRA can retain identity",
         ));
     }
+    if matches!(model, TrainingModel::Sdxl { .. }) && config.train_command.is_none() {
+        return Err(TrainError::Invalid(
+            "SDXL trains only through a training command",
+        ));
+    }
     validate_pairing(&request.images, &model)?;
     let images: Arc<[TrainImage]> = request.images.into();
     let decoded = decode_uploads(Arc::clone(&images)).await?;
@@ -427,7 +432,7 @@ async fn train_with_pipeline(
                     .to_string(),
             );
         match &model {
-            TrainingModel::Flux { checkpoint } => {
+            TrainingModel::Flux { checkpoint } | TrainingModel::Sdxl { checkpoint } => {
                 process.env(contract.variable("CHECKPOINT"), checkpoint);
             }
             TrainingModel::QwenEdit { unet, clip, vae } => {
@@ -1581,7 +1586,7 @@ mod tests {
                 .and_then(|rest| rest.split('"').next())
                 .unwrap_or_default()
                 .to_string();
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            ResponseTemplate::new(200).set_body_json(json!({
                 "name": filename,
                 "subfolder": field("subfolder"),
                 "type": field("type"),
@@ -2434,14 +2439,13 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/prompt"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"prompt_id": prompt, "number": 1})),
+                ResponseTemplate::new(200).set_body_json(json!({"prompt_id": prompt, "number": 1})),
             )
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path(format!("/history/{prompt}")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 prompt.to_string(): {"status": {"completed": true, "status_str": "success"}}
             })))
             .mount(&server)
@@ -2539,14 +2543,13 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/prompt"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"prompt_id": prompt, "number": 1})),
+                ResponseTemplate::new(200).set_body_json(json!({"prompt_id": prompt, "number": 1})),
             )
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path(format!("/history/{prompt}")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 prompt.to_string(): {"status": {"completed": true, "status_str": "success"}}
             })))
             .mount(&server)
@@ -3615,6 +3618,84 @@ mod tests {
                 .models_directory
                 .join("loras/must-not-train.safetensors")
                 .exists()
+        );
+    }
+
+    fn trainable_sdxl(root: &Path, config: &mut Config) {
+        let workflows = root.join("workflows");
+        let recipes = root.join("recipes");
+        fs::create_dir(&workflows).unwrap();
+        fs::create_dir(&recipes).unwrap();
+        let mut catalog: Value =
+            serde_json::from_str(include_str!("../comfyui/recipes/catalog.json")).unwrap();
+        let sdxl = catalog["recipes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|recipe| recipe["id"] == "sdxl")
+            .unwrap();
+        sdxl["defaults"] = json!({ "checkpoint": "RealVisXL_V5.0_fp16.safetensors" });
+        sdxl["hf_bases"] = json!(["SG161222/RealVisXL_V5.0"]);
+        sdxl["training"] = json!({
+            "architecture": "sdxl",
+            "adapter": "sdxl-adapter",
+            "hf_base": "SG161222/RealVisXL_V5.0"
+        });
+        fs::write(
+            recipes.join("catalog.json"),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        config.workflow_path = Some(workflows.join("sdxl-api.json"));
+    }
+
+    #[tokio::test]
+    async fn sdxl_trains_through_the_command_on_its_checkpoint() {
+        let command = r#"
+            test "$TRAIN_ARCHITECTURE" = "sdxl" || exit 11
+            test "$TRAIN_CHECKPOINT" = "RealVisXL_V5.0_fp16.safetensors" || exit 12
+            printf trained > "$TRAIN_OUTPUT"
+        "#;
+        let (root, mut config) = harness(command);
+        trainable_sdxl(root.path(), &mut config);
+        let request =
+            TrainRequest::new("person", "sdxl", vec![image("target", "a portrait", None)])
+                .with_trigger("ohwx");
+
+        train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            request,
+            keep_all,
+        )
+        .await
+        .expect("the command trains SDXL");
+    }
+
+    #[tokio::test]
+    async fn sdxl_without_a_training_command_is_refused_before_screening() {
+        let (root, mut config) = harness("unused");
+        trainable_sdxl(root.path(), &mut config);
+        config.train_command = None;
+        config.enabled = true;
+        let request =
+            TrainRequest::new("person", "sdxl", vec![image("target", "a portrait", None)])
+                .with_trigger("ohwx");
+
+        let error = train_with_screening(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            request,
+            |_, _| panic!("screening must not run"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(error, TrainError::Invalid(message) if message.contains("SDXL")),
+            "{error:?}"
         );
     }
 

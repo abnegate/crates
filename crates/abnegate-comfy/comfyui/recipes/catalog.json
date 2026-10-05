@@ -45,7 +45,8 @@
       "filename_hints": [
         "flux1-schnell",
         "schnell"
-      ]
+      ],
+      "edit_recipe": "flux-dev"
     },
     {
       "id": "flux-schnell-adapter",
@@ -201,6 +202,7 @@
         "prompt": "/6/inputs/text",
         "seed": "/3/inputs/seed",
         "source": "/10/inputs/image",
+        "pose": "/20/inputs/image",
         "weights": {
           "checkpoint": "/4/inputs/ckpt_name"
         }
@@ -212,13 +214,66 @@
         "Pony",
         "Illustrious"
       ],
+      "pose_required_files": [
+        {
+          "filename": "thibaud_xl_openpose.safetensors",
+          "directory": "controlnet"
+        }
+      ],
       "filename_hints": [
         "sdxl",
         "sd_xl",
         "sd-xl",
         "pony",
         "illustrious",
-        "juggernautxl"
+        "juggernautxl",
+        "realvisxl"
+      ],
+      "extras": [
+        "face",
+        "identity_refine"
+      ]
+    },
+    {
+      "id": "sdxl-adapter",
+      "kind": "image",
+      "label": "SDXL + LoRA",
+      "adapter": true,
+      "bare": "sdxl-adapter-api.json",
+      "with_source": "sdxl-adapter-img2img-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/text",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "pose": "/20/inputs/image",
+        "weights": {
+          "checkpoint": "/4/inputs/ckpt_name",
+          "lora": "/13/inputs/lora_name"
+        }
+      },
+      "defaults": {
+        "checkpoint": "RealVisXL_V5.0_fp16.safetensors"
+      },
+      "required_files": [
+        {
+          "filename": "RealVisXL_V5.0_fp16.safetensors",
+          "directory": "checkpoints"
+        }
+      ],
+      "pose_required_files": [
+        {
+          "filename": "thibaud_xl_openpose.safetensors",
+          "directory": "controlnet"
+        }
+      ],
+      "hf_bases": [
+        "SG161222/RealVisXL_V5.0"
+      ],
+      "extras": [
+        "face",
+        "refine"
       ]
     },
     {
@@ -318,6 +373,49 @@
       ],
       "hf_bases": [
         "Qwen/Qwen-Image-Edit-2511"
+      ]
+    },
+    {
+      "id": "wan-adapter",
+      "kind": "video",
+      "label": "Wan 2.2 identity adapter",
+      "adapter": true,
+      "bare": "wan-adapter-api.json",
+      "with_source": "wan-adapter-i2v-api.json",
+      "output_node": "10",
+      "output": "save_webm",
+      "slots": {
+        "prompt": "/5/inputs/text",
+        "seed": "/8/inputs/seed",
+        "source": "/11/inputs/image",
+        "weights": {
+          "unet": "/1/inputs/unet_name",
+          "clip": "/2/inputs/clip_name",
+          "vae": "/3/inputs/vae_name",
+          "lora": "/12/inputs/lora_name"
+        }
+      },
+      "defaults": {
+        "unet": "wan2.2_ti2v_5B_fp16.safetensors",
+        "clip": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "vae": "wan2.2_vae.safetensors"
+      },
+      "required_files": [
+        {
+          "filename": "wan2.2_ti2v_5B_fp16.safetensors",
+          "directory": "diffusion_models"
+        },
+        {
+          "filename": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+          "directory": "text_encoders"
+        },
+        {
+          "filename": "wan2.2_vae.safetensors",
+          "directory": "vae"
+        }
+      ],
+      "hf_bases": [
+        "Comfy-Org/Wan_2.2_ComfyUI_Repackaged"
       ]
     }
   ]

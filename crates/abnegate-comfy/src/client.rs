@@ -253,6 +253,33 @@ impl Client {
         self.catalog.image_recipe_for(selected)
     }
 
+    fn generation_plan(
+        &self,
+        has_source: bool,
+    ) -> Result<(&Recipe, HashMap<String, String>), Error> {
+        let recipe = self.image_recipe()?;
+        if has_source {
+            let edit = self
+                .catalog
+                .edit_recipe_for(recipe, &self.config.checkpoint, |candidate| {
+                    self.is_installed(candidate)
+                });
+            if edit.id != recipe.id {
+                return Ok((edit, edit.default_weight_map()?));
+            }
+        }
+        Ok((recipe, recipe.weight_map(&self.config.checkpoint)?))
+    }
+
+    fn is_installed(&self, recipe: &Recipe) -> bool {
+        !recipe.required_files.is_empty()
+            && crate::inventory::missing_required(
+                &self.config.models_directory,
+                &recipe.required_files,
+            )
+            .is_empty()
+    }
+
     fn video_workflows(&self) -> Result<(Value, Value), Error> {
         for (value, message) in [
             (
@@ -290,8 +317,12 @@ impl Client {
     }
 
     /// Generate images from `prompt` with the selected checkpoint's recipe,
-    /// editing `source` when one is given. A blank prompt is refused unless
-    /// there is a source, which is then edited generically.
+    /// editing `source` when one is given. An edit runs on the recipe's
+    /// [`edit_recipe`](Recipe::edit_recipe) instead when the selected
+    /// checkpoint is one of the recipe's own stock files and the edit
+    /// recipe's files are installed; a custom checkpoint keeps its own
+    /// weights. A blank prompt is refused unless there is a source, which is
+    /// then edited generically.
     ///
     /// Progress messages are sent on `progress`, and a message on `cancel`
     /// stops the run.
@@ -319,8 +350,7 @@ impl Client {
         } else {
             prompt
         };
-        let recipe = self.image_recipe()?;
-        let weights = recipe.weight_map(&self.config.checkpoint)?;
+        let (recipe, weights) = self.generation_plan(source.is_some())?;
         let fill_weights: HashMap<&str, &str> = weights
             .iter()
             .map(|(name, filename)| (name.as_str(), filename.as_str()))
@@ -1302,7 +1332,7 @@ mod tests {
         );
         assert_eq!(workflow["6"]["inputs"]["text"], "make it dusk");
         assert_eq!(workflow["3"]["inputs"]["seed"], 42);
-        assert_eq!(workflow["3"]["inputs"]["denoise"], 0.75);
+        assert_eq!(workflow["3"]["inputs"]["denoise"], 0.6);
         assert_eq!(workflow["3"]["inputs"]["steps"], 4);
         assert_eq!(workflow["10"]["inputs"]["image"], "img2img-source.png");
         assert_eq!(workflow["11"]["inputs"]["width"], 1024);
@@ -1568,6 +1598,131 @@ mod tests {
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(marker, b"pending").unwrap();
         assert!(Client::new(config).is_err());
+    }
+
+    fn models_with(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let models = root.path().join("models");
+        for (directory, filename) in files {
+            let folder = models.join(directory);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join(filename), filename.as_bytes()).unwrap();
+        }
+        (root, models)
+    }
+
+    #[test]
+    fn edits_prefer_installed_flux_dev_over_schnell() {
+        let (_root, models) = models_with(&[
+            ("checkpoints", "flux1-schnell-fp8.safetensors"),
+            ("checkpoints", "flux1-dev-fp8.safetensors"),
+        ]);
+        let client = Client::new(Config {
+            checkpoint: "flux1-schnell-fp8.safetensors".into(),
+            models_directory: models,
+            ..Default::default()
+        })
+        .unwrap();
+        let (recipe, weights) = client.generation_plan(true).unwrap();
+        assert_eq!(recipe.id, "flux-dev");
+        assert_eq!(
+            weights.get("checkpoint").map(String::as_str),
+            Some("flux1-dev-fp8.safetensors")
+        );
+        let (recipe, _) = client.generation_plan(false).unwrap();
+        assert_eq!(recipe.id, "flux-schnell");
+    }
+
+    #[test]
+    fn edits_stay_on_schnell_when_dev_is_missing() {
+        let (_root, models) = models_with(&[("checkpoints", "flux1-schnell-fp8.safetensors")]);
+        let client = Client::new(Config {
+            checkpoint: "flux1-schnell-fp8.safetensors".into(),
+            models_directory: models,
+            ..Default::default()
+        })
+        .unwrap();
+        let (recipe, weights) = client.generation_plan(true).unwrap();
+        assert_eq!(recipe.id, "flux-schnell");
+        assert_eq!(
+            weights.get("checkpoint").map(String::as_str),
+            Some("flux1-schnell-fp8.safetensors")
+        );
+    }
+
+    #[test]
+    fn edits_stay_on_schnell_without_a_models_directory() {
+        let client = Client::new(Config {
+            checkpoint: "flux1-schnell-fp8.safetensors".into(),
+            models_directory: PathBuf::from("/nonexistent/models"),
+            ..Default::default()
+        })
+        .unwrap();
+        let (recipe, _) = client.generation_plan(true).unwrap();
+        assert_eq!(recipe.id, "flux-schnell");
+    }
+
+    #[test]
+    fn a_schnell_lora_edit_does_not_switch_to_dev() {
+        let (_root, models) = models_with(&[
+            ("checkpoints", "flux1-schnell-fp8.safetensors"),
+            ("checkpoints", "flux1-dev-fp8.safetensors"),
+            ("loras", "identity.safetensors"),
+        ]);
+        crate::inventory::write_sidecar(
+            &models.join("loras/identity.safetensors"),
+            &crate::inventory::WeightSidecar {
+                recipe_id: "flux-schnell-adapter".into(),
+                huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+            },
+            &crate::train::Contract::default(),
+        )
+        .unwrap();
+        let client = Client::new(Config {
+            checkpoint: "identity.safetensors".into(),
+            models_directory: models,
+            ..Default::default()
+        })
+        .unwrap();
+        let (recipe, weights) = client.generation_plan(true).unwrap();
+        assert_eq!(recipe.id, "flux-schnell-adapter");
+        assert_eq!(
+            weights.get("lora").map(String::as_str),
+            Some("identity.safetensors")
+        );
+    }
+
+    /// A fine-tune its sidecar binds to schnell is the person's own weight;
+    /// swapping it for flux-dev's defaults would edit with someone else's
+    /// model.
+    #[test]
+    fn a_custom_schnell_checkpoint_edit_keeps_its_own_weights() {
+        let (_root, models) = models_with(&[
+            ("checkpoints", "flux1-schnell-fp8.safetensors"),
+            ("checkpoints", "flux1-dev-fp8.safetensors"),
+            ("checkpoints", "jerry.safetensors"),
+        ]);
+        crate::inventory::write_sidecar(
+            &models.join("checkpoints/jerry.safetensors"),
+            &crate::inventory::WeightSidecar {
+                recipe_id: "flux-schnell".into(),
+                huggingface_base: Some("black-forest-labs/FLUX.1-schnell".into()),
+            },
+            &crate::train::Contract::default(),
+        )
+        .unwrap();
+        let client = Client::new(Config {
+            checkpoint: "jerry.safetensors".into(),
+            models_directory: models,
+            ..Default::default()
+        })
+        .unwrap();
+        let (recipe, weights) = client.generation_plan(true).unwrap();
+        assert_eq!(recipe.id, "flux-schnell");
+        assert_eq!(
+            weights.get("checkpoint").map(String::as_str),
+            Some("jerry.safetensors")
+        );
     }
 
     #[test]
@@ -2011,6 +2166,70 @@ mod tests {
             progress_rx.recv().await.as_deref(),
             Some("Uploading source image...")
         );
+    }
+
+    #[tokio::test]
+    async fn an_edit_submits_the_installed_flux_dev_graph() {
+        let (_root, models) = models_with(&[
+            ("checkpoints", "flux1-schnell-fp8.safetensors"),
+            ("checkpoints", "flux1-dev-fp8.safetensors"),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/upload/image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "name": "uploaded-source.png",
+                "subfolder": "",
+                "type": "input"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains(
+                "flux1-dev-fp8.safetensors",
+            ))
+            .and(wiremock::matchers::body_string_contains("FluxGuidance"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "dev"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/history/dev"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "dev": {"status": {"status_str": "success"}, "outputs": {
+                    "9": {"images": [{"filename": "edited.png", "subfolder": "", "type": "temp"}]}
+                }}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "image/png")
+                    .set_body_bytes(vec![9, 8, 7]),
+            )
+            .mount(&server)
+            .await;
+        let client = Client::new(Config {
+            enabled: true,
+            base_url: server.uri(),
+            poll_interval: Duration::from_millis(50),
+            checkpoint: "flux1-schnell-fp8.safetensors".into(),
+            models_directory: models,
+            ..Default::default()
+        })
+        .unwrap();
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let source = SourceImage::new(vec![1, 2, 3, 4], "image/png").unwrap();
+        let images = client
+            .generate("make it dusk", Some(&source), &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+        assert_eq!(images[0].bytes.as_ref(), &[9, 8, 7]);
     }
 
     #[test]

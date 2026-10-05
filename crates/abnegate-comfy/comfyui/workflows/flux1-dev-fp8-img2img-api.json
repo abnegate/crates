@@ -3,7 +3,7 @@
     "class_type": "KSampler",
     "inputs": {
       "cfg": 1,
-      "denoise": 0.75,
+      "denoise": 0.5,
       "latent_image": ["12", 0],
       "model": ["4", 0],
       "negative": ["7", 0],
@@ -11,7 +11,7 @@
       "sampler_name": "euler",
       "scheduler": "normal",
       "seed": 0,
-      "steps": 20
+      "steps": 40
     },
     "_meta": {
       "title": "FLUX.1 Dev Image-to-Image Sampler"

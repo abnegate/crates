@@ -217,7 +217,7 @@ fn publication_pending(models_directory: &Path, filename: &str, contract: &Contr
         .is_some_and(|path| fs::symlink_metadata(path).is_ok())
 }
 
-fn missing_required(models_directory: &Path, required: &[RequiredFile]) -> Vec<String> {
+pub(crate) fn missing_required(models_directory: &Path, required: &[RequiredFile]) -> Vec<String> {
     required
         .iter()
         .filter(|file| !required_path(models_directory, file).is_some_and(|path| path.is_file()))
