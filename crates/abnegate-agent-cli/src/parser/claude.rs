@@ -180,7 +180,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(sessions, ["6f1", "6f1"], "from the init and the result");
+        assert_eq!(sessions, ["6f1"], "from the init alone");
 
         assert!(
             events.iter().any(
@@ -320,8 +320,8 @@ mod tests {
         let mut events = Vec::new();
         interpret(line, &mut events);
 
-        let [AgentEvent::Session(_), AgentEvent::Failed(message)] = events.as_slice() else {
-            panic!("expected a session and a failure, got {events:?}");
+        let [AgentEvent::Failed(message)] = events.as_slice() else {
+            panic!("expected the failure alone, got {events:?}");
         };
         assert_eq!(message, "Invalid API key provided");
     }

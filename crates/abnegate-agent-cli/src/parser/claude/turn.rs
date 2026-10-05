@@ -30,6 +30,9 @@ const UNNAMED_WINDOW: &str = "request";
 /// credits extend is spent. The line after it types the refusal.
 const OVERAGE_INCLUDED_WINDOW: &str = "seven_day_overage_included";
 
+/// The system notice claude opens a session with, naming it.
+const INIT_SUBTYPE: &str = "init";
+
 /// Why claude could not look the account's usage credits up, which a later
 /// attempt may get past.
 const INDETERMINATE_REASONS: [&str; 2] = ["fetch_error", "unknown"];
@@ -47,6 +50,9 @@ const INDETERMINATE_REASONS: [&str; 2] = ["fetch_error", "unknown"];
 /// token counts and its API errors are its own conversation's, and claude
 /// hands its failure to the main agent as the result of the call that
 /// started it.
+///
+/// The session is announced once, from the first `init` notice, though
+/// claude repeats its id on other notices and on the result.
 #[derive(Debug, Clone, Default)]
 pub struct Turn {
     /// The latest reason claude gave for the account not spending usage
@@ -58,6 +64,8 @@ pub struct Turn {
     failure: Option<String>,
     /// Whether the turn has said it runs on usage credits.
     credited: bool,
+    /// Whether the turn has announced its session.
+    announced: bool,
 }
 
 impl Turn {
@@ -76,9 +84,10 @@ impl Turn {
 
     pub(crate) fn read(&mut self, event: StreamEvent, events: &mut Vec<AgentEvent>) {
         match event {
-            StreamEvent::System { session_id, .. } => {
-                events.extend(session_id.map(AgentEvent::Session));
-            }
+            StreamEvent::System {
+                subtype,
+                session_id,
+            } => self.announce(subtype.as_deref(), session_id, events),
             StreamEvent::Assistant {
                 message,
                 parent_tool_use_id: Some(_),
@@ -97,11 +106,10 @@ impl Turn {
                 structured_output,
                 total_cost_usd,
                 turns,
-                session_id,
                 api_milliseconds,
                 usage,
+                ..
             } => {
-                events.extend(session_id.map(AgentEvent::Session));
                 events.extend(structured_output.map(AgentEvent::Structured));
                 events.extend(total_cost_usd.map(AgentEvent::Cost));
                 events.extend(
@@ -126,6 +134,21 @@ impl Turn {
                 self.limit(report.unwrap_or_default(), resets_at, events);
             }
             StreamEvent::User {} | StreamEvent::Unknown => {}
+        }
+    }
+
+    fn announce(
+        &mut self,
+        subtype: Option<&str>,
+        session: Option<String>,
+        events: &mut Vec<AgentEvent>,
+    ) {
+        if self.announced || subtype != Some(INIT_SUBTYPE) {
+            return;
+        }
+        if let Some(session) = session.filter(|session| !session.is_empty()) {
+            self.announced = true;
+            events.push(AgentEvent::Session(session));
         }
     }
 

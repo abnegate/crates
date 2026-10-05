@@ -7,9 +7,10 @@ conversation flattened into one prompt on stdin, reads the agent's
 newline-delimited JSON as it streams with a cap on any one event, and returns its
 final prose as a completion; `CliProvider::execute` returns the whole
 `Execution` for a caller that needs the structured answer, the session to
-resume, the cost, or the run's log files. A Claude or Codex run can attach MCP
-servers, and a Claude run can restrict its tools, or be confined to reading its
-working directory, and a run
+resume, the cost, or the run's log files. A run can start the agent's own
+`Session` under an id of the caller's choosing, or resume one. A Claude or Codex
+run can attach MCP servers, and a Claude run can restrict its tools, or be
+confined to reading its working directory, and a run
 that fails in any way takes every process the agent forked with it. The agent is
 given an allowlisted part of this process's environment, the names
 `CliSettings::allow` adds (a proxy among them with
@@ -37,8 +38,9 @@ every other remote server, not from them.
 No agent is passed a permission-bypass flag, and nothing is approved in advance
 but what the settings allow. Claude's own tools keep Claude's own permission
 checks. Codex's do not: `codex exec` never asks for approval, so only its
-sandbox confines them, whichever one the user's configuration or a `--sandbox`
-argument names, and `danger-full-access` confines nothing.
+sandbox confines them, whichever one `CliSettings::with_sandbox`, the user's
+configuration or a `--sandbox` argument names, and `danger-full-access` confines
+nothing.
 
 ## Claude turns
 

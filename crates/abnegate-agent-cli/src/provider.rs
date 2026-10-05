@@ -144,7 +144,9 @@ impl CliProvider {
             .agent
             .options(&self.settings, &attachments)
             .map_err(|error| ExecutionError::new(error, None))?;
-        let arguments = self.agent.invocation(Some(request.model), options);
+        let arguments =
+            self.agent
+                .invocation_in(Some(request.model), options, self.settings.session.as_ref());
         let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &|name| {
             std::env::var_os(name)
         });
@@ -661,6 +663,7 @@ mod tests {
     use crate::mcp::expand;
     use crate::parser::claude::CREDITS_REQUIRED;
     use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
+    use crate::session::Session;
     use crate::settings::CliSettings;
     use crate::structured_result::StructuredResult;
     use crate::test_support::PATIENCE;
@@ -952,7 +955,10 @@ echo '{"type":"result","subtype":"success","is_error":false}'
     #[tokio::test]
     async fn a_reported_failure_is_still_an_execution_for_the_caller_to_judge() {
         let directory = TempDir::new().expect("a temporary directory");
-        let script = r#"echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","session_id":"s-9"}'"#;
+        let script = r#"
+echo '{"type":"system","subtype":"init","session_id":"s-9"}'
+echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","session_id":"s-9"}'
+"#;
         let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
 
         let execution = execute(&provider, &[Message::user("hi")]).await;
@@ -2703,6 +2709,56 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
             "{document}"
         );
         assert!(!path.exists(), "the MCP config outlived the run");
+    }
+
+    #[tokio::test]
+    async fn the_session_a_turn_is_given_reaches_the_agents_command_line() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let script = format!(
+            r#"printf '%s\n' "$@" > '{captured}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
+            captured = captured.display(),
+        );
+        let arguments = |settings: CliSettings| {
+            let captured = captured.clone();
+            async move {
+                run(
+                    &CliProvider::agent(AgentKind::Claude, settings),
+                    &[Message::user("hi")],
+                )
+                .await
+                .expect("an answer");
+                std::fs::read_to_string(&captured)
+                    .expect("the captured arguments")
+                    .lines()
+                    .map(str::to_string)
+                    .collect::<Vec<String>>()
+            }
+        };
+
+        let resumed = arguments(
+            settings(&directory, &script)
+                .with_session(Session::resumed("5b0c1f7e-8d43-4a77-9a3e-2f0d6c1b9e42")),
+        )
+        .await;
+        assert_eq!(
+            &resumed[resumed.len() - 3..],
+            [
+                "--resume",
+                "5b0c1f7e-8d43-4a77-9a3e-2f0d6c1b9e42",
+                "--print"
+            ],
+            "{resumed:?}"
+        );
+
+        let unpinned = arguments(settings(&directory, &script)).await;
+        assert!(
+            !unpinned
+                .iter()
+                .any(|argument| argument == "--resume" || argument == "--session-id"),
+            "a turn given no session was pinned to one: {unpinned:?}"
+        );
     }
 
     /// A caller that configured servers chose which ones load. With every

@@ -31,7 +31,11 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
     };
 
     match event {
-        Event::Thread { thread_id } => events.extend(thread_id.map(AgentEvent::Session)),
+        Event::Thread { thread_id } => events.extend(
+            thread_id
+                .filter(|thread| !thread.is_empty())
+                .map(AgentEvent::Session),
+        ),
         Event::Completed {
             item: Item::Message { text },
         } => events.push(AgentEvent::Text(text)),
@@ -427,6 +431,17 @@ mod tests {
             events.first(),
             Some(AgentEvent::Session(session)) if session == "019b2c41-0000-7000-8000-000000000001"
         ));
+    }
+
+    #[test]
+    fn an_empty_thread_identifier_announces_no_session() {
+        for line in [
+            r#"{"type":"thread.started","thread_id":""}"#,
+            r#"{"type":"thread.started"}"#,
+        ] {
+            let events = interpret_all(line);
+            assert!(events.is_empty(), "{line}: {events:?}");
+        }
     }
 
     #[test]

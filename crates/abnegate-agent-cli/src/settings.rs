@@ -6,10 +6,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use abnegate_llm::Credential;
+use abnegate_llm::ProviderError;
 use abnegate_secret::SecretValue;
 
+use crate::codex_sandbox::CodexSandbox;
+use crate::kind::AgentKind;
 use crate::mcp::McpConfig;
 use crate::mcp::McpServer;
+use crate::session::Session;
 use crate::tripwire::Tripwire;
 
 /// Five minutes, matching the default for any command `abnegate-exec` runs.
@@ -38,6 +42,52 @@ const PROXY_VARIABLES: &[&str] = &[
     "all_proxy",
     "no_proxy",
 ];
+
+/// Caller [arguments](CliSettings::arguments) with which Claude picks,
+/// carries on or forks a session, which a run given its own
+/// [session](CliSettings::session) refuses.
+const CLAUDE_SESSION_FLAGS: &[&str] = &[
+    "--resume",
+    "-r",
+    "--session-id",
+    "--continue",
+    "-c",
+    "--fork-session",
+];
+
+/// Caller [arguments](CliSettings::arguments) with which `codex exec` picks
+/// or forks a session, which a run given its own
+/// [session](CliSettings::session) refuses.
+const CODEX_SESSION_FLAGS: &[&str] = &["resume", "fork", "--last"];
+
+/// Caller [arguments](CliSettings::arguments) that choose or lift Codex's
+/// sandbox, directly or through a profile, which a run given its own
+/// [sandbox](CliSettings::sandbox) refuses.
+const CODEX_SANDBOX_FLAGS: &[&str] = &[
+    "--sandbox",
+    "-s",
+    "--full-auto",
+    "--approve-for-me",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--profile",
+    "-p",
+];
+
+/// Codex's flags overriding one configuration value, given as `key=value`.
+const CODEX_CONFIGURATION_FLAGS: &[&str] = &["-c", "--config"];
+
+/// The configuration key naming Codex's sandbox, at the top level or in a
+/// profile.
+const SANDBOX_MODE_KEY: &str = "sandbox_mode";
+
+/// The configuration key choosing the profile Codex reads its settings from.
+const PROFILE_KEY: &str = "profile";
+
+const KEY_SEPARATOR: char = '.';
+const KEY_QUOTES: [char; 2] = ['"', '\''];
+const LONG_FLAG: &str = "--";
+const FLAG: char = '-';
+const INLINE_VALUE: char = '=';
 
 /// Claude Code's tools that read files but never change anything, and the
 /// only built-in tools a read-only run makes available unless it
@@ -160,6 +210,20 @@ pub struct CliSettings {
     /// in a [read-only](CliSettings::read_only) run, which refuses anything
     /// not in [`READ_ONLY_SWITCHES`] or [`READ_ONLY_OPTIONS`].
     pub arguments: Vec<String>,
+    /// The agent's own session the run starts or resumes. `None` lets the
+    /// agent start one of its own choosing. A run given one refuses a caller
+    /// [argument](CliSettings::arguments) with which the agent would pick,
+    /// carry on or fork a session of its own, such as Claude's `--continue`
+    /// or Codex's `resume`, and a session whose id is empty or begins with
+    /// `-`, which the agent would read as a flag.
+    pub session: Option<Session>,
+    /// The sandbox Codex runs its own tools in. `None` leaves it to Codex's
+    /// configuration. A run given one refuses a caller
+    /// [argument](CliSettings::arguments) that would choose or lift the
+    /// sandbox instead: `--sandbox`, a profile, a bypass of approvals and
+    /// sandbox, or a `-c` override of `sandbox_mode` or `profile`. Codex
+    /// only.
+    pub sandbox: Option<CodexSandbox>,
     /// A JSON schema the final answer must satisfy. Claude only.
     pub schema: Option<String>,
     /// Appended to the agent's own system prompt, through a private
@@ -230,6 +294,8 @@ impl Default for CliSettings {
             allowed: BTreeSet::new(),
             inherit_environment: false,
             arguments: Vec::new(),
+            session: None,
+            sandbox: None,
             schema: None,
             instructions: None,
             permissions: Vec::new(),
@@ -363,6 +429,18 @@ impl CliSettings {
         self
     }
 
+    /// Start or resume `session`. See [`CliSettings::session`].
+    pub fn with_session(mut self, session: Session) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// Run Codex's own tools in `sandbox`. See [`CliSettings::sandbox`].
+    pub fn with_sandbox(mut self, sandbox: CodexSandbox) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
     /// Hold the final answer to the JSON schema `schema`, such as
     /// [`StructuredResult::SCHEMA`](crate::StructuredResult::SCHEMA).
     pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
@@ -432,6 +510,120 @@ impl CliSettings {
         self.tripwire = Some(Tripwire::new(tripwire));
         self
     }
+
+    /// Refuse a [session](CliSettings::session) the agent would misread, and
+    /// a caller [argument](CliSettings::arguments) with which `agent` would
+    /// choose what the session or the [sandbox](CliSettings::sandbox)
+    /// already chose, naming the flag but never its value.
+    pub(crate) fn refuse_conflicts(&self, agent: AgentKind) -> Result<(), ProviderError> {
+        if let Some(session) = &self.session
+            && (session.id.is_empty() || session.id.starts_with(FLAG))
+        {
+            return Err(ProviderError::config(
+                "a session id cannot be empty or begin with '-'",
+            ));
+        }
+        if agent == AgentKind::Claude
+            && let Some(session) = &self.session
+            && !session.resume
+            && !is_uuid(&session.id)
+        {
+            return Err(ProviderError::config(
+                "claude pins a session only by a UUID; resume one named otherwise",
+            ));
+        }
+        let (session_flags, sandbox_flags, configuration_flags): (&[&str], &[&str], &[&str]) =
+            match agent {
+                AgentKind::Claude => (CLAUDE_SESSION_FLAGS, &[], &[]),
+                AgentKind::Codex => (
+                    CODEX_SESSION_FLAGS,
+                    CODEX_SANDBOX_FLAGS,
+                    CODEX_CONFIGURATION_FLAGS,
+                ),
+            };
+        let chosen = [
+            (self.session.is_some(), session_flags, "session"),
+            (self.sandbox.is_some(), sandbox_flags, "sandbox"),
+        ];
+        for (index, argument) in self.arguments.iter().enumerate() {
+            for (_, flags, setting) in chosen.iter().filter(|(given, ..)| *given) {
+                if let Some(flag) = flags.iter().find(|flag| names(argument, flag)) {
+                    return Err(ProviderError::config(format!(
+                        "a run given its own {setting} cannot pass {flag}"
+                    )));
+                }
+            }
+            if self.sandbox.is_none() {
+                continue;
+            }
+            let next = self.arguments.get(index + 1).map(String::as_str);
+            for flag in configuration_flags {
+                if let Some(key) = value(argument, flag, next).and_then(sandbox_key) {
+                    return Err(ProviderError::config(format!(
+                        "a run given its own sandbox cannot pass {flag} {key}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether `argument` is `flag`, with or without its value attached. A flag
+/// that is not one, such as a subcommand, is only ever the whole argument.
+fn names(argument: &str, flag: &str) -> bool {
+    if flag.starts_with(LONG_FLAG) {
+        argument
+            .strip_prefix(flag)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(INLINE_VALUE))
+    } else if flag.starts_with(FLAG) {
+        !argument.starts_with(LONG_FLAG) && argument.starts_with(flag)
+    } else {
+        argument == flag
+    }
+}
+
+/// The value `argument` gives `flag`: attached to it, or `next` when the
+/// argument is the flag alone.
+fn value<'a>(argument: &'a str, flag: &str, next: Option<&'a str>) -> Option<&'a str> {
+    if !names(argument, flag) {
+        return None;
+    }
+    match &argument[flag.len()..] {
+        "" => next,
+        attached => Some(attached.strip_prefix(INLINE_VALUE).unwrap_or(attached)),
+    }
+}
+
+/// The key of a `key=value` configuration override when it chooses the
+/// sandbox: [`SANDBOX_MODE_KEY`] at the top level or in a profile, or the
+/// [`PROFILE_KEY`] whose settings Codex reads.
+fn sandbox_key(setting: &str) -> Option<&str> {
+    let key = setting
+        .split_once(INLINE_VALUE)
+        .map_or(setting, |(key, _)| key)
+        .trim();
+    let last = key
+        .rsplit(KEY_SEPARATOR)
+        .next()
+        .unwrap_or(key)
+        .trim()
+        .trim_matches(KEY_QUOTES);
+    let unquoted = key.trim_matches(KEY_QUOTES);
+    (last == SANDBOX_MODE_KEY || unquoted == PROFILE_KEY).then_some(key)
+}
+
+/// Whether `id` is a UUID in its hyphenated form, as `--session-id` takes it.
+fn is_uuid(id: &str) -> bool {
+    const HYPHENS: [usize; 4] = [8, 13, 18, 23];
+    id.len() == 36
+        && id.char_indices().all(|(at, character)| {
+            if HYPHENS.contains(&at) {
+                character == '-'
+            } else {
+                character.is_ascii_hexdigit()
+            }
+        })
 }
 
 #[cfg(test)]
@@ -440,6 +632,7 @@ mod tests {
     use std::time::Duration;
 
     use abnegate_llm::Credential;
+    use abnegate_llm::ProviderError;
     use abnegate_secret::SecretValue;
 
     use super::CliSettings;
@@ -449,7 +642,10 @@ mod tests {
     use super::DEFAULT_TIMEOUT;
     use super::READ_ONLY_TOOLS;
     use super::WEB_TOOLS;
+    use crate::codex_sandbox::CodexSandbox;
+    use crate::kind::AgentKind;
     use crate::mcp::McpServer;
+    use crate::session::Session;
 
     #[test]
     fn defaults_inherit_the_hosts_session_and_directory() {
@@ -464,6 +660,8 @@ mod tests {
         assert!(settings.allowed.is_empty());
         assert!(!settings.inherit_environment);
         assert!(settings.arguments.is_empty());
+        assert!(settings.session.is_none());
+        assert!(settings.sandbox.is_none());
         assert!(settings.schema.is_none());
         assert!(settings.instructions.is_none());
         assert!(settings.permissions.is_empty());
@@ -637,6 +835,240 @@ mod tests {
             assert!(settings.web);
             assert!(settings.read_only);
             assert_eq!(settings.permissions, READ_ONLY_TOOLS);
+        }
+    }
+
+    #[test]
+    fn a_turn_runs_in_a_session_of_the_agents_choosing_until_given_one() {
+        assert_eq!(CliSettings::default().session, None);
+
+        let session = Session::resumed("5b0c1f7e-8d43-4a77-9a3e-2f0d6c1b9e42");
+        let settings = CliSettings::default().with_session(session.clone());
+        assert_eq!(settings.session, Some(session));
+        for agent in [AgentKind::Claude, AgentKind::Codex] {
+            assert!(settings.refuse_conflicts(agent).is_ok(), "{agent}");
+        }
+    }
+
+    #[test]
+    fn codex_keeps_the_sandbox_of_its_configuration_until_given_one() {
+        assert_eq!(CliSettings::default().sandbox, None);
+
+        let settings = CliSettings::default().with_sandbox(CodexSandbox::WorkspaceWrite);
+        assert_eq!(settings.sandbox, Some(CodexSandbox::WorkspaceWrite));
+        assert!(settings.refuse_conflicts(AgentKind::Codex).is_ok());
+    }
+
+    /// Refuse `arguments` once `given` is set on settings carrying them, and
+    /// only then, naming `refused` in the error.
+    fn refused_once_given(
+        agent: AgentKind,
+        arguments: &[&str],
+        given: impl Fn(CliSettings) -> CliSettings,
+        refused: &str,
+    ) {
+        let settings = CliSettings::default().with_arguments(arguments.iter().copied());
+        assert!(
+            settings.refuse_conflicts(agent).is_ok(),
+            "{agent} {arguments:?}"
+        );
+
+        let error = given(settings)
+            .refuse_conflicts(agent)
+            .expect_err("a refusal");
+        assert!(
+            matches!(&error, ProviderError::Config { detail, .. } if detail.ends_with(refused)),
+            "{agent} {arguments:?}: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_claude_run_given_a_session_refuses_an_argument_choosing_another() {
+        for (arguments, flag) in [
+            (&["--resume", "6f1"][..], "--resume"),
+            (&["--resume=6f1"], "--resume"),
+            (&["--resume"], "--resume"),
+            (&["-r", "6f1"], "-r"),
+            (&["-r6f1"], "-r"),
+            (&["--session-id", "6f1"], "--session-id"),
+            (&["--session-id=6f1"], "--session-id"),
+            (&["--continue"], "--continue"),
+            (&["-c"], "-c"),
+            (&["--fork-session"], "--fork-session"),
+            (&["--fork-session=true"], "--fork-session"),
+        ] {
+            for session in [
+                Session::pinned("5b0c1f7e-8d43-4a77-9a3e-2f0d6c1b9e42"),
+                Session::resumed("5b0c"),
+            ] {
+                refused_once_given(
+                    AgentKind::Claude,
+                    arguments,
+                    |settings| settings.with_session(session.clone()),
+                    &format!("session cannot pass {flag}"),
+                );
+            }
+        }
+
+        let settings = CliSettings::default()
+            .with_session(Session::resumed("5b0c"))
+            .with_arguments(["--effort", "high", "--resume-picker-is-not-a-flag"]);
+        assert!(settings.refuse_conflicts(AgentKind::Claude).is_ok());
+    }
+
+    #[test]
+    fn a_codex_run_given_a_session_refuses_an_argument_choosing_another() {
+        for (arguments, flag) in [
+            (&["resume", "019b"][..], "resume"),
+            (&["fork", "019b"], "fork"),
+            (&["--last"], "--last"),
+        ] {
+            for session in [Session::pinned("019b"), Session::resumed("019b")] {
+                refused_once_given(
+                    AgentKind::Codex,
+                    arguments,
+                    |settings| settings.with_session(session.clone()),
+                    &format!("session cannot pass {flag}"),
+                );
+            }
+        }
+
+        let settings = CliSettings::default()
+            .with_session(Session::resumed("019b"))
+            .with_arguments(["-c", r#"model="o3""#, "--ephemeral", "--resumed-later"]);
+        assert!(
+            settings.refuse_conflicts(AgentKind::Codex).is_ok(),
+            "codex's -c sets configuration, not a session"
+        );
+    }
+
+    #[test]
+    fn a_codex_run_given_a_sandbox_refuses_an_argument_choosing_another() {
+        for (arguments, flag) in [
+            (&["--sandbox", "danger-full-access"][..], "--sandbox"),
+            (&["--sandbox=danger-full-access"], "--sandbox"),
+            (&["-s", "danger-full-access"], "-s"),
+            (&["-sdanger-full-access"], "-s"),
+            (&["--full-auto"], "--full-auto"),
+            (&["--approve-for-me"], "--approve-for-me"),
+            (
+                &["--dangerously-bypass-approvals-and-sandbox"],
+                "--dangerously-bypass-approvals-and-sandbox",
+            ),
+            (&["--profile", "unconfined"], "--profile"),
+            (&["-p", "unconfined"], "-p"),
+        ] {
+            refused_once_given(
+                AgentKind::Codex,
+                arguments,
+                |settings| settings.with_sandbox(CodexSandbox::ReadOnly),
+                &format!("sandbox cannot pass {flag}"),
+            );
+        }
+    }
+
+    #[test]
+    fn a_codex_run_given_a_sandbox_refuses_a_configuration_override_choosing_another() {
+        for (arguments, refused) in [
+            (
+                &["-c", r#"sandbox_mode="danger-full-access""#][..],
+                "-c sandbox_mode",
+            ),
+            (
+                &[r#"-csandbox_mode="danger-full-access""#],
+                "-c sandbox_mode",
+            ),
+            (
+                &[r#"-c=sandbox_mode="danger-full-access""#],
+                "-c sandbox_mode",
+            ),
+            (
+                &["--config", r#"sandbox_mode="danger-full-access""#],
+                "--config sandbox_mode",
+            ),
+            (
+                &[r#"--config=sandbox_mode="danger-full-access""#],
+                "--config sandbox_mode",
+            ),
+            (
+                &["-c", r#" sandbox_mode = "danger-full-access""#],
+                "-c sandbox_mode",
+            ),
+            (
+                &["-c", r#"profiles.open.sandbox_mode="danger-full-access""#],
+                "-c profiles.open.sandbox_mode",
+            ),
+            (&["-c", r#"profile="open""#], "-c profile"),
+        ] {
+            refused_once_given(
+                AgentKind::Codex,
+                arguments,
+                |settings| settings.with_sandbox(CodexSandbox::WorkspaceWrite),
+                refused,
+            );
+        }
+
+        let settings = CliSettings::default()
+            .with_sandbox(CodexSandbox::WorkspaceWrite)
+            .with_arguments([
+                "-c",
+                r#"model="o3""#,
+                "--config",
+                "sandbox_workspace_write.network_access=true",
+                "-c",
+            ]);
+        assert!(settings.refuse_conflicts(AgentKind::Codex).is_ok());
+    }
+
+    #[test]
+    fn a_pinned_claude_session_must_be_a_uuid() {
+        for id in [
+            "tenant-123",
+            "5b0c1f7e8d434a779a3e2f0d6c1b9e42",
+            "5b0c1f7e-8d43-4a77-9a3e-2f0d6c1b9e4z",
+        ] {
+            let error = CliSettings::default()
+                .with_session(Session::pinned(id))
+                .refuse_conflicts(AgentKind::Claude)
+                .expect_err("claude pins only a uuid");
+            assert!(
+                matches!(error, ProviderError::Config { .. }),
+                "{id:?}: {error:?}"
+            );
+        }
+        for (agent, session) in [
+            (
+                AgentKind::Claude,
+                Session::pinned("5B0C1F7E-8D43-4A77-9A3E-2F0D6C1B9E42"),
+            ),
+            (AgentKind::Claude, Session::resumed("tenant-123")),
+            (AgentKind::Codex, Session::pinned("tenant-123")),
+        ] {
+            assert!(
+                CliSettings::default()
+                    .with_session(session.clone())
+                    .refuse_conflicts(agent)
+                    .is_ok(),
+                "{agent} {session:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_the_agent_would_read_as_a_flag_is_refused() {
+        for id in ["", "-", "--dangerously-skip-permissions"] {
+            for session in [Session::pinned(id), Session::resumed(id)] {
+                for agent in [AgentKind::Claude, AgentKind::Codex] {
+                    let error = CliSettings::default()
+                        .with_session(session.clone())
+                        .refuse_conflicts(agent)
+                        .expect_err("a refusal");
+                    assert!(
+                        matches!(error, ProviderError::Config { .. }),
+                        "{agent} {id:?}: {error:?}"
+                    );
+                }
+            }
         }
     }
 }

@@ -19,6 +19,8 @@
 //! [`CliProvider::execute`] returns the whole [`Execution`] for a caller that
 //! needs more than prose: the answer to a [`StructuredResult::SCHEMA`], the
 //! session to resume, the cost, and where the run's [`log`] files are. A
+//! run can start the agent's own [`Session`] under an id of the caller's
+//! choosing or resume one, and confine Codex to a [`CodexSandbox`]. A
 //! Claude or Codex run can attach [`mcp`] servers, and a Claude run can
 //! restrict its tools, or be confined to reading its working directory with
 //! [`CliSettings::read_only`], and
@@ -106,6 +108,7 @@
 //! `abnegate-exec`.
 
 mod attachments;
+mod codex_sandbox;
 mod delivery;
 mod diagnostics;
 mod environment;
@@ -124,6 +127,7 @@ mod question;
 mod reader;
 mod reaper;
 mod scrubber;
+mod session;
 mod settings;
 mod stdout_parse_result;
 pub mod stream;
@@ -135,6 +139,7 @@ mod tripwire;
 mod verdict;
 
 pub use crate::attachments::Attachments;
+pub use crate::codex_sandbox::CodexSandbox;
 pub use crate::delivery::Delivery;
 pub use crate::event::AgentEvent;
 pub use crate::execution::Execution;
@@ -165,6 +170,7 @@ pub use crate::parser::claude::RateLimitReport;
 pub use crate::parser::claude::StreamEvent;
 pub use crate::provider::CliProvider;
 pub use crate::question::BlockingQuestion;
+pub use crate::session::Session;
 pub use crate::settings::CliSettings;
 pub use crate::settings::DEFAULT_JOURNAL_LIMIT;
 pub use crate::settings::DEFAULT_LINE_LIMIT;
