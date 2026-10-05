@@ -186,7 +186,7 @@ pub enum ProviderError {
 
 const REJECTED: [u16; 4] = [400, 404, 413, 422];
 const REQUEST_TIMEOUT: u16 = 408;
-const TOO_MANY_REQUESTS: u16 = 429;
+pub(crate) const TOO_MANY_REQUESTS: u16 = 429;
 const FIRST_SERVER_ERROR: u16 = 500;
 
 fn transient_status(status: u16) -> bool {

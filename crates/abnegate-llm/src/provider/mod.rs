@@ -17,7 +17,7 @@ mod capabilities;
 mod completion;
 mod completion_provider;
 mod credential;
-mod error;
+pub(crate) mod error;
 mod exit_status;
 mod http;
 mod kind;

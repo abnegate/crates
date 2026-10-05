@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::parse_error::ParseError;
 
-const KIND: &str = "cost strategy";
-const BUDGET_PREFIX: &str = "budget:";
+pub(crate) const KIND: &str = "cost strategy";
+pub(crate) const BUDGET_PREFIX: &str = "budget:";
 
 /// How to choose between the models that can do a task.
 ///
