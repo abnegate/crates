@@ -6,6 +6,8 @@ pub(super) enum CharacterSet {
     Alphanumeric,
     /// `[A-Za-z0-9_.:/+-]`
     Token,
+    /// `[A-Za-z0-9_.:+-]`, a token that ends at a path separator.
+    Segment,
     /// `[A-Za-z0-9_-]`
     Word,
     /// `[A-Za-z0-9+/_-]`
@@ -18,6 +20,7 @@ impl CharacterSet {
             || match self {
                 Self::Alphanumeric => false,
                 Self::Token => matches!(byte, b'_' | b'.' | b':' | b'/' | b'+' | b'-'),
+                Self::Segment => matches!(byte, b'_' | b'.' | b':' | b'+' | b'-'),
                 Self::Word => matches!(byte, b'_' | b'-'),
                 Self::Encoded => matches!(byte, b'+' | b'/' | b'_' | b'-'),
             }

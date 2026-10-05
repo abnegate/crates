@@ -7,6 +7,7 @@ use std::ops::Range;
 use crate::redact::character_set::CharacterSet;
 use crate::redact::credential::CREDENTIALS;
 use crate::redact::credential::Credential;
+use crate::redact::credential::Prose;
 use crate::work;
 
 /// Stands in for every credential this module removes, and for the body of a
@@ -130,11 +131,12 @@ pub fn redact(text: &str) -> Cow<'_, str> {
     let bytes = text.as_bytes();
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut userinfo: Option<usize> = None;
+    let mut prose: Option<Prose> = None;
     let mut index = 0;
 
     while index < bytes.len() {
         if may_start_secret(bytes, index, userinfo)
-            && let Some(end) = secret_at(text, index, &mut userinfo)
+            && let Some(end) = secret_at(text, index, &mut userinfo, &mut prose)
         {
             spans.push((index, end));
             userinfo = None;
@@ -175,10 +177,15 @@ fn may_start_secret(bytes: &[u8], index: usize, userinfo: Option<usize>) -> bool
             }))
 }
 
-fn secret_at(text: &str, index: usize, userinfo: &mut Option<usize>) -> Option<usize> {
+fn secret_at(
+    text: &str,
+    index: usize,
+    userinfo: &mut Option<usize>,
+    prose: &mut Option<Prose>,
+) -> Option<usize> {
     let bytes = text.as_bytes();
     private_key_at(text, index)
-        .or_else(|| credential_at(bytes, index))
+        .or_else(|| credential_at(bytes, index, prose))
         .or_else(|| aws_access_key_at(bytes, index))
         .or_else(|| json_web_token_at(bytes, index))
         .or_else(|| url_password_at(bytes, index, userinfo))
@@ -477,7 +484,7 @@ fn reads_as_words(candidate: &[u8]) -> bool {
     }) && (lowercase_tail || uppercase)
 }
 
-fn credential_at(bytes: &[u8], index: usize) -> Option<usize> {
+fn credential_at(bytes: &[u8], index: usize, prose: &mut Option<Prose>) -> Option<usize> {
     if (index > 0 && bytes[index - 1].is_ascii_alphanumeric())
         || !Credential::may_start(bytes[index])
     {
@@ -485,7 +492,7 @@ fn credential_at(bytes: &[u8], index: usize) -> Option<usize> {
     }
     CREDENTIALS
         .iter()
-        .find_map(|credential| credential.end_at(bytes, index))
+        .find_map(|credential| credential.end_at(bytes, index, prose))
 }
 
 /// An AWS access key ID: a four-letter prefix and sixteen uppercase letters or
@@ -1173,6 +1180,10 @@ mod tests {
             concat!("AKIA", "0123456789ABCDEF"),
             concat!("ASIA", "0123456789ABCDEF"),
             concat!("glpat-", "0123456789abcdefghij"),
+            concat!("xai-", "0123456789abcdefghij"),
+            concat!("xai_", "0123456789abcdefghij"),
+            concat!("sk_", "0123456789abcdefghij"),
+            concat!("sk_", "4f9c2b17a3e6d580c1b2a3948f7e6d5c4b3a29184f9c2b17"),
             concat!("sk_live_", "0123456789abcdefghij"),
             concat!("sk_test_", "0123456789abcdefghij"),
             concat!("rk_live_", "0123456789abcdefghij"),
@@ -1406,6 +1417,39 @@ mod tests {
     }
 
     #[test]
+    fn redacts_an_xai_key_and_a_bare_sk_key() {
+        for (text, expected) in [
+            (
+                concat!("XAI_API_KEY is xai-", "AbCdEf0123456789GhIjKl"),
+                format!("XAI_API_KEY is {REDACTED}"),
+            ),
+            (
+                concat!("export XAI_KEY xai_", "AbCdEf0123456789GhIjKl"),
+                format!("export XAI_KEY {REDACTED}"),
+            ),
+            (
+                concat!("401 for sk_", "4f9c2b17a3e6d580c1b2a394, retrying"),
+                format!("401 for {REDACTED}, retrying"),
+            ),
+        ] {
+            assert_eq!(redact(text), expected);
+        }
+    }
+
+    #[test]
+    fn a_bare_sk_identifier_shorter_than_a_key_is_left_alone() {
+        for text in [
+            "sk_buff",
+            "inet->sk_v6_rcv_saddr",
+            concat!("sk_", "0123456789abcde"),
+            concat!("xai-", "0123456"),
+            concat!("xai_", "0123456"),
+        ] {
+            assert!(matches!(redact(text), Cow::Borrowed(_)), "{text}");
+        }
+    }
+
+    #[test]
     fn a_count_of_tokens_is_not_a_token() {
         for text in [
             "max_tokens=200000",
@@ -1432,6 +1476,90 @@ mod tests {
             ("max_tokens=200000abc", format!("max_tokens={REDACTED}")),
         ] {
             assert_eq!(redact(text), expected);
+        }
+    }
+
+    #[test]
+    fn a_path_named_like_a_credential_prefix_is_left_alone() {
+        for text in [
+            "~/Local/sk-learn-experiments",
+            "cd ~/Local/sk-learn-experiments/notebooks && ls",
+            "/opt/xai-sdk-python/README.md",
+            "npm_config_cache=/Users/dev/.npm",
+            "sk_receive_queue_length",
+            "sk-sk-sk-sk-sk-sk",
+        ] {
+            assert!(matches!(redact(text), Cow::Borrowed(_)), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_credential_in_a_path_stops_at_the_separator() {
+        for (text, expected) in [
+            (
+                concat!("cd ~/Local/sk-", "0123456789abcdefghij/notebooks"),
+                format!("cd ~/Local/{REDACTED}/notebooks"),
+            ),
+            (
+                concat!("GET /v1/keys/ghp_", "0123456789abcdefghij/rotate"),
+                format!("GET /v1/keys/{REDACTED}/rotate"),
+            ),
+            (
+                concat!("GET /v1/keys/sk_live_", "0123456789abcdefghij/rotate"),
+                format!("GET /v1/keys/{REDACTED}/rotate"),
+            ),
+        ] {
+            assert_eq!(redact(text), expected);
+        }
+    }
+
+    #[test]
+    fn a_sentry_token_runs_past_the_slashes_its_base64_carries() {
+        let token = concat!("sntrys_", "eyJpYXQiOjE2ODcz/MzY1NDMuNjk4+NTks");
+        assert_eq!(
+            redact(&format!("SENTRY {token} expired")),
+            format!("SENTRY {REDACTED} expired")
+        );
+    }
+
+    #[test]
+    fn a_credential_after_a_wordy_prefix_is_still_redacted() {
+        for (text, expected) in [
+            (
+                concat!("sk_learn_experiments_and_more-ghp_", "abcdefgh.0123456789"),
+                format!("sk_learn_experiments_and_more-{REDACTED}"),
+            ),
+            (
+                concat!("sk_learn_experiments_and_more-sntrys_", "abcdefgh/ijklmnop"),
+                format!("sk_learn_experiments_and_more-{REDACTED}"),
+            ),
+            (
+                concat!("sk_learn_experiments_and_more-ghp_", "0123456789abcdefghij"),
+                REDACTED.to_string(),
+            ),
+        ] {
+            assert_eq!(redact(text), expected);
+        }
+    }
+
+    #[test]
+    fn prefixes_inside_a_wordy_body_are_scanned_once() {
+        for unit in [
+            "sk-",
+            "sk_live_a-",
+            "hf_a-sk_a-ghp_a-sntrys_",
+            "xai_sk-a_",
+            "sk_abcdefghijklmnop-ghp_a.",
+            "sk_abcdefghijklmnop-sntrys_a/",
+            "sk_abcdefghijklmnop-ghp_a-ghp_a-ghp_a. ",
+        ] {
+            work::assert_linear(
+                LENGTH / unit.len(),
+                |repetitions| unit.repeat(repetitions),
+                |text| {
+                    redact(text);
+                },
+            );
         }
     }
 

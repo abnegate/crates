@@ -149,6 +149,12 @@ pub(super) const ALLOWED: &[Allowance] = &[
     },
     Allowance {
         file: "redact/credential.rs",
+        code: "index + credential.prefix.len() <= self.end \
+               && self.stop.is_none_or(|byte| !credential.body.contains(byte))",
+        walks: "one byte, in a credential's character set",
+    },
+    Allowance {
+        file: "redact/credential.rs",
         code: "while index < credentials.len() {",
         walks: "the credential table, at compile time",
     },
