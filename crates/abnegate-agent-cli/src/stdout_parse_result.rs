@@ -2,8 +2,10 @@
 
 use std::time::Duration;
 
+use abnegate_llm::Limit;
 use abnegate_llm::ToolCall;
 use abnegate_llm::Usage;
+use abnegate_llm::Window;
 use serde::de::DeserializeOwned;
 
 use crate::event::AgentEvent;
@@ -48,12 +50,20 @@ pub struct StdoutParseResult {
     /// The plan's window the account's usage credits carried the run past,
     /// when the agent said they did.
     pub credits: Option<String>,
+    /// The usage limit that refused the turn, when the run's
+    /// [failure](StdoutParseResult::failure) was one: its message is that
+    /// failure.
+    pub limit: Option<Limit>,
+    /// The latest report on each of the plan's usage windows, in the order
+    /// each was first reported.
+    pub windows: Vec<Window>,
 }
 
 impl StdoutParseResult {
-    /// Fold one event in. Prose and tool calls accumulate, the first failure
-    /// and the first credit window are kept, and every other field takes the
-    /// latest value reported.
+    /// Fold one event in. Prose and tool calls accumulate, the first failure,
+    /// a limit's included, and the first credit window are kept, a window
+    /// report replaces the last one on the same window, and every other
+    /// field takes the latest value reported.
     pub fn record(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Text(chunk) => self.text.push_str(&chunk),
@@ -63,6 +73,23 @@ impl StdoutParseResult {
             AgentEvent::Failed(message) => {
                 self.finished = true;
                 self.failure.get_or_insert(message);
+            }
+            AgentEvent::Limited(limit) => {
+                self.finished = true;
+                if self.failure.is_none() {
+                    self.failure = Some(limit.message.clone());
+                    self.limit = Some(limit);
+                }
+            }
+            AgentEvent::Window(window) => {
+                match self
+                    .windows
+                    .iter_mut()
+                    .find(|known| known.name == window.name)
+                {
+                    Some(known) => *known = window,
+                    None => self.windows.push(window),
+                }
             }
             AgentEvent::Finished { finish_reason } => {
                 self.finished = true;
@@ -118,7 +145,9 @@ impl FromIterator<AgentEvent> for StdoutParseResult {
 mod tests {
     use std::time::Duration;
 
+    use abnegate_llm::Limit;
     use abnegate_llm::Usage;
+    use abnegate_llm::Window;
     use serde_json::json;
 
     use super::StdoutParseResult;
@@ -144,6 +173,8 @@ mod tests {
         assert!(result.latency.is_none());
         assert_eq!(result.dropped, 0);
         assert!(result.credits.is_none());
+        assert!(result.limit.is_none());
+        assert!(result.windows.is_empty());
         assert!(format!("{result:?}").contains("StdoutParseResult"));
     }
 
@@ -276,6 +307,75 @@ mod tests {
         .collect();
 
         assert_eq!(result.credits.as_deref(), Some("five_hour"));
+        assert!(!result.finished);
+        assert!(result.failure.is_none());
+    }
+
+    #[test]
+    fn a_limit_finishes_the_run_as_its_failure() {
+        let limit = Limit::new("rate limit reached (five_hour, rejected): You've hit your limit")
+            .with_window(Window::new("five_hour").with_used_percent(100.0));
+        let mut result: StdoutParseResult = [
+            AgentEvent::Text("Halfway there.".to_string()),
+            AgentEvent::Limited(limit.clone()),
+        ]
+        .into_iter()
+        .collect();
+        result.conclude();
+
+        assert!(result.finished);
+        assert_eq!(result.failure.as_deref(), Some(limit.message.as_str()));
+        assert_eq!(result.limit, Some(limit));
+    }
+
+    #[test]
+    fn only_a_limit_that_is_the_first_failure_is_kept() {
+        let failed_first: StdoutParseResult = [
+            AgentEvent::Failed("Invalid API key provided".to_string()),
+            AgentEvent::Limited(Limit::new("You have hit your usage limit.")),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            failed_first.failure.as_deref(),
+            Some("Invalid API key provided")
+        );
+        assert!(failed_first.limit.is_none(), "{failed_first:?}");
+
+        let limited_first: StdoutParseResult = [
+            AgentEvent::Limited(Limit::new("You have hit your usage limit.")),
+            AgentEvent::Limited(Limit::new("You have hit your weekly limit.")),
+            AgentEvent::Failed("turn failed".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            limited_first.failure.as_deref(),
+            Some("You have hit your usage limit.")
+        );
+        assert_eq!(
+            limited_first.limit.map(|limit| limit.message),
+            Some("You have hit your usage limit.".to_string())
+        );
+    }
+
+    #[test]
+    fn each_window_keeps_its_latest_report_in_the_order_first_reported() {
+        let result: StdoutParseResult = [
+            AgentEvent::Window(Window::new("five_hour").with_used_percent(40.0)),
+            AgentEvent::Window(Window::new("seven_day").with_used_percent(10.0)),
+            AgentEvent::Window(Window::new("five_hour").with_used_percent(43.0)),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            result.windows,
+            [
+                Window::new("five_hour").with_used_percent(43.0),
+                Window::new("seven_day").with_used_percent(10.0),
+            ]
+        );
         assert!(!result.finished);
         assert!(result.failure.is_none());
     }

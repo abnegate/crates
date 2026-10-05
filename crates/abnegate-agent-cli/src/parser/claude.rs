@@ -5,6 +5,7 @@ mod cli_message;
 mod cli_usage;
 mod credits_refusal;
 mod rate_limit_report;
+mod refusal;
 mod stream_event;
 mod turn;
 
@@ -15,6 +16,9 @@ pub use crate::parser::claude::rate_limit_report::RateLimitReport;
 pub use crate::parser::claude::stream_event::StreamEvent;
 pub use crate::parser::claude::turn::Turn;
 
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::event::AgentEvent;
@@ -82,6 +86,17 @@ pub fn essential(prefix: &str) -> bool {
     top(ASSISTANT)
         && parser::field(prefix, PARENT).is_none()
         && (blocks.peek().is_none() || blocks.any(|kind| kind == TEXT))
+}
+
+/// A field claude may one day send in another shape, read as absent rather
+/// than losing the whole line, and with it a refusal, to a parse error.
+pub(crate) fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 /// A line that is not a stream event can still be the CLI's final JSON
@@ -239,14 +254,17 @@ mod tests {
     }
 
     #[test]
-    fn a_headroom_report_is_not_a_failure() {
+    fn a_headroom_report_is_a_window_and_not_a_failure() {
         for status in ["allowed", "allowed_warning"] {
             let line = format!(
-                r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"{status}","rateLimitType":"five_hour","utilization":72.5}}}}"#
+                r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"{status}","rateLimitType":"five_hour","utilization":0.725}}}}"#
             );
             let mut events = Vec::new();
             interpret(&line, &mut events);
-            assert!(events.is_empty(), "{status} was treated as a failure");
+            assert!(
+                matches!(events.as_slice(), [AgentEvent::Window(window)] if window.used_percent == Some(72.5)),
+                "{status}: {events:?}"
+            );
         }
     }
 
@@ -266,42 +284,48 @@ mod tests {
                 panic!("expected a remembered refusal for {line}, got {events:?}");
             };
             assert!(
-                remembered.starts_with("rate limit reached: {"),
+                remembered.starts_with("rate limit reached ("),
                 "{remembered}"
             );
 
             let events = interpret_all(&format!("{line}\n{REFUSED}"));
-            let failures: Vec<_> = events
+            let limits: Vec<_> = events
                 .iter()
                 .filter_map(|event| match event {
-                    AgentEvent::Failed(message) => Some(message.as_str()),
+                    AgentEvent::Limited(limit) => Some(limit.message.as_str()),
                     _ => None,
                 })
                 .collect();
-            let [failure] = failures.as_slice() else {
-                panic!("expected one failure for {line}, got {events:?}");
+            let [limit] = limits.as_slice() else {
+                panic!("expected one limit for {line}, got {events:?}");
             };
-            assert!(failure.starts_with("rate limit reached: {"), "{failure}");
-            assert!(failure.ends_with(": You've hit your limit"), "{failure}");
+            assert!(limit.starts_with("rate limit reached ("), "{limit}");
+            assert!(limit.ends_with("): You've hit your limit"), "{limit}");
         }
     }
 
     #[test]
-    fn a_refusal_quotes_its_report_with_the_reset_wherever_the_cli_put_it() {
-        for line in [
-            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"exceeded","resetsAt":"2026-02-23T06:00:00Z","rateLimitType":"seven_day","utilization":1.0}}"#,
-            r#"{"type":"rate_limit_event","resetsAt":"2026-02-23T06:00:00Z"}"#,
+    fn a_refusal_names_its_window_and_status_and_keeps_the_reset_wherever_the_cli_put_it() {
+        let reset = chrono::DateTime::parse_from_rfc3339("2026-02-23T06:00:00Z")
+            .expect("a valid timestamp")
+            .with_timezone(&chrono::Utc);
+        for (line, wording) in [
+            (
+                r#"{"type":"rate_limit_event","rate_limit_info":{"status":"exceeded","resetsAt":"2026-02-23T06:00:00Z","rateLimitType":"seven_day","utilization":1.0}}"#,
+                "rate limit reached (seven_day, exceeded): You've hit your limit",
+            ),
+            (
+                r#"{"type":"rate_limit_event","resetsAt":"2026-02-23T06:00:00Z"}"#,
+                "rate limit reached (request, ): You've hit your limit",
+            ),
         ] {
             let events = interpret_all(&format!("{line}\n{REFUSED}"));
 
-            let [AgentEvent::Diagnostic(_), AgentEvent::Failed(message)] = events.as_slice() else {
-                panic!("expected one failure for {line}, got {events:?}");
+            let [AgentEvent::Diagnostic(_), AgentEvent::Limited(limit)] = events.as_slice() else {
+                panic!("expected one limit for {line}, got {events:?}");
             };
-            assert!(message.starts_with("rate limit reached: {"), "{message}");
-            assert!(
-                message.contains(r#""resetsAt":"2026-02-23T06:00:00Z""#),
-                "{message}"
-            );
+            assert_eq!(limit.message, wording);
+            assert_eq!(limit.resets_at, Some(reset), "{line}");
         }
 
         let events = interpret_all(&format!(
@@ -310,7 +334,8 @@ mod tests {
         ));
         assert!(matches!(
             events.as_slice(),
-            [AgentEvent::Diagnostic(_), AgentEvent::Failed(message)] if message.contains(r#""resetsAt":1772096400"#)
+            [AgentEvent::Diagnostic(_), AgentEvent::Limited(limit)]
+                if limit.resets_at == chrono::DateTime::from_timestamp(1_772_096_400, 0)
         ));
     }
 
@@ -352,11 +377,23 @@ mod tests {
 
     #[test]
     fn a_success_subtype_carrying_an_error_flag_is_still_a_failure() {
-        let line = r#"{"type":"result","subtype":"success","is_error":true,"result":"You have hit your weekly limit"}"#;
+        let line = r#"{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key provided"}"#;
         let mut events = Vec::new();
         interpret(line, &mut events);
 
         assert!(matches!(events.as_slice(), [AgentEvent::Failed(_)]));
+    }
+
+    #[test]
+    fn a_success_subtype_carrying_an_error_flag_in_limit_words_is_a_limit() {
+        let line = r#"{"type":"result","subtype":"success","is_error":true,"result":"You have hit your weekly limit"}"#;
+        let mut events = Vec::new();
+        interpret(line, &mut events);
+
+        assert!(
+            matches!(events.as_slice(), [AgentEvent::Limited(limit)] if limit.message == "You have hit your weekly limit"),
+            "{events:?}"
+        );
     }
 
     #[test]

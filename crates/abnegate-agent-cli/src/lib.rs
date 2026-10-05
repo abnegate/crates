@@ -96,7 +96,21 @@
 //! Nothing here decides whether a failure is worth retrying. A caller already
 //! owns that judgement and makes it by reading the failure text, so a provider
 //! reports what went wrong in the agent's own words, with any credential
-//! scrubbed out. A failure the agent reported is followed by
+//! scrubbed out. A turn a usage limit refused is told apart all the same: it
+//! is an [`AgentEvent::Limited`], and the run fails with
+//! [`ProviderError::Limited`](abnegate_llm::ProviderError::Limited), which
+//! renders exactly as the agent failure it replaces and carries the
+//! [`Limit`](abnegate_llm::Limit): when it lifts, which window refused the
+//! turn, and whether the account's usage credits ran out.
+//! [`CliProvider::execute`] keeps it in [`StdoutParseResult::limit`] in the
+//! agent's words alone, with the end of the agent's stderr in
+//! [`Execution::stderr`]. A Claude stream that ends on a refused window with
+//! no line after it fails as an agent failure in the same words, not as a
+//! limit. A Claude turn that
+//! reports how much of a plan's window is spent yields an
+//! [`AgentEvent::Window`], kept by name in [`StdoutParseResult::windows`],
+//! under the name Claude streams it with and its
+//! [`WindowKind`](abnegate_llm::WindowKind). A failure the agent reported is followed by
 //! [`STDERR_HEADING`] and the last whole lines of its stderr that fit in
 //! 1 KiB, since some agents give the reason only there, so a caller splits on
 //! the heading to read the agent's words alone. An agent that exits with no
@@ -105,12 +119,16 @@
 //! [`PROSE_EXCEEDED`].
 //!
 //! A Claude turn's failure begins with a marker ahead of those words when
-//! Claude says why it refused the request: `rate limit reached` and the CLI's
-//! own report for a refused plan window, [`CREDITS_REQUIRED`] or
+//! Claude says why it refused the request: `rate limit reached (<window>,
+//! <status>)` for a refused plan window, [`CREDITS_REQUIRED`] or
 //! [`LONG_CONTEXT_CREDITS_REQUIRED`] for a model or a context the account's
 //! usage credits cannot fund, and [`CREDITS_UNCONFIRMED`] for such a refusal
-//! Claude could not look the credits up for. A subagent's refusal is never
-//! the turn's: Claude hands it to the main agent, which answers without it.
+//! Claude could not look the credits up for, which is a failure rather than
+//! a limit. Every other one is a limit, and so is a failed result Claude
+//! gives status 429 or words a limit in, unless it gives status 401; a Codex
+//! turn that fails in a limit's words is one unless they name a 401. A
+//! subagent's refusal is never the turn's: Claude hands it to the main agent,
+//! which answers without it.
 //! A turn the account's usage credits carry past the plan's window is logged
 //! once, at info, and named in [`StdoutParseResult::credits`].
 //!

@@ -14,6 +14,10 @@ use crate::event::AgentEvent;
 /// failed in any way ends it with one `Err`, the error
 /// [`CompletionProvider::complete`](abnegate_llm::CompletionProvider::complete)
 /// would have returned; a failure the agent reported is that error and is
-/// never yielded as an [`AgentEvent::Failed`]. Dropping the stream while the
-/// agent still runs stops it and every process it forked.
+/// never yielded as an [`AgentEvent::Failed`], and a turn a usage limit
+/// refused ends it in a [`ProviderError::Limited`] rather than yielding an
+/// [`AgentEvent::Limited`]. A Claude stream that ends on a refused window
+/// with no line after it ends in a [`ProviderError::Agent`] in the words the
+/// limit would have had. Dropping the stream while the agent still runs
+/// stops it and every process it forked.
 pub type AgentStream = Pin<Box<dyn Stream<Item = Result<AgentEvent, ProviderError>> + Send>>;

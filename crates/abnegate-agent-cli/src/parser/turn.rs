@@ -53,18 +53,16 @@ mod tests {
             &mut events,
         );
 
-        let failures: Vec<&str> = events
+        let limits: Vec<&str> = events
             .iter()
             .filter_map(|event| match event {
-                AgentEvent::Failed(message) => Some(message.as_str()),
+                AgentEvent::Limited(limit) => Some(limit.message.as_str()),
                 _ => None,
             })
             .collect();
         assert_eq!(
-            failures,
-            [
-                r#"rate limit reached: {"status":"rejected","rateLimitType":"five_hour"}: You've hit your limit"#
-            ]
+            limits,
+            ["rate limit reached (five_hour, rejected): You've hit your limit"]
         );
     }
 

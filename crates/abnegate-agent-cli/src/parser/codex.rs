@@ -5,6 +5,7 @@ mod item;
 mod reason;
 mod token_counts;
 
+use abnegate_llm::Limit;
 use abnegate_llm::Usage;
 use abnegate_secret::redact;
 use serde_json::Map;
@@ -23,6 +24,10 @@ const COMPLETED_ITEM: &str = "item.completed";
 const MESSAGE: &str = "agent_message";
 const FAILED_TURN: &str = "the agent reported a failed turn";
 const ERROR: &str = "the agent reported an error";
+
+/// The status codex names a refused sign-in with, which no wording makes a
+/// limit.
+const UNAUTHORIZED: &str = "401";
 
 /// Translate one line of the stream, appending whatever it means.
 pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
@@ -77,7 +82,7 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
                 finish_reason: Some(COMPLETED.to_string()),
             });
         }
-        Event::Failed { error, message } => events.push(AgentEvent::Failed(
+        Event::Failed { error, message } => events.push(failed(
             error
                 .and_then(|error| error.message)
                 .or(message)
@@ -91,6 +96,24 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
         }
         | Event::Ignored => {}
     }
+}
+
+/// A failed turn, which is a limit when codex's words say one refused it,
+/// unless they name a sign-in codex was refused. codex reports no reset time
+/// or window with one.
+fn failed(message: String) -> AgentEvent {
+    if Limit::worded(&message) && !unauthorized(&message) {
+        return AgentEvent::Limited(Limit::new(message));
+    }
+    AgentEvent::Failed(message)
+}
+
+/// Whether `message` names [`UNAUTHORIZED`] as a number of its own, rather
+/// than as digits of a longer one such as a count of seconds.
+fn unauthorized(message: &str) -> bool {
+    message
+        .split(|character: char| !character.is_ascii_digit())
+        .any(|number| number == UNAUTHORIZED)
 }
 
 /// Whether an event too long to read, of which only `prefix` is known, is
@@ -462,23 +485,64 @@ mod tests {
     }
 
     #[test]
-    fn an_exhausted_quota_reads_as_a_rate_limit_to_the_caller() {
+    fn an_exhausted_quota_is_a_limit_without_a_reset_time() {
         let events = interpret_all(QUOTA);
 
         let [
             AgentEvent::Session(_),
             AgentEvent::Diagnostic(diagnostic),
-            AgentEvent::Failed(failure),
+            AgentEvent::Limited(limit),
         ] = events.as_slice()
         else {
-            panic!("expected a diagnostic then the failed turn, got {events:?}");
+            panic!("expected a diagnostic then the failed turn as a limit, got {events:?}");
         };
-        for message in [diagnostic, failure] {
+        assert_eq!(
+            limit.message,
+            "You have hit your usage limit. Try again later."
+        );
+        for message in [diagnostic, &limit.message] {
             assert!(
                 message.to_ascii_lowercase().contains("usage limit"),
                 "the caller cannot classify {message:?}"
             );
         }
+        assert_eq!(limit.resets_at, None);
+        assert_eq!(limit.window, None);
+        assert!(!limit.credits);
+    }
+
+    #[test]
+    fn digits_of_a_longer_number_are_no_unauthorized_turn() {
+        for words in [
+            "You have hit your usage limit. Try again in 2401 seconds.",
+            "You have hit your usage limit (request 14012).",
+        ] {
+            let mut events = Vec::new();
+            interpret(
+                &serde_json::json!({"type": "turn.failed", "error": {"message": words}})
+                    .to_string(),
+                &mut events,
+            );
+
+            assert!(
+                matches!(events.as_slice(), [AgentEvent::Limited(limit)] if limit.message == words),
+                "{words}: {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unauthorized_turn_in_limit_words_stays_a_failure() {
+        let mut events = Vec::new();
+        interpret(
+            r#"{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: you have hit your usage limit for this key"}}"#,
+            &mut events,
+        );
+
+        assert!(
+            matches!(events.as_slice(), [AgentEvent::Failed(message)] if message.contains("401")),
+            "{events:?}"
+        );
     }
 
     #[test]

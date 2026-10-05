@@ -42,8 +42,8 @@ const BUFFER: usize = 8 * 1024;
 /// credits carry past the plan's window is logged once, at info.
 ///
 /// [Forwarding](Reader::forwarding) hands each event on as it is read, up to
-/// the first failure the agent reports, which ends what is handed on and is
-/// never itself handed on: a stream reports it as its error.
+/// the first failure or usage limit the agent reports, which ends what is
+/// handed on and is never itself handed on: a stream reports it as its error.
 pub(crate) struct Reader {
     agent: AgentKind,
     turn: Turn,
@@ -214,6 +214,11 @@ impl Reader {
                     self.settle(Verdict::Failed(message.clone()));
                     AgentEvent::Failed(message)
                 }
+                AgentEvent::Limited(limit) => {
+                    let message = self.scrubber.scrub(&limit.message).into_owned();
+                    self.settle(Verdict::Failed(message.clone()));
+                    AgentEvent::Limited(limit.with_message(message))
+                }
                 AgentEvent::Diagnostic(message) => {
                     let message = self.scrubber.scrub(&message).into_owned();
                     tracing::debug!(agent = %self.agent, diagnostic = %message, "agent diagnostic");
@@ -236,7 +241,7 @@ impl Reader {
     }
 
     fn hand_on(&mut self, event: &AgentEvent) {
-        if matches!(event, AgentEvent::Failed(_)) {
+        if matches!(event, AgentEvent::Failed(_) | AgentEvent::Limited(_)) {
             self.forward = None;
         }
         if let Some(forward) = &self.forward

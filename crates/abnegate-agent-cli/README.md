@@ -52,17 +52,36 @@ nothing.
 A Claude run reads its stream through one `Turn` (from `AgentKind::turn`), since
 a line's meaning can hang on the lines before it. Claude reports a refused plan
 window on a `rate_limit_event` that names no agent, so the window is remembered
-and fails the turn, as `rate limit reached: {report}: <Claude's words>`, only
-when the main agent's next line is a failed request or the result a failure. A
-stream that ends on the window alone still fails with it. A request the
-account's usage credits carry past the window is headroom, and the turn is
+and limits the turn, as `rate limit reached (<window>, <status>): <Claude's
+words>`, only when the main agent's next line is a failed request or the result
+a failure. A stream that ends on the window alone, with no line after it, still
+fails with it, as `ProviderError::Agent` in the same words rather than as a
+limit. A request
+the account's usage credits carry past the window is headroom, and the turn is
 logged once at info and named in `StdoutParseResult::credits`. A model or a
-context the account cannot fund fails in Claude's own words after
-`CREDITS_REQUIRED` or `LONG_CONTEXT_CREDITS_REQUIRED`, or after
-`CREDITS_UNCONFIRMED` when Claude could not look the credits up. A subagent's
-lines contribute only the tools it calls: its words, token counts and refusals
-stay in its own conversation, and the main agent answers without them. Nothing
-names a failure by the words it is written in.
+context the account cannot fund is limited in Claude's own words after
+`CREDITS_REQUIRED` or `LONG_CONTEXT_CREDITS_REQUIRED`, or fails after
+`CREDITS_UNCONFIRMED` when Claude could not look the credits up. A failed
+result with status 429, or in a limit's words, is a limit too, unless its
+status is 401. A subagent's lines contribute only the tools it calls: its
+words, token counts and refusals stay in its own conversation, and the main
+agent answers without them.
+
+## Limits and windows
+
+A turn a usage limit refused is `AgentEvent::Limited`, never
+`AgentEvent::Failed`, and the run fails with `ProviderError::Limited`: it
+renders exactly as the agent failure it replaces, the end of stderr included,
+and its `Limit` says when the limit lifts, which window refused the turn, and
+whether the account's usage credits ran out. `CliProvider::stream` ends with
+that error rather than yielding the event, and `complete` reports the same
+limit. `execute`'s `Execution::stdout.limit` carries the agent's words alone;
+the end of its stderr is in `Execution::stderr`. A Codex turn that fails in a
+limit's words is a limit unless they name a 401. While a Claude turn runs, a
+report of how much of a plan's window is spent is an `AgentEvent::Window`, under
+the name Claude streams it with (`five_hour`, `seven_day`, ...) and its
+`WindowKind`, and `StdoutParseResult::windows` keeps the latest report on each.
+The window only usage credits extend is never reported as one.
 
 ## Failures
 
