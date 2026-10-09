@@ -1,0 +1,39 @@
+[package]
+name = "abnegate-payments"
+description = "Stripe Checkout, Customer Portal and webhook verification behind a host-agnostic client"
+keywords = ["stripe", "checkout", "billing", "payments", "webhook"]
+categories = ["web-programming::http-client", "api-bindings"]
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+testing = []
+
+[dependencies]
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.3" }
+async-stripe = { workspace = true, features = ["default-tls"] }
+async-stripe-billing = { workspace = true, features = ["billing_portal_session"] }
+async-stripe-checkout = { workspace = true, features = ["checkout_session"] }
+async-stripe-shared = { workspace = true }
+async-stripe-types = { workspace = true }
+async-stripe-webhook = { workspace = true, features = [
+    "async-stripe-billing",
+    "async-stripe-checkout",
+] }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
