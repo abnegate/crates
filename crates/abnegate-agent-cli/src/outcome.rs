@@ -4,7 +4,9 @@ use crate::verdict::Verdict;
 
 /// The first of the three things a running agent is waited on for.
 pub(crate) enum Outcome {
-    Exited(std::io::Result<std::process::ExitStatus>),
+    /// The agent exited, and is left unreaped, with the status it exited
+    /// with when that could be read.
+    Exited(std::io::Result<Option<std::process::ExitStatus>>),
     TimedOut,
     /// The agent is still running, but its output already settled the run.
     Settled(Verdict),

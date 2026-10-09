@@ -3,12 +3,15 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use abnegate_exec::GroupRegistry;
 use abnegate_llm::Credential;
 use abnegate_llm::ProviderError;
 use abnegate_secret::SecretValue;
 
+use crate::cleanup::Cleanup;
 use crate::codex_sandbox::CodexSandbox;
 use crate::kind::AgentKind;
 use crate::mcp::McpConfig;
@@ -358,6 +361,38 @@ pub struct CliSettings {
     /// that finished anyway, its result read, still answers: the tripwire
     /// ends a wait, it never discards an answer the agent gave.
     pub tripwire: Option<Tripwire>,
+    /// When a run stops the processes its agent left behind.
+    /// [`Cleanup::OnFailure`] by default, which leaves what a successful
+    /// run's agent started running.
+    pub cleanup: Cleanup,
+    /// The environment variable each run marks its agent with, set to a
+    /// value of the run's own, so that a [cleanup](CliSettings::cleanup)
+    /// also stops the processes the agent started that left its process
+    /// group, such as a daemon a tool started in a session of its own. Every
+    /// process inherits the marker from the one that started it, unless one
+    /// clears the variable. `None` marks nothing, and a cleanup then reaches
+    /// only the group.
+    ///
+    /// On macOS a sweep cannot see Apple's platform binaries, whose
+    /// environment is hidden from other processes: a marked `/bin/sh`, `zsh`
+    /// or `bash`, or a `sleep`, that left the group is never found, though
+    /// what such a shell starts from outside the system is. Only the group's
+    /// kill reaches those.
+    ///
+    /// A name no environment entry can carry, such as one holding `=`, is
+    /// refused before the agent starts. See [`Marker`](abnegate_exec::Marker)
+    /// for which processes a sweep can find.
+    pub marker: Option<String>,
+    /// The registry each run registers its agent's process group in while
+    /// it runs, and tracks its [marker](CliSettings::marker) in until it has
+    /// been swept, so that the host can pass a Ctrl-C on to every run, or
+    /// stop every run as it shuts down. A registry that has been
+    /// [killed](GroupRegistry::kill_all) refuses to start a run, which then
+    /// fails as [`ProviderError::Unavailable`]. `None` registers nothing.
+    ///
+    /// Each run holds its own reference, so a registry outlives every run
+    /// still registered in it however the host lets go of it.
+    pub registry: Option<Arc<GroupRegistry>>,
 }
 
 impl Default for CliSettings {
@@ -386,6 +421,9 @@ impl Default for CliSettings {
             log: None,
             journal_limit: DEFAULT_JOURNAL_LIMIT,
             tripwire: None,
+            cleanup: Cleanup::default(),
+            marker: None,
+            registry: None,
         }
     }
 }
@@ -598,6 +636,27 @@ impl CliSettings {
         self
     }
 
+    /// Stop what each run's agent left behind as `cleanup` says. See
+    /// [`CliSettings::cleanup`].
+    pub fn with_cleanup(mut self, cleanup: Cleanup) -> Self {
+        self.cleanup = cleanup;
+        self
+    }
+
+    /// Mark each run's agent with the environment variable `variable`. See
+    /// [`CliSettings::marker`].
+    pub fn with_marker(mut self, variable: impl Into<String>) -> Self {
+        self.marker = Some(variable.into());
+        self
+    }
+
+    /// Register each run in `registry`, such as
+    /// [`GroupRegistry::global`]. See [`CliSettings::registry`].
+    pub fn with_registry(mut self, registry: Arc<GroupRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
     /// Refuse a [session](CliSettings::session) the agent would misread, and
     /// a caller [argument](CliSettings::arguments) with which `agent` would
     /// choose what the session or the [sandbox](CliSettings::sandbox)
@@ -716,8 +775,10 @@ fn is_uuid(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Duration;
 
+    use abnegate_exec::GroupRegistry;
     use abnegate_llm::Credential;
     use abnegate_llm::ProviderError;
     use abnegate_secret::SecretValue;
@@ -729,6 +790,7 @@ mod tests {
     use super::DEFAULT_TIMEOUT;
     use super::READ_ONLY_TOOLS;
     use super::WEB_TOOLS;
+    use crate::cleanup::Cleanup;
     use crate::codex_sandbox::CodexSandbox;
     use crate::kind::AgentKind;
     use crate::mcp::McpServer;
@@ -759,6 +821,26 @@ mod tests {
         assert!(settings.log.is_none());
         assert_eq!(settings.journal_limit, DEFAULT_JOURNAL_LIMIT);
         assert!(settings.tripwire.is_none());
+        assert_eq!(settings.cleanup, Cleanup::OnFailure);
+        assert!(settings.marker.is_none());
+        assert!(settings.registry.is_none());
+    }
+
+    #[test]
+    fn a_run_can_be_marked_registered_and_cleaned_up_after_every_exit() {
+        let registry = GroupRegistry::global();
+        let settings = CliSettings::default()
+            .with_cleanup(Cleanup::Always)
+            .with_marker("MY_APPLICATION_RUN")
+            .with_registry(Arc::clone(&registry));
+
+        assert_eq!(settings.cleanup, Cleanup::Always);
+        assert_eq!(settings.marker.as_deref(), Some("MY_APPLICATION_RUN"));
+        assert!(
+            settings
+                .registry
+                .is_some_and(|chosen| Arc::ptr_eq(&chosen, &registry))
+        );
     }
 
     #[test]

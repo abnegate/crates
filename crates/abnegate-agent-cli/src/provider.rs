@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 
-use abnegate_exec::executor::ProcessGroup;
+use abnegate_exec::Marker;
 use abnegate_llm::Capabilities;
 use abnegate_llm::Completion;
 use abnegate_llm::CompletionProvider;
@@ -46,6 +46,7 @@ use crate::reaper::Reaper;
 use crate::run::Run;
 use crate::scrubber::Scrubber;
 use crate::settings::CliSettings;
+use crate::spawned::Spawned;
 use crate::stdout_parse_result::StdoutParseResult;
 use crate::transcript;
 
@@ -53,6 +54,7 @@ const NO_DIAGNOSTICS: &str = "the agent produced no diagnostics";
 const UNFINISHED: &str = "the agent exited without completing its event stream";
 const INSTRUCTIONS_PREFIX: &str = "instructions-";
 const INSTRUCTIONS_SUFFIX: &str = ".md";
+const STOPPING: &str = "its registry has stopped every run";
 
 /// Drives a coding agent CLI as a completion provider.
 ///
@@ -73,8 +75,10 @@ const INSTRUCTIONS_SUFFIX: &str = ".md";
 /// all network access and grants `process-exec` for a single literal command,
 /// and a coding agent needs the network to reach its own API and forks a tree
 /// of helper processes to do its work. It does reuse that crate's
-/// process-group termination and output caps, so a run that times out or
-/// fails takes the agent's whole process tree with it, and it is given only
+/// process-group termination, [`Marker`] sweeps,
+/// [`GroupRegistry`](abnegate_exec::GroupRegistry) and output
+/// caps, so a run that times out or fails takes the agent's whole process
+/// tree with it, and a host can stop every run at once; and it is given only
 /// the [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names and
 /// those [`CliSettings::allow`] adds from this process's environment unless
 /// [`CliSettings::inherit_environment`] opts in.
@@ -116,10 +120,13 @@ impl CliProvider {
     /// that cannot be started, one that outlives its timeout, and output that
     /// cannot be read as the agent's stream.
     ///
-    /// Only a run that succeeded leaves behind what the agent forked. Any
-    /// other takes the agent's whole process group with it. A run that fails
-    /// here still reports where its logs are, with every line read before it
-    /// failed flushed to them.
+    /// What the agent left behind is stopped as
+    /// [`CliSettings::cleanup`] says: by default, a run that succeeded
+    /// leaves it running, and any other takes the agent's whole process
+    /// group, and everything carrying the run's
+    /// [marker](CliSettings::marker), with it. A run that fails here still
+    /// reports where its logs are, with every line read before it failed
+    /// flushed to them.
     ///
     /// The conversation reaches the agent as [`transcript::render`] flattens
     /// it, every message under its role's label;
@@ -180,7 +187,8 @@ impl CliProvider {
     /// its timeout, or once its output settles the run, even while nobody
     /// polls the stream, and what it emitted waits in the stream, followed by
     /// the run's error, until it is read. Dropping the stream while the agent
-    /// still runs, read or not, stops it and every process it forked.
+    /// still runs, read or not, stops it, every process it forked and
+    /// everything carrying the run's [marker](CliSettings::marker).
     ///
     /// Call it within a Tokio runtime, which runs that task.
     pub async fn stream(
@@ -259,6 +267,13 @@ impl CliProvider {
         let arguments = self
             .agent
             .invocation_in(model, options, self.settings.session.as_ref());
+        let marker = self
+            .settings
+            .marker
+            .as_deref()
+            .map(Marker::new)
+            .transpose()
+            .map_err(|error| ExecutionError::new(ProviderError::config(error), None))?;
         let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &|name| {
             std::env::var_os(name)
         });
@@ -298,7 +313,19 @@ impl CliProvider {
             "starting agent"
         );
 
-        let mut child = match self.command(&arguments, &environment).spawn() {
+        let Some(reaper) = Reaper::admit(self.settings.registry.clone(), marker) else {
+            journal
+                .append(Record::SpawnFailed, json!({ "error": STOPPING }))
+                .await;
+            return Err(ExecutionError::new(
+                ProviderError::unavailable(&self.name, &self.executable(), STOPPING),
+                files,
+            ));
+        };
+        let child = match self
+            .command(&arguments, &environment, reaper.marker())
+            .spawn()
+        {
             Ok(child) => child,
             Err(error) => {
                 journal
@@ -310,15 +337,15 @@ impl CliProvider {
                 ));
             }
         };
-        let reaper = Reaper::new(child.id().and_then(|pid| ProcessGroup::try_from(pid).ok()));
+        let mut spawned = Spawned::new(reaper, child);
         journal
-            .append(Record::Spawned, json!({ "pid": child.id() }))
+            .append(Record::Spawned, json!({ "pid": spawned.child.id() }))
             .await;
 
         // The prompt is written concurrently with reading the reply: a prompt
         // larger than the pipe buffer blocks until the child drains it, and a
         // child nobody reads from blocks on its own output first.
-        let stdin = child.stdin.take();
+        let stdin = spawned.child.stdin.take();
         let writer = tokio::spawn(async move {
             if let Some(mut stdin) = stdin {
                 let _ = stdin.write_all(prompt.as_bytes()).await;
@@ -342,7 +369,7 @@ impl CliProvider {
                 cancelled.clone(),
             )
             .forwarding(events)
-            .run(child.stdout.take()),
+            .run(spawned.child.stdout.take()),
         );
         let diagnostics = tokio::spawn(
             Diagnostics::new(
@@ -355,14 +382,16 @@ impl CliProvider {
                 verdicts,
                 cancelled,
             )
-            .run(child.stderr.take()),
+            .run(spawned.child.stderr.take()),
         );
 
+        let Spawned { reaper, child } = spawned;
         Ok(Run {
             name: self.name.clone(),
             label: label.to_string(),
             timeout: self.settings.timeout,
             deadline: Instant::now().checked_add(self.settings.timeout),
+            cleanup: self.settings.cleanup,
             journal,
             files,
             reaper,
@@ -444,7 +473,12 @@ impl CliProvider {
         )
     }
 
-    fn command(&self, arguments: &[String], environment: &Environment) -> Command {
+    fn command(
+        &self,
+        arguments: &[String],
+        environment: &Environment,
+        marker: Option<&Marker>,
+    ) -> Command {
         let executable = self
             .settings
             .executable
@@ -463,6 +497,9 @@ impl CliProvider {
             command.current_dir(directory);
         }
         environment.apply(&mut command);
+        if let Some(marker) = marker {
+            marker.apply(&mut command);
+        }
 
         // The agent leads its own group so that stopping the run reaches the
         // language servers, searches and builds it forked, not just itself.
@@ -608,6 +645,8 @@ mod tests {
     use crate::test_support::captured_logs;
     use crate::test_support::delegated;
     use crate::test_support::running;
+
+    mod lifecycle;
 
     const ETXTBSY: i32 = 26;
     const PROBE: &str = "FAKE_AGENT_PROBE";

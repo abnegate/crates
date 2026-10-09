@@ -16,6 +16,7 @@ use tokio::time::Instant;
 use tokio::time::timeout;
 use tokio::time::timeout_at;
 
+use crate::cleanup::Cleanup;
 use crate::execution::Execution;
 use crate::execution_error::ExecutionError;
 use crate::log::EXECUTION_LOG_PREVIEW_LIMIT;
@@ -26,6 +27,7 @@ use crate::log::preview;
 use crate::mcp::McpAttachment;
 use crate::outcome::Outcome;
 use crate::reaper::Reaper;
+use crate::settlement::Settlement;
 use crate::stdout_parse_result::StdoutParseResult;
 use crate::verdict::Verdict;
 
@@ -37,15 +39,18 @@ const LINGERED: &str = "the agent finished its turn but did not exit";
 /// has to outlive it, until [`Run::finish`] collects what it did.
 ///
 /// The deadline was set when the agent started, so the timeout covers the
-/// whole run however long the caller takes to finish it. Dropped before it
-/// finishes, a run kills the agent's whole process group: the reaper is
-/// declared ahead of the child, so it drops first, while the group's leader
-/// is still unreaped and its id cannot belong to anyone else.
+/// agent however long the caller takes to finish the run. Dropped before it
+/// finishes, a run kills the agent's whole process group and everything that
+/// carries its marker: the reaper is declared ahead of the child, so it
+/// drops first, while the group's leader is still unreaped and its id cannot
+/// belong to anyone else, as it did in the [`Spawned`](crate::spawned::Spawned)
+/// the run was built from.
 pub(crate) struct Run {
     pub(crate) name: String,
     pub(crate) label: String,
     pub(crate) timeout: Duration,
     pub(crate) deadline: Option<Instant>,
+    pub(crate) cleanup: Cleanup,
     pub(crate) journal: Journal,
     pub(crate) files: Option<ExecutionLogFiles>,
     pub(crate) reaper: Reaper,
@@ -65,9 +70,12 @@ impl Run {
     /// Wait for the agent to exit, or for its output to settle the run, and
     /// report everything it did.
     ///
-    /// Only a run that succeeded leaves behind what the agent forked. Any
-    /// other takes the agent's whole process group with it. A run that fails
-    /// here still reports where its logs are, with every line read before it
+    /// The agent is reaped only once the run has cleaned up after it, so
+    /// every kill of its group lands while the group's id is still its own.
+    /// What the agent left behind is stopped as the run's [`Cleanup`] says:
+    /// after any run but a successful one by default, the agent's exit
+    /// status, read while it is unreaped, included. A run that fails here
+    /// still reports where its logs are, with every line read before it
     /// failed flushed to them.
     pub(crate) async fn finish(mut self) -> Result<Execution, ExecutionError> {
         let deadline = self.deadline;
@@ -79,30 +87,39 @@ impl Run {
         };
         let outcome = tokio::select! {
             biased;
-            status = self.child.wait() => Outcome::Exited(status),
+            exit = exited(&mut self.child, self.reaper.group()) => Outcome::Exited(exit),
             Some(verdict) = self.settled.recv() => Outcome::Settled(verdict),
             () = expiry => Outcome::TimedOut,
         };
 
-        let (status, stopped, failure) = match self.settle(outcome).await {
+        let settlement = self.settle(outcome).await;
+        let unstopped = settlement
+            .as_ref()
+            .is_ok_and(|settled| settled.stopped.is_none());
+        if !unstopped || self.cleanup == Cleanup::Always {
+            self.reaper.clean().await;
+        }
+        self.writer.abort();
+        let Settlement {
+            stopped,
+            failure,
+            exit,
+        } = match settlement {
             Ok(settlement) => settlement,
             Err(error) => {
-                self.writer.abort();
                 let _ = drain(&mut self.reader, self.reaper.group(), &self.cancel).await;
                 let _ = drain(&mut self.diagnostics, self.reaper.group(), &self.cancel).await;
+                let _ = self.reap().await;
                 return Err(ExecutionError::new(error, self.files.take()));
             }
         };
-        let status = ExitStatus::from(status);
-        self.journal
-            .append(Record::Exited, json!({ "status": status.to_string() }))
-            .await;
 
-        self.writer.abort();
         let stdout = match drain(&mut self.reader, self.reaper.group(), &self.cancel).await {
             Ok(Ok(stdout)) => stdout,
             Ok(Err(message)) | Err(message) => {
                 let _ = drain(&mut self.diagnostics, self.reaper.group(), &self.cancel).await;
+                self.reaper.clean().await;
+                let _ = self.reap().await;
                 return Err(ExecutionError::new(
                     ProviderError::malformed(&self.name, message),
                     self.files.take(),
@@ -124,13 +141,42 @@ impl Run {
                 Verdict::Finished => None,
             })
         });
-        if status == ExitStatus::Code(0)
-            && stdout.finished
+        let succeeded = stdout.finished
             && stdout.failure.is_none()
             && stopped.is_none()
-        {
-            self.reaper.disarm();
+            && exit.is_some_and(|status| status.success());
+        if !succeeded {
+            self.reaper.clean().await;
         }
+
+        let status = match self.reap().await {
+            Ok(status) => status,
+            Err(error) => {
+                self.journal
+                    .append(Record::WaitFailed, json!({ "error": error.to_string() }))
+                    .await;
+                let message = match stopped {
+                    Some(_) => UNSTOPPABLE.to_string(),
+                    None => error.to_string(),
+                };
+                return Err(ExecutionError::new(
+                    ProviderError::malformed(&self.name, message),
+                    self.files.take(),
+                ));
+            }
+        };
+        if let Some(reason) = &stopped {
+            self.journal
+                .append(
+                    Record::Stopped,
+                    json!({ "exit_code": status.code(), "reason": reason }),
+                )
+                .await;
+        }
+        let status = ExitStatus::from(status);
+        self.journal
+            .append(Record::Exited, json!({ "status": status.to_string() }))
+            .await;
 
         let reported = stdout
             .failure
@@ -162,15 +208,19 @@ impl Run {
         })
     }
 
-    /// Carry the wait through to an exit status, stopping the agent when the
-    /// wait ended without one, and say why it was stopped when it was and
-    /// what failure settled the run when one did.
-    async fn settle(
-        &mut self,
-        outcome: Outcome,
-    ) -> Result<(std::process::ExitStatus, Option<String>, Option<String>), ProviderError> {
+    /// Carry the wait through to the agent's exit, stopping the agent when
+    /// the wait ended without one, and say why it was stopped when it was,
+    /// what failure settled the run when one did, and the status it exited
+    /// with when it exited by itself. The agent is left unreaped.
+    async fn settle(&mut self, outcome: Outcome) -> Result<Settlement, ProviderError> {
         let verdict = match outcome {
-            Outcome::Exited(Ok(status)) => return Ok((status, None, None)),
+            Outcome::Exited(Ok(exit)) => {
+                return Ok(Settlement {
+                    stopped: None,
+                    failure: None,
+                    exit,
+                });
+            }
             Outcome::Exited(Err(error)) => {
                 self.journal
                     .append(Record::WaitFailed, json!({ "error": error.to_string() }))
@@ -206,50 +256,64 @@ impl Run {
 
         let grace = Instant::now() + GRACE_PERIOD;
         let patience = self.deadline.map_or(grace, |deadline| deadline.min(grace));
-        if let Ok(Ok(status)) = timeout_at(patience, self.child.wait()).await {
-            return Ok((status, None, failure));
+        if let Ok(Ok(exit)) =
+            timeout_at(patience, exited(&mut self.child, self.reaper.group())).await
+        {
+            return Ok(Settlement {
+                stopped: None,
+                failure,
+                exit,
+            });
         }
 
-        let status = stop_agent(&mut self.child, self.reaper.group())
-            .await
-            .ok_or_else(|| ProviderError::malformed(&self.name, UNSTOPPABLE))?;
-        self.journal
-            .append(
-                Record::Stopped,
-                json!({ "exit_code": status.code(), "reason": reason }),
-            )
-            .await;
-        Ok((status, Some(reason), failure))
+        stop_agent(&mut self.child, self.reaper.group()).await;
+        Ok(Settlement {
+            stopped: Some(reason),
+            failure,
+            exit: None,
+        })
+    }
+
+    /// Release the agent's group, which no kill reaches from here on, and
+    /// reap the agent.
+    async fn reap(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.reaper.release();
+        self.child.wait().await
+    }
+}
+
+/// Resolve once the agent has exited, with the status it exited with,
+/// leaving it unreaped while it leads a group, so that the group's id stays
+/// its own until the run has cleaned up after it.
+async fn exited(
+    child: &mut Child,
+    group: Option<&ProcessGroup>,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    match group {
+        Some(group) => group.leader_exited().await.map_err(std::io::Error::other),
+        None => child.wait().await.map(Some),
     }
 }
 
 /// Terminate the agent's group, and kill whatever is left of it once the
-/// grace period runs out.
+/// agent has exited or the grace period has run out.
 ///
-/// A group is identified by its leader's process id, which the system may
-/// hand to a new process once the leader is reaped and no member is left.
-/// So the group is killed while the leader is still unreaped whenever it
-/// outlives the grace period. When the leader exits within it, reaping comes
-/// first, and the kill that follows reaches stragglers safely only because a
-/// straggler still alive keeps the group's id from being reused; a group
-/// that empties in the instant between the two leaves the kill to land on
-/// whatever took the id, a race this cannot close without a process handle
-/// the platform does not offer here.
-async fn stop_agent(
-    child: &mut Child,
-    group: Option<&ProcessGroup>,
-) -> Option<std::process::ExitStatus> {
+/// The agent is left unreaped, so its group's id cannot pass to another
+/// group while the group is signalled. When the agent's exit cannot be
+/// watched, it may not be this process's unreaped child, and its group's id
+/// may not be its own, so only the agent is killed.
+async fn stop_agent(child: &mut Child, group: Option<&ProcessGroup>) {
     let Some(group) = group else {
         let _ = child.start_kill();
-        return child.wait().await.ok();
+        return;
     };
     let _ = group.terminate();
-    if let Ok(Ok(status)) = timeout(GRACE_PERIOD, child.wait()).await {
-        let _ = group.kill_until_gone().await;
-        return Some(status);
+    if let Ok(Err(error)) = timeout(GRACE_PERIOD, group.leader_exited()).await {
+        tracing::warn!(%error, "the agent's exit could not be watched; killing the agent alone");
+        let _ = child.start_kill();
+        return;
     }
     let _ = group.kill_until_gone().await;
-    child.wait().await.ok()
 }
 
 /// A reader's result once the agent has exited.
@@ -276,4 +340,64 @@ async fn drain<T>(
     tracing::warn!("{UNCLOSED}; keeping what was read");
     let _ = cancel.send(true);
     task.await.map_err(|error| error.to_string())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::process::Stdio;
+
+    use abnegate_exec::executor::ProcessGroup;
+    use tokio::io::AsyncBufReadExt;
+    use tokio::io::BufReader;
+    use tokio::process::Command;
+
+    use super::stop_agent;
+    use crate::test_support::PATIENCE;
+    use crate::test_support::stop_if_running;
+
+    /// Leaves a process leading a group of its own, ignoring SIGTERM, that is
+    /// the shell's child rather than the test's, prints its pid, and becomes
+    /// a long sleep.
+    const STRANGER: &str = concat!(
+        r#"perl -e '$| = 1; $SIG{TERM} = q(IGNORE); setpgrp(0, 0); print qq($$\n); sleep 300' &"#,
+        "\nexec sleep 300",
+    );
+
+    /// Linux cannot watch the exit of a process that is not this process's
+    /// child, so nothing says the group's id is still the stranger's own.
+    #[tokio::test]
+    async fn an_agent_whose_exit_cannot_be_watched_is_killed_without_its_group() {
+        let mut agent = Command::new("sh")
+            .args(["-c", STRANGER])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("the agent starts");
+        let mut lines = BufReader::new(agent.stdout.take().expect("its stdout")).lines();
+        let stranger: u32 = lines
+            .next_line()
+            .await
+            .expect("the agent's output reads")
+            .expect("the stranger's pid")
+            .trim()
+            .parse()
+            .expect("a pid");
+        let group = ProcessGroup::try_from(stranger).expect("a process leading its own group");
+
+        tokio::time::timeout(PATIENCE, stop_agent(&mut agent, Some(&group)))
+            .await
+            .expect("the agent is stopped");
+
+        let agent_exit = tokio::time::timeout(PATIENCE, agent.wait()).await;
+        let spared = stop_if_running(stranger);
+        assert!(
+            agent_exit.is_ok_and(|status| status.is_ok()),
+            "the agent was not killed"
+        );
+        assert!(
+            spared,
+            "a group whose leader could not be watched was killed by its id"
+        );
+    }
 }

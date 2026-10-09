@@ -14,7 +14,14 @@
 //! settles the run — the turn finished, the agent reported a failure, or a
 //! diagnostic tripped the caller's [`CliSettings::tripwire`] — an agent that
 //! does not exit by itself is stopped, and a run that fails in any way takes
-//! every process the agent forked with it.
+//! every process the agent forked with it. The agent's group is killed while
+//! the agent is still unreaped, so a kill never reaches a group that took
+//! over its id. [`CliSettings::with_cleanup`] with [`Cleanup::Always`] cleans
+//! up after a successful run too; [`CliSettings::with_marker`] marks the
+//! agent's environment, so a cleanup also stops what the agent started in a
+//! session of its own; and [`CliSettings::with_registry`] registers every run
+//! in a [`GroupRegistry`](abnegate_exec::GroupRegistry), through which the
+//! host can pass a Ctrl-C on to every run or stop them all.
 //!
 //! [`CliProvider::execute`] returns the whole [`Execution`] for a caller that
 //! needs more than prose: the answer to a [`StructuredResult::SCHEMA`], the
@@ -143,6 +150,7 @@
 
 mod agent_stream;
 mod attachments;
+mod cleanup;
 mod codex_sandbox;
 mod delivery;
 mod diagnostics;
@@ -165,6 +173,8 @@ mod run;
 mod scrubber;
 mod session;
 mod settings;
+mod settlement;
+mod spawned;
 mod stdout_parse_result;
 pub mod stream;
 mod structured_result;
@@ -176,6 +186,7 @@ mod verdict;
 
 pub use crate::agent_stream::AgentStream;
 pub use crate::attachments::Attachments;
+pub use crate::cleanup::Cleanup;
 pub use crate::codex_sandbox::CodexSandbox;
 pub use crate::delivery::Delivery;
 pub use crate::event::AgentEvent;

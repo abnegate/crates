@@ -51,6 +51,44 @@ sandbox confines them, whichever one `CliSettings::with_sandbox`, the user's
 configuration or a `--sandbox` argument names, and `danger-full-access` confines
 nothing.
 
+## Cleanup
+
+The agent leads a process group of its own. Once it exits, or is stopped, the
+run kills what is left of the group while the agent is still unreaped, so the
+kill never reaches a group that took over its id, and reaps it only then. A
+run that fails, times out or is dropped takes the whole group with it. A
+successful run leaves what the agent started running, such as a server it
+started for the caller, unless it still holds the agent's output open past the
+grace period, or `CliSettings::with_cleanup(Cleanup::Always)` asks for every
+run to be cleaned up; success here means the agent's stream
+finished its turn without a failure, nothing stopped the agent, and the agent
+exited with status zero, which the run reads before it reaps the agent.
+
+`CliSettings::with_marker` names an environment variable each run sets to a
+value of its own. Everything the agent starts inherits it, so a cleanup also
+finds and stops what left the group, such as a daemon in a session of its own:
+SIGTERM, `GRACE_PERIOD` to exit, then SIGKILL, on the runtime's blocking pool,
+and a dropped run sends SIGKILL at once. On macOS a sweep cannot see Apple's
+platform binaries, whose environment is hidden: a `/bin/sh`, `zsh`, `bash` or
+`sleep` that left the group is never found, though what such a shell starts
+from outside the system is. The run's timeout bounds only the
+agent, never the sweep. `CliSettings::with_registry` registers each run's group,
+and tracks its marker, in an `abnegate_exec::GroupRegistry` such as
+`GroupRegistry::global()`, so a host can pass a Ctrl-C on to every run with
+`interrupt_all` and stop them all as it shuts down with `shutdown`; a registry
+that has been killed refuses to start a run.
+
+```rust,no_run
+use abnegate_agent_cli::Cleanup;
+use abnegate_agent_cli::CliSettings;
+use abnegate_exec::GroupRegistry;
+
+let settings = CliSettings::default()
+    .with_cleanup(Cleanup::Always)
+    .with_marker("MY_APPLICATION_RUN")
+    .with_registry(GroupRegistry::global());
+```
+
 ## Claude turns
 
 A Claude run reads its stream through one `Turn` (from `AgentKind::turn`), since

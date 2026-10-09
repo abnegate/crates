@@ -10,6 +10,20 @@ use std::time::Duration;
 use tokio::process::Command;
 use tracing_subscriber::fmt::MakeWriter;
 
+mod straggler;
+
+pub(crate) use straggler::INTERRUPTED;
+pub(crate) use straggler::Straggler;
+pub(crate) use straggler::TERMINATION;
+pub(crate) use straggler::exits_within;
+pub(crate) use straggler::stop_if_running;
+
+/// The variable the tests mark their runs with: the one `abnegate-exec`'s own
+/// marker tests use, never one a live host marks its runs with, so a sweep a
+/// test starts can reach only processes the tests started. Each run sets it
+/// to a value of its own.
+pub(crate) const MARKER: &str = "ABNEGATE_EXEC_TEST_MARKER";
+
 /// How long a test waits in real time on a child it started. A child a test
 /// expects to be killed outlives it, so a wait for it to go never mistakes
 /// its own exit for the kill.
