@@ -2,7 +2,9 @@
 //! ComfyUI; [`Config::train_command`] hands the dataset to an external trainer
 //! instead.
 
+mod clips;
 mod dropped;
+mod handoff;
 mod process_group;
 mod remediation;
 mod remediation_outcome;
@@ -47,6 +49,7 @@ use crate::inventory::contains_phrase;
 use crate::inventory::publication_marker;
 use crate::inventory::sidecar_path;
 use crate::person;
+use crate::recipe::MediaKind;
 use crate::recipe::Recipe;
 use crate::recipe::RecipeCatalog;
 use crate::recipe::TrainingModel;
@@ -65,6 +68,7 @@ use abnegate_vision::Raster;
 use abnegate_vision::Rendered;
 use abnegate_vision::decode;
 use abnegate_vision::gravity::Point;
+use handoff::Handoff;
 use process_group::ProcessGroup;
 use serde::Deserialize;
 use serde::Serialize;
@@ -119,6 +123,8 @@ struct Destination {
     recipe_id: String,
     huggingface_base: Option<String>,
     trigger: Option<String>,
+    /// [`TrainRule::suffix`].
+    suffix: Option<String>,
 }
 
 struct ScreenedImage {
@@ -168,6 +174,8 @@ const HOST_SECRET: &str = "a host secret needs a plain file name the job does no
 const HOST_FIELD: &str = "a host field may not replace a key the host job gives a meaning";
 const HOST_EDIT: &str = "an edit base trains on the host only once the host-job contract carries its references; train it through a training command or the packaged graph";
 const HOST_RENAMED: &str = "the host job names a weight file other than the one its name gives";
+const NO_CLIPS: &str = "video training needs clips";
+const VIDEO_HOST_ONLY: &str = "video training runs only on a host trainer";
 const MIXED_PERSON: &str =
     "these images look like different people, and a person weight can only learn one";
 /// The class word a person's captions bind the trigger to.
@@ -360,6 +368,16 @@ pub fn trainable_bases(config: &Config) -> Result<Vec<TrainBase>, TrainError> {
 /// with the companions [`dataset`] names beside each crop. A person set the
 /// captions read as several people is refused.
 ///
+/// A [`TrainMethod::Video`] request trains a video adapter on the host
+/// trainer instead: every clip among its files, as [`video::is_clip`]
+/// names them, is cut into two or three windows the size and length of one
+/// generated clip, without screening or captions, and the trainer reads them
+/// from the job's [`CLIPS_DIRECTORY`](host::CLIPS_DIRECTORY). The weight is
+/// published under the requested name with its rule's
+/// [`suffix`](TrainRule::suffix).
+///
+/// [`video::is_clip`]: crate::video::is_clip
+///
 /// Fails with [`TrainError::Disabled`] when neither ComfyUI nor a training
 /// command is configured, [`TrainError::Invalid`] for a request that cannot
 /// train, [`TrainError::Configuration`] for a setting that cannot work, and
@@ -466,8 +484,9 @@ async fn train_with_screening(
 /// weight, a name a weight in another scanned model folder already has, a
 /// name already taken by a weight no training run published, a
 /// method other than a LoRA or an SDXL base with no [`Config::train_command`]
-/// to run it, a missing trigger word, and references on the wrong kind of
-/// base. A host calls it to refuse a bad request up front rather than as a
+/// to run it, a video adapter with no [`Config::host_trainer`] or no clip
+/// among its files, a missing trigger word, and references on the wrong kind
+/// of base. A host calls it to refuse a bad request up front rather than as a
 /// failed job.
 pub fn validate_request(config: &Config, request: &TrainRequest) -> Result<(), TrainError> {
     plan(config, request).map(|_| ())
@@ -478,9 +497,14 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
         return Err(TrainError::Disabled);
     }
     config.validate()?;
-    let filename = final_filename(&request.name)?;
+    final_filename(&request.name)?;
+    let video = request.method == TrainMethod::Video;
     if request.images.is_empty() {
-        return Err(TrainError::Invalid("training needs images"));
+        return Err(TrainError::Invalid(if video {
+            NO_CLIPS
+        } else {
+            "training needs images"
+        }));
     }
     let catalog = RecipeCatalog::load(config.workflow_path.as_deref())
         .map_err(|_| TrainError::Invalid("recipe catalog is missing"))?;
@@ -492,8 +516,17 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
         .training_model()
         .map_err(|_| TrainError::Invalid("training base is not supported"))?;
     let destination = destination(config, &catalog, recipe, request)?;
+    let filename = weight_filename(&request.name, destination.suffix.as_deref())?;
     require_free_name(config, &catalog, &destination.directory, &filename)?;
     let route = route(config, &model, request.method)?;
+    if video
+        && !request
+            .images
+            .iter()
+            .any(|image| crate::video::is_clip(&image.filename))
+    {
+        return Err(TrainError::Invalid(NO_CLIPS));
+    }
     if route == Route::Host {
         validate_host_settings(request)?;
     }
@@ -515,13 +548,17 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
     })
 }
 
-/// What trains `method` on `model` under `config`: the training command when
-/// one is set; the host trainer for what the packaged graph cannot train, a
-/// method other than a LoRA or an SDXL base, except an edit base, whose
-/// reference images the host job does not carry; otherwise the packaged
-/// graph, which needs ComfyUI enabled.
+/// What trains `method` on `model` under `config`: the host trainer for a
+/// video adapter, which nothing else trains; the training command when one is
+/// set; the host trainer for what the packaged graph cannot train, a method
+/// other than a LoRA or an SDXL base, except an edit base, whose reference
+/// images the host job does not carry; otherwise the packaged graph, which
+/// needs ComfyUI enabled.
 fn route(config: &Config, model: &TrainingModel, method: TrainMethod) -> Result<Route, TrainError> {
-    if config.train_command.is_some() {
+    if method == TrainMethod::Video && config.host_trainer.is_none() {
+        return Err(TrainError::Invalid(VIDEO_HOST_ONLY));
+    }
+    if config.train_command.is_some() && method != TrainMethod::Video {
         return Ok(Route::Command);
     }
     let sdxl = matches!(model, TrainingModel::Sdxl { .. });
@@ -589,6 +626,7 @@ fn destination(
             recipe_id: adapter.recipe_id.clone(),
             huggingface_base: Some(adapter.huggingface_base.clone()),
             trigger: trigger(recipe, request),
+            suffix: None,
         });
     }
     let rule = policy
@@ -605,11 +643,18 @@ fn destination(
             "install the files this base needs before training on it",
         ));
     }
+    let huggingface_base = match rule.method {
+        TrainMethod::Video => catalog
+            .get(&rule.recipe_id)
+            .and_then(|runner| runner.huggingface_bases.first().cloned()),
+        _ => huggingface_base(recipe),
+    };
     Ok(Destination {
         directory: rule.directory.clone(),
         recipe_id: rule.recipe_id.clone(),
-        huggingface_base: huggingface_base(recipe),
+        huggingface_base,
         trigger: trigger(recipe, request),
+        suffix: rule.suffix.clone(),
     })
 }
 
@@ -658,10 +703,12 @@ fn installed(config: &Config, rule: &TrainRule) -> bool {
 }
 
 /// Whether `runner` loads a weight trained on `base` with `method` and
-/// published in `directory`: for a LoRA, an adapter with a LoRA slot over the
-/// base's Hugging Face model, reading `loras`; for a fine-tune, a base recipe
-/// with a checkpoint slot reading `checkpoints` or a UNet slot reading
-/// `diffusion_models`; and either way one that makes what `base` makes.
+/// published in `directory`: for a LoRA or a pivotal LoRA, an adapter with a
+/// LoRA slot over the base's Hugging Face model, reading `loras`; for a
+/// fine-tune, a base recipe with a checkpoint slot reading `checkpoints` or a
+/// UNet slot reading `diffusion_models`; either way one that makes what
+/// `base` makes. For a video adapter, a video adapter with a LoRA slot,
+/// reading `loras`, over a base that makes images.
 fn runs_weight(
     runner: &Recipe,
     base: &Recipe,
@@ -669,12 +716,17 @@ fn runs_weight(
     directory: &str,
     huggingface_base: Option<&str>,
 ) -> bool {
-    if runner.kind != base.kind {
-        return false;
-    }
     match method {
-        TrainMethod::Lora => {
+        TrainMethod::Video => {
             directory == LORAS
+                && base.kind == MediaKind::Image
+                && runner.kind == MediaKind::Video
+                && runner.adapter
+                && runner.has_lora_slot()
+        }
+        TrainMethod::Lora | TrainMethod::Pivotal => {
+            directory == LORAS
+                && runner.kind == base.kind
                 && runner.adapter
                 && runner.has_lora_slot()
                 && huggingface_base.is_some_and(|huggingface_base| {
@@ -685,7 +737,8 @@ fn runs_weight(
                 })
         }
         TrainMethod::Finetune => {
-            !runner.adapter
+            runner.kind == base.kind
+                && !runner.adapter
                 && !runner.has_lora_slot()
                 && FINETUNE_SLOTS
                     .iter()
@@ -749,11 +802,15 @@ async fn train_with_pipeline(
     config: &Config,
     litellm_host: String,
     litellm_key: SecretValue,
-    request: TrainRequest,
+    mut request: TrainRequest,
     screening: fn(&[Vec<u8>], u32) -> crate::screening::Verdict,
     repair_rejections: bool,
     progress: Reporter,
 ) -> Result<TrainOutcome, TrainError> {
+    let planned = plan(config, &request)?;
+    if request.method == TrainMethod::Video {
+        return clips::train(config, request, planned, progress).await;
+    }
     let Plan {
         filename,
         base,
@@ -761,7 +818,7 @@ async fn train_with_pipeline(
         trigger,
         destination,
         route,
-    } = plan(config, &request)?;
+    } = planned;
     let trigger = trigger.as_str();
     let edit = matches!(&model, TrainingModel::QwenEdit { .. });
     let person = request.subject == TrainSubject::Person && !edit;
@@ -777,7 +834,8 @@ async fn train_with_pipeline(
     };
     let progress = progress.with_total(budget(request.images.len()));
     progress.phase(Phase::Screening, "Screening the dataset", 0, 1);
-    let (images, decoded) = decode_uploads(request.images, progress.clone()).await?;
+    let (images, decoded) =
+        decode_uploads(std::mem::take(&mut request.images), progress.clone()).await?;
     let http =
         crate::http::client(config).map_err(|error| TrainError::Failed(error.to_string()))?;
     progress.phase(Phase::Screening, "Checking the images", 0, 1);
@@ -869,7 +927,7 @@ async fn train_with_pipeline(
     let published = ensure_child_directory(&config.models_directory, &destination.directory)?;
     let output = validate_output(&published, &published.join(&filename))?;
     validate_output(&published, &sidecar_path(&output, &config.contract))?;
-    let targets = ensure_child_directory(&attempt.root, "targets")?;
+    let targets = ensure_child_directory(&attempt.root, Handoff::Images.staged())?;
     let controls = edit
         .then(|| ensure_child_directory(&attempt.root, "control_1"))
         .transpose()?;
@@ -923,29 +981,20 @@ async fn train_with_pipeline(
         attempted,
     };
     if route == Route::Host {
-        let job = host::Job::new(
-            request.name.as_str(),
-            request.method.as_str(),
-            base_weight(&model),
+        let job = host_job(
+            &request,
+            &base,
+            &model,
+            trigger,
+            &filename,
+            &destination,
+            survivors.len(),
         )
-        .with_subject(request.subject.as_str())
-        .with_trigger(trigger)
-        .with_architecture(crate::train::architecture(&model))
-        .with_base(base.as_str())
-        .with_filename(filename.as_str())
-        .with_recipe_id(destination.recipe_id.as_str())
-        .with_huggingface_base(destination.huggingface_base.clone().unwrap_or_default())
-        .with_image_count(survivors.len());
-        let job = request.host_fields.iter().fold(job, |job, (name, value)| {
-            job.with_field(name, value.clone())
-        });
-        let job = request
-            .host_secrets
-            .keys()
-            .fold(job, |job, name| job.with_secret(name));
+        .with_architecture(crate::train::architecture(&model));
         let path = train_on_host(
             config,
             &attempt,
+            Handoff::Images,
             job,
             &request.host_secrets,
             &destination,
@@ -1144,8 +1193,41 @@ fn base_weight(model: &TrainingModel) -> &str {
     }
 }
 
-/// Hands the dataset staged in `attempt` to the host trainer as `job`, waits
-/// for the weight, and publishes it where `destination` says.
+/// The host job training `request` on the base recipe `base`, whose weights
+/// `model` names, into `filename` for `destination`, from `count` images or
+/// clip windows, with the request's own host fields and secrets.
+fn host_job(
+    request: &TrainRequest,
+    base: &str,
+    model: &TrainingModel,
+    trigger: &str,
+    filename: &str,
+    destination: &Destination,
+    count: usize,
+) -> host::Job {
+    let job = host::Job::new(
+        request.name.as_str(),
+        request.method.as_str(),
+        base_weight(model),
+    )
+    .with_subject(request.subject.as_str())
+    .with_trigger(trigger)
+    .with_base(base)
+    .with_filename(filename)
+    .with_recipe_id(destination.recipe_id.as_str())
+    .with_huggingface_base(destination.huggingface_base.clone().unwrap_or_default())
+    .with_image_count(count);
+    let job = request.host_fields.iter().fold(job, |job, (name, value)| {
+        job.with_field(name, value.clone())
+    });
+    request
+        .host_secrets
+        .keys()
+        .fold(job, |job, name| job.with_secret(name))
+}
+
+/// Hands what `handoff` names, staged in `attempt`, to the host trainer as
+/// `job`, waits for the weight, and publishes it where `destination` says.
 ///
 /// The job directory is complete before `job.json` appears in it, so the
 /// trainer never starts on half a dataset, and its lock is held from then
@@ -1156,6 +1238,7 @@ fn base_weight(model: &TrainingModel) -> &str {
 async fn train_on_host(
     config: &Config,
     attempt: &Attempt,
+    handoff: Handoff,
     job: host::Job,
     secrets: &BTreeMap<String, SecretValue>,
     destination: &Destination,
@@ -1170,15 +1253,15 @@ async fn train_on_host(
     let _lock = directory.try_lock()?.ok_or_else(|| {
         TrainError::Failed("another process holds a job that was just created".to_string())
     })?;
-    let targets = attempt.root.join("targets");
-    let dataset = directory.path().join(host::DATASET_DIRECTORY);
-    if fs::rename(&targets, &dataset).is_err() {
-        directory.stage(&targets, host::DATASET_DIRECTORY)?;
+    let staged = attempt.root.join(handoff.staged());
+    let input = directory.path().join(handoff.directory());
+    if fs::rename(&staged, &input).is_err() {
+        directory.stage(&staged, handoff.directory())?;
     }
     for (name, value) in secrets {
         directory.write_secret(name, value)?;
     }
-    progress.send(directory.write_queued_progress(trainer.steps_for(job.image_count))?);
+    progress.send(directory.write_queued_progress(handoff.steps(trainer, job.image_count))?);
     directory.write_job(&job)?;
     pending.queued();
     let finished = host::wait_with(trainer, &directory, progress).await?;
@@ -1187,7 +1270,10 @@ async fn train_on_host(
             "the host trainer renamed the weight it was asked for".to_string(),
         ));
     }
-    let filename = final_filename(&job.name)?;
+    let filename = job
+        .filename
+        .clone()
+        .ok_or(TrainError::Invalid(HOST_RENAMED))?;
     let weight = hosted_weight(&directory, &filename)?;
     let staged = attempt.output();
     let linked = staged.clone();
@@ -1256,15 +1342,15 @@ fn host_destination(config: &Config, job: &host::Job) -> Result<(Destination, St
         .map_err(|_| TrainError::Invalid("unknown training method"))?;
     let subject = serde_json::from_value::<TrainSubject>(wire(&job.subject))
         .map_err(|_| TrainError::Invalid("unknown training subject"))?;
-    let filename = final_filename(&job.name)?;
-    if job.filename.as_deref() != Some(filename.as_str()) {
-        return Err(TrainError::Invalid(HOST_RENAMED));
-    }
     let request = TrainRequest::new(job.name.as_str(), job.base.as_str(), Vec::new())
         .with_subject(subject)
         .with_method(method)
         .with_trigger(job.trigger.as_str());
     let destination = destination(config, &catalog, recipe, &request)?;
+    let filename = weight_filename(&job.name, destination.suffix.as_deref())?;
+    if job.filename.as_deref() != Some(filename.as_str()) {
+        return Err(TrainError::Invalid(HOST_RENAMED));
+    }
     require_free_name(config, &catalog, &destination.directory, &filename)?;
     Ok((destination, filename))
 }
@@ -1780,6 +1866,23 @@ fn final_filename(name: &str) -> Result<String, TrainError> {
         return Err(TrainError::Invalid("invalid weight name"));
     }
     Ok(filename)
+}
+
+/// The file a weight requested as `name` is published under: its
+/// [`final_filename`], with `suffix` added to the stem unless the stem
+/// already ends with it.
+fn weight_filename(name: &str, suffix: Option<&str>) -> Result<String, TrainError> {
+    let filename = final_filename(name)?;
+    let Some(suffix) = suffix else {
+        return Ok(filename);
+    };
+    let stem = filename
+        .strip_suffix(crate::inventory::WEIGHT_EXTENSION)
+        .unwrap_or(&filename);
+    if stem.ends_with(suffix) {
+        return Ok(filename);
+    }
+    final_filename(&format!("{stem}{suffix}"))
 }
 
 fn failed(error: std::io::Error) -> TrainError {
@@ -5588,6 +5691,8 @@ mod tests {
         for (method, name) in [
             (TrainMethod::Lora, "lora"),
             (TrainMethod::Finetune, "finetune"),
+            (TrainMethod::Pivotal, "pivotal"),
+            (TrainMethod::Video, "video"),
         ] {
             assert_eq!(serde_json::to_value(method).unwrap(), name);
             assert_eq!(method.as_str(), name);
@@ -6580,11 +6685,13 @@ mod tests {
             recipe_id: "flux-schnell".to_string(),
             huggingface_base: None,
             trigger: None,
+            suffix: None,
         };
 
         train_on_host(
             &config,
             &attempt,
+            Handoff::Images,
             job,
             &secrets,
             &destination,

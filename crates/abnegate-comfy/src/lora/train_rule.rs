@@ -17,15 +17,21 @@ pub struct TrainRule {
     /// The recipe written into the published weight's sidecar, which runs it.
     pub recipe_id: String,
     /// The directory under the models root the weight is published in: the
-    /// one the recipe's loader reads, so `loras` for a
-    /// [`TrainMethod::Lora`], and for a [`TrainMethod::Finetune`]
-    /// `checkpoints` when the recipe loads a checkpoint or `diffusion_models`
-    /// when it loads a UNet. Training on a rule that names any other directory
-    /// fails as a configuration error.
+    /// one the recipe's loader reads, so `loras` for a [`TrainMethod::Lora`],
+    /// a [`TrainMethod::Pivotal`] or a [`TrainMethod::Video`], and for a
+    /// [`TrainMethod::Finetune`] `checkpoints` when the recipe loads a
+    /// checkpoint or `diffusion_models` when it loads a UNet. Training on a
+    /// rule that names any other directory fails as a configuration error.
     pub directory: String,
     /// Files, relative to the models root, that have to be installed before a
     /// run starts, such as `checkpoints/base.safetensors`.
     pub required: Vec<PathBuf>,
+    /// Added to the stem of the requested name, unless the stem already ends
+    /// with it, to make the name the weight is published under. A
+    /// [`TrainMethod::Video`] rule sets one, such as `-wan`, so the video
+    /// adapter of `jerry` does not take the name of the still LoRA `jerry`
+    /// beside it in `loras`.
+    pub suffix: Option<String>,
 }
 
 impl TrainRule {
@@ -45,6 +51,7 @@ impl TrainRule {
             recipe_id: recipe_id.into(),
             directory: directory.into(),
             required: Vec::new(),
+            suffix: None,
         }
     }
 
@@ -58,6 +65,14 @@ impl TrainRule {
     /// before a run starts.
     pub fn with_required(mut self, file: impl Into<PathBuf>) -> Self {
         self.required.push(file.into());
+        self
+    }
+
+    /// Sets what is added to the stem of the requested name to make the name
+    /// the weight is published under: letters, digits, dashes and
+    /// underscores.
+    pub fn with_suffix(mut self, suffix: impl Into<String>) -> Self {
+        self.suffix = Some(suffix.into());
         self
     }
 }

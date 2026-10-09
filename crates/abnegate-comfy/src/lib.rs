@@ -129,6 +129,8 @@ pub use client::build_flux_schnell_image_to_image_workflow;
 pub use client::build_flux_schnell_workflow;
 pub use client::build_upscale_image_workflow;
 pub use client::build_upscale_video_workflow;
+pub use client::build_wan_adapter_image_to_video_workflow;
+pub use client::build_wan_adapter_text_to_video_workflow;
 pub use client::build_wan_image_to_video_workflow;
 pub use client::build_wan_text_to_video_workflow;
 pub use config::Config;

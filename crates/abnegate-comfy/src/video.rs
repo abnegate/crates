@@ -13,11 +13,18 @@
 //! photo: motion says which of the things in frame is being filmed, and it
 //! costs nothing here because the same frame differences already decide which
 //! frames are worth keeping.
+//!
+//! A video adapter trains on motion rather than stills, so for
+//! [`TrainMethod::Video`](crate::lora::TrainMethod::Video) a clip is cut into
+//! two or three windows instead, each as long and as large as one generated
+//! clip, placed where the pose changes when it does and spread evenly when it
+//! does not.
 
 mod clip;
 mod frame;
 mod frame_request;
 mod options;
+pub(crate) mod window;
 
 pub use clip::Clip;
 pub use frame::Frame;
@@ -157,11 +164,13 @@ pub async fn extract(
     let work = tempfile::tempdir().map_err(|error| TrainError::Failed(error.to_string()))?;
     let container = container(filename);
     let clip = work.path().join(format!("clip.{}", container.extension));
-    std::fs::write(&clip, video).map_err(|error| TrainError::Failed(error.to_string()))?;
+    tokio::fs::write(&clip, video)
+        .await
+        .map_err(|error| TrainError::Failed(error.to_string()))?;
 
     let requested = f64::from(options.fps.clamp(1, 30));
     let sampled_fps = match duration(config, container, &clip, PROBE_TIMEOUT).await {
-        Some(seconds) if seconds > 0.0 => {
+        Ok(Some(seconds)) if seconds > 0.0 => {
             (CEILING as f64 / seconds).clamp(0.5, requested * OVERSAMPLE)
         }
         _ => requested * OVERSAMPLE,
@@ -228,17 +237,19 @@ fn build(
     })
 }
 
-/// Seconds of video, as ffprobe reports them.
+/// Seconds of video, as ffprobe reports them: `None` when it reports none or
+/// runs out of `budget`, and the error when it cannot be run at all.
 async fn duration(
     config: &Config,
     container: Container,
     clip: &Path,
     budget: Duration,
-) -> Option<f64> {
-    let output = execute(&config.ffprobe, &probe_arguments(container, clip), budget)
-        .await
-        .ok()??;
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+) -> io::Result<Option<f64>> {
+    let Some(output) = execute(&config.ffprobe, &probe_arguments(container, clip), budget).await?
+    else {
+        return Ok(None);
+    };
+    Ok(String::from_utf8_lossy(&output.stdout).trim().parse().ok())
 }
 
 async fn sample(
@@ -291,20 +302,30 @@ async fn execute(
     }
 }
 
-/// Options that pin how `clip` is opened. They have to precede `-i`.
+/// Options that pin how `clip` is opened, then `clip` itself.
 fn input_arguments(container: Container, clip: &Path) -> Vec<OsString> {
-    let mut arguments: Vec<OsString> = [
+    let mut arguments = demuxer_arguments(container);
+    arguments.extend(opened(clip));
+    arguments
+}
+
+/// Options that pin how a clip in `container` is opened. They have to
+/// precede `-i`.
+fn demuxer_arguments(container: Container) -> Vec<OsString> {
+    [
         "-protocol_whitelist",
         INPUT_PROTOCOLS,
         "-f",
         container.demuxer,
-        "-i",
     ]
     .into_iter()
     .map(OsString::from)
-    .collect();
-    arguments.push(clip.as_os_str().to_os_string());
-    arguments
+    .collect()
+}
+
+/// Opens `clip` as the input of the options before it.
+fn opened(clip: &Path) -> [OsString; 2] {
+    [OsString::from("-i"), clip.as_os_str().to_os_string()]
 }
 
 fn probe_arguments(container: Container, clip: &Path) -> Vec<OsString> {
@@ -709,10 +730,21 @@ fn hash(luma: &[f32]) -> u64 {
     bits
 }
 
+/// Whether `filename` names a clip by its extension, in any case: one of
+/// the containers a clip is read as, `mp4`, `mov`, `m4v`, `webm`, `mkv` or
+/// `avi`. A video adapter trains only on the files of its request that are.
+pub fn is_clip(filename: &str) -> bool {
+    known_container(filename).is_some()
+}
+
 /// The container a clip is read as, from the extension the browser sent. An
 /// extension outside [`CONTAINERS`] is read as MP4, and a clip that is not one
 /// then fails to decode rather than being probed as whatever it resembles.
 fn container(filename: &str) -> Container {
+    known_container(filename).unwrap_or(MP4)
+}
+
+fn known_container(filename: &str) -> Option<Container> {
     let extension = Path::new(filename)
         .extension()
         .and_then(|value| value.to_str())
@@ -720,7 +752,6 @@ fn container(filename: &str) -> Container {
     CONTAINERS
         .into_iter()
         .find(|container| Some(container.extension) == extension.as_deref())
-        .unwrap_or(MP4)
 }
 
 #[cfg(test)]
@@ -1012,6 +1043,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_clip_is_a_file_in_a_container_a_clip_is_read_as() {
+        for clip in [
+            "walk.mp4",
+            "walk.MOV",
+            "walk.webm",
+            "walk.m4v",
+            "walk.mkv",
+            "walk.avi",
+        ] {
+            assert!(is_clip(clip), "{clip}");
+        }
+        for other in [
+            "walk.png",
+            "walk.jpg",
+            "a portrait",
+            "walk.mp4.txt",
+            "playlist.m3u8",
+        ] {
+            assert!(!is_clip(other), "{other}");
+        }
+    }
+
     fn position(arguments: &[OsString], flag: &str) -> usize {
         arguments
             .iter()
@@ -1110,7 +1164,7 @@ mod tests {
         };
         let clip = work.path().join("clip.mp4");
 
-        duration(&config, MP4, &clip, PROBE_TIMEOUT).await;
+        duration(&config, MP4, &clip, PROBE_TIMEOUT).await.unwrap();
         sample(&config, MP4, &clip, work.path(), 8.0, DECODE_TIMEOUT)
             .await
             .unwrap();

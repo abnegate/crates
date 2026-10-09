@@ -47,8 +47,9 @@ impl TrainPolicy {
 
     /// Refuses a rule with no subjects, a base or recipe that is blank, padded
     /// or holds a control character, a publication directory that is not one
-    /// plain directory name, a required file that could leave the models root,
-    /// and two rules for the same base and method.
+    /// plain directory name, a suffix that is not a plain run of name
+    /// characters, a required file that could leave the models root, and two
+    /// rules for the same base and method.
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         for (index, rule) in self.rules.iter().enumerate() {
             if rule.subjects.is_empty() || !is_name(&rule.base) || !is_name(&rule.recipe_id) {
@@ -59,6 +60,15 @@ impl TrainPolicy {
             if !is_directory_name(&rule.directory) {
                 return Err(ConfigError::new(
                     "a training rule must publish into one plain directory name",
+                ));
+            }
+            if rule
+                .suffix
+                .as_deref()
+                .is_some_and(|suffix| !is_suffix(suffix))
+            {
+                return Err(ConfigError::new(
+                    "a training rule's suffix must be letters, digits, dashes or underscores",
                 ));
             }
             if !rule.required.iter().all(|file| is_beneath(file)) {
@@ -83,6 +93,13 @@ fn is_name(name: &str) -> bool {
     !name.is_empty() && name.trim() == name && !name.chars().any(char::is_control)
 }
 
+fn is_suffix(suffix: &str) -> bool {
+    !suffix.is_empty()
+        && suffix
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
 fn is_directory_name(name: &str) -> bool {
     is_name(name)
         && !name.contains(['/', '\\'])
@@ -95,4 +112,31 @@ fn is_beneath(path: &Path) -> bool {
         && path
             .components()
             .all(|component| matches!(component, Component::Normal(_)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lora::TrainSubject;
+
+    fn video(suffix: &str) -> TrainPolicy {
+        TrainPolicy::new().with_rule(
+            TrainRule::new("sdxl", TrainMethod::Video, "wan-adapter", "loras")
+                .with_subjects([TrainSubject::Person])
+                .with_suffix(suffix),
+        )
+    }
+
+    #[test]
+    fn a_suffix_is_a_plain_run_of_name_characters() {
+        for accepted in ["-wan", "_video", "wan2"] {
+            assert_eq!(video(accepted).validate(), Ok(()), "{accepted:?}");
+        }
+        for refused in ["", "-wan.safetensors", "/wan", "-w an", "..", "-wän"] {
+            assert!(
+                video(refused).validate().is_err(),
+                "{refused:?} was accepted"
+            );
+        }
+    }
 }

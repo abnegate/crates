@@ -21,8 +21,9 @@
 //! [`host`](crate::host) job directory hands on: which part of the person the
 //! crop frames ([`kind_path`], a [`FrameKind`]), the pose its caption names
 //! ([`pose_path`], a [`pose_cluster`]), the subject mask ([`mask_path`]), and
-//! one [`Rebalance`] for the whole set ([`rebalance_path`]). A video window is
-//! described by a [`ClipWindow`].
+//! one [`Rebalance`] for the whole set ([`rebalance_path`]). A video adapter
+//! trains on clip windows instead, each one `NNNN.mp4` ([`clip_path`])
+//! described by a [`ClipWindow`] in `NNNN.json` ([`window_path`]).
 
 mod clip_window;
 mod concern;
@@ -72,6 +73,10 @@ pub const KIND_SUFFIX: &str = ".kind";
 pub const POSE_SUFFIX: &str = ".pose";
 /// The companion holding a crop's 8-bit subject mask, as PNG.
 pub const MASK_SUFFIX: &str = ".mask.png";
+/// The clip window itself, H.264 in MP4.
+pub const CLIP_SUFFIX: &str = ".mp4";
+/// The [`ClipWindow`] describing a clip window, as JSON.
+pub const WINDOW_SUFFIX: &str = ".json";
 /// The pose of a caption that names none of [`pose_cluster`]'s poses.
 pub const UNKNOWN_POSE: &str = "unknown";
 /// The extension of the OpenPose image [`pose_filename`] names.
@@ -332,6 +337,17 @@ pub fn pose_path(directory: &Path, stem: &str) -> PathBuf {
 /// The [`MASK_SUFFIX`] companion of the frame `stem` in `directory`.
 pub fn mask_path(directory: &Path, stem: &str) -> PathBuf {
     companion(directory, stem, MASK_SUFFIX)
+}
+
+/// The [`CLIP_SUFFIX`] clip window `stem` in `directory`.
+pub fn clip_path(directory: &Path, stem: &str) -> PathBuf {
+    companion(directory, stem, CLIP_SUFFIX)
+}
+
+/// The [`WINDOW_SUFFIX`] description of the clip window `stem` in
+/// `directory`.
+pub fn window_path(directory: &Path, stem: &str) -> PathBuf {
+    companion(directory, stem, WINDOW_SUFFIX)
 }
 
 /// Where a person set in `directory` keeps its [`Rebalance`].
@@ -722,6 +738,19 @@ mod tests {
             Path::new("/job/dataset/rebalance.json")
         );
         assert_eq!(REBALANCE_SHARE, 0.40);
+    }
+
+    #[test]
+    fn a_clip_window_is_described_beside_its_mp4() {
+        let directory = Path::new("/job/clips");
+        assert_eq!(
+            clip_path(directory, "0000"),
+            Path::new("/job/clips/0000.mp4")
+        );
+        assert_eq!(
+            window_path(directory, "0000"),
+            Path::new("/job/clips/0000.json")
+        );
     }
 
     #[test]

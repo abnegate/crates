@@ -63,7 +63,8 @@ pub struct Job {
     pub trigger: String,
     /// The base's model family, such as `flux` or `sdxl`, the same name a
     /// training command reads in `<prefix>_ARCHITECTURE`. Blank when not
-    /// given.
+    /// given, and for a video adapter, whose
+    /// [`recipe_id`](Job::recipe_id) names the model it trains.
     #[serde(default)]
     pub architecture: String,
     /// The base weight file the trainer starts from.
@@ -86,7 +87,8 @@ pub struct Job {
     /// base names none.
     #[serde(default, rename = "hf_base")]
     pub huggingface_base: String,
-    /// Images in the job's `dataset/`.
+    /// Images in the job's `dataset/`, or for a video adapter the windows in
+    /// its `clips/`.
     #[serde(default)]
     pub image_count: usize,
     /// Why a [`Status::Failed`] job failed.

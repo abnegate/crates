@@ -12,6 +12,15 @@ pub enum TrainMethod {
     Lora,
     /// A full checkpoint fine-tuned from its base.
     Finetune,
+    /// A low-rank adapter trained together with a new token embedding for its
+    /// trigger, published and loaded like a [`Lora`](Self::Lora). Only a
+    /// training command or the host trainer trains one.
+    Pivotal,
+    /// A low-rank adapter for a video recipe, trained on windows cut from the
+    /// request's clips rather than on its photos. Only the host trainer
+    /// trains one, from the job's
+    /// [`CLIPS_DIRECTORY`](crate::host::CLIPS_DIRECTORY).
+    Video,
 }
 
 impl TrainMethod {
@@ -21,6 +30,8 @@ impl TrainMethod {
         match self {
             Self::Lora => "lora",
             Self::Finetune => "finetune",
+            Self::Pivotal => "pivotal",
+            Self::Video => "video",
         }
     }
 }

@@ -32,6 +32,13 @@ use std::path::Path;
 
 use crate::client::Error;
 
+/// The packaged graph a video prompt runs with a trained identity's LoRA.
+pub(crate) const VIDEO_ADAPTER_WORKFLOW: &str = "wan-adapter-api.json";
+/// The packaged graph an image-to-video prompt runs with a trained
+/// identity's LoRA.
+pub(crate) const IMAGE_TO_VIDEO_ADAPTER_WORKFLOW: &str = "wan-adapter-i2v-api.json";
+/// The node class an adapter graph loads its LoRA with.
+pub(crate) const LORA_LOADER: &str = "LoraLoaderModelOnly";
 const PACKAGED_CATALOG: &str = include_str!("../comfyui/recipes/catalog.json");
 const SELECTED_SLOTS: &[&str] = &["lora", "checkpoint", "unet"];
 const ENCODER: &str = "VAEEncode";
@@ -85,8 +92,8 @@ fn packaged_workflow(name: &str) -> Option<&'static str> {
         "qwen-image-edit-2511-adapter-edit-api.json" => Some(include_str!(
             "../comfyui/workflows/qwen-image-edit-2511-adapter-edit-api.json"
         )),
-        "wan-adapter-api.json" => Some(include_str!("../comfyui/workflows/wan-adapter-api.json")),
-        "wan-adapter-i2v-api.json" => Some(include_str!(
+        VIDEO_ADAPTER_WORKFLOW => Some(include_str!("../comfyui/workflows/wan-adapter-api.json")),
+        IMAGE_TO_VIDEO_ADAPTER_WORKFLOW => Some(include_str!(
             "../comfyui/workflows/wan-adapter-i2v-api.json"
         )),
         _ => None,

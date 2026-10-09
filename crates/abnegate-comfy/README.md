@@ -144,6 +144,13 @@ a fine-tune. Training never publishes over a weight a recipe or rule needs, nor
 over one that no training run published, so a fine-tune cannot replace its own
 base checkpoint. Only a LoRA is scored against its base. The external trainer
 reads the request's choice from `<prefix>_SUBJECT` and `<prefix>_METHOD`.
+A `TrainMethod::Pivotal` LoRA, trained together with an embedding for its
+trigger, is published and run like a LoRA, and only a training command or the
+host trainer trains one. A `TrainMethod::Video` rule names a video adapter
+recipe, such as the packaged `wan-adapter`, and usually a `suffix`, so the
+video adapter of `jerry` is published as `jerry-wan.safetensors` beside the
+still `jerry.safetensors` rather than over it; only the host trainer trains
+one.
 `lora::trainable_bases` lists each installed base with the subjects and
 methods its rules allow and that something configured can run, which is what
 a host offers the person choosing.
@@ -201,8 +208,18 @@ trainer, named by `abnegate_comfy::dataset`:
 
 A set where one pose holds more than 40% of the frames (`REBALANCE_SHARE`)
 draws each frame in inverse proportion to its pose's size, so the rarest pose
-keeps weight 1; otherwise every weight is 1. A video window in `clips/` is
-described by `dataset::ClipWindow`, `{"start_s", "end_s", "pose"}`.
+keeps weight 1; otherwise every weight is 1.
+
+A `TrainMethod::Video` request trains on clips instead. Every file of the
+request `video::is_clip` names is cut into two or three windows of 49 frames
+at 24 frames a second, letterboxed to 832×480, the size and length of one
+clip the packaged Wan graphs generate. Windows centre on the moments the shot
+changes when it changes at least twice, and are spread evenly over the clip
+otherwise. Each window is `clips/NNNN.mp4` (`dataset::clip_path`), described
+by `dataset::ClipWindow`, `{"start_s", "end_s", "pose"}`, in `NNNN.json`
+(`dataset::window_path`). The trainer's step budget for them is
+`host::Trainer::with_video_steps`, 20 per window between 150 and 2000 by
+default.
 
 `Config::poses_directory` (`COMFYUI_POSES_DIRECTORY`) names a directory of
 OpenPose images a person's generation can be posed with, one per pose cluster,
@@ -274,7 +291,8 @@ trigger two weights share, or two different triggers of that length, select
 neither. `lora::identity_caption` leads a rewritten prompt with the trigger
 when it no longer names it. For video, `inventory::bind_video_identity`
 returns the named trigger and the ready video LoRA trained on it, when there
-is exactly one.
+is exactly one, and `Client::generate_video` binds it on its own: the prompt
+keeps the trigger, and a video LoRA runs through the `wan-adapter` graph.
 
 These calls read the models directory and every sidecar in it, so they block:
 call them inside `spawn_blocking`, or scan once with `inventory::scan` and ask
@@ -379,7 +397,7 @@ temporary name, flushed, and renamed into place:
 | `progress.json` | both | one progress object, below; the crate writes the queued one |
 | `previews/` | trainer | the samples `progress.json` lists in `previews` |
 | `dataset/` | crate | `NNNN.png` with its caption `NNNN.txt`, and for a person set `NNNN.kind`, `NNNN.pose`, `NNNN.mask.png` and `rebalance.json` |
-| `clips/` | crate | reserved for video windows, `NNNN.mp4` described by `NNNN.json`; nothing writes it yet |
+| `clips/` | crate | a `video` job's windows, `NNNN.mp4` described by `NNNN.json` |
 | `data/` | host | text records, `train.jsonl` and `valid.jsonl`, laid out as `format.json` says |
 | `<filename>` | trainer | the trained weight, which the crate then publishes and removes |
 | `publish.lock` | crate | locked by whoever publishes the job, from queueing it until the weight is published; the trainer leaves it alone |
@@ -396,17 +414,17 @@ host to show until `host::remove` takes the whole job away.
 | `schema_version` | `1` |
 | `id` | the job's UUID, also its directory name |
 | `name` | the name the weight was requested under |
-| `method` | `lora`, `finetune`, or a method of the host's own |
+| `method` | `lora`, `finetune`, `pivotal`, `video`, or a method of the host's own |
 | `subject` | `other`, `person`, a subject of the host's own, or absent |
 | `trigger` | the identity weight's trigger word, or empty |
-| `architecture` | the base's model family, `flux` or `sdxl`, as `<prefix>_ARCHITECTURE` names it for a training command |
+| `architecture` | the base's model family, `flux` or `sdxl`, as `<prefix>_ARCHITECTURE` names it for a training command; empty for a `video` job, whose `recipe_id` names the model it trains |
 | `checkpoint` | the base weight file to start from |
 | `base` | the base recipe id; empty for a job the crate does not publish |
 | `status` | `queued`, `running`, `succeeded` or `failed` |
 | `filename` | the file to write the weight to, and the name it is published under |
 | `recipe_id` | the recipe that runs the published weight |
 | `hf_base` | the Hugging Face model of the base, or empty |
-| `image_count` | images in `dataset/` |
+| `image_count` | images in `dataset/`, or windows in `clips/` for a `video` job |
 | `error` | why a `failed` job failed |
 | `pid` | the trainer process of a `running` job, `Job::process_id` |
 | `started_at` | RFC 3339 time the job was queued |
