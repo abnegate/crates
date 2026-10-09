@@ -15,8 +15,12 @@ use crate::parser::claude::CliUsage;
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct StdoutParseResult {
-    /// The agent's prose, in the order it was streamed.
+    /// The agent's prose, in the order it was streamed: its narration and
+    /// its answer alike.
     pub text: String,
+    /// The agent's final answer, apart from the narration in
+    /// [`text`](StdoutParseResult::text), when it reported one.
+    pub answer: Option<String>,
     /// Tools the agent ran for itself. Reported, never replayed.
     pub tools: Vec<ToolCall>,
     /// The last token counts reported, cache reads and writes counted as
@@ -97,6 +101,7 @@ impl StdoutParseResult {
             }
             AgentEvent::Session(session) => self.session = Some(session),
             AgentEvent::Structured(output) => self.structured = Some(output),
+            AgentEvent::Answer(answer) => self.answer = Some(answer),
             AgentEvent::Cost(cost) => self.cost = Some(cost),
             AgentEvent::Turns(turns) => self.turns = Some(turns),
             AgentEvent::Latency(latency) => self.latency = Some(latency),
@@ -114,6 +119,16 @@ impl StdoutParseResult {
         if !self.finished && self.failure.is_none() {
             self.failure.clone_from(&self.diagnostic);
         }
+    }
+
+    /// What the agent answered: its final [answer](StdoutParseResult::answer)
+    /// when it reported one that is not blank, or else all the
+    /// [prose](StdoutParseResult::text) it streamed.
+    pub fn reply(&self) -> &str {
+        self.answer
+            .as_deref()
+            .filter(|answer| !answer.trim().is_empty())
+            .unwrap_or(&self.text)
     }
 
     /// The schema-shaped answer read as `T`, or `None` when there was none or
@@ -159,6 +174,8 @@ mod tests {
     fn nothing_recorded_means_nothing_known() {
         let result = StdoutParseResult::default();
         assert!(result.text.is_empty());
+        assert!(result.answer.is_none());
+        assert_eq!(result.reply(), "");
         assert!(result.tools.is_empty());
         assert!(result.usage.is_none());
         assert!(result.tokens.is_none());
@@ -195,6 +212,7 @@ mod tests {
                 cache_creation_input_tokens: Some(400),
             }),
             AgentEvent::Usage(Usage::new(800, 200)),
+            AgentEvent::Answer("lo".to_string()),
             AgentEvent::Finished {
                 finish_reason: Some("success".to_string()),
             },
@@ -203,6 +221,7 @@ mod tests {
         .collect();
 
         assert_eq!(result.text, "hello");
+        assert_eq!(result.answer.as_deref(), Some("lo"));
         assert_eq!(result.session.as_deref(), Some("sess-1"));
         assert!((result.cost.expect("a cost") - 0.05).abs() < 1e-6);
         assert_eq!(result.turns, Some(3));
@@ -223,6 +242,57 @@ mod tests {
         let report: StructuredResult = result.decode().expect("a report");
         assert!(report.success);
         assert_eq!(report.summary, "done");
+    }
+
+    const NARRATION: &str = "#42 returned 500 — LIVE FAIL, retrying.";
+    const FINAL_REPORT: &str = "- #42 fix uploads LIVE PASS\nDEPLOY_QA_VERDICT: ALL_VERIFIED";
+
+    fn narrated(answer: Option<&str>) -> StdoutParseResult {
+        [
+            AgentEvent::Text(NARRATION.to_string()),
+            AgentEvent::Text(FINAL_REPORT.to_string()),
+        ]
+        .into_iter()
+        .chain(answer.map(|answer| AgentEvent::Answer(answer.to_string())))
+        .chain([AgentEvent::finished(Some("success".to_string()))])
+        .collect()
+    }
+
+    #[test]
+    fn the_reply_is_only_the_final_answer() {
+        let result = narrated(Some(FINAL_REPORT));
+
+        assert_eq!(result.reply(), FINAL_REPORT);
+        assert_eq!(result.answer.as_deref(), Some(FINAL_REPORT));
+        assert_eq!(result.text, format!("{NARRATION}{FINAL_REPORT}"));
+    }
+
+    #[test]
+    fn the_reply_falls_back_to_the_prose_without_a_final_answer() {
+        let result = narrated(None);
+
+        assert_eq!(result.reply(), format!("{NARRATION}{FINAL_REPORT}"));
+    }
+
+    #[test]
+    fn the_reply_falls_back_to_the_prose_for_a_blank_final_answer() {
+        let result = narrated(Some(" \n "));
+
+        assert_eq!(result.reply(), format!("{NARRATION}{FINAL_REPORT}"));
+    }
+
+    #[test]
+    fn a_final_answer_ends_nothing_and_the_last_one_wins() {
+        let result: StdoutParseResult = [
+            AgentEvent::Answer("first".to_string()),
+            AgentEvent::Answer("second".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        assert!(!result.finished);
+        assert!(result.failure.is_none());
+        assert_eq!(result.answer.as_deref(), Some("second"));
     }
 
     #[test]

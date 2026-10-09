@@ -8,7 +8,7 @@
 //! [`CliProvider`] runs `claude --output-format stream-json` or
 //! `codex exec --json` with the conversation flattened into one prompt on
 //! stdin, reads the agent's newline-delimited JSON as it streams, and returns
-//! its final prose as a completion. Output is framed by [`Lines`] with a cap
+//! its final answer as a completion. Output is framed by [`Lines`] with a cap
 //! on any one event, parsed by the agent's own parser in [`parser`] into
 //! [`AgentEvent`]s, and folded into a [`StdoutParseResult`]. Once the stream
 //! settles the run — the turn finished, the agent reported a failure, or a
@@ -25,7 +25,12 @@
 //!
 //! [`CliProvider::execute`] returns the whole [`Execution`] for a caller that
 //! needs more than prose: the answer to a [`StructuredResult::SCHEMA`], the
-//! session to resume, the cost, and where the run's [`log`] files are.
+//! session to resume, the cost, and where the run's [`log`] files are. A
+//! Claude turn that succeeds reports its final answer apart from the
+//! narration it streamed on the way there, as an [`AgentEvent::Answer`] kept
+//! in [`StdoutParseResult::answer`]; [`StdoutParseResult::reply`] is that
+//! answer, or all the prose when the agent gave none, and is what
+//! [`complete`](abnegate_llm::CompletionProvider::complete) returns.
 //! [`CliProvider::execute_prompt`] and [`CliProvider::stream_prompt`] send a
 //! prompt's bytes unchanged instead of a flattened conversation, so Claude
 //! reads a leading slash command as one; nothing in such a prompt is
@@ -141,7 +146,10 @@
 //! subagent's refusal is never the turn's: Claude hands it to the main agent,
 //! which answers without it.
 //! A turn the account's usage credits carry past the plan's window is logged
-//! once, at info, and named in [`StdoutParseResult::credits`].
+//! once, at info, and named in [`StdoutParseResult::credits`]. A failed
+//! Claude result, such as one out of turns (`error_max_turns`), fails in its
+//! words and then the `errors` it lists, a line apiece, and in its subtype
+//! only when it gave neither.
 //!
 //! # Platform support
 //!

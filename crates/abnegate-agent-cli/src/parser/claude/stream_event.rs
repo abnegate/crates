@@ -79,6 +79,12 @@ pub enum StreamEvent {
         /// The agent's final prose, or its own account of why it failed.
         #[serde(default)]
         result: Option<String>,
+        /// What went wrong, for a failure such as `error_max_turns` that
+        /// carries no `result` text: each a sentence, or a JSON value of
+        /// another shape. A list of any other shape reads as absent rather
+        /// than losing the whole result.
+        #[serde(default, deserialize_with = "lenient")]
+        errors: Option<Vec<serde_json::Value>>,
         /// The answer shaped to the schema passed with `--json-schema`.
         #[serde(default)]
         structured_output: Option<serde_json::Value>,
@@ -358,6 +364,7 @@ mod tests {
                 subtype: None,
                 is_error: false,
                 result: None,
+                errors: None,
                 structured_output: None,
                 total_cost_usd: None,
                 turns: None,
@@ -488,6 +495,84 @@ mod tests {
             event,
             StreamEvent::Result { structured_output: None, ref result, .. } if result.as_deref() == Some("text")
         ));
+    }
+
+    #[test]
+    fn a_result_carries_the_final_answer() {
+        let event = parse(
+            r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":61000,"duration_api_ms":58000,"num_turns":7,"result":"- #42 fix uploads LIVE PASS\nDEPLOY_QA_VERDICT: ALL_VERIFIED","session_id":"sess-live-qa","total_cost_usd":0.42,"usage":{"input_tokens":12,"output_tokens":340}}"#,
+        );
+        let StreamEvent::Result {
+            result, is_error, ..
+        } = event
+        else {
+            panic!("unexpected event: {event:?}");
+        };
+        assert_eq!(
+            result.as_deref(),
+            Some("- #42 fix uploads LIVE PASS\nDEPLOY_QA_VERDICT: ALL_VERIFIED")
+        );
+        assert!(!is_error);
+    }
+
+    #[test]
+    fn a_result_carries_its_error_flag() {
+        let event = parse(
+            r#"{"type":"result","subtype":"success","is_error":true,"num_turns":3,"result":"Claude AI usage limit reached|1790262000","session_id":"sess-live-qa"}"#,
+        );
+        let StreamEvent::Result {
+            result, is_error, ..
+        } = event
+        else {
+            panic!("unexpected event: {event:?}");
+        };
+        assert_eq!(
+            result.as_deref(),
+            Some("Claude AI usage limit reached|1790262000")
+        );
+        assert!(is_error);
+    }
+
+    #[test]
+    fn a_failure_subtype_carries_its_errors_without_result_text() {
+        let event = parse(
+            r#"{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":30,"session_id":"sess-live-qa","errors":["Reached maximum number of turns (30)"]}"#,
+        );
+        let StreamEvent::Result {
+            result,
+            errors,
+            is_error,
+            turns,
+            ..
+        } = event
+        else {
+            panic!("unexpected event: {event:?}");
+        };
+        assert!(result.is_none());
+        assert_eq!(
+            errors,
+            Some(vec![json!("Reached maximum number of turns (30)")])
+        );
+        assert!(is_error);
+        assert_eq!(turns, Some(30));
+    }
+
+    #[test]
+    fn errors_of_another_shape_are_absent_and_the_result_is_kept() {
+        for line in [
+            r#"{"type":"result","subtype":"error_max_turns","is_error":true,"errors":"Reached maximum number of turns (30)"}"#,
+            r#"{"type":"result","subtype":"error_max_turns","is_error":true,"errors":{"message":"Reached maximum number of turns (30)"}}"#,
+            r#"{"type":"result","subtype":"error_max_turns","is_error":true,"errors":null}"#,
+        ] {
+            let StreamEvent::Result {
+                subtype, errors, ..
+            } = parse(line)
+            else {
+                panic!("{line} was not read as a result");
+            };
+            assert_eq!(subtype.as_deref(), Some("error_max_turns"), "{line}");
+            assert_eq!(errors, None, "{line}");
+        }
     }
 
     #[test]

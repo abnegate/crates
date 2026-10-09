@@ -60,7 +60,10 @@ const STOPPING: &str = "its registry has stopped every run";
 ///
 /// The agent runs its own tool loop, so [`CompletionRequest::tools`] is not
 /// forwarded: the agent has its own tools and no way to call the caller's.
-/// What comes back is the agent's final prose. Tool activity is still parsed,
+/// What comes back is the agent's [reply](StdoutParseResult::reply): its
+/// final answer, without the narration it streamed on the way there, when it
+/// reports the two apart, as Claude does, or else all its prose. Tool
+/// activity is still parsed,
 /// so a stream full of it cannot derail the run, but it is not returned as
 /// tool calls: the agent already executed them, and replaying them through the
 /// caller's registry would run each one a second time.
@@ -115,7 +118,10 @@ impl CliProvider {
     ///
     /// A run that exits on its own, or is stopped once its output settled it,
     /// is an [`Execution`] however it ended; judging it is left to the caller,
-    /// as [`CompletionProvider::complete`] does. What fails here is only what
+    /// as [`CompletionProvider::complete`] does. Its
+    /// [`stdout`](Execution::stdout) keeps a Claude turn's final
+    /// [answer](StdoutParseResult::answer) apart from the prose streamed on
+    /// the way to it. What fails here is only what
     /// leaves nothing to judge: settings the agent cannot honour, an agent
     /// that cannot be started, one that outlives its timeout, and output that
     /// cannot be read as the agent's stream.
@@ -166,7 +172,9 @@ impl CliProvider {
     }
 
     /// Start the agent and yield its events as it emits them, each the moment
-    /// its line is read.
+    /// its line is read. A Claude turn that succeeds yields its final answer
+    /// as an [`AgentEvent::Answer`] just before the [`AgentEvent::Finished`]
+    /// that ends it, after the [`AgentEvent::Text`] it streamed on the way.
     ///
     /// The agent is spawned before this returns, so settings it cannot
     /// honour and an agent that cannot be started are this call's error,
@@ -576,7 +584,7 @@ fn assemble(name: &str, execution: Execution) -> Result<Completion, ProviderErro
 
 /// The answer `stdout` amounts to, from the provider called `name`.
 fn completion(name: &str, stdout: StdoutParseResult) -> Completion {
-    Completion::new(name, Message::assistant(stdout.text))
+    Completion::new(name, Message::assistant(stdout.reply()))
         .with_usage(stdout.usage)
         .with_finish_reason(stdout.finish_reason)
 }
@@ -1104,6 +1112,138 @@ echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","
         assert_eq!(execution.stdout.failure.as_deref(), Some("error_max_turns"));
         assert_eq!(execution.stdout.session.as_deref(), Some("s-9"));
         assert!(execution.stdout.finished);
+    }
+
+    /// A turn whose narration goes before its final answer.
+    const NARRATION_THEN_RESULT: &str =
+        include_str!("../tests/fixtures/claude/narration-then-result.jsonl");
+    const NARRATION: &str = "#42 returned 500 — LIVE FAIL, retrying.";
+    const FINAL_REPORT: &str = "- #42 fix uploads LIVE PASS\nDEPLOY_QA_VERDICT: ALL_VERIFIED";
+
+    /// A turn that ran out of turns, which says so only in its `errors`.
+    const ERROR_MAX_TURNS: &str =
+        include_str!("../tests/fixtures/claude/error-max-turns-with-errors.jsonl");
+    const MAX_TURNS: &str = "Reached maximum number of turns (30)";
+    const MAX_TURNS_NARRATION: &str = "Let me check.";
+
+    #[tokio::test]
+    async fn a_completion_is_the_final_answer_without_the_narration() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            replayed(&directory, NARRATION_THEN_RESULT),
+        );
+
+        let completion = run(&provider, &[Message::user("Check the deploy.")])
+            .await
+            .expect("an answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some(FINAL_REPORT));
+    }
+
+    #[tokio::test]
+    async fn a_streamed_turn_yields_its_final_answer_just_before_it_finishes() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            replayed(&directory, NARRATION_THEN_RESULT),
+        );
+
+        let (delivered, failure, _) =
+            collected(streamed(&provider, &[Message::user("Check the deploy.")]).await).await;
+
+        assert!(failure.is_none(), "{failure:?}");
+        let texts: Vec<&str> = delivered
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, [NARRATION, FINAL_REPORT]);
+        let [.., AgentEvent::Answer(answer), AgentEvent::Finished { .. }] = delivered.as_slice()
+        else {
+            panic!("expected the answer, then the finish: {delivered:?}");
+        };
+        assert_eq!(answer, FINAL_REPORT);
+    }
+
+    #[tokio::test]
+    async fn an_execution_keeps_the_final_answer_apart_from_the_narration() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            replayed(&directory, NARRATION_THEN_RESULT).with_log(directory.path().join("logs")),
+        );
+
+        let execution = execute(&provider, &[Message::user("Check the deploy.")]).await;
+
+        assert_eq!(execution.stdout.answer.as_deref(), Some(FINAL_REPORT));
+        assert_eq!(execution.stdout.text, format!("{NARRATION}{FINAL_REPORT}"));
+        assert_eq!(execution.stdout.reply(), FINAL_REPORT);
+        let journal = recorded(&execution.log.expect("log files").events);
+        let completed: Value = journal
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("a JSON line"))
+            .find(|entry| entry["event"] == "process_completed")
+            .expect("a completed record");
+        assert_eq!(completed["data"]["has_answer"], true, "{journal}");
+    }
+
+    #[tokio::test]
+    async fn a_turn_out_of_turns_fails_in_the_errors_claude_gave() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(AgentKind::Claude, replayed(&directory, ERROR_MAX_TURNS));
+        let messages = [Message::user("Fix the tests.")];
+
+        let error = run(&provider, &messages).await.expect_err("a failure");
+        assert!(
+            matches!(&error, ProviderError::Agent { message, .. } if message == MAX_TURNS),
+            "{error:?}"
+        );
+
+        let (delivered, failure, _) = collected(streamed(&provider, &messages).await).await;
+        assert!(
+            matches!(&failure, Some(ProviderError::Agent { message, .. }) if message == MAX_TURNS),
+            "{failure:?}"
+        );
+        assert!(
+            !delivered
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Answer(_))),
+            "a failed turn yielded an answer: {delivered:?}"
+        );
+
+        let execution = execute(&provider, &messages).await;
+        assert_eq!(execution.stdout.failure.as_deref(), Some(MAX_TURNS));
+        assert_eq!(execution.stdout.answer, None);
+        assert_eq!(execution.stdout.text, MAX_TURNS_NARRATION);
+        assert_eq!(execution.stdout.turns, Some(30));
+    }
+
+    #[tokio::test]
+    async fn a_failed_exit_keeps_an_unflagged_final_answer_out_of_the_error() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let lines: Vec<String> = NARRATION_THEN_RESULT.lines().map(str::to_string).collect();
+        let script = format!("{}\nexit 1", replaying(&directory, &lines));
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+
+        let error = run(&provider, &[Message::user("Check the deploy.")])
+            .await
+            .expect_err("a run whose process failed is no answer");
+
+        assert!(
+            matches!(
+                &error,
+                ProviderError::Exit {
+                    status: ExitStatus::Code(1),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(!error.to_string().contains(FINAL_REPORT), "{error}");
+        assert!(!error.to_string().contains(NARRATION), "{error}");
     }
 
     #[tokio::test]
@@ -4264,6 +4404,7 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         let [
             AgentEvent::Window(window),
             AgentEvent::Text(text),
+            AgentEvent::Answer(answer),
             AgentEvent::Finished { .. },
         ] = delivered.as_slice()
         else {
@@ -4273,6 +4414,7 @@ echo '{"type":"result","subtype":"success","is_error":false}'
         assert_eq!(window.kind, Some(WindowKind::FiveHours));
         assert_eq!(window.used_percent, Some(43.0));
         assert_eq!(text, "Done.");
+        assert_eq!(answer, "Done.");
 
         let completion = run(&provider, &messages)
             .await

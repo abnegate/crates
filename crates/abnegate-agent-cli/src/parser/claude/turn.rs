@@ -5,6 +5,7 @@ use abnegate_llm::Usage;
 use abnegate_llm::Window;
 use chrono::DateTime;
 use chrono::Utc;
+use serde_json::Value;
 
 use crate::event::AgentEvent;
 use crate::parser::claude::CREDITS_UNCONFIRMED;
@@ -119,6 +120,7 @@ impl Turn {
                 subtype,
                 is_error,
                 result,
+                errors,
                 structured_output,
                 total_cost_usd,
                 turns,
@@ -145,7 +147,12 @@ impl Turn {
                     events.push(AgentEvent::Usage(Usage::from(&usage)));
                     events.push(AgentEvent::Tokens(usage));
                 }
-                events.push(self.conclusion(subtype, is_error, result, api_error_status));
+                if failed(subtype.as_deref(), is_error) {
+                    events.push(self.failure(subtype, explained(result, errors), api_error_status));
+                } else {
+                    events.extend(result.filter(|words| spoken(words)).map(AgentEvent::Answer));
+                    events.push(AgentEvent::finished(subtype));
+                }
             }
             StreamEvent::RateLimit { report, resets_at } => {
                 self.limit(report.unwrap_or_default(), resets_at, events);
@@ -212,24 +219,18 @@ impl Turn {
         }
     }
 
-    fn conclusion(
+    /// What a failed result ends the turn in: the main agent's failed
+    /// request when it had one, or else claude's `words` for the result,
+    /// falling back to its `subtype`.
+    fn failure(
         &self,
         subtype: Option<String>,
-        is_error: bool,
-        result: Option<String>,
+        words: Option<String>,
         status: Option<u16>,
     ) -> AgentEvent {
-        let failed = is_error
-            || subtype
-                .as_deref()
-                .is_some_and(|subtype| subtype.starts_with(FAILED_SUBTYPE_PREFIX));
-        if !failed {
-            return AgentEvent::finished(subtype);
-        }
         if let Some(failure) = &self.failure {
             return failure.clone();
         }
-        let words = result.filter(|result| !result.trim().is_empty());
         if status == Some(UNAUTHORIZED) {
             return AgentEvent::Failed(
                 words.unwrap_or_else(|| subtype.unwrap_or_else(|| FAILED.to_string())),
@@ -246,7 +247,7 @@ impl Turn {
     fn limit(
         &mut self,
         mut report: RateLimitReport,
-        resets_at: Option<serde_json::Value>,
+        resets_at: Option<Value>,
         events: &mut Vec<AgentEvent>,
     ) {
         if report.resets_at.is_none() {
@@ -303,6 +304,37 @@ impl Turn {
             _ => self.limited(worded(marker, words), true),
         }
     }
+}
+
+/// Whether a result ended the turn in failure, by its flag or its subtype.
+fn failed(subtype: Option<&str>, is_error: bool) -> bool {
+    is_error || subtype.is_some_and(|subtype| subtype.starts_with(FAILED_SUBTYPE_PREFIX))
+}
+
+/// Whether `words` say anything at all.
+fn spoken(words: &str) -> bool {
+    !words.trim().is_empty()
+}
+
+/// claude's words for a failed result: its `result` text, then each of its
+/// `errors` on a line of its own, a value that is not a sentence written as
+/// JSON, leaving out whatever is blank.
+fn explained(result: Option<String>, errors: Option<Vec<Value>>) -> Option<String> {
+    let errors = errors
+        .into_iter()
+        .flatten()
+        .filter(|error| !error.is_null())
+        .map(|error| match error {
+            Value::String(message) => message,
+            other => other.to_string(),
+        });
+    let lines: Vec<String> = result
+        .into_iter()
+        .chain(errors)
+        .filter(|line| spoken(line))
+        .map(|line| line.trim().to_string())
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// A line of a subagent's own conversation, of which only the tools it
@@ -382,6 +414,18 @@ mod tests {
     /// usage credits off.
     const LONG_CONTEXT_STREAM: &str =
         include_str!("../../../tests/fixtures/claude/long-context-credits-required.jsonl");
+
+    /// A turn that ran out of turns, which says so only in its `errors`.
+    const ERROR_MAX_TURNS_STREAM: &str =
+        include_str!("../../../tests/fixtures/claude/error-max-turns-with-errors.jsonl");
+
+    /// A turn whose narration goes before its final answer.
+    const NARRATION_THEN_RESULT_STREAM: &str =
+        include_str!("../../../tests/fixtures/claude/narration-then-result.jsonl");
+
+    const MAX_TURNS: &str = "Reached maximum number of turns (30)";
+    const NARRATION: &str = "#42 returned 500 — LIVE FAIL, retrying.";
+    const FINAL_REPORT: &str = "- #42 fix uploads LIVE PASS\nDEPLOY_QA_VERDICT: ALL_VERIFIED";
 
     const REQUIRES_CREDITS: &str =
         "Fable 5.1 requires usage credits. Switch to another model to continue.";
@@ -495,6 +539,16 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 AgentEvent::Tool(call) => Some(call.function.name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn answers(events: &[AgentEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Answer(answer) => Some(answer.as_str()),
                 _ => None,
             })
             .collect()
@@ -1572,5 +1626,117 @@ mod tests {
         assert_eq!(limit.message, LIMIT_HIT);
         assert_eq!(limit.resets_at, None, "{limit:?}");
         assert_eq!(limit.window, None, "{limit:?}");
+    }
+
+    #[test]
+    fn a_turn_out_of_turns_fails_in_its_joined_errors_and_not_its_subtype() {
+        let events = interpret_all(ERROR_MAX_TURNS_STREAM);
+
+        assert_eq!(failures(&events), [MAX_TURNS]);
+        assert!(
+            matches!(events.last(), Some(AgentEvent::Failed(message)) if message == MAX_TURNS),
+            "{events:?}"
+        );
+        assert!(answers(&events).is_empty(), "{events:?}");
+        assert_eq!(text(&events), "Let me check.");
+    }
+
+    #[test]
+    fn a_failed_results_words_and_errors_are_joined_a_line_apiece() {
+        for (line, expected) in [
+            (
+                json!({
+                    "type": "result",
+                    "subtype": "error_max_turns",
+                    "is_error": true,
+                    "result": " \n ",
+                    "errors": [MAX_TURNS, {"code": 7}, null, "  "],
+                }),
+                format!("{MAX_TURNS}\n{{\"code\":7}}"),
+            ),
+            (
+                json!({
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "is_error": true,
+                    "result": "The run failed.",
+                    "errors": ["  Tool permission denied: Bash  "],
+                }),
+                "The run failed.\nTool permission denied: Bash".to_string(),
+            ),
+            (
+                json!({
+                    "type": "result",
+                    "subtype": "error_max_turns",
+                    "is_error": true,
+                    "errors": [],
+                }),
+                "error_max_turns".to_string(),
+            ),
+        ] {
+            let events = interpret_all(&line.to_string());
+
+            assert!(
+                matches!(events.as_slice(), [AgentEvent::Failed(message)] if *message == expected),
+                "{line}: {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn errors_in_a_limits_words_are_a_limit() {
+        let line = json!({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": true,
+            "errors": [LIMIT_HIT],
+        });
+        let events = interpret_all(&line.to_string());
+
+        assert!(
+            matches!(events.as_slice(), [AgentEvent::Limited(limit)] if limit.message == LIMIT_HIT),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn narration_followed_by_a_final_result_answers_in_the_result_alone() {
+        let events = interpret_all(NARRATION_THEN_RESULT_STREAM);
+
+        assert_eq!(answers(&events), [FINAL_REPORT]);
+        assert_eq!(text(&events), format!("{NARRATION}{FINAL_REPORT}"));
+        assert!(
+            matches!(
+                events.as_slice(),
+                [.., AgentEvent::Answer(_), AgentEvent::Finished { finish_reason }]
+                    if finish_reason.as_deref() == Some("success")
+            ),
+            "the answer comes just before the finish: {events:?}"
+        );
+
+        let result: StdoutParseResult = events.into_iter().collect();
+        assert_eq!(result.answer.as_deref(), Some(FINAL_REPORT));
+        assert_eq!(result.reply(), FINAL_REPORT);
+        assert!(result.finished);
+        assert!(result.failure.is_none());
+    }
+
+    #[test]
+    fn a_failed_or_blank_result_is_no_answer() {
+        for line in [
+            failed_result(SESSION_LIMIT),
+            failed_with("Invalid API key provided", 400),
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "result": "It broke."}),
+            succeeded(" \n "),
+            json!({"type": "result", "subtype": "success", "is_error": false}),
+        ] {
+            let events = interpret_all(&line.to_string());
+
+            assert!(answers(&events).is_empty(), "{line}: {events:?}");
+            assert!(
+                events.last().is_some_and(AgentEvent::terminal),
+                "{line}: {events:?}"
+            );
+        }
     }
 }

@@ -196,6 +196,7 @@ impl Run {
                     "stderr_bytes": stderr.len(),
                     "finished": stdout.finished,
                     "has_structured_result": stdout.structured.is_some(),
+                    "has_answer": stdout.answer.is_some(),
                     "failure": reported,
                     "stopped": stopped,
                 }),

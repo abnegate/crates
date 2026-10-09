@@ -5,7 +5,7 @@ Coding agent CLIs driven as child processes, behind the same
 `claude --output-format stream-json` or `codex exec --json` with the
 conversation flattened into one prompt on stdin, reads the agent's
 newline-delimited JSON as it streams with a cap on any one event, and returns its
-final prose as a completion; `CliProvider::execute` returns the whole
+final answer as a completion; `CliProvider::execute` returns the whole
 `Execution` for a caller that needs the structured answer, the session to
 resume, the cost, or the run's log files, and `CliProvider::stream` yields the
 run's `AgentEvent`s as the agent emits them, ending in the error `complete`
@@ -108,6 +108,14 @@ result with status 429, or in a limit's words, is a limit too, unless its
 status is 401. A subagent's lines contribute only the tools it calls: its
 words, token counts and refusals stay in its own conversation, and the main
 agent answers without them.
+
+A successful result's text is the turn's final answer, `AgentEvent::Answer`,
+yielded just before `AgentEvent::Finished` and kept in
+`StdoutParseResult::answer` apart from the narration streamed as
+`AgentEvent::Text` on the way there. `StdoutParseResult::reply` is that answer,
+or all the prose when the agent gave none, and is what `complete` returns. A
+failed result, such as `error_max_turns`, fails in its words and then the
+`errors` it lists, a line apiece, and in its subtype only when it gave neither.
 
 ## Limits and windows
 
