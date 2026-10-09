@@ -18,6 +18,14 @@ too_many_arguments = "allow"
 [workspace.dependencies]
 aes-gcm = "0.11"
 async-stream = "0.3"
+# Pre-release candidates bump breakingly, so this is not a caret: rc.10 would
+# resolve alongside rc.9 and mix two Stripe client generations.
+async-stripe = { version = ">=1.0.0-rc.9, <1.0.0-rc.10", default-features = false }
+async-stripe-billing = { version = ">=1.0.0-rc.9, <1.0.0-rc.10", default-features = false }
+async-stripe-checkout = { version = ">=1.0.0-rc.9, <1.0.0-rc.10", default-features = false }
+async-stripe-shared = { version = ">=1.0.0-rc.9, <1.0.0-rc.10", default-features = false }
+async-stripe-types = { version = ">=1.0.0-rc.9, <1.0.0-rc.10", default-features = false }
+async-stripe-webhook = { version = ">=1.0.0-rc.9, <1.0.0-rc.10", default-features = false }
 async-trait = "0.1"
 base64 = "0.23"
 bytes = "1"
