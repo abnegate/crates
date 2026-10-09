@@ -139,6 +139,14 @@ is kept unscrubbed. A run stopped for
 prose past its output limit fails with a message starting with
 `PROSE_EXCEEDED`, so a caller can tell it from any other failure.
 
+Output a process the agent forked still holds open after the agent exits does
+not hold the run up. A run that cleans up kills the agent's process group at
+once; otherwise that process gets 5 seconds to finish before the group is
+killed. Then the run drains the agent's stdout and stderr: everything already
+written is read, however far behind the run fell, and the run stops once the
+output goes quiet 3 seconds into the drain, or 10 seconds into it while a
+process outside the group keeps writing, keeping what it read.
+
 ## Features
 
 None.

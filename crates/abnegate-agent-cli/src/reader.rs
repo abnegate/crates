@@ -7,6 +7,7 @@ use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+use crate::drain::Drain;
 use crate::event::AgentEvent;
 use crate::kind::AgentKind;
 use crate::lines::Lines;
@@ -44,6 +45,9 @@ const BUFFER: usize = 8 * 1024;
 /// [Forwarding](Reader::forwarding) hands each event on as it is read, up to
 /// the first failure or usage limit the agent reports, which ends what is
 /// handed on and is never itself handed on: a stream reports it as its error.
+///
+/// Once the run starts to [`Drain`] it, the reader still takes everything the
+/// pipe holds, and stops when the drain ends.
 pub(crate) struct Reader {
     agent: AgentKind,
     turn: Turn,
@@ -55,7 +59,7 @@ pub(crate) struct Reader {
     scrubber: Scrubber,
     verdicts: Option<mpsc::Sender<Verdict>>,
     forward: Option<mpsc::UnboundedSender<AgentEvent>>,
-    cancel: watch::Receiver<bool>,
+    drain: Drain,
     count: u64,
     partials: u64,
     events: Vec<AgentEvent>,
@@ -71,7 +75,7 @@ impl Reader {
         prose: Sink,
         scrubber: Scrubber,
         verdicts: mpsc::Sender<Verdict>,
-        cancel: watch::Receiver<bool>,
+        draining: watch::Receiver<bool>,
     ) -> Self {
         Self {
             agent,
@@ -84,7 +88,7 @@ impl Reader {
             scrubber,
             verdicts: Some(verdicts),
             forward: None,
-            cancel,
+            drain: Drain::new(draining),
             count: 0,
             partials: 0,
             events: Vec::new(),
@@ -98,7 +102,8 @@ impl Reader {
         self
     }
 
-    /// Everything read, including when the read was cancelled part way.
+    /// Everything read, including when the drain ended the read before the
+    /// output closed.
     pub(crate) async fn run(
         mut self,
         stdout: Option<ChildStdout>,
@@ -132,12 +137,11 @@ impl Reader {
         let mut buffer = [0_u8; BUFFER];
 
         loop {
-            let read = tokio::select! {
-                biased;
-                _ = self.cancel.changed() => return Ok(()),
-                read = stdout.read(&mut buffer) => read
-                    .map_err(|error| format!("could not read the agent's output: {error}"))?,
+            let Some(read) = self.drain.read(stdout.read(&mut buffer)).await else {
+                return Ok(());
             };
+            let read =
+                read.map_err(|error| format!("could not read the agent's output: {error}"))?;
             if read == 0 {
                 break;
             }
@@ -255,5 +259,74 @@ impl Reader {
         if let Some(verdicts) = self.verdicts.take() {
             let _ = verdicts.try_send(verdict);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Stdio;
+
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
+    use tokio::sync::watch;
+
+    use super::Reader;
+    use crate::kind::AgentKind;
+    use crate::log::Journal;
+    use crate::log::Sink;
+    use crate::scrubber::Scrubber;
+    use crate::settings::DEFAULT_LINE_LIMIT;
+    use crate::settings::DEFAULT_OUTPUT_LIMIT;
+    use crate::test_support::ESCAPED_PROCESS;
+    use crate::test_support::PATIENCE;
+    use crate::test_support::kill_escaped;
+    use crate::test_support::shell;
+
+    /// Few enough of [`TEXT`] that they all fit in a pipe nobody reads yet.
+    const WRITTEN: usize = 100;
+    const TEXT: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}]}}"#;
+    const RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false}"#;
+
+    /// A reader still behind when the run gave up on the output closing
+    /// stopped at once, losing everything the agent wrote before it exited.
+    #[tokio::test]
+    async fn what_the_agent_wrote_before_the_drain_started_is_read_to_its_end() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = format!(
+            "{ESCAPED_PROCESS}i=0; while [ $i -lt {WRITTEN} ]; do echo '{TEXT}'; i=$((i + 1)); done\necho '{RESULT}'\n"
+        );
+        let mut agent = shell(directory.path(), &script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the agent");
+        let stdout = agent.stdout.take();
+        agent.wait().await.expect("the agent to exit");
+        let (verdicts, _settled) = mpsc::channel(2);
+        let (draining, started) = watch::channel(false);
+        draining.send_replace(true);
+        let reader = Reader::new(
+            AgentKind::Claude,
+            DEFAULT_LINE_LIMIT,
+            DEFAULT_OUTPUT_LIMIT,
+            Journal::disabled(),
+            Sink::open(None).await,
+            Scrubber::new([]),
+            verdicts,
+            started,
+        );
+
+        let read = tokio::time::timeout(PATIENCE, reader.run(stdout)).await;
+        kill_escaped(directory.path());
+
+        let result = read
+            .expect("the drain to end while an escaped process holds the output open")
+            .expect("the output to be read");
+        assert_eq!(
+            result.text,
+            "a".repeat(WRITTEN),
+            "output buffered before the drain started was dropped"
+        );
+        assert!(result.finished, "the buffered result was dropped");
     }
 }

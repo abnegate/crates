@@ -31,7 +31,6 @@ use crate::settlement::Settlement;
 use crate::stdout_parse_result::StdoutParseResult;
 use crate::verdict::Verdict;
 
-const UNCLOSED: &str = "the agent's output stayed open after it exited";
 const UNSTOPPABLE: &str = "the agent could not be stopped";
 const LINGERED: &str = "the agent finished its turn but did not exit";
 
@@ -59,7 +58,9 @@ pub(crate) struct Run {
     pub(crate) reader: JoinHandle<Result<StdoutParseResult, String>>,
     pub(crate) diagnostics: JoinHandle<String>,
     pub(crate) settled: mpsc::Receiver<Verdict>,
-    pub(crate) cancel: watch::Sender<bool>,
+    /// Turned true once the run stops waiting for the agent's output to
+    /// close, which starts its readers' drain.
+    pub(crate) draining: watch::Sender<bool>,
     /// Held only so the MCP file the agent reads outlives it.
     pub(crate) _mcp: Option<McpAttachment>,
     /// Held only so the instructions file the agent reads outlives it.
@@ -98,6 +99,7 @@ impl Run {
             .is_ok_and(|settled| settled.stopped.is_none());
         if !unstopped || self.cleanup == Cleanup::Always {
             self.reaper.clean().await;
+            self.draining.send_replace(true);
         }
         self.writer.abort();
         let Settlement {
@@ -107,17 +109,17 @@ impl Run {
         } = match settlement {
             Ok(settlement) => settlement,
             Err(error) => {
-                let _ = drain(&mut self.reader, self.reaper.group(), &self.cancel).await;
-                let _ = drain(&mut self.diagnostics, self.reaper.group(), &self.cancel).await;
+                let _ = drain(&mut self.reader, self.reaper.group(), &self.draining).await;
+                let _ = drain(&mut self.diagnostics, self.reaper.group(), &self.draining).await;
                 let _ = self.reap().await;
                 return Err(ExecutionError::new(error, self.files.take()));
             }
         };
 
-        let stdout = match drain(&mut self.reader, self.reaper.group(), &self.cancel).await {
+        let stdout = match drain(&mut self.reader, self.reaper.group(), &self.draining).await {
             Ok(Ok(stdout)) => stdout,
             Ok(Err(message)) | Err(message) => {
-                let _ = drain(&mut self.diagnostics, self.reaper.group(), &self.cancel).await;
+                let _ = drain(&mut self.diagnostics, self.reaper.group(), &self.draining).await;
                 self.reaper.clean().await;
                 let _ = self.reap().await;
                 return Err(ExecutionError::new(
@@ -126,9 +128,11 @@ impl Run {
                 ));
             }
         };
-        let stderr = match drain(&mut self.diagnostics, self.reaper.group(), &self.cancel).await {
+        let stderr = match drain(&mut self.diagnostics, self.reaper.group(), &self.draining).await {
             Ok(stderr) => stderr,
             Err(message) => {
+                self.reaper.clean().await;
+                let _ = self.reap().await;
                 return Err(ExecutionError::new(
                     ProviderError::malformed(&self.name, message),
                     self.files.take(),
@@ -320,13 +324,16 @@ async fn stop_agent(child: &mut Child, group: Option<&ProcessGroup>) {
 ///
 /// A descendant that outlived the agent can still hold its output open, and a
 /// reader waiting for that end of file would wait forever. Such stragglers get
-/// the grace period to finish, then the rest of the group is killed, and a
-/// reader still held open by something outside the group is told to stop with
-/// what it has.
+/// the grace period to finish, then the rest of the group is killed and the
+/// readers start to [`Drain`](crate::drain::Drain): each still takes what the
+/// pipe holds, and stops once it is quiet, or at the cutoff while something
+/// outside the group keeps writing. A run that already cleaned up after the
+/// agent started the drain as it killed the group, so no straggler is left to
+/// wait for.
 async fn drain<T>(
     task: &mut JoinHandle<T>,
     group: Option<&ProcessGroup>,
-    cancel: &watch::Sender<bool>,
+    draining: &watch::Sender<bool>,
 ) -> Result<T, String> {
     if let Ok(joined) = timeout(GRACE_PERIOD, &mut *task).await {
         return joined.map_err(|error| error.to_string());
@@ -334,11 +341,7 @@ async fn drain<T>(
     if let Some(group) = group {
         let _ = group.kill_until_gone().await;
     }
-    if let Ok(joined) = timeout(GRACE_PERIOD, &mut *task).await {
-        return joined.map_err(|error| error.to_string());
-    }
-    tracing::warn!("{UNCLOSED}; keeping what was read");
-    let _ = cancel.send(true);
+    draining.send_replace(true);
     task.await.map_err(|error| error.to_string())
 }
 

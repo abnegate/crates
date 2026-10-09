@@ -354,7 +354,7 @@ impl CliProvider {
         });
 
         let (verdicts, settled) = mpsc::channel(2);
-        let (cancel, cancelled) = watch::channel(false);
+        let (draining, started) = watch::channel(false);
         let prose = Sink::open(files.as_ref().map(|files| files.stdout.as_path())).await;
         let raw = Sink::open(files.as_ref().map(|files| files.stderr.as_path())).await;
         let reader = tokio::spawn(
@@ -366,7 +366,7 @@ impl CliProvider {
                 prose,
                 scrubber.clone(),
                 verdicts.clone(),
-                cancelled.clone(),
+                started.clone(),
             )
             .forwarding(events)
             .run(spawned.child.stdout.take()),
@@ -380,7 +380,7 @@ impl CliProvider {
                 scrubber.clone(),
                 self.settings.tripwire.clone(),
                 verdicts,
-                cancelled,
+                started,
             )
             .run(spawned.child.stderr.take()),
         );
@@ -400,7 +400,7 @@ impl CliProvider {
             reader,
             diagnostics,
             settled,
-            cancel,
+            draining,
             _mcp: mcp,
             _instructions: instructions,
         })
@@ -2743,6 +2743,41 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         assert!(
             waited < PATIENCE,
             "waited {waited:?} on output held open outside the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn output_written_without_end_outside_the_group_ends_the_drain_keeping_the_answer() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let marker = directory.path().join("escaped");
+        let started = directory.path().join("started");
+        let script = format!(
+            r#"touch '{started}'
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Kept."}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false}}'
+perl -e 'use POSIX qw(setsid); setsid(); open(my $file, ">", $ARGV[0]) or die; print $file $$; close($file); $| = 1; print "x" x 65536 while 1' '{marker}' &
+while [ ! -s '{marker}' ]; do sleep 0.1; done"#,
+            started = started.display(),
+            marker = marker.display(),
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, &script));
+        let messages = [Message::user("hi")];
+
+        let (completion, waited) = timed(run(&provider, &messages), &started).await;
+
+        let escaped = std::fs::read_to_string(&marker).unwrap_or_default();
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", escaped.trim()])
+            .status();
+        assert_eq!(
+            completion.expect("an answer").message.content.as_deref(),
+            Some("Kept.")
+        );
+        let bound =
+            abnegate_exec::executor::GRACE_PERIOD + crate::drain::CUTOFF + Duration::from_secs(5);
+        assert!(
+            waited < bound,
+            "waited {waited:?}, past the grace and the drain's cutoff, on output written without end outside the group"
         );
     }
 

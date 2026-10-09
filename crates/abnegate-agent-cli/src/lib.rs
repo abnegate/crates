@@ -154,6 +154,7 @@ mod cleanup;
 mod codex_sandbox;
 mod delivery;
 mod diagnostics;
+mod drain;
 mod environment;
 mod event;
 mod execution;
