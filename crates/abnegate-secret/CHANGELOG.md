@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/abnegate/crates/compare/abnegate-secret-v0.1.3...abnegate-secret-v0.1.4) - 2026-10-09
+
+### Added
+
+- *(secret)* so xai and bare sk_ keys are redacted and paths are not
+- *(secret)* so a count of tokens is not redacted as a token
+- *(secret)* so consumers that only redact skip the cipher dependencies
+
 ## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-secret-v0.1.2...abnegate-secret-v0.1.3) - 2026-10-01
 
 ### Added
