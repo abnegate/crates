@@ -3,6 +3,7 @@
 
 mod error;
 mod generated_image;
+mod prepared;
 mod source_image;
 mod source_video;
 
@@ -12,6 +13,8 @@ pub use source_image::MAXIMUM_SOURCE_IMAGE_BYTES;
 pub use source_image::SourceImage;
 pub use source_video::MAXIMUM_SOURCE_VIDEO_BYTES;
 pub use source_video::SourceVideo;
+
+use prepared::Prepared;
 
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
@@ -28,7 +31,9 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::inventory::VideoIdentity;
+use crate::inventory::WeightSidecar;
 use crate::media::MediaType;
+use crate::people;
 use crate::recipe::Fill;
 use crate::recipe::IMAGE_TO_VIDEO_ADAPTER_WORKFLOW;
 use crate::recipe::LORA_LOADER;
@@ -39,6 +44,7 @@ use crate::recipe::RecipeCatalog;
 use crate::recipe::VIDEO_ADAPTER_WORKFLOW;
 use crate::recipe::sanitize_upload_name;
 use crate::recipe::sanitize_weight_filename;
+use crate::subject::Subject;
 
 const PACKAGED_VIDEO_WORKFLOW: &str = include_str!("../comfyui/workflows/wan2.2-ti2v-5b-api.json");
 const PACKAGED_IMAGE_TO_VIDEO_WORKFLOW: &str =
@@ -91,6 +97,12 @@ struct OutputImage {
 
 fn default_output_type() -> String {
     "output".to_string()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    First,
+    Refine,
 }
 
 #[derive(Clone, Copy)]
@@ -366,6 +378,27 @@ impl Client {
     /// weights. A blank prompt is refused unless there is a source, which is
     /// then edited generically.
     ///
+    /// A selected weight whose sidecar names a trigger is an identity, and
+    /// its generation gets the person extras its recipe supports: a new
+    /// picture is posed through the recipe's pose slot with the OpenPose image
+    /// in [`Config::poses_directory`] for the pose the prompt names (standing
+    /// when it names none), once the recipe's
+    /// [`pose_required_files`](Recipe::pose_required_files) are installed; a
+    /// recipe that supports [`RecipeExtra::Face`](crate::recipe::RecipeExtra::Face)
+    /// steers the face with the reference beside the weight through the
+    /// [`Contract::ipadapter_face_node`](crate::train::Contract::ipadapter_face_node)
+    /// once its [`face_required_files`](Recipe::face_required_files) are
+    /// installed. The embedding its sidecar names leads the prompt either way.
+    /// An extra whose files are missing is left out, never an error.
+    ///
+    /// A recipe that supports [`RecipeExtra::Refine`](crate::recipe::RecipeExtra::Refine),
+    /// or [`RecipeExtra::IdentityRefine`](crate::recipe::RecipeExtra::IdentityRefine)
+    /// for an identity, runs each result's head through its source graph again
+    /// at a low denoise and pastes it back, within the same time limit as the
+    /// first pass. A result whose refine pass fails, or that the time limit
+    /// cuts short, is returned as it was; once the first pass has its results
+    /// only a cancellation fails the call.
+    ///
     /// Progress messages are sent on `progress`, and a message on `cancel`
     /// stops the run.
     pub async fn generate(
@@ -392,43 +425,263 @@ impl Client {
         } else {
             prompt
         };
-        let (recipe, weights) = self.generation_plan(source.is_some())?;
-        let fill_weights: HashMap<&str, &str> = weights
+        let (sidecar, refines) = self
+            .blocking(|client| {
+                let sidecar = client.selected_sidecar();
+                let refines = people::refines(client.image_recipe()?, sidecar.as_ref());
+                Ok((sidecar, refines))
+            })
+            .await?;
+        let images = self
+            .generate_image(
+                prompt,
+                source,
+                sidecar.as_ref(),
+                Pass::First,
+                cancel,
+                deadline,
+                progress.clone(),
+            )
+            .await?;
+        if !refines {
+            return Ok(images);
+        }
+        let subject = Subject::shared(&self.config).await;
+        let mut refined = Vec::with_capacity(images.len());
+        for image in images {
+            if tokio::time::Instant::now() >= deadline {
+                refined.push(image);
+                continue;
+            }
+            refined.push(
+                self.refine(
+                    prompt,
+                    image,
+                    sidecar.as_ref(),
+                    &subject,
+                    cancel,
+                    deadline,
+                    progress.clone(),
+                )
+                .await?,
+            );
+        }
+        Ok(refined)
+    }
+
+    /// Runs `work` on the blocking pool with a clone of this client, for the
+    /// filesystem reads a generation makes before it submits anything.
+    async fn blocking<T, F>(&self, work: F) -> Result<T, Error>
+    where
+        F: FnOnce(&Client) -> Result<T, Error> + Send + 'static,
+        T: Send + 'static,
+    {
+        let client = self.clone();
+        match tokio::task::spawn_blocking(move || work(&client)).await {
+            Ok(result) => result,
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(_) => Err(Error::Cancelled),
+        }
+    }
+
+    /// Reads what `pass` needs from disk: the recipe and weights it runs, and
+    /// for a first pass the pose and face images of the extras it gets.
+    fn prepare(
+        &self,
+        prompt: &str,
+        has_source: bool,
+        sidecar: Option<&WeightSidecar>,
+        pass: Pass,
+    ) -> Result<Prepared, Error> {
+        let (recipe, weights) = self.generation_plan(has_source)?;
+        let extras = match pass {
+            Pass::First => people::extras(&self.config, recipe, sidecar, has_source),
+            Pass::Refine => people::Extras::default(),
+        };
+        let pose = extras
+            .pose
+            .then_some(self.config.poses_directory.as_deref())
+            .flatten()
+            .and_then(|directory| people::pose_image(directory, prompt));
+        let face = extras
+            .face
+            .then(|| {
+                crate::inventory::face_path(
+                    &self.config.models_directory,
+                    &self.config.checkpoint,
+                    sidecar,
+                )
+            })
+            .flatten()
+            .and_then(|path| crate::inventory::read_face(&path))
+            .and_then(|bytes| SourceImage::from_bytes(bytes).ok());
+        Ok(Prepared {
+            recipe: recipe.clone(),
+            weights,
+            pose,
+            face,
+        })
+    }
+
+    fn selected_sidecar(&self) -> Option<WeightSidecar> {
+        crate::inventory::sidecar_for_weight(
+            &self.config.models_directory,
+            &self.config.checkpoint,
+            &self.config.contract,
+        )
+    }
+
+    async fn generate_image(
+        &self,
+        prompt: &str,
+        source: Option<&SourceImage>,
+        sidecar: Option<&WeightSidecar>,
+        pass: Pass,
+        cancel: &mut broadcast::Receiver<()>,
+        deadline: tokio::time::Instant,
+        progress: mpsc::UnboundedSender<String>,
+    ) -> Result<Vec<GeneratedImage>, Error> {
+        let prompt = people::prefix_embedding(prompt, sidecar);
+        let prepared = {
+            let prompt = prompt.clone();
+            let sidecar = sidecar.cloned();
+            let has_source = source.is_some();
+            self.blocking(move |client| client.prepare(&prompt, has_source, sidecar.as_ref(), pass))
+                .await?
+        };
+        let recipe = &prepared.recipe;
+        let pose = match prepared.pose {
+            Some(pose) => Some(
+                self.upload_media(
+                    &bytes::Bytes::from(pose.bytes),
+                    &pose.name,
+                    MediaType::PNG.mime,
+                    cancel,
+                    deadline,
+                )
+                .await?,
+            ),
+            None => None,
+        };
+        let face = match &prepared.face {
+            Some(face) => Some(self.upload_source(face, cancel, deadline).await?),
+            None => None,
+        };
+        let fill_weights: HashMap<&str, &str> = prepared
+            .weights
             .iter()
             .map(|(name, filename)| (name.as_str(), filename.as_str()))
             .collect();
-        let workflow = if let Some(source) = source {
-            let _ = progress.send("Uploading source image...".to_string());
-            let uploaded = self.upload_source(source, cancel, deadline).await?;
-            recipe.apply(
-                Fill::new(
-                    prompt,
-                    rand::random::<u64>() & i64::MAX as u64,
-                    fill_weights,
-                )
-                .with_source(uploaded.as_str()),
-            )?
-        } else {
-            recipe.apply(Fill::new(
-                prompt,
-                rand::random::<u64>() & i64::MAX as u64,
-                fill_weights,
-            ))?
-        };
-        self.submit_and_collect(
-            workflow,
-            cancel,
-            deadline,
-            progress,
-            Collection {
+        let mut fill = Fill::new(
+            &prompt,
+            rand::random::<u64>() & i64::MAX as u64,
+            fill_weights,
+        );
+        let uploaded;
+        if let Some(source) = source {
+            if pass == Pass::First {
+                let _ = progress.send("Uploading source image...".to_string());
+            }
+            uploaded = self.upload_source(source, cancel, deadline).await?;
+            fill = fill.with_source(&uploaded);
+        }
+        if let Some(pose) = &pose {
+            fill = fill.with_pose(pose);
+        }
+        let mut workflow = recipe.apply(fill)?;
+        if let Some(face) = &face {
+            people::attach_face(
+                &mut workflow,
+                recipe,
+                face,
+                &self.config.contract.ipadapter_face_node,
+            )?;
+        }
+        if pass == Pass::Refine {
+            people::set_denoise(&mut workflow, recipe, people::REFINE_DENOISE)?;
+        }
+        let collection = match pass {
+            Pass::First => Collection {
                 mode: OutputMode::Image,
                 node: None,
                 queued: "Image queued...",
                 generating: "Generating image...",
                 saving: "Saving generated image...",
             },
-        )
-        .await
+            Pass::Refine => Collection {
+                mode: OutputMode::Image,
+                node: None,
+                queued: "Face refine queued...",
+                generating: "Refining the face...",
+                saving: "Saving the refined image...",
+            },
+        };
+        self.submit_and_collect(workflow, cancel, deadline, progress, collection)
+            .await
+    }
+
+    async fn refine(
+        &self,
+        prompt: &str,
+        image: GeneratedImage,
+        sidecar: Option<&WeightSidecar>,
+        subject: &Subject,
+        cancel: &mut broadcast::Receiver<()>,
+        deadline: tokio::time::Instant,
+        progress: mpsc::UnboundedSender<String>,
+    ) -> Result<GeneratedImage, Error> {
+        let original = image.bytes.clone();
+        let cropper = subject.clone();
+        let crop = tokio::task::spawn_blocking(move || people::head_crop(&original, &cropper))
+            .await
+            .ok()
+            .flatten();
+        let Some(crop) = crop else {
+            return Ok(image);
+        };
+        let Ok(head) = SourceImage::from_bytes(crop.png) else {
+            return Ok(image);
+        };
+        let refined = match self
+            .generate_image(
+                prompt,
+                Some(&head),
+                sidecar,
+                Pass::Refine,
+                cancel,
+                deadline,
+                progress,
+            )
+            .await
+        {
+            Ok(outputs) => outputs.into_iter().next(),
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Err(error) => {
+                tracing::warn!(%error, "face refine failed; keeping the unrefined image");
+                None
+            }
+        };
+        let Some(refined) = refined else {
+            return Ok(image);
+        };
+        if crop.full_frame {
+            return Ok(refined);
+        }
+        let original = image.bytes.clone();
+        let region = crop.region;
+        let pasted =
+            tokio::task::spawn_blocking(move || people::paste(&original, &refined.bytes, region))
+                .await
+                .ok()
+                .flatten();
+        Ok(match pasted {
+            Some(bytes) => GeneratedImage {
+                bytes: bytes.into(),
+                mime: MediaType::PNG.mime.to_string(),
+                filename: image.filename,
+            },
+            None => image,
+        })
     }
 
     /// Generate a video from `prompt`, animating `source` when one is given.
@@ -3051,5 +3304,497 @@ mod tests {
         assert_eq!(clips[0].mime, "audio/flac");
         assert_eq!(clips[0].filename, "clip.flac");
         assert_eq!(progress_rx.recv().await.as_deref(), Some("Audio queued..."));
+    }
+
+    const PEOPLE_BASE: &str = "SG161222/RealVisXL_V5.0";
+    const PEOPLE_CHECKPOINT: &str = "RealVisXL_V5.0_fp16.safetensors";
+
+    fn rgb_png(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+        use image::ImageEncoder;
+        let mut bytes = Vec::new();
+        let pixels: Vec<u8> = (0..width * height).flat_map(|_| rgb).collect();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(&pixels, width, height, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        bytes
+    }
+
+    async fn mock_output(server: &MockServer, prompt_id: &str, filename: &str, body: Vec<u8>) {
+        Mock::given(method("GET"))
+            .and(path(format!("/history/{prompt_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                prompt_id: {"status": {"status_str": "success"}, "outputs": {
+                    "9": {"images": [{"filename": filename, "subfolder": "", "type": "temp"}]}
+                }}
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .and(wiremock::matchers::query_param("filename", filename))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "image/png")
+                    .set_body_bytes(body),
+            )
+            .mount(server)
+            .await;
+    }
+
+    async fn mock_uploads(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/upload/image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "name": "uploaded.png",
+                "subfolder": ""
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// A LoRA on the packaged SDXL adapter, bound by `sidecar`, over an
+    /// installed base, plus `extra` files.
+    fn person_models(
+        sidecar: crate::inventory::WeightSidecar,
+        extra: &[(&str, &str)],
+    ) -> (tempfile::TempDir, PathBuf) {
+        let mut files = vec![
+            ("checkpoints", PEOPLE_CHECKPOINT),
+            ("loras", "jerry.safetensors"),
+        ];
+        files.extend_from_slice(extra);
+        let (root, models) = models_with(&files);
+        crate::inventory::write_sidecar(
+            &models.join("loras/jerry.safetensors"),
+            &sidecar,
+            &crate::train::Contract::default(),
+        )
+        .unwrap();
+        (root, models)
+    }
+
+    fn person_client(server: &MockServer, models: PathBuf, checkpoint: &str) -> Client {
+        let contract = crate::train::Contract {
+            ipadapter_face_node: "AcmeIPAdapterFace".into(),
+            ..Default::default()
+        };
+        Client::new(Config {
+            enabled: true,
+            base_url: server.uri(),
+            checkpoint: checkpoint.into(),
+            models_directory: models,
+            poll_interval: Duration::from_millis(50),
+            contract,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    async fn prompt_bodies(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/prompt")
+            .map(|request| String::from_utf8(request.body).unwrap())
+            .collect()
+    }
+
+    fn identity_sidecar() -> crate::inventory::WeightSidecar {
+        crate::inventory::WeightSidecar::new("sdxl-adapter")
+            .with_huggingface_base(PEOPLE_BASE)
+            .with_trigger("ohwx")
+    }
+
+    #[tokio::test]
+    async fn people_generate_without_an_identity_omits_controlnet_and_face() {
+        let server = MockServer::start().await;
+        let (_root, models) = models_with(&[
+            ("checkpoints", PEOPLE_CHECKPOINT),
+            ("controlnet", "thibaud_xl_openpose.safetensors"),
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("KSampler"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "plain"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mock_output(&server, "plain", "plain.png", vec![1, 2, 3]).await;
+        let client = person_client(&server, models, PEOPLE_CHECKPOINT);
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        let images = client
+            .generate("a person in a kitchen", None, &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+        assert_eq!(images[0].bytes.as_ref(), &[1, 2, 3]);
+        let bodies = prompt_bodies(&server).await;
+        assert_eq!(bodies.len(), 1, "an SDXL base refines only an identity");
+        assert!(
+            !bodies[0].contains("ControlNetLoader"),
+            "an unposed run strips ControlNet: {}",
+            bodies[0]
+        );
+        assert!(!bodies[0].contains("IPAdapterFace"));
+    }
+
+    #[tokio::test]
+    async fn people_identity_loads_controlnet_face_and_embedding() {
+        let server = MockServer::start().await;
+        let (_root, models) = person_models(
+            identity_sidecar()
+                .with_embedding("ohwx.safetensors")
+                .with_face("jerry.face.png"),
+            &[
+                ("controlnet", "thibaud_xl_openpose.safetensors"),
+                ("ipadapter", "ip-adapter-plus-face_sdxl_vit-h.safetensors"),
+                ("clip_vision", "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors"),
+                ("embeddings", "ohwx.safetensors"),
+            ],
+        );
+        std::fs::write(
+            models.join("loras/jerry.face.png"),
+            rgb_png(8, 8, [1, 2, 3]),
+        )
+        .unwrap();
+        let poses = tempfile::tempdir().unwrap();
+        std::fs::write(poses.path().join("sitting.png"), rgb_png(8, 8, [0, 0, 0])).unwrap();
+        mock_uploads(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("ControlNetLoader"))
+            .and(wiremock::matchers::body_string_contains(
+                "AcmeIPAdapterFace",
+            ))
+            .and(wiremock::matchers::body_string_contains("embedding:ohwx"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "id"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mock_output(&server, "id", "posed.png", vec![9, 8, 7]).await;
+        let mut client = person_client(&server, models, "jerry.safetensors");
+        client.config.poses_directory = Some(poses.path().to_path_buf());
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        let images = client
+            .generate(
+                "ohwx sitting in a kitchen",
+                None,
+                &mut cancel_rx,
+                progress_tx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(images[0].bytes.as_ref(), &[9, 8, 7]);
+        let uploads: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/upload/image")
+            .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+            .collect();
+        assert!(
+            uploads
+                .iter()
+                .any(|body| body.contains("filename=\"pose-sitting.png\"")),
+            "the prompt's pose is uploaded"
+        );
+        assert_eq!(uploads.len(), 2, "one pose and one face");
+    }
+
+    #[tokio::test]
+    async fn people_identity_without_the_pose_images_runs_unposed() {
+        let server = MockServer::start().await;
+        let (_root, models) = person_models(
+            identity_sidecar(),
+            &[("controlnet", "thibaud_xl_openpose.safetensors")],
+        );
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "bare"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mock_output(&server, "bare", "bare.png", vec![4, 5, 6]).await;
+        let mut client = person_client(&server, models, "jerry.safetensors");
+        client.config.poses_directory = Some(tempfile::tempdir().unwrap().path().join("gone"));
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        client
+            .generate("ohwx sitting", None, &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+        let bodies = prompt_bodies(&server).await;
+        assert!(!bodies[0].contains("ControlNetLoader"), "{}", bodies[0]);
+        assert!(!bodies[0].contains("IPAdapterFace"), "no face is installed");
+    }
+
+    #[tokio::test]
+    async fn people_img2img_skips_controlnet() {
+        let server = MockServer::start().await;
+        let (_root, models) = person_models(
+            identity_sidecar(),
+            &[("controlnet", "thibaud_xl_openpose.safetensors")],
+        );
+        let poses = tempfile::tempdir().unwrap();
+        std::fs::write(poses.path().join("sitting.png"), rgb_png(8, 8, [0, 0, 0])).unwrap();
+        mock_uploads(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("VAEEncode"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "edit"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mock_output(&server, "edit", "edited.png", vec![3, 2, 1]).await;
+        let mut client = person_client(&server, models, "jerry.safetensors");
+        client.config.poses_directory = Some(poses.path().to_path_buf());
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        let source = SourceImage::from_bytes(rgb_png(8, 8, [7, 7, 7])).unwrap();
+        let images = client
+            .generate("ohwx sitting", Some(&source), &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+        assert_eq!(images[0].bytes.as_ref(), &[3, 2, 1]);
+        assert!(
+            prompt_bodies(&server)
+                .await
+                .iter()
+                .all(|body| !body.contains("ControlNetLoader")),
+            "an edit keeps its source's pose"
+        );
+    }
+
+    #[tokio::test]
+    async fn face_refine_reruns_img2img_at_low_denoise() {
+        let server = MockServer::start().await;
+        let (_root, models) = person_models(
+            crate::inventory::WeightSidecar::new("sdxl-adapter").with_huggingface_base(PEOPLE_BASE),
+            &[],
+        );
+        let first = rgb_png(64, 64, [10, 20, 30]);
+        let refined = rgb_png(64, 64, [200, 10, 10]);
+        mock_uploads(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("EmptyLatentImage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "first"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("\"denoise\":0.3"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "refine"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mock_output(&server, "first", "one.png", first).await;
+        mock_output(&server, "refine", "two.png", refined.clone()).await;
+        let client = person_client(&server, models, "jerry.safetensors");
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        let images = client
+            .generate("a person standing", None, &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(
+            images[0].bytes.as_ref(),
+            refined.as_slice(),
+            "a square close-up is refined whole"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refine_that_fails_keeps_the_unrefined_image() {
+        let server = MockServer::start().await;
+        let (_root, models) = person_models(
+            crate::inventory::WeightSidecar::new("sdxl-adapter").with_huggingface_base(PEOPLE_BASE),
+            &[],
+        );
+        let first = rgb_png(64, 96, [10, 20, 30]);
+        mock_uploads(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("EmptyLatentImage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "first"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("\"denoise\":0.3"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mock_output(&server, "first", "one.png", first.clone()).await;
+        let client = person_client(&server, models, "jerry.safetensors");
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        let images = client
+            .generate("a person standing", None, &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+        assert_eq!(images[0].bytes.as_ref(), first.as_slice());
+    }
+
+    #[tokio::test]
+    async fn a_refined_head_is_pasted_back_into_a_portrait() {
+        let server = MockServer::start().await;
+        let (_root, models) = person_models(
+            crate::inventory::WeightSidecar::new("sdxl-adapter").with_huggingface_base(PEOPLE_BASE),
+            &[],
+        );
+        let first = rgb_png(64, 96, [10, 20, 30]);
+        mock_uploads(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("EmptyLatentImage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "first"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("\"denoise\":0.3"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "refine"})))
+            .mount(&server)
+            .await;
+        mock_output(&server, "first", "one.png", first).await;
+        mock_output(&server, "refine", "two.png", rgb_png(32, 32, [200, 10, 10])).await;
+        let client = person_client(&server, models, "jerry.safetensors");
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        let images = client
+            .generate("a person standing", None, &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+        assert_eq!(images[0].mime, "image/png");
+        let raster = abnegate_vision::decode::decode(&images[0].bytes).unwrap();
+        assert_eq!((raster.width, raster.height), (64, 96));
+        assert_eq!(&raster.pixels[..3], &[200, 10, 10], "the head is refined");
+        let bottom = ((raster.width * raster.height - 1) * 3) as usize;
+        assert_eq!(
+            &raster.pixels[bottom..bottom + 3],
+            &[10, 20, 30],
+            "the body is not"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refine_the_time_limit_cuts_short_keeps_the_unrefined_image() {
+        let server = MockServer::start().await;
+        let (_root, models) = person_models(
+            crate::inventory::WeightSidecar::new("sdxl-adapter").with_huggingface_base(PEOPLE_BASE),
+            &[],
+        );
+        let first = rgb_png(64, 96, [10, 20, 30]);
+        mock_uploads(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("EmptyLatentImage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "first"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .and(wiremock::matchers::body_string_contains("\"denoise\":0.3"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "refine"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/history/refine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+        mock_output(&server, "first", "one.png", first.clone()).await;
+        let mut client = person_client(&server, models, "jerry.safetensors");
+        client.config.generation_timeout = Duration::from_secs(2);
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+
+        let images = client
+            .generate("a person standing", None, &mut cancel_rx, progress_tx)
+            .await
+            .expect("a generated image outlives a refine the time limit cut short");
+
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].bytes.as_ref(), first.as_slice());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_identity_reads_its_pose_image_off_the_runtime() {
+        let poses = tempfile::tempdir().unwrap();
+        let pose = poses.path().join("sitting.png");
+        nix::unistd::mkfifo(&pose, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        let directory = poses.path().to_path_buf();
+        let writer = pose.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let uploads = runtime.block_on(async move {
+                let server = MockServer::start().await;
+                let (_root, models) = person_models(
+                    identity_sidecar(),
+                    &[("controlnet", "thibaud_xl_openpose.safetensors")],
+                );
+                mock_uploads(&server).await;
+                Mock::given(method("POST"))
+                    .and(path("/prompt"))
+                    .respond_with(
+                        ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "posed"})),
+                    )
+                    .mount(&server)
+                    .await;
+                mock_output(&server, "posed", "posed.png", vec![1, 2, 3]).await;
+                let mut client = person_client(&server, models, "jerry.safetensors");
+                client.config.poses_directory = Some(directory);
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::fs::write(writer, rgb_png(8, 8, [0, 0, 0])).await
+                });
+                let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+                let (progress_tx, _) = mpsc::unbounded_channel();
+                client
+                    .generate("ohwx sitting", None, &mut cancel_rx, progress_tx)
+                    .await
+                    .unwrap();
+                server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|request| request.url.path() == "/upload/image")
+                    .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+                    .collect::<Vec<String>>()
+            });
+            let _ = done.send(uploads);
+            runtime.shutdown_background();
+        });
+
+        let uploads = finished
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap_or_else(|_| {
+                let _ = std::fs::write(&pose, b"");
+                panic!("reading the pose image blocked the async runtime");
+            });
+
+        assert!(
+            uploads
+                .iter()
+                .any(|body| body.contains("filename=\"pose-sitting.png\"")),
+            "the prompt's pose is uploaded"
+        );
     }
 }

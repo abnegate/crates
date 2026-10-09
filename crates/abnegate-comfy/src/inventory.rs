@@ -12,6 +12,7 @@ pub use video_identity::VideoIdentity;
 pub(crate) use weight_document::WeightDocument;
 pub use weight_sidecar::WeightSidecar;
 
+use crate::client::MAXIMUM_SOURCE_IMAGE_BYTES;
 use crate::config::Config;
 use crate::recipe::MediaKind;
 use crate::recipe::PromptMode;
@@ -22,6 +23,9 @@ use crate::recipe::sanitize_weight_filename;
 use crate::train::Contract;
 use crate::train::is_single_component;
 use std::fs;
+use std::fs::File;
+use std::io;
+use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -32,6 +36,9 @@ const PUBLICATION_SUFFIX: &str = ".pending";
 const CHECKPOINT: &str = "checkpoint";
 const DIFFUSION_MODEL: &str = "diffusion_model";
 const LORA: &str = "lora";
+/// The suffix of the face reference a person's weight keeps beside it, after
+/// the weight's stem: `jerry.face.png` for `jerry.safetensors`.
+pub const FACE_SUFFIX: &str = ".face.png";
 
 /// The directories under the models root the inventory lists weights from,
 /// with the kind of weight each holds.
@@ -420,6 +427,95 @@ pub fn relative_weight_path(kind: &str, filename: &str) -> Option<PathBuf> {
     weight_filename(filename).then(|| PathBuf::from(directory).join(filename))
 }
 
+/// The face reference [`FACE_SUFFIX`] names for `weight`, or `None` when
+/// `weight` has no stem.
+pub fn face_filename(weight: &str) -> Option<String> {
+    let stem = Path::new(weight).file_stem()?.to_str()?;
+    (!stem.is_empty()).then(|| format!("{stem}{FACE_SUFFIX}"))
+}
+
+/// The binding of the weight `filename`, from the first directory [`scan`]
+/// reads that holds it.
+pub(crate) fn sidecar_for_weight(
+    models_directory: &Path,
+    filename: &str,
+    contract: &Contract,
+) -> Option<WeightSidecar> {
+    read_sidecar(&weight_path(models_directory, filename)?, contract)
+        .map(|document| document.sidecar)
+}
+
+/// The face reference beside the weight `filename`: the one `sidecar`, its
+/// binding, names, else the one [`face_filename`] names. `None` when it is
+/// missing, is not a plain file or its name is not one plain path component.
+pub(crate) fn face_path(
+    models_directory: &Path,
+    filename: &str,
+    sidecar: Option<&WeightSidecar>,
+) -> Option<PathBuf> {
+    let weight = weight_path(models_directory, filename)?;
+    let name = sidecar
+        .and_then(|sidecar| sidecar.face.as_deref())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| face_filename(filename))?;
+    if !is_single_component(&name) {
+        return None;
+    }
+    let path = weight.parent()?.join(name);
+    fs::symlink_metadata(&path)
+        .is_ok_and(|metadata| metadata.is_file())
+        .then_some(path)
+}
+
+/// The bytes of the face reference at `path`, when the file opened there is
+/// a regular file no larger than [`MAXIMUM_SOURCE_IMAGE_BYTES`]. A link in
+/// its place is not followed, and the type and size are those of the file
+/// opened, so a face swapped after [`face_path`] found it is never read.
+pub(crate) fn read_face(path: &Path) -> Option<Vec<u8>> {
+    let file = open_unfollowed(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let limit = MAXIMUM_SOURCE_IMAGE_BYTES as u64;
+    if !metadata.is_file() || metadata.len() > limit {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= MAXIMUM_SOURCE_IMAGE_BYTES).then_some(bytes)
+}
+
+/// Opens `path` for reading without following a link in its place, and
+/// without waiting on a pipe.
+#[cfg(unix)]
+fn open_unfollowed(path: &Path) -> io::Result<File> {
+    use nix::fcntl::OFlag;
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .open(path)
+}
+
+/// Opens `path` for reading, refusing a link in its place.
+#[cfg(not(unix))]
+fn open_unfollowed(path: &Path) -> io::Result<File> {
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    File::open(path)
+}
+
+fn weight_path(models_directory: &Path, filename: &str) -> Option<PathBuf> {
+    if !weight_filename(filename) {
+        return None;
+    }
+    SCAN_DIRECTORIES
+        .iter()
+        .map(|(directory, _)| models_directory.join(directory).join(filename))
+        .find(|path| path.is_file())
+}
+
 /// Whether `filename` is exactly one entry of a weight directory and passes
 /// the weight-filename rules every other weight path is held to.
 fn weight_filename(filename: &str) -> bool {
@@ -564,6 +660,15 @@ mod tests {
     use super::*;
     use crate::recipe::RecipeCatalog;
     use std::fs;
+
+    fn bound_face(root: &Path, filename: &str) -> Option<PathBuf> {
+        let contract = Contract::default();
+        face_path(
+            root,
+            filename,
+            sidecar_for_weight(root, filename, &contract).as_ref(),
+        )
+    }
 
     fn temp_models() -> PathBuf {
         let root = std::env::temp_dir().join(format!("comfy-inventory-{}", uuid::Uuid::new_v4()));
@@ -1130,6 +1235,132 @@ mod tests {
         assert!(bind_identity(&mut config, "a lighthouse").is_none());
         assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bind_identity_keeps_an_embedding_sidecar_on_the_selected_weight() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        let lora = root.join("loras/jerry.safetensors");
+        write_sidecar(
+            &lora,
+            &WeightSidecar::new("flux-schnell-adapter")
+                .with_huggingface_base(FLUX_SCHNELL_BASE)
+                .with_trigger("ohwx")
+                .with_embedding("ohwx.safetensors")
+                .with_face("jerry.face.png"),
+            &Contract::default(),
+        )
+        .unwrap();
+        fs::write(root.join("loras/jerry.face.png"), b"face").unwrap();
+        let mut config = configured(&root);
+
+        let identity = bind_identity(&mut config, "portrait of ohwx").unwrap();
+        assert_eq!(identity.filename, "jerry.safetensors");
+        assert_eq!(config.checkpoint, "jerry.safetensors");
+        let sidecar = sidecar_for_weight(&root, "jerry.safetensors", &Contract::default()).unwrap();
+        assert_eq!(sidecar.embedding.as_deref(), Some("ohwx.safetensors"));
+        assert_eq!(
+            bound_face(&root, "jerry.safetensors"),
+            Some(root.join("loras/jerry.face.png"))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_face_without_a_sidecar_name_is_the_weights_stem() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        assert_eq!(bound_face(&root, "jerry.safetensors"), None);
+        fs::write(root.join("checkpoints/jerry.face.png"), b"face").unwrap();
+        assert_eq!(
+            bound_face(&root, "jerry.safetensors"),
+            None,
+            "the face sits beside its weight, not in another directory"
+        );
+        fs::write(root.join("loras/jerry.face.png"), b"face").unwrap();
+        assert_eq!(
+            bound_face(&root, "jerry.safetensors"),
+            Some(root.join("loras/jerry.face.png"))
+        );
+        assert_eq!(
+            face_filename("jerry.safetensors").as_deref(),
+            Some("jerry.face.png")
+        );
+        assert_eq!(face_filename(""), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_face_the_sidecar_names_outside_its_directory_is_refused() {
+        let root = temp_models();
+        let lora = root.join("loras/jerry.safetensors");
+        fs::write(&lora, b"lora").unwrap();
+        fs::write(root.join("face.png"), b"face").unwrap();
+        for face in ["../face.png", "/etc/passwd", "nested/face.png"] {
+            write_sidecar(
+                &lora,
+                &WeightSidecar::new("flux-schnell-adapter").with_face(face),
+                &Contract::default(),
+            )
+            .unwrap();
+            assert_eq!(bound_face(&root, "jerry.safetensors"), None, "{face}");
+        }
+        assert_eq!(bound_face(&root, "../loras/jerry.safetensors"), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_face_is_refused() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        fs::write(root.join("elsewhere.png"), b"face").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("elsewhere.png"),
+            root.join("loras/jerry.face.png"),
+        )
+        .unwrap();
+        assert_eq!(bound_face(&root, "jerry.safetensors"), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_face_is_read_only_when_it_fits_a_source_image() {
+        let root = tempfile::tempdir().unwrap();
+        let face = root.path().join("jerry.face.png");
+        fs::write(&face, b"face").unwrap();
+        assert_eq!(read_face(&face).as_deref(), Some(b"face".as_slice()));
+        let file = File::options().write(true).open(&face).unwrap();
+        file.set_len(MAXIMUM_SOURCE_IMAGE_BYTES as u64 + 1).unwrap();
+        assert_eq!(read_face(&face), None, "an oversized face is refused");
+        file.set_len(MAXIMUM_SOURCE_IMAGE_BYTES as u64).unwrap();
+        assert_eq!(
+            read_face(&face).map(|bytes| bytes.len()),
+            Some(MAXIMUM_SOURCE_IMAGE_BYTES)
+        );
+        assert_eq!(read_face(root.path()), None, "a directory is no face");
+        assert_eq!(read_face(&root.path().join("missing.png")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_face_swapped_for_a_link_is_not_read() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("elsewhere.png");
+        fs::write(&target, b"secret").unwrap();
+        let face = root.path().join("jerry.face.png");
+        std::os::unix::fs::symlink(&target, &face).unwrap();
+        assert_eq!(read_face(&face), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_face_swapped_for_a_pipe_is_not_waited_on() {
+        let root = tempfile::tempdir().unwrap();
+        let face = root.path().join("jerry.face.png");
+        nix::unistd::mkfifo(&face, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        assert_eq!(read_face(&face), None);
     }
 
     #[test]

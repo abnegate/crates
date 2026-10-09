@@ -7,6 +7,7 @@ use crate::train::ENVIRONMENT_PREFIX;
 use crate::train::FOLDER_PREFIX;
 use crate::train::HOST_DIRECTORY;
 use crate::train::INPUT_ENVIRONMENT_PREFIX;
+use crate::train::IPADAPTER_FACE_NODE;
 use crate::train::LOAD_TRAIN_DATASET_NODE;
 use crate::train::PROBE_LOSS_NODE;
 use crate::train::PROBE_PREFIX;
@@ -18,8 +19,9 @@ use crate::train::TRAIN_LORA_NODE;
 use crate::train::TRAINING_DIRECTORY;
 
 /// The names a training run shares with the ComfyUI node pack that executes it
-/// and with an external training command. The nodes refuse a run namespace
-/// they do not recognise, so these have to match the deployment.
+/// and with an external training command, and the face node a generation runs
+/// through. The nodes refuse a run namespace they do not recognise, so these
+/// have to match the deployment.
 ///
 /// The prefixes, the sidecar and progress suffixes and the publication and
 /// host directories become directory and file names under ComfyUI's
@@ -41,6 +43,12 @@ pub struct Contract {
     /// `class_type` of the node that moves a trained checkpoint to where a
     /// LoRA loader finds it.
     pub stage_training_artifact_node: String,
+    /// `class_type` of the node a generation's face reference runs through:
+    /// it takes `model`, `clip_vision` (a `CLIPVisionLoader` output), `image`
+    /// (the face, a `LoadImage` output), `ipadapter_name` and `strength`, and
+    /// returns the model the sampler reads. Only a recipe that declares
+    /// [`RecipeExtra::Face`](crate::recipe::RecipeExtra::Face) runs it.
+    pub ipadapter_face_node: String,
     /// Namespace of the input folder a run stages its dataset in.
     pub folder_prefix: String,
     /// Namespace of the weights a run writes.
@@ -89,6 +97,7 @@ impl Default for Contract {
             load_train_dataset_node: LOAD_TRAIN_DATASET_NODE.to_string(),
             probe_loss_node: PROBE_LOSS_NODE.to_string(),
             stage_training_artifact_node: STAGE_TRAINING_ARTIFACT_NODE.to_string(),
+            ipadapter_face_node: IPADAPTER_FACE_NODE.to_string(),
             folder_prefix: FOLDER_PREFIX.to_string(),
             artifact_prefix: ARTIFACT_PREFIX.to_string(),
             probe_prefix: PROBE_PREFIX.to_string(),
@@ -136,6 +145,7 @@ impl Contract {
             &self.load_train_dataset_node,
             &self.probe_loss_node,
             &self.stage_training_artifact_node,
+            &self.ipadapter_face_node,
         ]
         .iter()
         .all(|node| is_name(node, is_node_character))
@@ -282,7 +292,25 @@ mod tests {
                 ..Contract::default()
             };
             assert!(contract.validate().is_err(), "{node:?} was accepted");
+            let contract = Contract {
+                ipadapter_face_node: node.into(),
+                ..Contract::default()
+            };
+            assert!(contract.validate().is_err(), "{node:?} was accepted");
         }
+    }
+
+    #[test]
+    fn the_face_node_is_neutral_by_default_and_a_deployment_names_its_own() {
+        assert_eq!(
+            Contract::default().ipadapter_face_node,
+            "AbnegateIPAdapterFace"
+        );
+        let contract = Contract {
+            ipadapter_face_node: "AcmeIPAdapterFace".into(),
+            ..Contract::default()
+        };
+        assert_eq!(contract.validate(), Ok(()));
     }
 
     #[test]

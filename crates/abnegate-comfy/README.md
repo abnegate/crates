@@ -128,6 +128,12 @@ slots, a recipe may declare:
   IP-Adapter face reference), `refine` (a face-refine pass on every result)
   and `identity_refine` (one only when the selected weight is
   bound to an identity).
+- `face_required_files`: exactly one IP-Adapter weight in `ipadapter/` and one
+  CLIP vision encoder in `clip_vision/`, declared exactly when `extras` holds
+  `face`; the sampler the seed slot fills has to read a linked `model`. The
+  packaged SDXL recipes declare
+  `ipadapter/ip-adapter-plus-face_sdxl_vit-h.safetensors` and
+  `clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors`.
 - `training.architecture`: `flux`, `qwen_edit` or `sdxl`. SDXL has no packaged
   ComfyUI training graph and trains only through `Config::train_command` or
   the host trainer.
@@ -225,6 +231,33 @@ default.
 OpenPose images a person's generation can be posed with, one per pose cluster,
 named by `dataset::pose_filename`: `standing.png`, `on_back.png`,
 `all_fours.png`. The crate ships none.
+
+## Generating a person
+
+A selected weight whose sidecar names a `trigger` is an identity, and
+`Client::generate` gives it the extras its recipe supports, each only once its
+files are installed and never as an error when they are not:
+
+- **Pose.** A new picture (not an edit) through a recipe with a pose slot is
+  posed with the image in `Config::poses_directory` for the last pose the
+  prompt names, standing when it names none, uploaded as `pose-<file>`.
+- **Face.** A recipe with the `face` extra routes its sampler's model through
+  `Contract::ipadapter_face_node` (`AbnegateIPAdapterFace` by default), fed the
+  face reference beside the weight: the file the sidecar's `face` names, else
+  `<stem>.face.png` (`inventory::FACE_SUFFIX`). The node takes `model`,
+  `clip_vision`, `image`, `ipadapter_name` and `strength` (0.4) and returns
+  the model; the crate ships no node pack, so the deployment registers one.
+- **Embedding.** The sidecar's `embedding` leads the prompt as
+  `embedding:<stem>`, unless the prompt already holds it.
+
+A recipe with `refine`, or `identity_refine` for an identity, then reruns the
+head of every result through its source graph at denoise 0.3 and pastes it
+back: the head and shoulders square a person's training set would crop (the
+whole image when that square is all of it), placed on the subject when
+`Config::vision_model` is set. The refine runs within the same generation
+time limit as the first pass. A refine pass that fails, or that the time limit
+cuts short, keeps the unrefined image; once the first pass has its results
+only a cancellation fails the call.
 
 ## Watching a run
 
@@ -478,8 +511,9 @@ deployment that relied on the old defaults sets them itself.
   `environment_prefix`, `input_environment_prefix`, and the two that were
   constants before, `sidecar_suffix` and `publication_directory`, and
   `progress_suffix` when the training node names its progress file other
-  than `<artifact>-progress.json`, and `host_directory` when a host trainer
-  watches a directory other than `.abnegate-train`. Model volumes
+  than `<artifact>-progress.json`, `host_directory` when a host trainer
+  watches a directory other than `.abnegate-train`, and
+  `ipadapter_face_node` when its face node is not `AbnegateIPAdapterFace`. Model volumes
   keep their bindings under the suffix they were written with, so keep the old
   suffix and publication directory or every existing LoRA drops out of the
   inventory.

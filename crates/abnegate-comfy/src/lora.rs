@@ -3814,6 +3814,7 @@ mod tests {
             load_train_dataset_node: "AcmeLoadTrainDataset".into(),
             probe_loss_node: "AcmeProbeLoss".into(),
             stage_training_artifact_node: "AcmeStageTrainingArtifact".into(),
+            ipadapter_face_node: "AcmeIPAdapterFace".into(),
             folder_prefix: "acme-train-".into(),
             artifact_prefix: "acme-lora-".into(),
             probe_prefix: "acme-probe-".into(),

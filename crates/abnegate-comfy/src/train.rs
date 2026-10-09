@@ -63,6 +63,9 @@ pub const PROBE_LOSS_NODE: &str = "AbnegateProbeLoss";
 /// Default `class_type` of the node that moves a trained checkpoint to where a
 /// LoRA loader finds it.
 pub const STAGE_TRAINING_ARTIFACT_NODE: &str = "AbnegateStageTrainingArtifact";
+/// Default `class_type` of the node that steers a generation's model with an
+/// IP-Adapter face reference.
+pub const IPADAPTER_FACE_NODE: &str = "AbnegateIPAdapterFace";
 /// Default prefix of the variables handed to an external training command.
 pub const ENVIRONMENT_PREFIX: &str = "ABNEGATE_TRAIN";
 /// Default prefix of the variable naming ComfyUI's input directory for an
@@ -2006,6 +2009,7 @@ mod tests {
             load_train_dataset_node: "LoadDataset".into(),
             probe_loss_node: "MeasureLoss".into(),
             stage_training_artifact_node: "StageWeights".into(),
+            ipadapter_face_node: "SteerFace".into(),
             folder_prefix: "dataset-".into(),
             artifact_prefix: "adapter-".into(),
             probe_prefix: "sample-".into(),

@@ -45,6 +45,10 @@ const ENCODER: &str = "VAEEncode";
 const LATENT_INPUTS: &[&str] = &["latent_image", "samples"];
 const CONDITIONING_CLASSES: &[&str] = &["FluxGuidance"];
 const CONDITIONING_CLASS_PREFIXES: &[&str] = &["CLIPTextEncode", "Conditioning", "ControlNetApply"];
+/// The directory of the IP-Adapter weight a face reference runs through.
+pub(crate) const IPADAPTER_DIRECTORY: &str = "ipadapter";
+/// The directory of the CLIP vision encoder a face reference is read with.
+pub(crate) const CLIP_VISION_DIRECTORY: &str = "clip_vision";
 
 fn packaged_workflow(name: &str) -> Option<&'static str> {
     match name {
@@ -134,6 +138,11 @@ pub struct Recipe {
     /// weights, which a run with [`Fill::with_pose`] needs on top of
     /// [`required_files`](Recipe::required_files). Empty without a pose slot.
     pub pose_required_files: Vec<RequiredFile>,
+    /// The model files a face reference loads on top of
+    /// [`required_files`](Recipe::required_files): one IP-Adapter weight in
+    /// `ipadapter/` and one CLIP vision encoder in `clip_vision/`. Declared
+    /// exactly when the recipe supports [`RecipeExtra::Face`].
+    pub face_required_files: Vec<RequiredFile>,
     /// The base recipe an edit of a source image switches to when that
     /// recipe's files are installed and the selected weight is one of this
     /// recipe's stock files, so a fast default can hand edits to a stronger
@@ -191,6 +200,8 @@ struct CatalogRecipe {
     required_files: Vec<RequiredFile>,
     #[serde(default)]
     pose_required_files: Vec<RequiredFile>,
+    #[serde(default)]
+    face_required_files: Vec<RequiredFile>,
     #[serde(default)]
     training: Option<CatalogTraining>,
     #[serde(default)]
@@ -288,6 +299,13 @@ impl RecipeCatalog {
                     "pose_required_files needs a pose slot",
                 ));
             }
+            let extras = known_extras(spec.extras);
+            validate_face(&extras, &spec.face_required_files)?;
+            if extras.contains(&RecipeExtra::Face) {
+                for graph in std::iter::once(&bare).chain(with_source.as_ref()) {
+                    validate_face_sampler(graph, &slots)?;
+                }
+            }
             for filename in spec.files {
                 files.insert(filename, spec.id.clone());
             }
@@ -304,8 +322,9 @@ impl RecipeCatalog {
                 huggingface_bases: spec.huggingface_bases,
                 required_files: spec.required_files,
                 pose_required_files: spec.pose_required_files,
+                face_required_files: spec.face_required_files,
                 edit_recipe: spec.edit_recipe,
-                extras: known_extras(spec.extras),
+                extras,
                 training: spec.training.map(|training| Training {
                     architecture: training.architecture,
                     adapter: TrainingAdapter {
@@ -485,6 +504,7 @@ impl RecipeCatalog {
                         .required_files
                         .iter()
                         .chain(&recipe.pose_required_files)
+                        .chain(&recipe.face_required_files)
                         .any(|file| named(&file.filename))
             })
     }
@@ -571,6 +591,20 @@ impl Recipe {
     /// Whether its catalog entry declares `extra`.
     pub fn supports(&self, extra: RecipeExtra) -> bool {
         self.extras.contains(&extra)
+    }
+
+    /// The one file of its [`face_required_files`](Recipe::face_required_files)
+    /// in `directory`.
+    pub(crate) fn face_file(&self, directory: &str) -> Option<&RequiredFile> {
+        self.face_required_files
+            .iter()
+            .find(|file| file.directory == directory)
+    }
+
+    /// The node its seed slot fills, the sampler a face reference and a
+    /// denoise override reach.
+    pub(crate) fn sampler_node(&self) -> &str {
+        slot_node(&self.slots.seed)
     }
 
     /// The weight file for each slot as its defaults name them, for running
@@ -735,6 +769,43 @@ fn validate_graph(workflow: &Value, slots: &RecipeSlots, with_source: bool) -> R
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_face(extras: &[RecipeExtra], files: &[RequiredFile]) -> Result<(), Error> {
+    if !extras.contains(&RecipeExtra::Face) {
+        return if files.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Configuration(
+                "face_required_files needs the face extra",
+            ))
+        };
+    }
+    let count = |directory: &str| {
+        files
+            .iter()
+            .filter(|file| file.directory == directory)
+            .count()
+    };
+    if files.len() != 2 || count(IPADAPTER_DIRECTORY) != 1 || count(CLIP_VISION_DIRECTORY) != 1 {
+        return Err(Error::Configuration(
+            "the face extra needs one ipadapter and one clip_vision file",
+        ));
+    }
+    for file in files {
+        sanitize_weight_filename(&file.filename)?;
+    }
+    Ok(())
+}
+
+fn validate_face_sampler(workflow: &Value, slots: &RecipeSlots) -> Result<(), Error> {
+    let model = format!("/{}/inputs/model", slot_node(&slots.seed));
+    if workflow.pointer(&model).and_then(link_node).is_none() {
+        return Err(Error::Configuration(
+            "the face extra needs a sampler that reads a linked model",
+        ));
     }
     Ok(())
 }
@@ -1751,6 +1822,124 @@ mod tests {
             }
         }
         assert!(RecipeCatalog::from_json(&file.to_string(), None).is_err());
+    }
+
+    /// The IP-Adapter weight and the encoder it reads the face with are
+    /// declared beside the face extra, so a host can install them and the
+    /// client never runs a face branch whose weights are missing.
+    #[test]
+    fn face_capable_sdxl_runs_declare_the_ip_adapter_and_its_encoder() {
+        let catalog = catalog();
+        for id in ["sdxl", "sdxl-adapter"] {
+            let recipe = catalog.get(id).unwrap();
+            assert_eq!(
+                recipe.face_required_files,
+                [
+                    RequiredFile {
+                        filename: "ip-adapter-plus-face_sdxl_vit-h.safetensors".into(),
+                        directory: IPADAPTER_DIRECTORY.into(),
+                    },
+                    RequiredFile {
+                        filename: "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors".into(),
+                        directory: CLIP_VISION_DIRECTORY.into(),
+                    },
+                ],
+                "{id}"
+            );
+            assert_eq!(recipe.sampler_node(), "3");
+            assert!(catalog.needs_weight("ip-adapter-plus-face_sdxl_vit-h.safetensors"));
+        }
+        for recipe in &catalog.recipes {
+            assert_eq!(
+                recipe.supports(RecipeExtra::Face),
+                !recipe.face_required_files.is_empty(),
+                "{}",
+                recipe.id
+            );
+        }
+    }
+
+    fn with_face(id: &str, extras: Value, files: Value) -> Result<RecipeCatalog, Error> {
+        let mut file: Value = serde_json::from_str(PACKAGED_CATALOG).unwrap();
+        for recipe in file["recipes"].as_array_mut().unwrap() {
+            if recipe["id"] == id {
+                recipe["extras"] = extras.clone();
+                recipe["face_required_files"] = files.clone();
+            }
+        }
+        RecipeCatalog::from_json(&file.to_string(), None)
+    }
+
+    #[test]
+    fn face_files_without_the_face_extra_fail_catalog_load() {
+        let files = json!([
+            {"filename": "adapter.safetensors", "directory": "ipadapter"},
+            {"filename": "encoder.safetensors", "directory": "clip_vision"}
+        ]);
+        assert!(with_face("flux-schnell", json!([]), files.clone()).is_err());
+        assert!(with_face("sdxl", json!(["identity_refine"]), files).is_err());
+    }
+
+    #[test]
+    fn the_face_extra_without_one_adapter_and_one_encoder_fails_catalog_load() {
+        for files in [
+            json!([]),
+            json!([{"filename": "adapter.safetensors", "directory": "ipadapter"}]),
+            json!([
+                {"filename": "adapter.safetensors", "directory": "ipadapter"},
+                {"filename": "other.safetensors", "directory": "ipadapter"}
+            ]),
+            json!([
+                {"filename": "adapter.safetensors", "directory": "ipadapter"},
+                {"filename": "encoder.safetensors", "directory": "clip_vision"},
+                {"filename": "extra.safetensors", "directory": "controlnet"}
+            ]),
+            json!([
+                {"filename": "../adapter.safetensors", "directory": "ipadapter"},
+                {"filename": "encoder.safetensors", "directory": "clip_vision"}
+            ]),
+        ] {
+            assert!(
+                with_face("sdxl", json!(["face"]), files.clone()).is_err(),
+                "{files}"
+            );
+        }
+        let catalog = with_face(
+            "flux-schnell",
+            json!(["face"]),
+            json!([
+                {"filename": "adapter.safetensors", "directory": "ipadapter"},
+                {"filename": "encoder.safetensors", "directory": "clip_vision"}
+            ]),
+        )
+        .unwrap();
+        assert!(
+            catalog
+                .get("flux-schnell")
+                .unwrap()
+                .supports(RecipeExtra::Face)
+        );
+    }
+
+    #[test]
+    fn the_face_extra_on_a_sampler_without_a_linked_model_fails_catalog_load() {
+        let mut file: Value = serde_json::from_str(PACKAGED_CATALOG).unwrap();
+        for recipe in file["recipes"].as_array_mut().unwrap() {
+            if recipe["id"] == "sdxl" {
+                recipe["slots"]["seed"] = json!("/7/inputs/text");
+            }
+        }
+        assert!(RecipeCatalog::from_json(&file.to_string(), None).is_err());
+        for recipe in file["recipes"].as_array_mut().unwrap() {
+            if recipe["id"] == "sdxl" {
+                recipe["extras"] = json!(["identity_refine"]);
+                recipe["face_required_files"] = json!([]);
+            }
+        }
+        assert!(
+            RecipeCatalog::from_json(&file.to_string(), None).is_ok(),
+            "without the face extra the same graph loads"
+        );
     }
 
     /// The packaged assets are the generic catalog: a host's own checkpoints

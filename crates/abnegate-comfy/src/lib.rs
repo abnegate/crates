@@ -104,6 +104,7 @@ pub mod inventory;
 pub mod lora;
 mod media;
 mod observe;
+mod people;
 mod person;
 pub mod quality;
 pub mod recipe;
