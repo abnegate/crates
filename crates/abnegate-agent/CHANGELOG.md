@@ -7,19 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.4](https://github.com/abnegate/crates/compare/abnegate-agent-v0.1.3...abnegate-agent-v0.1.4) - 2026-10-09
+## [0.1.4](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.3...abnegate-agent/v0.1.4) - 2026-10-09
 
 ### Other
 
 - updated the following local packages: abnegate-secret, abnegate-exec, abnegate-llm, abnegate-agent-cli, abnegate-config
 
-## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-agent-v0.1.2...abnegate-agent-v0.1.3) - 2026-10-01
+## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.2...abnegate-agent/v0.1.3) - 2026-10-01
 
 ### Other
 
 - updated the following local packages: abnegate-secret, abnegate-llm, abnegate-exec, abnegate-agent-cli, abnegate-config
 
-## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-agent-v0.1.1...abnegate-agent-v0.1.2) - 2026-09-30
+## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.1...abnegate-agent/v0.1.2) - 2026-09-30
 
 ### Added
 
@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(agent)* document every public item
 
-## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-agent-v0.1.0...abnegate-agent-v0.1.1) - 2026-09-30
+## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.0...abnegate-agent/v0.1.1) - 2026-09-30
 
 ### Other
 

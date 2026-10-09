@@ -223,8 +223,8 @@ Publishing cannot create a crate, so a new crate's first version is published
 by hand and its Trusted Publishing entry added before release-plz can publish
 it.
 
-Every release is tagged `abnegate-<name>-v<version>`, such as
-`abnegate-http-v0.2.0`, and gets a GitHub release of the same name from its
+Every release is tagged `abnegate-<name>/v<version>`, such as
+`abnegate-http/v0.2.0`, and gets a GitHub release of the same name from its
 changelog entry. A crate whose tag already exists counts as released.
 
 Each crate carries its own `version` rather than inheriting one from the

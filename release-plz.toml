@@ -2,6 +2,6 @@
 changelog_update = true
 semver_check = true
 git_tag_enable = true
-git_tag_name = "{{ package }}-v{{ version }}"
+git_tag_name = "{{ package }}/v{{ version }}"
 git_release_enable = true
-git_release_name = "{{ package }}-v{{ version }}"
+git_release_name = "{{ package }}/v{{ version }}"

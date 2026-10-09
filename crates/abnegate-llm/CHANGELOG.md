@@ -7,13 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.4](https://github.com/abnegate/crates/compare/abnegate-llm-v0.1.3...abnegate-llm-v0.1.4) - 2026-10-09
+## [0.1.4](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.3...abnegate-llm/v0.1.4) - 2026-10-09
 
 ### Other
 
 - updated the following local packages: abnegate-secret
 
-## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-llm-v0.1.2...abnegate-llm-v0.1.3) - 2026-10-01
+## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.2...abnegate-llm/v0.1.3) - 2026-10-01
 
 ### Added
 
@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(llm)* local ONNX embeddings through fastembed behind the `fastembed` feature
 
-## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-llm-v0.1.1...abnegate-llm-v0.1.2) - 2026-09-30
+## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.1...abnegate-llm/v0.1.2) - 2026-09-30
 
 ### Fixed
 
@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(llm)* document every public item
 - *(llm)* send the url the outbound guard checked
 
-## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-llm-v0.1.0...abnegate-llm-v0.1.1) - 2026-09-30
+## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.0...abnegate-llm/v0.1.1) - 2026-09-30
 
 ### Other
 

@@ -7,13 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-vision-v0.1.1...abnegate-vision-v0.1.2) - 2026-09-30
+## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-vision/v0.1.1...abnegate-vision/v0.1.2) - 2026-09-30
 
 ### Other
 
 - *(vision)* document every public item
 
-## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-vision-v0.1.0...abnegate-vision-v0.1.1) - 2026-09-30
+## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-vision/v0.1.0...abnegate-vision/v0.1.1) - 2026-09-30
 
 ### Other
 
