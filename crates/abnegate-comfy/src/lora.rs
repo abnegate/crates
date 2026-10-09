@@ -171,6 +171,9 @@ const FOREIGN_WEIGHT: &str = "a weight training did not publish already has this
 const LORA_ONLY: &str = "the packaged training graph trains only a LoRA; configure a training command or a host trainer";
 const SDXL_UNSUPPORTED: &str = "SDXL trains only through a training command or a host trainer";
 const HOST_SECRET: &str = "a host secret needs a plain file name the job does not use";
+const REMOTE_WITHOUT_HOST: &str =
+    "a remote compute trains only on the host trainer; configure a host trainer";
+const MISSING_COMPUTE_KEY: &str = "this compute needs its key to train";
 const HOST_FIELD: &str = "a host field may not replace a key the host job gives a meaning";
 const HOST_EDIT: &str = "an edit base trains on the host only once the host-job contract carries its references; train it through a training command or the packaged graph";
 const HOST_RENAMED: &str = "the host job names a weight file other than the one its name gives";
@@ -480,7 +483,9 @@ async fn train_with_screening(
 /// [`Config::train_policy`] does not allow on that base, a rule whose recipe
 /// cannot run the weight it publishes or does not load it from the rule's
 /// directory, a file the base's rule requires that
-/// is not installed, a name a catalog recipe or a rule needs for its own
+/// is not installed when the request trains locally, a remote
+/// [compute](TrainRequest::compute) with no host trainer or no key, a name a
+/// catalog recipe or a rule needs for its own
 /// weight, a name a weight in another scanned model folder already has, a
 /// name already taken by a weight no training run published, a
 /// method other than a LoRA or an SDXL base with no [`Config::train_command`]
@@ -518,7 +523,11 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
     let destination = destination(config, &catalog, recipe, request)?;
     let filename = weight_filename(&request.name, destination.suffix.as_deref())?;
     require_free_name(config, &catalog, &destination.directory, &filename)?;
-    let route = route(config, &model, request.method)?;
+    let route = if request.compute.is_remote() {
+        remote_route(config, &model)?
+    } else {
+        route(config, &model, request.method)?
+    };
     if video
         && !request
             .images
@@ -580,9 +589,35 @@ fn route(config: &Config, model: &TrainingModel, method: TrainMethod) -> Result<
     Ok(Route::Graph)
 }
 
-/// Refuses a host field `job.json` already gives a meaning, and a host
-/// secret that is not one plain file name of its own beside it.
+/// What trains a request on a remote compute: the host trainer, whatever
+/// the method and base, except an edit base, whose reference images the host
+/// job does not carry.
+fn remote_route(config: &Config, model: &TrainingModel) -> Result<Route, TrainError> {
+    if config.host_trainer.is_none() {
+        return Err(TrainError::Invalid(REMOTE_WITHOUT_HOST));
+    }
+    if matches!(model, TrainingModel::QwenEdit { .. }) {
+        return Err(TrainError::Invalid(HOST_EDIT));
+    }
+    Ok(Route::Host)
+}
+
+/// Refuses a host field `job.json` already gives a meaning, a host secret
+/// that is not one plain file name of its own beside it or that takes the
+/// compute's key file, and a compute that reads a key with none given.
 fn validate_host_settings(request: &TrainRequest) -> Result<(), TrainError> {
+    if let Some(file) = request.compute.key_file() {
+        if request
+            .compute_key
+            .as_ref()
+            .is_none_or(|key| key.expose().trim().is_empty())
+        {
+            return Err(TrainError::Invalid(MISSING_COMPUTE_KEY));
+        }
+        if request.host_secrets.contains_key(file) {
+            return Err(TrainError::Invalid(HOST_SECRET));
+        }
+    }
     if request
         .host_fields
         .keys()
@@ -603,7 +638,7 @@ fn validate_host_settings(request: &TrainRequest) -> Result<(), TrainError> {
 /// Where [`Config::train_policy`] publishes `request` trained on `recipe`,
 /// once its rule allows the request's subject and method, names a recipe in
 /// `catalog` that runs the weight from the directory it publishes in, and
-/// every file it requires is installed.
+/// every file it requires is installed, unless a remote compute trains it.
 fn destination(
     config: &Config,
     catalog: &RecipeCatalog,
@@ -638,7 +673,7 @@ fn destination(
     if !rule.subjects.contains(&request.subject) {
         return Err(TrainError::Invalid(SUBJECT_UNAVAILABLE));
     }
-    if !installed(config, rule) {
+    if !request.compute.is_remote() && !installed(config, rule) {
         return Err(TrainError::Invalid(
             "install the files this base needs before training on it",
         ));
@@ -996,7 +1031,11 @@ async fn train_with_pipeline(
             &attempt,
             Handoff::Images,
             job,
-            &request.host_secrets,
+            &host_secrets(
+                &request.host_secrets,
+                request.compute,
+                request.compute_key.as_ref(),
+            ),
             &destination,
             &progress,
         )
@@ -1184,6 +1223,20 @@ fn publish(
     Ok(output)
 }
 
+/// The secrets written beside a host job: the host's own, and the key of a
+/// compute that reads one.
+fn host_secrets(
+    secrets: &BTreeMap<String, SecretValue>,
+    compute: host::Compute,
+    key: Option<&SecretValue>,
+) -> BTreeMap<String, SecretValue> {
+    let mut secrets = secrets.clone();
+    if let (Some(file), Some(key)) = (compute.key_file(), key) {
+        secrets.insert(file.to_string(), key.clone());
+    }
+    secrets
+}
+
 /// The file the trainer starts from: the base's checkpoint, or its diffusion
 /// model when the base loads its parts separately.
 fn base_weight(model: &TrainingModel) -> &str {
@@ -1216,7 +1269,8 @@ fn host_job(
     .with_filename(filename)
     .with_recipe_id(destination.recipe_id.as_str())
     .with_huggingface_base(destination.huggingface_base.clone().unwrap_or_default())
-    .with_image_count(count);
+    .with_image_count(count)
+    .with_compute(request.compute);
     let job = request.host_fields.iter().fold(job, |job, (name, value)| {
         job.with_field(name, value.clone())
     });
@@ -1234,7 +1288,8 @@ fn host_job(
 /// until the weight is published, so [`host::recover`] never publishes it
 /// beside this run. A failure or a drop before `job.json` is written removes
 /// the whole directory; after, the secrets go once the job ends, and a job
-/// the trainer still holds keeps them until it does.
+/// the trainer still holds keeps them until it does. Queueing the job also
+/// removes the secrets of every job that ended while nobody waited on it.
 async fn train_on_host(
     config: &Config,
     attempt: &Attempt,
@@ -1245,25 +1300,20 @@ async fn train_on_host(
     progress: &Reporter,
 ) -> Result<PathBuf, TrainError> {
     let trainer = config.host_trainer.as_ref().ok_or(TrainError::Disabled)?;
-    let root = ensure_child_directory(&config.models_directory, &config.contract.host_directory)?;
     let directory = JobDirectory::new(config, job.id);
-    let mut pending = host::Pending::new(directory.clone());
-    directory.create()?;
-    require_confined_directory(&root, directory.path())?;
-    let _lock = directory.try_lock()?.ok_or_else(|| {
-        TrainError::Failed("another process holds a job that was just created".to_string())
-    })?;
-    let staged = attempt.root.join(handoff.staged());
-    let input = directory.path().join(handoff.directory());
-    if fs::rename(&staged, &input).is_err() {
-        directory.stage(&staged, handoff.directory())?;
-    }
-    for (name, value) in secrets {
-        directory.write_secret(name, value)?;
-    }
-    progress.send(directory.write_queued_progress(handoff.steps(trainer, job.image_count))?);
-    directory.write_job(&job)?;
-    pending.queued();
+    let (_pending, _lock, queued) = {
+        let config = config.clone();
+        let directory = directory.clone();
+        let staged = attempt.root.join(handoff.staged());
+        let steps = handoff.steps(trainer, job.image_count);
+        let job = job.clone();
+        let secrets = secrets.clone();
+        blocking(move || {
+            queue_on_host(&config, &directory, &staged, handoff, &job, &secrets, steps)
+        })
+        .await??
+    };
+    progress.send(queued);
     let finished = host::wait_with(trainer, &directory, progress).await?;
     if finished.filename != job.filename {
         return Err(TrainError::Failed(
@@ -1290,6 +1340,42 @@ async fn train_on_host(
     )
 }
 
+/// Fills `directory` for `job` and writes its `job.json`, holding its lock
+/// from the moment it exists: moves or copies what `handoff` staged at
+/// `staged`, writes `secrets` and the queued progress of `steps` steps, and
+/// removes the secrets of every job that has ended. Returns the pending job,
+/// which removes a directory left half-made, the lock, and the progress it
+/// wrote.
+fn queue_on_host(
+    config: &Config,
+    directory: &JobDirectory,
+    staged: &Path,
+    handoff: Handoff,
+    job: &host::Job,
+    secrets: &BTreeMap<String, SecretValue>,
+    steps: u32,
+) -> Result<(host::Pending, fs::File, TrainProgress), TrainError> {
+    let root = ensure_child_directory(&config.models_directory, &config.contract.host_directory)?;
+    let mut pending = host::Pending::new(directory.clone());
+    directory.create()?;
+    require_confined_directory(&root, directory.path())?;
+    let lock = directory.try_lock()?.ok_or_else(|| {
+        TrainError::Failed("another process holds a job that was just created".to_string())
+    })?;
+    host::remove_ended_secrets(config);
+    let input = directory.path().join(handoff.directory());
+    if fs::rename(staged, &input).is_err() {
+        directory.stage(staged, handoff.directory())?;
+    }
+    for (name, value) in secrets {
+        directory.write_secret(name, value)?;
+    }
+    let queued = directory.write_queued_progress(steps)?;
+    directory.write_job(job)?;
+    pending.queued();
+    Ok((pending, lock, queued))
+}
+
 /// Refuses publishing the host job `job` the way [`validate_request`] would
 /// have refused queueing it: an unknown base, a method or subject
 /// [`Config::train_policy`] no longer allows on it, a weight file other than
@@ -1308,7 +1394,7 @@ pub(crate) fn publish_host_job(
     progress: &Reporter,
 ) -> Result<PathBuf, TrainError> {
     if let Some(path) = host::published(config, &job)? {
-        directory.remove_secrets(&job.secrets);
+        directory.remove_job_secrets(&job);
         directory.prune();
         return Ok(path);
     }
@@ -1345,7 +1431,8 @@ fn host_destination(config: &Config, job: &host::Job) -> Result<(Destination, St
     let request = TrainRequest::new(job.name.as_str(), job.base.as_str(), Vec::new())
         .with_subject(subject)
         .with_method(method)
-        .with_trigger(job.trigger.as_str());
+        .with_trigger(job.trigger.as_str())
+        .with_compute(job.compute);
     let destination = destination(config, &catalog, recipe, &request)?;
     let filename = weight_filename(&job.name, destination.suffix.as_deref())?;
     if job.filename.as_deref() != Some(filename.as_str()) {
@@ -1396,7 +1483,7 @@ fn finish_hosted(
         return Ok(output);
     }
     let _ = fs::remove_file(directory.path().join(filename));
-    directory.remove_secrets(&job.secrets);
+    directory.remove_job_secrets(&job);
     directory.prune();
     Ok(output)
 }
@@ -6273,8 +6360,8 @@ mod tests {
         let trainer = host_trainer(&config, succeed_with(b"tuned"));
         let (reporter, recorded) = Reporter::recording();
         let request = finetuned("jerry")
-            .with_host_field("provider", "runpod")
-            .with_host_secret("runpod.key", SecretValue::new("rp-secret"));
+            .with_compute(host::Compute::Runpod)
+            .with_compute_key(SecretValue::new("rp-secret"));
 
         let outcome = train_with_pipeline(
             &config,
@@ -6310,7 +6397,7 @@ mod tests {
         assert_eq!(job.recipe_id, "flux-schnell");
         assert_eq!(job.huggingface_base, "black-forest-labs/FLUX.1-schnell");
         assert_eq!(job.image_count, 1);
-        assert_eq!(job.fields["provider"], "runpod");
+        assert_eq!(job.compute, host::Compute::Runpod);
         assert_eq!(
             picked.dataset,
             [
@@ -6473,6 +6560,197 @@ mod tests {
             .with_trigger("ohwx")
             .with_base("flux-schnell")
             .with_filename(format!("{name}.safetensors"))
+    }
+
+    #[test]
+    fn train_request_defaults_provider_to_local() {
+        let built = identity("style");
+        assert_eq!(built.compute, host::Compute::Local);
+        assert!(built.compute_key.is_none());
+        let parsed: TrainRequest = serde_json::from_value(json!({
+            "name": "style",
+            "base": "flux-schnell",
+            "images": [],
+        }))
+        .unwrap();
+        assert_eq!(parsed.compute, host::Compute::Local);
+        let runpod: TrainRequest = serde_json::from_value(json!({
+            "name": "jerry",
+            "base": "sdxl-people",
+            "provider": "runpod",
+        }))
+        .unwrap();
+        assert_eq!(runpod.compute, host::Compute::Runpod);
+        assert!(
+            runpod.images.is_empty(),
+            "a request whose images follow in batches reads"
+        );
+        assert!(runpod.compute_key.is_none());
+    }
+
+    #[test]
+    fn runpod_without_a_key_is_refused() {
+        let (_root, config) = hosted();
+        let runpod = || finetuned("jerry").with_compute(host::Compute::Runpod);
+        assert_eq!(refused(&config, &runpod()), MISSING_COMPUTE_KEY);
+        assert_eq!(
+            refused(&config, &runpod().with_compute_key(SecretValue::new(" \n"))),
+            MISSING_COMPUTE_KEY
+        );
+        assert_eq!(
+            refused(
+                &config,
+                &runpod()
+                    .with_compute_key(SecretValue::new("rp"))
+                    .with_host_secret("runpod.key", SecretValue::new("other"))
+            ),
+            HOST_SECRET
+        );
+        validate_request(&config, &runpod().with_compute_key(SecretValue::new("rp")))
+            .expect("a remote compute with its key trains");
+        validate_request(
+            &config,
+            &finetuned("jerry").with_compute_key(SecretValue::new("rp")),
+        )
+        .expect("a local request ignores a key it does not need");
+    }
+
+    #[test]
+    fn runpod_person_does_not_need_the_local_people_checkpoint() {
+        let (_root, config) = hosted();
+        fs::remove_file(
+            config
+                .models_directory
+                .join("checkpoints/flux1-schnell-fp8.safetensors"),
+        )
+        .unwrap();
+        assert_eq!(
+            refused(&config, &finetuned("jerry")),
+            "install the files this base needs before training on it"
+        );
+        validate_request(
+            &config,
+            &finetuned("jerry")
+                .with_compute(host::Compute::Runpod)
+                .with_compute_key(SecretValue::new("rp")),
+        )
+        .expect("the pod pulls the base itself");
+    }
+
+    #[test]
+    fn a_remote_compute_trains_only_on_the_host_trainer_and_never_an_edit_base() {
+        let (_root, config) = harness("true");
+        let remote = |request: TrainRequest| {
+            request
+                .with_compute(host::Compute::Runpod)
+                .with_compute_key(SecretValue::new("rp"))
+        };
+        assert_eq!(
+            refused(&config, &remote(identity("style"))),
+            REMOTE_WITHOUT_HOST
+        );
+        let (_root, config) = hosted();
+        assert_eq!(
+            refused(
+                &config,
+                &remote(edit(vec![image("target", "make it red", Some("before"))]))
+            ),
+            HOST_EDIT
+        );
+    }
+
+    #[tokio::test]
+    async fn runpod_other_with_a_key_publishes_a_host_job_ahead_of_the_training_command() {
+        let (_root, mut config) = hosted();
+        config.train_policy = TrainPolicy::new();
+        config.train_command = Some("exit 1".into());
+        let trainer = host_trainer(&config, succeed_with(b"lora"));
+        let request = identity("style")
+            .with_compute(host::Compute::Runpod)
+            .with_compute_key(SecretValue::new("rp-test-key"));
+
+        let outcome = train_with_pipeline(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            request,
+            keep_all,
+            false,
+            Reporter::default(),
+        )
+        .await
+        .expect("the host trainer trains the remote LoRA");
+        let picked = trainer.await.unwrap();
+
+        let published = config.models_directory.join("loras/style.safetensors");
+        assert_eq!(outcome.path, published);
+        assert_eq!(fs::read(&published).unwrap(), b"lora");
+        assert!(outcome.quality.is_none());
+        let job = &picked.job;
+        assert_eq!(
+            (
+                job.method.as_str(),
+                job.subject.as_str(),
+                job.base.as_str(),
+                job.trigger.as_str(),
+                job.checkpoint.as_str(),
+            ),
+            (
+                "lora",
+                "other",
+                "flux-schnell",
+                "ohwx",
+                "flux1-schnell-fp8.safetensors"
+            )
+        );
+        assert_eq!(job.compute, host::Compute::Runpod);
+        assert_eq!(job.recipe_id, "flux-schnell-adapter");
+        assert_eq!(job.huggingface_base, "black-forest-labs/FLUX.1-schnell");
+        assert_eq!(job.filename.as_deref(), Some("style.safetensors"));
+        assert_eq!(job.image_count, 1);
+        assert_eq!(job.secrets, ["runpod.key"]);
+        assert!(job.fields.is_empty(), "{:?}", job.fields);
+        assert_eq!(picked.dataset, ["0000.png", "0000.txt"]);
+        assert_eq!(picked.secret.as_deref(), Some("rp-test-key\n"));
+        let directory = JobDirectory::new(&config, job.id);
+        assert!(!directory.path().join("runpod.key").exists());
+        assert_eq!(
+            directory.read_job().unwrap().published.as_deref(),
+            Some("loras/style.safetensors")
+        );
+    }
+
+    #[test]
+    fn a_remote_job_recovers_without_the_base_installed_here() {
+        let (_root, config) = hosted();
+        fs::remove_file(
+            config
+                .models_directory
+                .join("checkpoints/flux1-schnell-fp8.safetensors"),
+        )
+        .unwrap();
+        finished(
+            &config,
+            person_job("jerry", "finetune").with_compute(host::Compute::Runpod),
+            Some(b"tuned"),
+        );
+        let mut local = person_job("yvonne", "finetune");
+        local.started_at += chrono::Duration::seconds(1);
+        finished(&config, local, Some(b"tuned"));
+
+        let recovered = host::recover(&config);
+
+        assert_eq!(recovered.len(), 2, "{recovered:?}");
+        assert_eq!(
+            recovered[0].as_ref().unwrap(),
+            &config
+                .models_directory
+                .join("checkpoints/jerry.safetensors")
+        );
+        assert!(
+            matches!(&recovered[1], Err(TrainError::Invalid(message)) if message.starts_with("install the files")),
+            "{recovered:?}"
+        );
     }
 
     #[test]
@@ -6722,12 +7000,16 @@ mod tests {
                 .await
             })
         };
-        let mut job = loop {
-            if let Some(job) = host::current(&config) {
-                break job;
+        let mut job = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(job) = host::current(&config) {
+                    break job;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        };
+        })
+        .await
+        .expect("the job was never queued");
         let directory = JobDirectory::new(&config, job.id);
         assert_eq!(job.secrets, ["runpod.key"]);
         assert_eq!(job.architecture, "flux");
@@ -6751,6 +7033,59 @@ mod tests {
         assert!(directory.path().join(host::JOB_FILE).is_file());
     }
 
+    fn running_runpod_job(config: &Config, name: &str) -> PathBuf {
+        let mut job = person_job(name, "finetune").with_compute(host::Compute::Runpod);
+        job.status = host::Status::Running;
+        job.started_at -= chrono::Duration::hours(1);
+        let directory = JobDirectory::new(config, job.id);
+        directory.write_job(&job).unwrap();
+        directory
+            .write_compute_key(host::Compute::Runpod, &SecretValue::new("rp-live"))
+            .unwrap();
+        directory.path().join("runpod.key")
+    }
+
+    #[tokio::test]
+    async fn queueing_a_job_removes_the_key_of_one_that_ended_while_nobody_waited() {
+        let (_root, config) = hosted();
+        let ended = finished(
+            &config,
+            person_job("yvonne", "finetune").with_compute(host::Compute::Runpod),
+            Some(b"tuned"),
+        );
+        ended
+            .write_compute_key(host::Compute::Runpod, &SecretValue::new("rp-secret"))
+            .unwrap();
+        let key = ended.path().join("runpod.key");
+        let live_key = running_runpod_job(&config, "zelda");
+        let training = {
+            let config = config.clone();
+            tokio::spawn(async move {
+                train_with_screening(
+                    &config,
+                    String::new(),
+                    SecretValue::new(""),
+                    finetuned("jerry"),
+                    keep_all,
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while host::current(&config).is_none_or(|job| job.name != "jerry") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the new job was never queued");
+
+        training.abort();
+        assert!(training.await.unwrap_err().is_cancelled());
+        assert!(!key.exists(), "the key outlived its ended job");
+        assert!(live_key.is_file(), "a running job lost its key");
+        assert!(ended.path().join("yvonne.safetensors").is_file());
+    }
+
     #[test]
     fn recovery_removes_the_secrets_of_every_job_that_ended() {
         let (_root, config) = hosted();
@@ -6768,12 +7103,14 @@ mod tests {
                 .write_secret("runpod.key", &SecretValue::new("rp"))
                 .unwrap();
         }
+        let live_key = running_runpod_job(&config, "zelda");
 
         let recovered = host::recover(&config);
 
         assert_eq!(recovered.len(), 1, "{recovered:?}");
         assert!(!succeeded.path().join("runpod.key").exists());
         assert!(!failed_directory.path().join("runpod.key").exists());
+        assert!(live_key.is_file(), "a running job lost its key");
     }
 
     #[tokio::test]

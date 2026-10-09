@@ -36,7 +36,7 @@ impl Drop for Pending {
         if let Ok(job) = self.directory.read_job()
             && !job.busy()
         {
-            self.directory.remove_secrets(&job.secrets);
+            self.directory.remove_job_secrets(&job);
         }
     }
 }

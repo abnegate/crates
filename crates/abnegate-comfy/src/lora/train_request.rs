@@ -1,3 +1,4 @@
+use crate::host::Compute;
 use crate::lora::TrainImage;
 use crate::lora::TrainMethod;
 use crate::lora::TrainSubject;
@@ -25,12 +26,26 @@ pub struct TrainRequest {
     /// How the images become a weight.
     #[serde(default)]
     pub method: TrainMethod,
-    /// The training set.
+    /// The training set. A request that names none reads, so its images can
+    /// follow in batches too large for one body, but trains only once they
+    /// are there.
+    #[serde(default)]
     pub images: Vec<TrainImage>,
+    /// Where the host trainer runs the request, under the `provider` key. A
+    /// [remote](Compute::is_remote) compute trains every subject and method
+    /// on the [host trainer](crate::Config::host_trainer) and needs its
+    /// [`compute_key`](TrainRequest::compute_key).
+    #[serde(default, rename = "provider")]
+    pub compute: Compute,
+    /// The credential of a compute with a [key file](Compute::key_file),
+    /// written there beside the host job, readable only by its owner, and
+    /// never into `job.json`.
+    #[serde(skip)]
+    pub compute_key: Option<SecretValue>,
     /// Keys of the host's own added to the
     /// [`host::Job`](crate::host::Job) when the request trains on the
-    /// [host trainer](crate::Config::host_trainer), such as the compute
-    /// provider it runs on. Ignored otherwise.
+    /// [host trainer](crate::Config::host_trainer), such as a setting only
+    /// its trainer reads. Ignored otherwise.
     #[serde(skip)]
     pub host_fields: Map<String, Value>,
     /// Credentials written beside the host job, one file each, readable only
@@ -51,6 +66,8 @@ impl TrainRequest {
             subject: TrainSubject::default(),
             method: TrainMethod::default(),
             images,
+            compute: Compute::Local,
+            compute_key: None,
             host_fields: Map::new(),
             host_secrets: BTreeMap::new(),
         }
@@ -71,6 +88,19 @@ impl TrainRequest {
     /// Sets how the images become a weight.
     pub fn with_method(mut self, method: TrainMethod) -> Self {
         self.method = method;
+        self
+    }
+
+    /// Sets where the host trainer runs the request.
+    pub fn with_compute(mut self, compute: Compute) -> Self {
+        self.compute = compute;
+        self
+    }
+
+    /// Sets the credential the compute's trainer reads from its
+    /// [key file](Compute::key_file).
+    pub fn with_compute_key(mut self, key: SecretValue) -> Self {
+        self.compute_key = Some(key);
         self
     }
 

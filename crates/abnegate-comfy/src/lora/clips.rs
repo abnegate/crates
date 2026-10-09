@@ -10,6 +10,7 @@ use super::TrainRequest;
 use super::blocking;
 use super::ensure_child_directory;
 use super::host_job;
+use super::host_secrets;
 use super::train_on_host;
 use crate::config::Config;
 use crate::dataset;
@@ -74,7 +75,11 @@ pub(super) async fn train(
         &attempt,
         Handoff::Clips,
         job,
-        &request.host_secrets,
+        &host_secrets(
+            &request.host_secrets,
+            request.compute,
+            request.compute_key.as_ref(),
+        ),
         &plan.destination,
         &progress,
     )
@@ -97,6 +102,7 @@ mod tests {
     use super::super::HOST_RENAMED;
     use super::super::LORA_ONLY;
     use super::super::METHOD_UNAVAILABLE;
+    use super::super::MISSING_COMPUTE_KEY;
     use super::super::SUBJECT_UNAVAILABLE;
     use super::super::UNRUNNABLE_RULE;
     use super::super::VIDEO_HOST_ONLY;
@@ -242,6 +248,7 @@ mod tests {
         job: host::Job,
         clips: Vec<String>,
         queued: Option<TrainProgress>,
+        secret: Option<String>,
     }
 
     /// Plays the host trainer: waits for a job, records what it was handed,
@@ -265,6 +272,9 @@ mod tests {
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
                 .collect();
             clips.sort();
+            let secret = host::Compute::Runpod
+                .key_file()
+                .and_then(|file| fs::read_to_string(directory.path().join(file)).ok());
             job.status = host::Status::Running;
             directory.write_job(&job).unwrap();
             fs::write(
@@ -278,6 +288,7 @@ mod tests {
                 job: picked,
                 clips,
                 queued,
+                secret,
             }
         })
     }
@@ -495,7 +506,7 @@ mod tests {
                 clip("portrait.png", b"not a clip"),
             ],
         )
-        .with_host_field("provider", "local");
+        .with_host_field("queue", "video");
 
         let outcome = train_with_pipeline(
             &config,
@@ -534,7 +545,10 @@ mod tests {
             )
         );
         assert_eq!(job.filename.as_deref(), Some("jerry-wan.safetensors"));
-        assert_eq!(job.fields["provider"], "local");
+        assert_eq!(job.fields["queue"], "video");
+        assert_eq!(job.compute, host::Compute::Local);
+        assert!(job.secrets.is_empty(), "{:?}", job.secrets);
+        assert!(picked.secret.is_none());
         let mut expected: Vec<String> = (0..windows)
             .flat_map(|index| [format!("{index:04}.json"), format!("{index:04}.mp4")])
             .collect();
@@ -587,5 +601,58 @@ mod tests {
         )
         .expect("the trained trigger names the video adapter");
         assert_eq!(bound.lora.as_deref(), Some("jerry-wan.safetensors"));
+    }
+
+    #[tokio::test]
+    async fn a_remote_video_adapter_queues_a_host_job_carrying_its_compute_and_key() {
+        let (root, config) = hosted();
+        let remote = |request: TrainRequest| request.with_compute(host::Compute::Runpod);
+        assert_eq!(
+            refused(&config, &remote(walk("jerry"))),
+            MISSING_COMPUTE_KEY,
+            "a remote video adapter is checked as a host job"
+        );
+        fs::remove_file(config.models_directory.join(VIDEO_MODEL)).unwrap();
+        validate_request(
+            &config,
+            &remote(walk("jerry")).with_compute_key(SecretValue::new("rp-test-key")),
+        )
+        .expect("the pod pulls the video model itself");
+        if !ffmpeg_installed() {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        }
+        let bytes = synthesize(root.path(), "6").await;
+        let trainer = host_trainer(&config, b"adapter");
+        let request = remote(video("jerry", vec![clip("walk.mp4", &bytes)]))
+            .with_compute_key(SecretValue::new("rp-test-key"));
+
+        let outcome = train_with_pipeline(
+            &config,
+            String::new(),
+            SecretValue::new(""),
+            request,
+            never_screened,
+            false,
+            Reporter::default(),
+        )
+        .await
+        .expect("the host trainer trains the remote video adapter");
+        let picked = trainer.await.unwrap();
+
+        let job = &picked.job;
+        assert_eq!(job.method, "video");
+        assert_eq!(job.compute, host::Compute::Runpod);
+        assert_eq!(job.secrets, ["runpod.key"]);
+        assert_eq!(picked.secret.as_deref(), Some("rp-test-key\n"));
+        assert!(job.fields.is_empty(), "{:?}", job.fields);
+        let published = config.models_directory.join("loras/jerry-wan.safetensors");
+        assert_eq!(outcome.path, published);
+        assert_eq!(fs::read(&published).unwrap(), b"adapter");
+        let directory = JobDirectory::new(&config, job.id);
+        assert!(
+            !directory.path().join("runpod.key").exists(),
+            "the key outlived the job"
+        );
     }
 }

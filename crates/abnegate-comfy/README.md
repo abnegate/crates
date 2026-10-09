@@ -366,6 +366,16 @@ base goes there; a LoRA on any other base still runs the packaged graph. An
 edit base is refused on the host, since the job does not carry its reference
 images or its text encoder and VAE; it trains through a training command or,
 as a LoRA, the packaged graph.
+
+A request can also name where the host trainer runs it,
+`TrainRequest::with_compute`. `host::Compute::Local`, the default, is the
+host's own machine. A remote compute, `host::Compute::Runpod`, sends every
+subject and method to the host trainer, ahead of any training command, and
+needs none of the base's files installed here, since the pod pulls the base
+from Hugging Face. Its key, `TrainRequest::with_compute_key`, is written to
+the compute's key file beside the job, never into `job.json`; a remote
+request without one is refused before any image is read. Which subjects may
+use a remote compute, and where its key is kept, is the host's to decide.
 Screening, cropping and captioning happen here as for any run; the trainer
 only trains. The finished weight is published here too, under the same
 protections as any other: the policy's directory and recipe, never over a
@@ -379,7 +389,7 @@ allowlist, unless a deployment allows the settings its trainer reads.
 
 ```rust,no_run
 use abnegate_comfy::Config;
-use abnegate_comfy::host::{self, Trainer};
+use abnegate_comfy::host::{self, Compute, Trainer};
 use abnegate_comfy::lora::{self, TrainError, TrainMethod, TrainRequest, TrainSubject};
 use abnegate_exec::EnvironmentPolicy;
 use abnegate_secret::SecretValue;
@@ -407,8 +417,9 @@ async fn person(
     let request = request
         .with_subject(TrainSubject::Person)
         .with_method(TrainMethod::Finetune)
-        .with_host_field("provider", "cloud")
-        .with_host_secret("cloud.key", key);
+        .with_compute(Compute::Runpod)
+        .with_compute_key(key)
+        .with_host_field("tier", "overnight");
     let outcome = lora::train(config, String::new(), SecretValue::new(""), request).await?;
     println!("{}", outcome.path.display());
     Ok(())
@@ -434,6 +445,9 @@ temporary name, flushed, and renamed into place:
 | `data/` | host | text records, `train.jsonl` and `valid.jsonl`, laid out as `format.json` says |
 | `<filename>` | trainer | the trained weight, which the crate then publishes and removes |
 | `publish.lock` | crate | locked by whoever publishes the job, from queueing it until the weight is published; the trainer leaves it alone |
+| `claimed` | trainer or crate | empty; created exclusively by whoever moves a queued job on: the trainer before it writes `running`, or the crate before it gives up on the job |
+| `dismissed` | crate | empty; marks a finished job `host::dismiss` hid |
+| `runpod.key` | crate | the key of a `Compute::Runpod` job, one line, mode `0600`, listed in `secrets` and removed when the job ends |
 | any other file | crate | a secret from `TrainRequest::with_host_secret`, one line, mode `0600`, listed in `secrets` and removed when the job ends |
 
 Once a job has failed, or its weight is published, `dataset/`, `clips/` and
@@ -453,6 +467,9 @@ host to show until `host::remove` takes the whole job away.
 | `architecture` | the base's model family, `flux` or `sdxl`, as `<prefix>_ARCHITECTURE` names it for a training command; empty for a `video` job, whose `recipe_id` names the model it trains |
 | `checkpoint` | the base weight file to start from |
 | `base` | the base recipe id; empty for a job the crate does not publish |
+| `provider` | where the trainer runs the job, `local` or `runpod`, `Job::compute`; `local` when absent |
+| `gpu` | the GPU a remote compute runs the job on, stamped by the trainer |
+| `pod_id` | the pod a remote compute runs the job on, stamped by the trainer |
 | `status` | `queued`, `running`, `succeeded` or `failed` |
 | `filename` | the file to write the weight to, and the name it is published under |
 | `recipe_id` | the recipe that runs the published weight |
@@ -485,14 +502,20 @@ configuration.
 ### After a restart
 
 The job outlives the process that queued it. `host::current_with_progress`
-returns the latest job with its progress for a host to show, and
-`host::preview` resolves one of its samples. `host::resume` waits on a job an
+returns the latest job with its progress for a host to show, until
+`host::dismiss` hides it once it has ended and removes its secrets, and
+`host::preview` resolves one
+of its samples. `host::resume` waits on a job an
 earlier process queued and publishes it, and `host::resume_reporting` keeps
 its latest progress in a `watch` sender the way `lora::train_reporting` does;
 `host::wait` and `host::wait_reporting` wait without publishing.
 `host::recover`, called once at startup, publishes every job that succeeded
 while nobody waited, after checking its base, method, subject and weight name
-against the policy again, and removes the secrets of every job that ended.
+against the policy again, removes the secrets of every job that ended, and
+removes a job directory with no `job.json` that nobody holds, which a crash
+left between writing its secrets and queueing it;
+`host::resume` of a job that ended, and queueing a new job, remove them too, so
+a key never waits for a restart once the run waiting on its job was dropped.
 Whoever publishes a job holds its `publish.lock` and records `published` in
 `job.json` before removing the weight, so a job is published once: `recover`
 skips a job another waiter holds and one already published, and `resume` of a

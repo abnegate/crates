@@ -1,7 +1,9 @@
 use crate::config::Config;
 use crate::host::CLIPS_DIRECTORY;
+use crate::host::Compute;
 use crate::host::DATA_DIRECTORY;
 use crate::host::DATASET_DIRECTORY;
+use crate::host::DISMISSED_FILE;
 use crate::host::JOB_FILE;
 use crate::host::Job;
 use crate::host::LOCK_FILE;
@@ -29,6 +31,7 @@ const RESERVED: &[&str] = &[
     JOB_FILE,
     PROGRESS_FILE,
     LOCK_FILE,
+    DISMISSED_FILE,
     PREVIEWS_DIRECTORY,
     DATASET_DIRECTORY,
     CLIPS_DIRECTORY,
@@ -163,6 +166,22 @@ impl JobDirectory {
         self.replace(name, line.as_bytes(), PRIVATE_FILE)
     }
 
+    /// Writes `key` as the one line of `compute`'s
+    /// [key file](Compute::key_file), the way [`JobDirectory::write_secret`]
+    /// writes any secret: readable only by its owner, and never into
+    /// `job.json`. Refuses a compute that reads no key, and a blank key.
+    /// [`Job::with_compute`] lists the file so it is removed once the job
+    /// ends.
+    pub fn write_compute_key(&self, compute: Compute, key: &SecretValue) -> Result<(), TrainError> {
+        let file = compute
+            .key_file()
+            .ok_or(TrainError::Invalid("this compute reads no key"))?;
+        if key.expose().trim().is_empty() {
+            return Err(TrainError::Invalid("a compute key cannot be blank"));
+        }
+        self.write_secret(file, key)
+    }
+
     /// The preview `name` the trainer rendered under `previews/`, when it is
     /// a plain file name and the file is there.
     pub fn preview(&self, name: &str) -> Option<PathBuf> {
@@ -173,6 +192,20 @@ impl JobDirectory {
         fs::symlink_metadata(&path)
             .is_ok_and(|metadata| metadata.is_file())
             .then_some(path)
+    }
+
+    /// Whether a host has [dismissed](crate::host::dismiss) the job.
+    pub(crate) fn dismissed(&self) -> bool {
+        fs::symlink_metadata(self.path.join(DISMISSED_FILE))
+            .is_ok_and(|metadata| metadata.is_file())
+    }
+
+    /// Marks the job dismissed, once.
+    pub(crate) fn dismiss(&self) -> Result<(), TrainError> {
+        if self.dismissed() {
+            return Ok(());
+        }
+        self.replace(DISMISSED_FILE, b"", SHARED_FILE)
     }
 
     /// Creates the directory readable only by its owner, or checks that the
@@ -234,6 +267,15 @@ impl JobDirectory {
             Ok(()) => Ok(Some(file)),
             Err(TryLockError::WouldBlock) => Ok(None),
             Err(TryLockError::Error(error)) => Err(failed(error)),
+        }
+    }
+
+    /// Removes the secrets `job` lists, and every compute's key file whether
+    /// or not the list names it.
+    pub(crate) fn remove_job_secrets(&self, job: &Job) {
+        self.remove_secrets(&job.secrets);
+        for file in crate::host::KEY_FILES {
+            let _ = fs::remove_file(self.path.join(file));
         }
     }
 

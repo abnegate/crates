@@ -1,3 +1,4 @@
+use crate::host::Compute;
 use crate::host::SCHEMA_VERSION;
 use crate::host::Status;
 use crate::train::TrainProgress;
@@ -21,6 +22,9 @@ const KEYS: &[&str] = &[
     "architecture",
     "checkpoint",
     "base",
+    "provider",
+    "gpu",
+    "pod_id",
     "status",
     "filename",
     "recipe_id",
@@ -74,6 +78,17 @@ pub struct Job {
     /// publishes.
     #[serde(default)]
     pub base: String,
+    /// Where the trainer runs the job, under the `provider` key.
+    #[serde(default, rename = "provider")]
+    pub compute: Compute,
+    /// The GPU a remote compute runs the job on, which its trainer stamps
+    /// for a host to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<String>,
+    /// The pod a remote compute runs the job on, which its trainer stamps so
+    /// a trainer that restarts carries on with the same pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_id: Option<String>,
     /// Where the job stands.
     pub status: Status,
     /// The file the trainer writes the weight to inside the job directory,
@@ -137,6 +152,9 @@ impl Job {
             architecture: String::new(),
             checkpoint: checkpoint.into(),
             base: String::new(),
+            compute: Compute::Local,
+            gpu: None,
+            pod_id: None,
             status: Status::Queued,
             filename: None,
             recipe_id: String::new(),
@@ -176,6 +194,17 @@ impl Job {
         self
     }
 
+    /// Sets where the trainer runs the job, and lists the compute's
+    /// [key file](Compute::key_file) as a secret, so it is removed once the
+    /// job ends.
+    pub fn with_compute(mut self, compute: Compute) -> Self {
+        self.compute = compute;
+        match compute.key_file() {
+            Some(file) => self.with_secret(file),
+            None => self,
+        }
+    }
+
     /// Sets the file the trainer writes the weight to.
     pub fn with_filename(mut self, filename: impl Into<String>) -> Self {
         self.filename = Some(filename.into());
@@ -210,9 +239,9 @@ impl Job {
         self
     }
 
-    /// Adds a key of the host's own to `job.json`, such as the compute
-    /// provider its trainer runs on. A key `job.json` already gives a meaning
-    /// is left as it is.
+    /// Adds a key of the host's own to `job.json`, such as a setting only its
+    /// trainer reads. A key `job.json` already gives a meaning is left as it
+    /// is.
     pub fn with_field(mut self, name: impl Into<String>, value: impl Into<Value>) -> Self {
         let name = name.into();
         if !is_reserved(&name) {

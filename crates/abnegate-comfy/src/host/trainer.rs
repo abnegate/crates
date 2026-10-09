@@ -5,7 +5,7 @@ const PICKUP: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const STEPS_PER_IMAGE: u32 = 20;
 const MINIMUM_STEPS: u32 = 500;
-const MAXIMUM_STEPS: u32 = 8000;
+const MAXIMUM_STEPS: u32 = 40_000;
 const STEPS_PER_WINDOW: u32 = 20;
 const MINIMUM_VIDEO_STEPS: u32 = 150;
 const MAXIMUM_VIDEO_STEPS: u32 = 2000;
@@ -20,7 +20,8 @@ const MAXIMUM_VIDEO_STEPS: u32 = 2000;
 /// [`Config::train_command`](crate::Config::train_command) is set: every method
 /// other than a LoRA, and every SDXL base. A
 /// [`TrainMethod::Video`](crate::lora::TrainMethod::Video) adapter trains only
-/// here, whatever else is set.
+/// here, whatever else is set. It also trains every request on a
+/// [remote](crate::host::Compute::is_remote) compute, command or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Trainer {
@@ -34,7 +35,8 @@ pub struct Trainer {
     pub steps_per_image: u32,
     /// Fewest steps the trainer takes on any set, 500 by default.
     pub minimum_steps: u32,
-    /// Most steps the trainer takes on any set, 8000 by default.
+    /// Most steps the trainer takes on any set, 40,000 by default, which
+    /// keeps 20 passes over a set of up to 2,000 images.
     pub maximum_steps: u32,
     /// Training steps the trainer takes per clip window of a video adapter,
     /// 20 by default.

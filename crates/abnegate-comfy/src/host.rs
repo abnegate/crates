@@ -22,7 +22,9 @@
 //! - The weight, written by the trainer as [`Job::filename`], which
 //!   [`lora::train`](crate::lora::train) then publishes like any other.
 //! - Any secret the host wrote with [`JobDirectory::write_secret`], removed
-//!   once the job ends.
+//!   once the job ends, such as the key a remote [`Compute`] reads, written
+//!   with [`JobDirectory::write_compute_key`].
+//! - [`DISMISSED_FILE`], once a host [dismissed](dismiss) the finished job.
 //! - [`LOCK_FILE`], held by whoever publishes the job, from queueing it until
 //!   its weight is published.
 //!
@@ -31,17 +33,20 @@
 //! `progress.json` and `previews/` stay for a host to show until
 //! [`remove`] takes the job away.
 
+mod compute;
 mod job;
 mod job_directory;
 mod pending;
 mod status;
 mod trainer;
 
+pub use compute::Compute;
 pub use job::Job;
 pub use job_directory::JobDirectory;
 pub use status::Status;
 pub use trainer::Trainer;
 
+pub(crate) use compute::KEY_FILES;
 pub(crate) use job::is_reserved;
 pub(crate) use job_directory::is_secret_name;
 pub(crate) use pending::Pending;
@@ -67,6 +72,8 @@ pub const JOB_FILE: &str = "job.json";
 pub const PROGRESS_FILE: &str = "progress.json";
 /// The lock whoever publishes the job holds while it waits and publishes.
 pub const LOCK_FILE: &str = "publish.lock";
+/// The empty marker of a finished job a host no longer shows.
+pub const DISMISSED_FILE: &str = "dismissed";
 /// Samples the trainer renders while it trains.
 pub const PREVIEWS_DIRECTORY: &str = "previews";
 /// The image set and its captions and companions.
@@ -90,6 +97,7 @@ const UNPUBLISHED: &str = "a job with no base is the host's to publish";
 const PUBLISHED_OUTSIDE: &str = "a job's published weight is not a path under the models directory";
 const STILL_BUSY: &str = "a job the host trainer may still hold is not removed";
 const BEING_PUBLISHED: &str = "a job that is being waited on or published is not removed";
+const STILL_RUNNING: &str = "a training job is already running";
 
 /// The directory every job lives in under `config`.
 pub fn root(config: &Config) -> PathBuf {
@@ -110,11 +118,41 @@ pub fn current(config: &Config) -> Option<Job> {
 }
 
 /// [`current`], with its `progress.json` in [`Job::progress`], so a host that
-/// restarted mid-run still shows how far it has got.
+/// restarted mid-run still shows how far it has got. `None` once the job is
+/// [dismissed](dismiss), until another job starts.
 pub fn current_with_progress(config: &Config) -> Option<Job> {
     let mut job = current(config)?;
-    job.progress = JobDirectory::new(config, job.id).read_progress();
+    let directory = JobDirectory::new(config, job.id);
+    if directory.dismissed() {
+        return None;
+    }
+    job.progress = directory.read_progress();
     Some(job)
+}
+
+/// Hides the finished [`current`] job from [`current_with_progress`]
+/// with [`DISMISSED_FILE`] and removes the secrets it lists, leaving the rest
+/// of its directory as it is. Refuses a job still waiting for, or holding,
+/// the trainer. With no job, or one already dismissed, there is nothing to
+/// do.
+pub fn dismiss(config: &Config) -> Result<(), TrainError> {
+    let Some(job) = current(config) else {
+        return Ok(());
+    };
+    if job.busy() {
+        return Err(TrainError::Invalid(STILL_RUNNING));
+    }
+    let directory = JobDirectory::new(config, job.id);
+    directory.remove_job_secrets(&job);
+    directory.dismiss()
+}
+
+/// Removes the secrets of every job under `config` that has ended, such as
+/// one that finished after the run waiting on it was dropped.
+pub(crate) fn remove_ended_secrets(config: &Config) {
+    for job in jobs(config).into_iter().filter(|job| !job.busy()) {
+        JobDirectory::new(config, job.id).remove_job_secrets(&job);
+    }
 }
 
 /// Whether the current job is still waiting for, or holding, the trainer.
@@ -163,7 +201,9 @@ pub async fn wait_reporting(
 /// A job that names another id, has no [base](Job::base), or whose base,
 /// method, subject or weight name the policy refuses fails before any wait.
 /// While another waiter holds the job, this one waits for it to let go, then
-/// returns what it published.
+/// returns what it published. Once its `job.json` reads, names `id` and
+/// shows the job ended, the job loses its secrets, even when this then
+/// fails.
 pub async fn resume(config: &Config, id: Uuid) -> Result<PathBuf, TrainError> {
     resume_with(config, id, &Reporter::default()).await
 }
@@ -184,12 +224,15 @@ pub async fn resume_reporting(
 /// [published](Job::published) yet. A job with no base, which a host queued
 /// for a trainer of its own, is left to the host, and a job another waiter
 /// holds is left to that waiter. Every job that has ended loses its secrets,
-/// and a failed one what it trained on. Returns where each weight went, or
-/// why it could not be published.
+/// and a failed one what it trained on. A job directory with no `job.json`
+/// that nobody holds, which a crash left between writing its secrets and
+/// queueing it, is removed. Returns where each weight went, or why it could
+/// not be published.
 ///
 /// A host calls it once at startup, after a restart that may have dropped
 /// [`lora::train`](crate::lora::train) mid-run.
 pub fn recover(config: &Config) -> Vec<Result<PathBuf, TrainError>> {
+    discard_unqueued(&root(config));
     jobs(config)
         .into_iter()
         .filter(|job| !job.busy())
@@ -263,6 +306,9 @@ async fn resume_with(
     if job.id != id {
         return Err(TrainError::Invalid(ANOTHER_JOB));
     }
+    if !job.busy() {
+        directory.remove_job_secrets(&job);
+    }
     if let Some(path) = published(config, &job)? {
         return Ok(path);
     }
@@ -286,7 +332,7 @@ fn recover_job(config: &Config, id: Uuid) -> Option<Result<PathBuf, TrainError>>
         .read_job()
         .ok()
         .filter(|job| job.id == id && !job.busy())?;
-    directory.remove_secrets(&job.secrets);
+    directory.remove_job_secrets(&job);
     if job.status == Status::Failed {
         directory.prune();
         return None;
@@ -308,6 +354,28 @@ fn recover_job(config: &Config, id: Uuid) -> Option<Result<PathBuf, TrainError>>
         job,
         &Reporter::default(),
     ))
+}
+
+/// Removes every job directory under `root` that holds no `job.json` and
+/// whose lock nobody holds.
+fn discard_unqueued(root: &Path) {
+    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        let is_job = entry.file_type().is_ok_and(|kind| kind.is_dir())
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| Uuid::parse_str(name).is_ok());
+        if !is_job {
+            continue;
+        }
+        let directory = JobDirectory::at(entry.path());
+        if fs::symlink_metadata(directory.path().join(JOB_FILE)).is_ok() {
+            continue;
+        }
+        if let Ok(Some(_lock)) = directory.try_lock() {
+            let _ = directory.discard();
+        }
+    }
 }
 
 fn jobs_in(root: &Path) -> Vec<Job> {
@@ -341,7 +409,7 @@ fn another_running(directory: &JobDirectory, id: Uuid) -> bool {
 /// Ends `job` on this side: its secrets go, and so does what it trained on
 /// once it failed.
 fn ended(directory: &JobDirectory, job: &Job) {
-    directory.remove_secrets(&job.secrets);
+    directory.remove_job_secrets(job);
     if job.status == Status::Failed {
         directory.prune();
     }
@@ -445,10 +513,11 @@ mod tests {
             .with_recipe_id("sdxl")
             .with_huggingface_base("SG161222/RealVisXL_V5.0")
             .with_image_count(40)
-            .with_secret("runpod.key")
-            .with_secret("runpod.key")
-            .with_field("provider", "runpod");
+            .with_compute(Compute::Runpod)
+            .with_secret("runpod.key");
         let mut job = job;
+        job.gpu = Some("A40".into());
+        job.pod_id = Some("pod-1".into());
         job.process_id = Some(4242);
         job.published = Some("checkpoints/jerry.safetensors".into());
         let encoded = serde_json::to_value(&job).unwrap();
@@ -464,6 +533,9 @@ mod tests {
                 "architecture": "sdxl",
                 "checkpoint": "base.safetensors",
                 "base": "sdxl",
+                "provider": "runpod",
+                "gpu": "A40",
+                "pod_id": "pod-1",
                 "status": "queued",
                 "filename": "jerry.safetensors",
                 "recipe_id": "sdxl",
@@ -473,7 +545,6 @@ mod tests {
                 "started_at": encoded["started_at"],
                 "published": "checkpoints/jerry.safetensors",
                 "secrets": ["runpod.key"],
-                "provider": "runpod",
             })
         );
         assert_eq!(serde_json::from_value::<Job>(encoded).unwrap(), job);
@@ -491,6 +562,7 @@ mod tests {
                 JOB_FILE,
                 PROGRESS_FILE,
                 LOCK_FILE,
+                DISMISSED_FILE,
                 PREVIEWS_DIRECTORY,
                 DATASET_DIRECTORY,
                 REBALANCE_FILE,
@@ -504,6 +576,7 @@ mod tests {
                 "job.json",
                 "progress.json",
                 "publish.lock",
+                "dismissed",
                 "previews",
                 "dataset",
                 "rebalance.json",
@@ -540,11 +613,14 @@ mod tests {
         assert_eq!(job.status, Status::Running);
         assert_eq!(job.process_id, Some(4242));
         assert_eq!(job.error, None);
-        assert_eq!(job.fields["gpu"], "A40");
-        assert_eq!(job.fields["pod_id"], "pod-1");
+        assert_eq!(job.compute, Compute::Local);
+        assert_eq!(job.gpu.as_deref(), Some("A40"));
+        assert_eq!(job.pod_id.as_deref(), Some("pod-1"));
         assert_eq!(job.fields["step"], 120);
         let rewritten = serde_json::to_value(&job).unwrap();
+        assert_eq!(rewritten["provider"], "local");
         assert_eq!(rewritten["gpu"], "A40");
+        assert_eq!(rewritten["pod_id"], "pod-1");
         assert_eq!(rewritten["step"], 120);
         assert!(rewritten.get("progress").is_none());
     }
@@ -554,11 +630,116 @@ mod tests {
         let job = Job::new("jerry", "lora", "base.safetensors")
             .with_field("status", "succeeded")
             .with_field("hf_base", "elsewhere")
-            .with_field("provider", "local");
+            .with_field("provider", "runpod")
+            .with_field("gpu", "H100")
+            .with_field("tier", "overnight");
         assert_eq!(job.status, Status::Queued);
-        assert!(!job.fields.contains_key("status"));
-        assert!(!job.fields.contains_key("hf_base"));
-        assert_eq!(job.fields["provider"], "local");
+        assert_eq!(job.compute, Compute::Local);
+        assert_eq!(job.gpu, None);
+        for key in ["status", "hf_base", "provider", "gpu"] {
+            assert!(!job.fields.contains_key(key), "{key} became a host field");
+        }
+        assert_eq!(job.fields["tier"], "overnight");
+    }
+
+    #[test]
+    fn host_job_defaults_provider_to_local_and_round_trips_runpod_without_a_key() {
+        let job = Job::new("jerry", "lora", "base.safetensors").with_trigger("ohwx");
+        assert_eq!(job.compute, Compute::Local);
+        assert!(job.secrets.is_empty());
+        let mut value = serde_json::to_value(&job).unwrap();
+        assert_eq!(value["provider"], "local");
+        value.as_object_mut().unwrap().remove("provider");
+        let loaded: Job = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.compute, Compute::Local);
+
+        let mut runpod = Job::new("jerry", "finetune", "base.safetensors")
+            .with_trigger("ohwx")
+            .with_compute(Compute::Runpod);
+        runpod.gpu = Some("A40".into());
+        runpod.pod_id = Some("pod-1".into());
+        let encoded = serde_json::to_value(&runpod).unwrap();
+        assert_eq!(encoded["provider"], "runpod");
+        assert_eq!(encoded["gpu"], "A40");
+        assert_eq!(encoded["pod_id"], "pod-1");
+        assert_eq!(encoded["secrets"], json!(["runpod.key"]));
+        assert!(encoded.get("runpod_api_key").is_none());
+        assert!(encoded.get("api_key").is_none());
+        let loaded: Job = serde_json::from_value(encoded).unwrap();
+        assert_eq!(loaded.compute, Compute::Runpod);
+        assert_eq!(loaded.gpu.as_deref(), Some("A40"));
+        assert_eq!(loaded.pod_id.as_deref(), Some("pod-1"));
+        for (compute, name, key_file) in [
+            (Compute::Local, "local", None),
+            (Compute::Runpod, "runpod", Some("runpod.key")),
+        ] {
+            assert_eq!(serde_json::to_value(compute).unwrap(), json!(name));
+            assert_eq!(compute.as_str(), name);
+            assert_eq!(compute.key_file(), key_file);
+            assert_eq!(compute.is_remote(), key_file.is_some());
+        }
+    }
+
+    #[test]
+    fn a_job_json_zone_writes_today_still_reads_and_keeps_its_keys() {
+        let written = json!({
+            "schema_version": 1,
+            "id": "6f1c9a2e-5d4b-4c3a-9e8f-7a6b5c4d3e2f",
+            "name": "jerry",
+            "method": "finetune",
+            "subject": "person",
+            "trigger": "ohwx",
+            "checkpoint": "lustifySDXLNSFW_ggwpV7.safetensors",
+            "provider": "runpod",
+            "gpu": "A40",
+            "pod_id": "pod-1",
+            "status": "running",
+            "filename": "jerry.safetensors",
+            "recipe_id": "sdxl-people",
+            "hf_base": "SG161222/RealVisXL_V5.0",
+            "image_count": 40,
+            "step": 120,
+            "total": 8000,
+            "phase": "training",
+            "message": "Training",
+            "percent": 2,
+            "loss": 0.21,
+            "eta_seconds": 14400,
+            "pid": 4242,
+            "previews": ["previews/step-100-0.png"],
+            "started_at": "2026-10-05T01:02:03.456789Z",
+        });
+        let job: Job = serde_json::from_value(written.clone()).unwrap();
+        assert_eq!(job.id.to_string(), "6f1c9a2e-5d4b-4c3a-9e8f-7a6b5c4d3e2f");
+        assert_eq!(
+            (job.name.as_str(), job.method.as_str(), job.subject.as_str()),
+            ("jerry", "finetune", "person")
+        );
+        assert_eq!(job.trigger, "ohwx");
+        assert_eq!(job.checkpoint, "lustifySDXLNSFW_ggwpV7.safetensors");
+        assert_eq!(job.compute, Compute::Runpod);
+        assert_eq!(job.gpu.as_deref(), Some("A40"));
+        assert_eq!(job.pod_id.as_deref(), Some("pod-1"));
+        assert_eq!(job.status, Status::Running);
+        assert_eq!(job.filename.as_deref(), Some("jerry.safetensors"));
+        assert_eq!(job.recipe_id, "sdxl-people");
+        assert_eq!(job.huggingface_base, "SG161222/RealVisXL_V5.0");
+        assert_eq!(job.image_count, 40);
+        assert_eq!(job.process_id, Some(4242));
+        assert_eq!(job.base, "");
+        assert!(job.secrets.is_empty());
+        assert!(job.busy());
+
+        let rewritten = serde_json::to_value(&job).unwrap();
+        for (key, value) in written.as_object().unwrap() {
+            if key == "started_at" {
+                let started: chrono::DateTime<chrono::Utc> =
+                    serde_json::from_value(rewritten[key].clone()).unwrap();
+                assert_eq!(started, job.started_at);
+                continue;
+            }
+            assert_eq!(&rewritten[key], value, "{key} changed on a rewrite");
+        }
     }
 
     #[test]
@@ -678,8 +859,10 @@ mod tests {
         assert_eq!(trainer.steps_for(25), 500);
         assert_eq!(trainer.steps_for(26), 520);
         assert_eq!(trainer.steps_for(400), 8000);
-        assert_eq!(trainer.steps_for(500), 8000);
-        assert_eq!(trainer.steps_for(usize::MAX), 8000);
+        assert_eq!(trainer.steps_for(500), 10000);
+        assert_eq!(trainer.steps_for(2000), 40000);
+        assert_eq!(trainer.steps_for(2500), 40000);
+        assert_eq!(trainer.steps_for(usize::MAX), 40000);
         let video = Trainer::default().with_steps(20, 150, 2000);
         assert_eq!(video.steps_for(7), 150);
         assert_eq!(video.steps_for(8), 160);
@@ -784,6 +967,7 @@ mod tests {
             "JOB.JSON",
             "Progress.Json",
             "publish.lock",
+            "dismissed",
             "Jerry.SafeTensors",
             "key.TMP",
         ] {
@@ -801,6 +985,147 @@ mod tests {
             0,
             "no temporary file is left behind"
         );
+    }
+
+    #[test]
+    fn write_runpod_key_is_one_line_and_mode_600() {
+        let (_root, config) = models();
+        let directory = JobDirectory::new(&config, Uuid::new_v4());
+        directory
+            .write_compute_key(Compute::Runpod, &SecretValue::new(" rp-secret \n"))
+            .unwrap();
+        let path = directory.path().join("runpod.key");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "rp-secret\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert!(!directory.path().join(JOB_FILE).exists());
+
+        for (compute, key) in [(Compute::Local, "rp-secret"), (Compute::Runpod, " \n")] {
+            let elsewhere = JobDirectory::new(&config, Uuid::new_v4());
+            let error = elsewhere
+                .write_compute_key(compute, &SecretValue::new(key))
+                .unwrap_err();
+            assert!(matches!(error, TrainError::Invalid(_)), "{error:?}");
+            assert!(!elsewhere.path().exists(), "{compute:?} wrote a key");
+        }
+    }
+
+    #[test]
+    fn dismiss_hides_a_finished_job_and_refuses_a_running_one() {
+        let (_root, config) = models();
+        dismiss(&config).expect("with no job there is nothing to dismiss");
+        let mut job = Job::new("yvonne", "finetune", "base.safetensors").with_trigger("ohwx");
+        job.status = Status::Failed;
+        job.error = Some("cancelled".into());
+        let directory = queued(&config, &job);
+        assert_eq!(
+            current_with_progress(&config).unwrap().error.as_deref(),
+            Some("cancelled")
+        );
+
+        dismiss(&config).unwrap();
+        assert!(current_with_progress(&config).is_none());
+        assert_eq!(current(&config).unwrap().name, "yvonne");
+        assert!(directory.path().join(DISMISSED_FILE).is_file());
+        assert!(directory.path().join(JOB_FILE).is_file());
+        dismiss(&config).unwrap();
+
+        let mut running = Job::new("jerry", "lora", "base.safetensors").with_trigger("ohwx");
+        running.started_at = job.started_at + chrono::Duration::seconds(5);
+        let running_directory = queued(&config, &running);
+        let error = dismiss(&config).unwrap_err();
+        assert!(
+            matches!(error, TrainError::Invalid(message) if message == STILL_RUNNING),
+            "{error:?}"
+        );
+        assert!(!running_directory.path().join(DISMISSED_FILE).exists());
+        assert_eq!(current_with_progress(&config).unwrap().name, "jerry");
+    }
+
+    fn ended_runpod_job(config: &Config, status: Status) -> (Job, PathBuf) {
+        let mut job = Job::new("jerry", "lora", "base.safetensors").with_compute(Compute::Runpod);
+        job.status = status;
+        let directory = queued(config, &job);
+        directory
+            .write_compute_key(Compute::Runpod, &SecretValue::new("rp-secret"))
+            .unwrap();
+        (job, directory.path().join("runpod.key"))
+    }
+
+    #[test]
+    fn dismissing_a_finished_job_removes_its_key() {
+        let (_root, config) = models();
+        let (_job, key) = ended_runpod_job(&config, Status::Succeeded);
+
+        dismiss(&config).unwrap();
+
+        assert!(!key.exists(), "the key outlived its dismissed job");
+        assert!(current_with_progress(&config).is_none());
+    }
+
+    #[tokio::test]
+    async fn resuming_an_ended_job_that_cannot_publish_removes_its_key() {
+        let (_root, config) = models();
+        let (job, key) = ended_runpod_job(&config, Status::Failed);
+
+        let error = resume(&config, job.id).await.unwrap_err();
+
+        assert!(
+            matches!(error, TrainError::Invalid(message) if message == UNPUBLISHED),
+            "{error:?}"
+        );
+        assert!(!key.exists(), "the key outlived its refused job");
+    }
+
+    #[test]
+    fn a_job_that_lists_no_secrets_still_loses_its_compute_key() {
+        let (_root, config) = models();
+        let mut job = Job::new("jerry", "lora", "base.safetensors").with_compute(Compute::Runpod);
+        job.status = Status::Succeeded;
+        job.secrets.clear();
+        let directory = queued(&config, &job);
+        directory
+            .write_compute_key(Compute::Runpod, &SecretValue::new("rp-secret"))
+            .unwrap();
+
+        dismiss(&config).unwrap();
+
+        assert!(
+            !directory.path().join("runpod.key").exists(),
+            "a job.json rewritten without its secrets kept the key"
+        );
+    }
+
+    #[test]
+    fn recovery_removes_an_unqueued_job_nobody_holds() {
+        let (_root, config) = models();
+        let crashed = JobDirectory::new(&config, Uuid::new_v4());
+        crashed
+            .write_compute_key(Compute::Runpod, &SecretValue::new("rp-secret"))
+            .unwrap();
+        let staging = JobDirectory::new(&config, Uuid::new_v4());
+        staging
+            .write_compute_key(Compute::Runpod, &SecretValue::new("rp-secret"))
+            .unwrap();
+        let held = staging.try_lock().unwrap().expect("nobody holds the job");
+        let stranger = root(&config).join("not-a-job");
+        fs::create_dir_all(&stranger).unwrap();
+
+        assert!(recover(&config).is_empty());
+
+        assert!(!crashed.path().exists(), "the crashed job's key was left");
+        assert!(
+            staging.path().join("runpod.key").is_file(),
+            "a job being staged lost its key"
+        );
+        assert!(stranger.is_dir(), "a directory that is no job was removed");
+        drop(held);
     }
 
     #[cfg(unix)]

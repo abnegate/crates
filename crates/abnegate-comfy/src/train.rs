@@ -50,6 +50,7 @@ const NO_TRAINING_GRAPH: &str = "SDXL has no packaged ComfyUI training graph; tr
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const TRAIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const TRAINER_ERROR: &str = "the trainer reported an error";
+const TIMED_OUT: &str = "training timed out";
 const EXECUTION_ERROR: &str = "execution_error";
 
 /// Default `class_type` of the node that trains the adapter.
@@ -834,25 +835,17 @@ async fn wait_prompt(
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if tokio::time::Instant::now() >= deadline {
-            let cleanup = cancel_and_wait(client, config, prompt, false).await;
-            return Err(WaitFailure {
-                error: TrainError::Failed("training timed out".into()),
-                cleanup,
-            });
+            return Err(abandon(client, config, prompt, timed_out()).await);
         }
-        let history = match history(client, config, prompt, deadline).await {
-            Ok(history) => history,
-            Err(error) => {
-                let cleanup = cancel_and_wait(client, config, prompt, false).await;
-                return Err(WaitFailure { error, cleanup });
-            }
+        let history = match tokio::time::timeout_at(deadline, history(client, config, prompt)).await
+        {
+            Ok(Ok(history)) => history,
+            Ok(Err(error)) => return Err(abandon(client, config, prompt, error).await),
+            Err(_) => return Err(abandon(client, config, prompt, timed_out()).await),
         };
         let entry = match exact_history(&history, prompt) {
             Ok(entry) => entry,
-            Err(error) => {
-                let cleanup = cancel_and_wait(client, config, prompt, false).await;
-                return Err(WaitFailure { error, cleanup });
-            }
+            Err(error) => return Err(abandon(client, config, prompt, error).await),
         };
         if let Some(entry) = entry {
             match train_prompt_complete(entry) {
@@ -869,7 +862,9 @@ async fn wait_prompt(
         }
         if let Some(progress_file) = progress_file
             && progress.listening()
-            && let Some(update) = read_progress(client, config, progress_file, deadline).await
+            && let Ok(Some(update)) =
+                tokio::time::timeout_at(deadline, read_progress(client, config, progress_file))
+                    .await
         {
             progress.send(update);
         }
@@ -878,14 +873,29 @@ async fn wait_prompt(
     }
 }
 
+/// Cancels `prompt`, waits for ComfyUI to confirm it, and fails the wait
+/// with `error`.
+async fn abandon(
+    client: &reqwest::Client,
+    config: &Config,
+    prompt: Uuid,
+    error: TrainError,
+) -> WaitFailure {
+    let cleanup = cancel_and_wait(client, config, prompt, false).await;
+    WaitFailure { error, cleanup }
+}
+
+fn timed_out() -> TrainError {
+    TrainError::Failed(TIMED_OUT.into())
+}
+
 /// What the training node last wrote to `progress_file` in ComfyUI's LoRA
-/// output, read before `deadline`. `None` before it writes one, and whenever
-/// the read fails: progress never fails a run.
+/// output. `None` before it writes one, and whenever the read fails:
+/// progress never fails a run.
 async fn read_progress(
     client: &reqwest::Client,
     config: &Config,
     progress_file: &str,
-    deadline: tokio::time::Instant,
 ) -> Option<TrainProgress> {
     let response = authorize(
         config,
@@ -895,7 +905,7 @@ async fn read_progress(
                 config.base_url,
                 urlencoding::encode(progress_file)
             ))
-            .timeout(poll_timeout(deadline)),
+            .timeout(POLL_TIMEOUT),
     )
     .send()
     .await
@@ -906,17 +916,20 @@ async fn read_progress(
     TrainProgress::parse(&response.bytes().await.ok()?)
 }
 
+/// ComfyUI's history of `prompt`, in one request of at most
+/// [`POLL_TIMEOUT`]. A caller with a deadline of its own runs it under
+/// [`tokio::time::timeout_at`], so a ComfyUI too slow to answer before the
+/// deadline is reported as the deadline, not as a failed request.
 async fn history(
     client: &reqwest::Client,
     config: &Config,
     prompt: Uuid,
-    deadline: tokio::time::Instant,
 ) -> Result<Value, TrainError> {
     authorize(
         config,
         client
             .get(format!("{}/history/{prompt}", config.base_url))
-            .timeout(poll_timeout(deadline)),
+            .timeout(POLL_TIMEOUT),
     )
     .send()
     .await
@@ -926,14 +939,6 @@ async fn history(
     .json()
     .await
     .map_err(|error| TrainError::Failed(error.to_string()))
-}
-
-/// How long one poll may take: [`POLL_TIMEOUT`], or less when `deadline` is
-/// nearer.
-fn poll_timeout(deadline: tokio::time::Instant) -> Duration {
-    deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .min(POLL_TIMEOUT)
 }
 
 fn exact_history(history: &Value, prompt: Uuid) -> Result<Option<&Value>, TrainError> {
@@ -1021,7 +1026,8 @@ async fn cancel_and_wait(
         if tokio::time::Instant::now() >= deadline {
             return false;
         }
-        if let Ok(history) = history(client, config, prompt, deadline).await
+        if let Ok(Ok(history)) =
+            tokio::time::timeout_at(deadline, history(client, config, prompt)).await
             && let Ok(Some(entry)) = exact_history(&history, prompt)
             && train_prompt_terminal(entry)
         {
@@ -1257,6 +1263,9 @@ mod tests {
     use super::*;
     use crate::recipe::Recipe;
     use crate::recipe::RecipeCatalog;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -1703,22 +1712,10 @@ mod tests {
     async fn a_graph_that_never_finishes_times_out() {
         let server = MockServer::start().await;
         let prompt = Uuid::new_v4();
-        uploads(&server).await;
-        queues(&server, json!({"prompt_id": prompt, "number": 1})).await;
-        Mock::given(method("GET"))
-            .and(path(format!("/history/{prompt}")))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(
-                    json!({prompt.to_string(): {"status": {"status_str": "running"}}}),
-                ),
-            )
-            .mount(&server)
-            .await;
+        RunningUntilCancelled::mount(&server, prompt, Duration::ZERO).await;
 
-        let work = dataset();
-        let client = reqwest::Client::new();
         let failure = wait_prompt(
-            &client,
+            &reqwest::Client::new(),
             &config(&server),
             prompt,
             Duration::from_millis(120),
@@ -1728,11 +1725,89 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(&failure.error, TrainError::Failed(message) if message.contains("timed out")),
+            matches!(&failure.error, TrainError::Failed(message) if message == TIMED_OUT),
             "{}",
             failure.error
         );
-        drop(work);
+        assert!(failure.cleanup, "the timed-out graph was cancelled");
+    }
+
+    #[tokio::test]
+    async fn a_comfyui_too_slow_to_answer_still_times_out_at_the_deadline() {
+        let server = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        RunningUntilCancelled::mount(&server, prompt, Duration::from_secs(30)).await;
+
+        let failure = wait_prompt(
+            &reqwest::Client::new(),
+            &config(&server),
+            prompt,
+            Duration::from_millis(200),
+            None,
+            &Reporter::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&failure.error, TrainError::Failed(message) if message == TIMED_OUT),
+            "{}",
+            failure.error
+        );
+        assert!(failure.cleanup, "the timed-out graph was cancelled");
+    }
+
+    /// A ComfyUI whose prompt runs, answering each history poll after
+    /// `delay`, until it is cancelled, then reports it ended in an error.
+    #[derive(Clone)]
+    struct RunningUntilCancelled {
+        prompt: Uuid,
+        delay: Duration,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    impl RunningUntilCancelled {
+        async fn mount(server: &MockServer, prompt: Uuid, delay: Duration) {
+            let running = Self {
+                prompt,
+                delay,
+                cancelled: Arc::default(),
+            };
+            Mock::given(method("GET"))
+                .and(path(format!("/history/{prompt}")))
+                .respond_with(running.clone())
+                .mount(server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!("/api/jobs/{prompt}/cancel")))
+                .respond_with(Cancel(running.cancelled))
+                .mount(server)
+                .await;
+        }
+    }
+
+    impl wiremock::Respond for RunningUntilCancelled {
+        fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+            if self.cancelled.load(Ordering::SeqCst) {
+                return ResponseTemplate::new(200).set_body_json(json!({
+                    self.prompt.to_string(): {"status": {"status_str": "error"}}
+                }));
+            }
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    self.prompt.to_string(): {"status": {"status_str": "running"}}
+                }))
+                .set_delay(self.delay)
+        }
+    }
+
+    /// ComfyUI's cancel endpoint, which marks the prompt cancelled.
+    struct Cancel(Arc<AtomicBool>);
+
+    impl wiremock::Respond for Cancel {
+        fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+            self.0.store(true, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({"cancelled": true}))
+        }
     }
 
     #[tokio::test]
