@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['abnegate-*-v*']
+    tags: ['abnegate-*/v*']
   pull_request:
   workflow_dispatch:
 

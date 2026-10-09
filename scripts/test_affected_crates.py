@@ -162,21 +162,21 @@ class TagTest(unittest.TestCase):
         return sorted(affected_crates.select_by_tag(workspace(), tag).packages)
 
     def test_a_tag_selects_its_crate_and_dependents(self) -> None:
-        self.assertEqual(self.select('abnegate-exec-v0.1.0'), ['abnegate-agent', 'abnegate-agent-cli', 'abnegate-exec'])
+        self.assertEqual(self.select('abnegate-exec/v0.1.0'), ['abnegate-agent', 'abnegate-agent-cli', 'abnegate-exec'])
 
     def test_a_hyphenated_crate_is_named_up_to_its_version(self) -> None:
-        self.assertEqual(self.select('abnegate-agent-cli-v1.20.3'), ['abnegate-agent', 'abnegate-agent-cli'])
+        self.assertEqual(self.select('abnegate-agent-cli/v1.20.3'), ['abnegate-agent', 'abnegate-agent-cli'])
 
     def test_a_crate_whose_name_holds_a_v_is_named_in_full(self) -> None:
-        self.assertEqual(self.select('abnegate-vision-v0.2.0-rc.1'), ['abnegate-comfy', 'abnegate-vision'])
+        self.assertEqual(self.select('abnegate-vision/v0.2.0-rc.1'), ['abnegate-comfy', 'abnegate-vision'])
 
     def test_a_tag_for_no_workspace_crate_is_refused(self) -> None:
         with self.assertRaisesRegex(affected_crates.SelectionError, 'not a workspace package'):
-            self.select('serde-v1.0.0')
+            self.select('serde/v1.0.0')
 
     def test_a_tag_without_a_version_is_refused(self) -> None:
-        for tag in ('abnegate-exec', 'abnegate-exec-v', 'abnegate-exec-vnext', 'v0.1.0'):
-            with self.subTest(tag=tag), self.assertRaisesRegex(affected_crates.SelectionError, 'not <package>-v<version>'):
+        for tag in ('abnegate-exec', 'abnegate-exec/v', 'abnegate-exec/vnext', 'v0.1.0', 'abnegate-exec-v0.1.0'):
+            with self.subTest(tag=tag), self.assertRaisesRegex(affected_crates.SelectionError, r'not <package>/v<version>'):
                 self.select(tag)
 
 
@@ -299,7 +299,7 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(self.selected('--all'), ['base', 'leaf', 'other'])
 
     def test_a_tag_selects_its_crate_and_dependents(self) -> None:
-        self.assertEqual(self.selected('--tag', 'base-v0.1.0'), ['base', 'leaf'])
+        self.assertEqual(self.selected('--tag', 'base/v0.1.0'), ['base', 'leaf'])
 
     def test_an_unknown_commit_is_an_error(self) -> None:
         status, _, errors = self.run_script('--base', 'does-not-exist')

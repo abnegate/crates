@@ -7,7 +7,7 @@ such as the root README, affects none. Every crate that depends on an affected
 crate, directly or transitively, through a normal, dev or build dependency,
 optional or not, is affected too.
 
-A release tag, `<package>-v<version>`, affects that package and its dependents.
+A release tag, `<package>/v<version>`, affects that package and its dependents.
 
 Each result is printed as a GitHub Actions output, `name=value`:
 
@@ -49,7 +49,7 @@ MINIMUM_PYTHON = (3, 9)
 CRATES = 'crates/'
 PACKAGE = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*')
 SANDBOXED = 'abnegate-exec'
-TAG = re.compile(r'(?P<package>.+)-v(?P<version>\d+\.\d+\.\d+\S*)')
+TAG = re.compile(r'(?P<package>.+)/v(?P<version>\d+\.\d+\.\d+\S*)')
 WORKSPACE_FILES = frozenset({
     'Cargo.lock',
     'Cargo.toml',
@@ -168,7 +168,7 @@ def select_by_files(workspace: Workspace, files: Iterable[str]) -> Selection:
 def select_by_tag(workspace: Workspace, tag: str) -> Selection:
     match = TAG.fullmatch(tag)
     if match is None:
-        raise SelectionError(f'the tag {tag} is not <package>-v<version>')
+        raise SelectionError(f'the tag {tag} is not <package>/v<version>')
     package = match['package']
     if package not in workspace.names:
         raise SelectionError(f'the tag {tag} names {package}, which is not a workspace package')
@@ -212,7 +212,7 @@ def run() -> Exit:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--all', action='store_true', help='select every crate')
-    source.add_argument('--tag', help='select the crate a release tag names, such as abnegate-exec-v0.1.0')
+    source.add_argument('--tag', help='select the crate a release tag names, such as abnegate-exec/v0.1.0')
     source.add_argument('--base', help='select the crates changed since the merge base of this commit and --head')
     parser.add_argument('--head', default='HEAD', help='the commit compared with --base (default: HEAD)')
     arguments = parser.parse_args()
