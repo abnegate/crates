@@ -142,13 +142,14 @@ pub struct Config {
     pub workflow_path: Option<PathBuf>,
     /// Image checkpoint, or a LoRA whose sidecar names its base.
     pub checkpoint: String,
-    /// `None` uses the packaged text-to-video graph.
+    /// `None` uses the packaged Wan 2.2 A14B text-to-video graph.
     pub video_workflow_path: Option<PathBuf>,
-    /// Diffusion model the video graphs load.
+    /// Wan 2.2 A14B noise expert the video graphs load, paired with its
+    /// other expert; the high-noise text-to-video expert unless set.
     pub video_unet: String,
     /// Text encoder the video graphs load.
     pub video_clip: String,
-    /// VAE the video graphs load.
+    /// VAE the video graphs load, the Wan 2.1 VAE unless set.
     pub video_vae: String,
     /// `None` uses the packaged text-to-audio graph.
     pub audio_workflow_path: Option<PathBuf>,
@@ -251,9 +252,9 @@ impl Default for Config {
             workflow_path: None,
             checkpoint: "flux1-schnell-fp8.safetensors".to_string(),
             video_workflow_path: None,
-            video_unet: "wan2.2_ti2v_5B_fp16.safetensors".to_string(),
+            video_unet: "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors".to_string(),
             video_clip: "umt5_xxl_fp8_e4m3fn_scaled.safetensors".to_string(),
-            video_vae: "wan2.2_vae.safetensors".to_string(),
+            video_vae: "wan_2.1_vae.safetensors".to_string(),
             audio_workflow_path: None,
             audio_checkpoint: "ace_step_v1_3.5b.safetensors".to_string(),
             upscale_workflow_path: None,
@@ -453,7 +454,7 @@ impl Config {
             checkpoint: text(environment("COMFYUI_CHECKPOINT")).unwrap_or(defaults.checkpoint),
             video_workflow_path: Some(workflow(
                 environment("COMFYUI_VIDEO_WORKFLOW_PATH"),
-                "wan2.2-ti2v-5b-api.json",
+                "wan2.2-a14b-t2v-api.json",
             )),
             video_unet: text(environment("COMFYUI_VIDEO_UNET")).unwrap_or(defaults.video_unet),
             video_clip: text(environment("COMFYUI_VIDEO_CLIP")).unwrap_or(defaults.video_clip),
@@ -598,7 +599,7 @@ mod tests {
         let read = configured(&[]);
         for (path, graph) in [
             (&read.workflow_path, "flux1-schnell-fp8-api.json"),
-            (&read.video_workflow_path, "wan2.2-ti2v-5b-api.json"),
+            (&read.video_workflow_path, "wan2.2-a14b-t2v-api.json"),
             (&read.audio_workflow_path, "ace-step-v1-3.5b-api.json"),
             (&read.upscale_workflow_path, "upscale-image-api.json"),
         ] {
@@ -606,6 +607,17 @@ mod tests {
                 path,
                 &Some(PathBuf::from("./comfyui/workflows").join(graph))
             );
+        }
+    }
+
+    #[test]
+    fn video_defaults_name_the_wan_22_a14b_experts() {
+        for config in [Config::default(), configured(&[])] {
+            assert_eq!(
+                config.video_unet,
+                "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"
+            );
+            assert_eq!(config.video_vae, "wan_2.1_vae.safetensors");
         }
     }
 

@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Client::generate_video` and the `build_wan_*` builders run Wan 2.2 A14B, a high-noise and a low-noise 14B expert, from the packaged `wan2.2-a14b-t2v-api.json` and `wan2.2-a14b-i2v-api.json`, in place of TI2V 5B, whose graphs are no longer packaged. `Config::video_unet` defaults to `wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors` and is paired with its other expert; a name that is not a Wan 2.2 noise expert, such as the 5B one, loads the packaged pair. `Config::video_vae` defaults to `wan_2.1_vae.safetensors`, and the 5B `wan2.2_vae.safetensors` maps to it. `COMFYUI_VIDEO_WORKFLOW_PATH` defaults to `./comfyui/workflows/wan2.2-a14b-t2v-api.json`, and a leftover `wan2.2-ti2v-5b-api.json` path loads the A14B graph beside it
+- A configured video graph that cannot be read or breaks the A14B contract fails the request instead of falling back to the packaged one, and only the graph a request uses is read, before its source is uploaded
 - `Config::video_generation_timeout` defaults to two hours (was ten minutes) and `COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS` accepts up to four hours (was one), the time a Wan 2.2 A14B clip can take
 
 ### Removed

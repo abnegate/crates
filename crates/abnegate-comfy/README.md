@@ -281,6 +281,40 @@ cuts short, keeps the unrefined image, and no refine starts with less than one
 cancellation fails the call. The pose and face images are read without
 following a link or waiting on a pipe, up to the source-image limit.
 
+## Generating video
+
+`Client::generate_video` runs Wan 2.2 A14B: a high-noise 14B expert samples
+the first half of the steps and a low-noise one the rest, at 1280×704, 81
+frames, 16 frames a second. The packaged graphs are
+`wan2.2-a14b-t2v-api.json` and `wan2.2-a14b-i2v-api.json`;
+`Config::video_workflow_path` replaces the text-to-video one when it keeps the
+A14B contract (UNet loaders at nodes 1 and 12, `KSamplerAdvanced` at 8 and
+14, `EmptyHunyuanLatentVideo` at 7, `SaveWEBM` at 10), and an image-to-video
+graph of that name beside it, with `WanImageToVideo` at 7 and `LoadImage` at
+11, replaces the other. A configured graph that cannot be read or breaks the
+contract fails the request; only the graph a request uses is read, before
+anything is uploaded. A leftover `wan2.2-ti2v-5b-api.json` path loads the
+A14B graph beside it, or the packaged one.
+
+`Config::video_unet` names either expert of a pair, such as
+`wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors`, the default; the other
+expert, and the image-to-video pair, are derived from its name in its own
+casing. A name that is not a Wan 2.2 noise expert with a `t2v` or `i2v` mode,
+such as the 5B `wan2.2_ti2v_5B_fp16.safetensors`, loads the packaged pair,
+and the 5B `wan2.2_vae.safetensors` loads `wan_2.1_vae.safetensors`, the VAE
+the experts decode with.
+
+A clip can take hours, so `Config::video_generation_timeout` is two hours
+unless set and at most four. Every generation rides out a failing ComfyUI: a
+history poll or output download that gets no answer, or a 5xx, 408 or 429, is
+retried until such failures have lasted `Config::outage_window`, two minutes;
+while history stays empty, the queue is asked every
+`Config::queue_check_interval`, thirty seconds, whether it still holds the
+prompt, and a prompt ComfyUI lost to a restart fails. Each download may take
+the larger of the request timeout and five minutes. Any failure after
+ComfyUI accepted a prompt deletes it from the queue, and history is cleared
+only once the outputs landed.
+
 ## Watching a run
 
 `lora::train_reporting` is `lora::train` with a `tokio::sync::watch` channel
