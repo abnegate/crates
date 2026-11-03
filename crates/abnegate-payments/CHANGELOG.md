@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-payments/v0.1.1...abnegate-payments/v0.1.2) - 2026-11-03
+
+### Other
+
+- *(release)* nest git tags as crate/vversion ([#15](https://github.com/abnegate/crates/pull/15))
+
 ## [0.1.1](https://github.com/abnegate/crates/compare/abnegate-payments/v0.1.0...abnegate-payments/v0.1.1) - 2026-10-09
 
 ### Other
