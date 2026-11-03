@@ -72,7 +72,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "claude: agent command timed out after 5s"
+            "claude: agent command timed out after 5 seconds"
         );
         assert_eq!(error.log.as_ref(), Some(&log));
         assert!(matches!(

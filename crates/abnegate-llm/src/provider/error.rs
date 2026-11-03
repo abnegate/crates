@@ -72,9 +72,9 @@ pub enum ProviderError {
     },
 
     /// The agent command ran past its deadline and was stopped. The deadline
-    /// renders in [`Duration`]'s `Debug` form, so 1,500 ms reads `1.5s` and
-    /// 500 ms reads `500ms`.
-    #[error("{provider}: agent command timed out after {timeout:?}")]
+    /// renders in seconds, keeping any fraction, so 1,800 s reads
+    /// `1800 seconds` and 500 ms reads `0.5 seconds`.
+    #[error("{provider}: agent command timed out after {}", in_seconds(.timeout))]
     #[non_exhaustive]
     Timeout {
         /// The provider that failed.
@@ -188,6 +188,13 @@ const REJECTED: [u16; 4] = [400, 404, 413, 422];
 const REQUEST_TIMEOUT: u16 = 408;
 pub(crate) const TOO_MANY_REQUESTS: u16 = 429;
 const FIRST_SERVER_ERROR: u16 = 500;
+
+fn in_seconds(duration: &Duration) -> String {
+    if *duration == Duration::from_secs(1) {
+        return "1 second".to_string();
+    }
+    format!("{} seconds", duration.as_secs_f64())
+}
 
 fn transient_status(status: u16) -> bool {
     status == REQUEST_TIMEOUT || status == TOO_MANY_REQUESTS || status >= FIRST_SERVER_ERROR
@@ -577,15 +584,23 @@ mod tests {
         for (timeout, rendered) in [
             (
                 Duration::from_millis(1_500),
-                "claude: agent command timed out after 1.5s",
+                "claude: agent command timed out after 1.5 seconds",
             ),
             (
                 Duration::from_millis(500),
-                "claude: agent command timed out after 500ms",
+                "claude: agent command timed out after 0.5 seconds",
             ),
             (
-                Duration::from_secs(600),
-                "claude: agent command timed out after 600s",
+                Duration::ZERO,
+                "claude: agent command timed out after 0 seconds",
+            ),
+            (
+                Duration::from_secs(1),
+                "claude: agent command timed out after 1 second",
+            ),
+            (
+                Duration::from_secs(1_800),
+                "claude: agent command timed out after 1800 seconds",
             ),
         ] {
             let error = ProviderError::timeout("claude", timeout);

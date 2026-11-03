@@ -1128,7 +1128,7 @@ mod tests {
             "{error:?}"
         );
         assert!(
-            error.to_string().ends_with("timed out after 300ms"),
+            error.to_string().ends_with("timed out after 0.3 seconds"),
             "{error}"
         );
         assert!(started.elapsed() < Duration::from_secs(5));
