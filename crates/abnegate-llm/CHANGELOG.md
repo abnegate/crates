@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.7...abnegate-llm/v0.1.8) - 2026-11-03
+
+### Added
+
+- *(llm)* so a host can offer xhigh, max and ultra reasoning without a copy of its own
+
+### Fixed
+
+- *(llm)* so an agent timeout reads "1800 seconds", not "1800s"
+- *(llm)* so a window equals itself after a trip through JSON
+
 ## [0.1.7](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.6...abnegate-llm/v0.1.7) - 2026-11-03
 
 ### Added
