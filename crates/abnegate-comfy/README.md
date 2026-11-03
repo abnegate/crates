@@ -236,10 +236,11 @@ the only caption of any image the model does not answer for. Each request gets
 set and at most an hour, as the completion client's whole deadline, so no
 client default cuts it short. A host whose other completions wait half an hour
 for a model on a CPU or a cold cache gives its captioner the same with
-`Config::with_caption_timeout`. The first request that times out or cannot
-reach the endpoint is the last one sent, and every shot not yet described
-keeps the trigger, so a dead endpoint costs one `Config::caption_timeout`
-however many shots the set holds. Captioning comes before the trainer starts,
+`Config::with_caption_timeout`. Captioning stops at the first request that
+cannot reach the endpoint, or at the second in a row that times out, since the
+first may only have waited out a cold model's load. Every shot not yet
+described keeps the trigger, so a dead endpoint costs at most two
+`Config::caption_timeout`s however many shots the set holds. Captioning comes before the trainer starts,
 one shot at a time, so it is not part of `Config::train_timeout`.
 
 ## Training a person

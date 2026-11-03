@@ -31,6 +31,9 @@ use crate::dataset::pose_word;
 const SUBJECT_TOKENS: u32 = 40;
 const DESCRIPTION_TOKENS: u32 = 80;
 const MAXIMUM_CAPTION_WORDS: usize = 24;
+/// Timeouts in a row after which the endpoint is taken for dead. One is not
+/// enough: the first request to a cold model can wait out its whole load.
+const TIMEOUTS_BEFORE_GIVING_UP: u32 = 2;
 /// A word in at least this share of the descriptions is invariant, so it is identity.
 /// Set low on purpose: leaking identity costs more than dropping a little context.
 const INVARIANT_SHARE: f32 = 0.34;
@@ -126,10 +129,11 @@ impl Captioner {
     /// done before the first is sent to the vision model, then after each.
     /// Never called when there is nothing to caption.
     ///
-    /// The first request that times out or cannot reach the endpoint is the
-    /// last one sent: every shot not yet described keeps the trigger as its
-    /// only caption, so a dead endpoint costs one
-    /// [`Config::caption_timeout`] rather than one per shot.
+    /// Captioning stops at the first request that cannot reach the endpoint,
+    /// or at the second in a row that times out, since the first may only
+    /// have waited out a cold model's load. Every shot not yet described
+    /// keeps the trigger as its only caption, so a dead endpoint costs at
+    /// most two [`Config::caption_timeout`]s rather than one per shot.
     pub async fn fill_with_progress(
         &self,
         drafts: &mut [Draft],
@@ -146,8 +150,8 @@ impl Captioner {
             .collect::<HashSet<usize>>()
             .len();
         progress(0, blank);
-        let mut reachable = true;
-        let subject = answered(self.subject(&drafts[0].image).await, &mut reachable);
+        let mut strikes = 0;
+        let subject = answered(self.subject(&drafts[0].image).await, &mut strikes);
         let mut shots: Vec<usize> = Vec::new();
         let mut described: Vec<Option<String>> = Vec::new();
         for draft in drafts.iter() {
@@ -155,10 +159,10 @@ impl Captioner {
                 continue;
             }
             shots.push(draft.group);
-            let description = if reachable {
+            let description = if strikes < TIMEOUTS_BEFORE_GIVING_UP {
                 answered(
                     self.describe(&draft.image, subject.as_deref()).await,
-                    &mut reachable,
+                    &mut strikes,
                 )
             } else {
                 None
@@ -242,18 +246,28 @@ impl Captioner {
     }
 }
 
-/// The answer to one caption request, or none when it failed. A request that
-/// timed out or never reached the endpoint clears `reachable`, so no further
-/// request waits out the same dead endpoint; any other failure is that
-/// image's alone.
-fn answered(result: Result<Option<String>, Error>, reachable: &mut bool) -> Option<String> {
-    result.unwrap_or_else(|error| {
-        if matches!(error, Error::Timeout(_) | Error::Http(_)) {
-            tracing::warn!(%error, "the caption endpoint did not answer; the remaining shots keep the trigger");
-            *reachable = false;
+/// The answer to one caption request, or none when it failed, counting in
+/// `strikes` the timeouts in a row. A request that never reached the endpoint
+/// uses up every strike at once, so no further request is sent to it. Any
+/// answer from the endpoint, a refusal included, ends the run of timeouts,
+/// since a refusal is that image's alone.
+fn answered(result: Result<Option<String>, Error>, strikes: &mut u32) -> Option<String> {
+    let error = match result {
+        Ok(answer) => {
+            *strikes = 0;
+            return answer;
         }
-        None
-    })
+        Err(error) => error,
+    };
+    *strikes = match error {
+        Error::Timeout(_) => *strikes + 1,
+        Error::Http(_) => TIMEOUTS_BEFORE_GIVING_UP,
+        _ => 0,
+    };
+    if *strikes >= TIMEOUTS_BEFORE_GIVING_UP {
+        tracing::warn!(%error, "the caption endpoint did not answer; the remaining shots keep the trigger");
+    }
+    None
 }
 
 /// Words that identify the subject rather than the shot.
@@ -749,7 +763,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_endpoint_that_times_out_is_asked_once_and_every_shot_keeps_the_trigger() {
+    async fn an_endpoint_that_times_out_is_asked_twice_and_every_shot_keeps_the_trigger() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(
@@ -757,7 +771,7 @@ mod tests {
                     .set_body_json(answer("three-quarter view, standing on concrete"))
                     .set_delay(Duration::from_secs(2)),
             )
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
         let config = config("vision").with_caption_timeout(Duration::from_millis(200));
@@ -782,6 +796,84 @@ mod tests {
             ticks,
             vec![(0, 3), (1, 3), (2, 3), (3, 3)],
             "progress still reaches every blank shot"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_timeout_while_the_model_loads_does_not_end_captioning() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(answer("a teapot robot"))
+                    .set_delay(Duration::from_secs(2)),
+            )
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        for (image, description) in [
+            ("base64,aaa", "three-quarter view, standing on concrete"),
+            ("base64,bbb", "close-up, sitting on a wooden stool"),
+        ] {
+            Mock::given(method("POST"))
+                .and(body_string_contains("Write a short caption"))
+                .and(body_string_contains(image))
+                .respond_with(ResponseTemplate::new(200).set_body_json(answer(description)))
+                .mount(&server)
+                .await;
+        }
+        let config = config("vision").with_caption_timeout(Duration::from_millis(200));
+        let captioner = Captioner::new(&config, server.uri(), "key".into());
+        let mut images = vec![
+            Draft::new("a.png", "aaa", "", 0),
+            Draft::new("b.png", "bbb", "", 1),
+        ];
+        captioner.fill(&mut images, "zrkxyz").await;
+
+        assert_eq!(
+            images[0].caption, "zrkxyz, three-quarter view, standing on concrete",
+            "the subject request timing out while the model loads must not end captioning"
+        );
+        assert_eq!(
+            images[1].caption,
+            "zrkxyz, close-up, sitting on a wooden stool"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_that_drops_the_connection_is_asked_once() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&accepted);
+        let dropping = tokio::spawn(async move {
+            while let Ok((connection, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                drop(connection);
+            }
+        });
+        let captioner =
+            Captioner::new(&config("vision"), format!("http://{address}"), "key".into());
+        let mut images = vec![
+            Draft::new("a.png", "aaa", "", 0),
+            Draft::new("b.png", "bbb", "", 1),
+            Draft::new("c.png", "ccc", "", 2),
+        ];
+        captioner.fill(&mut images, "zrkxyz").await;
+        dropping.abort();
+
+        for draft in &images {
+            assert_eq!(draft.caption, "zrkxyz");
+        }
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            1,
+            "a connection the endpoint drops is not tried again for every shot"
         );
     }
 

@@ -169,10 +169,10 @@ pub struct Config {
     /// Vision model that captions LoRA training images. Empty disables captioning.
     pub caption_model: String,
     /// Ceiling on one caption request, at most an hour. It is the completion
-    /// client's whole deadline, so a caption gets all of it. The first
-    /// request that times out or cannot reach the endpoint ends captioning,
-    /// so a dead endpoint costs a training run one of these, however many
-    /// shots it holds.
+    /// client's whole deadline, so a caption gets all of it. Captioning ends
+    /// at the first request that cannot reach the endpoint or the second in
+    /// a row that times out, so a dead endpoint costs a training run at most
+    /// two of these, however many shots it holds.
     pub caption_timeout: Duration,
     /// Ceiling on any one HTTP request, at most ten minutes. Generation and
     /// training are bounded by their own deadlines, not by this.
