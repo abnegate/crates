@@ -217,6 +217,12 @@ impl JobDirectory {
         }
     }
 
+    /// Lets the job's [claim](CLAIM_FILE) go, for a claimer that could not
+    /// act on it.
+    pub(crate) fn release_claim(&self) {
+        let _ = fs::remove_file(self.path.join(CLAIM_FILE));
+    }
+
     /// Marks the job dismissed, once.
     pub(crate) fn dismiss(&self) -> Result<(), TrainError> {
         if self.dismissed() {

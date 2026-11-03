@@ -475,11 +475,23 @@ pub(crate) async fn wait_with(
 
 /// Marks the job failed when it is still queued and this waiter wins its
 /// [claim](CLAIM_FILE), and returns it when the mark held. A trainer that
-/// claimed the job first keeps it, even before it writes `running`.
+/// claimed the job first keeps it, even before it writes `running`. A
+/// give-up that fails once the claim is won lets the claim go again, so
+/// the job is not left queued with no one able to take it.
 fn give_up(directory: &JobDirectory) -> Result<Option<Job>, TrainError> {
     if directory.read_job()?.status != Status::Queued || !directory.claim()? {
         return Ok(None);
     }
+    let marked = mark_not_picked_up(directory);
+    if marked.is_err() {
+        directory.release_claim();
+    }
+    marked
+}
+
+/// Marks the claimed job failed when it is still queued, and returns it when
+/// the mark held.
+fn mark_not_picked_up(directory: &JobDirectory) -> Result<Option<Job>, TrainError> {
     let mut job = directory.read_job()?;
     if job.status != Status::Queued {
         return Ok(None);
@@ -1268,6 +1280,23 @@ mod tests {
 
         assert_eq!(give_up(&directory).unwrap(), None);
         assert_eq!(directory.read_job().unwrap().status, Status::Running);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_waiter_that_cannot_mark_the_job_failed_leaves_it_for_the_trainer_to_claim() {
+        let (root, config) = models();
+        let job = Job::new("jerry", "lora", "base.safetensors");
+        let real = queued(&config, &job);
+        let linked = root.path().join("linked");
+        std::os::unix::fs::symlink(real.path(), &linked).unwrap();
+
+        assert!(give_up(&JobDirectory::at(linked)).is_err());
+        assert_eq!(real.read_job().unwrap().status, Status::Queued);
+        assert!(
+            real.claim().unwrap(),
+            "a failed give-up kept the claim, so no trainer can start the job"
+        );
     }
 
     #[tokio::test]
