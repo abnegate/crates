@@ -727,6 +727,7 @@ mod tests {
             .await
             .expect("the leader exit never resolved")
             .unwrap();
+        let refused = group.send(Signal::SIGKILL);
 
         let killed = group.kill_until_gone().await;
         let signalled = [group.kill(), group.interrupt(), group.terminate()];
@@ -734,6 +735,11 @@ mod tests {
         drop(exiting);
         group.release();
         let status = leader.wait().expect("the leader is reaped");
+        assert_eq!(
+            refused,
+            Err(Errno::EPERM),
+            "the kernel did not refuse a group left with only its exiting member and zombie leader"
+        );
         assert!(killed.is_ok(), "{killed:?}");
         assert!(signalled.iter().all(Result::is_ok), "{signalled:?}");
         assert_eq!(status.code(), Some(3));
