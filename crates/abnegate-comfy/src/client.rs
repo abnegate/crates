@@ -8,6 +8,7 @@ mod plan;
 mod prepared;
 #[cfg(test)]
 mod probe;
+mod queue;
 mod source_image;
 mod source_video;
 
@@ -20,6 +21,7 @@ pub use source_video::SourceVideo;
 
 use plan::Plan;
 use prepared::Prepared;
+use queue::Queue;
 
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
@@ -30,6 +32,7 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -66,6 +69,10 @@ const PACKAGED_AUDIO_WORKFLOW: &str =
 const PACKAGED_UPSCALE_WORKFLOW: &str = include_str!("../comfyui/workflows/upscale-image-api.json");
 const PACKAGED_UPSCALE_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/upscale-video-api.json");
+/// Floor on one output download: a finished clip can outlast the request
+/// timeout on its way back.
+const DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(300);
+const LOST_PROMPT: &str = "it no longer has the prompt, most likely because it restarted";
 
 /// Runs generation and upscaling workflows on one ComfyUI server.
 ///
@@ -1052,6 +1059,8 @@ impl Client {
         let _ = progress.send(collection.queued.to_string());
 
         let mut announced_generation = false;
+        let mut failing_since = None;
+        let mut queue_checked = tokio::time::Instant::now();
         loop {
             tokio::select! {
                 biased;
@@ -1068,21 +1077,46 @@ impl Client {
                         let _ = progress.send(collection.generating.to_string());
                         announced_generation = true;
                     }
-                    match self.history_outputs(&prompt_id, cancel, deadline, collection).await {
+                    let polled = match self
+                        .history_outputs(&prompt_id, cancel, deadline, collection)
+                        .await
+                    {
+                        Ok(None) if queue_checked.elapsed() >= self.config.queue_check_interval => {
+                            queue_checked = tokio::time::Instant::now();
+                            self.confirm_queued(&prompt_id, cancel, deadline, collection)
+                                .await
+                        }
+                        polled => polled,
+                    };
+                    match polled {
                         Ok(Some(outputs)) => {
                             let _ = progress.send(collection.saving.to_string());
                             let result = self.fetch_outputs(outputs, cancel, deadline).await;
-                            self.clear_history(&prompt_id).await;
-                            if matches!(result, Err(Error::Cancelled | Error::Timeout)) {
-                                self.cancel(&prompt_id).await;
+                            match &result {
+                                Ok(_) => self.clear_history(&prompt_id).await,
+                                Err(_) => self.cancel(&prompt_id).await,
                             }
                             return result;
                         }
-                        Ok(None) => {}
-                        Err(error) => {
-                            if matches!(error, Error::Cancelled | Error::Timeout) {
+                        Ok(None) => failing_since = None,
+                        Err(Error::Http(error)) if is_transient(&error) => {
+                            if self.outage_outlasted(&mut failing_since) {
+                                tracing::warn!(
+                                    prompt_id = %prompt_id,
+                                    error = %error,
+                                    "ComfyUI kept failing; giving up on the prompt"
+                                );
                                 self.cancel(&prompt_id).await;
+                                return Err(Error::Http(error));
                             }
+                            tracing::warn!(
+                                prompt_id = %prompt_id,
+                                error = %error,
+                                "ComfyUI history poll failed; polling again"
+                            );
+                        }
+                        Err(error) => {
+                            self.cancel(&prompt_id).await;
                             return Err(error);
                         }
                     }
@@ -1199,6 +1233,52 @@ impl Client {
         )
     }
 
+    /// What an empty history means: `None` while ComfyUI still queues
+    /// `prompt_id`, its outputs when it finished between the two reads, and
+    /// [`LOST_PROMPT`] when ComfyUI has neither.
+    async fn confirm_queued(
+        &self,
+        prompt_id: &str,
+        cancel: &mut broadcast::Receiver<()>,
+        deadline: tokio::time::Instant,
+        collection: Collection<'_>,
+    ) -> Result<Option<Vec<OutputImage>>, Error> {
+        let request = self.authorize(self.client.get(format!("{}/queue", self.config.base_url)));
+        let queue = self
+            .bounded(cancel, deadline, async move {
+                request
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<Queue>()
+                    .await
+            })
+            .await?;
+        if queue.holds(prompt_id) {
+            return Ok(None);
+        }
+        match self
+            .history_outputs(prompt_id, cancel, deadline, collection)
+            .await?
+        {
+            Some(outputs) => Ok(Some(outputs)),
+            None => Err(Error::InvalidResponse(LOST_PROMPT)),
+        }
+    }
+
+    /// Whether the run of failures that began at `failing_since`, now when
+    /// this is its first, has outlasted [`Config::outage_window`].
+    fn outage_outlasted(&self, failing_since: &mut Option<tokio::time::Instant>) -> bool {
+        let since = *failing_since.get_or_insert_with(tokio::time::Instant::now);
+        since.elapsed() >= self.config.outage_window
+    }
+
+    fn download_timeout(&self, deadline: tokio::time::Instant) -> Duration {
+        crate::http::request_timeout(&self.config)
+            .max(DOWNLOAD_ATTEMPT_TIMEOUT)
+            .min(deadline.saturating_duration_since(tokio::time::Instant::now()))
+    }
+
     async fn fetch_outputs(
         &self,
         outputs: Vec<OutputImage>,
@@ -1207,16 +1287,38 @@ impl Client {
     ) -> Result<Vec<GeneratedImage>, Error> {
         let mut generated = Vec::with_capacity(outputs.len());
         for output in outputs {
-            let filename = output.filename.clone();
-            let url = format!(
-                "{}/view?filename={}&subfolder={}&type={}",
-                self.config.base_url,
-                urlencoding::encode(output.filename.as_str()),
-                urlencoding::encode(output.subfolder.as_str()),
-                urlencoding::encode(output.r#type.as_str()),
-            );
-            let request = self.authorize(self.client.get(url));
-            let (bytes, mime) = self
+            let (bytes, mime) = self.fetch_output(&output, cancel, deadline).await?;
+            generated.push(GeneratedImage {
+                bytes,
+                mime,
+                filename: output.filename,
+            });
+        }
+        Ok(generated)
+    }
+
+    /// Downloads `output`, retrying a failure that could heal until it has
+    /// lasted [`Config::outage_window`].
+    async fn fetch_output(
+        &self,
+        output: &OutputImage,
+        cancel: &mut broadcast::Receiver<()>,
+        deadline: tokio::time::Instant,
+    ) -> Result<(bytes::Bytes, String), Error> {
+        let url = format!(
+            "{}/view?filename={}&subfolder={}&type={}",
+            self.config.base_url,
+            urlencoding::encode(output.filename.as_str()),
+            urlencoding::encode(output.subfolder.as_str()),
+            urlencoding::encode(output.r#type.as_str()),
+        );
+        let mut failing_since = None;
+        loop {
+            let request = self
+                .authorize(self.client.get(&url))
+                .timeout(self.download_timeout(deadline));
+            let filename = output.filename.as_str();
+            let result = self
                 .bounded(cancel, deadline, async move {
                     let response = request.send().await?.error_for_status()?;
                     let mime = response
@@ -1231,17 +1333,43 @@ impl Client {
                                 || value.starts_with("audio/")
                         })
                         .map(str::to_string)
-                        .unwrap_or_else(|| mime_for_filename(&filename));
+                        .unwrap_or_else(|| mime_for_filename(filename));
                     Ok((response.bytes().await?, mime))
                 })
-                .await?;
-            generated.push(GeneratedImage {
-                bytes,
-                mime,
-                filename: output.filename,
-            });
+                .await;
+            match result {
+                Err(Error::Http(error)) if is_transient(&error) => {
+                    if self.outage_outlasted(&mut failing_since) {
+                        tracing::warn!(
+                            filename = %output.filename,
+                            error = %error,
+                            "ComfyUI output download kept failing; giving up"
+                        );
+                        return Err(Error::Http(error));
+                    }
+                    tracing::warn!(
+                        filename = %output.filename,
+                        error = %error,
+                        "ComfyUI output download failed; retrying"
+                    );
+                    self.pause(cancel, deadline).await?;
+                }
+                result => return result,
+            }
         }
-        Ok(generated)
+    }
+
+    async fn pause(
+        &self,
+        cancel: &mut broadcast::Receiver<()>,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), Error> {
+        tokio::select! {
+            biased;
+            _ = cancel.recv() => Err(Error::Cancelled),
+            _ = tokio::time::sleep_until(deadline) => Err(Error::Timeout),
+            _ = tokio::time::sleep(self.config.poll_interval) => Ok(()),
+        }
     }
 
     async fn cancel(&self, prompt_id: &str) {
@@ -1726,6 +1854,17 @@ fn apply_ace_step_workflow_inputs(
     workflow["5"]["inputs"]["lyrics"] = json!("");
     workflow["8"]["inputs"]["seed"] = json!(seed);
     Ok(())
+}
+
+/// Whether a failed request could succeed if sent again: no answer at all,
+/// or a 5xx, 408 or 429 status.
+fn is_transient(error: &reqwest::Error) -> bool {
+    !error.is_builder()
+        && error.status().is_none_or(|status| {
+            status.is_server_error()
+                || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        })
 }
 
 fn is_model_filename(name: &str) -> bool {
@@ -3141,6 +3280,274 @@ mod tests {
         assert_eq!(videos[0].bytes.as_ref(), &[1, 2, 3, 4]);
         assert_eq!(videos[0].mime, "video/webm");
         assert_eq!(progress_rx.recv().await.as_deref(), Some("Video queued..."));
+    }
+
+    async fn mock_video_prompt(server: &MockServer, prompt_id: &str) {
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": prompt_id})))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    async fn mock_finished_clip(server: &MockServer, prompt_id: &str) {
+        let mut history = serde_json::Map::new();
+        history.insert(
+            prompt_id.to_string(),
+            json!({"status": {"status_str": "success"}, "outputs": {
+                "10": {"gifs": [{"filename": "clip.webm", "subfolder": "", "type": "output"}]}
+            }}),
+        );
+        Mock::given(method("GET"))
+            .and(path(format!("/history/{prompt_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(Value::Object(history)))
+            .mount(server)
+            .await;
+    }
+
+    async fn mock_queue_delete(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/queue"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(server)
+            .await;
+    }
+
+    async fn mock_queue(server: &MockServer, running: Value) {
+        Mock::given(method("GET"))
+            .and(path("/queue"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "queue_running": running,
+                "queue_pending": []
+            })))
+            .mount(server)
+            .await;
+    }
+
+    fn empty_history(prompt_id: &str) -> Mock {
+        Mock::given(method("GET"))
+            .and(path(format!("/history/{prompt_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+    }
+
+    fn video_config(server: &MockServer) -> Config {
+        Config {
+            enabled: true,
+            base_url: server.uri(),
+            poll_interval: Duration::from_millis(50),
+            ..Default::default()
+        }
+    }
+
+    async fn generate_clip(config: Config) -> Result<Vec<GeneratedImage>, Error> {
+        let client = Client::new(config).unwrap();
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        client
+            .generate_video("a fox running", None, &mut cancel_rx, progress_tx)
+            .await
+    }
+
+    async fn posted_bodies(server: &MockServer, endpoint: &str) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .expect("the mock server records requests")
+            .into_iter()
+            .filter(|request| request.method.as_str() == "POST" && request.url.path() == endpoint)
+            .map(|request| serde_json::from_slice(&request.body).unwrap_or(Value::Null))
+            .collect()
+    }
+
+    async fn history_reads(server: &MockServer, prompt_id: &str) -> usize {
+        let expected = format!("/history/{prompt_id}");
+        server
+            .received_requests()
+            .await
+            .expect("the mock server records requests")
+            .iter()
+            .filter(|request| request.method.as_str() == "GET" && request.url.path() == expected)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_failed_history_poll_keeps_the_render_alive() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "flaky").await;
+        Mock::given(method("GET"))
+            .and(path("/history/flaky"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        serve_video(&server, "flaky").await;
+        let videos = generate_clip(video_config(&server))
+            .await
+            .expect("one failed poll must not discard the render");
+        assert_eq!(videos[0].bytes.as_ref(), &[1, 2, 3, 4]);
+        assert!(
+            posted_bodies(&server, "/queue").await.is_empty(),
+            "a finished render must not be cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_download_slower_than_the_request_timeout_still_lands() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "slow").await;
+        mock_finished_clip(&server, "slow").await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "video/webm")
+                    .set_body_bytes(vec![5, 6, 7])
+                    .set_delay(Duration::from_millis(2500)),
+            )
+            .mount(&server)
+            .await;
+        let config = Config {
+            request_timeout: Duration::from_secs(1),
+            video_generation_timeout: Duration::from_secs(60),
+            ..video_config(&server)
+        };
+        let videos = generate_clip(config)
+            .await
+            .expect("a download inside the render deadline must land");
+        assert_eq!(videos[0].bytes.as_ref(), &[5, 6, 7]);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_http_error_cancels_the_prompt_and_keeps_its_history() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "gone").await;
+        mock_finished_clip(&server, "gone").await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        mock_queue_delete(&server).await;
+        let result = generate_clip(video_config(&server)).await;
+        assert!(matches!(result, Err(Error::Http(_))), "{result:?}");
+        assert_eq!(
+            posted_bodies(&server, "/queue").await,
+            [json!({"delete": ["gone"]})],
+            "a terminal error must delete the accepted prompt"
+        );
+        assert!(
+            posted_bodies(&server, "/history").await.is_empty(),
+            "history is cleared only after a clip lands"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_comfyui_lost_fails_long_before_the_deadline() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "lost").await;
+        empty_history("lost").mount(&server).await;
+        mock_queue(&server, json!([])).await;
+        mock_queue_delete(&server).await;
+        let config = video_config(&server).with_queue_check_interval(Duration::ZERO);
+        let result = tokio::time::timeout(REQUEST_WAIT, generate_clip(config))
+            .await
+            .expect("a lost prompt must fail instead of waiting out the generation deadline");
+        assert!(
+            matches!(result, Err(Error::InvalidResponse(LOST_PROMPT))),
+            "{result:?}"
+        );
+        assert_eq!(
+            history_reads(&server, "lost").await,
+            2,
+            "history is read once more after the queue misses the prompt"
+        );
+        assert_eq!(
+            posted_bodies(&server, "/queue").await,
+            [json!({"delete": ["lost"]})]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_that_finishes_between_history_and_queue_reads_is_collected() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "raced").await;
+        empty_history("raced").up_to_n_times(1).mount(&server).await;
+        serve_video(&server, "raced").await;
+        mock_queue(&server, json!([])).await;
+        let config = video_config(&server).with_queue_check_interval(Duration::ZERO);
+        let videos = generate_clip(config)
+            .await
+            .expect("a prompt that left the queue for history is finished, not lost");
+        assert_eq!(videos[0].bytes.as_ref(), &[1, 2, 3, 4]);
+        assert!(posted_bodies(&server, "/queue").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_prompt_still_in_the_queue_keeps_polling() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "queued").await;
+        empty_history("queued")
+            .up_to_n_times(3)
+            .mount(&server)
+            .await;
+        serve_video(&server, "queued").await;
+        mock_queue(&server, json!([[0, "queued", {}, {}, []]])).await;
+        let config = video_config(&server).with_queue_check_interval(Duration::ZERO);
+        let videos = generate_clip(config)
+            .await
+            .expect("a running prompt must not be taken for a lost one");
+        assert_eq!(videos[0].bytes.as_ref(), &[1, 2, 3, 4]);
+        assert_eq!(history_reads(&server, "queued").await, 4);
+    }
+
+    #[tokio::test]
+    async fn a_comfyui_that_goes_away_fails_with_a_connect_error_within_the_window() {
+        let server = MockServer::builder().start().await;
+        mock_video_prompt(&server, "dead").await;
+        empty_history("dead").mount(&server).await;
+        let config = video_config(&server).with_outage_window(Duration::from_secs(1));
+        let render = tokio::spawn(generate_clip(config));
+        wait_for_request(&server, "/prompt").await;
+        drop(server);
+        let result = tokio::time::timeout(REQUEST_WAIT, render)
+            .await
+            .expect("a dead ComfyUI must fail within the outage window, not the deadline")
+            .expect("the render task should not panic");
+        assert!(
+            matches!(&result, Err(Error::Http(error)) if error.is_connect()),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_download_that_keeps_failing_gives_up_within_the_window() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "stuck").await;
+        mock_finished_clip(&server, "stuck").await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        mock_queue_delete(&server).await;
+        let config = video_config(&server).with_outage_window(Duration::from_secs(1));
+        let result = tokio::time::timeout(REQUEST_WAIT, generate_clip(config))
+            .await
+            .expect("a failing download must give up within the outage window");
+        assert!(
+            matches!(
+                &result,
+                Err(Error::Http(error))
+                    if error.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE)
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            posted_bodies(&server, "/queue").await,
+            [json!({"delete": ["stuck"]})]
+        );
     }
 
     struct BodyLacks(&'static str);

@@ -11,10 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Client::generate_excluding` takes a negative prompt, so what a picture must not show stays out of its prompt; `generate` is unchanged
 - `recipe::Fill::with_negative` and the catalog's `slots.negative`, which every packaged image recipe now declares
+- `Config::outage_window` and `Config::queue_check_interval`, with `with_outage_window` and `with_queue_check_interval`, bound how long a generation rides out a failing ComfyUI and how often it confirms an unfinished prompt is still queued
 
 ### Changed
 
 - `Config::video_generation_timeout` defaults to two hours (was ten minutes) and `COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS` accepts up to four hours (was one), the time a Wan 2.2 A14B clip can take
+
+### Fixed
+
+- A generation keeps polling through a failed history read or output download that could heal (no answer, 5xx, 408, 429) for up to `Config::outage_window`, instead of throwing a finished render away on one 500
+- Each output download gets the larger of the request timeout and five minutes, within the generation deadline, so a long clip is not cut off by the client-wide request timeout
+- A prompt ComfyUI no longer queues or remembers, as after a restart, fails with "it no longer has the prompt" instead of waiting out the deadline
+- Any error after ComfyUI accepted a prompt deletes it from the queue, and history is cleared only once the outputs landed
 
 ## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.1.7...abnegate-comfy/v0.1.8) - 2026-11-03
 

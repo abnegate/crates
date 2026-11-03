@@ -35,6 +35,8 @@ const MAXIMUM_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 const MAXIMUM_GENERATION_TIMEOUT: Duration = Duration::from_secs(3600);
 const DEFAULT_VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(7200);
 const MAXIMUM_VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(14_400);
+const DEFAULT_OUTAGE_WINDOW: Duration = Duration::from_secs(120);
+const DEFAULT_QUEUE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const MAXIMUM_TRAIN_TIMEOUT: Duration = Duration::from_secs(14_400);
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8188";
 const DEFAULT_ARTIFACT_ROOT: &str = "./artifacts";
@@ -181,6 +183,16 @@ pub struct Config {
     /// Wait between two polls of a submitted graph's history, or of a
     /// training command's progress file, at most five seconds.
     pub poll_interval: Duration,
+    /// How long a run of failed polls or downloads that could heal, a lost
+    /// connection or a 5xx, 408 or 429 answer, is retried before a
+    /// generation gives up on a dead or restarted ComfyUI. Two minutes
+    /// unless set with [`Config::with_outage_window`].
+    pub outage_window: Duration,
+    /// How often a generation whose history is still empty asks ComfyUI's
+    /// queue whether it holds the prompt, so one lost to a restart fails
+    /// instead of waiting out its deadline. Thirty seconds unless set with
+    /// [`Config::with_queue_check_interval`].
+    pub queue_check_interval: Duration,
     /// ComfyUI models root (`checkpoints/`, `loras/`, `diffusion_models/`, ...).
     pub models_directory: PathBuf,
     /// Optional command used to train a LoRA, run with `sh -c`. Empty runs the
@@ -257,6 +269,8 @@ impl Default for Config {
             audio_generation_timeout: Duration::from_secs(600),
             upscale_generation_timeout: Duration::from_secs(600),
             poll_interval: Duration::from_millis(500),
+            outage_window: DEFAULT_OUTAGE_WINDOW,
+            queue_check_interval: DEFAULT_QUEUE_CHECK_INTERVAL,
             models_directory: PathBuf::from(DEFAULT_MODELS_DIRECTORY),
             train_command: None,
             trainer_environment: EnvironmentPolicy::allowlist(),
@@ -395,6 +409,20 @@ impl Config {
         self
     }
 
+    /// The same settings, retrying a generation's failed polls and downloads
+    /// for `window` before it gives up on ComfyUI.
+    pub fn with_outage_window(mut self, window: Duration) -> Self {
+        self.outage_window = window;
+        self
+    }
+
+    /// The same settings, confirming every `interval` that ComfyUI still
+    /// queues a prompt whose history is empty.
+    pub fn with_queue_check_interval(mut self, interval: Duration) -> Self {
+        self.queue_check_interval = interval;
+        self
+    }
+
     /// The same settings, posing a person's generation with the OpenPose
     /// images in `directory`.
     pub fn with_poses_directory(mut self, directory: impl Into<PathBuf>) -> Self {
@@ -495,6 +523,8 @@ impl Config {
                 Duration::from_millis(50),
                 MAXIMUM_POLL_INTERVAL,
             ),
+            outage_window: defaults.outage_window,
+            queue_check_interval: defaults.queue_check_interval,
             vision_model: text(environment(vision_model))
                 .map(PathBuf::from)
                 .or_else(|| Some(models_directory.join("vision/u2net.onnx")))
@@ -600,6 +630,20 @@ mod tests {
                 .video_generation_timeout,
             Duration::from_secs(14_400)
         );
+    }
+
+    #[test]
+    fn a_generation_rides_out_two_minutes_of_outage_and_checks_the_queue_every_thirty_seconds() {
+        for config in [Config::default(), configured(&[])] {
+            assert_eq!(config.outage_window, Duration::from_secs(120));
+            assert_eq!(config.queue_check_interval, Duration::from_secs(30));
+        }
+        let tuned = Config::default()
+            .with_outage_window(Duration::from_secs(5))
+            .with_queue_check_interval(Duration::ZERO);
+        assert_eq!(tuned.outage_window, Duration::from_secs(5));
+        assert_eq!(tuned.queue_check_interval, Duration::ZERO);
+        assert_eq!(tuned.validate(), Ok(()));
     }
 
     #[test]
