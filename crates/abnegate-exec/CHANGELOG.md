@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.8...abnegate-exec/v0.1.9) - 2026-11-03
+
+### Fixed
+
+- *(exec)* so a shutdown never fails on a process group whose members are still exiting
+
+### Other
+
+- *(exec)* so the exiting-member fixture waits for the state its refusal depends on
+- *(exec)* so a perl leader never sleeps through its interrupt and the exiting-member test proves the refusal
+
 ## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.7...abnegate-exec/v0.1.8) - 2026-11-03
 
 ### Fixed

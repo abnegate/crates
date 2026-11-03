@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.9...abnegate-agent/v0.1.10) - 2026-11-03
+
+### Other
+
+- updated the following local packages: abnegate-exec, abnegate-agent-cli
+
 ## [0.1.9](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.8...abnegate-agent/v0.1.9) - 2026-11-03
 
 ### Other

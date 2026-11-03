@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.2.0...abnegate-comfy/v0.2.1) - 2026-11-03
+
+### Added
+
+- *(comfy)* so a host can give its captioner the completion timeouts the rest of its completions get
+
+### Fixed
+
+- *(comfy)* so a model still loading on its first caption does not leave the whole set trigger-only
+- *(comfy)* so a dead caption endpoint costs a training run one caption timeout, not one per shot
+
+### Other
+
+- *(comfy)* so the caption strike count is proven to start over after an answer
+- *(comfy)* so the caption timeout docs claim only what the client does
+- *(comfy)* so a host knows the training budget starts after captioning
+
 ## [0.2.0](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.1.8...abnegate-comfy/v0.2.0) - 2026-11-03
 
 ### Added
