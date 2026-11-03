@@ -31,8 +31,10 @@ const MAXIMUM_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const MAXIMUM_CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAXIMUM_CAPTION_TIMEOUT: Duration = Duration::from_secs(600);
 const MAXIMUM_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
-/// Ceiling on every generation deadline: image, video, audio and upscale.
+/// Ceiling on the image, audio and upscale generation deadlines.
 const MAXIMUM_GENERATION_TIMEOUT: Duration = Duration::from_secs(3600);
+const DEFAULT_VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(7200);
+const MAXIMUM_VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(14_400);
 const MAXIMUM_TRAIN_TIMEOUT: Duration = Duration::from_secs(14_400);
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8188";
 const DEFAULT_ARTIFACT_ROOT: &str = "./artifacts";
@@ -170,7 +172,7 @@ pub struct Config {
     /// Deadline for one image generation, from submission to the last byte, at
     /// most an hour.
     pub generation_timeout: Duration,
-    /// Deadline for one video generation, at most an hour.
+    /// Deadline for one video generation, two hours unless set, at most four.
     pub video_generation_timeout: Duration,
     /// Deadline for one audio generation, at most an hour.
     pub audio_generation_timeout: Duration,
@@ -251,7 +253,7 @@ impl Default for Config {
             caption_timeout: Duration::from_secs(60),
             request_timeout: Duration::from_secs(120),
             generation_timeout: Duration::from_secs(300),
-            video_generation_timeout: Duration::from_secs(600),
+            video_generation_timeout: DEFAULT_VIDEO_GENERATION_TIMEOUT,
             audio_generation_timeout: Duration::from_secs(600),
             upscale_generation_timeout: Duration::from_secs(600),
             poll_interval: Duration::from_millis(500),
@@ -312,8 +314,8 @@ impl Config {
             ),
             (
                 self.video_generation_timeout,
-                MAXIMUM_GENERATION_TIMEOUT,
-                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS must be between one second and an hour",
+                MAXIMUM_VIDEO_GENERATION_TIMEOUT,
+                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS must be between one second and four hours",
             ),
             (
                 self.audio_generation_timeout,
@@ -473,7 +475,7 @@ impl Config {
                 environment("COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS"),
                 defaults.video_generation_timeout,
                 Duration::from_secs(10),
-                MAXIMUM_GENERATION_TIMEOUT,
+                MAXIMUM_VIDEO_GENERATION_TIMEOUT,
             ),
             audio_generation_timeout: seconds(
                 environment("COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS"),
@@ -575,6 +577,29 @@ mod tests {
                 &Some(PathBuf::from("./comfyui/workflows").join(graph))
             );
         }
+    }
+
+    #[test]
+    fn a_video_render_gets_two_hours_and_may_be_given_four() {
+        assert_eq!(
+            Config::default().video_generation_timeout,
+            Duration::from_secs(7200)
+        );
+        assert_eq!(
+            configured(&[]).video_generation_timeout,
+            Duration::from_secs(7200)
+        );
+        let longest = configured(&[("COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS", "14400")]);
+        assert_eq!(
+            longest.video_generation_timeout,
+            Duration::from_secs(14_400)
+        );
+        assert_eq!(longest.validate(), Ok(()));
+        assert_eq!(
+            configured(&[("COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS", "14401")])
+                .video_generation_timeout,
+            Duration::from_secs(14_400)
+        );
     }
 
     #[test]
@@ -879,7 +904,7 @@ mod tests {
             ),
             (
                 |config, value| config.video_generation_timeout = value,
-                MAXIMUM_GENERATION_TIMEOUT,
+                MAXIMUM_VIDEO_GENERATION_TIMEOUT,
             ),
             (
                 |config, value| config.audio_generation_timeout = value,
