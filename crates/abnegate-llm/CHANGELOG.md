@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.6...abnegate-llm/v0.1.7) - 2026-11-03
+
+### Added
+
+- *(llm)* so a tenant's endpoint cannot reach metadata or leak the key it was sent
+- *(llm)* so a host can keep every model exchange as an ndjson log
+- *(llm)* so a request sent straight to openai or anthropic is not refused with a 400
+- *(llm)* so a usage limit reaches the caller as a limit, not as agent prose
+
+### Fixed
+
+- *(llm)* so the claude-cli route names itself, retries what the api retries, and a cost strategy typo is reported
+
 ## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.5...abnegate-llm/v0.1.6) - 2026-11-03
 
 ### Added
