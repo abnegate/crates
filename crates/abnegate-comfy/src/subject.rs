@@ -12,10 +12,15 @@
 //! wired in at all.
 
 mod error;
+mod located;
 #[cfg(feature = "saliency")]
 mod models;
+mod saliency_map;
 
 pub use error::SubjectError;
+
+pub(crate) use located::Located;
+pub(crate) use saliency_map::SaliencyMap;
 
 use crate::config::Config;
 use abnegate_vision::Raster;
@@ -112,6 +117,35 @@ impl Subject {
         fallback
     }
 
+    /// Where the subject of one image sits, as [`focus`](Self::focus) finds
+    /// it, together with the map the model found it on, from one pass of the
+    /// model. Without the model it is `fallback` and no map.
+    pub(crate) fn locate(&self, raster: &Raster, fallback: Point) -> Located {
+        #[cfg(feature = "saliency")]
+        if let Some(analyzer) = &self.analyzer {
+            use abnegate_vision::saliency::INPUT_HEIGHT;
+            use abnegate_vision::saliency::INPUT_WIDTH;
+
+            let located = analyzer.saliency(raster, |map, content| Located {
+                focus: centre(map, content, &[]).unwrap_or(fallback),
+                map: Some(SaliencyMap {
+                    values: map.to_vec(),
+                    size: (INPUT_WIDTH as u32, INPUT_HEIGHT as u32),
+                    content,
+                }),
+            });
+            match located {
+                Ok(located) => return located,
+                Err(error) => tracing::warn!(%error, "subject detection failed for one image"),
+            }
+        }
+        let _ = raster;
+        Located {
+            focus: fallback,
+            map: None,
+        }
+    }
+
     /// Decodes an image and renders the square crop framed on its subject.
     pub fn crop(&self, data: &[u8], side: u32) -> Result<Rendered, SubjectError> {
         let raster = decode::decode(data)?;
@@ -182,6 +216,7 @@ fn centre(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use abnegate_vision::crop::Region;
     use abnegate_vision::decode::Layout;
 
     #[test]
@@ -192,6 +227,38 @@ mod tests {
         let elsewhere = Point { x: 0.2, y: 0.8 };
         assert_eq!(subject.focus(&raster, elsewhere), elsewhere);
         assert_eq!(subject.weighted(&raster, &[1.0; 16], elsewhere), elsewhere);
+        let located = subject.locate(&raster, elsewhere);
+        assert_eq!(located.focus, elsewhere);
+        assert!(located.map.is_none(), "no model means no mask");
+        assert_eq!(
+            located.mask((4, 4), Region::new(0, 0, 4, 4), Target::square(4)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_located_map_masks_the_crop_it_was_found_for() {
+        let mut values = vec![0.0f32; 4 * 4];
+        for row in values.chunks_mut(4) {
+            row[..2].fill(1.0);
+        }
+        let located = Located {
+            focus: CENTRE,
+            map: Some(SaliencyMap {
+                values,
+                size: (4, 4),
+                content: abnegate_vision::gravity::Rectangle::new(0, 0, 4, 4),
+            }),
+        };
+        let mask = located
+            .mask((8, 8), Region::new(0, 0, 8, 8), Target::new(4, 2))
+            .unwrap();
+        assert_eq!(mask, [255, 255, 0, 0, 255, 255, 0, 0]);
+        assert_eq!(
+            located.mask((8, 8), Region::new(4, 0, 8, 8), Target::new(4, 2)),
+            None,
+            "a crop outside the image has no mask"
+        );
     }
 
     fn encoded(width: u32, height: u32) -> Vec<u8> {

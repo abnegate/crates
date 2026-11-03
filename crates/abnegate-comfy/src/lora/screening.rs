@@ -3,7 +3,7 @@ use crate::lora::Remediation;
 use serde::Serialize;
 
 /// What screening made of the submitted images.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
 pub struct Screening {
     /// How many images were trained on.

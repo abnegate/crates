@@ -12,3 +12,19 @@ pub struct CaptionRequest {
     /// The images, in order.
     pub images: Vec<CaptionImage>,
 }
+
+impl CaptionRequest {
+    /// Captions `images`, with no trigger word.
+    pub fn new(images: Vec<CaptionImage>) -> Self {
+        Self {
+            trigger: None,
+            images,
+        }
+    }
+
+    /// Sets the word the LoRA will learn its subject by.
+    pub fn with_trigger(mut self, trigger: impl Into<String>) -> Self {
+        self.trigger = Some(trigger.into());
+        self
+    }
+}

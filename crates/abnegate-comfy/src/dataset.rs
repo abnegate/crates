@@ -15,15 +15,30 @@
 //! Findings are reported, never enforced. The evidence is a small vision
 //! model's vocabulary, so it will sometimes be wrong, and a wrong warning a user
 //! can overrule costs far less than a refusal they cannot.
+//!
+//! A person's set also carries companions beside each `NNNN.png` for the
+//! trainer to read, which [`lora::train`](crate::lora::train) writes and the
+//! [`host`](crate::host) job directory hands on: which part of the person the
+//! crop frames ([`kind_path`], a [`FrameKind`]), the pose its caption names
+//! ([`pose_path`], a [`pose_cluster`]), the subject mask ([`mask_path`]), and
+//! one [`Rebalance`] for the whole set ([`rebalance_path`]).
 
 mod concern;
 mod finding;
+mod frame_kind;
+mod rebalance;
 
 pub use concern::Concern;
 pub use finding::Finding;
+pub use frame_kind::FrameKind;
+pub use rebalance::Rebalance;
 
 use crate::caption::content_words;
+use crate::host::REBALANCE_FILE;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
 
 /// A measured eight-image run improved the subject by 34.72%, so the floor sits
 /// below it: under five, the set is also too small for the checks below to say
@@ -45,22 +60,33 @@ const REPEATED: f32 = 0.65;
 /// angles, measured 0.33; sets that changed only the background measured 0.83
 /// and up.
 const UNIFORM: f32 = 0.6;
+/// The share of a person's frames one pose may hold before [`rebalance`]
+/// draws it less often, so a few common setups cannot eat the step budget.
+pub const REBALANCE_SHARE: f32 = 0.40;
+/// The companion naming which part of the person a crop frames.
+pub const KIND_SUFFIX: &str = ".kind";
+/// The companion naming the pose a crop's caption names.
+pub const POSE_SUFFIX: &str = ".pose";
+/// The companion holding a crop's 8-bit subject mask, as PNG.
+pub const MASK_SUFFIX: &str = ".mask.png";
+/// The pose of a caption that names none of [`pose_cluster`]'s poses.
+pub const UNKNOWN_POSE: &str = "unknown";
+/// The extension of the OpenPose image [`pose_filename`] names.
+const POSE_IMAGE_EXTENSION: &str = ".png";
 
 /// What the subject is doing and where the camera is, grouped by the pose each
 /// term names so that paraphrase does not read as variety: a set that says
 /// "standing" in half its descriptions and "stands" in the rest is one pose.
-const POSES: &[&[&str]] = &[
+/// The first term of each group names its cluster.
+pub(crate) const POSES: &[&[&str]] = &[
     &["standing", "stands", "stood", "upright"],
     &["sitting", "sits", "seated", "sat", "perched"],
     &["lying", "lies", "laying", "reclining", "sprawled", "curled"],
-    &[
-        "crouching",
-        "crouched",
-        "squatting",
-        "kneeling",
-        "knelt",
-        "hunched",
-    ],
+    &["on back", "supine"],
+    &["on side"],
+    &["crouching", "crouched", "squatting", "hunched"],
+    &["kneeling", "knelt", "on knees"],
+    &["all fours", "on all fours", "hands and knees"],
     &["leaning", "leans", "propped"],
     &["walking", "walks", "striding", "strolling"],
     &["running", "runs", "sprinting", "bounding"],
@@ -206,16 +232,119 @@ fn one_pose(descriptions: &[String], described: usize) -> bool {
 }
 
 fn poses(description: &str) -> HashSet<usize> {
-    let words: Vec<String> = description
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect();
+    let words = tokens(description);
     POSES
         .iter()
         .enumerate()
         .filter(|(_, terms)| terms.iter().any(|term| mentions(&words, term)))
         .map(|(index, _)| index)
+        .collect()
+}
+
+/// Every pose `caption` names, as the cluster each belongs to, in the order
+/// [`pose_cluster`] ranks them.
+pub fn pose_clusters(caption: &str) -> Vec<&'static str> {
+    let words = tokens(caption);
+    POSES
+        .iter()
+        .filter(|terms| terms.iter().any(|term| mentions(&words, term)))
+        .map(|terms| terms[0])
+        .collect()
+}
+
+/// The pose a person crop's caption names, which its [`POSE_SUFFIX`]
+/// companion holds and [`rebalance`] counts: the cluster of the first pose
+/// it names, standing before sitting before lying and so on, or
+/// [`UNKNOWN_POSE`].
+pub fn pose_cluster(caption: &str) -> &'static str {
+    pose_clusters(caption)
+        .first()
+        .copied()
+        .unwrap_or(UNKNOWN_POSE)
+}
+
+/// The OpenPose image for `cluster` inside
+/// [`Config::poses_directory`](crate::Config::poses_directory): its words
+/// joined by underscores, `on back` as `on_back.png`. `None` for anything
+/// [`pose_clusters`] does not return.
+pub fn pose_filename(cluster: &str) -> Option<String> {
+    POSES
+        .iter()
+        .map(|terms| terms[0])
+        .find(|name| *name == cluster)
+        .map(|name| format!("{}{POSE_IMAGE_EXTENSION}", name.replace(' ', "_")))
+}
+
+/// Whether `word` belongs to a pose, so the captioner keeps it even when
+/// most of a set's captions share it.
+pub(crate) fn pose_word(word: &str) -> bool {
+    POSES
+        .iter()
+        .flat_map(|terms| terms.iter())
+        .any(|term| term.split(' ').any(|part| part.eq_ignore_ascii_case(word)))
+}
+
+/// The draw weight of every frame of a person's set, keyed by its stem, from
+/// the [`pose_cluster`] of each. A set whose largest pose holds at most
+/// [`REBALANCE_SHARE`] of the frames draws every frame once; otherwise each
+/// frame is drawn in inverse proportion to its pose's size, so the rarest
+/// pose keeps weight 1. A stem listed twice counts once, with its last
+/// pose.
+pub fn rebalance<S: AsRef<str>, C: AsRef<str>>(frames: &[(S, C)]) -> Rebalance {
+    let by_stem: BTreeMap<&str, &str> = frames
+        .iter()
+        .map(|(stem, cluster)| (stem.as_ref(), cluster.as_ref()))
+        .collect();
+    let mut clusters: BTreeMap<String, usize> = BTreeMap::new();
+    for cluster in by_stem.values() {
+        *clusters.entry((*cluster).to_string()).or_default() += 1;
+    }
+    let largest = clusters.values().copied().max().unwrap_or(0);
+    let rarest = clusters.values().copied().min().unwrap_or(1);
+    let skewed = !by_stem.is_empty() && largest as f32 / by_stem.len() as f32 > REBALANCE_SHARE;
+    let weights = by_stem
+        .iter()
+        .map(|(stem, cluster)| {
+            let weight = if skewed {
+                rarest as f32 / clusters[*cluster] as f32
+            } else {
+                1.0
+            };
+            ((*stem).to_string(), weight)
+        })
+        .collect();
+    Rebalance { clusters, weights }
+}
+
+/// The [`KIND_SUFFIX`] companion of the frame `stem` in `directory`.
+pub fn kind_path(directory: &Path, stem: &str) -> PathBuf {
+    companion(directory, stem, KIND_SUFFIX)
+}
+
+/// The [`POSE_SUFFIX`] companion of the frame `stem` in `directory`.
+pub fn pose_path(directory: &Path, stem: &str) -> PathBuf {
+    companion(directory, stem, POSE_SUFFIX)
+}
+
+/// The [`MASK_SUFFIX`] companion of the frame `stem` in `directory`.
+pub fn mask_path(directory: &Path, stem: &str) -> PathBuf {
+    companion(directory, stem, MASK_SUFFIX)
+}
+
+/// Where a person set in `directory` keeps its [`Rebalance`].
+pub fn rebalance_path(directory: &Path) -> PathBuf {
+    directory.join(REBALANCE_FILE)
+}
+
+fn companion(directory: &Path, stem: &str, suffix: &str) -> PathBuf {
+    directory.join(format!("{stem}{suffix}"))
+}
+
+fn tokens(description: &str) -> Vec<String> {
+    description
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
         .collect()
 }
 
@@ -568,5 +697,189 @@ mod tests {
             vec![Concern::LowPoseVariety],
             "the same pose in different words is still the same pose"
         );
+    }
+
+    #[test]
+    fn companion_files_use_the_frame_stem() {
+        let directory = Path::new("/job/dataset");
+        assert_eq!(
+            mask_path(directory, "0000"),
+            Path::new("/job/dataset/0000.mask.png")
+        );
+        assert_eq!(
+            kind_path(directory, "0000"),
+            Path::new("/job/dataset/0000.kind")
+        );
+        assert_eq!(
+            pose_path(directory, "0000"),
+            Path::new("/job/dataset/0000.pose")
+        );
+        assert_eq!(
+            rebalance_path(directory),
+            Path::new("/job/dataset/rebalance.json")
+        );
+        assert_eq!(REBALANCE_SHARE, 0.40);
+    }
+
+    #[test]
+    fn pose_cluster_uses_the_first_matching_canonical_term() {
+        assert_eq!(
+            pose_cluster("standing in a kitchen, warm light"),
+            "standing"
+        );
+        assert_eq!(
+            pose_cluster("from behind, tiled bathroom, cool window light"),
+            "back view"
+        );
+        assert_eq!(pose_cluster("lying on back on a sofa"), "lying");
+        assert_eq!(pose_cluster("on all fours on a rug"), "all fours");
+        assert_eq!(pose_cluster("kneeling on a mat"), "kneeling");
+        assert_eq!(pose_cluster("a kitchen with warm light"), UNKNOWN_POSE);
+    }
+
+    #[test]
+    fn the_last_pose_a_prompt_names_picks_its_openpose_image() {
+        for (prompt, image) in [
+            ("ohwx sitting in a kitchen", "sitting.png"),
+            ("standing close up", "close_up.png"),
+            ("lying on a sofa, full body", "full_body.png"),
+            ("lying on back on a sofa", "on_back.png"),
+            ("on all fours on a rug", "all_fours.png"),
+        ] {
+            let cluster = pose_clusters(prompt).last().copied().unwrap();
+            assert_eq!(pose_filename(cluster).as_deref(), Some(image), "{prompt}");
+        }
+        assert!(pose_clusters("a kitchen with warm light").is_empty());
+    }
+
+    #[test]
+    fn every_pose_has_its_own_openpose_image_and_nothing_else_does() {
+        let images: Vec<String> = POSES
+            .iter()
+            .map(|terms| pose_filename(terms[0]).unwrap())
+            .collect();
+        assert_eq!(
+            images,
+            [
+                "standing.png",
+                "sitting.png",
+                "lying.png",
+                "on_back.png",
+                "on_side.png",
+                "crouching.png",
+                "kneeling.png",
+                "all_fours.png",
+                "leaning.png",
+                "walking.png",
+                "running.png",
+                "jumping.png",
+                "climbing.png",
+                "dancing.png",
+                "flying.png",
+                "riding.png",
+                "reaching.png",
+                "holding.png",
+                "handstand.png",
+                "front.png",
+                "back_view.png",
+                "side.png",
+                "three_quarter.png",
+                "above.png",
+                "below.png",
+                "close_up.png",
+                "wide.png",
+                "full_body.png",
+                "medium_shot.png",
+            ]
+        );
+        for cluster in [UNKNOWN_POSE, "stands", "../standing", "", "Standing"] {
+            assert_eq!(pose_filename(cluster), None, "{cluster:?}");
+        }
+    }
+
+    #[test]
+    fn pose_words_are_known_whole_and_in_part() {
+        for word in ["standing", "Standing", "back", "fours", "supine"] {
+            assert!(pose_word(word), "{word}");
+        }
+        for word in ["kitchen", "ohwx", "stand", ""] {
+            assert!(!pose_word(word), "{word:?}");
+        }
+    }
+
+    #[test]
+    fn a_spread_pose_histogram_stays_uniform() {
+        let frames = [
+            ("0000", "standing"),
+            ("0001", "sitting"),
+            ("0002", "lying"),
+            ("0003", "standing"),
+            ("0004", "sitting"),
+            ("0005", "lying"),
+        ];
+        let balanced = rebalance(&frames);
+        assert_eq!(balanced.clusters.get("standing"), Some(&2));
+        assert!(
+            balanced.weights.values().all(|weight| *weight == 1.0),
+            "a dump under {REBALANCE_SHARE} stays uniform: {:?}",
+            balanced.weights
+        );
+    }
+
+    #[test]
+    fn rebalance_downsamples_only_when_one_cluster_exceeds_the_share() {
+        let even = [
+            ("0000", "standing"),
+            ("0001", "sitting"),
+            ("0002", "lying"),
+            ("0003", "kneeling"),
+            ("0004", "standing"),
+            ("0005", "sitting"),
+            ("0006", "lying"),
+            ("0007", "kneeling"),
+        ];
+        let even = rebalance(&even);
+        assert!(
+            even.weights.values().all(|weight| *weight == 1.0),
+            "2/8 is not above {REBALANCE_SHARE}: {:?}",
+            even.weights
+        );
+
+        let overflow = [
+            ("0000", "standing"),
+            ("0001", "standing"),
+            ("0002", "standing"),
+            ("0003", "standing"),
+            ("0004", "standing"),
+            ("0005", "sitting"),
+            ("0006", "sitting"),
+            ("0007", "lying"),
+            ("0008", "lying"),
+        ];
+        let overflow = rebalance(&overflow);
+        assert_eq!(overflow.clusters.get("standing"), Some(&5));
+        assert_eq!(overflow.weights.get("0000"), Some(&(2.0 / 5.0)));
+        assert_eq!(overflow.weights.get("0005"), Some(&1.0));
+        assert_eq!(overflow.weights.get("0007"), Some(&1.0));
+    }
+
+    #[test]
+    fn rebalance_counts_each_stem_once() {
+        let frames = [
+            ("0000", "standing"),
+            ("0000", "standing"),
+            ("0001", "sitting"),
+            ("0002", "sitting"),
+        ];
+        let balanced = rebalance(&frames);
+        assert_eq!(balanced.clusters.get("standing"), Some(&1));
+        assert_eq!(balanced.clusters.get("sitting"), Some(&2));
+        assert_eq!(balanced.weights.len(), 3);
+    }
+
+    #[test]
+    fn an_empty_set_rebalances_to_nothing() {
+        let frames: [(&str, &str); 0] = [];
+        assert_eq!(rebalance(&frames), Rebalance::default());
     }
 }

@@ -1,4 +1,5 @@
 use crate::caption::data_url;
+use base64::Engine;
 use std::fmt;
 
 /// One image on its way to a caption.
@@ -31,6 +32,18 @@ impl Draft {
     pub fn new(filename: &str, base64: &str, caption: &str, group: usize) -> Self {
         Self {
             image: data_url(filename, base64),
+            caption: caption.to_string(),
+            group,
+        }
+    }
+
+    /// A draft of the image `filename` from its encoded `bytes`, carrying
+    /// `caption`, blank to have one written, in the shot `group`.
+    pub fn from_bytes(filename: &str, bytes: &[u8], caption: &str, group: usize) -> Self {
+        let mut image = data_url(filename, "");
+        base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut image);
+        Self {
+            image,
             caption: caption.to_string(),
             group,
         }

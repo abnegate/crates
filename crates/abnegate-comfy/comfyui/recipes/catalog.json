@@ -12,6 +12,7 @@
       "output": "preview_image",
       "slots": {
         "prompt": "/6/inputs/text",
+        "negative": "/7/inputs/text",
         "seed": "/3/inputs/seed",
         "source": "/10/inputs/image",
         "weights": {
@@ -45,7 +46,8 @@
       "filename_hints": [
         "flux1-schnell",
         "schnell"
-      ]
+      ],
+      "edit_recipe": "flux-dev"
     },
     {
       "id": "flux-schnell-adapter",
@@ -58,6 +60,7 @@
       "output": "preview_image",
       "slots": {
         "prompt": "/6/inputs/text",
+        "negative": "/7/inputs/text",
         "seed": "/3/inputs/seed",
         "source": "/10/inputs/image",
         "weights": {
@@ -88,6 +91,7 @@
       "output": "preview_image",
       "slots": {
         "prompt": "/6/inputs/text",
+        "negative": "/7/inputs/text",
         "seed": "/3/inputs/seed",
         "source": "/10/inputs/image",
         "weights": {
@@ -134,6 +138,7 @@
       "output": "preview_image",
       "slots": {
         "prompt": "/6/inputs/text",
+        "negative": "/7/inputs/text",
         "seed": "/3/inputs/seed",
         "source": "/10/inputs/image",
         "weights": {
@@ -168,6 +173,7 @@
       "output": "preview_image",
       "slots": {
         "prompt": "/6/inputs/text",
+        "negative": "/7/inputs/text",
         "seed": "/3/inputs/seed",
         "source": "/10/inputs/image",
         "weights": {
@@ -199,8 +205,10 @@
       "output": "preview_image",
       "slots": {
         "prompt": "/6/inputs/text",
+        "negative": "/7/inputs/text",
         "seed": "/3/inputs/seed",
         "source": "/10/inputs/image",
+        "pose": "/20/inputs/image",
         "weights": {
           "checkpoint": "/4/inputs/ckpt_name"
         }
@@ -212,13 +220,87 @@
         "Pony",
         "Illustrious"
       ],
+      "pose_required_files": [
+        {
+          "filename": "thibaud_xl_openpose.safetensors",
+          "directory": "controlnet"
+        }
+      ],
+      "face_required_files": [
+        {
+          "filename": "ip-adapter-plus-face_sdxl_vit-h.safetensors",
+          "directory": "ipadapter"
+        },
+        {
+          "filename": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+          "directory": "clip_vision"
+        }
+      ],
       "filename_hints": [
         "sdxl",
         "sd_xl",
         "sd-xl",
         "pony",
         "illustrious",
-        "juggernautxl"
+        "juggernautxl",
+        "realvisxl"
+      ],
+      "extras": [
+        "face",
+        "identity_refine"
+      ]
+    },
+    {
+      "id": "sdxl-adapter",
+      "kind": "image",
+      "label": "SDXL + LoRA",
+      "adapter": true,
+      "bare": "sdxl-adapter-api.json",
+      "with_source": "sdxl-adapter-img2img-api.json",
+      "output_node": "9",
+      "output": "preview_image",
+      "slots": {
+        "prompt": "/6/inputs/text",
+        "negative": "/7/inputs/text",
+        "seed": "/3/inputs/seed",
+        "source": "/10/inputs/image",
+        "pose": "/20/inputs/image",
+        "weights": {
+          "checkpoint": "/4/inputs/ckpt_name",
+          "lora": "/13/inputs/lora_name"
+        }
+      },
+      "defaults": {
+        "checkpoint": "RealVisXL_V5.0_fp16.safetensors"
+      },
+      "required_files": [
+        {
+          "filename": "RealVisXL_V5.0_fp16.safetensors",
+          "directory": "checkpoints"
+        }
+      ],
+      "pose_required_files": [
+        {
+          "filename": "thibaud_xl_openpose.safetensors",
+          "directory": "controlnet"
+        }
+      ],
+      "face_required_files": [
+        {
+          "filename": "ip-adapter-plus-face_sdxl_vit-h.safetensors",
+          "directory": "ipadapter"
+        },
+        {
+          "filename": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+          "directory": "clip_vision"
+        }
+      ],
+      "hf_bases": [
+        "SG161222/RealVisXL_V5.0"
+      ],
+      "extras": [
+        "face",
+        "refine"
       ]
     },
     {
@@ -232,6 +314,7 @@
       "output": "preview_image",
       "slots": {
         "prompt": "/6/inputs/prompt",
+        "negative": "/7/inputs/prompt",
         "seed": "/3/inputs/seed",
         "source": "/10/inputs/image",
         "weights": {
@@ -288,6 +371,7 @@
       "output": "preview_image",
       "slots": {
         "prompt": "/6/inputs/prompt",
+        "negative": "/7/inputs/prompt",
         "seed": "/3/inputs/seed",
         "source": "/10/inputs/image",
         "weights": {

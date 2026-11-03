@@ -53,3 +53,8 @@ fn frame(data: &[u8]) -> Result<Rendered, Error> {
 
 With `saliency`, `Analyzer::open` loads the model and `Analyzer::crop` finds the
 focus itself.
+
+A training pipeline that weights its loss by the subject renders the matching
+mask too: `crop::render_mask` samples a saliency map, such as the one
+`Analyzer::saliency` hands its callback, over the same region and target as
+`crop::render`, as one 8-bit luma value per pixel.

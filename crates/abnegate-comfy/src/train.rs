@@ -2,11 +2,17 @@
 
 mod config;
 mod contract;
+mod phase;
+mod progress;
+mod reporter;
 mod run;
 
 pub use config::TrainConfig;
 pub use config::packaged_config;
 pub use contract::Contract;
+pub use phase::Phase;
+pub use progress::TrainProgress;
+pub(crate) use reporter::Reporter;
 pub use run::Run;
 
 use crate::config::Config;
@@ -32,7 +38,6 @@ use std::io::Write;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
-
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -41,8 +46,12 @@ pub(crate) const PACKAGED_TRAIN_CONFIG: &str = include_str!("../comfyui/train_co
 /// with a 200 error page, so size is what tells the two apart.
 pub(crate) const MINIMUM_WEIGHT_BYTES: usize = 10_000;
 const MANIFEST_VERSION: u32 = 1;
+const NO_TRAINING_GRAPH: &str = "SDXL has no packaged ComfyUI training graph; train it through a training command or a host trainer";
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const TRAIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const TRAINER_ERROR: &str = "the trainer reported an error";
+const TIMED_OUT: &str = "training timed out";
+const EXECUTION_ERROR: &str = "execution_error";
 
 /// Default `class_type` of the node that trains the adapter.
 pub const TRAIN_LORA_NODE: &str = "AbnegateTrainLoRA";
@@ -55,6 +64,9 @@ pub const PROBE_LOSS_NODE: &str = "AbnegateProbeLoss";
 /// Default `class_type` of the node that moves a trained checkpoint to where a
 /// LoRA loader finds it.
 pub const STAGE_TRAINING_ARTIFACT_NODE: &str = "AbnegateStageTrainingArtifact";
+/// Default `class_type` of the node that steers a generation's model with an
+/// IP-Adapter face reference.
+pub const IPADAPTER_FACE_NODE: &str = "AbnegateIPAdapterFace";
 /// Default prefix of the variables handed to an external training command.
 pub const ENVIRONMENT_PREFIX: &str = "ABNEGATE_TRAIN";
 /// Default prefix of the variable naming ComfyUI's input directory for an
@@ -68,9 +80,16 @@ pub const ARTIFACT_PREFIX: &str = "abnegate-lora-";
 pub const PROBE_PREFIX: &str = "abnegate-probe-";
 /// Default suffix of the recipe binding written beside every weight.
 pub const SIDECAR_SUFFIX: &str = ".abnegate.json";
+/// Default suffix of the progress file the training node writes beside a
+/// run's checkpoints.
+pub const PROGRESS_SUFFIX: &str = "-progress.json";
 /// Default directory under `loras/` whose markers hide a weight while it is
 /// replaced.
 pub const PUBLICATION_DIRECTORY: &str = ".abnegate-publish";
+/// Default directory under the models root that host training jobs live in.
+pub const HOST_DIRECTORY: &str = ".abnegate-train";
+/// The directory under the models root a training attempt is staged in.
+pub(crate) const TRAINING_DIRECTORY: &str = "training";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -152,10 +171,20 @@ pub async fn run(
         return Err(TrainError::Disabled);
     }
     let client = crate::http::client(config).map_err(request_failed)?;
-    run_with(&client, config, model, work, output, image_count).await
+    run_with(
+        &client,
+        config,
+        model,
+        work,
+        output,
+        image_count,
+        &Reporter::default(),
+    )
+    .await
 }
 
-/// [`run`] on a client the caller already holds for this run.
+/// [`run`] on a client the caller already holds for this run, forwarding
+/// what the training node writes to its progress file to `progress`.
 pub(crate) async fn run_with(
     client: &reqwest::Client,
     config: &Config,
@@ -163,13 +192,28 @@ pub(crate) async fn run_with(
     work: &Path,
     output: &Path,
     image_count: usize,
+    progress: &Reporter,
 ) -> Result<Run, TrainError> {
     if !config.enabled {
         return Err(TrainError::Disabled);
     }
     config.validate()?;
+    if matches!(model, TrainingModel::Sdxl { .. }) {
+        return Err(TrainError::Invalid(NO_TRAINING_GRAPH));
+    }
     let run = Run::new(&config.contract);
-    match execute(client, config, model, work, output, image_count, &run).await {
+    match execute(
+        client,
+        config,
+        model,
+        work,
+        output,
+        image_count,
+        &run,
+        progress,
+    )
+    .await
+    {
         Ok(()) => Ok(run),
         Err(failure) => {
             if failure.cleanup {
@@ -192,6 +236,7 @@ async fn execute(
     output: &Path,
     image_count: usize,
     run: &Run,
+    progress: &Reporter,
 ) -> Result<(), Failure> {
     run.validate(&config.contract)?;
     let settings = packaged_config()?;
@@ -204,14 +249,24 @@ async fn execute(
         &settings,
         settings.steps(image_count),
         &config.contract,
-    );
+    )?;
     let prompt = queue(client, config, graph)
         .await
         .map_err(|failure| Failure {
             error: failure.error,
             cleanup: failure.cleanup,
         })?;
-    if let Err(failure) = wait_prompt(client, config, prompt, config.train_timeout).await {
+    let progress_file = config.contract.progress_filename(&run.artifact);
+    if let Err(failure) = wait_prompt(
+        client,
+        config,
+        prompt,
+        config.train_timeout,
+        Some(&progress_file),
+        progress,
+    )
+    .await
+    {
         return Err(Failure {
             error: failure.error,
             cleanup: failure.cleanup,
@@ -415,14 +470,15 @@ pub(crate) fn train_graph(
     settings: &TrainConfig,
     steps: u32,
     contract: &Contract,
-) -> Value {
+) -> Result<Value, TrainError> {
     match model {
-        TrainingModel::Flux { checkpoint } => flux_graph(
+        TrainingModel::Flux { checkpoint } => Ok(flux_graph(
             checkpoint, folder, manifest, artifact, settings, steps, contract,
-        ),
-        TrainingModel::QwenEdit { unet, clip, vae } => qwen_graph(
+        )),
+        TrainingModel::QwenEdit { unet, clip, vae } => Ok(qwen_graph(
             unet, clip, vae, folder, manifest, artifact, settings, steps, contract,
-        ),
+        )),
+        TrainingModel::Sdxl { .. } => Err(TrainError::Invalid(NO_TRAINING_GRAPH)),
     }
 }
 
@@ -614,7 +670,7 @@ fn pairs(model: &TrainingModel, work: &Path) -> Result<Vec<Pair>, TrainError> {
             ));
         }
         let reference = match model {
-            TrainingModel::Flux { .. } => None,
+            TrainingModel::Flux { .. } | TrainingModel::Sdxl { .. } => None,
             TrainingModel::QwenEdit { .. } => {
                 let control = controls.get(index).ok_or(TrainError::Invalid(
                     "Qwen edit training needs one reference for every target",
@@ -688,7 +744,7 @@ async fn stage_remote(
     run: &Run,
 ) -> Result<(), TrainError> {
     for directory in ["targets", "control_1"] {
-        if directory == "control_1" && matches!(model, TrainingModel::Flux { .. }) {
+        if directory == "control_1" && !matches!(model, TrainingModel::QwenEdit { .. }) {
             continue;
         }
         for png in pngs(&work.join(directory))? {
@@ -773,29 +829,23 @@ async fn wait_prompt(
     config: &Config,
     prompt: Uuid,
     timeout: Duration,
+    progress_file: Option<&str>,
+    progress: &Reporter,
 ) -> Result<(), WaitFailure> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if tokio::time::Instant::now() >= deadline {
-            let cleanup = cancel_and_wait(client, config, prompt, false).await;
-            return Err(WaitFailure {
-                error: TrainError::Failed("training timed out".into()),
-                cleanup,
-            });
+            return Err(abandon(client, config, prompt, timed_out()).await);
         }
-        let history = match history(client, config, prompt, deadline).await {
-            Ok(history) => history,
-            Err(error) => {
-                let cleanup = cancel_and_wait(client, config, prompt, false).await;
-                return Err(WaitFailure { error, cleanup });
-            }
+        let history = match tokio::time::timeout_at(deadline, history(client, config, prompt)).await
+        {
+            Ok(Ok(history)) => history,
+            Ok(Err(error)) => return Err(abandon(client, config, prompt, error).await),
+            Err(_) => return Err(abandon(client, config, prompt, timed_out()).await),
         };
         let entry = match exact_history(&history, prompt) {
             Ok(entry) => entry,
-            Err(error) => {
-                let cleanup = cancel_and_wait(client, config, prompt, false).await;
-                return Err(WaitFailure { error, cleanup });
-            }
+            Err(error) => return Err(abandon(client, config, prompt, error).await),
         };
         if let Some(entry) = entry {
             match train_prompt_complete(entry) {
@@ -810,24 +860,76 @@ async fn wait_prompt(
                 }
             }
         }
-        tokio::time::sleep(TRAIN_POLL_INTERVAL).await;
+        if let Some(progress_file) = progress_file
+            && progress.listening()
+            && let Ok(Some(update)) =
+                tokio::time::timeout_at(deadline, read_progress(client, config, progress_file))
+                    .await
+        {
+            progress.send(update);
+        }
+        tokio::time::sleep_until((tokio::time::Instant::now() + TRAIN_POLL_INTERVAL).min(deadline))
+            .await;
     }
 }
 
+/// Cancels `prompt`, waits for ComfyUI to confirm it, and fails the wait
+/// with `error`.
+async fn abandon(
+    client: &reqwest::Client,
+    config: &Config,
+    prompt: Uuid,
+    error: TrainError,
+) -> WaitFailure {
+    let cleanup = cancel_and_wait(client, config, prompt, false).await;
+    WaitFailure { error, cleanup }
+}
+
+fn timed_out() -> TrainError {
+    TrainError::Failed(TIMED_OUT.into())
+}
+
+/// What the training node last wrote to `progress_file` in ComfyUI's LoRA
+/// output. `None` before it writes one, and whenever the read fails:
+/// progress never fails a run.
+async fn read_progress(
+    client: &reqwest::Client,
+    config: &Config,
+    progress_file: &str,
+) -> Option<TrainProgress> {
+    let response = authorize(
+        config,
+        client
+            .get(format!(
+                "{}/view?filename={}&subfolder=loras&type=output",
+                config.base_url,
+                urlencoding::encode(progress_file)
+            ))
+            .timeout(POLL_TIMEOUT),
+    )
+    .send()
+    .await
+    .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    TrainProgress::parse(&response.bytes().await.ok()?)
+}
+
+/// ComfyUI's history of `prompt`, in one request of at most
+/// [`POLL_TIMEOUT`]. A caller with a deadline of its own runs it under
+/// [`tokio::time::timeout_at`], so a ComfyUI too slow to answer before the
+/// deadline is reported as the deadline, not as a failed request.
 async fn history(
     client: &reqwest::Client,
     config: &Config,
     prompt: Uuid,
-    deadline: tokio::time::Instant,
 ) -> Result<Value, TrainError> {
-    let timeout = deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .min(POLL_TIMEOUT);
     authorize(
         config,
         client
             .get(format!("{}/history/{prompt}", config.base_url))
-            .timeout(timeout),
+            .timeout(POLL_TIMEOUT),
     )
     .send()
     .await
@@ -858,22 +960,48 @@ fn exact_history(history: &Value, prompt: Uuid) -> Result<Option<&Value>, TrainE
 }
 
 fn train_prompt_complete(entry: &Value) -> Result<bool, TrainError> {
-    let status: HistoryStatus =
-        serde_json::from_value(entry.get("status").cloned().unwrap_or(json!({})))
-            .map_err(|_| TrainError::Failed("ComfyUI history status is invalid".into()))?;
+    let unreported = json!({});
+    let report = entry.get("status").unwrap_or(&unreported);
+    let status = HistoryStatus::deserialize(report)
+        .map_err(|_| TrainError::Failed("ComfyUI history status is invalid".into()))?;
     if status.status_str.eq_ignore_ascii_case("error") {
         return Err(TrainError::Failed(format!(
             "ComfyUI train failed: {}",
-            excerpt::head(
-                &entry
-                    .get("status")
-                    .cloned()
-                    .unwrap_or(json!({}))
-                    .to_string()
-            )
+            excerpt::head(&execution_error(report).unwrap_or_else(|| TRAINER_ERROR.to_string()))
         )));
     }
     Ok(status.completed == Some(true) || status.status_str.eq_ignore_ascii_case("success"))
+}
+
+/// The exception the failing node raised, named after the node, from the
+/// `execution_error` message in a history status. Only that: the message
+/// also carries the node's inputs, tensors among them, which say nothing a
+/// person can act on and can run to megabytes.
+fn execution_error(status: &Value) -> Option<String> {
+    status
+        .get("messages")?
+        .as_array()?
+        .iter()
+        .find_map(|message| {
+            let [kind, payload] = message.as_array()?.as_slice() else {
+                return None;
+            };
+            if kind.as_str()? != EXECUTION_ERROR {
+                return None;
+            }
+            let exception = payload.get("exception_message")?.as_str()?.trim();
+            if exception.is_empty() {
+                return None;
+            }
+            match payload
+                .get("node_type")
+                .and_then(Value::as_str)
+                .map(str::trim)
+            {
+                Some(node) if !node.is_empty() => Some(format!("{node}: {exception}")),
+                _ => Some(exception.to_string()),
+            }
+        })
 }
 
 async fn cancel_and_wait(
@@ -898,7 +1026,8 @@ async fn cancel_and_wait(
         if tokio::time::Instant::now() >= deadline {
             return false;
         }
-        if let Ok(history) = history(client, config, prompt, deadline).await
+        if let Ok(Ok(history)) =
+            tokio::time::timeout_at(deadline, history(client, config, prompt)).await
             && let Ok(Some(entry)) = exact_history(&history, prompt)
             && train_prompt_terminal(entry)
         {
@@ -954,7 +1083,15 @@ pub(crate) async fn cleanup_with(client: &reqwest::Client, config: &Config, run:
     let Ok(prompt) = queue(client, config, graph).await else {
         return;
     };
-    let _ = wait_prompt(client, config, prompt, CLEANUP_TIMEOUT).await;
+    let _ = wait_prompt(
+        client,
+        config,
+        prompt,
+        CLEANUP_TIMEOUT,
+        None,
+        &Reporter::default(),
+    )
+    .await;
 }
 
 fn cleanup_local(config: &Config, run: &Run) {
@@ -965,13 +1102,16 @@ fn cleanup_local(config: &Config, run: &Run) {
     if let Some(output) = local_output(config) {
         let prefix = format!("{}-step", run.artifact);
         let final_name = format!("{}.safetensors", run.artifact);
+        let progress_name = config.contract.progress_filename(&run.artifact);
         let Ok(entries) = fs::read_dir(output) else {
             return;
         };
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if (name == final_name || name.starts_with(&prefix) && name.ends_with(".safetensors"))
+            if (name == final_name
+                || name == progress_name
+                || name.starts_with(&prefix) && name.ends_with(".safetensors"))
                 && !entry
                     .file_type()
                     .is_ok_and(|file_type| file_type.is_symlink())
@@ -1114,6 +1254,7 @@ pub(crate) fn architecture(model: &TrainingModel) -> &'static str {
     match model {
         TrainingModel::Flux { .. } => "flux",
         TrainingModel::QwenEdit { .. } => "qwen_edit",
+        TrainingModel::Sdxl { .. } => "sdxl",
     }
 }
 
@@ -1122,6 +1263,9 @@ mod tests {
     use super::*;
     use crate::recipe::Recipe;
     use crate::recipe::RecipeCatalog;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -1491,6 +1635,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_sdxl_model_is_refused_before_anything_reaches_comfyui() {
+        let server = MockServer::start().await;
+        let work = dataset();
+        let error = run(
+            &config(&server),
+            &TrainingModel::sdxl("RealVisXL_V5.0_fp16.safetensors").unwrap(),
+            work.path(),
+            &work.path().join("out.safetensors"),
+            2,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, TrainError::Invalid(message) if message == NO_TRAINING_GRAPH),
+            "{error:?}"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_graph_comfyui_will_not_accept_fails_the_job() {
         let server = MockServer::start().await;
         uploads(&server).await;
@@ -1548,34 +1712,102 @@ mod tests {
     async fn a_graph_that_never_finishes_times_out() {
         let server = MockServer::start().await;
         let prompt = Uuid::new_v4();
-        uploads(&server).await;
-        queues(&server, json!({"prompt_id": prompt, "number": 1})).await;
-        Mock::given(method("GET"))
-            .and(path(format!("/history/{prompt}")))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(
-                    json!({prompt.to_string(): {"status": {"status_str": "running"}}}),
-                ),
-            )
-            .mount(&server)
-            .await;
+        RunningUntilCancelled::mount(&server, prompt, Duration::ZERO).await;
 
-        let work = dataset();
-        let client = reqwest::Client::new();
         let failure = wait_prompt(
-            &client,
+            &reqwest::Client::new(),
             &config(&server),
             prompt,
             Duration::from_millis(120),
+            None,
+            &Reporter::default(),
         )
         .await
         .unwrap_err();
         assert!(
-            matches!(&failure.error, TrainError::Failed(message) if message.contains("timed out")),
+            matches!(&failure.error, TrainError::Failed(message) if message == TIMED_OUT),
             "{}",
             failure.error
         );
-        drop(work);
+        assert!(failure.cleanup, "the timed-out graph was cancelled");
+    }
+
+    #[tokio::test]
+    async fn a_comfyui_too_slow_to_answer_still_times_out_at_the_deadline() {
+        let server = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        RunningUntilCancelled::mount(&server, prompt, Duration::from_secs(30)).await;
+
+        let failure = wait_prompt(
+            &reqwest::Client::new(),
+            &config(&server),
+            prompt,
+            Duration::from_millis(200),
+            None,
+            &Reporter::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&failure.error, TrainError::Failed(message) if message == TIMED_OUT),
+            "{}",
+            failure.error
+        );
+        assert!(failure.cleanup, "the timed-out graph was cancelled");
+    }
+
+    /// A ComfyUI whose prompt runs, answering each history poll after
+    /// `delay`, until it is cancelled, then reports it ended in an error.
+    #[derive(Clone)]
+    struct RunningUntilCancelled {
+        prompt: Uuid,
+        delay: Duration,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    impl RunningUntilCancelled {
+        async fn mount(server: &MockServer, prompt: Uuid, delay: Duration) {
+            let running = Self {
+                prompt,
+                delay,
+                cancelled: Arc::default(),
+            };
+            Mock::given(method("GET"))
+                .and(path(format!("/history/{prompt}")))
+                .respond_with(running.clone())
+                .mount(server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!("/api/jobs/{prompt}/cancel")))
+                .respond_with(Cancel(running.cancelled))
+                .mount(server)
+                .await;
+        }
+    }
+
+    impl wiremock::Respond for RunningUntilCancelled {
+        fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+            if self.cancelled.load(Ordering::SeqCst) {
+                return ResponseTemplate::new(200).set_body_json(json!({
+                    self.prompt.to_string(): {"status": {"status_str": "error"}}
+                }));
+            }
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    self.prompt.to_string(): {"status": {"status_str": "running"}}
+                }))
+                .set_delay(self.delay)
+        }
+    }
+
+    /// ComfyUI's cancel endpoint, which marks the prompt cancelled.
+    struct Cancel(Arc<AtomicBool>);
+
+    impl wiremock::Respond for Cancel {
+        fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+            self.0.store(true, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({"cancelled": true}))
+        }
     }
 
     #[tokio::test]
@@ -1597,6 +1829,8 @@ mod tests {
             &config(&server),
             prompt,
             Duration::from_secs(5),
+            None,
+            &Reporter::default(),
         )
         .await
         .unwrap_err();
@@ -1773,7 +2007,8 @@ mod tests {
             &settings,
             12,
             &contract,
-        );
+        )
+        .unwrap();
         let qwen = train_graph(
             &qwen(),
             "folder",
@@ -1782,7 +2017,8 @@ mod tests {
             &settings,
             12,
             &contract,
-        );
+        )
+        .unwrap();
         assert_eq!(flux["2"]["class_type"], contract.load_train_dataset_node);
         assert_eq!(flux["3"]["class_type"], "VAEEncode");
         assert_eq!(flux["5"]["class_type"], contract.train_lora_node);
@@ -1848,6 +2084,7 @@ mod tests {
             load_train_dataset_node: "LoadDataset".into(),
             probe_loss_node: "MeasureLoss".into(),
             stage_training_artifact_node: "StageWeights".into(),
+            ipadapter_face_node: "SteerFace".into(),
             folder_prefix: "dataset-".into(),
             artifact_prefix: "adapter-".into(),
             probe_prefix: "sample-".into(),
@@ -1855,6 +2092,8 @@ mod tests {
             input_environment_prefix: "COMFY".into(),
             sidecar_suffix: ".adapter.json".into(),
             publication_directory: ".adapter-publish".into(),
+            progress_suffix: ".adapter-progress.json".into(),
+            host_directory: ".adapter-train".into(),
         }
     }
 
@@ -1870,7 +2109,8 @@ mod tests {
             &settings,
             12,
             &contract,
-        );
+        )
+        .unwrap();
         let qwen = train_graph(
             &qwen(),
             "folder",
@@ -1879,7 +2119,8 @@ mod tests {
             &settings,
             12,
             &contract,
-        );
+        )
+        .unwrap();
         assert_eq!(flux["2"]["class_type"], "LoadDataset");
         assert_eq!(flux["5"]["class_type"], "TrainAdapter");
         assert_eq!(qwen["4"]["class_type"], "LoadDataset");
@@ -2144,6 +2385,8 @@ mod tests {
             },
             prompt,
             Duration::from_secs(1),
+            None,
+            &Reporter::default(),
         )
         .await
         .unwrap_err();
@@ -2263,7 +2506,10 @@ mod tests {
     fn a_failure_comfyui_reports_is_quoted_bounded_and_sanitized() {
         let entry = json!({"status": {
             "status_str": "error",
-            "messages": [format!("\u{1b}[31m{}", "traceback line\n".repeat(10_000))]
+            "messages": [[
+                "execution_error",
+                {"exception_message": format!("\u{1b}[31m{}", "traceback line\n".repeat(10_000))}
+            ]]
         }});
         let TrainError::Failed(message) = train_prompt_complete(&entry).unwrap_err() else {
             panic!("a failed graph is a training failure");
@@ -2284,5 +2530,231 @@ mod tests {
                 .unwrap()
         );
         assert!(train_prompt_complete(&json!({"status": {"status_str": "error"}})).is_err());
+    }
+
+    #[test]
+    fn a_trainer_exception_is_named_without_dumping_inputs() {
+        let error = train_prompt_complete(&json!({
+            "status": {
+                "completed": false,
+                "status_str": "error",
+                "messages": [
+                    ["execution_start", {"prompt_id": "abc"}],
+                    [
+                        "execution_error",
+                        {
+                            "exception_message": "training loss became NaN",
+                            "node_type": "AbnegateTrainLoRA",
+                            "current_inputs": {
+                                "latents": "{'samples': tensor([[1.234, 5.678]])}"
+                            }
+                        }
+                    ]
+                ]
+            }
+        }))
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("AbnegateTrainLoRA: training loss became NaN"),
+            "{message}"
+        );
+        assert!(!message.contains("tensor("), "{message}");
+        assert!(!message.contains("current_inputs"), "{message}");
+    }
+
+    #[test]
+    fn an_error_without_an_exception_stays_short() {
+        for status in [
+            json!({"status_str": "error", "completed": false}),
+            json!({"status_str": "error", "messages": [["execution_error", {"exception_message": "  "}]]}),
+        ] {
+            let message = train_prompt_complete(&json!({ "status": status }))
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains(TRAINER_ERROR), "{message}");
+            assert!(!message.contains('{'), "{message}");
+        }
+        let unnamed = train_prompt_complete(&json!({"status": {
+            "status_str": "error",
+            "messages": [["execution_error", {"exception_message": "out of memory", "node_type": " "}]]
+        }}))
+        .unwrap_err()
+        .to_string();
+        assert!(unnamed.ends_with(": out of memory"), "{unnamed}");
+    }
+
+    /// ComfyUI reports the prompt running on the first poll and finished on
+    /// every one after.
+    struct RunningThenDone(std::sync::atomic::AtomicUsize, Uuid);
+
+    impl wiremock::Respond for RunningThenDone {
+        fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+            let seen = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let status = if seen == 0 {
+                json!({"status_str": "running"})
+            } else {
+                json!({"completed": true, "status_str": "success"})
+            };
+            ResponseTemplate::new(200).set_body_json(json!({
+                self.1.to_string(): {"status": status}
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn waiting_forwards_what_the_training_node_writes_to_its_progress_file() {
+        let server = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        let contract = Contract {
+            progress_suffix: ".progress.json".into(),
+            ..Contract::default()
+        };
+        let artifact = format!("{}{}", contract.artifact_prefix, Uuid::new_v4());
+        let progress_file = contract.progress_filename(&artifact);
+        Mock::given(method("GET"))
+            .and(path(format!("/history/{prompt}")))
+            .respond_with(RunningThenDone(
+                std::sync::atomic::AtomicUsize::new(0),
+                prompt,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .and(query_param("filename", progress_file.as_str()))
+            .and(query_param("subfolder", "loras"))
+            .and(query_param("type", "output"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"step": 12, "total": 400, "phase": "training", "loss": 0.25}),
+            ))
+            .mount(&server)
+            .await;
+
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        wait_prompt(
+            &reqwest::Client::new(),
+            &Config {
+                contract,
+                ..config(&server)
+            },
+            prompt,
+            Duration::from_secs(5),
+            Some(&progress_file),
+            &Reporter::new(sender),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *receiver.borrow(),
+            Some(
+                TrainProgress::new(12, 400)
+                    .with_phase(Phase::Training)
+                    .with_loss(0.25)
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slow_progress_file_never_holds_a_run_past_its_deadline() {
+        let server = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        Mock::given(method("GET"))
+            .and(path(format!("/history/{prompt}")))
+            .respond_with(RunningThenDone(
+                std::sync::atomic::AtomicUsize::new(0),
+                prompt,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"step": 1, "total": 400}))
+                    .set_delay(Duration::from_secs(30)),
+            )
+            .mount(&server)
+            .await;
+
+        let (reporter, _) = Reporter::recording();
+        let started = std::time::Instant::now();
+        let failure = wait_prompt(
+            &reqwest::Client::new(),
+            &config(&server),
+            prompt,
+            Duration::from_millis(300),
+            Some("abnegate-lora-slow-progress.json"),
+            &reporter,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&failure.error, TrainError::Failed(message) if message.contains("timed out")),
+            "{}",
+            failure.error
+        );
+        assert!(
+            started.elapsed() < POLL_TIMEOUT,
+            "the progress read ran {:?} past a 300 ms budget",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_progress_file_that_cannot_be_read_never_fails_the_run() {
+        let server = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        Mock::given(method("GET"))
+            .and(path(format!("/history/{prompt}")))
+            .respond_with(RunningThenDone(
+                std::sync::atomic::AtomicUsize::new(0),
+                prompt,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"step\":1,"))
+            .mount(&server)
+            .await;
+
+        let (reporter, published) = Reporter::recording();
+        wait_prompt(
+            &reqwest::Client::new(),
+            &config(&server),
+            prompt,
+            Duration::from_secs(5),
+            Some("abnegate-lora-half-progress.json"),
+            &reporter,
+        )
+        .await
+        .unwrap();
+        assert!(published.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cleanup_removes_the_runs_progress_file_and_nothing_else() {
+        let root = tempfile::tempdir().unwrap();
+        let comfy = root.path().join("comfy");
+        let loras = comfy.join("output").join("loras");
+        fs::create_dir_all(comfy.join("models")).unwrap();
+        fs::create_dir_all(&loras).unwrap();
+        let contract = Contract::default();
+        let run = Run::new(&contract);
+        let other = Run::new(&contract);
+        let progress = loras.join(contract.progress_filename(&run.artifact));
+        let foreign = loras.join(contract.progress_filename(&other.artifact));
+        fs::write(&progress, br#"{"step":1,"total":400}"#).unwrap();
+        fs::write(&foreign, br#"{"step":1,"total":400}"#).unwrap();
+        cleanup_local(
+            &Config {
+                models_directory: comfy.join("models"),
+                ..Default::default()
+            },
+            &run,
+        );
+        assert!(!progress.exists(), "the run's progress file outlived it");
+        assert!(foreign.exists(), "another run's progress file was removed");
     }
 }

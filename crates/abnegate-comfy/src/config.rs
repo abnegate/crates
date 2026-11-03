@@ -4,7 +4,10 @@ mod error;
 
 pub use error::ConfigError;
 
+use crate::host::Trainer;
+use crate::lora::TrainPolicy;
 use crate::train::Contract;
+use abnegate_exec::EnvironmentPolicy;
 use abnegate_secret::SecretValue;
 use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
@@ -28,8 +31,12 @@ const MAXIMUM_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const MAXIMUM_CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAXIMUM_CAPTION_TIMEOUT: Duration = Duration::from_secs(600);
 const MAXIMUM_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
-/// Ceiling on every generation deadline: image, video, audio and upscale.
+/// Ceiling on the image, audio and upscale generation deadlines.
 const MAXIMUM_GENERATION_TIMEOUT: Duration = Duration::from_secs(3600);
+const DEFAULT_VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(7200);
+const MAXIMUM_VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(14_400);
+const DEFAULT_OUTAGE_WINDOW: Duration = Duration::from_secs(120);
+const DEFAULT_QUEUE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const MAXIMUM_TRAIN_TIMEOUT: Duration = Duration::from_secs(14_400);
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8188";
 const DEFAULT_ARTIFACT_ROOT: &str = "./artifacts";
@@ -135,13 +142,14 @@ pub struct Config {
     pub workflow_path: Option<PathBuf>,
     /// Image checkpoint, or a LoRA whose sidecar names its base.
     pub checkpoint: String,
-    /// `None` uses the packaged text-to-video graph.
+    /// `None` uses the packaged Wan 2.2 A14B text-to-video graph.
     pub video_workflow_path: Option<PathBuf>,
-    /// Diffusion model the video graphs load.
+    /// Wan 2.2 A14B noise expert the video graphs load, paired with its
+    /// other expert; the high-noise text-to-video expert unless set.
     pub video_unet: String,
     /// Text encoder the video graphs load.
     pub video_clip: String,
-    /// VAE the video graphs load.
+    /// VAE the video graphs load, the Wan 2.1 VAE unless set.
     pub video_vae: String,
     /// `None` uses the packaged text-to-audio graph.
     pub audio_workflow_path: Option<PathBuf>,
@@ -167,29 +175,50 @@ pub struct Config {
     /// Deadline for one image generation, from submission to the last byte, at
     /// most an hour.
     pub generation_timeout: Duration,
-    /// Deadline for one video generation, at most an hour.
+    /// Deadline for one video generation, two hours unless set, at most four.
     pub video_generation_timeout: Duration,
     /// Deadline for one audio generation, at most an hour.
     pub audio_generation_timeout: Duration,
     /// Deadline for one image or video upscale, at most an hour.
     pub upscale_generation_timeout: Duration,
-    /// Wait between two polls of a submitted graph's history, at most five
-    /// seconds.
+    /// Wait between two polls of a submitted graph's history, or of a
+    /// training command's progress file, at most five seconds.
     pub poll_interval: Duration,
+    /// How long a run of failed polls or downloads that could heal, a lost
+    /// connection or a 5xx, 408 or 429 answer, is retried before a
+    /// generation gives up on a dead or restarted ComfyUI. Two minutes
+    /// unless set with [`Config::with_outage_window`].
+    pub outage_window: Duration,
+    /// How often a generation whose history is still empty asks ComfyUI's
+    /// queue whether it holds the prompt, so one lost to a restart fails
+    /// instead of waiting out its deadline. Thirty seconds unless set with
+    /// [`Config::with_queue_check_interval`].
+    pub queue_check_interval: Duration,
     /// ComfyUI models root (`checkpoints/`, `loras/`, `diffusion_models/`, ...).
     pub models_directory: PathBuf,
     /// Optional command used to train a LoRA, run with `sh -c`. Empty runs the
     /// packaged training graph on ComfyUI.
     ///
-    /// The command never sees this process's whole environment. It gets the
-    /// names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT),
-    /// every variable this process has under
-    /// [`Contract::environment_prefix`], and the variables that prefix
+    /// The command never sees this process's whole environment. It gets
+    /// [`Config::trainer_environment`], every variable this process has
+    /// under [`Contract::environment_prefix`], and the variables that prefix
     /// documents; anything else it needs, it sets itself.
     pub train_command: Option<String>,
+    /// What [`Config::train_command`] is given of this process's environment
+    /// besides its own variables: by default the names in
+    /// [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) and nothing
+    /// else. A deployment whose trainer reads settings of its own allows
+    /// them here.
+    pub trainer_environment: EnvironmentPolicy,
+    /// A trainer on the host that takes the jobs the packaged graph cannot
+    /// run when no [`Config::train_command`] is set. `None` refuses them.
+    pub host_trainer: Option<Trainer>,
     /// Wall clock budget for a training run, graph or command, at most four
     /// hours.
     pub train_timeout: Duration,
+    /// Which subjects and methods each base trains and where each method's
+    /// weight is published. Empty trains a LoRA on every trainable base.
+    pub train_policy: TrainPolicy,
     /// Decoder that turns a submitted clip into training frames. It sees only
     /// the names in [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT)
     /// of this process's environment.
@@ -204,6 +233,10 @@ pub struct Config {
     /// U2-Net weights that locate the subject of a training image. `None`
     /// crops photos on their centre and video frames on whatever moved.
     pub vision_model: Option<PathBuf>,
+    /// Directory of OpenPose images, one per pose cluster, named as
+    /// [`dataset::pose_filename`](crate::dataset::pose_filename) names it,
+    /// that a person's generation can be posed with. `None` poses nothing.
+    pub poses_directory: Option<PathBuf>,
     /// Node and namespace names the training graphs and training command are
     /// built with.
     pub contract: Contract,
@@ -219,9 +252,9 @@ impl Default for Config {
             workflow_path: None,
             checkpoint: "flux1-schnell-fp8.safetensors".to_string(),
             video_workflow_path: None,
-            video_unet: "wan2.2_ti2v_5B_fp16.safetensors".to_string(),
+            video_unet: "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors".to_string(),
             video_clip: "umt5_xxl_fp8_e4m3fn_scaled.safetensors".to_string(),
-            video_vae: "wan2.2_vae.safetensors".to_string(),
+            video_vae: "wan_2.1_vae.safetensors".to_string(),
             audio_workflow_path: None,
             audio_checkpoint: "ace_step_v1_3.5b.safetensors".to_string(),
             upscale_workflow_path: None,
@@ -233,18 +266,24 @@ impl Default for Config {
             caption_timeout: Duration::from_secs(60),
             request_timeout: Duration::from_secs(120),
             generation_timeout: Duration::from_secs(300),
-            video_generation_timeout: Duration::from_secs(600),
+            video_generation_timeout: DEFAULT_VIDEO_GENERATION_TIMEOUT,
             audio_generation_timeout: Duration::from_secs(600),
             upscale_generation_timeout: Duration::from_secs(600),
             poll_interval: Duration::from_millis(500),
+            outage_window: DEFAULT_OUTAGE_WINDOW,
+            queue_check_interval: DEFAULT_QUEUE_CHECK_INTERVAL,
             models_directory: PathBuf::from(DEFAULT_MODELS_DIRECTORY),
             train_command: None,
+            trainer_environment: EnvironmentPolicy::allowlist(),
+            host_trainer: None,
             train_timeout: Duration::from_secs(3600),
+            train_policy: TrainPolicy::default(),
             ffmpeg: "ffmpeg".to_string(),
             ffprobe: "ffprobe".to_string(),
             frame_rate: 4,
             frame_limit: 48,
             vision_model: None,
+            poses_directory: None,
             contract: Contract::default(),
         }
     }
@@ -266,8 +305,9 @@ impl Config {
 
     /// Refuses settings that would fail every request, poll ComfyUI in a busy
     /// loop, wait past the ceiling each timeout's documentation names, send a
-    /// token no proxy could read, or run a decoder whose name is blank or
-    /// carries a control character. [`Client::new`](crate::Client::new),
+    /// token no proxy could read, run a decoder whose name is blank or
+    /// carries a control character, or publish a trained weight outside the
+    /// models directory. [`Client::new`](crate::Client::new),
     /// [`lora::train`](crate::lora::train) and [`train::run`](crate::train::run)
     /// call it first.
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -289,8 +329,8 @@ impl Config {
             ),
             (
                 self.video_generation_timeout,
-                MAXIMUM_GENERATION_TIMEOUT,
-                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS must be between one second and an hour",
+                MAXIMUM_VIDEO_GENERATION_TIMEOUT,
+                "COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS must be between one second and four hours",
             ),
             (
                 self.audio_generation_timeout,
@@ -348,7 +388,47 @@ impl Config {
                 return Err(ConfigError::new(message));
             }
         }
+        if let Some(trainer) = &self.host_trainer {
+            trainer.validate()?;
+        }
+        self.train_policy.validate()?;
         self.contract.validate()
+    }
+
+    /// The same settings, giving [`Config::train_command`] `environment` of
+    /// this process's environment besides its own variables, in place of the
+    /// default allowlist.
+    pub fn with_trainer_environment(mut self, environment: EnvironmentPolicy) -> Self {
+        self.trainer_environment = environment;
+        self
+    }
+
+    /// The same settings, handing what the packaged graph cannot train to
+    /// `trainer` on the host.
+    pub fn with_host_trainer(mut self, trainer: Trainer) -> Self {
+        self.host_trainer = Some(trainer);
+        self
+    }
+
+    /// The same settings, retrying a generation's failed polls and downloads
+    /// for `window` before it gives up on ComfyUI.
+    pub fn with_outage_window(mut self, window: Duration) -> Self {
+        self.outage_window = window;
+        self
+    }
+
+    /// The same settings, confirming every `interval` that ComfyUI still
+    /// queues a prompt whose history is empty.
+    pub fn with_queue_check_interval(mut self, interval: Duration) -> Self {
+        self.queue_check_interval = interval;
+        self
+    }
+
+    /// The same settings, posing a person's generation with the OpenPose
+    /// images in `directory`.
+    pub fn with_poses_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.poses_directory = Some(directory.into());
+        self
     }
 
     /// Settings from whatever `environment` answers for each variable, so the
@@ -374,7 +454,7 @@ impl Config {
             checkpoint: text(environment("COMFYUI_CHECKPOINT")).unwrap_or(defaults.checkpoint),
             video_workflow_path: Some(workflow(
                 environment("COMFYUI_VIDEO_WORKFLOW_PATH"),
-                "wan2.2-ti2v-5b-api.json",
+                "wan2.2-a14b-t2v-api.json",
             )),
             video_unet: text(environment("COMFYUI_VIDEO_UNET")).unwrap_or(defaults.video_unet),
             video_clip: text(environment("COMFYUI_VIDEO_CLIP")).unwrap_or(defaults.video_clip),
@@ -424,7 +504,7 @@ impl Config {
                 environment("COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS"),
                 defaults.video_generation_timeout,
                 Duration::from_secs(10),
-                MAXIMUM_GENERATION_TIMEOUT,
+                MAXIMUM_VIDEO_GENERATION_TIMEOUT,
             ),
             audio_generation_timeout: seconds(
                 environment("COMFYUI_AUDIO_GENERATION_TIMEOUT_SECONDS"),
@@ -444,18 +524,24 @@ impl Config {
                 Duration::from_millis(50),
                 MAXIMUM_POLL_INTERVAL,
             ),
+            outage_window: defaults.outage_window,
+            queue_check_interval: defaults.queue_check_interval,
             vision_model: text(environment(vision_model))
                 .map(PathBuf::from)
                 .or_else(|| Some(models_directory.join("vision/u2net.onnx")))
                 .filter(|path| path.is_file()),
+            poses_directory: text(environment("COMFYUI_POSES_DIRECTORY")).map(PathBuf::from),
             models_directory,
             train_command: text(environment("COMFYUI_TRAIN_COMMAND")),
+            trainer_environment: defaults.trainer_environment,
+            host_trainer: defaults.host_trainer,
             train_timeout: seconds(
                 environment("COMFYUI_TRAIN_TIMEOUT_SECONDS"),
                 defaults.train_timeout,
                 Duration::from_secs(60),
                 MAXIMUM_TRAIN_TIMEOUT,
             ),
+            train_policy: defaults.train_policy,
             ffmpeg: text(environment("COMFYUI_FFMPEG")).unwrap_or(defaults.ffmpeg),
             ffprobe: text(environment("COMFYUI_FFPROBE")).unwrap_or(defaults.ffprobe),
             frame_rate: frames(
@@ -513,7 +599,7 @@ mod tests {
         let read = configured(&[]);
         for (path, graph) in [
             (&read.workflow_path, "flux1-schnell-fp8-api.json"),
-            (&read.video_workflow_path, "wan2.2-ti2v-5b-api.json"),
+            (&read.video_workflow_path, "wan2.2-a14b-t2v-api.json"),
             (&read.audio_workflow_path, "ace-step-v1-3.5b-api.json"),
             (&read.upscale_workflow_path, "upscale-image-api.json"),
         ] {
@@ -522,6 +608,54 @@ mod tests {
                 &Some(PathBuf::from("./comfyui/workflows").join(graph))
             );
         }
+    }
+
+    #[test]
+    fn video_defaults_name_the_wan_22_a14b_experts() {
+        for config in [Config::default(), configured(&[])] {
+            assert_eq!(
+                config.video_unet,
+                "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"
+            );
+            assert_eq!(config.video_vae, "wan_2.1_vae.safetensors");
+        }
+    }
+
+    #[test]
+    fn a_video_render_gets_two_hours_and_may_be_given_four() {
+        assert_eq!(
+            Config::default().video_generation_timeout,
+            Duration::from_secs(7200)
+        );
+        assert_eq!(
+            configured(&[]).video_generation_timeout,
+            Duration::from_secs(7200)
+        );
+        let longest = configured(&[("COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS", "14400")]);
+        assert_eq!(
+            longest.video_generation_timeout,
+            Duration::from_secs(14_400)
+        );
+        assert_eq!(longest.validate(), Ok(()));
+        assert_eq!(
+            configured(&[("COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS", "14401")])
+                .video_generation_timeout,
+            Duration::from_secs(14_400)
+        );
+    }
+
+    #[test]
+    fn a_generation_rides_out_two_minutes_of_outage_and_checks_the_queue_every_thirty_seconds() {
+        for config in [Config::default(), configured(&[])] {
+            assert_eq!(config.outage_window, Duration::from_secs(120));
+            assert_eq!(config.queue_check_interval, Duration::from_secs(30));
+        }
+        let tuned = Config::default()
+            .with_outage_window(Duration::from_secs(5))
+            .with_queue_check_interval(Duration::ZERO);
+        assert_eq!(tuned.outage_window, Duration::from_secs(5));
+        assert_eq!(tuned.queue_check_interval, Duration::ZERO);
+        assert_eq!(tuned.validate(), Ok(()));
     }
 
     #[test]
@@ -567,6 +701,7 @@ mod tests {
             ("COMFYUI_MODELS_DIRECTORY", "/srv/comfyui/models"),
             ("COMFYUI_TRAIN_FRAME_RATE", "6"),
             ("COMFYUI_ARTIFACT_ROOT", "/srv/artifacts"),
+            ("COMFYUI_POSES_DIRECTORY", "/srv/comfyui/poses"),
         ]);
         assert_eq!(config.classifier_timeout, Duration::from_secs(7));
         assert_eq!(config.caption_timeout, Duration::from_secs(70));
@@ -583,6 +718,26 @@ mod tests {
         );
         assert_eq!(config.frame_rate, 6);
         assert_eq!(config.artifact_root, PathBuf::from("/srv/artifacts"));
+        assert_eq!(
+            config.poses_directory,
+            Some(PathBuf::from("/srv/comfyui/poses"))
+        );
+    }
+
+    #[test]
+    fn nothing_is_posed_until_a_deployment_names_its_poses() {
+        assert_eq!(Config::default().poses_directory, None);
+        assert_eq!(configured(&[]).poses_directory, None);
+        assert_eq!(
+            configured(&[("COMFYUI_POSES_DIRECTORY", "  ")]).poses_directory,
+            None
+        );
+        assert_eq!(
+            Config::default()
+                .with_poses_directory("/srv/poses")
+                .poses_directory,
+            Some(PathBuf::from("/srv/poses"))
+        );
     }
 
     #[test]
@@ -614,6 +769,7 @@ mod tests {
             "COMFYUI_GENERATION_TIMEOUT_SECONDS",
             "COMFYUI_MODELS_DIRECTORY",
             "COMFYUI_POLL_INTERVAL_MILLISECONDS",
+            "COMFYUI_POSES_DIRECTORY",
             "COMFYUI_REQUEST_TIMEOUT_SECONDS",
             "COMFYUI_TOKEN_HEADER",
             "COMFYUI_TRAIN_COMMAND",
@@ -804,7 +960,7 @@ mod tests {
             ),
             (
                 |config, value| config.video_generation_timeout = value,
-                MAXIMUM_GENERATION_TIMEOUT,
+                MAXIMUM_VIDEO_GENERATION_TIMEOUT,
             ),
             (
                 |config, value| config.audio_generation_timeout = value,
@@ -880,6 +1036,31 @@ mod tests {
     fn a_contract_that_could_name_a_path_outside_comfyui_is_refused() {
         let mut config = Config::default();
         config.contract.folder_prefix = "../escape-".into();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn the_trainer_gets_the_allowlist_and_no_host_trainer_until_a_deployment_says_otherwise() {
+        let defaults = Config::default();
+        assert_eq!(defaults.trainer_environment, EnvironmentPolicy::allowlist());
+        assert_eq!(defaults.host_trainer, None);
+        let read = configured(&[]);
+        assert_eq!(read.trainer_environment, defaults.trainer_environment);
+        assert_eq!(read.host_trainer, None);
+
+        let environment = EnvironmentPolicy::allowlist().allow(["ACME_PROBE_STEPS"]);
+        let configured = Config::default()
+            .with_trainer_environment(environment.clone())
+            .with_host_trainer(Trainer::new());
+        assert_eq!(configured.trainer_environment, environment);
+        assert_eq!(configured.host_trainer, Some(Trainer::new()));
+        assert_eq!(configured.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_host_trainer_that_would_poll_in_a_busy_loop_is_refused() {
+        let config =
+            Config::default().with_host_trainer(Trainer::new().with_poll_interval(Duration::ZERO));
         assert!(config.validate().is_err());
     }
 

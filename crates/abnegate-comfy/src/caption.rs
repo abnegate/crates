@@ -25,17 +25,18 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::config::Config;
+use crate::dataset::pose_word;
 
 const SUBJECT_TOKENS: u32 = 40;
 const DESCRIPTION_TOKENS: u32 = 80;
-const MAXIMUM_CAPTION_WORDS: usize = 18;
+const MAXIMUM_CAPTION_WORDS: usize = 24;
 /// A word in at least this share of the descriptions is invariant, so it is identity.
 /// Set low on purpose: leaking identity costs more than dropping a little context.
 const INVARIANT_SHARE: f32 = 0.34;
 /// Shown to anchor the answer format. Small models copy it verbatim, so it is
 /// also the one answer that is never accepted.
 const EXAMPLE_CAPTION: &str =
-    "close-up from the side, sitting on a wooden stool, warm indoor light";
+    "standing full body, one hand on her hip, wooden stool, warm indoor light";
 
 const PREAMBLES: &[&str] = &[
     "in this image,",
@@ -113,9 +114,29 @@ impl Captioner {
     /// words are stripped from them, so a caller can measure how much of that
     /// vocabulary the set has in common.
     pub async fn fill(&self, drafts: &mut [Draft], trigger: &str) -> Vec<String> {
+        self.fill_with_progress(drafts, trigger, |_, _| {}).await
+    }
+
+    /// [`fill`](Self::fill), calling `progress` with how many of the shots
+    /// left blank have been described and how many there are: once with none
+    /// done before the first is sent to the vision model, then after each.
+    /// Never called when there is nothing to caption.
+    pub async fn fill_with_progress(
+        &self,
+        drafts: &mut [Draft],
+        trigger: &str,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Vec<String> {
         if !self.available() || drafts.iter().all(|draft| !draft.caption.trim().is_empty()) {
             return Vec::new();
         }
+        let blank = drafts
+            .iter()
+            .filter(|draft| draft.caption.trim().is_empty())
+            .map(|draft| draft.group)
+            .collect::<HashSet<usize>>()
+            .len();
+        progress(0, blank);
         let subject = self.subject(&drafts[0].image).await;
         let mut shots: Vec<usize> = Vec::new();
         let mut described: Vec<Option<String>> = Vec::new();
@@ -125,6 +146,7 @@ impl Captioner {
             }
             shots.push(draft.group);
             described.push(self.describe(&draft.image, subject.as_deref()).await);
+            progress(shots.len(), blank);
         }
         let banned = identity_words(&described, subject.as_deref(), trigger);
         let vocabulary: Vec<String> = described.iter().flatten().cloned().collect();
@@ -167,16 +189,7 @@ impl Captioner {
 
     /// What varies in one image: pose, framing, setting, lighting, props.
     async fn describe(&self, image: &str, subject: Option<&str>) -> Option<String> {
-        let exclusion = match subject {
-            Some(subject) => format!(" Do not name or describe the {subject} itself."),
-            None => String::new(),
-        };
-        let prompt = format!(
-            "Write a short caption for this photo. Say where it was taken, how it is framed, \
-             and what the lighting is like.{exclusion} Answer with lowercase phrases separated \
-             by commas.\nExample answer: {EXAMPLE_CAPTION}"
-        );
-        let mut message = Message::user(prompt);
+        let mut message = Message::user(describe_prompt(subject));
         message.images = vec![image.to_string()];
         let answer = self.ask(message, DESCRIPTION_TOKENS).await?;
         let cleaned = tidy(&answer);
@@ -239,10 +252,26 @@ fn identity_words(
     banned.extend(
         counts
             .into_iter()
-            .filter(|(_, count)| *count >= threshold)
+            .filter(|(word, count)| *count >= threshold && !pose_word(word))
             .map(|(word, _)| word.clone()),
     );
     banned
+}
+
+/// Asks for the pose first, since a pose a person's set never names is a pose
+/// the weight learns as part of the person.
+fn describe_prompt(subject: Option<&str>) -> String {
+    let exclusion = match subject {
+        Some(subject) => format!(" Do not name or describe the {subject} itself."),
+        None => String::new(),
+    };
+    format!(
+        "Write a short caption for this photo. Name the pose or anatomy position (standing, \
+         sitting, lying, on back, from behind, full body, close-up, plus arm or hand notes \
+         when they are visible), where it was taken, how it is framed, and what the lighting \
+         is like.{exclusion} Answer with lowercase phrases separated by commas.\nExample \
+         answer: {EXAMPLE_CAPTION}"
+    )
 }
 
 pub(crate) fn content_words(value: &str) -> impl Iterator<Item = String> + '_ {
@@ -331,16 +360,52 @@ mod tests {
     }
 
     #[test]
+    fn an_uploaded_image_is_drafted_like_its_base64() {
+        use base64::Engine;
+        let bytes = b"\x89PNG not really".to_vec();
+        let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let expected = Draft::new("a.png", &base64, "kept", 3);
+
+        let uploaded = CaptionImage::from_bytes("a.png", bytes.clone()).with_caption("kept");
+        let both = CaptionImage {
+            bytes: Some(bytes.clone()),
+            ..CaptionImage::new("a.png", "not base64").with_caption("kept")
+        };
+        for drafted in [
+            Draft::from_bytes("a.png", &bytes, "kept", 3),
+            uploaded.draft(3),
+            both.draft(3),
+            CaptionImage::new("a.png", base64.clone())
+                .with_caption("kept")
+                .draft(3),
+        ] {
+            assert_eq!(drafted.image, expected.image);
+            assert_eq!(drafted.caption, "kept");
+            assert_eq!(drafted.group, 3);
+        }
+
+        let request: CaptionRequest = serde_json::from_value(serde_json::json!({
+            "images": [{"filename": "a.png", "bytes": [1, 2, 3]}],
+        }))
+        .unwrap();
+        assert!(request.images[0].bytes.is_none());
+        assert!(request.images[0].bytes_base64.is_empty());
+        let built = CaptionRequest::new(vec![uploaded.with_group(1)]).with_trigger("ohwx");
+        assert_eq!(built.trigger.as_deref(), Some("ohwx"));
+        assert_eq!(built.images[0].group, Some(1));
+    }
+
+    #[test]
     fn images_print_their_size_rather_than_their_bytes() {
         let upload = "A".repeat(1 << 20);
-        let image = CaptionImage {
-            filename: "a.png".into(),
-            bytes_base64: upload.clone(),
-            caption: String::new(),
-            group: None,
-        };
+        let image = CaptionImage::new("a.png", upload.clone());
         let draft = Draft::new("a.png", &upload, "", 0);
-        for rendered in [format!("{image:?}"), format!("{draft:?}")] {
+        let uploaded = CaptionImage::from_bytes("a.png", vec![0; 1 << 20]);
+        for rendered in [
+            format!("{image:?}"),
+            format!("{draft:?}"),
+            format!("{uploaded:?}"),
+        ] {
             assert!(rendered.len() < 200, "{} characters", rendered.len());
         }
     }
@@ -397,7 +462,7 @@ mod tests {
 
     #[test]
     fn captions_are_capped_without_cutting_a_clause_in_half() {
-        let clause = "standing on a wooden stool in a warehouse under warm light";
+        let clause = "standing on a wooden stool in a large warehouse under warm indoor light";
         let description = format!("{clause}, {clause}");
         let capped = strip_words(&description, &HashSet::new());
         assert_eq!(
@@ -405,6 +470,43 @@ mod tests {
             "a clause that does not fit is dropped whole"
         );
         assert!(capped.split_whitespace().count() <= MAXIMUM_CAPTION_WORDS);
+    }
+
+    #[test]
+    fn describe_prompt_requires_pose() {
+        let prompt = describe_prompt(None);
+        assert!(
+            prompt.contains("pose or anatomy position"),
+            "vision must be asked for pose, got {prompt}"
+        );
+        assert!(prompt.contains("standing"));
+        assert!(prompt.contains("hand"));
+        assert!(prompt.contains(EXAMPLE_CAPTION));
+        assert!(describe_prompt(Some("golden retriever")).contains("the golden retriever itself"));
+    }
+
+    #[test]
+    fn pose_words_are_not_stripped_as_identity() {
+        let drafts: Vec<Option<String>> = [
+            "standing, wooden porch, warm afternoon",
+            "standing, grassy field, bright daylight",
+            "standing, tiled floor, cool window",
+            "sitting, leather couch, lamp glow",
+            "lying, garden path, overcast sky",
+            "walking, city street, neon signs",
+        ]
+        .iter()
+        .map(|value| Some((*value).to_string()))
+        .collect();
+        let banned = identity_words(&drafts, None, "ohwx");
+        assert!(
+            !banned.contains("standing"),
+            "a pose term must stay even at 50% frequency: {banned:?}"
+        );
+        assert_eq!(
+            strip_words(drafts[0].as_deref().unwrap(), &banned),
+            "standing, wooden porch, warm afternoon"
+        );
     }
 
     #[tokio::test]
@@ -431,8 +533,18 @@ mod tests {
             Draft::new("a.png", "aaa", "", 0),
             Draft::new("b.png", "bbb", "hand written", 1),
         ];
-        captioner.fill(&mut images, "zrkxyz").await;
+        let mut ticks = Vec::new();
+        captioner
+            .fill_with_progress(&mut images, "zrkxyz", |done, total| {
+                ticks.push((done, total))
+            })
+            .await;
 
+        assert_eq!(
+            ticks,
+            vec![(0, 1), (1, 1)],
+            "one blank shot reports its start and its completion"
+        );
         assert_eq!(
             images[1].caption, "hand written",
             "written captions must survive"
@@ -547,8 +659,12 @@ mod tests {
     async fn fill_is_a_no_op_without_a_caption_model() {
         let captioner = Captioner::new(&config(""), "http://unused".into(), "key".into());
         let mut images = vec![Draft::new("a.png", "aaa", "", 0)];
-        captioner.fill(&mut images, "zrkxyz").await;
+        let mut ticks = 0;
+        captioner
+            .fill_with_progress(&mut images, "zrkxyz", |_, _| ticks += 1)
+            .await;
         assert_eq!(images[0].caption, "");
+        assert_eq!(ticks, 0, "nothing was captioned, so nothing is reported");
     }
 
     #[tokio::test]
@@ -587,7 +703,12 @@ mod tests {
         let mut frames: Vec<Draft> = (0..6)
             .map(|index| Draft::new(&format!("{index}.png"), "aaa", "", index / 3))
             .collect();
-        captioner.fill(&mut frames, "zrkxyz").await;
+        let mut ticks = Vec::new();
+        captioner
+            .fill_with_progress(&mut frames, "zrkxyz", |done, total| {
+                ticks.push((done, total))
+            })
+            .await;
 
         let described = server
             .received_requests()
@@ -599,6 +720,11 @@ mod tests {
             })
             .count();
         assert_eq!(described, 2, "six frames of two shots cost two round trips");
+        assert_eq!(
+            ticks,
+            vec![(0, 2), (1, 2), (2, 2)],
+            "progress counts shots, not frames"
+        );
         assert_eq!(frames[0].caption, frames[2].caption, "a shot reads alike");
         assert!(
             frames

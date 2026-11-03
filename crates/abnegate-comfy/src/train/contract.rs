@@ -1,27 +1,34 @@
 use crate::config::ConfigError;
+use crate::inventory::SCAN_DIRECTORIES;
 use crate::inventory::WEIGHT_EXTENSION;
 use crate::train::ARTIFACT_PREFIX;
 use crate::train::CLEANUP_TRAINING_RUN_NODE;
 use crate::train::ENVIRONMENT_PREFIX;
 use crate::train::FOLDER_PREFIX;
+use crate::train::HOST_DIRECTORY;
 use crate::train::INPUT_ENVIRONMENT_PREFIX;
+use crate::train::IPADAPTER_FACE_NODE;
 use crate::train::LOAD_TRAIN_DATASET_NODE;
 use crate::train::PROBE_LOSS_NODE;
 use crate::train::PROBE_PREFIX;
+use crate::train::PROGRESS_SUFFIX;
 use crate::train::PUBLICATION_DIRECTORY;
 use crate::train::SIDECAR_SUFFIX;
 use crate::train::STAGE_TRAINING_ARTIFACT_NODE;
 use crate::train::TRAIN_LORA_NODE;
+use crate::train::TRAINING_DIRECTORY;
 
 /// The names a training run shares with the ComfyUI node pack that executes it
-/// and with an external training command. The nodes refuse a run namespace
-/// they do not recognise, so these have to match the deployment.
+/// and with an external training command, and the face node a generation runs
+/// through. The nodes refuse a run namespace they do not recognise, so these
+/// have to match the deployment.
 ///
-/// The prefixes, the sidecar suffix and the publication directory become
-/// directory and file names under ComfyUI's directories, so
-/// [`Contract::validate`] holds each to one plain path component. The
-/// defaults name everything under a neutral `Abnegate` namespace; a deployment
-/// whose node pack and training script register other names sets them here.
+/// The prefixes, the sidecar and progress suffixes and the publication and
+/// host directories become directory and file names under ComfyUI's
+/// directories, so [`Contract::validate`] holds each to one plain path
+/// component. The defaults name everything under a neutral `Abnegate`
+/// namespace; a deployment whose node pack and training script register other
+/// names sets them here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Contract {
@@ -36,6 +43,12 @@ pub struct Contract {
     /// `class_type` of the node that moves a trained checkpoint to where a
     /// LoRA loader finds it.
     pub stage_training_artifact_node: String,
+    /// `class_type` of the node a generation's face reference runs through:
+    /// it takes `model`, `clip_vision` (a `CLIPVisionLoader` output), `image`
+    /// (the face, a `LoadImage` output), `ipadapter_name` and `strength`, and
+    /// returns the model the sampler reads. Only a recipe that declares
+    /// [`RecipeExtra::Face`](crate::recipe::RecipeExtra::Face) runs it.
+    pub ipadapter_face_node: String,
     /// Namespace of the input folder a run stages its dataset in.
     pub folder_prefix: String,
     /// Namespace of the weights a run writes.
@@ -63,6 +76,17 @@ pub struct Contract {
     /// Directory under `loras/` whose markers hide a weight while it is
     /// replaced. Every process sharing a models directory has to agree on it.
     pub publication_directory: String,
+    /// Suffix of the progress file the training node writes beside a run's
+    /// checkpoints in ComfyUI's LoRA output, holding one
+    /// [`TrainProgress`](crate::train::TrainProgress). The node has to write it
+    /// as `<artifact><suffix>`, the name [`Contract::progress_filename`]
+    /// gives, or no progress is read, and the cleanup node has to remove it
+    /// with the run. It has to differ from `sidecar_suffix`.
+    pub progress_suffix: String,
+    /// Directory under the models root that host training jobs live in, one
+    /// per job, as the [`host`](crate::host) module lays them out. The host
+    /// trainer watches it, so both have to agree on it.
+    pub host_directory: String,
 }
 
 impl Default for Contract {
@@ -73,6 +97,7 @@ impl Default for Contract {
             load_train_dataset_node: LOAD_TRAIN_DATASET_NODE.to_string(),
             probe_loss_node: PROBE_LOSS_NODE.to_string(),
             stage_training_artifact_node: STAGE_TRAINING_ARTIFACT_NODE.to_string(),
+            ipadapter_face_node: IPADAPTER_FACE_NODE.to_string(),
             folder_prefix: FOLDER_PREFIX.to_string(),
             artifact_prefix: ARTIFACT_PREFIX.to_string(),
             probe_prefix: PROBE_PREFIX.to_string(),
@@ -80,6 +105,8 @@ impl Default for Contract {
             input_environment_prefix: INPUT_ENVIRONMENT_PREFIX.to_string(),
             sidecar_suffix: SIDECAR_SUFFIX.to_string(),
             publication_directory: PUBLICATION_DIRECTORY.to_string(),
+            progress_suffix: PROGRESS_SUFFIX.to_string(),
+            host_directory: HOST_DIRECTORY.to_string(),
         }
     }
 }
@@ -118,6 +145,7 @@ impl Contract {
             &self.load_train_dataset_node,
             &self.probe_loss_node,
             &self.stage_training_artifact_node,
+            &self.ipadapter_face_node,
         ]
         .iter()
         .all(|node| is_name(node, is_node_character))
@@ -149,7 +177,34 @@ impl Contract {
                 "the contract publication directory must be one plain directory name",
             ));
         }
+        if !is_name(&self.progress_suffix, is_file_character)
+            || self.progress_suffix.ends_with(WEIGHT_EXTENSION)
+            || self.progress_suffix == self.sidecar_suffix
+        {
+            return Err(ConfigError::new(
+                "the contract progress suffix must be one plain name that no weight ends in and the sidecar suffix is not",
+            ));
+        }
+        let taken = SCAN_DIRECTORIES
+            .iter()
+            .map(|(directory, _)| *directory)
+            .chain([TRAINING_DIRECTORY, self.publication_directory.as_str()])
+            .any(|directory| directory.eq_ignore_ascii_case(&self.host_directory));
+        if !is_name(&self.host_directory, is_file_character)
+            || matches!(self.host_directory.as_str(), "." | "..")
+            || taken
+        {
+            return Err(ConfigError::new(
+                "the contract host directory must be one plain directory name that no weight, training attempt or publication uses",
+            ));
+        }
         Ok(())
+    }
+
+    /// The name of the progress file the training node writes for
+    /// `artifact`, a [`Run::artifact`](crate::train::Run::artifact).
+    pub fn progress_filename(&self, artifact: &str) -> String {
+        format!("{artifact}{}", self.progress_suffix)
     }
 
     pub(crate) fn variable(&self, name: &str) -> String {
@@ -237,7 +292,25 @@ mod tests {
                 ..Contract::default()
             };
             assert!(contract.validate().is_err(), "{node:?} was accepted");
+            let contract = Contract {
+                ipadapter_face_node: node.into(),
+                ..Contract::default()
+            };
+            assert!(contract.validate().is_err(), "{node:?} was accepted");
         }
+    }
+
+    #[test]
+    fn the_face_node_is_neutral_by_default_and_a_deployment_names_its_own() {
+        assert_eq!(
+            Contract::default().ipadapter_face_node,
+            "AbnegateIPAdapterFace"
+        );
+        let contract = Contract {
+            ipadapter_face_node: "AcmeIPAdapterFace".into(),
+            ..Contract::default()
+        };
+        assert_eq!(contract.validate(), Ok(()));
     }
 
     #[test]
@@ -290,6 +363,74 @@ mod tests {
                 "directory {name:?} was accepted"
             );
         }
+    }
+
+    #[test]
+    fn a_progress_suffix_that_is_not_one_plain_name_or_names_a_weight_is_refused() {
+        for suffix in [
+            "",
+            "/progress.json",
+            "../progress.json",
+            "back\\slash",
+            "space d",
+            ".safetensors",
+            "-step1.safetensors",
+            SIDECAR_SUFFIX,
+        ] {
+            let contract = Contract {
+                progress_suffix: suffix.into(),
+                ..Contract::default()
+            };
+            assert!(contract.validate().is_err(), "{suffix:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_host_directory_that_is_not_one_plain_name_or_a_directory_already_in_use_is_refused() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "training",
+            "Training",
+            "loras",
+            "Checkpoints",
+            "diffusion_models",
+            ".abnegate-publish",
+            "/",
+            "../escape",
+            "nested/name",
+            "back\\slash",
+            "space d",
+        ] {
+            let contract = Contract {
+                host_directory: name.into(),
+                ..Contract::default()
+            };
+            assert!(contract.validate().is_err(), "{name:?} was accepted");
+        }
+        let contract = Contract {
+            host_directory: ".acme-train".into(),
+            ..Contract::default()
+        };
+        assert_eq!(contract.validate(), Ok(()));
+        assert_eq!(Contract::default().host_directory, ".abnegate-train");
+    }
+
+    #[test]
+    fn the_progress_file_is_named_after_its_run() {
+        assert_eq!(
+            Contract::default().progress_filename("abnegate-lora-abcd"),
+            "abnegate-lora-abcd-progress.json"
+        );
+        let contract = Contract {
+            progress_suffix: ".progress.json".into(),
+            ..Contract::default()
+        };
+        assert_eq!(
+            contract.progress_filename("acme-lora-abcd"),
+            "acme-lora-abcd.progress.json"
+        );
     }
 
     #[test]

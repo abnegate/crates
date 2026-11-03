@@ -6,8 +6,8 @@
       "denoise": 0.65,
       "latent_image": ["12", 0],
       "model": ["4", 0],
-      "negative": ["7", 0],
-      "positive": ["6", 0],
+      "negative": ["22", 1],
+      "positive": ["22", 0],
       "sampler_name": "euler",
       "scheduler": "normal",
       "seed": 0,
@@ -95,6 +95,39 @@
     },
     "_meta": {
       "title": "Encode Source Image"
+    }
+  },
+  "20": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "pose-standing.png"
+    },
+    "_meta": {
+      "title": "OpenPose Map"
+    }
+  },
+  "21": {
+    "class_type": "ControlNetLoader",
+    "inputs": {
+      "control_net_name": "thibaud_xl_openpose.safetensors"
+    },
+    "_meta": {
+      "title": "SDXL OpenPose ControlNet"
+    }
+  },
+  "22": {
+    "class_type": "ControlNetApplyAdvanced",
+    "inputs": {
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "control_net": ["21", 0],
+      "image": ["20", 0],
+      "strength": 0.7,
+      "start_percent": 0,
+      "end_percent": 1
+    },
+    "_meta": {
+      "title": "Apply OpenPose"
     }
   }
 }

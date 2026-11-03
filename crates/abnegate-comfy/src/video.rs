@@ -157,11 +157,13 @@ pub async fn extract(
     let work = tempfile::tempdir().map_err(|error| TrainError::Failed(error.to_string()))?;
     let container = container(filename);
     let clip = work.path().join(format!("clip.{}", container.extension));
-    std::fs::write(&clip, video).map_err(|error| TrainError::Failed(error.to_string()))?;
+    tokio::fs::write(&clip, video)
+        .await
+        .map_err(|error| TrainError::Failed(error.to_string()))?;
 
     let requested = f64::from(options.fps.clamp(1, 30));
     let sampled_fps = match duration(config, container, &clip, PROBE_TIMEOUT).await {
-        Some(seconds) if seconds > 0.0 => {
+        Ok(Some(seconds)) if seconds > 0.0 => {
             (CEILING as f64 / seconds).clamp(0.5, requested * OVERSAMPLE)
         }
         _ => requested * OVERSAMPLE,
@@ -228,17 +230,19 @@ fn build(
     })
 }
 
-/// Seconds of video, as ffprobe reports them.
+/// Seconds of video, as ffprobe reports them: `None` when it reports none or
+/// runs out of `budget`, and the error when it cannot be run at all.
 async fn duration(
     config: &Config,
     container: Container,
     clip: &Path,
     budget: Duration,
-) -> Option<f64> {
-    let output = execute(&config.ffprobe, &probe_arguments(container, clip), budget)
-        .await
-        .ok()??;
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+) -> io::Result<Option<f64>> {
+    let Some(output) = execute(&config.ffprobe, &probe_arguments(container, clip), budget).await?
+    else {
+        return Ok(None);
+    };
+    Ok(String::from_utf8_lossy(&output.stdout).trim().parse().ok())
 }
 
 async fn sample(
@@ -291,20 +295,30 @@ async fn execute(
     }
 }
 
-/// Options that pin how `clip` is opened. They have to precede `-i`.
+/// Options that pin how `clip` is opened, then `clip` itself.
 fn input_arguments(container: Container, clip: &Path) -> Vec<OsString> {
-    let mut arguments: Vec<OsString> = [
+    let mut arguments = demuxer_arguments(container);
+    arguments.extend(opened(clip));
+    arguments
+}
+
+/// Options that pin how a clip in `container` is opened. They have to
+/// precede `-i`.
+fn demuxer_arguments(container: Container) -> Vec<OsString> {
+    [
         "-protocol_whitelist",
         INPUT_PROTOCOLS,
         "-f",
         container.demuxer,
-        "-i",
     ]
     .into_iter()
     .map(OsString::from)
-    .collect();
-    arguments.push(clip.as_os_str().to_os_string());
-    arguments
+    .collect()
+}
+
+/// Opens `clip` as the input of the options before it.
+fn opened(clip: &Path) -> [OsString; 2] {
+    [OsString::from("-i"), clip.as_os_str().to_os_string()]
 }
 
 fn probe_arguments(container: Container, clip: &Path) -> Vec<OsString> {
@@ -912,14 +926,50 @@ mod tests {
     }
 
     #[test]
+    fn an_uploaded_clip_wins_over_its_base64() {
+        let uploaded = FrameRequest::from_bytes("clip.mp4", b"clip".to_vec())
+            .with_fps(2)
+            .with_mirror(false);
+        assert_eq!(uploaded.encoded().unwrap().as_ref(), b"clip");
+        assert_eq!((uploaded.fps, uploaded.mirror), (Some(2), Some(false)));
+        let both = FrameRequest {
+            bytes: Some(b"clip".to_vec()),
+            ..FrameRequest::new("clip.mp4", "not base64")
+        };
+        assert_eq!(both.encoded().unwrap().as_ref(), b"clip");
+        assert_eq!(
+            FrameRequest::new("clip.mp4", " Y2xpcA== ")
+                .encoded()
+                .unwrap()
+                .as_ref(),
+            b"clip"
+        );
+        for (request, message) in [
+            (
+                FrameRequest::from_bytes("clip.mp4", Vec::new()),
+                "video is empty",
+            ),
+            (FrameRequest::new("clip.mp4", ""), "video is empty"),
+            (
+                FrameRequest::new("clip.mp4", "not base64"),
+                "video is not valid base64",
+            ),
+        ] {
+            assert!(
+                matches!(request.encoded(), Err(TrainError::Invalid(found)) if found == message),
+                "{request:?}"
+            );
+        }
+        let parsed: FrameRequest =
+            serde_json::from_value(serde_json::json!({"filename": "clip.mp4", "bytes": [1]}))
+                .unwrap();
+        assert!(parsed.bytes.is_none());
+    }
+
+    #[test]
     fn clips_and_frames_print_their_size_rather_than_their_bytes() {
         let upload = "A".repeat(1 << 20);
-        let request = FrameRequest {
-            filename: "clip.mp4".into(),
-            bytes_base64: upload.clone(),
-            fps: None,
-            mirror: None,
-        };
+        let request = FrameRequest::new("clip.mp4", upload.clone());
         let frame = Frame {
             filename: "frame-0000.png".into(),
             bytes_base64: upload,
@@ -931,6 +981,12 @@ mod tests {
             assert!(rendered.len() < 200, "{} characters", rendered.len());
             assert!(rendered.contains("bytes_base64: 1048576"), "{rendered}");
         }
+        let uploaded = format!(
+            "{:?}",
+            FrameRequest::from_bytes("clip.mp4", vec![0; 1 << 20])
+        );
+        assert!(uploaded.len() < 200, "{} characters", uploaded.len());
+        assert!(uploaded.contains("bytes: Some(1048576)"), "{uploaded}");
     }
 
     #[test]
@@ -1068,7 +1124,7 @@ mod tests {
         };
         let clip = work.path().join("clip.mp4");
 
-        duration(&config, MP4, &clip, PROBE_TIMEOUT).await;
+        duration(&config, MP4, &clip, PROBE_TIMEOUT).await.unwrap();
         sample(&config, MP4, &clip, work.path(), 8.0, DECODE_TIMEOUT)
             .await
             .unwrap();
