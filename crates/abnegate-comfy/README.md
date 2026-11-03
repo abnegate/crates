@@ -293,7 +293,8 @@ frames, 16 frames a second. The packaged graphs are
 `wan2.2-a14b-t2v-api.json` and `wan2.2-a14b-i2v-api.json`;
 `Config::video_workflow_path` replaces the text-to-video one when it keeps the
 A14B contract, and an image-to-video graph of that name beside it, with
-`WanImageToVideo` at 7 and `LoadImage` at 11, replaces the other. The contract
+`WanImageToVideo` at 7 starting from the image `LoadImage` at 11 loads,
+directly or through nodes that pass an image on, replaces the other. The contract
 is a `UNETLoader` or `UnetLoaderGGUF` at nodes 1 and 12, `KSamplerAdvanced` at
 8 and 14, `EmptyHunyuanLatentVideo` at 7 and `SaveWEBM` at 10, with 8 sampling
 the model node 1 loads, 14 sampling the one node 12 loads, through any nodes

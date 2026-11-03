@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Any error after ComfyUI accepted a prompt deletes it from the queue, and history is cleared only once the outputs landed
 - A `/history` or `/queue` answer that does not parse fails the generation at once instead of being retried as an outage, and a failed queue check is logged as one
 - The queue delete sent after `Config::outage_window` gives up on a ComfyUI waits at most five seconds instead of the request timeout
+- A configured image-to-video graph whose `WanImageToVideo` start image does not come from the `LoadImage` at node 11, which receives the caller's upload, is refused instead of animating some other image
 - A generation that is cancelled, times out or fails after ComfyUI accepted its prompt returns within five seconds of sending the queue delete; a slower delete carries on to the request timeout on its own
 
 ## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.1.7...abnegate-comfy/v0.1.8) - 2026-11-03

@@ -75,6 +75,8 @@ const HIGH_NOISE_SAMPLER: &str = "8";
 const LOW_NOISE_SAMPLER: &str = "14";
 const UNET_LOADERS: &[&str] = &["UNETLoader", "UnetLoaderGGUF"];
 const IMAGE_TO_VIDEO_LATENT: &str = "WanImageToVideo";
+const SOURCE_IMAGE_NODE: &str = "11";
+const LOAD_IMAGE: &str = "LoadImage";
 const PACKAGED_AUDIO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/ace-step-v1-3.5b-api.json");
 const PACKAGED_UPSCALE_WORKFLOW: &str = include_str!("../comfyui/workflows/upscale-image-api.json");
@@ -1589,7 +1591,7 @@ pub fn build_upscale_video_workflow(model: &str, video_name: &str) -> Result<Val
 
 fn validate_upscale_image_workflow(workflow: &Value) -> Result<(), Error> {
     for (pointer, class) in [
-        ("/1/class_type", "LoadImage"),
+        ("/1/class_type", LOAD_IMAGE),
         ("/2/class_type", "UpscaleModelLoader"),
         ("/3/class_type", "ImageUpscaleWithModel"),
         ("/4/class_type", "PreviewImage"),
@@ -1733,19 +1735,31 @@ fn validate_a14b_workflow(workflow: &Value) -> Result<(), Error> {
 /// The UNet loader the model `sampler` samples comes from, followed through
 /// every node that passes a model on.
 fn model_source<'a>(workflow: &'a Value, sampler: &str) -> Option<&'a str> {
-    let mut node = workflow
-        .pointer(&format!("/{sampler}/inputs/model"))
-        .and_then(link_node)?;
+    let link = workflow.pointer(&format!("/{sampler}/inputs/model"))?;
+    upstream(workflow, link, "model", |class| {
+        UNET_LOADERS.contains(&class)
+    })
+}
+
+/// The first node whose class `is_source` accepts on the way back from
+/// `link`, followed through every node that passes its `input` on.
+fn upstream<'a>(
+    workflow: &'a Value,
+    link: &'a Value,
+    input: &str,
+    is_source: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
+    let mut node = link_node(link)?;
     let nodes = workflow.as_object().map_or(0, serde_json::Map::len);
     for _ in 0..nodes {
         let class = workflow
             .pointer(&format!("/{node}/class_type"))
             .and_then(Value::as_str)?;
-        if UNET_LOADERS.contains(&class) {
+        if is_source(class) {
             return Some(node);
         }
         node = workflow
-            .pointer(&format!("/{node}/inputs/model"))
+            .pointer(&format!("/{node}/inputs/{input}"))
             .and_then(link_node)?;
     }
     None
@@ -1758,14 +1772,22 @@ fn validate_image_to_video_workflow(workflow: &Value) -> Result<(), Error> {
             "image-to-video workflow must use WanImageToVideo",
         ));
     }
-    if workflow.pointer("/11/class_type").and_then(Value::as_str) != Some("LoadImage") {
+    if workflow
+        .pointer(&format!("/{SOURCE_IMAGE_NODE}/class_type"))
+        .and_then(Value::as_str)
+        != Some(LOAD_IMAGE)
+    {
         return Err(Error::Configuration(
             "image-to-video workflow must load a source image",
         ));
     }
-    if workflow.pointer("/7/inputs/start_image").is_none() {
+    let starts_from_source = workflow
+        .pointer("/7/inputs/start_image")
+        .and_then(|link| upstream(workflow, link, "image", |class| class == LOAD_IMAGE))
+        == Some(SOURCE_IMAGE_NODE);
+    if !starts_from_source {
         return Err(Error::Configuration(
-            "image-to-video workflow must condition on a start image",
+            "image-to-video workflow must start from the image node 11 loads",
         ));
     }
     Ok(())
@@ -1835,7 +1857,7 @@ fn configure_wan_image_to_video_workflow(
     apply_wan_workflow_inputs(&mut workflow, prompt, unet, clip, vae, seed)?;
     let image_name = sanitize_upload_name(image_name)?;
     workflow
-        .pointer_mut("/11/inputs")
+        .pointer_mut(&format!("/{SOURCE_IMAGE_NODE}/inputs"))
         .and_then(Value::as_object_mut)
         .ok_or(Error::Configuration(
             "image-to-video workflow must load a source image",
@@ -2408,6 +2430,29 @@ mod tests {
                     "{pointer} = {link}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn an_image_to_video_graph_must_start_from_the_image_it_uploads() {
+        let mut scaled = packaged_graph(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW);
+        scaled["15"] = json!({
+            "class_type": "ImageScale",
+            "inputs": {"image": ["11", 0], "width": 1280, "height": 704}
+        });
+        scaled["7"]["inputs"]["start_image"] = json!(["15", 0]);
+        assert!(validate_image_to_video_workflow(&scaled).is_ok());
+        for start in [json!(["15", 0]), json!(["5", 0]), json!("source.png")] {
+            let mut workflow = packaged_graph(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW);
+            workflow["15"] = json!({"class_type": "LoadImage", "inputs": {"image": "other.png"}});
+            workflow["7"]["inputs"]["start_image"] = start.clone();
+            assert!(
+                matches!(
+                    validate_image_to_video_workflow(&workflow),
+                    Err(Error::Configuration(_))
+                ),
+                "start_image = {start}"
+            );
         }
     }
 
