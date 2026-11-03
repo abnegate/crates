@@ -241,7 +241,7 @@ fn is_identity(sidecar: Option<&WeightSidecar>) -> bool {
         .is_some_and(|trigger| !trigger.trim().is_empty())
 }
 
-fn embedding_token(name: &str) -> Option<String> {
+pub(crate) fn embedding_token(name: &str) -> Option<String> {
     let stem = Path::new(name).file_stem()?.to_str()?.trim();
     let plain = !stem.is_empty()
         && stem

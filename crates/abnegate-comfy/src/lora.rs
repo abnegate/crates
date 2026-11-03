@@ -174,6 +174,7 @@ const MISSING_COMPUTE_KEY: &str = "this compute needs its key to train";
 const HOST_FIELD: &str = "a host field may not replace a key the host job gives a meaning";
 const HOST_EDIT: &str = "an edit base trains on the host only once the host-job contract carries its references; train it through a training command or the packaged graph";
 const HOST_RENAMED: &str = "the host job names a weight file other than the one its name gives";
+const EMBEDDING_NAME: &str = "a pivotal weight's name must be letters, digits, dashes or underscores, so its embedding can be prompted";
 const MIXED_PERSON: &str =
     "these images look like different people, and a person weight can only learn one";
 /// The class word a person's captions bind the trigger to.
@@ -474,8 +475,9 @@ async fn train_with_screening(
 /// weight, a name a weight in another scanned model folder already has, a
 /// name already taken by a weight no training run published, a
 /// method other than a LoRA or an SDXL base with no [`Config::train_command`]
-/// to run it, a
-/// missing trigger word, and references on the wrong kind of base. A host calls it to refuse a bad request up front rather than as a
+/// to run it, a pivotal name with anything but letters, digits, dashes and
+/// underscores, which its embedding could not be prompted by, a missing
+/// trigger word, and references on the wrong kind of base. A host calls it to refuse a bad request up front rather than as a
 /// failed job.
 pub fn validate_request(config: &Config, request: &TrainRequest) -> Result<(), TrainError> {
     plan(config, request).map(|_| ())
@@ -501,6 +503,7 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
         .map_err(|_| TrainError::Invalid("training base is not supported"))?;
     let destination = destination(config, &catalog, recipe, request)?;
     let filename = weight_filename(&request.name, destination.suffix.as_deref())?;
+    require_embedding_name(request.method, &filename)?;
     require_free_name(config, &catalog, &destination.directory, &filename)?;
     let route = if request.compute.is_remote() {
         remote_route(config, &model)?
@@ -1395,8 +1398,16 @@ fn host_destination(config: &Config, job: &host::Job) -> Result<(Destination, St
     if job.filename.as_deref() != Some(filename.as_str()) {
         return Err(TrainError::Invalid(HOST_RENAMED));
     }
+    require_embedding_name(method, &filename)?;
     require_free_name(config, &catalog, &destination.directory, &filename)?;
     Ok((destination, filename))
+}
+
+fn require_embedding_name(method: TrainMethod, filename: &str) -> Result<(), TrainError> {
+    if method == TrainMethod::Pivotal && crate::people::embedding_token(filename).is_none() {
+        return Err(TrainError::Invalid(EMBEDDING_NAME));
+    }
+    Ok(())
 }
 
 /// The weight the host trainer wrote as `filename` in `directory`, when it is
@@ -6877,6 +6888,54 @@ mod tests {
             embedding(recovered[1].as_ref().unwrap()),
             None,
             "only a pivotal job trains an embedding"
+        );
+    }
+
+    fn pivotal_policy() -> TrainPolicy {
+        TrainPolicy::new().with_rule(
+            TrainRule::new(
+                "flux-schnell",
+                TrainMethod::Pivotal,
+                "flux-schnell-adapter",
+                "loras",
+            )
+            .with_subjects([TrainSubject::Person]),
+        )
+    }
+
+    #[test]
+    fn a_pivotal_weight_is_named_so_its_embedding_can_be_prompted() {
+        let (_root, mut config) = hosted();
+        config.train_policy = pivotal_policy();
+        let pivotal = |name: &str| {
+            identity(name)
+                .with_subject(TrainSubject::Person)
+                .with_method(TrainMethod::Pivotal)
+        };
+        validate_request(&config, &pivotal("jerry_v2-final")).expect("a plain name trains");
+        for name in ["jerry.v2", "jerry v2", "jérry"] {
+            assert_eq!(refused(&config, &pivotal(name)), EMBEDDING_NAME, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_pivotal_host_job_whose_embedding_cannot_be_prompted_is_not_published() {
+        let (_root, mut config) = hosted();
+        config.train_policy = pivotal_policy();
+        finished(&config, person_job("jerry.v2", "pivotal"), Some(b"adapter"));
+
+        let recovered = host::recover(&config);
+
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert!(
+            matches!(&recovered[0], Err(TrainError::Invalid(EMBEDDING_NAME))),
+            "{recovered:?}"
+        );
+        assert!(
+            !config
+                .models_directory
+                .join("loras/jerry.v2.safetensors")
+                .exists()
         );
     }
 

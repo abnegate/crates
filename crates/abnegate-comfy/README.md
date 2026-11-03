@@ -187,7 +187,8 @@ base checkpoint. Only a LoRA is scored against its base. The external trainer
 reads the request's choice from `<prefix>_SUBJECT` and `<prefix>_METHOD`.
 A `TrainMethod::Pivotal` LoRA, trained together with an embedding for its
 trigger, is published and run like a LoRA, and only a training command or the
-host trainer trains one. A rule's `suffix` names the published file, so
+host trainer trains one. Its name may hold only letters, digits, dashes and
+underscores, since its embedding is prompted as `embedding:<name>`. A rule's `suffix` names the published file, so
 `jerry` with suffix `-alt` lands as `jerry-alt.safetensors` beside
 `jerry.safetensors` rather than over it. Nothing trains a video adapter:
 video generation runs the Wan 2.2 A14B experts, which load no LoRA.
