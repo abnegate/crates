@@ -61,11 +61,13 @@ const REPEATER: &str = "process-group-kill";
 /// [`JobRegistry`](crate::job::JobRegistry) holds -- signals anything.
 ///
 /// Once its leader has exited, a group whose members are all unreaped
-/// zombies has nothing left to stop, and macOS refuses to signal it with
-/// `EPERM`. Every signal here counts that refusal as delivered once it has
-/// seen that every member is a zombie, so waiting for the leader and then
-/// killing what it left never fails on a group the leader left empty, while
-/// a refusal from a group with a member of another user's is still reported.
+/// zombies, or part way through their exits, has nothing left to stop, and
+/// macOS refuses to signal it with `EPERM`. Every signal here counts that
+/// refusal as delivered once it has seen that every member is dead, so
+/// waiting for the leader and then killing what it left never fails on a
+/// group the leader left empty, nor on one whose other members are still
+/// exiting, while a refusal from a group with a member of another user's is
+/// still reported.
 #[derive(Debug, Clone)]
 pub struct ProcessGroup {
     /// Process group ID (same as the leader process PID)
@@ -244,25 +246,26 @@ impl ProcessGroup {
         Arc::ptr_eq(&self.released, &other.released)
     }
 
-    /// `sent`, counting a group of zombies, which macOS refuses to signal
-    /// with `EPERM`, as signalled: it has nothing left to stop. macOS refuses
-    /// with `EPERM` too when a member belongs to another user, so the
-    /// refusal is forgiven only once every member is seen to be a zombie.
+    /// `sent`, counting a group of zombies and members part way through
+    /// their exits, which macOS refuses to signal with `EPERM`, as
+    /// signalled: it has nothing left to stop. macOS refuses with `EPERM` too
+    /// when a member belongs to another user, so the refusal is forgiven only
+    /// once every member is seen to be dead.
     fn living(&self, signal: Signal, sent: Result<(), Errno>) -> Result<(), ExecutorError> {
         match sent {
-            Err(Errno::EPERM) if self.only_zombies() => Ok(()),
+            Err(Errno::EPERM) if self.only_dead() => Ok(()),
             sent => sent.map_err(|error| self.failure(signal, error)),
         }
     }
 
     #[cfg(target_os = "macos")]
-    fn only_zombies(&self) -> bool {
-        zombies::only_zombies(self.pgid)
+    fn only_dead(&self) -> bool {
+        zombies::only_dead(self.pgid)
     }
 
-    /// Outside macOS a group of zombies takes a signal like any other.
+    /// Outside macOS a group of dead members takes a signal like any other.
     #[cfg(not(target_os = "macos"))]
-    fn only_zombies(&self) -> bool {
+    fn only_dead(&self) -> bool {
         false
     }
 
@@ -276,7 +279,8 @@ impl ProcessGroup {
     }
 
     /// Whether SIGKILL found a live member: not `ESRCH`, as once the group is
-    /// empty, nor `EPERM`, as once only its unreaped zombies are left.
+    /// empty, nor `EPERM`, as once only its unreaped zombies, and members
+    /// part way through their exits, are left.
     fn kill_again(&self) -> bool {
         kill(Pid::from_raw(-self.pgid), Signal::SIGKILL).is_ok()
     }
@@ -369,6 +373,8 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    #[cfg(target_os = "macos")]
+    use crate::executor::held_exit::HeldExit;
     use crate::executor::sleeper::Sleeper;
     use crate::executor::sleeper::exits_on_close;
 
@@ -698,6 +704,34 @@ mod tests {
         let killed = group.kill_until_gone().await;
         let signalled = [group.kill(), group.interrupt(), group.terminate()];
 
+        group.release();
+        let status = leader.wait().expect("the leader is reaped");
+        assert!(killed.is_ok(), "{killed:?}");
+        assert!(signalled.iter().all(Result::is_ok), "{signalled:?}");
+        assert_eq!(status.code(), Some(3));
+    }
+
+    /// A member part way through its exit is past stopping, and macOS
+    /// refuses with `EPERM` to signal a group left with only it and its
+    /// leader's zombie, as a shutdown that interrupts a run and kills what
+    /// the leader left finds it when the run's other processes exit on the
+    /// interrupt alongside the leader.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_group_left_with_a_member_still_exiting_takes_every_signal() {
+        let mut leader = exits_on_close();
+        let group = ProcessGroup::try_from(leader.id()).expect("a child leading its own group");
+        let exiting = HeldExit::join(&group);
+        drop(leader.stdin.take());
+        tokio::time::timeout(PATIENCE, group.leader_exited())
+            .await
+            .expect("the leader exit never resolved")
+            .unwrap();
+
+        let killed = group.kill_until_gone().await;
+        let signalled = [group.kill(), group.interrupt(), group.terminate()];
+
+        drop(exiting);
         group.release();
         let status = leader.wait().expect("the leader is reaped");
         assert!(killed.is_ok(), "{killed:?}");

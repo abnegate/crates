@@ -27,13 +27,14 @@ const BACKGROUND_SLEEP: &str = "sleep 300 & echo $!; exec sleep 300";
 const INTERRUPT_IGNORING_LEADER: &str = "trap '' INT; sleep 300 & echo $!; exec sleep 300";
 
 /// Like [`BACKGROUND_SLEEP`], but the leader exits with status 7 on SIGINT
-/// while its background process ignores it. Perl, because a shell cannot trap
-/// a signal it inherited as ignored.
+/// while its background process ignores it from the moment it is forked, so
+/// an interrupt that lands before it first runs cannot end it. Perl, because
+/// a shell cannot trap a signal it inherited as ignored.
 const INTERRUPTIBLE_LEADER: &str = concat!(
-    r#"exec perl -e '$| = 1; $SIG{INT} = sub { exit 7 }; "#,
+    r#"exec perl -e '$| = 1; $SIG{INT} = "IGNORE"; "#,
     r#"defined(my $pid = fork) or die; "#,
-    r#"if (!$pid) { $SIG{INT} = "IGNORE"; exec "sleep", "300" } "#,
-    r#"print "$pid\n"; sleep 300'"#,
+    r#"if (!$pid) { exec "sleep", "300" } "#,
+    r#"$SIG{INT} = sub { exit 7 }; print "$pid\n"; sleep 300'"#,
 );
 
 /// Prints its own pid, then a line for every SIGINT it receives.
