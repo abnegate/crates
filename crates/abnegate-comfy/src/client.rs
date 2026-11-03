@@ -3746,36 +3746,6 @@ mod tests {
             .await;
     }
 
-    #[derive(Clone, Default)]
-    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl Logs {
-        fn capture() -> (Self, tracing::subscriber::DefaultGuard) {
-            let logs = Self::default();
-            let writer = logs.clone();
-            let subscriber = tracing_subscriber::fmt()
-                .with_ansi(false)
-                .with_writer(move || writer.clone())
-                .finish();
-            (logs, tracing::subscriber::set_default(subscriber))
-        }
-
-        fn text(&self) -> String {
-            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-        }
-    }
-
-    impl std::io::Write for Logs {
-        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buffer);
-            Ok(buffer.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     async fn mock_queue(server: &MockServer, running: Value) {
         Mock::given(method("GET"))
             .and(path("/queue"))
@@ -4036,7 +4006,7 @@ mod tests {
         let config = video_config(&server)
             .with_queue_check_interval(Duration::ZERO)
             .with_outage_window(Duration::from_secs(60));
-        let (logs, _logging) = Logs::capture();
+        let (logs, _logging) = crate::logs::Logs::capture();
         let result = tokio::time::timeout(REQUEST_WAIT, generate_clip(config))
             .await
             .expect("a queue answer that can never parse must not be retried as an outage");
