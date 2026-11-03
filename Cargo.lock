@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abnegate-agent"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "abnegate-agent-cli",
  "abnegate-config",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-agent-cli"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "abnegate-exec",
  "abnegate-llm",
@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-comfy"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "abnegate-exec",
  "abnegate-llm",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "abnegate-exec"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "abnegate-secret",
  "base64 0.23.1",
