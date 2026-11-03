@@ -1359,6 +1359,11 @@ mod tests {
                 .with_resets_at(at(1_790_208_000).expect("a valid timestamp"))
                 .with_kind(WindowKind::FiveHours);
             assert_eq!(windows(&events), [&expected], "{status}");
+            assert_eq!(
+                windows(&events)[0].kind,
+                Some(WindowKind::FiveHours),
+                "{status}"
+            );
         }
     }
 

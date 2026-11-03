@@ -12,10 +12,9 @@ use crate::provider::window_kind::WindowKind;
 /// `resets_at`. [`Self::kind`] is never serialized, so a stored row reads
 /// back with no kind and a window with one writes the same JSON as before.
 ///
-/// Equality compares every field, `kind` included, so a window with a kind is
-/// not equal to itself once it has been through JSON: compare a stored row
-/// against one built without a kind.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Equality compares the stored fields and ignores `kind`, which is derived
+/// from `name` when parsed, so a window equals itself read back from JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Window {
     /// The name the window is recorded under.
@@ -77,6 +76,24 @@ impl Window {
     }
 }
 
+impl PartialEq for Window {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            name,
+            used_percent,
+            used,
+            limit,
+            resets_at,
+            kind: _,
+        } = self;
+        *name == other.name
+            && *used_percent == other.used_percent
+            && *used == other.used
+            && *limit == other.limit
+            && *resets_at == other.resets_at
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::DateTime;
@@ -126,15 +143,31 @@ mod tests {
     }
 
     #[test]
-    fn a_window_with_a_kind_reads_back_without_it_and_so_unequal() {
+    fn a_window_with_a_kind_equals_itself_read_back_from_json() {
         let window = stored().with_kind(WindowKind::FiveHours);
 
         let read: Window =
             serde_json::from_str(&serde_json::to_string(&window).expect("a window to serialize"))
                 .expect("a stored row to read");
 
-        assert_ne!(read, window);
-        assert_eq!(read, stored());
+        assert_eq!(read, window);
+        assert_eq!(read.kind, None);
+    }
+
+    #[test]
+    fn windows_that_differ_in_a_stored_field_are_unequal() {
+        let window = stored().with_kind(WindowKind::FiveHours);
+
+        assert_ne!(window, stored().with_used_percent(43.0));
+        assert_ne!(window, stored().with_used(1));
+        assert_ne!(window, stored().with_limit(100));
+        assert_ne!(
+            window,
+            Window::new("7d")
+                .with_used_percent(42.0)
+                .with_resets_at(midnight())
+        );
+        assert_ne!(window, Window::new("5h").with_used_percent(42.0));
     }
 
     #[test]
