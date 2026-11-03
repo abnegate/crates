@@ -579,7 +579,10 @@ Whoever publishes a job holds its `publish.lock` and records `published` in
 skips a job another waiter holds and one already published, and `resume` of a
 published job returns where it went. Either way the weight's sidecar carries
 the job's `trigger`, so a prompt that names it binds the weight as it would
-one trained here.
+one trained here. A `pivotal` job's trainer writes the embedding it trains to
+the models directory's `embeddings/` under the job's `filename`, and the
+sidecar names it as `embedding`, so `embedding:<stem>` leads every prompt run
+on the weight.
 
 ## Migrating from the pre-release defaults
 

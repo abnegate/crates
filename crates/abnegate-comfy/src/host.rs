@@ -27,7 +27,10 @@
 //! - [`DATA_DIRECTORY`]: text data, [`TRAIN_DATA_FILE`] and
 //!   [`VALID_DATA_FILE`] in the format [`FORMAT_FILE`] describes.
 //! - The weight, written by the trainer as [`Job::filename`], which
-//!   [`lora::train`](crate::lora::train) then publishes like any other.
+//!   [`lora::train`](crate::lora::train) then publishes like any other. A
+//!   `pivotal` job's trainer also writes the textual-inversion embedding it
+//!   trains to the models directory's `embeddings/` under that same name,
+//!   and the published weight's sidecar names it as its `embedding`.
 //! - Any secret the host wrote with [`JobDirectory::write_secret`], removed
 //!   once the job ends, such as the key a remote [`Compute`] reads, written
 //!   with [`JobDirectory::write_compute_key`].

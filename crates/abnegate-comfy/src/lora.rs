@@ -1133,6 +1133,7 @@ async fn train_with_pipeline(
         &staged,
         &destination,
         &filename,
+        None,
         &progress,
     )?;
     Ok(TrainOutcome {
@@ -1143,15 +1144,16 @@ async fn train_with_pipeline(
     })
 }
 
-/// Binds the weight staged in `attempt` to `destination`'s recipe and trigger
-/// and promotes it to `filename` in `destination`'s directory. Returns where
-/// it went.
+/// Binds the weight staged in `attempt` to `destination`'s recipe and trigger,
+/// and to the textual-inversion `embedding` trained with it, and promotes it
+/// to `filename` in `destination`'s directory. Returns where it went.
 fn publish(
     config: &Config,
     attempt: &Attempt,
     staged: &Path,
     destination: &Destination,
     filename: &str,
+    embedding: Option<&str>,
     progress: &Reporter,
 ) -> Result<PathBuf, TrainError> {
     let published = ensure_child_directory(&config.models_directory, &destination.directory)?;
@@ -1164,6 +1166,9 @@ fn publish(
     }
     if let Some(trigger) = &destination.trigger {
         sidecar = sidecar.with_trigger(trigger.as_str());
+    }
+    if let Some(embedding) = embedding {
+        sidecar = sidecar.with_embedding(embedding);
     }
     let bytes = serde_json::to_vec_pretty(&WeightDocument {
         sidecar,
@@ -1377,6 +1382,13 @@ pub(crate) fn publish_host_job(
     )
 }
 
+/// The textual-inversion embedding a pivotal host job trains beside its
+/// weight `filename`: the file of that name in the models directory's
+/// `embeddings/`. Every other method trains none.
+fn hosted_embedding(job: &host::Job, filename: &str) -> Option<String> {
+    (job.method == TrainMethod::Pivotal.as_str()).then(|| filename.to_string())
+}
+
 /// Where `job` publishes under `config`, and the weight file it publishes.
 fn host_destination(config: &Config, job: &host::Job) -> Result<(Destination, String), TrainError> {
     let catalog = RecipeCatalog::load(config.workflow_path.as_deref())
@@ -1421,9 +1433,10 @@ fn link_or_copy(weight: &Path, staged: &Path) -> Result<(), TrainError> {
     Ok(())
 }
 
-/// Promotes the host job's weight staged in `attempt` to `destination`,
-/// records where it went in `job.json` before the job directory gives up its
-/// copy, and removes the job's secrets and what it trained on.
+/// Promotes the host job's weight staged in `attempt` to `destination`, bound
+/// to the embedding a pivotal job trains, records where it went in `job.json`
+/// before the job directory gives up its copy, and removes the job's secrets
+/// and what it trained on.
 fn finish_hosted(
     config: &Config,
     attempt: &Attempt,
@@ -1434,7 +1447,16 @@ fn finish_hosted(
     filename: &str,
     progress: &Reporter,
 ) -> Result<PathBuf, TrainError> {
-    let output = publish(config, attempt, staged, destination, filename, progress)?;
+    let embedding = hosted_embedding(&job, filename);
+    let output = publish(
+        config,
+        attempt,
+        staged,
+        destination,
+        filename,
+        embedding.as_deref(),
+        progress,
+    )?;
     job.published = Some(format!("{}/{filename}", destination.directory));
     if let Err(error) = directory.write_job(&job) {
         tracing::warn!(
@@ -6817,6 +6839,50 @@ mod tests {
         let yvonne = crate::inventory::bind_identity(&mut config, "zwx in the rain")
             .expect("the recovered trigger names the weight");
         assert_eq!(yvonne.filename, "yvonne.safetensors");
+    }
+
+    #[test]
+    fn a_pivotal_lora_the_host_trained_names_its_embedding() {
+        let (_root, mut config) = hosted();
+        config.train_policy = TrainPolicy::new()
+            .with_rule(person_finetune("flux-schnell"))
+            .with_rule(
+                TrainRule::new(
+                    "flux-schnell",
+                    TrainMethod::Pivotal,
+                    "flux-schnell-adapter",
+                    "loras",
+                )
+                .with_subjects([TrainSubject::Person]),
+            );
+        finished(&config, person_job("jerry", "pivotal"), Some(b"adapter"));
+        let mut tuned = person_job("yvonne", "finetune");
+        tuned.started_at += chrono::Duration::seconds(1);
+        finished(&config, tuned, Some(b"tuned"));
+
+        let recovered = host::recover(&config);
+
+        assert_eq!(recovered.len(), 2, "{recovered:?}");
+        let embedding = |weight: &Path| {
+            serde_json::from_slice::<WeightDocument>(
+                &fs::read(sidecar_path(weight, &config.contract)).unwrap(),
+            )
+            .unwrap()
+            .sidecar
+            .embedding
+        };
+        let pivotal = config.models_directory.join("loras/jerry.safetensors");
+        assert_eq!(recovered[0].as_ref().unwrap(), &pivotal);
+        assert_eq!(
+            embedding(&pivotal).as_deref(),
+            Some("jerry.safetensors"),
+            "a pivotal LoRA without its embedding loses its trigger's prompt prefix"
+        );
+        assert_eq!(
+            embedding(recovered[1].as_ref().unwrap()),
+            None,
+            "only a pivotal job trains an embedding"
+        );
     }
 
     #[test]
