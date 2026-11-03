@@ -597,8 +597,13 @@ the job's `trigger`, so a prompt that names it binds the weight as it would
 one trained here. A `pivotal` job's trainer writes the embedding it trains to
 the models directory's `embeddings/` under the job's `filename`, and the
 sidecar names it as `embedding`, so `embedding:<stem>` leads every prompt run
-on the weight. A pivotal job whose embedding is not a regular file there,
-written since the job's `started_at`, fails instead of being published.
+on the weight. The trainer must have written that embedding to
+`embeddings/` before it writes `succeeded`: a pivotal job whose embedding is
+not a regular file there, last modified at or after the job's `started_at`,
+fails instead of being published. That check compares the file's mtime with
+the host's clock, so a trainer that writes it from another machine needs a
+clock that agrees, and a copy into `embeddings/` must not keep an older
+mtime, as `cp -p` or `rsync -a` would.
 
 ## Migrating from the pre-release defaults
 

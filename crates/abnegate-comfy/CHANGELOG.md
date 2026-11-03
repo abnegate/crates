@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `Config::video_generation_timeout` defaults to two hours (was ten minutes) and `COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS` accepts up to four hours (was one), the time a Wan 2.2 A14B clip can take
 - **Breaking:** `inventory::scan` lists a diffusion model without a sidecar only when an image recipe claims it through `files` or `filename_hints`; before, one no recipe claimed was listed as a ready base of the default image recipe, so a Wan UNet was offered as an image base
 - **Breaking:** `RecipeCatalog::is_explicit_image_match` is false for a file a video recipe claims through its `files` or `filename_hints`, even when an image recipe's hint also matches it
+- `publication` is a reserved name in a host job directory, beside `job.json`, `progress.json`, `publish.lock`, `claimed` and `dismissed`: the crate notes there the generation it is publishing the job's weight under, so `TrainRequest::with_host_secret` refuses a secret of that name in any case
 
 ### Fixed
 
