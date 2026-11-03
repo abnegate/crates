@@ -387,7 +387,9 @@ the one a prompt names the `Config`'s checkpoint. A trigger matches as a whole
 phrase, in any case, with any run of whitespace standing for one space. When a
 prompt names triggers of different lengths the longest wins; a longest
 trigger two weights share, or two different triggers of that length, select
-neither. `lora::identity_caption` leads a rewritten prompt with the trigger
+neither, and neither does a weight whose filename another model folder
+also holds, since selecting that name could load the other.
+`lora::identity_caption` leads a rewritten prompt with the trigger
 when it no longer names it. No identity is bound to video:
 `Client::generate_video` posts its prompt as written, so a trigger in it is
 plain text, and no LoRA is loaded onto the video model.

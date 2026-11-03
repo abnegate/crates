@@ -209,7 +209,9 @@ pub fn identity_for_prompt(
 /// it. A trigger is named as a whole phrase, in any case, with any run of
 /// whitespace standing for one space. When `haystack` names triggers of
 /// different lengths the longest wins; when the longest is shared by two
-/// weights, or two different triggers share that length, it names none.
+/// weights, or two different triggers share that length, it names none. A
+/// weight whose filename another of `items` shares names none either, since
+/// selecting that filename could load the other.
 pub fn identity_among(
     items: &[InventoryItem],
     catalog: &RecipeCatalog,
@@ -222,7 +224,15 @@ pub fn identity_among(
             .collect(),
     );
     match named.as_slice() {
-        [item] => identity(item),
+        [item]
+            if items
+                .iter()
+                .filter(|other| other.filename == item.filename)
+                .count()
+                == 1 =>
+        {
+            identity(item)
+        }
         _ => None,
     }
 }
@@ -1126,6 +1136,29 @@ mod tests {
         config.checkpoint = "flux1-schnell-fp8.safetensors".into();
         assert!(bind_identity(&mut config, "a lighthouse").is_none());
         assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_trigger_never_binds_a_filename_another_weight_shares() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        let checkpoint = root.join("checkpoints/jerry.safetensors");
+        fs::write(&checkpoint, b"base").unwrap();
+        write_sidecar(
+            &checkpoint,
+            &WeightSidecar::new("sdxl"),
+            &Contract::default(),
+        )
+        .unwrap();
+        let mut config = configured(&root);
+        config.checkpoint = "flux1-schnell-fp8.safetensors".into();
+
+        assert_eq!(bind_identity(&mut config, "portrait of ohwx"), None);
+        assert_eq!(
+            config.checkpoint, "flux1-schnell-fp8.safetensors",
+            "binding the LoRA's filename would load the checkpoint of that name"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
