@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.4...abnegate-vcs/v0.1.5) - 2026-11-03
+
+### Added
+
+- *(vcs)* register, re-sign and remove repository webhooks ([#17](https://github.com/abnegate/crates/pull/17))
+
+### Other
+
+- *(release)* nest git tags as crate/vversion ([#15](https://github.com/abnegate/crates/pull/15))
+
 ## [0.1.4](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.3...abnegate-vcs/v0.1.4) - 2026-10-09
 
 ### Other
