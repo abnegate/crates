@@ -3606,6 +3606,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_download_that_fails_once_is_retried_and_lands() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "retried").await;
+        mock_finished_clip(&server, "retried").await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "video/webm")
+                    .set_body_bytes(vec![8, 9]),
+            )
+            .mount(&server)
+            .await;
+        mock_queue_delete(&server).await;
+        let videos = generate_clip(video_config(&server))
+            .await
+            .expect("one failed download must be retried, not end the render");
+        assert_eq!(videos[0].bytes.as_ref(), &[8, 9]);
+        assert!(
+            posted_bodies(&server, "/queue").await.is_empty(),
+            "a clip that landed must not be cancelled"
+        );
+    }
+
+    #[tokio::test]
     async fn a_terminal_http_error_cancels_the_prompt_and_keeps_its_history() {
         let server = MockServer::start().await;
         mock_video_prompt(&server, "gone").await;
@@ -3693,18 +3724,26 @@ mod tests {
         let server = MockServer::builder().start().await;
         mock_video_prompt(&server, "dead").await;
         empty_history("dead").mount(&server).await;
-        let config = video_config(&server).with_outage_window(Duration::from_secs(1));
+        let outage = Duration::from_secs(1);
+        let config = video_config(&server).with_outage_window(outage);
         let render = tokio::spawn(generate_clip(config));
         wait_for_request(&server, "/prompt").await;
+        let started = std::time::Instant::now();
         drop(server);
         let result = tokio::time::timeout(REQUEST_WAIT, render)
             .await
             .expect("a dead ComfyUI must fail within the outage window, not the deadline")
             .expect("the render task should not panic");
+        let elapsed = started.elapsed();
         assert!(
             matches!(&result, Err(Error::Http(error)) if error.is_connect()),
             "{result:?}"
         );
+        assert!(
+            elapsed >= outage,
+            "a refused connection must be retried for the outage window, gave up after {elapsed:?}"
+        );
+        assert!(elapsed < REQUEST_WAIT, "took {elapsed:?}");
     }
 
     #[tokio::test]
