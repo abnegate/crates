@@ -962,7 +962,7 @@ fn class_type(node: &Value) -> Option<&str> {
     node.get("class_type").and_then(Value::as_str)
 }
 
-fn link_node(value: &Value) -> Option<&str> {
+pub(crate) fn link_node(value: &Value) -> Option<&str> {
     match value.as_array()?.as_slice() {
         [Value::String(node), Value::Number(_)] => Some(node),
         _ => None,

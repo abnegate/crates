@@ -49,6 +49,7 @@ use crate::recipe::MediaKind;
 use crate::recipe::PromptMode;
 use crate::recipe::Recipe;
 use crate::recipe::RecipeCatalog;
+use crate::recipe::link_node;
 use crate::recipe::sanitize_upload_name;
 use crate::recipe::sanitize_weight_filename;
 use crate::subject::Subject;
@@ -70,6 +71,9 @@ const TEXT_TO_VIDEO_TOKEN: &str = "t2v";
 const IMAGE_TO_VIDEO_TOKEN: &str = "i2v";
 const HIGH_NOISE_NODE: &str = "1";
 const LOW_NOISE_NODE: &str = "12";
+const HIGH_NOISE_SAMPLER: &str = "8";
+const LOW_NOISE_SAMPLER: &str = "14";
+const UNET_LOADERS: &[&str] = &["UNETLoader", "UnetLoaderGGUF"];
 const IMAGE_TO_VIDEO_LATENT: &str = "WanImageToVideo";
 const PACKAGED_AUDIO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/ace-step-v1-3.5b-api.json");
@@ -1693,7 +1697,49 @@ fn validate_a14b_workflow(workflow: &Value) -> Result<(), Error> {
             "video workflow output must use SaveWEBM",
         ));
     }
+    if [HIGH_NOISE_NODE, LOW_NOISE_NODE].iter().any(|node| {
+        !workflow
+            .pointer(&format!("/{node}/class_type"))
+            .and_then(Value::as_str)
+            .is_some_and(|class| UNET_LOADERS.contains(&class))
+    }) {
+        return Err(Error::Configuration(
+            "A14B video workflow must load its experts with a UNet loader at nodes 1 and 12",
+        ));
+    }
+    if model_source(workflow, HIGH_NOISE_SAMPLER) != Some(HIGH_NOISE_NODE)
+        || model_source(workflow, LOW_NOISE_SAMPLER) != Some(LOW_NOISE_NODE)
+        || workflow
+            .pointer(&format!("/{LOW_NOISE_SAMPLER}/inputs/latent_image"))
+            .and_then(link_node)
+            != Some(HIGH_NOISE_SAMPLER)
+    {
+        return Err(Error::Configuration(
+            "A14B video workflow must sample node 1's expert at 8 and finish with node 12's at 14",
+        ));
+    }
     Ok(())
+}
+
+/// The UNet loader the model `sampler` samples comes from, followed through
+/// every node that passes a model on.
+fn model_source<'a>(workflow: &'a Value, sampler: &str) -> Option<&'a str> {
+    let mut node = workflow
+        .pointer(&format!("/{sampler}/inputs/model"))
+        .and_then(link_node)?;
+    let nodes = workflow.as_object().map_or(0, serde_json::Map::len);
+    for _ in 0..nodes {
+        let class = workflow
+            .pointer(&format!("/{node}/class_type"))
+            .and_then(Value::as_str)?;
+        if UNET_LOADERS.contains(&class) {
+            return Some(node);
+        }
+        node = workflow
+            .pointer(&format!("/{node}/inputs/model"))
+            .and_then(link_node)?;
+    }
+    None
 }
 
 fn validate_image_to_video_workflow(workflow: &Value) -> Result<(), Error> {
@@ -1779,7 +1825,13 @@ fn configure_wan_image_to_video_workflow(
     validate_image_to_video_workflow(&workflow)?;
     apply_wan_workflow_inputs(&mut workflow, prompt, unet, clip, vae, seed)?;
     let image_name = sanitize_upload_name(image_name)?;
-    workflow["11"]["inputs"]["image"] = json!(image_name);
+    workflow
+        .pointer_mut("/11/inputs")
+        .and_then(Value::as_object_mut)
+        .ok_or(Error::Configuration(
+            "image-to-video workflow must load a source image",
+        ))?
+        .insert("image".to_string(), json!(image_name));
     Ok(workflow)
 }
 
@@ -1814,12 +1866,26 @@ fn apply_wan_workflow_inputs(
 }
 
 /// Whether `unet` names a Wan 2.2 A14B noise expert, in any case: one that
-/// names Wan, a noise level and a mode.
+/// names Wan, a noise level and a mode standing on its own, so `ti2v` is no
+/// `i2v`.
 fn is_a14b_unet(unet: &str) -> bool {
     let lower = unet.to_ascii_lowercase();
     lower.contains(WAN_TOKEN)
         && (lower.contains(HIGH_NOISE_TOKEN) || lower.contains(LOW_NOISE_TOKEN))
-        && (lower.contains(TEXT_TO_VIDEO_TOKEN) || lower.contains(IMAGE_TO_VIDEO_TOKEN))
+        && (mode_starts(&lower, TEXT_TO_VIDEO_TOKEN).next().is_some()
+            || mode_starts(&lower, IMAGE_TO_VIDEO_TOKEN).next().is_some())
+}
+
+/// Where `mode` starts in `lower` with no letter or digit on either side.
+fn mode_starts<'a>(lower: &'a str, mode: &'a str) -> impl Iterator<Item = usize> + 'a {
+    lower
+        .match_indices(mode)
+        .map(|(start, _)| start)
+        .filter(move |&start| {
+            !lower[..start].ends_with(|character: char| character.is_ascii_alphanumeric())
+                && !lower[start + mode.len()..]
+                    .starts_with(|character: char| character.is_ascii_alphanumeric())
+        })
 }
 
 /// The high-noise and low-noise experts the graph for `image_to_video` loads
@@ -1836,11 +1902,9 @@ fn paired_wan_unets(unet: &str, image_to_video: bool) -> (String, String) {
     } else {
         (IMAGE_TO_VIDEO_TOKEN, TEXT_TO_VIDEO_TOKEN)
     };
-    let high = replace_token(
-        &replace_token(expert, from, to),
-        LOW_NOISE_TOKEN,
-        HIGH_NOISE_TOKEN,
-    );
+    let lower = expert.to_ascii_lowercase();
+    let moded = replace_at(expert, mode_starts(&lower, from), from.len(), to);
+    let high = replace_token(&moded, LOW_NOISE_TOKEN, HIGH_NOISE_TOKEN);
     let low = replace_token(&high, HIGH_NOISE_TOKEN, LOW_NOISE_TOKEN);
     (high, low)
 }
@@ -1849,10 +1913,22 @@ fn paired_wan_unets(unet: &str, image_to_video: bool) -> (String, String) {
 /// `replacement` in the casing of the text it replaces.
 fn replace_token(name: &str, token: &str, replacement: &str) -> String {
     let lower = name.to_ascii_lowercase();
+    let starts = lower.match_indices(token).map(|(start, _)| start);
+    replace_at(name, starts, token.len(), replacement)
+}
+
+/// `name` with the `length` bytes at each of `starts` replaced by
+/// `replacement` in the casing of the text it replaces.
+fn replace_at(
+    name: &str,
+    starts: impl Iterator<Item = usize>,
+    length: usize,
+    replacement: &str,
+) -> String {
     let mut replaced = String::with_capacity(name.len());
     let mut copied = 0;
-    for (start, _) in lower.match_indices(token) {
-        let end = start + token.len();
+    for start in starts {
+        let end = start + length;
         replaced.push_str(&name[copied..start]);
         replaced.push_str(&cased_like(&name[start..end], replacement));
         copied = end;
@@ -2273,6 +2349,87 @@ mod tests {
             load_video_workflow(Some(&configured)),
             Err(Error::Configuration(_))
         ));
+    }
+
+    #[test]
+    fn an_a14b_graph_whose_experts_are_not_unet_loaders_is_refused() {
+        for packaged in [PACKAGED_VIDEO_WORKFLOW, PACKAGED_IMAGE_TO_VIDEO_WORKFLOW] {
+            for node in [HIGH_NOISE_NODE, LOW_NOISE_NODE] {
+                let mut workflow = packaged_graph(packaged);
+                workflow[node]["class_type"] = json!("CheckpointLoaderSimple");
+                assert!(
+                    matches!(
+                        validate_a14b_workflow(&workflow),
+                        Err(Error::Configuration(_))
+                    ),
+                    "node {node} loads no UNet"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_a14b_graph_may_load_gguf_experts() {
+        for packaged in [PACKAGED_VIDEO_WORKFLOW, PACKAGED_IMAGE_TO_VIDEO_WORKFLOW] {
+            let mut workflow = packaged_graph(packaged);
+            for node in [HIGH_NOISE_NODE, LOW_NOISE_NODE] {
+                workflow[node]["class_type"] = json!("UnetLoaderGGUF");
+            }
+            assert!(validate_a14b_workflow(&workflow).is_ok());
+        }
+    }
+
+    #[test]
+    fn an_a14b_graph_must_chain_its_samplers_through_their_own_experts() {
+        for packaged in [PACKAGED_VIDEO_WORKFLOW, PACKAGED_IMAGE_TO_VIDEO_WORKFLOW] {
+            assert!(validate_a14b_workflow(&packaged_graph(packaged)).is_ok());
+            for (pointer, link) in [
+                ("/14/inputs/latent_image", json!(["7", 0])),
+                ("/14/inputs/model", json!(["4", 0])),
+                ("/8/inputs/model", json!(["13", 0])),
+                ("/14/inputs/model", json!(["14", 0])),
+            ] {
+                let mut workflow = packaged_graph(packaged);
+                *workflow.pointer_mut(pointer).unwrap() = link.clone();
+                assert!(
+                    matches!(
+                        validate_a14b_workflow(&workflow),
+                        Err(Error::Configuration(_))
+                    ),
+                    "{pointer} = {link}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_image_to_video_graph_whose_source_has_no_inputs_is_refused() {
+        let mut workflow = packaged_graph(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW);
+        workflow["11"]["inputs"] = json!("source.png");
+        assert!(matches!(
+            configure_wan_image_to_video_workflow(
+                workflow,
+                "make it move",
+                HIGH_NOISE_UNET,
+                "clip.safetensors",
+                "vae.safetensors",
+                42,
+                "source.png",
+            ),
+            Err(Error::Configuration(_))
+        ));
+    }
+
+    #[test]
+    fn a_ti2v_name_is_not_an_image_to_video_expert() {
+        assert!(!is_a14b_unet("wan2.2_ti2v_high_noise_x.safetensors"));
+        assert_eq!(
+            paired_wan_unets("wan2.2_ti2v_high_noise_x.safetensors", false),
+            (
+                HIGH_NOISE_UNET.to_string(),
+                "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors".to_string(),
+            )
+        );
     }
 
     #[test]

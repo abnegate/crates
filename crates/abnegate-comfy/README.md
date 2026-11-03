@@ -291,10 +291,12 @@ the first half of the steps and a low-noise one the rest, at 1280×704, 81
 frames, 16 frames a second. The packaged graphs are
 `wan2.2-a14b-t2v-api.json` and `wan2.2-a14b-i2v-api.json`;
 `Config::video_workflow_path` replaces the text-to-video one when it keeps the
-A14B contract (UNet loaders at nodes 1 and 12, `KSamplerAdvanced` at 8 and
-14, `EmptyHunyuanLatentVideo` at 7, `SaveWEBM` at 10), and an image-to-video
-graph of that name beside it, with `WanImageToVideo` at 7 and `LoadImage` at
-11, replaces the other. A configured graph that cannot be read or breaks the
+A14B contract, and an image-to-video graph of that name beside it, with
+`WanImageToVideo` at 7 and `LoadImage` at 11, replaces the other. The contract
+is a `UNETLoader` or `UnetLoaderGGUF` at nodes 1 and 12, `KSamplerAdvanced` at
+8 and 14, `EmptyHunyuanLatentVideo` at 7 and `SaveWEBM` at 10, with 8 sampling
+the model node 1 loads, 14 sampling the one node 12 loads, through any nodes
+that pass a model on, and 14 continuing from 8's latent. A configured graph that cannot be read or breaks the
 contract fails the request; only the graph a request uses is read, before
 anything is uploaded. A leftover `wan2.2-ti2v-5b-api.json` path loads the
 A14B graph beside it, or the packaged one.
@@ -302,8 +304,8 @@ A14B graph beside it, or the packaged one.
 `Config::video_unet` names either expert of a pair, such as
 `wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors`, the default; the other
 expert, and the image-to-video pair, are derived from its name in its own
-casing. A name that is not a Wan 2.2 noise expert with a `t2v` or `i2v` mode,
-such as the 5B `wan2.2_ti2v_5B_fp16.safetensors`, loads the packaged pair,
+casing. A name that is not a Wan 2.2 noise expert with a `t2v` or `i2v` mode
+standing on its own, such as the 5B `wan2.2_ti2v_5B_fp16.safetensors`, loads the packaged pair,
 and the 5B `wan2.2_vae.safetensors` loads `wan_2.1_vae.safetensors`, the VAE
 the experts decode with.
 
