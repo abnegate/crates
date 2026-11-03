@@ -82,6 +82,7 @@ const PACKAGED_UPSCALE_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/upscale-video-api.json");
 const DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(300);
 const ABANDON_TIMEOUT: Duration = Duration::from_secs(5);
+const CANCEL_WAIT: Duration = Duration::from_secs(5);
 const LOST_PROMPT: &str = "it no longer has the prompt, most likely because it restarted";
 
 /// Runs generation and upscaling workflows on one ComfyUI server.
@@ -1361,9 +1362,17 @@ impl Client {
         }
     }
 
+    /// Deletes `prompt_id` from the queue within the request timeout, but
+    /// returns after [`CANCEL_WAIT`] at most, leaving a slow delete to land
+    /// on its own.
     async fn cancel(&self, prompt_id: &str) {
-        self.delete_from_queue(prompt_id, crate::http::request_timeout(&self.config))
-            .await;
+        let client = self.clone();
+        let prompt_id = prompt_id.to_string();
+        let delete = tokio::spawn(async move {
+            let timeout = crate::http::request_timeout(&client.config);
+            client.delete_from_queue(&prompt_id, timeout).await;
+        });
+        let _ = tokio::time::timeout(CANCEL_WAIT, delete).await;
     }
 
     async fn abandon(&self, prompt_id: &str) {
@@ -4024,6 +4033,33 @@ mod tests {
         assert_eq!(
             posted_bodies(&server, "/queue").await,
             [json!({"delete": ["down"]})]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_render_whose_download_fails_does_not_wait_out_a_stalled_cancel() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "gone").await;
+        mock_finished_clip(&server, "gone").await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        mock_unanswered_queue_delete(&server).await;
+        let result = tokio::time::timeout(REQUEST_WAIT, generate_clip(video_config(&server)))
+            .await
+            .expect("a stalled cancel must not hold a failed render past its wait");
+        assert!(
+            matches!(
+                &result,
+                Err(Error::Http(error)) if error.status() == Some(reqwest::StatusCode::NOT_FOUND)
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            posted_bodies(&server, "/queue").await,
+            [json!({"delete": ["gone"]})]
         );
     }
 

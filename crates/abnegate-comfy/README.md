@@ -321,7 +321,8 @@ while history stays empty, the queue is asked every
 prompt, and a prompt ComfyUI lost to a restart fails. Each download may take
 the larger of the request timeout and five minutes. Any failure after
 ComfyUI accepted a prompt deletes it from the queue, and history is cleared
-only once the outputs landed.
+only once the outputs landed. The call waits at most five seconds for that
+delete and leaves a slower one to finish within the request timeout.
 
 ## Watching a run
 
