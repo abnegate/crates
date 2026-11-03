@@ -274,7 +274,9 @@ files are installed and never as an error when they are not:
   `clip_vision`, `image`, `ipadapter_name` and `strength` (0.4) and returns
   the model; the crate ships no node pack, so the deployment registers one.
 - **Embedding.** The sidecar's `embedding` leads the prompt as
-  `embedding:<stem>`, unless the prompt already holds it.
+  `embedding:<stem>`, unless the prompt already holds it or the file is not
+  in the models directory's `embeddings/`, which is logged as a warning:
+  ComfyUI drops a token it cannot load.
 
 A recipe with `refine`, or `identity_refine` for an identity, then reruns the
 head of every result through its source graph at denoise 0.3 and pastes it

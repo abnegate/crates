@@ -554,7 +554,9 @@ impl Client {
     fn prepare(&self, prompt: &str, has_source: bool) -> Result<Prepared, Error> {
         #[cfg(test)]
         probe::entered(&self.config.models_directory);
-        let sidecar = self.selected_sidecar();
+        let sidecar = self.selected_sidecar().map(|sidecar| {
+            people::without_missing_embedding(&self.config.models_directory, sidecar)
+        });
         let image = self.image_recipe()?;
         let (recipe, weights) = self.plan_for(image, has_source)?;
         let first = Plan {
@@ -4680,6 +4682,34 @@ mod tests {
         let bodies = prompt_bodies(&server).await;
         assert!(!bodies[0].contains("ControlNetLoader"), "{}", bodies[0]);
         assert!(!bodies[0].contains("IPAdapterFace"), "no face is installed");
+    }
+
+    #[tokio::test]
+    async fn people_identity_without_its_embedding_installed_leaves_the_token_out() {
+        let server = MockServer::start().await;
+        let (_root, models) =
+            person_models(identity_sidecar().with_embedding("ohwx.safetensors"), &[]);
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "bare"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mock_output(&server, "bare", "bare.png", vec![4, 5, 6]).await;
+        let client = person_client(&server, models, "jerry.safetensors");
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        client
+            .generate("ohwx sitting", None, &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+        let bodies = prompt_bodies(&server).await;
+        assert!(
+            !bodies[0].contains("embedding:ohwx"),
+            "ComfyUI drops a token whose embedding is not installed: {}",
+            bodies[0]
+        );
+        assert!(bodies[0].contains("ohwx sitting"), "{}", bodies[0]);
     }
 
     #[tokio::test]

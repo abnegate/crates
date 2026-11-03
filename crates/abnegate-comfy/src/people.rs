@@ -25,6 +25,7 @@ use crate::recipe::RequiredFile;
 use crate::recipe::sanitize_upload_name;
 use crate::subject::CENTRE;
 use crate::subject::Subject;
+use crate::train::is_single_component;
 use abnegate_vision::Raster;
 use abnegate_vision::Region;
 use abnegate_vision::Rendered;
@@ -36,6 +37,7 @@ use abnegate_vision::decode::Orientation;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
+use std::fs;
 use std::path::Path;
 
 /// How strongly the face reference steers the model.
@@ -82,6 +84,29 @@ pub(crate) fn extras(
 pub(crate) fn refines(recipe: &Recipe, sidecar: Option<&WeightSidecar>) -> bool {
     recipe.supports(RecipeExtra::Refine)
         || (recipe.supports(RecipeExtra::IdentityRefine) && is_identity(sidecar))
+}
+
+/// `sidecar` without its embedding when that is not a regular file in the
+/// models directory's `embeddings/`: ComfyUI drops an `embedding:` token it
+/// cannot load, so a prompt led by one would run without the embedding and
+/// say nothing.
+pub(crate) fn without_missing_embedding(
+    models_directory: &Path,
+    mut sidecar: WeightSidecar,
+) -> WeightSidecar {
+    let installed = sidecar.embedding.as_deref().is_none_or(|embedding| {
+        is_single_component(embedding)
+            && fs::symlink_metadata(models_directory.join(EMBEDDINGS_DIRECTORY).join(embedding))
+                .is_ok_and(|metadata| metadata.is_file())
+    });
+    if !installed {
+        tracing::warn!(
+            embedding = sidecar.embedding.as_deref().unwrap_or_default(),
+            "the weight's embedding is not installed; its prompts run without it"
+        );
+        sidecar.embedding = None;
+    }
+    sidecar
 }
 
 /// `prompt` led by `embedding:<stem>` for the embedding `sidecar` names,
