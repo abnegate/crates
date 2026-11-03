@@ -129,8 +129,12 @@ is given the same contract.
 Every graph the client runs comes from a recipe in `comfyui/recipes/catalog.json`.
 A host replaces the packaged catalog by placing its own `recipes/catalog.json`
 beside the directory `Config::workflow_path` names; graphs of the same name in
-that directory replace the packaged copies. Besides the graph pair and its
-slots, a recipe may declare:
+that directory replace the packaged copies. A checkpoint that no recipe lists
+in `files` or matches with a `filename_hints` entry runs on the catalog's
+`default_image` recipe. A diffusion model gets no such fallback:
+`inventory::scan` lists one without a sidecar only when an image recipe claims
+it, so a video model such as a Wan UNet is never offered as an image base.
+Besides the graph pair and its slots, a recipe may declare:
 
 - `edit_recipe`: the base recipe an edit of a source image switches to when
   every file it requires is installed and the selected checkpoint is one of the

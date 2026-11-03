@@ -49,8 +49,11 @@ pub(crate) const SCAN_DIRECTORIES: &[(&str, &str)] = &[
 /// Every checkpoint, diffusion model and LoRA under `models_directory` that a
 /// recipe in `catalog` can run, sorted by filename. A LoRA is listed only when
 /// its sidecar, named with `contract`'s suffix, binds it to an adapter recipe
-/// for its base. No weight is listed while a publication in its directory's
-/// `contract` publication directory is replacing it.
+/// for its base. A diffusion model without a sidecar is listed only when an
+/// image recipe claims it by name or filename hint
+/// ([`RecipeCatalog::is_explicit_image_match`]): the default image recipe
+/// cannot run a video model. No weight is listed while a publication in its
+/// directory's `contract` publication directory is replacing it.
 ///
 /// `contract` is expected to pass [`Contract::validate`], as it does in any
 /// [`Config`] that passes [`Config::validate`]:
@@ -319,9 +322,9 @@ pub fn write_sidecar(
 /// unknown kind or a `filename` that is not exactly one entry of its directory.
 pub fn relative_weight_path(kind: &str, filename: &str) -> Option<PathBuf> {
     let directory = match kind {
-        "checkpoint" => "checkpoints",
-        "diffusion_model" => "diffusion_models",
-        "lora" => "loras",
+        CHECKPOINT => "checkpoints",
+        DIFFUSION_MODEL => "diffusion_models",
+        LORA => "loras",
         "vae" => "vae",
         "text_encoder" => "text_encoders",
         _ => return None,
@@ -457,6 +460,9 @@ fn resolve_recipe<'a>(
         && let Some(recipe) = catalog.get(&document.sidecar.recipe_id)
     {
         return Some(recipe);
+    }
+    if kind == DIFFUSION_MODEL && !catalog.is_explicit_image_match(filename) {
+        return None;
     }
     catalog.image_recipe_for(filename).ok()
 }
@@ -1021,6 +1027,25 @@ mod tests {
                 "trigger": "ohwx",
             })
         );
+    }
+
+    #[test]
+    fn scan_skips_diffusion_models_no_image_recipe_names() {
+        let root = temp_models();
+        for filename in [
+            "wan2.2_ti2v_5B_fp16.safetensors",
+            "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors",
+            "qwen_image_edit_2511_fp8mixed.safetensors",
+        ] {
+            fs::write(root.join("diffusion_models").join(filename), b"unet").unwrap();
+        }
+        let catalog = RecipeCatalog::packaged().unwrap();
+        let listed: Vec<String> = scan(&root, &catalog, &Contract::default())
+            .into_iter()
+            .map(|item| item.filename)
+            .collect();
+        assert_eq!(listed, ["qwen_image_edit_2511_fp8mixed.safetensors"]);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

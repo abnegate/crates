@@ -418,12 +418,16 @@ impl RecipeCatalog {
             ))
     }
 
-    /// Whether a recipe claims `filename` by name or by a filename hint,
-    /// rather than it falling back to the default image recipe.
+    /// Whether an image recipe claims `filename` by name or by a filename
+    /// hint, rather than it falling back to the default image recipe. A file
+    /// a video recipe claims is no image match.
     pub fn is_explicit_image_match(&self, filename: &str) -> bool {
         let trimmed = filename.trim();
-        self.files.contains_key(trimmed)
-            || self.resolve_image_id(trimmed) != self.default_image.as_str()
+        let id = self.resolve_image_id(trimmed);
+        (self.files.contains_key(trimmed) || id != self.default_image.as_str())
+            && self
+                .get(id)
+                .is_some_and(|recipe| recipe.kind == MediaKind::Image)
     }
 
     fn resolve_image_id(&self, checkpoint: &str) -> &str {
@@ -2286,6 +2290,33 @@ mod tests {
             .unwrap();
         assert_eq!(animated["11"]["inputs"]["image"], "i2v-source.png");
         assert_eq!(animated["7"]["inputs"]["start_image"], json!(["11", 0]));
+    }
+
+    #[test]
+    fn only_an_image_recipe_claims_a_file_as_an_explicit_image_match() {
+        let mut file: Value = serde_json::from_str(PACKAGED_CATALOG).unwrap();
+        for recipe in file["recipes"].as_array_mut().unwrap() {
+            if recipe["id"] == "wan-adapter" {
+                recipe["files"] = json!(["wan2.2_ti2v_5B_fp16.safetensors"]);
+                recipe["filename_hints"] = json!(["wan2.2"]);
+            }
+        }
+        let catalog = RecipeCatalog::from_json(&file.to_string(), None).unwrap();
+        for image in [
+            "qwen_image_edit_2511_fp8mixed.safetensors",
+            "flux1-schnell-fp8.safetensors",
+            "juggernautXL_v9.safetensors",
+        ] {
+            assert!(catalog.is_explicit_image_match(image), "{image}");
+        }
+        for other in [
+            "wan2.2_ti2v_5B_fp16.safetensors",
+            "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors",
+            "my_wan2.2_t2v_finetune.safetensors",
+            "unrelated-model.safetensors",
+        ] {
+            assert!(!catalog.is_explicit_image_match(other), "{other}");
+        }
     }
 
     #[test]
