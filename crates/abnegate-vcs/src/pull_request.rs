@@ -7,11 +7,12 @@
 //! through conversation comments, reviews and review threads; merges it; and
 //! reads back when it merged, how many rounds of review it took, who approved
 //! it, and what the reviewers actually said. It also creates a repository for a
-//! new project and reads a file from one. It talks to GitHub's REST API, and
-//! to its GraphQL API for review threads and an administrator's merge. It
-//! addresses GitHub's own API by default and a GitHub Enterprise origin when
-//! one is configured; either way it only answers for repositories on the host
-//! that origin serves.
+//! new project and reads a file from one, and registers, re-signs and removes
+//! the webhooks a repository delivers its events through. It talks to GitHub's
+//! REST API, and to its GraphQL API for review threads and an administrator's
+//! merge. It addresses GitHub's own API by default and a GitHub Enterprise
+//! origin when one is configured; either way it only answers for repositories
+//! on the host that origin serves.
 //!
 //! Every URL a call reaches is built from numbers and validated values: a
 //! [`Repository`] from [`PullRequestService::parse_github_url`], a
@@ -98,6 +99,9 @@ mod service;
 mod state;
 mod submitted_review;
 mod thread_comment;
+mod webhook_configuration;
+mod webhook_event;
+mod webhook_request;
 
 pub use crate::pull_request::changed_file::ChangedFile;
 pub use crate::pull_request::checks_outcome::ChecksOutcome;
@@ -130,3 +134,4 @@ pub use crate::pull_request::service::PullRequestService;
 pub use crate::pull_request::state::PullRequestState;
 pub use crate::pull_request::submitted_review::SubmittedReview;
 pub use crate::pull_request::thread_comment::ThreadComment;
+pub use crate::pull_request::webhook_event::WebhookEvent;

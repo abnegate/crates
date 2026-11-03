@@ -49,6 +49,7 @@ mod pulls;
 mod redirect_tests;
 mod repositories;
 mod threads;
+mod webhooks;
 
 /// What this crate calls itself to the GitHub API.
 const USER_AGENT: &str = "abnegate-vcs";
@@ -153,6 +154,8 @@ const GIT_SUFFIX: &str = ".git";
 ///   [`Self::reply_to_review_comment`] and [`Self::resolve_review_thread`].
 /// - Merging: [`Self::merge`], then [`Self::delete_branch`].
 /// - Creating a repository: [`Self::create_repository`].
+/// - Webhooks: [`Self::create_webhook`], [`Self::update_webhook`] and
+///   [`Self::delete_webhook`].
 ///
 /// Review threads, resolving one, and an administrator's merge go to GitHub's
 /// GraphQL API; everything else goes to its REST API, at the same origin.
@@ -178,7 +181,8 @@ const GIT_SUFFIX: &str = ".git";
 /// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
 /// rate limit as [`PullRequestError::RateLimited`], any other 403 as
 /// [`PullRequestError::Forbidden`], and 404 as [`PullRequestError::NotFound`],
-/// except that [`Self::delete_branch`] reads a 404 as a branch already gone.
+/// except that [`Self::delete_branch`] and [`Self::delete_webhook`] read a 404
+/// as already gone.
 /// Outside a merge, the errors GitHub's GraphQL API reports map onto the same
 /// variants where GitHub names their kind. Of a refusal's answer, an error
 /// keeps only GitHub's own message, bounded: never the raw answer, and never
