@@ -1332,7 +1332,8 @@ fn queue_on_host(
 /// Refuses publishing the host job `job` the way [`validate_request`] would
 /// have refused queueing it: an unknown base, a method or subject
 /// [`Config::train_policy`] no longer allows on it, a weight file other than
-/// the one its name gives, or a name that is not free.
+/// the one its name gives, a pivotal name its embedding could not be prompted
+/// by, or a name that is not free.
 pub(crate) fn validate_host_job(config: &Config, job: &host::Job) -> Result<(), TrainError> {
     host_destination(config, job).map(|_| ())
 }

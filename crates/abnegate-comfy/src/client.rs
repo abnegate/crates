@@ -2423,6 +2423,7 @@ mod tests {
     #[test]
     fn a_ti2v_name_is_not_an_image_to_video_expert() {
         assert!(!is_a14b_unet("wan2.2_ti2v_high_noise_x.safetensors"));
+        assert!(!is_a14b_unet("wan2.2_t2v14b_high_noise.safetensors"));
         assert_eq!(
             paired_wan_unets("wan2.2_ti2v_high_noise_x.safetensors", false),
             (

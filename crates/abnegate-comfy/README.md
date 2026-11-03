@@ -305,10 +305,12 @@ A14B graph beside it, or the packaged one.
 `Config::video_unet` names either expert of a pair, such as
 `wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors`, the default; the other
 expert, and the image-to-video pair, are derived from its name in its own
-casing. A name that is not a Wan 2.2 noise expert with a `t2v` or `i2v` mode
-standing on its own, such as the 5B `wan2.2_ti2v_5B_fp16.safetensors`, loads the packaged pair,
-and the 5B `wan2.2_vae.safetensors` loads `wan_2.1_vae.safetensors`, the VAE
-the experts decode with.
+casing. A name is a Wan 2.2 noise expert only when it names Wan, a noise
+level and a `t2v` or `i2v` mode with no letter or digit beside the mode, so
+`ti2v` and `t2v14b` are not modes. Any other name, such as the 5B
+`wan2.2_ti2v_5B_fp16.safetensors`, loads the packaged pair, and the 5B
+`wan2.2_vae.safetensors` loads `wan_2.1_vae.safetensors`, the VAE the experts
+decode with.
 
 A clip can take hours, so `Config::video_generation_timeout` is two hours
 unless set and at most four. Every generation rides out a failing ComfyUI: a
