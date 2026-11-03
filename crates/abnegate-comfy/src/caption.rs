@@ -15,6 +15,7 @@ pub use draft::Draft;
 pub use image::CaptionImage;
 pub use request::CaptionRequest;
 
+use abnegate_llm::Error;
 use abnegate_llm::LlmClient;
 use abnegate_llm::LlmConfig;
 use abnegate_llm::Message;
@@ -124,6 +125,11 @@ impl Captioner {
     /// left blank have been described and how many there are: once with none
     /// done before the first is sent to the vision model, then after each.
     /// Never called when there is nothing to caption.
+    ///
+    /// The first request that times out or cannot reach the endpoint is the
+    /// last one sent: every shot not yet described keeps the trigger as its
+    /// only caption, so a dead endpoint costs one
+    /// [`Config::caption_timeout`] rather than one per shot.
     pub async fn fill_with_progress(
         &self,
         drafts: &mut [Draft],
@@ -140,7 +146,8 @@ impl Captioner {
             .collect::<HashSet<usize>>()
             .len();
         progress(0, blank);
-        let subject = self.subject(&drafts[0].image).await;
+        let mut reachable = true;
+        let subject = answered(self.subject(&drafts[0].image).await, &mut reachable);
         let mut shots: Vec<usize> = Vec::new();
         let mut described: Vec<Option<String>> = Vec::new();
         for draft in drafts.iter() {
@@ -148,7 +155,15 @@ impl Captioner {
                 continue;
             }
             shots.push(draft.group);
-            described.push(self.describe(&draft.image, subject.as_deref()).await);
+            let description = if reachable {
+                answered(
+                    self.describe(&draft.image, subject.as_deref()).await,
+                    &mut reachable,
+                )
+            } else {
+                None
+            };
+            described.push(description);
             progress(shots.len(), blank);
         }
         let banned = identity_words(&described, subject.as_deref(), trigger);
@@ -180,38 +195,41 @@ impl Captioner {
     }
 
     /// One noun phrase naming the subject, used to seed the exclusion list.
-    async fn subject(&self, image: &str) -> Option<String> {
+    async fn subject(&self, image: &str) -> Result<Option<String>, Error> {
         let prompt = "What is the main object in this photo? Answer with a short noun phrase, \
              at most 12 words. Do not write a sentence.";
         let mut message = Message::user(prompt);
         message.images = vec![image.to_string()];
-        let answer = self.ask(message, SUBJECT_TOKENS).await?;
+        let Some(answer) = self.ask(message, SUBJECT_TOKENS).await? else {
+            return Ok(None);
+        };
         let cleaned = tidy(&answer);
-        (!cleaned.is_empty()).then_some(cleaned)
+        Ok((!cleaned.is_empty()).then_some(cleaned))
     }
 
     /// What varies in one image: pose, framing, setting, lighting, props.
-    async fn describe(&self, image: &str, subject: Option<&str>) -> Option<String> {
+    async fn describe(&self, image: &str, subject: Option<&str>) -> Result<Option<String>, Error> {
         let mut message = Message::user(describe_prompt(subject));
         message.images = vec![image.to_string()];
-        let answer = self.ask(message, DESCRIPTION_TOKENS).await?;
+        let Some(answer) = self.ask(message, DESCRIPTION_TOKENS).await? else {
+            return Ok(None);
+        };
         let cleaned = tidy(&answer);
         if cleaned.is_empty() || cleaned.eq_ignore_ascii_case(EXAMPLE_CAPTION) {
-            return None;
+            return Ok(None);
         }
-        Some(cleaned)
+        Ok(Some(cleaned))
     }
 
-    async fn ask(&self, message: Message, maximum_tokens: u32) -> Option<String> {
+    async fn ask(&self, message: Message, maximum_tokens: u32) -> Result<Option<String>, Error> {
         let response = self
             .client(maximum_tokens)
             .chat_with_model(&self.model, &[message], None)
-            .await
-            .ok()?;
-        response
+            .await?;
+        Ok(response
             .choices
             .first()
-            .and_then(|choice| choice.message.content.clone())
+            .and_then(|choice| choice.message.content.clone()))
     }
 
     fn client(&self, maximum_tokens: u32) -> LlmClient {
@@ -222,6 +240,20 @@ impl Captioner {
                 .with_timeout(self.timeout),
         )
     }
+}
+
+/// The answer to one caption request, or none when it failed. A request that
+/// timed out or never reached the endpoint clears `reachable`, so no further
+/// request waits out the same dead endpoint; any other failure is that
+/// image's alone.
+fn answered(result: Result<Option<String>, Error>, reachable: &mut bool) -> Option<String> {
+    result.unwrap_or_else(|error| {
+        if matches!(error, Error::Timeout(_) | Error::Http(_)) {
+            tracing::warn!(%error, "the caption endpoint did not answer; the remaining shots keep the trigger");
+            *reachable = false;
+        }
+        None
+    })
 }
 
 /// Words that identify the subject rather than the shot.
@@ -714,6 +746,80 @@ mod tests {
         let mut images = vec![Draft::new("a.png", "aaa", "", 0)];
         captioner.fill(&mut images, "zrkxyz").await;
         assert_eq!(images[0].caption, "zrkxyz");
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_that_times_out_is_asked_once_and_every_shot_keeps_the_trigger() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(answer("three-quarter view, standing on concrete"))
+                    .set_delay(Duration::from_secs(2)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let config = config("vision").with_caption_timeout(Duration::from_millis(200));
+        let captioner = Captioner::new(&config, server.uri(), "key".into());
+        let mut images = vec![
+            Draft::new("a.png", "aaa", "", 0),
+            Draft::new("b.png", "bbb", "", 1),
+            Draft::new("c.png", "ccc", "", 2),
+        ];
+        let mut ticks = Vec::new();
+        let described = captioner
+            .fill_with_progress(&mut images, "zrkxyz", |done, total| {
+                ticks.push((done, total))
+            })
+            .await;
+
+        assert!(described.is_empty(), "nothing answered: {described:?}");
+        for draft in &images {
+            assert_eq!(draft.caption, "zrkxyz");
+        }
+        assert_eq!(
+            ticks,
+            vec![(0, 3), (1, 3), (2, 3), (3, 3)],
+            "progress still reaches every blank shot"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_image_the_endpoint_refuses_does_not_stop_the_rest() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("main object in this photo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(answer("a teapot robot")))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("Write a short caption"))
+            .and(body_string_contains("base64,aaa"))
+            .respond_with(ResponseTemplate::new(400))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("Write a short caption"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(answer("three-quarter view, standing on concrete")),
+            )
+            .mount(&server)
+            .await;
+        let captioner = Captioner::new(&config("vision"), server.uri(), "key".into());
+        let mut images = vec![
+            Draft::new("a.png", "aaa", "", 0),
+            Draft::new("b.png", "bbb", "", 1),
+        ];
+        captioner.fill(&mut images, "zrkxyz").await;
+
+        assert_eq!(images[0].caption, "zrkxyz", "the refused image");
+        assert_eq!(
+            images[1].caption, "zrkxyz, three-quarter view, standing on concrete",
+            "a refusal is one image's, so the next is still described"
+        );
     }
 
     #[tokio::test]
