@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::io;
+use std::path::Path;
 use std::process::Output;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Once;
@@ -10,10 +12,58 @@ use std::time::Duration;
 use tokio::process::Command;
 use tracing_subscriber::fmt::MakeWriter;
 
+mod straggler;
+
+pub(crate) use straggler::INTERRUPTED;
+pub(crate) use straggler::Straggler;
+pub(crate) use straggler::TERMINATION;
+pub(crate) use straggler::exits_within;
+pub(crate) use straggler::stop_if_running;
+
+/// The variable the tests mark their runs with: the one `abnegate-exec`'s own
+/// marker tests use, never one a live host marks its runs with, so a sweep a
+/// test starts can reach only processes the tests started. Each run sets it
+/// to a value of its own.
+pub(crate) const MARKER: &str = "ABNEGATE_EXEC_TEST_MARKER";
+
 /// How long a test waits in real time on a child it started. A child a test
 /// expects to be killed outlives it, so a wait for it to go never mistakes
 /// its own exit for the kill.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(60);
+
+/// Where [`ESCAPED_PROCESS`] writes its pid, in the working directory.
+const ESCAPED_PID: &str = "escaped";
+
+/// Shell that leaves a process holding the shell's stdout and stderr open in a
+/// session of its own, out of reach of a kill of the shell's group, and waits
+/// until that process has written its pid to [`ESCAPED_PID`].
+pub(crate) const ESCAPED_PROCESS: &str = concat!(
+    r#"perl -e 'use POSIX qw(setsid); setsid(); open(my $file, ">", "escaped") or die; "#,
+    r#"print $file "$$\n"; close $file; sleep 120' &"#,
+    "\nwhile [ ! -s escaped ]; do sleep 0.1; done\n",
+);
+
+/// `script` run by `sh` in `directory`, with nothing on its stdin.
+pub(crate) fn shell(directory: &Path, script: &str) -> Command {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(script)
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    command
+}
+
+/// Kill the process a script started with [`ESCAPED_PROCESS`] in `directory`
+/// left behind.
+pub(crate) fn kill_escaped(directory: &Path) {
+    let pid =
+        std::fs::read_to_string(directory.join(ESCAPED_PID)).expect("the escaped process's pid");
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", pid.trim()])
+        .status();
+}
 
 /// The members of process group `group` still running. A killed leader not
 /// yet reaped lingers as a zombie, which still counts as a member to a signal

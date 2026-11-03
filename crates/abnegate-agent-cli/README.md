@@ -5,11 +5,15 @@ Coding agent CLIs driven as child processes, behind the same
 `claude --output-format stream-json` or `codex exec --json` with the
 conversation flattened into one prompt on stdin, reads the agent's
 newline-delimited JSON as it streams with a cap on any one event, and returns its
-final prose as a completion; `CliProvider::execute` returns the whole
+final answer as a completion; `CliProvider::execute` returns the whole
 `Execution` for a caller that needs the structured answer, the session to
 resume, the cost, or the run's log files, and `CliProvider::stream` yields the
 run's `AgentEvent`s as the agent emits them, ending in the error `complete`
-would have returned when the run failed. A run can start the agent's own
+would have returned when the run failed. `CliProvider::execute_prompt` and
+`CliProvider::stream_prompt` write a prompt's bytes to stdin unchanged, with no
+role label, trimming or escaping, so Claude reads a leading slash command such
+as `/issue ENG-42` as one; text the caller does not control belongs in a
+conversation, whose role labels are escaped. A run can start the agent's own
 `Session` under an id of the caller's choosing, or resume one. A Claude or Codex
 run can attach MCP servers, and a Claude run can restrict its tools, or be
 confined to reading its working directory, and a run
@@ -47,6 +51,44 @@ sandbox confines them, whichever one `CliSettings::with_sandbox`, the user's
 configuration or a `--sandbox` argument names, and `danger-full-access` confines
 nothing.
 
+## Cleanup
+
+The agent leads a process group of its own. Once it exits, or is stopped, the
+run kills what is left of the group while the agent is still unreaped, so the
+kill never reaches a group that took over its id, and reaps it only then. A
+run that fails, times out or is dropped takes the whole group with it. A
+successful run leaves what the agent started running, such as a server it
+started for the caller, unless it still holds the agent's output open past the
+grace period, or `CliSettings::with_cleanup(Cleanup::Always)` asks for every
+run to be cleaned up; success here means the agent's stream
+finished its turn without a failure, nothing stopped the agent, and the agent
+exited with status zero, which the run reads before it reaps the agent.
+
+`CliSettings::with_marker` names an environment variable each run sets to a
+value of its own. Everything the agent starts inherits it, so a cleanup also
+finds and stops what left the group, such as a daemon in a session of its own:
+SIGTERM, `GRACE_PERIOD` to exit, then SIGKILL, on the runtime's blocking pool,
+and a dropped run sends SIGKILL at once. On macOS a sweep cannot see Apple's
+platform binaries, whose environment is hidden: a `/bin/sh`, `zsh`, `bash` or
+`sleep` that left the group is never found, though what such a shell starts
+from outside the system is. The run's timeout bounds only the
+agent, never the sweep. `CliSettings::with_registry` registers each run's group,
+and tracks its marker, in an `abnegate_exec::GroupRegistry` such as
+`GroupRegistry::global()`, so a host can pass a Ctrl-C on to every run with
+`interrupt_all` and stop them all as it shuts down with `shutdown`; a registry
+that has been killed refuses to start a run.
+
+```rust,no_run
+use abnegate_agent_cli::Cleanup;
+use abnegate_agent_cli::CliSettings;
+use abnegate_exec::GroupRegistry;
+
+let settings = CliSettings::default()
+    .with_cleanup(Cleanup::Always)
+    .with_marker("MY_APPLICATION_RUN")
+    .with_registry(GroupRegistry::global());
+```
+
 ## Claude turns
 
 A Claude run reads its stream through one `Turn` (from `AgentKind::turn`), since
@@ -66,6 +108,14 @@ result with status 429, or in a limit's words, is a limit too, unless its
 status is 401. A subagent's lines contribute only the tools it calls: its
 words, token counts and refusals stay in its own conversation, and the main
 agent answers without them.
+
+A successful result's text is the turn's final answer, `AgentEvent::Answer`,
+yielded just before `AgentEvent::Finished` and kept in
+`StdoutParseResult::answer` apart from the narration streamed as
+`AgentEvent::Text` on the way there. `StdoutParseResult::reply` is that answer,
+or all the prose when the agent gave none, and is what `complete` returns. A
+failed result, such as `error_max_turns`, fails in its words and then the
+`errors` it lists, a line apiece, and in its subtype only when it gave neither.
 
 ## Limits and windows
 
@@ -96,6 +146,14 @@ any secret or credential-shaped token the cut would split, so no piece of one
 is kept unscrubbed. A run stopped for
 prose past its output limit fails with a message starting with
 `PROSE_EXCEEDED`, so a caller can tell it from any other failure.
+
+Output a process the agent forked still holds open after the agent exits does
+not hold the run up. A run that cleans up kills the agent's process group at
+once; otherwise that process gets 5 seconds to finish before the group is
+killed. Then the run drains the agent's stdout and stderr: everything already
+written is read, however far behind the run fell, and the run stops once the
+output goes quiet 3 seconds into the drain, or 10 seconds into it while a
+process outside the group keeps writing, keeping what it read.
 
 ## Features
 

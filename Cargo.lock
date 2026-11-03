@@ -49,6 +49,7 @@ dependencies = [
  "dirs 7.0.0",
  "futures",
  "getrandom 0.4.3",
+ "nix",
  "serde",
  "serde_json",
  "tempfile",
@@ -115,6 +116,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]

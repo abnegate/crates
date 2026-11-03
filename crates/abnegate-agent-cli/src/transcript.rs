@@ -26,6 +26,13 @@ const LINE_BREAKS: [char; 7] = [
 /// backslash in front of it, as does one that already starts with
 /// backslashes before a label, so a message can never open a turn in someone
 /// else's name: a tool result that prints `Assistant:` stays a tool result.
+///
+/// A lone message is rendered the same way. A prompt meant to reach the agent
+/// exactly as written, such as a slash command, goes through
+/// [`CliProvider::execute_prompt`](crate::CliProvider::execute_prompt) or
+/// [`CliProvider::stream_prompt`](crate::CliProvider::stream_prompt) instead,
+/// which escape nothing, so they are not for text the caller does not
+/// control.
 pub fn render(messages: &[Message]) -> String {
     render_tail(messages, 0)
 }

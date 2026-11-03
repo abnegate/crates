@@ -69,6 +69,14 @@ pub enum AgentEvent {
     Session(String),
     /// The answer the agent was asked to shape to a JSON schema.
     Structured(serde_json::Value),
+    /// The agent's final answer, apart from the narration it streamed as
+    /// [`AgentEvent::Text`] on the way to it: the text of a successful
+    /// Claude result. It comes just before the [`AgentEvent::Finished`] it
+    /// belongs to and ends nothing itself. A turn that failed has none, and
+    /// neither has an agent that reports no answer apart from its prose,
+    /// such as Codex, so a caller falls back to the prose, as
+    /// [`StdoutParseResult::reply`](crate::StdoutParseResult::reply) does.
+    Answer(String),
     /// What the agent says the run cost, in US dollars.
     Cost(f64),
     /// How many turns the agent took.
@@ -169,6 +177,7 @@ mod tests {
         for event in [
             AgentEvent::Session("6f1".to_string()),
             AgentEvent::Structured(serde_json::json!({"success": true})),
+            AgentEvent::Answer("It is empty.".to_string()),
             AgentEvent::Cost(0.04),
             AgentEvent::Turns(3),
             AgentEvent::Latency(Duration::from_millis(7980)),

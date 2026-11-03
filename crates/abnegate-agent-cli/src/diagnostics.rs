@@ -7,6 +7,7 @@ use tokio::process::ChildStderr;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+use crate::drain::Drain;
 use crate::lines::Lines;
 use crate::log::Journal;
 use crate::log::Record;
@@ -30,7 +31,8 @@ const TOKEN_PUNCTUATION: &[u8] = b"-_.~+/=%";
 /// it fills the pipe buffer, which on a verbose agent happens long before it
 /// reaches its answer, and one whose pipe was closed dies of its next write.
 /// Its end is what explains a failure, so that is what is kept, and every
-/// line reaches the tripwire and the journal wherever it falls.
+/// line reaches the tripwire and the journal wherever it falls, including
+/// every line the pipe still holds once the run starts to [`Drain`] it.
 pub(crate) struct Diagnostics {
     lines: Lines,
     limit: usize,
@@ -40,7 +42,7 @@ pub(crate) struct Diagnostics {
     scrubber: Scrubber,
     tripwire: Option<Tripwire>,
     verdicts: Option<mpsc::Sender<Verdict>>,
-    cancel: watch::Receiver<bool>,
+    drain: Drain,
     count: u64,
     collected: Vec<u8>,
 }
@@ -54,7 +56,7 @@ impl Diagnostics {
         scrubber: Scrubber,
         tripwire: Option<Tripwire>,
         verdicts: mpsc::Sender<Verdict>,
-        cancel: watch::Receiver<bool>,
+        draining: watch::Receiver<bool>,
     ) -> Self {
         Self {
             lines: Lines::new(line_limit),
@@ -65,13 +67,14 @@ impl Diagnostics {
             scrubber,
             tripwire,
             verdicts: Some(verdicts),
-            cancel,
+            drain: Drain::new(draining),
             count: 0,
             collected: Vec::new(),
         }
     }
 
-    /// Everything kept, including when the read was cancelled part way.
+    /// Everything kept, including when the drain ended the read before stderr
+    /// closed.
     pub(crate) async fn run(mut self, stderr: Option<ChildStderr>) -> String {
         if let Some(stderr) = stderr {
             self.read(stderr).await;
@@ -90,10 +93,8 @@ impl Diagnostics {
     async fn read(&mut self, mut stderr: ChildStderr) {
         let mut buffer = [0_u8; BUFFER];
         loop {
-            let read = tokio::select! {
-                biased;
-                _ = self.cancel.changed() => return,
-                read = stderr.read(&mut buffer) => read,
+            let Some(read) = self.drain.read(stderr.read(&mut buffer)).await else {
+                return;
             };
             let Ok(read) = read else {
                 break;
@@ -211,10 +212,24 @@ fn is_continuation(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use abnegate_secret::SecretValue;
+    use std::process::Stdio;
 
+    use abnegate_secret::SecretValue;
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
+    use tokio::sync::watch;
+
+    use super::Diagnostics;
     use super::Scrubber;
     use super::retained;
+    use crate::log::Journal;
+    use crate::log::Sink;
+    use crate::settings::DEFAULT_LINE_LIMIT;
+    use crate::settings::DEFAULT_OUTPUT_LIMIT;
+    use crate::test_support::ESCAPED_PROCESS;
+    use crate::test_support::PATIENCE;
+    use crate::test_support::kill_escaped;
+    use crate::test_support::shell;
 
     const CONFIGURED: &str = concat!("notreal-", "stderr-secret-", "0123456789");
     const SPOKEN: &str = concat!("correct horse ", "battery staple ", "notreal");
@@ -224,6 +239,53 @@ mod tests {
         "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"
     );
     const PIECE: usize = 6;
+
+    /// Few enough lines that they all fit in a pipe nobody reads yet.
+    const WRITTEN: usize = 500;
+
+    /// Stderr still unread when the run gave up on it closing was dropped,
+    /// though it is what explains a failure.
+    #[tokio::test]
+    async fn stderr_written_before_the_drain_started_is_read_to_its_end() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = format!(
+            "{ESCAPED_PROCESS}i=0; while [ $i -lt {WRITTEN} ]; do echo \"line $i\" >&2; i=$((i + 1)); done\n"
+        );
+        let mut agent = shell(directory.path(), &script)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the agent");
+        let stderr = agent.stderr.take();
+        agent.wait().await.expect("the agent to exit");
+        let (verdicts, _settled) = mpsc::channel(2);
+        let (draining, started) = watch::channel(false);
+        draining.send_replace(true);
+        let diagnostics = Diagnostics::new(
+            DEFAULT_LINE_LIMIT,
+            DEFAULT_OUTPUT_LIMIT,
+            Journal::disabled(),
+            Sink::open(None).await,
+            Scrubber::new([]),
+            None,
+            verdicts,
+            started,
+        );
+
+        let kept = tokio::time::timeout(PATIENCE, diagnostics.run(stderr)).await;
+        kill_escaped(directory.path());
+
+        let kept = kept.expect("the drain to end while an escaped process holds stderr open");
+        assert_eq!(
+            kept.lines().count(),
+            WRITTEN,
+            "stderr buffered before the drain started was dropped"
+        );
+        assert_eq!(
+            kept.lines().last(),
+            Some(format!("line {}", WRITTEN - 1).as_str())
+        );
+    }
 
     /// A cut that fell inside a secret kept its end, which the scrubber, looking
     /// for the whole secret, could not recognise; so did a cut inside a
