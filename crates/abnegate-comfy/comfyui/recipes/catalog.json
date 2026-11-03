@@ -403,49 +403,6 @@
       "hf_bases": [
         "Qwen/Qwen-Image-Edit-2511"
       ]
-    },
-    {
-      "id": "wan-adapter",
-      "kind": "video",
-      "label": "Wan 2.2 identity adapter",
-      "adapter": true,
-      "bare": "wan-adapter-api.json",
-      "with_source": "wan-adapter-i2v-api.json",
-      "output_node": "10",
-      "output": "save_webm",
-      "slots": {
-        "prompt": "/5/inputs/text",
-        "seed": "/8/inputs/seed",
-        "source": "/11/inputs/image",
-        "weights": {
-          "unet": "/1/inputs/unet_name",
-          "clip": "/2/inputs/clip_name",
-          "vae": "/3/inputs/vae_name",
-          "lora": "/12/inputs/lora_name"
-        }
-      },
-      "defaults": {
-        "unet": "wan2.2_ti2v_5B_fp16.safetensors",
-        "clip": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-        "vae": "wan2.2_vae.safetensors"
-      },
-      "required_files": [
-        {
-          "filename": "wan2.2_ti2v_5B_fp16.safetensors",
-          "directory": "diffusion_models"
-        },
-        {
-          "filename": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-          "directory": "text_encoders"
-        },
-        {
-          "filename": "wan2.2_vae.safetensors",
-          "directory": "vae"
-        }
-      ],
-      "hf_bases": [
-        "Comfy-Org/Wan_2.2_ComfyUI_Repackaged"
-      ]
     }
   ]
 }

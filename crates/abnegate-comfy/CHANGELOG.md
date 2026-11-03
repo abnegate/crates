@@ -19,11 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A configured video graph that cannot be read or breaks the A14B contract fails the request instead of falling back to the packaged one, and only the graph a request uses is read, before its source is uploaded
 - `Config::video_generation_timeout` defaults to two hours (was ten minutes) and `COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS` accepts up to four hours (was one), the time a Wan 2.2 A14B clip can take
 
-### Removed
-
-- Video identity binding: `inventory::{VideoIdentity, bind_video_identity, video_identity_for_prompt, video_identity_among}` and the `build_wan_adapter_text_to_video_workflow` and `build_wan_adapter_image_to_video_workflow` builders, none of them released. `Client::generate_video` posts its prompt as written and loads no LoRA, since the Wan 2.2 A14B experts cannot load a TI2V 5B adapter
-- Video adapter training: every `TrainMethod::Video` request is refused with the new `lora::VIDEO_REFUSAL`, and the clip windowing behind it is gone
-
 ### Fixed
 
 - A generation keeps polling through a failed history read or output download that could heal (no answer, 5xx, 408, 429) for up to `Config::outage_window`, instead of throwing a finished render away on one 500

@@ -6,9 +6,6 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const STEPS_PER_IMAGE: u32 = 20;
 const MINIMUM_STEPS: u32 = 500;
 const MAXIMUM_STEPS: u32 = 40_000;
-const STEPS_PER_WINDOW: u32 = 20;
-const MINIMUM_VIDEO_STEPS: u32 = 150;
-const MAXIMUM_VIDEO_STEPS: u32 = 2000;
 
 /// A trainer running beside ComfyUI on the host, which picks up the jobs
 /// [`lora::train`](crate::lora::train) queues under
@@ -18,9 +15,7 @@ const MAXIMUM_VIDEO_STEPS: u32 = 2000;
 /// Set on [`Config::host_trainer`](crate::Config::host_trainer), it trains
 /// what the packaged graph cannot, when no
 /// [`Config::train_command`](crate::Config::train_command) is set: every method
-/// other than a LoRA, and every SDXL base. A
-/// [`TrainMethod::Video`](crate::lora::TrainMethod::Video) adapter trains only
-/// here, whatever else is set. It also trains every request on a
+/// other than a LoRA, and every SDXL base. It also trains every request on a
 /// [remote](crate::host::Compute::is_remote) compute, command or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -38,13 +33,6 @@ pub struct Trainer {
     /// Most steps the trainer takes on any set, 40,000 by default, which
     /// keeps 20 passes over a set of up to 2,000 images.
     pub maximum_steps: u32,
-    /// Training steps the trainer takes per clip window of a video adapter,
-    /// 20 by default.
-    pub steps_per_window: u32,
-    /// Fewest steps the trainer takes on any video adapter, 150 by default.
-    pub minimum_video_steps: u32,
-    /// Most steps the trainer takes on any video adapter, 2000 by default.
-    pub maximum_video_steps: u32,
 }
 
 impl Default for Trainer {
@@ -55,9 +43,6 @@ impl Default for Trainer {
             steps_per_image: STEPS_PER_IMAGE,
             minimum_steps: MINIMUM_STEPS,
             maximum_steps: MAXIMUM_STEPS,
-            steps_per_window: STEPS_PER_WINDOW,
-            minimum_video_steps: MINIMUM_VIDEO_STEPS,
-            maximum_video_steps: MAXIMUM_VIDEO_STEPS,
         }
     }
 }
@@ -89,37 +74,14 @@ impl Trainer {
         self
     }
 
-    /// Sets the step budget the trainer is configured with for a video
-    /// adapter: `per_window` steps for every clip window, held between
-    /// `minimum` and `maximum`.
-    pub fn with_video_steps(mut self, per_window: u32, minimum: u32, maximum: u32) -> Self {
-        self.steps_per_window = per_window;
-        self.minimum_video_steps = minimum;
-        self.maximum_video_steps = maximum;
-        self
-    }
-
     /// The steps the trainer takes on `image_count` images, which a queued
     /// job reports as its total before the trainer has said otherwise.
     pub fn steps_for(&self, image_count: usize) -> u32 {
-        budget(
-            image_count,
-            self.steps_per_image,
-            self.minimum_steps,
-            self.maximum_steps,
-        )
-    }
-
-    /// The steps the trainer takes on a video adapter of `window_count` clip
-    /// windows, reported the way [`steps_for`](Self::steps_for) reports an
-    /// image set's.
-    pub fn video_steps_for(&self, window_count: usize) -> u32 {
-        budget(
-            window_count,
-            self.steps_per_window,
-            self.minimum_video_steps,
-            self.maximum_video_steps,
-        )
+        u32::try_from(image_count)
+            .unwrap_or(u32::MAX)
+            .saturating_mul(self.steps_per_image)
+            .max(self.minimum_steps)
+            .min(self.maximum_steps)
     }
 
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
@@ -128,63 +90,11 @@ impl Trainer {
                 "the host trainer's pickup and poll interval must be longer than zero",
             ));
         }
-        if self.maximum_steps == 0
-            || self.minimum_steps > self.maximum_steps
-            || self.maximum_video_steps == 0
-            || self.minimum_video_steps > self.maximum_video_steps
-        {
+        if self.maximum_steps == 0 || self.minimum_steps > self.maximum_steps {
             return Err(ConfigError::new(
                 "the host trainer's step budget must allow at least one step",
             ));
         }
         Ok(())
-    }
-}
-
-fn budget(count: usize, per_item: u32, minimum: u32, maximum: u32) -> u32 {
-    u32::try_from(count)
-        .unwrap_or(u32::MAX)
-        .saturating_mul(per_item)
-        .max(minimum)
-        .min(maximum)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_video_adapter_budgets_steps_per_clip_window() {
-        let trainer = Trainer::new();
-        assert_eq!(trainer.video_steps_for(1), 150);
-        assert_eq!(trainer.video_steps_for(7), 150);
-        assert_eq!(trainer.video_steps_for(8), 160);
-        assert_eq!(trainer.video_steps_for(100), 2000);
-        assert_eq!(trainer.video_steps_for(200), 2000);
-        assert_eq!(
-            trainer.steps_for(8),
-            500,
-            "an image set keeps its own budget"
-        );
-        let tuned = trainer.with_video_steps(10, 50, 60);
-        assert_eq!(tuned.video_steps_for(1), 50);
-        assert_eq!(tuned.video_steps_for(6), 60);
-    }
-
-    #[test]
-    fn a_video_budget_that_allows_no_step_is_refused() {
-        assert!(Trainer::new().validate().is_ok());
-        assert!(
-            Trainer::new()
-                .with_video_steps(20, 0, 0)
-                .validate()
-                .is_err()
-        );
-        assert!(
-            Trainer::new()
-                .with_video_steps(20, 300, 200)
-                .validate()
-                .is_err()
-        );
     }
 }

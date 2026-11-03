@@ -12,6 +12,8 @@ mod prompt_mode;
 mod required_file;
 mod training_adapter;
 mod training_model;
+#[cfg(test)]
+pub(crate) mod video_fixture;
 
 pub use extra::RecipeExtra;
 pub use fill::Fill;
@@ -32,11 +34,6 @@ use std::path::Path;
 
 use crate::client::Error;
 
-/// The packaged graph the `wan-adapter` recipe runs a Wan 2.2 TI2V 5B LoRA
-/// with.
-const VIDEO_ADAPTER_WORKFLOW: &str = "wan-adapter-api.json";
-/// The packaged image-to-video graph of the `wan-adapter` recipe.
-const IMAGE_TO_VIDEO_ADAPTER_WORKFLOW: &str = "wan-adapter-i2v-api.json";
 const PACKAGED_CATALOG: &str = include_str!("../comfyui/recipes/catalog.json");
 const SELECTED_SLOTS: &[&str] = &["lora", "checkpoint", "unet"];
 const ENCODER: &str = "VAEEncode";
@@ -95,10 +92,6 @@ fn packaged_workflow(name: &str) -> Option<&'static str> {
         )),
         "qwen-image-edit-2511-adapter-edit-api.json" => Some(include_str!(
             "../comfyui/workflows/qwen-image-edit-2511-adapter-edit-api.json"
-        )),
-        VIDEO_ADAPTER_WORKFLOW => Some(include_str!("../comfyui/workflows/wan-adapter-api.json")),
-        IMAGE_TO_VIDEO_ADAPTER_WORKFLOW => Some(include_str!(
-            "../comfyui/workflows/wan-adapter-i2v-api.json"
         )),
         _ => None,
     }
@@ -1099,10 +1092,6 @@ mod tests {
         assert!(catalog.get("sdxl-adapter").is_some());
         assert!(catalog.get("qwen-image-edit").is_some());
         assert!(catalog.get("qwen-image-edit-adapter").is_some());
-        let wan = catalog.get("wan-adapter").unwrap();
-        assert!(wan.adapter);
-        assert!(wan.has_lora_slot());
-        assert_eq!(wan.kind, MediaKind::Video);
         for name in [
             "flux1-schnell-fp8-api.json",
             "flux1-schnell-fp8-img2img-api.json",
@@ -1122,8 +1111,6 @@ mod tests {
             "qwen-image-edit-2511-edit-api.json",
             "qwen-image-edit-2511-adapter-api.json",
             "qwen-image-edit-2511-adapter-edit-api.json",
-            "wan-adapter-api.json",
-            "wan-adapter-i2v-api.json",
         ] {
             assert!(packaged_workflow(name).is_some(), "{name}");
         }
@@ -1484,13 +1471,6 @@ mod tests {
                 .training_model()
                 .is_err()
         );
-        assert!(
-            catalog
-                .get("wan-adapter")
-                .unwrap()
-                .training_model()
-                .is_err()
-        );
     }
 
     #[test]
@@ -1698,11 +1678,17 @@ mod tests {
 
     #[test]
     fn apply_refuses_a_negative_without_a_slot() {
-        let catalog = catalog();
-        let recipe = catalog.get("wan-adapter").unwrap();
-        let weights = recipe.weight_map("identity-wan.safetensors").unwrap();
+        let mut file: Value = serde_json::from_str(PACKAGED_CATALOG).unwrap();
+        for recipe in file["recipes"].as_array_mut().unwrap() {
+            if recipe["id"] == "flux-schnell" {
+                recipe["slots"].as_object_mut().unwrap().remove("negative");
+            }
+        }
+        let catalog = RecipeCatalog::from_json(&file.to_string(), None).unwrap();
+        let recipe = catalog.get("flux-schnell").unwrap();
+        let weights = recipe.default_weight_map().unwrap();
         let error = recipe
-            .apply(Fill::new("a person waves", 5, owned(&weights)).with_negative("hats"))
+            .apply(Fill::new("a lighthouse", 5, owned(&weights)).with_negative("hats"))
             .unwrap_err();
         assert!(
             error.to_string().contains("recipe has no negative slot"),
@@ -2244,12 +2230,13 @@ mod tests {
 
     #[test]
     fn an_edit_recipe_that_cannot_take_the_edit_fails_catalog_load() {
-        let base: Value = serde_json::from_str(PACKAGED_CATALOG).unwrap();
+        let base = video_fixture::packaged_with_video_adapter();
+        assert!(video_fixture::load(&base).is_ok());
         for (owner, target) in [
             ("flux-schnell", "missing"),
             ("flux-schnell", "flux-dev-adapter"),
             ("flux-schnell", "qwen-image-edit"),
-            ("flux-schnell", "wan-adapter"),
+            ("flux-schnell", video_fixture::VIDEO_ADAPTER),
             ("flux-schnell", "sd15"),
             ("flux-schnell-adapter", "flux-dev"),
         ] {
@@ -2259,49 +2246,20 @@ mod tests {
                     recipe["edit_recipe"] = json!(target);
                 }
             }
-            assert!(
-                RecipeCatalog::from_json(&file.to_string(), None).is_err(),
-                "{owner} -> {target}"
-            );
+            assert!(video_fixture::load(&file).is_err(), "{owner} -> {target}");
         }
-    }
-
-    #[test]
-    fn the_wan_adapter_writes_its_lora_into_a_webm_graph() {
-        let catalog = catalog();
-        let recipe = catalog.get("wan-adapter").unwrap();
-        let weights = recipe.weight_map("identity-wan.safetensors").unwrap();
-        let workflow = recipe
-            .apply(Fill::new("a person waves", 5, owned(&weights)))
-            .unwrap();
-        assert_eq!(workflow["10"]["class_type"], "SaveWEBM");
-        assert_eq!(workflow["12"]["class_type"], "LoraLoaderModelOnly");
-        assert_eq!(
-            workflow["12"]["inputs"]["lora_name"],
-            "identity-wan.safetensors"
-        );
-        assert_eq!(workflow["4"]["inputs"]["model"], json!(["12", 0]));
-        assert_eq!(
-            workflow["1"]["inputs"]["unet_name"],
-            "wan2.2_ti2v_5B_fp16.safetensors"
-        );
-        let animated = recipe
-            .apply(Fill::new("a person waves", 5, owned(&weights)).with_source("i2v-source.png"))
-            .unwrap();
-        assert_eq!(animated["11"]["inputs"]["image"], "i2v-source.png");
-        assert_eq!(animated["7"]["inputs"]["start_image"], json!(["11", 0]));
     }
 
     #[test]
     fn only_an_image_recipe_claims_a_file_as_an_explicit_image_match() {
-        let mut file: Value = serde_json::from_str(PACKAGED_CATALOG).unwrap();
+        let mut file = video_fixture::packaged_with_video_adapter();
         for recipe in file["recipes"].as_array_mut().unwrap() {
-            if recipe["id"] == "wan-adapter" {
+            if recipe["id"] == video_fixture::VIDEO_ADAPTER {
                 recipe["files"] = json!(["wan2.2_ti2v_5B_fp16.safetensors"]);
                 recipe["filename_hints"] = json!(["wan2.2"]);
             }
         }
-        let catalog = RecipeCatalog::from_json(&file.to_string(), None).unwrap();
+        let catalog = video_fixture::load(&file).unwrap();
         for image in [
             "qwen_image_edit_2511_fp8mixed.safetensors",
             "flux1-schnell-fp8.safetensors",
@@ -2321,13 +2279,13 @@ mod tests {
 
     #[test]
     fn a_video_recipe_must_save_webm() {
-        let mut file: Value = serde_json::from_str(PACKAGED_CATALOG).unwrap();
+        let mut file = video_fixture::packaged_with_video_adapter();
         for recipe in file["recipes"].as_array_mut().unwrap() {
-            if recipe["id"] == "wan-adapter" {
+            if recipe["id"] == video_fixture::VIDEO_ADAPTER {
                 recipe["output"] = json!("preview_image");
             }
         }
-        assert!(RecipeCatalog::from_json(&file.to_string(), None).is_err());
+        assert!(video_fixture::load(&file).is_err());
     }
 
     #[test]

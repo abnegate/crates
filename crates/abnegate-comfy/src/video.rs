@@ -723,21 +723,10 @@ fn hash(luma: &[f32]) -> u64 {
     bits
 }
 
-/// Whether `filename` names a clip by its extension, in any case: one of
-/// the containers a clip is read as, `mp4`, `mov`, `m4v`, `webm`, `mkv` or
-/// `avi`.
-pub fn is_clip(filename: &str) -> bool {
-    known_container(filename).is_some()
-}
-
 /// The container a clip is read as, from the extension the browser sent. An
 /// extension outside [`CONTAINERS`] is read as MP4, and a clip that is not one
 /// then fails to decode rather than being probed as whatever it resembles.
 fn container(filename: &str) -> Container {
-    known_container(filename).unwrap_or(MP4)
-}
-
-fn known_container(filename: &str) -> Option<Container> {
     let extension = Path::new(filename)
         .extension()
         .and_then(|value| value.to_str())
@@ -745,6 +734,7 @@ fn known_container(filename: &str) -> Option<Container> {
     CONTAINERS
         .into_iter()
         .find(|container| Some(container.extension) == extension.as_deref())
+        .unwrap_or(MP4)
 }
 
 #[cfg(test)]
@@ -1033,29 +1023,6 @@ mod tests {
             "a.tty",
         ] {
             assert_eq!(container(filename), MP4, "{filename} chose its own demuxer");
-        }
-    }
-
-    #[test]
-    fn a_clip_is_a_file_in_a_container_a_clip_is_read_as() {
-        for clip in [
-            "walk.mp4",
-            "walk.MOV",
-            "walk.webm",
-            "walk.m4v",
-            "walk.mkv",
-            "walk.avi",
-        ] {
-            assert!(is_clip(clip), "{clip}");
-        }
-        for other in [
-            "walk.png",
-            "walk.jpg",
-            "a portrait",
-            "walk.mp4.txt",
-            "playlist.m3u8",
-        ] {
-            assert!(!is_clip(other), "{other}");
         }
     }
 

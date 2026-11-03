@@ -22,8 +22,6 @@
 //! - [`DATASET_DIRECTORY`]: the images, `NNNN.png` captioned by `NNNN.txt`,
 //!   with the companions a person set carries (`NNNN.kind`, `NNNN.pose`,
 //!   `NNNN.mask.png`) and [`REBALANCE_FILE`].
-//! - [`CLIPS_DIRECTORY`]: video windows, `NNNN.mp4` described by
-//!   `NNNN.json`.
 //! - [`DATA_DIRECTORY`]: text data, [`TRAIN_DATA_FILE`] and
 //!   [`VALID_DATA_FILE`] in the format [`FORMAT_FILE`] describes.
 //! - The weight, written by the trainer as [`Job::filename`], which
@@ -39,7 +37,7 @@
 //!   its weight is published.
 //!
 //! The directory is readable only by its owner. Once a job has failed, or its
-//! weight is published, `dataset/`, `clips/` and `data/` are removed; `job.json`,
+//! weight is published, `dataset/` and `data/` are removed; `job.json`,
 //! `progress.json` and `previews/` stay for a host to show until
 //! [`remove`] takes the job away.
 
@@ -93,8 +91,6 @@ pub const PREVIEWS_DIRECTORY: &str = "previews";
 pub const DATASET_DIRECTORY: &str = "dataset";
 /// How a person set's poses are reweighted, inside [`DATASET_DIRECTORY`].
 pub const REBALANCE_FILE: &str = "rebalance.json";
-/// Video windows and their descriptions.
-pub const CLIPS_DIRECTORY: &str = "clips";
 /// Text data in JSON lines.
 pub const DATA_DIRECTORY: &str = "data";
 /// The training records, inside [`DATA_DIRECTORY`].
@@ -587,7 +583,6 @@ mod tests {
                 PREVIEWS_DIRECTORY,
                 DATASET_DIRECTORY,
                 REBALANCE_FILE,
-                CLIPS_DIRECTORY,
                 DATA_DIRECTORY,
                 TRAIN_DATA_FILE,
                 VALID_DATA_FILE,
@@ -601,7 +596,6 @@ mod tests {
                 "previews",
                 "dataset",
                 "rebalance.json",
-                "clips",
                 "data",
                 "train.jsonl",
                 "valid.jsonl",
@@ -884,10 +878,10 @@ mod tests {
         assert_eq!(trainer.steps_for(2000), 40000);
         assert_eq!(trainer.steps_for(2500), 40000);
         assert_eq!(trainer.steps_for(usize::MAX), 40000);
-        let video = Trainer::default().with_steps(20, 150, 2000);
-        assert_eq!(video.steps_for(7), 150);
-        assert_eq!(video.steps_for(8), 160);
-        assert_eq!(video.steps_for(200), 2000);
+        let tuned = Trainer::default().with_steps(20, 150, 2000);
+        assert_eq!(tuned.steps_for(7), 150);
+        assert_eq!(tuned.steps_for(8), 160);
+        assert_eq!(tuned.steps_for(200), 2000);
     }
 
     #[test]

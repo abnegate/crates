@@ -1942,6 +1942,7 @@ fn uploaded_image_name(uploaded: &UploadResponse, fallback: &str) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recipe::video_fixture;
     use std::time::Duration;
     use wiremock::Mock;
     use wiremock::MockServer;
@@ -2498,27 +2499,14 @@ mod tests {
     #[test]
     fn a_video_lora_is_not_selected_for_images() {
         let root = tempfile::tempdir().unwrap();
-        let models = root.path().join("models");
-        for (directory, filename) in [
-            ("diffusion_models", "wan2.2_ti2v_5B_fp16.safetensors"),
-            ("text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
-            ("vae", "wan2.2_vae.safetensors"),
-            ("loras", "jerry-wan.safetensors"),
-        ] {
-            std::fs::create_dir_all(models.join(directory)).unwrap();
-            std::fs::write(models.join(directory).join(filename), b"wan").unwrap();
-        }
-        crate::inventory::write_sidecar(
-            &models.join("loras/jerry-wan.safetensors"),
-            &crate::inventory::WeightSidecar::new("wan-adapter")
-                .with_huggingface_base("Comfy-Org/Wan_2.2_ComfyUI_Repackaged")
-                .with_trigger("ohwx"),
-            &crate::train::Contract::default(),
-        )
-        .unwrap();
+        let models = write_video_adapter(root.path());
         let config = Config {
-            checkpoint: "jerry-wan.safetensors".into(),
+            checkpoint: "jerry-video.safetensors".into(),
             models_directory: models,
+            workflow_path: Some(video_fixture::write_overlay(
+                &root.path().join("overlay"),
+                &video_fixture::packaged_with_video_adapter(),
+            )),
             ..Default::default()
         };
         assert!(matches!(
@@ -3776,6 +3764,27 @@ mod tests {
         .unwrap();
     }
 
+    fn write_video_adapter(root: &Path) -> PathBuf {
+        let models = root.join("models");
+        let lora = models.join("loras/jerry-video.safetensors");
+        std::fs::create_dir_all(lora.parent().unwrap()).unwrap();
+        std::fs::write(&lora, b"lora").unwrap();
+        crate::inventory::write_sidecar(
+            &lora,
+            &crate::inventory::WeightSidecar::new(video_fixture::VIDEO_ADAPTER)
+                .with_huggingface_base(video_fixture::VIDEO_HUGGINGFACE_BASE)
+                .with_trigger("ohwx"),
+            &crate::train::Contract::default(),
+        )
+        .unwrap();
+        let base = models
+            .join("diffusion_models")
+            .join(video_fixture::VIDEO_BASE);
+        std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+        std::fs::write(base, b"video").unwrap();
+        models
+    }
+
     async fn serve_video(server: &MockServer, prompt_id: &str) {
         let mut history = serde_json::Map::new();
         history.insert(
@@ -3800,12 +3809,18 @@ mod tests {
             .await;
     }
 
-    async fn generate_video_with(server: &MockServer, models: PathBuf, prompt: &str) {
+    async fn generate_video_with(
+        server: &MockServer,
+        models: PathBuf,
+        workflow_path: Option<PathBuf>,
+        prompt: &str,
+    ) {
         let client = Client::new(Config {
             enabled: true,
             base_url: server.uri(),
             poll_interval: Duration::from_millis(50),
             models_directory: models,
+            workflow_path,
             ..Default::default()
         })
         .unwrap();
@@ -3834,7 +3849,7 @@ mod tests {
         let models = root.path().join("models");
         write_still_identity(&models, "ohwx");
 
-        generate_video_with(&server, models, PROMPT).await;
+        generate_video_with(&server, models, None, PROMPT).await;
         let posted = posted_bodies(&server, "/prompt").await;
         assert_eq!(
             posted[0]["prompt"]["5"]["inputs"]["text"], PROMPT,
@@ -3843,41 +3858,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_video_prompt_naming_a_trained_wan_lora_loads_no_lora() {
+    async fn a_video_prompt_naming_a_video_adapter_loads_no_lora() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/prompt"))
             .and(BodyLacks("LoraLoaderModelOnly"))
-            .and(BodyLacks("jerry-wan.safetensors"))
+            .and(BodyLacks("jerry-video.safetensors"))
             .and(wiremock::matchers::body_string_contains("ohwx"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "wan"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "adapter"})))
             .expect(1)
             .mount(&server)
             .await;
-        serve_video(&server, "wan").await;
+        serve_video(&server, "adapter").await;
         let root = tempfile::tempdir().unwrap();
-        let models = root.path().join("models");
+        let models = write_video_adapter(root.path());
         write_still_identity(&models, "ohwx");
-        for (directory, filename) in [
-            ("diffusion_models", "wan2.2_ti2v_5B_fp16.safetensors"),
-            ("text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
-            ("vae", "wan2.2_vae.safetensors"),
-            ("loras", "jerry-wan.safetensors"),
-        ] {
-            std::fs::create_dir_all(models.join(directory)).unwrap();
-            std::fs::write(models.join(directory).join(filename), b"wan").unwrap();
-        }
-        let lora = models.join("loras/jerry-wan.safetensors");
-        crate::inventory::write_sidecar(
-            &lora,
-            &crate::inventory::WeightSidecar::new("wan-adapter")
-                .with_huggingface_base("Comfy-Org/Wan_2.2_ComfyUI_Repackaged")
-                .with_trigger("ohwx"),
-            &crate::train::Contract::default(),
-        )
-        .unwrap();
+        let overlay = video_fixture::write_overlay(
+            &root.path().join("overlay"),
+            &video_fixture::packaged_with_video_adapter(),
+        );
 
-        generate_video_with(&server, models, "ohwx walking on the beach").await;
+        generate_video_with(&server, models, Some(overlay), "ohwx walking on the beach").await;
     }
 
     #[tokio::test]

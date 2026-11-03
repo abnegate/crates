@@ -3,7 +3,6 @@
 //! instead.
 
 mod dropped;
-mod handoff;
 mod process_group;
 mod remediation;
 mod remediation_outcome;
@@ -66,7 +65,6 @@ use abnegate_vision::Raster;
 use abnegate_vision::Rendered;
 use abnegate_vision::decode;
 use abnegate_vision::gravity::Point;
-use handoff::Handoff;
 use process_group::ProcessGroup;
 use serde::Deserialize;
 use serde::Serialize;
@@ -156,6 +154,7 @@ struct Attempt {
 
 /// The directory a LoRA is published in, the one ComfyUI's LoRA loader reads.
 const LORAS: &str = "loras";
+const STAGED_DATASET: &str = "targets";
 /// Each weight slot a fine-tune can load into, with the directory under the
 /// models root ComfyUI's loader for that slot reads.
 const FINETUNE_SLOTS: &[(&str, &str)] =
@@ -165,11 +164,6 @@ const SUBJECT_UNAVAILABLE: &str = "this base does not train that subject";
 const UNRUNNABLE_RULE: &str = "training rule names a recipe that cannot run its weight";
 const NEEDED_WEIGHT: &str = "this name belongs to a weight the catalog or a training rule needs";
 const NAMED_ELSEWHERE: &str = "a weight in another model folder already has this name";
-/// Why every [`TrainMethod::Video`] request is refused: the packaged trainer
-/// would make a Wan 2.2 TI2V 5B adapter, and
-/// [`Client::generate_video`](crate::Client::generate_video) runs the Wan 2.2
-/// A14B experts, which cannot load one.
-pub const VIDEO_REFUSAL: &str = "video identity training is off: it trains Wan 2.2 TI2V 5B adapters, and video generation runs Wan 2.2 A14B, which cannot load them";
 const FOREIGN_WEIGHT: &str = "a weight training did not publish already has this name";
 const LORA_ONLY: &str = "the packaged training graph trains only a LoRA; configure a training command or a host trainer";
 const SDXL_UNSUPPORTED: &str = "SDXL trains only through a training command or a host trainer";
@@ -372,8 +366,6 @@ pub fn trainable_bases(config: &Config) -> Result<Vec<TrainBase>, TrainError> {
 /// with the companions [`dataset`] names beside each crop. A person set the
 /// captions read as several people is refused.
 ///
-/// A [`TrainMethod::Video`] request is refused with [`VIDEO_REFUSAL`].
-///
 /// Fails with [`TrainError::Disabled`] when neither ComfyUI nor a training
 /// command is configured, [`TrainError::Invalid`] for a request that cannot
 /// train, [`TrainError::Configuration`] for a setting that cannot work, and
@@ -482,7 +474,7 @@ async fn train_with_screening(
 /// weight, a name a weight in another scanned model folder already has, a
 /// name already taken by a weight no training run published, a
 /// method other than a LoRA or an SDXL base with no [`Config::train_command`]
-/// to run it, any [`TrainMethod::Video`] request, with [`VIDEO_REFUSAL`], a
+/// to run it, a
 /// missing trigger word, and references on the wrong kind of base. A host calls it to refuse a bad request up front rather than as a
 /// failed job.
 pub fn validate_request(config: &Config, request: &TrainRequest) -> Result<(), TrainError> {
@@ -494,9 +486,6 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
         return Err(TrainError::Disabled);
     }
     config.validate()?;
-    if request.method == TrainMethod::Video {
-        return Err(TrainError::Invalid(VIDEO_REFUSAL));
-    }
     final_filename(&request.name)?;
     if request.images.is_empty() {
         return Err(TrainError::Invalid("training needs images"));
@@ -714,7 +703,7 @@ fn installed(config: &Config, rule: &TrainRule) -> bool {
 /// LoRA slot over the base's Hugging Face model, reading `loras`; for a
 /// fine-tune, a base recipe with a checkpoint slot reading `checkpoints` or a
 /// UNet slot reading `diffusion_models`; either way one that makes what
-/// `base` makes. Nothing runs a video adapter, which is refused.
+/// `base` makes.
 fn runs_weight(
     runner: &Recipe,
     base: &Recipe,
@@ -723,7 +712,6 @@ fn runs_weight(
     huggingface_base: Option<&str>,
 ) -> bool {
     match method {
-        TrainMethod::Video => false,
         TrainMethod::Lora | TrainMethod::Pivotal => {
             directory == LORAS
                 && runner.kind == base.kind
@@ -924,7 +912,7 @@ async fn train_with_pipeline(
     let published = ensure_child_directory(&config.models_directory, &destination.directory)?;
     let output = validate_output(&published, &published.join(&filename))?;
     validate_output(&published, &sidecar_path(&output, &config.contract))?;
-    let targets = ensure_child_directory(&attempt.root, Handoff::Images.staged())?;
+    let targets = ensure_child_directory(&attempt.root, STAGED_DATASET)?;
     let controls = edit
         .then(|| ensure_child_directory(&attempt.root, "control_1"))
         .transpose()?;
@@ -991,7 +979,6 @@ async fn train_with_pipeline(
         let path = train_on_host(
             config,
             &attempt,
-            Handoff::Images,
             job,
             &host_secrets(
                 &request.host_secrets,
@@ -1214,8 +1201,8 @@ fn base_weight(model: &TrainingModel) -> &str {
 }
 
 /// The host job training `request` on the base recipe `base`, whose weights
-/// `model` names, into `filename` for `destination`, from `count` images or
-/// clip windows, with the request's own host fields and secrets.
+/// `model` names, into `filename` for `destination`, from `count` images,
+/// with the request's own host fields and secrets.
 fn host_job(
     request: &TrainRequest,
     base: &str,
@@ -1247,8 +1234,8 @@ fn host_job(
         .fold(job, |job, name| job.with_secret(name))
 }
 
-/// Hands what `handoff` names, staged in `attempt`, to the host trainer as
-/// `job`, waits for the weight, and publishes it where `destination` says.
+/// Hands the dataset staged in `attempt` to the host trainer as `job`, waits
+/// for the weight, and publishes it where `destination` says.
 ///
 /// The job directory is complete before `job.json` appears in it, so the
 /// trainer never starts on half a dataset, and its lock is held from then
@@ -1260,7 +1247,6 @@ fn host_job(
 async fn train_on_host(
     config: &Config,
     attempt: &Attempt,
-    handoff: Handoff,
     job: host::Job,
     secrets: &BTreeMap<String, SecretValue>,
     destination: &Destination,
@@ -1271,14 +1257,12 @@ async fn train_on_host(
     let (_pending, _lock, queued) = {
         let config = config.clone();
         let directory = directory.clone();
-        let staged = attempt.root.join(handoff.staged());
-        let steps = handoff.steps(trainer, job.image_count);
+        let staged = attempt.root.join(STAGED_DATASET);
+        let steps = trainer.steps_for(job.image_count);
         let job = job.clone();
         let secrets = secrets.clone();
-        blocking(move || {
-            queue_on_host(&config, &directory, &staged, handoff, &job, &secrets, steps)
-        })
-        .await??
+        blocking(move || queue_on_host(&config, &directory, &staged, &job, &secrets, steps))
+            .await??
     };
     progress.send(queued);
     let finished = host::wait_with(trainer, &directory, progress).await?;
@@ -1308,7 +1292,7 @@ async fn train_on_host(
 }
 
 /// Fills `directory` for `job` and writes its `job.json`, holding its lock
-/// from the moment it exists: moves or copies what `handoff` staged at
+/// from the moment it exists: moves or copies the dataset staged at
 /// `staged`, writes `secrets` and the queued progress of `steps` steps, and
 /// removes the secrets of every job that has ended. Returns the pending job,
 /// which removes a directory left half-made, the lock, and the progress it
@@ -1317,7 +1301,6 @@ fn queue_on_host(
     config: &Config,
     directory: &JobDirectory,
     staged: &Path,
-    handoff: Handoff,
     job: &host::Job,
     secrets: &BTreeMap<String, SecretValue>,
     steps: u32,
@@ -1330,9 +1313,9 @@ fn queue_on_host(
         TrainError::Failed("another process holds a job that was just created".to_string())
     })?;
     host::remove_ended_secrets(config);
-    let input = directory.path().join(handoff.directory());
-    if fs::rename(staged, &input).is_err() {
-        directory.stage(staged, handoff.directory())?;
+    let dataset = directory.path().join(host::DATASET_DIRECTORY);
+    if fs::rename(staged, &dataset).is_err() {
+        directory.stage(staged, host::DATASET_DIRECTORY)?;
     }
     for (name, value) in secrets {
         directory.write_secret(name, value)?;
@@ -2631,6 +2614,7 @@ pub(crate) fn png(rendered: &Rendered) -> Result<Vec<u8>, TrainError> {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::recipe::video_fixture;
     use crate::screening::Rejection;
     use crate::screening::Verdict;
     use crate::train::ARTIFACT_PREFIX;
@@ -5196,7 +5180,7 @@ mod tests {
 
         let (root, config) = harness("unused");
         let attempt = Attempt::create(&config.models_directory).unwrap();
-        let targets = ensure_child_directory(&attempt.root, "targets").unwrap();
+        let targets = ensure_child_directory(&attempt.root, STAGED_DATASET).unwrap();
         let outside = root.path().join("outside.png");
         fs::write(&outside, b"outside").unwrap();
         let staged = targets.join("0000.png");
@@ -5251,7 +5235,7 @@ mod tests {
     #[test]
     fn a_failed_write_names_the_artifact_it_was_for() {
         let attempt = tempfile::tempdir().unwrap();
-        let missing = attempt.path().join("targets").join("0000.png");
+        let missing = attempt.path().join(STAGED_DATASET).join("0000.png");
         let Err(TrainError::Failed(message)) = write_new(attempt.path(), &missing, b"x") else {
             panic!("writing into a directory that does not exist should fail");
         };
@@ -5765,11 +5749,14 @@ mod tests {
             (TrainMethod::Lora, "lora"),
             (TrainMethod::Finetune, "finetune"),
             (TrainMethod::Pivotal, "pivotal"),
-            (TrainMethod::Video, "video"),
         ] {
             assert_eq!(serde_json::to_value(method).unwrap(), name);
             assert_eq!(method.as_str(), name);
         }
+        assert!(
+            serde_json::from_value::<TrainMethod>(serde_json::json!("video")).is_err(),
+            "a method of the host's own is the host's to map"
+        );
     }
 
     #[test]
@@ -6049,12 +6036,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_rule_must_publish_for_a_recipe_that_runs_its_weight() {
-        let (_root, mut config) = harness("true");
+        let (root, mut config) = harness("true");
         installed_base(&config);
+        config.workflow_path = Some(video_fixture::write_overlay(
+            &root.path().join("overlay"),
+            &video_fixture::packaged_with_video_adapter(),
+        ));
         for (method, recipe_id, request) in [
             (TrainMethod::Lora, "flux-schnell", identity("plain")),
             (TrainMethod::Lora, "missing", identity("plain")),
-            (TrainMethod::Lora, "wan-adapter", identity("plain")),
+            (
+                TrainMethod::Lora,
+                video_fixture::VIDEO_ADAPTER,
+                identity("plain"),
+            ),
             (TrainMethod::Lora, "flux-dev-adapter", identity("plain")),
             (
                 TrainMethod::Finetune,
@@ -6979,7 +6974,7 @@ mod tests {
     async fn a_secret_that_cannot_be_written_leaves_no_job_behind() {
         let (_root, config) = hosted();
         let attempt = Attempt::create(&config.models_directory).unwrap();
-        let targets = ensure_child_directory(&attempt.root, "targets").unwrap();
+        let targets = ensure_child_directory(&attempt.root, STAGED_DATASET).unwrap();
         fs::write(targets.join("0000.png"), b"png").unwrap();
         let job = person_job("jerry", "finetune");
         let directory = JobDirectory::new(&config, job.id);
@@ -6999,7 +6994,6 @@ mod tests {
         train_on_host(
             &config,
             &attempt,
-            Handoff::Images,
             job,
             &secrets,
             &destination,
@@ -7423,24 +7417,6 @@ mod tests {
             .with_trigger("ohwx")
             .with_subject(TrainSubject::Person)
             .with_method(TrainMethod::Finetune)
-    }
-
-    #[test]
-    fn every_video_adapter_request_is_refused_with_the_reason() {
-        let (_root, config) = hosted();
-        let clip = || TrainImage::from_bytes("walk.mp4", "", vec![0; 16]);
-        for request in [
-            person(vec![clip()]),
-            person(Vec::new()),
-            request("jerry", "flux-schnell", Some("ohwx")).with_compute(host::Compute::Runpod),
-            TrainRequest::new("jerry", "sdxl", vec![clip()]),
-        ] {
-            let request = request.with_method(TrainMethod::Video);
-            match validate_request(&config, &request) {
-                Err(TrainError::Invalid(message)) => assert_eq!(message, VIDEO_REFUSAL),
-                other => panic!("video training was not refused: {other:?}"),
-            }
-        }
     }
 
     #[test]

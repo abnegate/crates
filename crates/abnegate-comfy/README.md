@@ -189,9 +189,8 @@ A `TrainMethod::Pivotal` LoRA, trained together with an embedding for its
 trigger, is published and run like a LoRA, and only a training command or the
 host trainer trains one. A rule's `suffix` names the published file, so
 `jerry` with suffix `-alt` lands as `jerry-alt.safetensors` beside
-`jerry.safetensors` rather than over it. A `TrainMethod::Video` request is
-refused with `lora::VIDEO_REFUSAL`: it would train a Wan 2.2 TI2V 5B adapter,
-and video generation runs Wan 2.2 A14B, which cannot load one.
+`jerry.safetensors` rather than over it. Nothing trains a video adapter:
+video generation runs the Wan 2.2 A14B experts, which load no LoRA.
 `lora::trainable_bases` lists each installed base with the subjects and
 methods its rules allow and that something configured can run, which is what
 a host offers the person choosing.
@@ -499,7 +498,6 @@ temporary name, flushed, and renamed into place:
 | `progress.json` | both | one progress object, below; the crate writes the queued one |
 | `previews/` | trainer | the samples `progress.json` lists in `previews` |
 | `dataset/` | crate | `NNNN.png` with its caption `NNNN.txt`, and for a person set `NNNN.kind`, `NNNN.pose`, `NNNN.mask.png` and `rebalance.json` |
-| `clips/` | crate | a `video` job's windows, `NNNN.mp4` described by `NNNN.json` |
 | `data/` | host | text records, `train.jsonl` and `valid.jsonl`, laid out as `format.json` says |
 | `<filename>` | trainer | the trained weight, which the crate then publishes and removes |
 | `publish.lock` | crate | locked by whoever publishes the job, from queueing it until the weight is published; the trainer leaves it alone |
@@ -508,9 +506,9 @@ temporary name, flushed, and renamed into place:
 | `runpod.key` | crate | the key of a `Compute::Runpod` job, one line, mode `0600`, listed in `secrets` and removed when the job ends |
 | any other file | crate | a secret from `TrainRequest::with_host_secret`, one line, mode `0600`, listed in `secrets` and removed when the job ends |
 
-Once a job has failed, or its weight is published, `dataset/`, `clips/` and
-`data/` are removed; `job.json`, `progress.json` and `previews/` stay for a
-host to show until `host::remove` takes the whole job away.
+Once a job has failed, or its weight is published, `dataset/` and `data/` are
+removed; `job.json`, `progress.json` and `previews/` stay for a host to show
+until `host::remove` takes the whole job away.
 
 `job.json` is one object, `schema_version` 1:
 
@@ -519,10 +517,10 @@ host to show until `host::remove` takes the whole job away.
 | `schema_version` | `1` |
 | `id` | the job's UUID, also its directory name |
 | `name` | the name the weight was requested under |
-| `method` | `lora`, `finetune`, `pivotal`, `video`, or a method of the host's own |
+| `method` | `lora`, `finetune`, `pivotal`, or a method of the host's own |
 | `subject` | `other`, `person`, a subject of the host's own, or absent |
 | `trigger` | the identity weight's trigger word, or empty |
-| `architecture` | the base's model family, `flux` or `sdxl`, as `<prefix>_ARCHITECTURE` names it for a training command; empty for a `video` job, whose `recipe_id` names the model it trains |
+| `architecture` | the base's model family, `flux` or `sdxl`, as `<prefix>_ARCHITECTURE` names it for a training command |
 | `checkpoint` | the base weight file to start from |
 | `base` | the base recipe id; empty for a job the crate does not publish |
 | `provider` | where the trainer runs the job, `local` or `runpod`, `Job::compute`; `local` when absent |
@@ -532,7 +530,7 @@ host to show until `host::remove` takes the whole job away.
 | `filename` | the file to write the weight to, and the name it is published under |
 | `recipe_id` | the recipe that runs the published weight |
 | `hf_base` | the Hugging Face model of the base, or empty |
-| `image_count` | images in `dataset/`, or windows in `clips/` for a `video` job |
+| `image_count` | images in `dataset/` |
 | `error` | why a `failed` job failed |
 | `pid` | the trainer process of a `running` job, `Job::process_id` |
 | `started_at` | RFC 3339 time the job was queued |

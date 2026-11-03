@@ -16,11 +16,6 @@ pub enum TrainMethod {
     /// trigger, published and loaded like a [`Lora`](Self::Lora). Only a
     /// training command or the host trainer trains one.
     Pivotal,
-    /// A Wan 2.2 TI2V 5B video adapter. It still reads off the wire so a
-    /// request for one can be refused: every request is, with
-    /// [`VIDEO_REFUSAL`](crate::lora::VIDEO_REFUSAL), since video generation
-    /// runs Wan 2.2 A14B, which cannot load it.
-    Video,
 }
 
 impl TrainMethod {
@@ -31,7 +26,6 @@ impl TrainMethod {
             Self::Lora => "lora",
             Self::Finetune => "finetune",
             Self::Pivotal => "pivotal",
-            Self::Video => "video",
         }
     }
 }

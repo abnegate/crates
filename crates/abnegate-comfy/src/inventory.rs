@@ -569,6 +569,7 @@ fn rfc3339(time: SystemTime) -> Option<String> {
 mod tests {
     use super::*;
     use crate::recipe::RecipeCatalog;
+    use crate::recipe::video_fixture;
     use std::fs;
 
     fn bound_face(root: &Path, filename: &str) -> Option<PathBuf> {
@@ -948,7 +949,6 @@ mod tests {
     }
 
     const FLUX_SCHNELL_BASE: &str = "black-forest-labs/FLUX.1-schnell";
-    const WAN_BASE: &str = "Comfy-Org/Wan_2.2_ComfyUI_Repackaged";
 
     fn write_identity(root: &Path, filename: &str, trigger: &str) {
         let lora = root.join("loras").join(filename);
@@ -972,19 +972,18 @@ mod tests {
         fs::write(&lora, b"lora").unwrap();
         write_sidecar(
             &lora,
-            &WeightSidecar::new("wan-adapter")
-                .with_huggingface_base(WAN_BASE)
+            &WeightSidecar::new(video_fixture::VIDEO_ADAPTER)
+                .with_huggingface_base(video_fixture::VIDEO_HUGGINGFACE_BASE)
                 .with_trigger(trigger),
             &Contract::default(),
         )
         .unwrap();
-        for (directory, filename) in [
-            ("diffusion_models", "wan2.2_ti2v_5B_fp16.safetensors"),
-            ("text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
-            ("vae", "wan2.2_vae.safetensors"),
-        ] {
-            fs::write(root.join(directory).join(filename), b"wan").unwrap();
-        }
+        fs::write(
+            root.join("diffusion_models")
+                .join(video_fixture::VIDEO_BASE),
+            b"video",
+        )
+        .unwrap();
     }
 
     fn identity_named(root: &Path, haystack: &str) -> Option<Identity> {
@@ -1332,20 +1331,22 @@ mod tests {
     #[test]
     fn a_video_adapter_is_inventoried_but_not_an_image_identity() {
         let root = temp_models();
-        write_video_adapter(&root, "jerry-wan.safetensors", "ohwx");
-        let items = scan(
-            &root,
-            &RecipeCatalog::packaged().unwrap(),
-            &Contract::default(),
-        );
-        let item = find(&items, "jerry-wan.safetensors").unwrap();
-        assert_eq!(item.recipe_id, "wan-adapter");
+        let overlay = tempfile::tempdir().unwrap();
+        write_video_adapter(&root, "jerry-video.safetensors", "ohwx");
+        let catalog = video_fixture::catalog();
+        let items = scan(&root, &catalog, &Contract::default());
+        let item = find(&items, "jerry-video.safetensors").unwrap();
+        assert_eq!(item.recipe_id, video_fixture::VIDEO_ADAPTER);
         assert!(item.ready);
         assert!(item.adapter);
+        assert!(identity_among(&items, &catalog, "portrait of ohwx").is_none());
 
-        assert!(identities(&configured(&root)).is_empty());
-        assert!(identity_named(&root, "portrait of ohwx").is_none());
         let mut config = configured(&root);
+        config.workflow_path = Some(video_fixture::write_overlay(
+            overlay.path(),
+            &video_fixture::packaged_with_video_adapter(),
+        ));
+        assert!(identities(&config).is_empty());
         assert!(bind_identity(&mut config, "portrait of ohwx").is_none());
         assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
         let _ = fs::remove_dir_all(root);
@@ -1519,8 +1520,8 @@ mod tests {
     fn identity_among_reads_only_the_items_it_is_given() {
         let root = temp_models();
         write_identity(&root, "jerry.safetensors", "ohwx");
-        write_video_adapter(&root, "jerry-wan.safetensors", "ohwx");
-        let catalog = RecipeCatalog::packaged().unwrap();
+        write_video_adapter(&root, "jerry-video.safetensors", "ohwx");
+        let catalog = video_fixture::catalog();
         let items = scan(&root, &catalog, &Contract::default());
         fs::remove_dir_all(&root).unwrap();
 

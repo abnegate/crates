@@ -119,9 +119,9 @@ mod tests {
     use super::*;
     use crate::lora::TrainSubject;
 
-    fn video(suffix: &str) -> TrainPolicy {
+    fn suffixed(suffix: &str) -> TrainPolicy {
         TrainPolicy::new().with_rule(
-            TrainRule::new("sdxl", TrainMethod::Video, "wan-adapter", "loras")
+            TrainRule::new("sdxl", TrainMethod::Lora, "sdxl-adapter", "loras")
                 .with_subjects([TrainSubject::Person])
                 .with_suffix(suffix),
         )
@@ -129,12 +129,12 @@ mod tests {
 
     #[test]
     fn a_suffix_is_a_plain_run_of_name_characters() {
-        for accepted in ["-wan", "_video", "wan2"] {
-            assert_eq!(video(accepted).validate(), Ok(()), "{accepted:?}");
+        for accepted in ["-alt", "_v2", "sdxl2"] {
+            assert_eq!(suffixed(accepted).validate(), Ok(()), "{accepted:?}");
         }
-        for refused in ["", "-wan.safetensors", "/wan", "-w an", "..", "-wän"] {
+        for refused in ["", "-alt.safetensors", "/alt", "-a lt", "..", "-ält"] {
             assert!(
-                video(refused).validate().is_err(),
+                suffixed(refused).validate().is_err(),
                 "{refused:?} was accepted"
             );
         }

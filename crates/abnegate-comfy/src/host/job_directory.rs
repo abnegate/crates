@@ -1,6 +1,5 @@
 use crate::config::Config;
 use crate::host::CLAIM_FILE;
-use crate::host::CLIPS_DIRECTORY;
 use crate::host::Compute;
 use crate::host::DATA_DIRECTORY;
 use crate::host::DATASET_DIRECTORY;
@@ -36,11 +35,10 @@ const RESERVED: &[&str] = &[
     DISMISSED_FILE,
     PREVIEWS_DIRECTORY,
     DATASET_DIRECTORY,
-    CLIPS_DIRECTORY,
     DATA_DIRECTORY,
     "pid",
 ];
-const INPUT_DIRECTORIES: &[&str] = &[DATASET_DIRECTORY, CLIPS_DIRECTORY, DATA_DIRECTORY];
+const INPUT_DIRECTORIES: &[&str] = &[DATASET_DIRECTORY, DATA_DIRECTORY];
 #[cfg(unix)]
 const PRIVATE_DIRECTORY: u32 = 0o700;
 const PRIVATE_FILE: u32 = 0o600;
