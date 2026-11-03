@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.6...abnegate-exec/v0.1.7) - 2026-11-03
+
+### Added
+
+- *(exec)* so a host can pass a ctrl-c on to every run and stop what is left when it shuts down
+- *(exec)* so a host can interrupt a run and wait for its leader without reaping it
+- *(exec)* so a run can stop the processes that left its process group
+
 ## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.5...abnegate-exec/v0.1.6) - 2026-11-03
 
 ### Added

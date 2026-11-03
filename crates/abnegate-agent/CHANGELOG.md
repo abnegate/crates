@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.6...abnegate-agent/v0.1.7) - 2026-11-03
+
+### Added
+
+- *(agent)* so a host can route its tools, jobs and mcp servers through a proxy of its own
+- *(agent)* so a chat can see images, choose its window and run against endpoints that publish nothing
+- *(agent)* so a host can gate the public web, pick its run_command programs and prune its registry
+
 ## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.5...abnegate-agent/v0.1.6) - 2026-11-03
 
 ### Other

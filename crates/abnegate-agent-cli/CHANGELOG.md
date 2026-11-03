@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.1.6...abnegate-agent-cli/v0.1.7) - 2026-11-03
+
+### Added
+
+- *(agent-cli)* so a run answers in its final result and fails in the errors claude gave
+- *(agent-cli)* so output an agent wrote before it exited is read even while an escaped process holds the pipe open
+- *(agent-cli)* so a run's cleanup never signals a group it no longer owns and can reach what left the group
+- *(agent-cli)* so a slash command reaches the agent as the caller typed it
+- *(agent-cli)* so a host can tell a turn a usage limit refused from a broken one
+- *(agent-cli)* so a host can stream a turn and keep its own sign-in from the agents it runs
+- *(agent-cli)* so a host can pin, resume and sandbox an agent's own session
+
 ## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.1.5...abnegate-agent-cli/v0.1.6) - 2026-11-03
 
 ### Other
