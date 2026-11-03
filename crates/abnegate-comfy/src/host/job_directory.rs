@@ -9,6 +9,7 @@ use crate::host::Job;
 use crate::host::LOCK_FILE;
 use crate::host::PREVIEWS_DIRECTORY;
 use crate::host::PROGRESS_FILE;
+use crate::host::PUBLICATION_FILE;
 use crate::host::SCHEMA_VERSION;
 use crate::host::root;
 use crate::inventory::WEIGHT_EXTENSION;
@@ -27,12 +28,15 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 const TEMPORARY_SUFFIX: &str = ".tmp";
+/// The suffix of a job directory moved aside to be removed.
+pub(crate) const DISCARDED_SUFFIX: &str = ".discarded";
 const RESERVED: &[&str] = &[
     JOB_FILE,
     PROGRESS_FILE,
     LOCK_FILE,
     CLAIM_FILE,
     DISMISSED_FILE,
+    PUBLICATION_FILE,
     PREVIEWS_DIRECTORY,
     DATASET_DIRECTORY,
     DATA_DIRECTORY,
@@ -217,6 +221,32 @@ impl JobDirectory {
         }
     }
 
+    /// Notes `generation`, the training attempt whose sidecar the job's
+    /// weight is about to be published with, before it is promoted.
+    pub(crate) fn write_publication(&self, generation: &str) -> Result<(), TrainError> {
+        self.replace(PUBLICATION_FILE, generation.as_bytes(), SHARED_FILE)
+    }
+
+    /// The generation [`JobDirectory::write_publication`] noted last.
+    pub(crate) fn publication(&self) -> Option<String> {
+        let generation = fs::read_to_string(self.path.join(PUBLICATION_FILE)).ok()?;
+        Some(generation.trim().to_string()).filter(|generation| !generation.is_empty())
+    }
+
+    /// Lets the job's [claim](CLAIM_FILE) go, for a claimer that could not
+    /// act on it.
+    pub(crate) fn release_claim(&self) {
+        match fs::remove_file(self.path.join(CLAIM_FILE)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                directory = %self.path.display(),
+                %error,
+                "the job's claim could not be released, so no trainer can claim it"
+            ),
+        }
+    }
+
     /// Marks the job dismissed, once.
     pub(crate) fn dismiss(&self) -> Result<(), TrainError> {
         if self.dismissed() {
@@ -253,10 +283,41 @@ impl JobDirectory {
         }
     }
 
+    /// Creates the directory for a job nobody has queued yet and takes its
+    /// publication lock, waiting for whoever holds it. A sweep that
+    /// [discards](JobDirectory::discard) the directory while holding the lock
+    /// moves it away first, so when nothing is left at the path once the lock
+    /// is taken, the directory is made again and locked afresh.
+    pub(crate) fn create_locked(&self) -> Result<File, TrainError> {
+        loop {
+            self.create()?;
+            let Some(lock) = self.open_lock()? else {
+                continue;
+            };
+            lock.lock().map_err(failed)?;
+            if fs::symlink_metadata(self.path.join(LOCK_FILE)).is_ok() {
+                return Ok(lock);
+            }
+        }
+    }
+
     /// Takes the job's publication lock, which whoever publishes the job
     /// holds from queueing it until its weight is published. `None` when
     /// another holds it.
     pub(crate) fn try_lock(&self) -> Result<Option<File>, TrainError> {
+        let file = self
+            .open_lock()?
+            .ok_or_else(|| failed(std::io::Error::from(ErrorKind::NotFound)))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(failed(error)),
+        }
+    }
+
+    /// Opens the job's lock file, creating it when it is missing. `None` when
+    /// the directory is no longer there.
+    fn open_lock(&self) -> Result<Option<File>, TrainError> {
         let path = self.path.join(LOCK_FILE);
         let mut options = OpenOptions::new();
         options.read(true).write(true).create_new(true);
@@ -265,25 +326,22 @@ impl JobDirectory {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(PRIVATE_FILE);
         }
-        let file = match options.open(&path) {
-            Ok(file) => file,
+        let opened = match options.open(&path) {
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                let metadata = fs::symlink_metadata(&path).map_err(failed)?;
-                if !metadata.is_file() {
-                    return Err(TrainError::Invalid("a job lock is not a regular file"));
+                match fs::symlink_metadata(&path) {
+                    Ok(metadata) if !metadata.is_file() => {
+                        return Err(TrainError::Invalid("a job lock is not a regular file"));
+                    }
+                    Ok(_) => OpenOptions::new().read(true).write(true).open(&path),
+                    Err(error) => Err(error),
                 }
-                OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&path)
-                    .map_err(failed)?
             }
-            Err(error) => return Err(failed(error)),
+            opened => opened,
         };
-        match file.try_lock() {
-            Ok(()) => Ok(Some(file)),
-            Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Error(error)) => Err(failed(error)),
+        match opened {
+            Ok(file) => Ok(Some(file)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(failed(error)),
         }
     }
 
@@ -314,10 +372,23 @@ impl JobDirectory {
         }
     }
 
-    /// Removes the whole directory.
+    /// Removes the whole directory, first moving it aside under a name that
+    /// is no job's, so whoever reaches the job's path afterwards finds nothing
+    /// there rather than part of what is being removed.
     pub(crate) fn discard(&self) -> Result<(), TrainError> {
         match fs::symlink_metadata(&self.path) {
-            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&self.path).map_err(failed),
+            Ok(metadata) if metadata.is_dir() => {
+                let discarded = self.path.with_file_name(format!(
+                    ".{}.{}{DISCARDED_SUFFIX}",
+                    self.path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default(),
+                    Uuid::new_v4()
+                ));
+                fs::rename(&self.path, &discarded).map_err(failed)?;
+                fs::remove_dir_all(&discarded).map_err(failed)
+            }
             Ok(_) => Err(TrainError::Invalid(
                 "a job directory is not a plain directory",
             )),

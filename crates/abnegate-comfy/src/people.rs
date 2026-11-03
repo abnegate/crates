@@ -19,12 +19,14 @@ use crate::inventory::WeightSidecar;
 use crate::person;
 use crate::recipe::CLIP_VISION_DIRECTORY;
 use crate::recipe::IPADAPTER_DIRECTORY;
+use crate::recipe::LOAD_IMAGE;
 use crate::recipe::Recipe;
 use crate::recipe::RecipeExtra;
 use crate::recipe::RequiredFile;
 use crate::recipe::sanitize_upload_name;
 use crate::subject::CENTRE;
 use crate::subject::Subject;
+use crate::train::is_single_component;
 use abnegate_vision::Raster;
 use abnegate_vision::Region;
 use abnegate_vision::Rendered;
@@ -36,7 +38,13 @@ use abnegate_vision::decode::Orientation;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::LazyLock;
+use std::sync::Mutex;
+use std::sync::PoisonError;
 
 /// How strongly the face reference steers the model.
 const IPADAPTER_STRENGTH: f64 = 0.4;
@@ -44,7 +52,14 @@ const IPADAPTER_STRENGTH: f64 = 0.4;
 pub(crate) const REFINE_DENOISE: f64 = 0.3;
 const POSE_UPLOAD_PREFIX: &str = "pose-";
 const EMBEDDING_PREFIX: &str = "embedding:";
-const LOAD_IMAGE: &str = "LoadImage";
+/// The directory under the models root ComfyUI reads textual-inversion
+/// embeddings from.
+pub(crate) const EMBEDDINGS_DIRECTORY: &str = "embeddings";
+
+/// Every missing embedding already warned about, so each is warned about
+/// once rather than on every generation.
+static MISSING_EMBEDDINGS: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 const CLIP_VISION_LOADER: &str = "CLIPVisionLoader";
 
 /// Which extras a generation with `recipe` runs for the selected weight,
@@ -79,6 +94,39 @@ pub(crate) fn extras(
 pub(crate) fn refines(recipe: &Recipe, sidecar: Option<&WeightSidecar>) -> bool {
     recipe.supports(RecipeExtra::Refine)
         || (recipe.supports(RecipeExtra::IdentityRefine) && is_identity(sidecar))
+}
+
+/// `sidecar` without its embedding when that is not a regular file in the
+/// models directory's `embeddings/`: ComfyUI drops an `embedding:` token it
+/// cannot load, so a prompt led by one would run without the embedding and
+/// say nothing.
+pub(crate) fn without_missing_embedding(
+    models_directory: &Path,
+    mut sidecar: WeightSidecar,
+) -> WeightSidecar {
+    let Some(embedding) = sidecar.embedding.as_deref() else {
+        return sidecar;
+    };
+    let path = models_directory.join(EMBEDDINGS_DIRECTORY).join(embedding);
+    let installed = is_single_component(embedding)
+        && fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file());
+    if installed {
+        return sidecar;
+    }
+    let first = MISSING_EMBEDDINGS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(path);
+    if first {
+        tracing::warn!(
+            embedding,
+            "the weight's embedding is not installed; its prompts run without it"
+        );
+    } else {
+        tracing::debug!(embedding, "the weight's embedding is still not installed");
+    }
+    sidecar.embedding = None;
+    sidecar
 }
 
 /// `prompt` led by `embedding:<stem>` for the embedding `sidecar` names,
@@ -323,6 +371,26 @@ mod tests {
     use std::path::PathBuf;
 
     const SDXL_BASE: &str = "SG161222/RealVisXL_V5.0";
+
+    #[test]
+    fn a_missing_embedding_is_warned_about_once_per_name() {
+        let models = tempfile::tempdir().unwrap();
+        let (logs, _logging) = crate::logs::Logs::capture();
+        let name = format!("{}.safetensors", uuid::Uuid::new_v4().simple());
+        for _ in 0..3 {
+            let sidecar = without_missing_embedding(
+                models.path(),
+                WeightSidecar::new("sdxl-adapter").with_embedding(name.as_str()),
+            );
+            assert_eq!(sidecar.embedding, None);
+        }
+        let text = logs.text();
+        let warnings = text
+            .lines()
+            .filter(|line| line.contains(" WARN ") && line.contains(&name))
+            .count();
+        assert_eq!(warnings, 1, "{text}");
+    }
 
     fn catalog() -> RecipeCatalog {
         RecipeCatalog::packaged().unwrap()

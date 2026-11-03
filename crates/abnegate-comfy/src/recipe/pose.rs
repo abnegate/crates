@@ -9,6 +9,19 @@ const APPLY_ADVANCED: &str = "ControlNetApplyAdvanced";
 const APPLY: &str = "ControlNetApply";
 const LOADER: &str = "ControlNetLoader";
 
+/// Whether a ControlNet apply node reads the image at `pose`, so a pose
+/// uploaded there steers the sampler.
+pub(crate) fn is_read(workflow: &Value, pose: &str) -> bool {
+    workflow.as_object().is_some_and(|nodes| {
+        nodes.values().any(|node| {
+            matches!(
+                node.get("class_type").and_then(Value::as_str),
+                Some(APPLY | APPLY_ADVANCED)
+            ) && node.pointer("/inputs/image").and_then(link_node) == Some(pose)
+        })
+    })
+}
+
 /// Removes the ControlNet branch the image at `pose` feeds, so the sampler
 /// reads the conditioning the branch would have wrapped.
 pub(crate) fn strip(workflow: &mut Value, pose: &str) -> Result<(), Error> {

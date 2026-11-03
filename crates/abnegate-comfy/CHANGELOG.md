@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `Config::video_generation_timeout` defaults to two hours (was ten minutes) and `COMFYUI_VIDEO_GENERATION_TIMEOUT_SECONDS` accepts up to four hours (was one), the time a Wan 2.2 A14B clip can take
 - **Breaking:** `inventory::scan` lists a diffusion model without a sidecar only when an image recipe claims it through `files` or `filename_hints`; before, one no recipe claimed was listed as a ready base of the default image recipe, so a Wan UNet was offered as an image base
 - **Breaking:** `RecipeCatalog::is_explicit_image_match` is false for a file a video recipe claims through its `files` or `filename_hints`, even when an image recipe's hint also matches it
+- `publication` is a reserved name in a host job directory, beside `job.json`, `progress.json`, `publish.lock`, `claimed` and `dismissed`: the crate notes there the generation it is publishing the job's weight under, so `TrainRequest::with_host_secret` refuses a secret of that name in any case
 
 ### Fixed
 
@@ -30,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Any error after ComfyUI accepted a prompt deletes it from the queue, and history is cleared only once the outputs landed
 - A `/history` or `/queue` answer that does not parse fails the generation at once instead of being retried as an outage, and a failed queue check is logged as one
 - The queue delete sent after `Config::outage_window` gives up on a ComfyUI waits at most five seconds instead of the request timeout
+- A catalog whose `slots.pose` names a `LoadImage` no `ControlNetApply` or `ControlNetApplyAdvanced` reads is refused, instead of uploading a pose the sampler never sees
+- A prompt is led by `embedding:<stem>` only when the embedding the weight's sidecar names is installed in `embeddings/`; a missing one is logged as a warning instead of being dropped by ComfyUI without a word
+- A host job whose weight was published but whose `job.json` could not record it is recorded by the next `recover` or `resume` without promoting the weight again under a new generation
+- A pivotal host job is published only when its embedding is a regular file in `embeddings/` written since the job started, so a weight never names an embedding that is missing or left by an earlier run
+- `inventory::scan` reads a checkpoint or diffusion model whose sidecar names an adapter recipe as if the sidecar named no recipe, so it is never listed as an adapter, bound as an identity and then loaded into a LoRA slot
+- `inventory::bind_identity` and `identity_among` select no weight whose filename another scanned weight shares in any ASCII case, such as a LoRA and a checkpoint of one name, since generation would load whichever the scan listed first
+- `host::recover` takes a job directory's lock before it looks for `job.json`, and every job directory is moved aside under a dot-name before it is removed; queueing makes its directory again when a sweep removed it before it was locked. A job queued while `recover` runs is neither removed with its inputs and secrets nor failed
+- A waiter that wins a queued host job's claim but cannot mark the job failed lets the claim go, so the trainer can still start the job instead of finding it claimed forever
+- A configured image-to-video graph whose `WanImageToVideo` start image does not come from the `LoadImage` at node 11, which receives the caller's upload, is refused instead of animating some other image
+- A generation that is cancelled, times out or fails after ComfyUI accepted its prompt returns within five seconds of sending the queue delete; a slower delete carries on to the request timeout on its own
 
 ## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.1.7...abnegate-comfy/v0.1.8) - 2026-11-03
 

@@ -175,6 +175,8 @@ const HOST_FIELD: &str = "a host field may not replace a key the host job gives 
 const HOST_EDIT: &str = "an edit base trains on the host only once the host-job contract carries its references; train it through a training command or the packaged graph";
 const HOST_RENAMED: &str = "the host job names a weight file other than the one its name gives";
 const EMBEDDING_NAME: &str = "a pivotal weight's name must be letters, digits, dashes or underscores, so its embedding can be prompted";
+const MISSING_EMBEDDING: &str =
+    "the host trainer wrote no embedding for the pivotal weight during this run";
 const MIXED_PERSON: &str =
     "these images look like different people, and a person weight can only learn one";
 /// The class word a person's captions bind the trigger to.
@@ -300,13 +302,20 @@ pub fn available_bases(
         .collect()
 }
 
-/// The bases a request can train on under `config`, each with the subjects
-/// and methods [`Config::train_policy`] allows on it, or the default LoRA on
+/// The bases a request on the local [compute](TrainRequest::compute) can
+/// train on under `config`, each with the subjects and methods
+/// [`Config::train_policy`] allows on it, or the default LoRA on
 /// [`TrainSubject::Other`] where no rule names it. A base is listed when its
 /// weights are installed, and a method when its rule's recipe runs the
 /// weight, the files the rule requires are installed, and something
-/// configured trains it: [`Config::train_command`], the packaged graph on an
-/// enabled ComfyUI, or [`Config::host_trainer`].
+/// configured trains it locally: [`Config::train_command`], the packaged
+/// graph on an enabled ComfyUI, or [`Config::host_trainer`] for a method or
+/// base the graph cannot train.
+///
+/// A remote compute trains every base but an edit base through the host
+/// trainer, so a method only it could run, such as a plain LoRA while
+/// ComfyUI is disabled, is not listed here; [`validate_request`] answers for
+/// a remote request.
 pub fn trainable_bases(config: &Config) -> Result<Vec<TrainBase>, TrainError> {
     config.validate()?;
     let catalog = RecipeCatalog::load(config.workflow_path.as_deref())
@@ -1279,6 +1288,7 @@ async fn train_on_host(
         .clone()
         .ok_or(TrainError::Invalid(HOST_RENAMED))?;
     let weight = hosted_weight(&directory, &filename)?;
+    require_hosted_embedding(config, &finished, &filename)?;
     let staged = attempt.output();
     let linked = staged.clone();
     blocking(move || link_or_copy(&weight, &linked)).await??;
@@ -1310,11 +1320,8 @@ fn queue_on_host(
 ) -> Result<(host::Pending, fs::File, TrainProgress), TrainError> {
     let root = ensure_child_directory(&config.models_directory, &config.contract.host_directory)?;
     let mut pending = host::Pending::new(directory.clone());
-    directory.create()?;
+    let lock = directory.create_locked()?;
     require_confined_directory(&root, directory.path())?;
-    let lock = directory.try_lock()?.ok_or_else(|| {
-        TrainError::Failed("another process holds a job that was just created".to_string())
-    })?;
     host::remove_ended_secrets(config);
     let dataset = directory.path().join(host::DATASET_DIRECTORY);
     if fs::rename(staged, &dataset).is_err() {
@@ -1353,7 +1360,17 @@ pub(crate) fn publish_host_job(
         return Ok(path);
     }
     let (destination, filename) = host_destination(config, &job)?;
+    if let Some(output) = unrecorded_publication(config, directory, &destination, &filename)? {
+        return Ok(record_hosted(
+            directory,
+            job,
+            &destination,
+            &filename,
+            output,
+        ));
+    }
     let weight = hosted_weight(directory, &filename)?;
+    require_hosted_embedding(config, &job, &filename)?;
     let attempt = Attempt::create(&config.models_directory)?;
     let staged = attempt.output();
     link_or_copy(&weight, &staged)?;
@@ -1374,6 +1391,33 @@ pub(crate) fn publish_host_job(
 /// `embeddings/`. Every other method trains none.
 fn hosted_embedding(job: &host::Job, filename: &str) -> Option<String> {
     (job.method == TrainMethod::Pivotal.as_str()).then(|| filename.to_string())
+}
+
+/// Refuses a pivotal job whose embedding, the one [`hosted_embedding`]
+/// names, is not a regular file in the models directory's `embeddings/`
+/// written since the job started, so the weight is never published naming
+/// an embedding that is missing or that an earlier run left.
+fn require_hosted_embedding(
+    config: &Config,
+    job: &host::Job,
+    filename: &str,
+) -> Result<(), TrainError> {
+    let Some(embedding) = hosted_embedding(job, filename) else {
+        return Ok(());
+    };
+    let path = config
+        .models_directory
+        .join(crate::people::EMBEDDINGS_DIRECTORY)
+        .join(embedding);
+    let written = fs::symlink_metadata(path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .and_then(|metadata| metadata.modified().ok())
+        .is_some_and(|modified| chrono::DateTime::<chrono::Utc>::from(modified) >= job.started_at);
+    if !written {
+        return Err(TrainError::Failed(MISSING_EMBEDDING.to_string()));
+    }
+    Ok(())
 }
 
 /// Where `job` publishes under `config`, and the weight file it publishes.
@@ -1429,20 +1473,21 @@ fn link_or_copy(weight: &Path, staged: &Path) -> Result<(), TrainError> {
 }
 
 /// Promotes the host job's weight staged in `attempt` to `destination`, bound
-/// to the embedding a pivotal job trains, records where it went in `job.json`
-/// before the job directory gives up its copy, and removes the job's secrets
-/// and what it trained on.
+/// to the embedding a pivotal job trains, having first noted the attempt's
+/// generation in the job directory, then [records](record_hosted) where it
+/// went.
 fn finish_hosted(
     config: &Config,
     attempt: &Attempt,
     directory: &JobDirectory,
-    mut job: host::Job,
+    job: host::Job,
     staged: &Path,
     destination: &Destination,
     filename: &str,
     progress: &Reporter,
 ) -> Result<PathBuf, TrainError> {
     let embedding = hosted_embedding(&job, filename);
+    directory.write_publication(&attempt.id)?;
     let output = publish(
         config,
         attempt,
@@ -1452,6 +1497,21 @@ fn finish_hosted(
         embedding.as_deref(),
         progress,
     )?;
+    Ok(record_hosted(directory, job, destination, filename, output))
+}
+
+/// Records in `job.json` that `job` was published to `output`, then gives up
+/// the job directory's copy of the weight, the job's secrets and what it
+/// trained on. A record that cannot be written leaves them all, and
+/// [`unrecorded_publication`] finds the weight again, so the next attempt
+/// records it without promoting it twice.
+fn record_hosted(
+    directory: &JobDirectory,
+    mut job: host::Job,
+    destination: &Destination,
+    filename: &str,
+    output: PathBuf,
+) -> PathBuf {
     job.published = Some(format!("{}/{filename}", destination.directory));
     if let Err(error) = directory.write_job(&job) {
         tracing::warn!(
@@ -1459,12 +1519,48 @@ fn finish_hosted(
             %error,
             "the published host job could not be marked published"
         );
-        return Ok(output);
+        return output;
     }
     let _ = fs::remove_file(directory.path().join(filename));
     directory.remove_job_secrets(&job);
     directory.prune();
-    Ok(output)
+    output
+}
+
+/// The weight an earlier attempt published for the job in `directory` but
+/// never recorded in `job.json`: the regular file at `filename` under
+/// `destination` whose sidecar names the generation the attempt noted before
+/// promoting it. A promotion a crash left half-done is first completed or
+/// rolled back under the publication's locks, as the next promotion would,
+/// so its marker never outlives it and hides the weight.
+fn unrecorded_publication(
+    config: &Config,
+    directory: &JobDirectory,
+    destination: &Destination,
+    filename: &str,
+) -> Result<Option<PathBuf>, TrainError> {
+    let Some(generation) = directory.publication() else {
+        return Ok(None);
+    };
+    let parent = config.models_directory.join(&destination.directory);
+    if !parent.is_dir() {
+        return Ok(None);
+    }
+    let output = parent.join(filename);
+    let output_sidecar = sidecar_path(&output, &config.contract);
+    let key = fs::canonicalize(&parent).map_err(failed)?.join(filename);
+    let local = publication_lock(&key);
+    let _local = local
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let publications = ensure_child_directory(&parent, &config.contract.publication_directory)?;
+    let _file = lock_publication(&publications, filename)?;
+    let marker = publication_marker(&parent, filename, &config.contract)
+        .ok_or(TrainError::Invalid("invalid weight publication name"))?;
+    recover_publication(&parent, &output, &output_sidecar, &marker, &config.contract)?;
+    let published = require_regular_output(&parent, &output).is_ok()
+        && read_generation(&output_sidecar).as_deref() == Some(generation.as_str());
+    Ok(published.then_some(output))
 }
 
 /// What the external trainer is given besides its run's own variables:
@@ -6746,6 +6842,85 @@ mod tests {
     }
 
     #[test]
+    fn a_job_published_but_not_recorded_is_recorded_without_being_promoted_again() {
+        let (_root, config) = hosted();
+        let directory = finished(&config, person_job("jerry", "finetune"), Some(b"tuned"));
+        let published = config
+            .models_directory
+            .join("checkpoints/jerry.safetensors");
+        let sidecar = sidecar_path(&published, &config.contract);
+        let recovered = host::recover(&config);
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        let generation = read_generation(&sidecar).expect("the weight was published");
+        let mut unrecorded = directory.read_job().unwrap();
+        unrecorded.published = None;
+        directory.write_job(&unrecorded).unwrap();
+        fs::write(directory.path().join("jerry.safetensors"), b"tuned").unwrap();
+
+        let recovered = host::recover(&config);
+
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert_eq!(recovered[0].as_ref().unwrap(), &published);
+        assert_eq!(
+            read_generation(&sidecar),
+            Some(generation),
+            "the weight was promoted again under a new generation"
+        );
+        assert_eq!(
+            directory.read_job().unwrap().published.as_deref(),
+            Some("checkpoints/jerry.safetensors")
+        );
+        assert!(!directory.path().join("jerry.safetensors").exists());
+    }
+
+    #[test]
+    fn a_publication_that_crashed_before_its_marker_went_is_settled_before_it_is_recorded() {
+        let (_root, config) = hosted();
+        let directory = finished(&config, person_job("jerry", "finetune"), Some(b"tuned"));
+        let parent = config.models_directory.join("checkpoints");
+        let published = parent.join("jerry.safetensors");
+        let recovered = host::recover(&config);
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        let generation =
+            read_generation(&sidecar_path(&published, &config.contract)).expect("published");
+        let mut unrecorded = directory.read_job().unwrap();
+        unrecorded.published = None;
+        directory.write_job(&unrecorded).unwrap();
+        fs::write(directory.path().join("jerry.safetensors"), b"tuned").unwrap();
+        let marker = publication_marker(&parent, "jerry.safetensors", &config.contract).unwrap();
+        fs::write(
+            &marker,
+            serde_json::to_vec(&Publication {
+                schema_version: 1,
+                filename: "jerry.safetensors".to_string(),
+                generation,
+                previous_weight: false,
+                previous_sidecar: false,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let recovered = host::recover(&config);
+
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert_eq!(recovered[0].as_ref().unwrap(), &published);
+        assert!(
+            !marker.exists(),
+            "the crashed publication's marker was left"
+        );
+        let catalog = RecipeCatalog::load(config.workflow_path.as_deref()).unwrap();
+        assert!(
+            crate::inventory::find(
+                &crate::inventory::scan(&config.models_directory, &catalog, &config.contract),
+                "jerry.safetensors"
+            )
+            .is_some(),
+            "a pending marker hides the published weight"
+        );
+    }
+
+    #[test]
     fn recovery_publishes_what_finished_while_nobody_waited() {
         let (_root, config) = hosted();
         let directory = finished(&config, person_job("jerry", "finetune"), Some(b"tuned"));
@@ -6863,6 +7038,7 @@ mod tests {
                 .with_subjects([TrainSubject::Person]),
             );
         finished(&config, person_job("jerry", "pivotal"), Some(b"adapter"));
+        write_embedding(&config, "jerry.safetensors");
         let mut tuned = person_job("yvonne", "finetune");
         tuned.started_at += chrono::Duration::seconds(1);
         finished(&config, tuned, Some(b"tuned"));
@@ -6917,6 +7093,54 @@ mod tests {
         for name in ["jerry.v2", "jerry v2", "jérry"] {
             assert_eq!(refused(&config, &pivotal(name)), EMBEDDING_NAME, "{name:?}");
         }
+    }
+
+    fn write_embedding(config: &Config, filename: &str) -> PathBuf {
+        let embeddings = config.models_directory.join("embeddings");
+        fs::create_dir_all(&embeddings).unwrap();
+        let embedding = embeddings.join(filename);
+        fs::write(&embedding, b"embedding").unwrap();
+        embedding
+    }
+
+    #[test]
+    fn a_pivotal_host_job_is_published_only_with_the_embedding_its_run_wrote() {
+        let (_root, mut config) = hosted();
+        config.train_policy = pivotal_policy();
+        let mut job = person_job("jerry", "pivotal");
+        job.started_at -= chrono::Duration::minutes(1);
+        finished(&config, job, Some(b"adapter"));
+        let published = config.models_directory.join("loras/jerry.safetensors");
+
+        let missing = host::recover(&config);
+        assert!(
+            matches!(missing.as_slice(), [Err(TrainError::Failed(_))]),
+            "{missing:?}"
+        );
+        assert!(!published.exists(), "published with no embedding");
+
+        let stale = write_embedding(&config, "jerry.safetensors");
+        let earlier = std::time::SystemTime::now() - Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        let outdated = host::recover(&config);
+        assert!(
+            matches!(outdated.as_slice(), [Err(TrainError::Failed(_))]),
+            "{outdated:?}"
+        );
+        assert!(
+            !published.exists(),
+            "published with an earlier run's embedding"
+        );
+
+        write_embedding(&config, "jerry.safetensors");
+        let recovered = host::recover(&config);
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert_eq!(recovered[0].as_ref().unwrap(), &published);
     }
 
     #[test]

@@ -102,6 +102,8 @@ mod excerpt;
 pub mod host;
 mod http;
 pub mod inventory;
+#[cfg(test)]
+mod logs;
 pub mod lora;
 mod media;
 mod observe;

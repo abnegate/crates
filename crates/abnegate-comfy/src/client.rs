@@ -44,6 +44,7 @@ use crate::media::MediaType;
 use crate::people;
 use crate::people::PoseImage;
 use crate::recipe::Fill;
+use crate::recipe::LOAD_IMAGE;
 use crate::recipe::MAXIMUM_PROMPT_BYTES;
 use crate::recipe::MediaKind;
 use crate::recipe::PromptMode;
@@ -75,13 +76,16 @@ const HIGH_NOISE_SAMPLER: &str = "8";
 const LOW_NOISE_SAMPLER: &str = "14";
 const UNET_LOADERS: &[&str] = &["UNETLoader", "UnetLoaderGGUF"];
 const IMAGE_TO_VIDEO_LATENT: &str = "WanImageToVideo";
+const SOURCE_IMAGE_NODE: &str = "11";
 const PACKAGED_AUDIO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/ace-step-v1-3.5b-api.json");
 const PACKAGED_UPSCALE_WORKFLOW: &str = include_str!("../comfyui/workflows/upscale-image-api.json");
 const PACKAGED_UPSCALE_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/upscale-video-api.json");
 const DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(300);
-const ABANDON_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a queue delete is waited on before the generation that sent it
+/// returns.
+const QUEUE_DELETE_WAIT: Duration = Duration::from_secs(5);
 const LOST_PROMPT: &str = "it no longer has the prompt, most likely because it restarted";
 
 /// Runs generation and upscaling workflows on one ComfyUI server.
@@ -551,7 +555,9 @@ impl Client {
     fn prepare(&self, prompt: &str, has_source: bool) -> Result<Prepared, Error> {
         #[cfg(test)]
         probe::entered(&self.config.models_directory);
-        let sidecar = self.selected_sidecar();
+        let sidecar = self.selected_sidecar().map(|sidecar| {
+            people::without_missing_embedding(&self.config.models_directory, sidecar)
+        });
         let image = self.image_recipe()?;
         let (recipe, weights) = self.plan_for(image, has_source)?;
         let first = Plan {
@@ -1361,13 +1367,21 @@ impl Client {
         }
     }
 
+    /// Deletes `prompt_id` from the queue within the request timeout, but
+    /// returns after [`QUEUE_DELETE_WAIT`] at most, leaving a slow delete to land
+    /// on its own.
     async fn cancel(&self, prompt_id: &str) {
-        self.delete_from_queue(prompt_id, crate::http::request_timeout(&self.config))
-            .await;
+        let client = self.clone();
+        let prompt_id = prompt_id.to_string();
+        let delete = tokio::spawn(async move {
+            let timeout = crate::http::request_timeout(&client.config);
+            client.delete_from_queue(&prompt_id, timeout).await;
+        });
+        let _ = tokio::time::timeout(QUEUE_DELETE_WAIT, delete).await;
     }
 
     async fn abandon(&self, prompt_id: &str) {
-        self.delete_from_queue(prompt_id, ABANDON_TIMEOUT).await;
+        self.delete_from_queue(prompt_id, QUEUE_DELETE_WAIT).await;
     }
 
     async fn delete_from_queue(&self, prompt_id: &str, timeout: Duration) {
@@ -1580,7 +1594,7 @@ pub fn build_upscale_video_workflow(model: &str, video_name: &str) -> Result<Val
 
 fn validate_upscale_image_workflow(workflow: &Value) -> Result<(), Error> {
     for (pointer, class) in [
-        ("/1/class_type", "LoadImage"),
+        ("/1/class_type", LOAD_IMAGE),
         ("/2/class_type", "UpscaleModelLoader"),
         ("/3/class_type", "ImageUpscaleWithModel"),
         ("/4/class_type", "PreviewImage"),
@@ -1724,19 +1738,31 @@ fn validate_a14b_workflow(workflow: &Value) -> Result<(), Error> {
 /// The UNet loader the model `sampler` samples comes from, followed through
 /// every node that passes a model on.
 fn model_source<'a>(workflow: &'a Value, sampler: &str) -> Option<&'a str> {
-    let mut node = workflow
-        .pointer(&format!("/{sampler}/inputs/model"))
-        .and_then(link_node)?;
+    let link = workflow.pointer(&format!("/{sampler}/inputs/model"))?;
+    upstream(workflow, link, "model", |class| {
+        UNET_LOADERS.contains(&class)
+    })
+}
+
+/// The first node whose class `is_source` accepts on the way back from
+/// `link`, followed through every node that passes its `input` on.
+fn upstream<'a>(
+    workflow: &'a Value,
+    link: &'a Value,
+    input: &str,
+    is_source: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
+    let mut node = link_node(link)?;
     let nodes = workflow.as_object().map_or(0, serde_json::Map::len);
     for _ in 0..nodes {
         let class = workflow
             .pointer(&format!("/{node}/class_type"))
             .and_then(Value::as_str)?;
-        if UNET_LOADERS.contains(&class) {
+        if is_source(class) {
             return Some(node);
         }
         node = workflow
-            .pointer(&format!("/{node}/inputs/model"))
+            .pointer(&format!("/{node}/inputs/{input}"))
             .and_then(link_node)?;
     }
     None
@@ -1749,14 +1775,22 @@ fn validate_image_to_video_workflow(workflow: &Value) -> Result<(), Error> {
             "image-to-video workflow must use WanImageToVideo",
         ));
     }
-    if workflow.pointer("/11/class_type").and_then(Value::as_str) != Some("LoadImage") {
+    if workflow
+        .pointer(&format!("/{SOURCE_IMAGE_NODE}/class_type"))
+        .and_then(Value::as_str)
+        != Some(LOAD_IMAGE)
+    {
         return Err(Error::Configuration(
             "image-to-video workflow must load a source image",
         ));
     }
-    if workflow.pointer("/7/inputs/start_image").is_none() {
+    let starts_from_source = workflow
+        .pointer("/7/inputs/start_image")
+        .and_then(|link| upstream(workflow, link, "image", |class| class == LOAD_IMAGE))
+        == Some(SOURCE_IMAGE_NODE);
+    if !starts_from_source {
         return Err(Error::Configuration(
-            "image-to-video workflow must condition on a start image",
+            "image-to-video workflow must start from the image node 11 loads",
         ));
     }
     Ok(())
@@ -1826,7 +1860,7 @@ fn configure_wan_image_to_video_workflow(
     apply_wan_workflow_inputs(&mut workflow, prompt, unet, clip, vae, seed)?;
     let image_name = sanitize_upload_name(image_name)?;
     workflow
-        .pointer_mut("/11/inputs")
+        .pointer_mut(&format!("/{SOURCE_IMAGE_NODE}/inputs"))
         .and_then(Value::as_object_mut)
         .ok_or(Error::Configuration(
             "image-to-video workflow must load a source image",
@@ -2399,6 +2433,29 @@ mod tests {
                     "{pointer} = {link}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn an_image_to_video_graph_must_start_from_the_image_it_uploads() {
+        let mut scaled = packaged_graph(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW);
+        scaled["15"] = json!({
+            "class_type": "ImageScale",
+            "inputs": {"image": ["11", 0], "width": 1280, "height": 704}
+        });
+        scaled["7"]["inputs"]["start_image"] = json!(["15", 0]);
+        assert!(validate_image_to_video_workflow(&scaled).is_ok());
+        for start in [json!(["15", 0]), json!(["5", 0]), json!("source.png")] {
+            let mut workflow = packaged_graph(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW);
+            workflow["15"] = json!({"class_type": "LoadImage", "inputs": {"image": "other.png"}});
+            workflow["7"]["inputs"]["start_image"] = start.clone();
+            assert!(
+                matches!(
+                    validate_image_to_video_workflow(&workflow),
+                    Err(Error::Configuration(_))
+                ),
+                "start_image = {start}"
+            );
         }
     }
 
@@ -3690,36 +3747,6 @@ mod tests {
             .await;
     }
 
-    #[derive(Clone, Default)]
-    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl Logs {
-        fn capture() -> (Self, tracing::subscriber::DefaultGuard) {
-            let logs = Self::default();
-            let writer = logs.clone();
-            let subscriber = tracing_subscriber::fmt()
-                .with_ansi(false)
-                .with_writer(move || writer.clone())
-                .finish();
-            (logs, tracing::subscriber::set_default(subscriber))
-        }
-
-        fn text(&self) -> String {
-            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-        }
-    }
-
-    impl std::io::Write for Logs {
-        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buffer);
-            Ok(buffer.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     async fn mock_queue(server: &MockServer, running: Value) {
         Mock::given(method("GET"))
             .and(path("/queue"))
@@ -3980,7 +4007,7 @@ mod tests {
         let config = video_config(&server)
             .with_queue_check_interval(Duration::ZERO)
             .with_outage_window(Duration::from_secs(60));
-        let (logs, _logging) = Logs::capture();
+        let (logs, _logging) = crate::logs::Logs::capture();
         let result = tokio::time::timeout(REQUEST_WAIT, generate_clip(config))
             .await
             .expect("a queue answer that can never parse must not be retried as an outage");
@@ -4024,6 +4051,33 @@ mod tests {
         assert_eq!(
             posted_bodies(&server, "/queue").await,
             [json!({"delete": ["down"]})]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_render_whose_download_fails_does_not_wait_out_a_stalled_cancel() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "gone").await;
+        mock_finished_clip(&server, "gone").await;
+        Mock::given(method("GET"))
+            .and(path("/view"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        mock_unanswered_queue_delete(&server).await;
+        let result = tokio::time::timeout(REQUEST_WAIT, generate_clip(video_config(&server)))
+            .await
+            .expect("a stalled cancel must not hold a failed render past its wait");
+        assert!(
+            matches!(
+                &result,
+                Err(Error::Http(error)) if error.status() == Some(reqwest::StatusCode::NOT_FOUND)
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            posted_bodies(&server, "/queue").await,
+            [json!({"delete": ["gone"]})]
         );
     }
 
@@ -4599,6 +4653,34 @@ mod tests {
         let bodies = prompt_bodies(&server).await;
         assert!(!bodies[0].contains("ControlNetLoader"), "{}", bodies[0]);
         assert!(!bodies[0].contains("IPAdapterFace"), "no face is installed");
+    }
+
+    #[tokio::test]
+    async fn people_identity_without_its_embedding_installed_leaves_the_token_out() {
+        let server = MockServer::start().await;
+        let (_root, models) =
+            person_models(identity_sidecar().with_embedding("ohwx.safetensors"), &[]);
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "bare"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mock_output(&server, "bare", "bare.png", vec![4, 5, 6]).await;
+        let client = person_client(&server, models, "jerry.safetensors");
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        client
+            .generate("ohwx sitting", None, &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+        let bodies = prompt_bodies(&server).await;
+        assert!(
+            !bodies[0].contains("embedding:ohwx"),
+            "ComfyUI drops a token whose embedding is not installed: {}",
+            bodies[0]
+        );
+        assert!(bodies[0].contains("ohwx sitting"), "{}", bodies[0]);
     }
 
     #[tokio::test]

@@ -49,7 +49,9 @@ pub(crate) const SCAN_DIRECTORIES: &[(&str, &str)] = &[
 /// Every checkpoint, diffusion model and LoRA under `models_directory` that a
 /// recipe in `catalog` can run, sorted by filename. A LoRA is listed only when
 /// its sidecar, named with `contract`'s suffix, binds it to an adapter recipe
-/// for its base. A diffusion model without a sidecar is listed only when an
+/// for its base. A checkpoint or diffusion model whose sidecar names an
+/// adapter recipe, which only a LoRA can run, is read as if the sidecar named
+/// no recipe. A diffusion model without a sidecar is listed only when an
 /// image recipe claims it by name or filename hint
 /// ([`RecipeCatalog::is_explicit_image_match`]): the default image recipe
 /// cannot run a video model. No weight is listed while a publication in its
@@ -209,7 +211,9 @@ pub fn identity_for_prompt(
 /// it. A trigger is named as a whole phrase, in any case, with any run of
 /// whitespace standing for one space. When `haystack` names triggers of
 /// different lengths the longest wins; when the longest is shared by two
-/// weights, or two different triggers share that length, it names none.
+/// weights, or two different triggers share that length, it names none. A
+/// weight whose filename another of `items` shares, in any ASCII case, names
+/// none either, since selecting that filename could load the other.
 pub fn identity_among(
     items: &[InventoryItem],
     catalog: &RecipeCatalog,
@@ -222,7 +226,15 @@ pub fn identity_among(
             .collect(),
     );
     match named.as_slice() {
-        [item] => identity(item),
+        [item]
+            if items
+                .iter()
+                .filter(|other| other.filename.eq_ignore_ascii_case(&item.filename))
+                .count()
+                == 1 =>
+        {
+            identity(item)
+        }
         _ => None,
     }
 }
@@ -458,6 +470,7 @@ fn resolve_recipe<'a>(
     }
     if let Some(document) = document
         && let Some(recipe) = catalog.get(&document.sidecar.recipe_id)
+        && !recipe.adapter
     {
         return Some(recipe);
     }
@@ -1126,6 +1139,83 @@ mod tests {
         config.checkpoint = "flux1-schnell-fp8.safetensors".into();
         assert!(bind_identity(&mut config, "a lighthouse").is_none());
         assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_full_weight_whose_sidecar_names_an_adapter_recipe_never_runs_as_one() {
+        let root = temp_models();
+        let catalog = RecipeCatalog::packaged().unwrap();
+        for (directory, filename) in [
+            ("checkpoints", "jerry-sdxl.safetensors"),
+            ("diffusion_models", "flux1-dev-jerry.safetensors"),
+        ] {
+            let weight = root.join(directory).join(filename);
+            fs::create_dir_all(weight.parent().unwrap()).unwrap();
+            fs::write(&weight, b"tuned").unwrap();
+            write_sidecar(
+                &weight,
+                &WeightSidecar::new("sdxl-adapter").with_trigger("ohwx"),
+                &Contract::default(),
+            )
+            .unwrap();
+        }
+
+        let items = scan(&root, &catalog, &Contract::default());
+        assert!(find(&items, "jerry-sdxl.safetensors").is_some());
+        for item in items {
+            assert!(!item.adapter, "{} runs as an adapter", item.filename);
+            assert!(
+                !catalog.get(&item.recipe_id).unwrap().adapter,
+                "{} loads into a LoRA slot",
+                item.filename
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_trigger_never_binds_a_filename_another_weight_shares() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        let checkpoint = root.join("checkpoints/jerry.safetensors");
+        fs::write(&checkpoint, b"base").unwrap();
+        write_sidecar(
+            &checkpoint,
+            &WeightSidecar::new("sdxl"),
+            &Contract::default(),
+        )
+        .unwrap();
+        let mut config = configured(&root);
+        config.checkpoint = "flux1-schnell-fp8.safetensors".into();
+
+        assert_eq!(bind_identity(&mut config, "portrait of ohwx"), None);
+        assert_eq!(
+            config.checkpoint, "flux1-schnell-fp8.safetensors",
+            "binding the LoRA's filename would load the checkpoint of that name"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_trigger_never_binds_a_filename_another_weight_shares_in_another_case() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        let checkpoint = root.join("checkpoints/Jerry.safetensors");
+        fs::write(&checkpoint, b"base").unwrap();
+        write_sidecar(
+            &checkpoint,
+            &WeightSidecar::new("sdxl"),
+            &Contract::default(),
+        )
+        .unwrap();
+        let mut config = configured(&root);
+
+        assert_eq!(
+            bind_identity(&mut config, "portrait of ohwx"),
+            None,
+            "a case-insensitive filesystem or ComfyUI could load either"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -42,6 +42,8 @@ pub(crate) const MAXIMUM_PROMPT_BYTES: usize = 100_000;
 const LATENT_INPUTS: &[&str] = &["latent_image", "samples"];
 const CONDITIONING_CLASSES: &[&str] = &["FluxGuidance"];
 const CONDITIONING_CLASS_PREFIXES: &[&str] = &["CLIPTextEncode", "Conditioning", "ControlNetApply"];
+/// The ComfyUI node class that loads an uploaded image.
+pub(crate) const LOAD_IMAGE: &str = "LoadImage";
 /// The directory of the IP-Adapter weight a face reference runs through.
 pub(crate) const IPADAPTER_DIRECTORY: &str = "ipadapter";
 /// The directory of the CLIP vision encoder a face reference is read with.
@@ -757,7 +759,7 @@ fn validate_graph(workflow: &Value, slots: &RecipeSlots, with_source: bool) -> R
         if workflow
             .pointer(&source_class_pointer(source))
             .and_then(Value::as_str)
-            != Some("LoadImage")
+            != Some(LOAD_IMAGE)
         {
             return Err(Error::Configuration(
                 "source graph must load a source image",
@@ -831,11 +833,17 @@ fn validate_pose(workflow: &Value, pointer: &str) -> Result<(), Error> {
     if workflow
         .pointer(&source_class_pointer(pointer))
         .and_then(Value::as_str)
-        != Some("LoadImage")
+        != Some(LOAD_IMAGE)
     {
         return Err(Error::Configuration("pose slot must fill a LoadImage node"));
     }
-    pose::strip(&mut workflow.clone(), slot_node(pointer))
+    let node = slot_node(pointer);
+    if !pose::is_read(workflow, node) {
+        return Err(Error::Configuration(
+            "pose slot must load the image a ControlNet apply reads",
+        ));
+    }
+    pose::strip(&mut workflow.clone(), node)
 }
 
 fn slot_node(pointer: &str) -> &str {
@@ -1913,6 +1921,18 @@ mod tests {
             }
         }
         assert!(RecipeCatalog::from_json(&file.to_string(), None).is_err());
+    }
+
+    #[test]
+    fn a_pose_image_no_controlnet_reads_is_refused() {
+        let mut graph: Value =
+            serde_json::from_str(packaged_workflow("sdxl-api.json").unwrap()).unwrap();
+        assert!(validate_pose(&graph, "/20/inputs/image").is_ok());
+        graph["30"] = json!({"class_type": "LoadImage", "inputs": {"image": "pose-standing.png"}});
+        assert!(matches!(
+            validate_pose(&graph, "/30/inputs/image"),
+            Err(Error::Configuration(_))
+        ));
     }
 
     #[test]

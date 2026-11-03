@@ -152,8 +152,9 @@ Besides the graph pair and its slots, a recipe may declare:
   refused when the slot names an input its graph lacks.
 - `slots.pose`: the `LoadImage` input of an OpenPose ControlNet branch.
   `recipe::Fill::with_pose` steers that branch; without a pose the branch is
-  removed and the sampler reads the plain prompt. The packaged `sdxl` and
-  `sdxl-adapter` graphs carry one.
+  removed and the sampler reads the plain prompt. The catalog is refused when
+  no `ControlNetApply` or `ControlNetApplyAdvanced` reads that image. The
+  packaged `sdxl` and `sdxl-adapter` graphs carry one.
 - `pose_required_files`: the files only that branch loads, which a host checks
   are installed before it passes a pose. The packaged SDXL recipes declare
   `controlnet/thibaud_xl_openpose.safetensors`; `inventory::scan` does not
@@ -193,8 +194,10 @@ underscores, since its embedding is prompted as `embedding:<name>`. A rule's `su
 `jerry.safetensors` rather than over it. Nothing trains a video adapter:
 video generation runs the Wan 2.2 A14B experts, which load no LoRA.
 `lora::trainable_bases` lists each installed base with the subjects and
-methods its rules allow and that something configured can run, which is what
-a host offers the person choosing.
+methods its rules allow and that something configured can run on the local
+compute, which is what a host offers the person choosing; a remote compute
+trains every base but an edit base through the host trainer, and
+`lora::validate_request` answers for a remote request.
 Uploads arrive as raw bytes, so a large set never round-trips through base64,
 and `lora::validate_request` refuses a bad request before any image is read:
 
@@ -272,7 +275,9 @@ files are installed and never as an error when they are not:
   `clip_vision`, `image`, `ipadapter_name` and `strength` (0.4) and returns
   the model; the crate ships no node pack, so the deployment registers one.
 - **Embedding.** The sidecar's `embedding` leads the prompt as
-  `embedding:<stem>`, unless the prompt already holds it.
+  `embedding:<stem>`, unless the prompt already holds it or the file is not
+  in the models directory's `embeddings/`, which is logged as a warning:
+  ComfyUI drops a token it cannot load.
 
 A recipe with `refine`, or `identity_refine` for an identity, then reruns the
 head of every result through its source graph at denoise 0.3 and pastes it
@@ -293,7 +298,8 @@ frames, 16 frames a second. The packaged graphs are
 `wan2.2-a14b-t2v-api.json` and `wan2.2-a14b-i2v-api.json`;
 `Config::video_workflow_path` replaces the text-to-video one when it keeps the
 A14B contract, and an image-to-video graph of that name beside it, with
-`WanImageToVideo` at 7 and `LoadImage` at 11, replaces the other. The contract
+`WanImageToVideo` at 7 starting from the image `LoadImage` at 11 loads,
+directly or through nodes that pass an image on, replaces the other. The contract
 is a `UNETLoader` or `UnetLoaderGGUF` at nodes 1 and 12, `KSamplerAdvanced` at
 8 and 14, `EmptyHunyuanLatentVideo` at 7 and `SaveWEBM` at 10, with 8 sampling
 the model node 1 loads, 14 sampling the one node 12 loads, through any nodes
@@ -321,7 +327,8 @@ while history stays empty, the queue is asked every
 prompt, and a prompt ComfyUI lost to a restart fails. Each download may take
 the larger of the request timeout and five minutes. Any failure after
 ComfyUI accepted a prompt deletes it from the queue, and history is cleared
-only once the outputs landed.
+only once the outputs landed. The call waits at most five seconds for that
+delete and leaves a slower one to finish within the request timeout.
 
 ## Watching a run
 
@@ -385,7 +392,9 @@ the one a prompt names the `Config`'s checkpoint. A trigger matches as a whole
 phrase, in any case, with any run of whitespace standing for one space. When a
 prompt names triggers of different lengths the longest wins; a longest
 trigger two weights share, or two different triggers of that length, select
-neither. `lora::identity_caption` leads a rewritten prompt with the trigger
+neither, and neither does a weight whose filename another model folder
+also holds, since selecting that name could load the other.
+`lora::identity_caption` leads a rewritten prompt with the trigger
 when it no longer names it. No identity is bound to video:
 `Client::generate_video` posts its prompt as written, so a trigger in it is
 plain text, and no LoRA is loaded onto the video model.
@@ -508,6 +517,7 @@ temporary name, flushed, and renamed into place:
 | `publish.lock` | crate | locked by whoever publishes the job, from queueing it until the weight is published; the trainer leaves it alone |
 | `claimed` | trainer or crate | empty; created exclusively by whoever moves a queued job on: the trainer before it writes `running`, or the crate before it gives up on the job |
 | `dismissed` | crate | empty; marks a finished job `host::dismiss` hid |
+| `publication` | crate | the training generation the crate notes just before it promotes the weight, so a publication whose record in `job.json` failed is recorded later rather than promoted again; the trainer leaves it alone |
 | `runpod.key` | crate | the key of a `Compute::Runpod` job, one line, mode `0600`, listed in `secrets` and removed when the job ends |
 | any other file | crate | a secret from `TrainRequest::with_host_secret`, one line, mode `0600`, listed in `secrets` and removed when the job ends |
 
@@ -579,13 +589,21 @@ left between writing its secrets and queueing it;
 a key never waits for a restart once the run waiting on its job was dropped.
 Whoever publishes a job holds its `publish.lock` and records `published` in
 `job.json` before removing the weight, so a job is published once: `recover`
-skips a job another waiter holds and one already published, and `resume` of a
+skips a job another waiter holds and one already published, records without
+promoting it again a weight already published under the generation in
+`publication` when that record failed, and `resume` of a
 published job returns where it went. Either way the weight's sidecar carries
 the job's `trigger`, so a prompt that names it binds the weight as it would
 one trained here. A `pivotal` job's trainer writes the embedding it trains to
 the models directory's `embeddings/` under the job's `filename`, and the
 sidecar names it as `embedding`, so `embedding:<stem>` leads every prompt run
-on the weight.
+on the weight. The trainer must have written that embedding to
+`embeddings/` before it writes `succeeded`: a pivotal job whose embedding is
+not a regular file there, last modified at or after the job's `started_at`,
+fails instead of being published. That check compares the file's mtime with
+the host's clock, so a trainer that writes it from another machine needs a
+clock that agrees, and a copy into `embeddings/` must not keep an older
+mtime, as `cp -p` or `rsync -a` would.
 
 ## Migrating from the pre-release defaults
 

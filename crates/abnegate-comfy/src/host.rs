@@ -56,6 +56,7 @@ pub use trainer::Trainer;
 
 pub(crate) use compute::KEY_FILES;
 pub(crate) use job::is_reserved;
+use job_directory::DISCARDED_SUFFIX;
 pub(crate) use job_directory::is_secret_name;
 pub(crate) use pending::Pending;
 
@@ -85,6 +86,9 @@ pub const LOCK_FILE: &str = "publish.lock";
 pub const CLAIM_FILE: &str = "claimed";
 /// The empty marker of a finished job a host no longer shows.
 pub const DISMISSED_FILE: &str = "dismissed";
+/// The training generation whoever publishes the job noted before it
+/// promoted the job's weight.
+pub(crate) const PUBLICATION_FILE: &str = "publication";
 /// Samples the trainer renders while it trains.
 pub const PREVIEWS_DIRECTORY: &str = "previews";
 /// The image set and its captions and companions.
@@ -370,10 +374,21 @@ fn recover_job(config: &Config, id: Uuid) -> Option<Result<PathBuf, TrainError>>
     ))
 }
 
-/// Removes every job directory under `root` that holds no `job.json` and
-/// whose lock nobody holds.
+/// Removes every job directory under `root` whose lock nobody holds and that
+/// holds no `job.json` once its lock is taken, since whoever queues a job
+/// publishes `job.json` while holding that lock, and every directory a
+/// [discard](JobDirectory::discard) moved aside but could not finish removing.
 fn discard_unqueued(root: &Path) {
     for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        let moved_aside = entry.file_type().is_ok_and(|kind| kind.is_dir())
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with('.') && name.ends_with(DISCARDED_SUFFIX));
+        if moved_aside {
+            let _ = fs::remove_dir_all(entry.path());
+            continue;
+        }
         let is_job = entry.file_type().is_ok_and(|kind| kind.is_dir())
             && entry
                 .file_name()
@@ -383,10 +398,10 @@ fn discard_unqueued(root: &Path) {
             continue;
         }
         let directory = JobDirectory::at(entry.path());
-        if fs::symlink_metadata(directory.path().join(JOB_FILE)).is_ok() {
+        let Ok(Some(_lock)) = directory.try_lock() else {
             continue;
-        }
-        if let Ok(Some(_lock)) = directory.try_lock() {
+        };
+        if fs::symlink_metadata(directory.path().join(JOB_FILE)).is_err() {
             let _ = directory.discard();
         }
     }
@@ -475,11 +490,23 @@ pub(crate) async fn wait_with(
 
 /// Marks the job failed when it is still queued and this waiter wins its
 /// [claim](CLAIM_FILE), and returns it when the mark held. A trainer that
-/// claimed the job first keeps it, even before it writes `running`.
+/// claimed the job first keeps it, even before it writes `running`. A
+/// give-up that fails once the claim is won lets the claim go again, so
+/// the job is not left queued with no one able to take it.
 fn give_up(directory: &JobDirectory) -> Result<Option<Job>, TrainError> {
     if directory.read_job()?.status != Status::Queued || !directory.claim()? {
         return Ok(None);
     }
+    let marked = mark_not_picked_up(directory);
+    if marked.is_err() {
+        directory.release_claim();
+    }
+    marked
+}
+
+/// Marks the claimed job failed when it is still queued, and returns it when
+/// the mark held.
+fn mark_not_picked_up(directory: &JobDirectory) -> Result<Option<Job>, TrainError> {
     let mut job = directory.read_job()?;
     if job.status != Status::Queued {
         return Ok(None);
@@ -1131,6 +1158,9 @@ mod tests {
         let held = staging.try_lock().unwrap().expect("nobody holds the job");
         let stranger = root(&config).join("not-a-job");
         fs::create_dir_all(&stranger).unwrap();
+        let moved_aside =
+            root(&config).join(format!(".{}.{}.discarded", Uuid::new_v4(), Uuid::new_v4()));
+        fs::create_dir_all(moved_aside.join(DATASET_DIRECTORY)).unwrap();
 
         assert!(recover(&config).is_empty());
 
@@ -1140,7 +1170,67 @@ mod tests {
             "a job being staged lost its key"
         );
         assert!(stranger.is_dir(), "a directory that is no job was removed");
+        assert!(
+            !moved_aside.exists(),
+            "a discard left half-removed was kept"
+        );
         drop(held);
+    }
+
+    #[test]
+    fn the_sweep_never_discards_a_job_queued_while_it_looked() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        let (root_directory, config) = models();
+        let jobs = root(&config);
+        fs::create_dir_all(&jobs).unwrap();
+        let archive = root_directory.path().join("archive");
+        fs::create_dir_all(&archive).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let passes = Arc::new(AtomicUsize::new(0));
+        let sweeper = std::thread::spawn({
+            let jobs = jobs.clone();
+            let stop = Arc::clone(&stop);
+            let passes = Arc::clone(&passes);
+            move || {
+                while !stop.load(Ordering::Acquire) {
+                    discard_unqueued(&jobs);
+                    passes.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+        });
+        let mut discarded = 0;
+        for _ in 0..2000 {
+            let id = Uuid::new_v4();
+            let directory = JobDirectory::new(&config, id);
+            let Ok(lock) = directory.create_locked() else {
+                discarded += 1;
+                continue;
+            };
+            let written = directory.path().join("job.json.next");
+            if fs::write(&written, b"{}").is_err()
+                || fs::rename(&written, directory.path().join(JOB_FILE)).is_err()
+            {
+                discarded += 1;
+                continue;
+            }
+            drop(lock);
+            let seen = passes.load(Ordering::Acquire);
+            while passes.load(Ordering::Acquire) < seen + 2 {
+                std::thread::yield_now();
+            }
+            if directory.path().join(JOB_FILE).is_file() {
+                fs::rename(directory.path(), archive.join(id.to_string())).unwrap();
+            } else {
+                discarded += 1;
+            }
+        }
+        stop.store(true, Ordering::Release);
+        sweeper.join().unwrap();
+        assert_eq!(discarded, 0, "the sweep discarded jobs that were queued");
     }
 
     #[cfg(unix)]
@@ -1268,6 +1358,23 @@ mod tests {
 
         assert_eq!(give_up(&directory).unwrap(), None);
         assert_eq!(directory.read_job().unwrap().status, Status::Running);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_waiter_that_cannot_mark_the_job_failed_leaves_it_for_the_trainer_to_claim() {
+        let (root, config) = models();
+        let job = Job::new("jerry", "lora", "base.safetensors");
+        let real = queued(&config, &job);
+        let linked = root.path().join("linked");
+        std::os::unix::fs::symlink(real.path(), &linked).unwrap();
+
+        assert!(give_up(&JobDirectory::at(linked)).is_err());
+        assert_eq!(real.read_job().unwrap().status, Status::Queued);
+        assert!(
+            real.claim().unwrap(),
+            "a failed give-up kept the claim, so no trainer can start the job"
+        );
     }
 
     #[tokio::test]
