@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.5...abnegate-llm/v0.1.6) - 2026-11-03
+
+### Added
+
+- *(llm)* so a host can tell a missing repository apart and show a model's quantization
+
+### Fixed
+
+- *(llm)* so loaders sharing a cold model cache wait for each other's download
+
 ## [0.1.5](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.4...abnegate-llm/v0.1.5) - 2026-11-03
 
 ### Other

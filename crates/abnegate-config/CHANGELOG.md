@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-config/v0.1.5...abnegate-config/v0.1.6) - 2026-11-03
+
+### Added
+
+- *(config)* so a host can build the crate's errors and stamp a token's identity
+
 ## [0.1.5](https://github.com/abnegate/crates/compare/abnegate-config/v0.1.4...abnegate-config/v0.1.5) - 2026-11-03
 
 ### Other
