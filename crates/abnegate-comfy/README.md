@@ -193,8 +193,10 @@ underscores, since its embedding is prompted as `embedding:<name>`. A rule's `su
 `jerry.safetensors` rather than over it. Nothing trains a video adapter:
 video generation runs the Wan 2.2 A14B experts, which load no LoRA.
 `lora::trainable_bases` lists each installed base with the subjects and
-methods its rules allow and that something configured can run, which is what
-a host offers the person choosing.
+methods its rules allow and that something configured can run on the local
+compute, which is what a host offers the person choosing; a remote compute
+trains every base but an edit base through the host trainer, and
+`lora::validate_request` answers for a remote request.
 Uploads arrive as raw bytes, so a large set never round-trips through base64,
 and `lora::validate_request` refuses a bad request before any image is read:
 

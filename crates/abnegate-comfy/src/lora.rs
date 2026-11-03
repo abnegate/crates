@@ -300,13 +300,20 @@ pub fn available_bases(
         .collect()
 }
 
-/// The bases a request can train on under `config`, each with the subjects
-/// and methods [`Config::train_policy`] allows on it, or the default LoRA on
+/// The bases a request on the local [compute](TrainRequest::compute) can
+/// train on under `config`, each with the subjects and methods
+/// [`Config::train_policy`] allows on it, or the default LoRA on
 /// [`TrainSubject::Other`] where no rule names it. A base is listed when its
 /// weights are installed, and a method when its rule's recipe runs the
 /// weight, the files the rule requires are installed, and something
-/// configured trains it: [`Config::train_command`], the packaged graph on an
-/// enabled ComfyUI, or [`Config::host_trainer`].
+/// configured trains it locally: [`Config::train_command`], the packaged
+/// graph on an enabled ComfyUI, or [`Config::host_trainer`] for a method or
+/// base the graph cannot train.
+///
+/// A remote compute trains every base but an edit base through the host
+/// trainer, so a method only it could run, such as a plain LoRA while
+/// ComfyUI is disabled, is not listed here; [`validate_request`] answers for
+/// a remote request.
 pub fn trainable_bases(config: &Config) -> Result<Vec<TrainBase>, TrainError> {
     config.validate()?;
     let catalog = RecipeCatalog::load(config.workflow_path.as_deref())
