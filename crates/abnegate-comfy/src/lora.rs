@@ -1363,7 +1363,7 @@ pub(crate) fn publish_host_job(
         return Ok(path);
     }
     let (destination, filename) = host_destination(config, &job)?;
-    if let Some(output) = unrecorded_publication(config, directory, &destination, &filename) {
+    if let Some(output) = unrecorded_publication(config, directory, &destination, &filename)? {
         return Ok(record_hosted(
             directory,
             job,
@@ -1531,22 +1531,39 @@ fn record_hosted(
 }
 
 /// The weight an earlier attempt published for the job in `directory` but
-/// never recorded in `job.json`: the one at `filename` under `destination`
-/// whose sidecar names the generation the attempt noted before promoting it.
+/// never recorded in `job.json`: the regular file at `filename` under
+/// `destination` whose sidecar names the generation the attempt noted before
+/// promoting it. A promotion a crash left half-done is first completed or
+/// rolled back under the publication's locks, as the next promotion would,
+/// so its marker never outlives it and hides the weight.
 fn unrecorded_publication(
     config: &Config,
     directory: &JobDirectory,
     destination: &Destination,
     filename: &str,
-) -> Option<PathBuf> {
-    let generation = directory.publication()?;
-    let output = config
-        .models_directory
-        .join(&destination.directory)
-        .join(filename);
-    (read_generation(&sidecar_path(&output, &config.contract)).as_deref()
-        == Some(generation.as_str()))
-    .then_some(output)
+) -> Result<Option<PathBuf>, TrainError> {
+    let Some(generation) = directory.publication() else {
+        return Ok(None);
+    };
+    let parent = config.models_directory.join(&destination.directory);
+    if !parent.is_dir() {
+        return Ok(None);
+    }
+    let output = parent.join(filename);
+    let output_sidecar = sidecar_path(&output, &config.contract);
+    let key = fs::canonicalize(&parent).map_err(failed)?.join(filename);
+    let local = publication_lock(&key);
+    let _local = local
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let publications = ensure_child_directory(&parent, &config.contract.publication_directory)?;
+    let _file = lock_publication(&publications, filename)?;
+    let marker = publication_marker(&parent, filename, &config.contract)
+        .ok_or(TrainError::Invalid("invalid weight publication name"))?;
+    recover_publication(&parent, &output, &output_sidecar, &marker, &config.contract)?;
+    let published = require_regular_output(&parent, &output).is_ok()
+        && read_generation(&output_sidecar).as_deref() == Some(generation.as_str());
+    Ok(published.then_some(output))
 }
 
 /// What the external trainer is given besides its run's own variables:
@@ -6857,6 +6874,53 @@ mod tests {
             Some("checkpoints/jerry.safetensors")
         );
         assert!(!directory.path().join("jerry.safetensors").exists());
+    }
+
+    #[test]
+    fn a_publication_that_crashed_before_its_marker_went_is_settled_before_it_is_recorded() {
+        let (_root, config) = hosted();
+        let directory = finished(&config, person_job("jerry", "finetune"), Some(b"tuned"));
+        let parent = config.models_directory.join("checkpoints");
+        let published = parent.join("jerry.safetensors");
+        let recovered = host::recover(&config);
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        let generation =
+            read_generation(&sidecar_path(&published, &config.contract)).expect("published");
+        let mut unrecorded = directory.read_job().unwrap();
+        unrecorded.published = None;
+        directory.write_job(&unrecorded).unwrap();
+        fs::write(directory.path().join("jerry.safetensors"), b"tuned").unwrap();
+        let marker = publication_marker(&parent, "jerry.safetensors", &config.contract).unwrap();
+        fs::write(
+            &marker,
+            serde_json::to_vec(&Publication {
+                schema_version: 1,
+                filename: "jerry.safetensors".to_string(),
+                generation,
+                previous_weight: false,
+                previous_sidecar: false,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let recovered = host::recover(&config);
+
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert_eq!(recovered[0].as_ref().unwrap(), &published);
+        assert!(
+            !marker.exists(),
+            "the crashed publication's marker was left"
+        );
+        let catalog = RecipeCatalog::load(config.workflow_path.as_deref()).unwrap();
+        assert!(
+            crate::inventory::find(
+                &crate::inventory::scan(&config.models_directory, &catalog, &config.contract),
+                "jerry.safetensors"
+            )
+            .is_some(),
+            "a pending marker hides the published weight"
+        );
     }
 
     #[test]
