@@ -42,6 +42,8 @@ pub(crate) const LORA_LOADER: &str = "LoraLoaderModelOnly";
 const PACKAGED_CATALOG: &str = include_str!("../comfyui/recipes/catalog.json");
 const SELECTED_SLOTS: &[&str] = &["lora", "checkpoint", "unet"];
 const ENCODER: &str = "VAEEncode";
+/// The longest prompt, or negative prompt, a graph is given.
+pub(crate) const MAXIMUM_PROMPT_BYTES: usize = 100_000;
 const LATENT_INPUTS: &[&str] = &["latent_image", "samples"];
 const CONDITIONING_CLASSES: &[&str] = &["FluxGuidance"];
 const CONDITIONING_CLASS_PREFIXES: &[&str] = &["CLIPTextEncode", "Conditioning", "ControlNetApply"];
@@ -159,6 +161,7 @@ pub struct Recipe {
 #[derive(Debug, Clone)]
 struct RecipeSlots {
     prompt: String,
+    negative: Option<String>,
     seed: String,
     source: Option<String>,
     pose: Option<String>,
@@ -227,6 +230,8 @@ struct Training {
 #[derive(Debug, Deserialize)]
 struct CatalogSlots {
     prompt: String,
+    #[serde(default)]
+    negative: Option<String>,
     seed: String,
     #[serde(default)]
     source: Option<String>,
@@ -277,6 +282,7 @@ impl RecipeCatalog {
         for spec in file.recipes {
             let slots = RecipeSlots {
                 prompt: spec.slots.prompt,
+                negative: spec.slots.negative,
                 seed: spec.slots.seed,
                 source: spec.slots.source,
                 pose: spec.slots.pose,
@@ -643,11 +649,12 @@ impl Recipe {
     /// The workflow graph with `fill` written into its slots, the
     /// source-image graph when `fill` has a source. Without a pose the
     /// ControlNet branch a pose slot feeds is removed, so the sampler reads
-    /// the plain prompt. [`Error::Configuration`] when the prompt is blank or
-    /// over 100,000 bytes, a file name is unsafe, or the graph lacks a slot
-    /// `fill` needs.
+    /// the plain prompt. Without a negative the graph keeps its own negative
+    /// text. [`Error::Configuration`] when the prompt is blank or over
+    /// 100,000 bytes, the negative is over 100,000 bytes, a file name is
+    /// unsafe, or the graph lacks a slot `fill` needs.
     pub fn apply(&self, fill: Fill<'_>) -> Result<Value, Error> {
-        if fill.prompt.trim().is_empty() || fill.prompt.len() > 100_000 {
+        if fill.prompt.trim().is_empty() || fill.prompt.len() > MAXIMUM_PROMPT_BYTES {
             return Err(Error::Configuration("prompt is empty or too long"));
         }
         let mut workflow = if fill.source.is_some() {
@@ -658,6 +665,17 @@ impl Recipe {
             self.bare.clone()
         };
         set_pointer(&mut workflow, &self.slots.prompt, json!(fill.prompt))?;
+        if let Some(negative) = fill.negative {
+            if negative.len() > MAXIMUM_PROMPT_BYTES {
+                return Err(Error::Configuration("negative prompt is too long"));
+            }
+            let pointer = self
+                .slots
+                .negative
+                .as_deref()
+                .ok_or(Error::Configuration("recipe has no negative slot"))?;
+            set_pointer(&mut workflow, pointer, json!(negative))?;
+        }
         set_pointer(&mut workflow, &self.slots.seed, json!(fill.seed))?;
         for (name, pointer) in &self.slots.weights {
             let filename = fill
@@ -729,6 +747,9 @@ fn load_graph(directory: Option<&Path>, filename: &str) -> Result<Value, Error> 
 
 fn validate_graph(workflow: &Value, slots: &RecipeSlots, with_source: bool) -> Result<(), Error> {
     require_pointer(workflow, &slots.prompt)?;
+    if let Some(negative) = slots.negative.as_deref() {
+        require_pointer(workflow, negative)?;
+    }
     require_pointer(workflow, &slots.seed)?;
     for pointer in slots.weights.values() {
         require_pointer(workflow, pointer)?;
@@ -1259,6 +1280,7 @@ mod tests {
         workflow["12"]["inputs"]["pixels"] = json!(["14", 0]);
         let slots = RecipeSlots {
             prompt: "/6/inputs/text".into(),
+            negative: None,
             seed: "/3/inputs/seed".into(),
             source: Some("/10/inputs/image".into()),
             pose: None,
@@ -1550,6 +1572,7 @@ mod tests {
         let workflow = recipe
             .apply(Fill {
                 prompt: "a blue fox",
+                negative: None,
                 seed: 42,
                 weights: HashMap::from([("checkpoint", "custom-image.safetensors")]),
                 source: None,
@@ -1568,6 +1591,172 @@ mod tests {
     }
 
     #[test]
+    fn apply_keeps_packaged_negatives_when_omitted() {
+        let catalog = catalog();
+        let flux = catalog
+            .image_recipe_for("flux1-schnell-fp8.safetensors")
+            .unwrap()
+            .apply(Fill::new(
+                "a blue fox",
+                42,
+                HashMap::from([("checkpoint", "custom-image.safetensors")]),
+            ))
+            .unwrap();
+        assert_eq!(flux["7"]["inputs"]["text"], "");
+
+        let sdxl = catalog
+            .image_recipe_for("sd_xl_base_1.0.safetensors")
+            .unwrap()
+            .apply(Fill::new(
+                "a fox",
+                1,
+                HashMap::from([("checkpoint", "juggernautXL.safetensors")]),
+            ))
+            .unwrap();
+        assert_eq!(
+            sdxl["7"]["inputs"]["text"],
+            "blurry, low quality, watermark, deformed"
+        );
+    }
+
+    #[test]
+    fn apply_writes_the_negative_slot() {
+        let catalog = catalog();
+        let flux = catalog
+            .image_recipe_for("flux1-schnell-fp8.safetensors")
+            .unwrap()
+            .apply(
+                Fill::new(
+                    "a blue fox",
+                    42,
+                    HashMap::from([("checkpoint", "custom-image.safetensors")]),
+                )
+                .with_negative("hats"),
+            )
+            .unwrap();
+        assert_eq!(flux["7"]["inputs"]["text"], "hats");
+        assert_eq!(flux["6"]["inputs"]["text"], "a blue fox");
+
+        let recipe = catalog
+            .image_recipe_for("qwen_image_edit_2511_fp8mixed.safetensors")
+            .unwrap();
+        let weights = recipe
+            .weight_map("qwen_image_edit_2511_fp8mixed.safetensors")
+            .unwrap();
+        let qwen = recipe
+            .apply(
+                Fill::new("remove the sign", 9, owned(&weights))
+                    .with_source("img2img-source.png")
+                    .with_negative("hats"),
+            )
+            .unwrap();
+        assert_eq!(qwen["7"]["inputs"]["prompt"], "hats");
+        assert_eq!(qwen["6"]["inputs"]["prompt"], "remove the sign");
+    }
+
+    #[test]
+    fn apply_empty_negative_clears_packaged_sdxl() {
+        let catalog = catalog();
+        let workflow = catalog
+            .image_recipe_for("sd_xl_base_1.0.safetensors")
+            .unwrap()
+            .apply(
+                Fill::new(
+                    "a fox",
+                    1,
+                    HashMap::from([("checkpoint", "juggernautXL.safetensors")]),
+                )
+                .with_negative(""),
+            )
+            .unwrap();
+        assert_eq!(workflow["7"]["inputs"]["text"], "");
+    }
+
+    #[test]
+    fn apply_rejects_a_too_long_negative() {
+        let catalog = catalog();
+        let too_long = "h".repeat(MAXIMUM_PROMPT_BYTES + 1);
+        let error = catalog
+            .image_recipe_for("flux1-schnell-fp8.safetensors")
+            .unwrap()
+            .apply(
+                Fill::new(
+                    "a fox",
+                    1,
+                    HashMap::from([("checkpoint", "ok.safetensors")]),
+                )
+                .with_negative(&too_long),
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("negative prompt is too long"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn apply_refuses_a_negative_without_a_slot() {
+        let catalog = catalog();
+        let recipe = catalog.get("wan-adapter").unwrap();
+        let weights = recipe.weight_map("identity-wan.safetensors").unwrap();
+        let error = recipe
+            .apply(Fill::new("a person waves", 5, owned(&weights)).with_negative("hats"))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("recipe has no negative slot"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_overlay_negative_slot_missing_from_its_graph_fails_catalog_load() {
+        let root = std::env::temp_dir().join(format!("recipe-negative-{}", uuid::Uuid::new_v4()));
+        let workflows = root.join("workflows");
+        let recipes = root.join("recipes");
+        std::fs::create_dir_all(&workflows).unwrap();
+        std::fs::create_dir_all(&recipes).unwrap();
+        std::fs::write(
+            workflows.join("custom-api.json"),
+            packaged_workflow("sd15-api.json").unwrap(),
+        )
+        .unwrap();
+        let overlay = |negative: &str| {
+            json!({
+                "schema_version": 1,
+                "default_image": "custom",
+                "recipes": [{
+                    "id": "custom",
+                    "kind": "image",
+                    "label": "Custom",
+                    "bare": "custom-api.json",
+                    "output_node": "9",
+                    "output": "preview_image",
+                    "slots": {
+                        "prompt": "/6/inputs/text",
+                        "negative": negative,
+                        "seed": "/3/inputs/seed",
+                        "weights": { "checkpoint": "/4/inputs/ckpt_name" }
+                    },
+                    "files": ["custom.safetensors"]
+                }]
+            })
+            .to_string()
+        };
+        let workflow = workflows.join("custom-api.json");
+
+        std::fs::write(recipes.join("catalog.json"), overlay("/7/inputs/text")).unwrap();
+        assert!(RecipeCatalog::load(Some(&workflow)).is_ok());
+
+        std::fs::write(recipes.join("catalog.json"), overlay("/99/inputs/text")).unwrap();
+        let error = RecipeCatalog::load(Some(&workflow)).err();
+        let _ = std::fs::remove_dir_all(root);
+        assert!(
+            error.is_some_and(|error| error.to_string().contains("recipe slot contract")),
+            "a negative slot its graph lacks must refuse the catalog"
+        );
+    }
+
+    #[test]
     fn sdxl_recipe_keeps_packaged_sampler() {
         let catalog = catalog();
         let recipe = catalog
@@ -1576,6 +1765,7 @@ mod tests {
         let workflow = recipe
             .apply(Fill {
                 prompt: "a fox",
+                negative: None,
                 seed: 1,
                 weights: HashMap::from([("checkpoint", "juggernautXL.safetensors")]),
                 source: None,
@@ -2118,6 +2308,7 @@ mod tests {
         let workflow = recipe
             .apply(Fill {
                 prompt: "make it dusk",
+                negative: None,
                 seed: 7,
                 weights: HashMap::from([("checkpoint", "model.safetensors")]),
                 source: Some("img2img-source.png"),
@@ -2137,6 +2328,7 @@ mod tests {
             recipe
                 .apply(Fill {
                     prompt: "fox",
+                    negative: None,
                     seed: 1,
                     weights: HashMap::from([("checkpoint", "../secret")]),
                     source: None,
@@ -2148,6 +2340,7 @@ mod tests {
             recipe
                 .apply(Fill {
                     prompt: "fox",
+                    negative: None,
                     seed: 1,
                     weights: HashMap::from([("checkpoint", "ok.safetensors")]),
                     source: Some("../secret.png"),
@@ -2222,6 +2415,7 @@ mod tests {
         workflow["9"]["class_type"] = json!("SaveImage");
         let slots = RecipeSlots {
             prompt: "/6/inputs/text".into(),
+            negative: None,
             seed: "/3/inputs/seed".into(),
             source: None,
             pose: None,
@@ -2255,6 +2449,7 @@ mod tests {
         let workflow = recipe
             .apply(Fill {
                 prompt: "remove the sign",
+                negative: None,
                 seed: 9,
                 weights: owned,
                 source: Some("img2img-source.png"),
@@ -2287,6 +2482,7 @@ mod tests {
         let workflow = recipe
             .apply(Fill {
                 prompt: "nsfw",
+                negative: None,
                 seed: 1,
                 weights: owned,
                 source: Some("img2img-source.png"),

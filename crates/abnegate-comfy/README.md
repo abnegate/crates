@@ -48,6 +48,30 @@ async fn lighthouse() -> Result<(), Error> {
 }
 ```
 
+What the picture must not show stays out of the prompt: `Client::generate_excluding`
+takes it as a negative prompt, written into the recipe's negative slot, so the
+prompt describes only the scene. `None` keeps the negative text the recipe's
+graph ships with (blank for FLUX and Qwen, a quality list for SD 1.5 and
+SDXL), and `Some("")` clears it. `generate` is `generate_excluding` with
+`None`.
+
+```rust,no_run
+use abnegate_comfy::{Client, Config, Error};
+use tokio::sync::{broadcast, mpsc};
+
+async fn bare_heads() -> Result<(), Error> {
+    let client = Client::new(Config::from_environment())?;
+    let (_stop, mut cancel) = broadcast::channel(1);
+    let (progress, _updates) = mpsc::unbounded_channel();
+
+    let images = client
+        .generate_excluding("a crowd at a match", None, Some("hats"), &mut cancel, progress)
+        .await?;
+    println!("{} images", images.len());
+    Ok(())
+}
+```
+
 ## Training on your own node pack
 
 A deployment whose node pack registers other names sets them on the contract,
@@ -115,6 +139,13 @@ slots, a recipe may declare:
   edits get Dev's sampler budget; a custom checkpoint that `flux-schnell` only
   runs, such as a fine-tune, keeps its own weights. It must name a base image
   recipe with a source graph and the same prompt mode.
+- `slots.negative`: the text input of the encoder the sampler reads as its
+  negative conditioning. `recipe::Fill::with_negative` writes it, an empty
+  negative clears it, and without one the graph's own text stays. A negative
+  over 100,000 bytes, or one for a recipe without the slot, is refused. Every
+  packaged image recipe carries one: `/7/inputs/text` on the FLUX, SD 1.5 and
+  SDXL graphs and `/7/inputs/prompt` on the Qwen edit graphs. The catalog is
+  refused when the slot names an input its graph lacks.
 - `slots.pose`: the `LoadImage` input of an OpenPose ControlNet branch.
   `recipe::Fill::with_pose` steers that branch; without a pose the branch is
   removed and the sampler reads the plain prompt. The packaged `sdxl` and

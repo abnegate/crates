@@ -2027,11 +2027,11 @@ fn require_regular_file(root: &Path, path: &Path) -> Result<PathBuf, TrainError>
 
 fn write_new(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), TrainError> {
     let named = |error: std::io::Error| TrainError::Failed(format!("{}: {error}", path.display()));
-    let root = fs::canonicalize(root).map_err(&named)?;
+    let root = fs::canonicalize(root).map_err(named)?;
     let parent = path
         .parent()
         .ok_or(TrainError::Invalid("training path has no parent"))?;
-    let parent = fs::canonicalize(parent).map_err(&named)?;
+    let parent = fs::canonicalize(parent).map_err(named)?;
     if !parent.starts_with(&root) {
         return Err(TrainError::Invalid("training path escapes its attempt"));
     }
@@ -2039,8 +2039,8 @@ fn write_new(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), TrainError> {
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(&named)?;
-    file.write_all(bytes).map_err(&named)
+        .map_err(named)?;
+    file.write_all(bytes).map_err(named)
 }
 
 fn validate_output(parent: &Path, output: &Path) -> Result<PathBuf, TrainError> {

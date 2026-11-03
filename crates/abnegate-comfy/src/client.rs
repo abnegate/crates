@@ -1,5 +1,6 @@
 //! Direct ComfyUI API client. Graphs come from packaged recipes; chat only
-//! supplies prompt, seed, checkpoint filename, and an optional source image.
+//! supplies prompt, optional negative prompt, seed, checkpoint filename, and
+//! an optional source image.
 
 mod error;
 mod generated_image;
@@ -37,6 +38,7 @@ use crate::people;
 use crate::recipe::Fill;
 use crate::recipe::IMAGE_TO_VIDEO_ADAPTER_WORKFLOW;
 use crate::recipe::LORA_LOADER;
+use crate::recipe::MAXIMUM_PROMPT_BYTES;
 use crate::recipe::MediaKind;
 use crate::recipe::PromptMode;
 use crate::recipe::Recipe;
@@ -400,11 +402,31 @@ impl Client {
     /// only a cancellation fails the call.
     ///
     /// Progress messages are sent on `progress`, and a message on `cancel`
-    /// stops the run.
+    /// stops the run. [`generate_excluding`](Client::generate_excluding)
+    /// also takes a negative prompt.
     pub async fn generate(
         &self,
         prompt: &str,
         source: Option<&SourceImage>,
+        cancel: &mut broadcast::Receiver<()>,
+        progress: mpsc::UnboundedSender<String>,
+    ) -> Result<Vec<GeneratedImage>, Error> {
+        self.generate_excluding(prompt, source, None, cancel, progress)
+            .await
+    }
+
+    /// [`generate`](Client::generate), with `negative` written into the
+    /// recipe's negative prompt slot: what the picture must not show, kept
+    /// out of the prompt so the prompt describes only the scene. `None` keeps
+    /// the negative text the recipe's graph ships with, and `Some("")` clears
+    /// it. The face refine pass is given the same negative.
+    /// [`Error::Configuration`] when `negative` is over 100,000 bytes or the
+    /// recipe has no negative slot.
+    pub async fn generate_excluding(
+        &self,
+        prompt: &str,
+        source: Option<&SourceImage>,
+        negative: Option<&str>,
         cancel: &mut broadcast::Receiver<()>,
         progress: mpsc::UnboundedSender<String>,
     ) -> Result<Vec<GeneratedImage>, Error> {
@@ -435,6 +457,7 @@ impl Client {
         let images = self
             .generate_image(
                 prompt,
+                negative,
                 source,
                 sidecar.as_ref(),
                 Pass::First,
@@ -456,6 +479,7 @@ impl Client {
             refined.push(
                 self.refine(
                     prompt,
+                    negative,
                     image,
                     sidecar.as_ref(),
                     &subject,
@@ -534,6 +558,7 @@ impl Client {
     async fn generate_image(
         &self,
         prompt: &str,
+        negative: Option<&str>,
         source: Option<&SourceImage>,
         sidecar: Option<&WeightSidecar>,
         pass: Pass,
@@ -588,6 +613,9 @@ impl Client {
         if let Some(pose) = &pose {
             fill = fill.with_pose(pose);
         }
+        if let Some(negative) = negative {
+            fill = fill.with_negative(negative);
+        }
         let mut workflow = recipe.apply(fill)?;
         if let Some(face) = &face {
             people::attach_face(
@@ -623,6 +651,7 @@ impl Client {
     async fn refine(
         &self,
         prompt: &str,
+        negative: Option<&str>,
         image: GeneratedImage,
         sidecar: Option<&WeightSidecar>,
         subject: &Subject,
@@ -645,6 +674,7 @@ impl Client {
         let refined = match self
             .generate_image(
                 prompt,
+                negative,
                 Some(&head),
                 sidecar,
                 Pass::Refine,
@@ -1590,7 +1620,7 @@ fn apply_wan_workflow_inputs(
     vae: &str,
     seed: u64,
 ) -> Result<(), Error> {
-    if prompt.trim().is_empty() || prompt.len() > 100_000 {
+    if prompt.trim().is_empty() || prompt.len() > MAXIMUM_PROMPT_BYTES {
         return Err(Error::Configuration("prompt is empty or too long"));
     }
     if !is_model_filename(unet) || !is_model_filename(clip) || !is_model_filename(vae) {
@@ -1621,7 +1651,7 @@ fn apply_ace_step_workflow_inputs(
     checkpoint: &str,
     seed: u64,
 ) -> Result<(), Error> {
-    if prompt.trim().is_empty() || prompt.len() > 100_000 {
+    if prompt.trim().is_empty() || prompt.len() > MAXIMUM_PROMPT_BYTES {
         return Err(Error::Configuration("prompt is empty or too long"));
     }
     let checkpoint = sanitize_weight_filename(checkpoint)?;
@@ -2414,6 +2444,33 @@ mod tests {
         assert_eq!(images[0].bytes.as_ref(), &[1, 2, 3]);
         assert_eq!(images[0].filename, "output.png");
         assert_eq!(progress_rx.recv().await.as_deref(), Some("Image queued..."));
+    }
+
+    #[tokio::test]
+    async fn generate_excluding_writes_the_negative_prompt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = Client::new(Config {
+            enabled: true,
+            base_url: server.uri(),
+            poll_interval: Duration::from_millis(50),
+            ..Default::default()
+        })
+        .unwrap();
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        let _ = client
+            .generate_excluding("a fox", None, Some("hats"), &mut cancel_rx, progress_tx)
+            .await;
+        let bodies = prompt_bodies(&server).await;
+        let submitted: Value =
+            serde_json::from_str(&bodies[0]).expect("ComfyUI is submitted a JSON prompt");
+        assert_eq!(submitted["prompt"]["7"]["inputs"]["text"], "hats");
+        assert_eq!(submitted["prompt"]["6"]["inputs"]["text"], "a fox");
     }
 
     #[tokio::test]

@@ -6,6 +6,10 @@ use std::collections::HashMap;
 pub struct Fill<'a> {
     /// Written into the prompt slot.
     pub prompt: &'a str,
+    /// Written into the negative prompt slot: what the picture must not
+    /// show. `None` keeps the text the recipe's graph ships with, and
+    /// `Some("")` clears it.
+    pub negative: Option<&'a str>,
     /// Written into the seed slot.
     pub seed: u64,
     /// The weight filename for each weight slot, by slot name.
@@ -22,6 +26,7 @@ impl<'a> Fill<'a> {
     pub fn new(prompt: &'a str, seed: u64, weights: HashMap<&'a str, &'a str>) -> Self {
         Self {
             prompt,
+            negative: None,
             seed,
             weights,
             source: None,
@@ -33,6 +38,15 @@ impl<'a> Fill<'a> {
     /// uploaded to ComfyUI.
     pub fn with_source(mut self, source: &'a str) -> Self {
         self.source = Some(source);
+        self
+    }
+
+    /// Writes `negative` into the recipe's negative prompt slot in place of
+    /// the text its graph ships with; an empty `negative` clears it.
+    /// [`Recipe::apply`](crate::recipe::Recipe::apply) refuses it for a
+    /// recipe without that slot.
+    pub fn with_negative(mut self, negative: &'a str) -> Self {
+        self.negative = Some(negative);
         self
     }
 

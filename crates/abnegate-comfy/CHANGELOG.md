@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Client::generate_excluding` takes a negative prompt, so what a picture must not show stays out of its prompt; `generate` is unchanged
+- `recipe::Fill::with_negative` and the catalog's `slots.negative`, which every packaged image recipe now declares
+
 ## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.1.7...abnegate-comfy/v0.1.8) - 2026-11-03
 
 ### Other
