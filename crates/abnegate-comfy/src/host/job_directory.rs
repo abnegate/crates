@@ -236,7 +236,15 @@ impl JobDirectory {
     /// Lets the job's [claim](CLAIM_FILE) go, for a claimer that could not
     /// act on it.
     pub(crate) fn release_claim(&self) {
-        let _ = fs::remove_file(self.path.join(CLAIM_FILE));
+        match fs::remove_file(self.path.join(CLAIM_FILE)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                directory = %self.path.display(),
+                %error,
+                "the job's claim could not be released, so no trainer can claim it"
+            ),
+        }
     }
 
     /// Marks the job dismissed, once.
