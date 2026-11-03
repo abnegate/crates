@@ -7,7 +7,9 @@ use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
+use nix::errno::Errno;
 use nix::fcntl::OFlag;
+use nix::libc;
 use nix::pty::PtyMaster;
 use nix::pty::grantpt;
 use nix::pty::posix_openpt;
@@ -39,7 +41,8 @@ pub(crate) struct HeldExit {
 
 impl HeldExit {
     /// Start a member of `group` that writes to a terminal and exits, and
-    /// return once it is held in its exit.
+    /// return once it is held in its exit, blocking the caller's thread
+    /// while it waits.
     pub(crate) fn join(group: &ProcessGroup) -> Self {
         let (terminal, name) = terminal();
         let member = Command::new("sh")
@@ -55,7 +58,7 @@ impl HeldExit {
             terminal: Some(terminal),
         };
         let started = Instant::now();
-        while !held.is_exiting() {
+        while !(held.is_exiting() && held.is_unfound()) {
             assert!(
                 started.elapsed() < PATIENCE,
                 "the member was never held in its exit"
@@ -77,11 +80,39 @@ impl HeldExit {
             .expect("a process listing");
         String::from_utf8_lossy(&output.stdout).contains('E')
     }
+
+    /// Whether the kernel no longer finds the member among the living, as
+    /// it does not once its exit has begun releasing it, and from then on
+    /// passes over it when it signals the member's group. `kill(pid, 0)`
+    /// cannot tell: it reports success for an exiting process too.
+    fn is_unfound(&self) -> bool {
+        // SAFETY: proc_bsdinfo holds only integers and byte arrays, all
+        // valid zeroed.
+        let mut information: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let Ok(size) = libc::c_int::try_from(size_of::<libc::proc_bsdinfo>()) else {
+            return false;
+        };
+        Errno::clear();
+        // SAFETY: `information` is valid for `size` writable bytes, and
+        // proc_pidinfo writes at most that many.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                self.pid(),
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&raw mut information).cast(),
+                size,
+            )
+        };
+        written <= 0 && Errno::last() == Errno::ESRCH
+    }
 }
 
 impl Drop for HeldExit {
     fn drop(&mut self) {
         drop(self.terminal.take());
+        // The terminal opened O_CLOEXEC and nothing duplicates it, so closing
+        // it closed the last copy and ended the member's wait.
         let _ = self.member.wait();
     }
 }

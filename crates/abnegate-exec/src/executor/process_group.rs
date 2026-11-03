@@ -27,7 +27,7 @@ use super::leader_exit::LeaderExit;
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
-mod zombies;
+mod dead;
 
 /// The lowest process identifier that can lead a job's group. `0` names the
 /// caller's own group and `1` is init, and `kill(-1, ...)` signals every
@@ -260,7 +260,7 @@ impl ProcessGroup {
 
     #[cfg(target_os = "macos")]
     fn only_dead(&self) -> bool {
-        zombies::only_dead(self.pgid)
+        dead::only_dead(self.pgid)
     }
 
     /// Outside macOS a group of dead members takes a signal like any other.
@@ -756,7 +756,7 @@ mod tests {
 
         assert!(
             refused.is_err(),
-            "a refusal from a running group was taken for a group of zombies"
+            "a refusal from a running group was taken for a group of dead members"
         );
     }
 

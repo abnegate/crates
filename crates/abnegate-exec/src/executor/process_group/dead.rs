@@ -1,5 +1,5 @@
-//! Whether every member of a process group has exited, unreaped or part way
-//! through, which macOS refuses to signal.
+//! Whether every member of a process group is dead -- an unreaped zombie,
+//! part way through its exit, or gone -- which macOS refuses to signal.
 
 use std::io;
 
@@ -97,14 +97,14 @@ mod tests {
     const PATIENCE: Duration = Duration::from_secs(60);
 
     #[test]
-    fn a_running_group_is_not_taken_for_zombies() {
+    fn a_running_group_is_not_taken_for_dead() {
         let sleeper = Sleeper::start();
 
         assert!(!only_dead(sleeper.group().pgid()));
     }
 
     #[test]
-    fn a_group_left_with_its_unreaped_leader_is_only_zombies() {
+    fn a_group_left_with_its_unreaped_leader_is_only_dead() {
         let mut leader = exits_on_close();
         let pgid = i32::try_from(leader.id()).unwrap();
         drop(leader.stdin.take());
@@ -113,13 +113,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        let zombies = only_dead(pgid);
+        let dead = only_dead(pgid);
 
         assert_eq!(leader.wait().expect("the leader is reaped").code(), Some(3));
-        assert!(
-            zombies,
-            "an exited leader's group was taken for a running one"
-        );
+        assert!(dead, "an exited leader's group was taken for a running one");
     }
 
     #[test]
@@ -141,14 +138,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        let zombies = only_dead(pgid);
+        let dead = only_dead(pgid);
 
         let _ = member.kill();
         let _ = member.wait();
         let _ = leader.wait();
         assert!(
-            !zombies,
-            "a group with a running member was taken for zombies"
+            !dead,
+            "a group with a running member was taken for a dead one"
         );
     }
 

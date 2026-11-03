@@ -39,8 +39,8 @@ const INTERRUPTIBLE_LEADER: &str = concat!(
     r#"$SIG{INT} = sub { exit 7 }; print "$pid\n"; sleep 1 while 1'"#,
 );
 
-/// Prints its own pid, then a line for every SIGINT it receives, within a
-/// second of it, as [`INTERRUPTIBLE_LEADER`] exits.
+/// Prints its own pid, then reports each SIGINT it receives with a line
+/// printed within a second of it.
 const INTERRUPT_COUNTING_LEADER: &str = concat!(
     r#"exec perl -e '$| = 1; $SIG{INT} = sub { print "interrupted\n" }; "#,
     r#"print "$$\n"; sleep 1 while 1'"#,
