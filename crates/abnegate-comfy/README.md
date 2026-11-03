@@ -183,11 +183,11 @@ base checkpoint. Only a LoRA is scored against its base. The external trainer
 reads the request's choice from `<prefix>_SUBJECT` and `<prefix>_METHOD`.
 A `TrainMethod::Pivotal` LoRA, trained together with an embedding for its
 trigger, is published and run like a LoRA, and only a training command or the
-host trainer trains one. A `TrainMethod::Video` rule names a video adapter
-recipe, such as the packaged `wan-adapter`, and usually a `suffix`, so the
-video adapter of `jerry` is published as `jerry-wan.safetensors` beside the
-still `jerry.safetensors` rather than over it; only the host trainer trains
-one.
+host trainer trains one. A rule's `suffix` names the published file, so
+`jerry` with suffix `-alt` lands as `jerry-alt.safetensors` beside
+`jerry.safetensors` rather than over it. A `TrainMethod::Video` request is
+refused with `lora::VIDEO_REFUSAL`: it would train a Wan 2.2 TI2V 5B adapter,
+and video generation runs Wan 2.2 A14B, which cannot load one.
 `lora::trainable_bases` lists each installed base with the subjects and
 methods its rules allow and that something configured can run, which is what
 a host offers the person choosing.
@@ -246,17 +246,6 @@ trainer, named by `abnegate_comfy::dataset`:
 A set where one pose holds more than 40% of the frames (`REBALANCE_SHARE`)
 draws each frame in inverse proportion to its pose's size, so the rarest pose
 keeps weight 1; otherwise every weight is 1.
-
-A `TrainMethod::Video` request trains on clips instead. Every file of the
-request `video::is_clip` names is cut into two or three windows of 49 frames
-at 24 frames a second, letterboxed to 832×480, the size and length of one
-clip the packaged Wan graphs generate. Windows centre on the moments the shot
-changes when it changes at least twice, and are spread evenly over the clip
-otherwise. Each window is `clips/NNNN.mp4` (`dataset::clip_path`), described
-by `dataset::ClipWindow`, `{"start_s", "end_s", "pose"}`, in `NNNN.json`
-(`dataset::window_path`). The trainer's step budget for them is
-`host::Trainer::with_video_steps`, 20 per window between 150 and 2000 by
-default.
 
 `Config::poses_directory` (`COMFYUI_POSES_DIRECTORY`) names a directory of
 OpenPose images a person's generation can be posed with, one per pose cluster,
@@ -355,15 +344,13 @@ phrase, in any case, with any run of whitespace standing for one space. When a
 prompt names triggers of different lengths the longest wins; a longest
 trigger two weights share, or two different triggers of that length, select
 neither. `lora::identity_caption` leads a rewritten prompt with the trigger
-when it no longer names it. For video, `inventory::bind_video_identity`
-returns the named trigger and the ready video LoRA trained on it, when there
-is exactly one, and `Client::generate_video` binds it on its own: the prompt
-keeps the trigger, and a video LoRA runs through the `wan-adapter` graph.
+when it no longer names it. No identity is bound to video:
+`Client::generate_video` posts its prompt as written, so a trigger in it is
+plain text, and no LoRA is loaded onto the video model.
 
 These calls read the models directory and every sidecar in it, so they block:
 call them inside `spawn_blocking`, or scan once with `inventory::scan` and ask
-`inventory::identity_among` or `inventory::video_identity_among`, which only
-read the items they are given.
+`inventory::identity_among`, which only reads the items it is given.
 
 ```rust,no_run
 use abnegate_comfy::{Client, Config, inventory, lora};

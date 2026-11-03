@@ -13,18 +13,11 @@
 //! photo: motion says which of the things in frame is being filmed, and it
 //! costs nothing here because the same frame differences already decide which
 //! frames are worth keeping.
-//!
-//! A video adapter trains on motion rather than stills, so for
-//! [`TrainMethod::Video`](crate::lora::TrainMethod::Video) a clip is cut into
-//! two or three windows instead, each as long and as large as one generated
-//! clip, placed where the pose changes when it does and spread evenly when it
-//! does not.
 
 mod clip;
 mod frame;
 mod frame_request;
 mod options;
-pub(crate) mod window;
 
 pub use clip::Clip;
 pub use frame::Frame;
@@ -732,7 +725,7 @@ fn hash(luma: &[f32]) -> u64 {
 
 /// Whether `filename` names a clip by its extension, in any case: one of
 /// the containers a clip is read as, `mp4`, `mov`, `m4v`, `webm`, `mkv` or
-/// `avi`. A video adapter trains only on the files of its request that are.
+/// `avi`.
 pub fn is_clip(filename: &str) -> bool {
     known_container(filename).is_some()
 }

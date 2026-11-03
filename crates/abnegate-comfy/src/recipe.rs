@@ -32,13 +32,11 @@ use std::path::Path;
 
 use crate::client::Error;
 
-/// The packaged graph a video prompt runs with a trained identity's LoRA.
-pub(crate) const VIDEO_ADAPTER_WORKFLOW: &str = "wan-adapter-api.json";
-/// The packaged graph an image-to-video prompt runs with a trained
-/// identity's LoRA.
-pub(crate) const IMAGE_TO_VIDEO_ADAPTER_WORKFLOW: &str = "wan-adapter-i2v-api.json";
-/// The node class an adapter graph loads its LoRA with.
-pub(crate) const LORA_LOADER: &str = "LoraLoaderModelOnly";
+/// The packaged graph the `wan-adapter` recipe runs a Wan 2.2 TI2V 5B LoRA
+/// with.
+const VIDEO_ADAPTER_WORKFLOW: &str = "wan-adapter-api.json";
+/// The packaged image-to-video graph of the `wan-adapter` recipe.
+const IMAGE_TO_VIDEO_ADAPTER_WORKFLOW: &str = "wan-adapter-i2v-api.json";
 const PACKAGED_CATALOG: &str = include_str!("../comfyui/recipes/catalog.json");
 const SELECTED_SLOTS: &[&str] = &["lora", "checkpoint", "unet"];
 const ENCODER: &str = "VAEEncode";

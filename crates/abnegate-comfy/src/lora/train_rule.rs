@@ -17,8 +17,8 @@ pub struct TrainRule {
     /// The recipe written into the published weight's sidecar, which runs it.
     pub recipe_id: String,
     /// The directory under the models root the weight is published in: the
-    /// one the recipe's loader reads, so `loras` for a [`TrainMethod::Lora`],
-    /// a [`TrainMethod::Pivotal`] or a [`TrainMethod::Video`], and for a
+    /// one the recipe's loader reads, so `loras` for a [`TrainMethod::Lora`]
+    /// or a [`TrainMethod::Pivotal`], and for a
     /// [`TrainMethod::Finetune`] `checkpoints` when the recipe loads a
     /// checkpoint or `diffusion_models` when it loads a UNet. Training on a
     /// rule that names any other directory fails as a configuration error.
@@ -27,10 +27,8 @@ pub struct TrainRule {
     /// run starts, such as `checkpoints/base.safetensors`.
     pub required: Vec<PathBuf>,
     /// Added to the stem of the requested name, unless the stem already ends
-    /// with it, to make the name the weight is published under. A
-    /// [`TrainMethod::Video`] rule sets one, such as `-wan`, so the video
-    /// adapter of `jerry` does not take the name of the still LoRA `jerry`
-    /// beside it in `loras`.
+    /// with it, to make the name the weight is published under, so a second
+    /// weight of `jerry` need not take the name of the LoRA `jerry` beside it.
     pub suffix: Option<String>,
 }
 

@@ -7,8 +7,6 @@ use crate::host::Trainer;
 pub(super) enum Handoff {
     /// The image set and its captions and companions, staged as `targets`.
     Images,
-    /// A video adapter's clip windows and their descriptions.
-    Clips,
 }
 
 impl Handoff {
@@ -16,7 +14,6 @@ impl Handoff {
     pub(super) fn staged(self) -> &'static str {
         match self {
             Self::Images => "targets",
-            Self::Clips => host::CLIPS_DIRECTORY,
         }
     }
 
@@ -24,15 +21,13 @@ impl Handoff {
     pub(super) fn directory(self) -> &'static str {
         match self {
             Self::Images => host::DATASET_DIRECTORY,
-            Self::Clips => host::CLIPS_DIRECTORY,
         }
     }
 
-    /// The steps `trainer` takes on a set of `count` images or windows.
+    /// The steps `trainer` takes on a set of `count` images.
     pub(super) fn steps(self, trainer: &Trainer, count: usize) -> u32 {
         match self {
             Self::Images => trainer.steps_for(count),
-            Self::Clips => trainer.video_steps_for(count),
         }
     }
 }

@@ -38,20 +38,16 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::inventory::VideoIdentity;
 use crate::inventory::WeightSidecar;
 use crate::media::MediaType;
 use crate::people;
 use crate::people::PoseImage;
 use crate::recipe::Fill;
-use crate::recipe::IMAGE_TO_VIDEO_ADAPTER_WORKFLOW;
-use crate::recipe::LORA_LOADER;
 use crate::recipe::MAXIMUM_PROMPT_BYTES;
 use crate::recipe::MediaKind;
 use crate::recipe::PromptMode;
 use crate::recipe::Recipe;
 use crate::recipe::RecipeCatalog;
-use crate::recipe::VIDEO_ADAPTER_WORKFLOW;
 use crate::recipe::sanitize_upload_name;
 use crate::recipe::sanitize_weight_filename;
 use crate::subject::Subject;
@@ -59,11 +55,6 @@ use crate::subject::Subject;
 const PACKAGED_VIDEO_WORKFLOW: &str = include_str!("../comfyui/workflows/wan2.2-ti2v-5b-api.json");
 const PACKAGED_IMAGE_TO_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/wan2.2-ti2v-5b-i2v-api.json");
-const PACKAGED_VIDEO_ADAPTER_WORKFLOW: &str =
-    include_str!("../comfyui/workflows/wan-adapter-api.json");
-const PACKAGED_IMAGE_TO_VIDEO_ADAPTER_WORKFLOW: &str =
-    include_str!("../comfyui/workflows/wan-adapter-i2v-api.json");
-const VIDEO_LORA_NODE: &str = "12";
 const PACKAGED_AUDIO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/ace-step-v1-3.5b-api.json");
 const PACKAGED_UPSCALE_WORKFLOW: &str = include_str!("../comfyui/workflows/upscale-image-api.json");
@@ -368,32 +359,6 @@ impl Client {
             load_image_to_video_workflow(self.config.video_workflow_path.as_deref())?;
         validate_image_to_video_workflow(&image_to_video_workflow)?;
         Ok((video_workflow, image_to_video_workflow))
-    }
-
-    /// The identity `prompt` names among the weights installed now, read off
-    /// the async runtime. A cancel or the deadline returns at once; a scan
-    /// that panics finds no identity.
-    async fn video_identity(
-        &self,
-        prompt: &str,
-        cancel: &mut broadcast::Receiver<()>,
-        deadline: tokio::time::Instant,
-    ) -> Result<Option<VideoIdentity>, Error> {
-        let models = self.config.models_directory.clone();
-        let catalog = Arc::clone(&self.catalog);
-        let contract = self.config.contract.clone();
-        let prompt = prompt.to_string();
-        let scan = tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            probe::entered(&models);
-            crate::inventory::video_identity_for_prompt(&models, &catalog, &contract, &prompt)
-        });
-        tokio::select! {
-            biased;
-            _ = cancel.recv() => Err(Error::Cancelled),
-            _ = tokio::time::sleep_until(deadline) => Err(Error::Timeout),
-            scanned = scan => Ok(scanned.ok().flatten()),
-        }
     }
 
     fn audio_workflow(&self) -> Result<Value, Error> {
@@ -790,12 +755,8 @@ impl Client {
     /// Generate a video from `prompt`, animating `source` when one is given.
     /// A blank prompt is refused unless there is a source.
     ///
-    /// A prompt that names a trained identity's trigger, as
-    /// [`inventory::video_identity_for_prompt`](crate::inventory::video_identity_for_prompt)
-    /// finds it, keeps the trigger in front, and when a video LoRA was
-    /// trained on that trigger the run loads it through the adapter graph,
-    /// `wan-adapter-api.json` or `wan-adapter-i2v-api.json` beside
-    /// [`Config::video_workflow_path`] or else the packaged one.
+    /// The prompt reaches the graph exactly as written. No identity LoRA is
+    /// applied to video, so a trigger word in it is plain text.
     pub async fn generate_video(
         &self,
         prompt: &str,
@@ -812,32 +773,23 @@ impl Client {
         }
         self.video_model_names()?;
         let deadline = tokio::time::Instant::now() + self.config.video_generation_timeout;
-        let mut prompt = if prompt.trim().is_empty() {
+        let prompt = if prompt.trim().is_empty() {
             if source.is_some() {
-                "animate this image".to_string()
+                "animate this image"
             } else {
                 return Err(Error::Configuration("prompt is empty or too long"));
             }
         } else {
-            prompt.to_string()
+            prompt
         };
-        let identity = self.video_identity(&prompt, cancel, deadline).await?;
-        if let Some(identity) = &identity {
-            prompt = crate::lora::identity_caption(&prompt, &identity.trigger);
-        }
-        let lora = identity.and_then(|identity| identity.lora);
-        let path = self.config.video_workflow_path.as_deref();
+        let (text_to_video, image_to_video) = self.video_workflows()?;
         let seed = rand::random::<u64>() & i64::MAX as u64;
-        let mut workflow = if let Some(source) = source {
-            let graph = match &lora {
-                Some(_) => load_image_to_video_adapter_workflow(path)?,
-                None => self.video_workflows()?.1,
-            };
+        let workflow = if let Some(source) = source {
             let _ = progress.send("Uploading source image...".to_string());
             let uploaded = self.upload_source(source, cancel, deadline).await?;
             configure_wan_image_to_video_workflow(
-                graph,
-                &prompt,
+                image_to_video,
+                prompt,
                 &self.config.video_unet,
                 &self.config.video_clip,
                 &self.config.video_vae,
@@ -845,22 +797,15 @@ impl Client {
                 &uploaded,
             )?
         } else {
-            let graph = match &lora {
-                Some(_) => load_video_adapter_workflow(path)?,
-                None => self.video_workflows()?.0,
-            };
             configure_wan_text_to_video_workflow(
-                graph,
-                &prompt,
+                text_to_video,
+                prompt,
                 &self.config.video_unet,
                 &self.config.video_clip,
                 &self.config.video_vae,
                 seed,
             )?
         };
-        if let Some(lora) = &lora {
-            apply_video_lora(&mut workflow, lora)?;
-        }
         self.submit_and_collect(
             workflow,
             cancel,
@@ -1464,26 +1409,6 @@ fn load_image_to_video_workflow(text_to_video_path: Option<&Path>) -> Result<Val
         .map_err(|_| Error::Configuration("packaged image-to-video workflow is not valid JSON"))
 }
 
-fn load_video_adapter_workflow(text_to_video_path: Option<&Path>) -> Result<Value, Error> {
-    if let Some(path) = sibling_file(text_to_video_path, VIDEO_ADAPTER_WORKFLOW) {
-        return load_workflow_file(&path)
-            .map_err(|_| Error::Configuration("video adapter workflow path is not readable"));
-    }
-    serde_json::from_str(PACKAGED_VIDEO_ADAPTER_WORKFLOW)
-        .map_err(|_| Error::Configuration("packaged video adapter workflow is not valid JSON"))
-}
-
-fn load_image_to_video_adapter_workflow(text_to_video_path: Option<&Path>) -> Result<Value, Error> {
-    if let Some(path) = sibling_file(text_to_video_path, IMAGE_TO_VIDEO_ADAPTER_WORKFLOW) {
-        return load_workflow_file(&path).map_err(|_| {
-            Error::Configuration("image-to-video adapter workflow path is not readable")
-        });
-    }
-    serde_json::from_str(PACKAGED_IMAGE_TO_VIDEO_ADAPTER_WORKFLOW).map_err(|_| {
-        Error::Configuration("packaged image-to-video adapter workflow is not valid JSON")
-    })
-}
-
 fn load_audio_workflow(path: Option<&Path>) -> Result<Value, Error> {
     if let Some(path) = configured_file(path) {
         return load_workflow_file(path)
@@ -1518,45 +1443,6 @@ pub fn build_wan_image_to_video_workflow(
     let workflow = serde_json::from_str(PACKAGED_IMAGE_TO_VIDEO_WORKFLOW)
         .map_err(|_| Error::Configuration("packaged image-to-video workflow is not valid JSON"))?;
     configure_wan_image_to_video_workflow(workflow, prompt, unet, clip, vae, seed, image_name)
-}
-
-/// Build the text-to-video workflow that loads the video LoRA `lora` and
-/// mutate only approved inputs.
-pub fn build_wan_adapter_text_to_video_workflow(
-    prompt: &str,
-    unet: &str,
-    clip: &str,
-    vae: &str,
-    seed: u64,
-    lora: &str,
-) -> Result<Value, Error> {
-    let workflow = serde_json::from_str(PACKAGED_VIDEO_ADAPTER_WORKFLOW)
-        .map_err(|_| Error::Configuration("packaged video adapter workflow is not valid JSON"))?;
-    let mut workflow =
-        configure_wan_text_to_video_workflow(workflow, prompt, unet, clip, vae, seed)?;
-    apply_video_lora(&mut workflow, lora)?;
-    Ok(workflow)
-}
-
-/// Build the image-to-video workflow that loads the video LoRA `lora` and
-/// mutate only approved inputs.
-pub fn build_wan_adapter_image_to_video_workflow(
-    prompt: &str,
-    unet: &str,
-    clip: &str,
-    vae: &str,
-    seed: u64,
-    image_name: &str,
-    lora: &str,
-) -> Result<Value, Error> {
-    let workflow =
-        serde_json::from_str(PACKAGED_IMAGE_TO_VIDEO_ADAPTER_WORKFLOW).map_err(|_| {
-            Error::Configuration("packaged image-to-video adapter workflow is not valid JSON")
-        })?;
-    let mut workflow =
-        configure_wan_image_to_video_workflow(workflow, prompt, unet, clip, vae, seed, image_name)?;
-    apply_video_lora(&mut workflow, lora)?;
-    Ok(workflow)
 }
 
 /// Build the text-to-audio workflow and mutate only approved inputs.
@@ -1792,20 +1678,6 @@ fn configure_wan_image_to_video_workflow(
     Ok(workflow)
 }
 
-/// Points the adapter graph's LoRA loader at `lora`.
-fn apply_video_lora(workflow: &mut Value, lora: &str) -> Result<(), Error> {
-    let class = format!("/{VIDEO_LORA_NODE}/class_type");
-    if workflow.pointer(&class).and_then(Value::as_str) != Some(LORA_LOADER) {
-        return Err(Error::Configuration(
-            "adapter workflow must load a LoRA with LoraLoaderModelOnly",
-        ));
-    }
-    let lora = sanitize_weight_filename(lora)
-        .map_err(|_| Error::Configuration("invalid video LoRA filename"))?;
-    workflow[VIDEO_LORA_NODE]["inputs"]["lora_name"] = json!(lora);
-    Ok(())
-}
-
 fn apply_wan_workflow_inputs(
     workflow: &mut Value,
     prompt: &str,
@@ -2032,79 +1904,6 @@ mod tests {
         assert_eq!(workflow["8"]["inputs"]["seed"], 42);
         assert_eq!(workflow["11"]["inputs"]["image"], "i2v-source.png");
         assert_eq!(workflow["7"]["class_type"], "Wan22ImageToVideoLatent");
-    }
-
-    #[test]
-    fn the_adapter_graph_loads_the_video_lora_and_the_bare_graph_loads_none() {
-        let bare = build_wan_text_to_video_workflow(
-            "a moving fox",
-            "custom-video.safetensors",
-            "custom-clip.safetensors",
-            "custom-vae.safetensors",
-            42,
-        )
-        .unwrap();
-        assert!(bare.get(VIDEO_LORA_NODE).is_none());
-        assert_eq!(bare["4"]["inputs"]["model"], json!(["1", 0]));
-
-        let adapted = build_wan_adapter_text_to_video_workflow(
-            "a moving fox",
-            "custom-video.safetensors",
-            "custom-clip.safetensors",
-            "custom-vae.safetensors",
-            42,
-            "jerry-wan.safetensors",
-        )
-        .unwrap();
-        assert_eq!(adapted["12"]["class_type"], "LoraLoaderModelOnly");
-        assert_eq!(
-            adapted["12"]["inputs"]["lora_name"],
-            "jerry-wan.safetensors"
-        );
-        assert_eq!(adapted["4"]["inputs"]["model"], json!(["12", 0]));
-        assert_eq!(adapted["5"]["inputs"]["text"], "a moving fox");
-        assert_eq!(
-            adapted["1"]["inputs"]["unet_name"],
-            "custom-video.safetensors"
-        );
-
-        let image_to_video = build_wan_adapter_image_to_video_workflow(
-            "make it move",
-            "custom-video.safetensors",
-            "custom-clip.safetensors",
-            "custom-vae.safetensors",
-            7,
-            "i2v-source.png",
-            "jerry-wan.safetensors",
-        )
-        .unwrap();
-        assert_eq!(
-            image_to_video["12"]["inputs"]["lora_name"],
-            "jerry-wan.safetensors"
-        );
-        assert_eq!(image_to_video["11"]["inputs"]["image"], "i2v-source.png");
-
-        for lora in ["../jerry-wan.safetensors", "nested/jerry.safetensors", ""] {
-            assert!(
-                build_wan_adapter_text_to_video_workflow(
-                    "fox",
-                    "video.safetensors",
-                    "clip.safetensors",
-                    "vae.safetensors",
-                    1,
-                    lora,
-                )
-                .is_err(),
-                "{lora:?}"
-            );
-        }
-        let mut unloaded = bare;
-        assert!(matches!(
-            apply_video_lora(&mut unloaded, "jerry-wan.safetensors"),
-            Err(Error::Configuration(
-                "adapter workflow must load a LoRA with LoraLoaderModelOnly"
-            ))
-        ));
     }
 
     #[test]
@@ -3578,26 +3377,6 @@ mod tests {
         .unwrap();
     }
 
-    fn write_video_identity(models: &Path, trigger: &str) {
-        for (directory, filename) in [
-            ("diffusion_models", "wan2.2_ti2v_5B_fp16.safetensors"),
-            ("text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
-            ("vae", "wan2.2_vae.safetensors"),
-            ("loras", "jerry-wan.safetensors"),
-        ] {
-            std::fs::create_dir_all(models.join(directory)).unwrap();
-            std::fs::write(models.join(directory).join(filename), b"wan").unwrap();
-        }
-        crate::inventory::write_sidecar(
-            &models.join("loras/jerry-wan.safetensors"),
-            &crate::inventory::WeightSidecar::new("wan-adapter")
-                .with_huggingface_base("Comfy-Org/Wan_2.2_ComfyUI_Repackaged")
-                .with_trigger(trigger),
-            &crate::train::Contract::default(),
-        )
-        .unwrap();
-    }
-
     async fn serve_video(server: &MockServer, prompt_id: &str) {
         let mut history = serde_json::Map::new();
         history.insert(
@@ -3641,11 +3420,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_video_prompt_naming_a_still_identity_keeps_the_bare_graph() {
+    async fn a_video_prompt_naming_an_identity_reaches_the_graph_unchanged() {
+        const PROMPT: &str = "  ohwx walking on the beach\n";
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/prompt"))
-            .and(wiremock::matchers::body_string_contains("ohwx"))
             .and(BodyLacks("LoraLoaderModelOnly"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "still"})))
             .expect(1)
@@ -3656,20 +3435,21 @@ mod tests {
         let models = root.path().join("models");
         write_still_identity(&models, "ohwx");
 
-        generate_video_with(&server, models, "ohwx walking on the beach").await;
+        generate_video_with(&server, models, PROMPT).await;
+        let posted = posted_bodies(&server, "/prompt").await;
+        assert_eq!(
+            posted[0]["prompt"]["5"]["inputs"]["text"], PROMPT,
+            "a video prompt reaches the graph exactly as written"
+        );
     }
 
     #[tokio::test]
-    async fn a_video_prompt_naming_a_video_identity_loads_its_lora() {
+    async fn a_video_prompt_naming_a_trained_wan_lora_loads_no_lora() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/prompt"))
-            .and(wiremock::matchers::body_string_contains(
-                "LoraLoaderModelOnly",
-            ))
-            .and(wiremock::matchers::body_string_contains(
-                "jerry-wan.safetensors",
-            ))
+            .and(BodyLacks("LoraLoaderModelOnly"))
+            .and(BodyLacks("jerry-wan.safetensors"))
             .and(wiremock::matchers::body_string_contains("ohwx"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "wan"})))
             .expect(1)
@@ -3679,54 +3459,26 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let models = root.path().join("models");
         write_still_identity(&models, "ohwx");
-        write_video_identity(&models, "ohwx");
-
-        generate_video_with(&server, models, "ohwx walking on the beach").await;
-    }
-
-    #[tokio::test]
-    async fn a_video_adapter_graph_beside_the_configured_one_is_used_over_the_packaged_one() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/prompt"))
-            .and(wiremock::matchers::body_string_contains(
-                "Local Wan Adapter",
-            ))
-            .and(wiremock::matchers::body_string_contains(
-                "jerry-wan.safetensors",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "local"})))
-            .expect(1)
-            .mount(&server)
-            .await;
-        serve_video(&server, "local").await;
-        let root = tempfile::tempdir().unwrap();
-        let models = root.path().join("models");
-        write_video_identity(&models, "ohwx");
-        let workflows = root.path().join("workflows");
-        std::fs::create_dir_all(&workflows).unwrap();
-        let mut local: Value = serde_json::from_str(PACKAGED_VIDEO_ADAPTER_WORKFLOW).unwrap();
-        local["12"]["_meta"]["title"] = json!("Local Wan Adapter");
-        std::fs::write(
-            workflows.join("wan-adapter-api.json"),
-            serde_json::to_vec(&local).unwrap(),
+        for (directory, filename) in [
+            ("diffusion_models", "wan2.2_ti2v_5B_fp16.safetensors"),
+            ("text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+            ("vae", "wan2.2_vae.safetensors"),
+            ("loras", "jerry-wan.safetensors"),
+        ] {
+            std::fs::create_dir_all(models.join(directory)).unwrap();
+            std::fs::write(models.join(directory).join(filename), b"wan").unwrap();
+        }
+        let lora = models.join("loras/jerry-wan.safetensors");
+        crate::inventory::write_sidecar(
+            &lora,
+            &crate::inventory::WeightSidecar::new("wan-adapter")
+                .with_huggingface_base("Comfy-Org/Wan_2.2_ComfyUI_Repackaged")
+                .with_trigger("ohwx"),
+            &crate::train::Contract::default(),
         )
         .unwrap();
-        let client = Client::new(Config {
-            enabled: true,
-            base_url: server.uri(),
-            poll_interval: Duration::from_millis(50),
-            models_directory: models,
-            video_workflow_path: Some(workflows.join("wan2.2-ti2v-5b-api.json")),
-            ..Default::default()
-        })
-        .unwrap();
-        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
-        let (progress_tx, _) = mpsc::unbounded_channel();
-        client
-            .generate_video("ohwx at dusk", None, &mut cancel_rx, progress_tx)
-            .await
-            .unwrap();
+
+        generate_video_with(&server, models, "ohwx walking on the beach").await;
     }
 
     #[tokio::test]
@@ -4416,29 +4168,5 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(Error::Timeout)), "{result:?}");
-    }
-
-    #[tokio::test]
-    async fn a_cancel_while_a_video_prompt_is_matched_returns_at_once() {
-        let server = MockServer::start().await;
-        let (_root, models) = refined_models();
-        let client = person_client(&server, models.clone(), "jerry.safetensors");
-        let (cancel_tx, mut cancel_rx) = broadcast::channel(1);
-        let (progress_tx, _) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let _ = cancel_tx.send(());
-        });
-        probe::hold(&models);
-
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            client.generate_video("ohwx dancing", None, &mut cancel_rx, progress_tx),
-        )
-        .await;
-        probe::release(&models);
-
-        let result = result.expect("a stuck identity scan held the call");
-        assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
     }
 }

@@ -2,13 +2,11 @@
 
 mod identity;
 mod item;
-mod video_identity;
 mod weight_document;
 mod weight_sidecar;
 
 pub use identity::Identity;
 pub use item::InventoryItem;
-pub use video_identity::VideoIdentity;
 pub(crate) use weight_document::WeightDocument;
 pub use weight_sidecar::WeightSidecar;
 
@@ -226,94 +224,6 @@ pub fn identity_among(
     }
 }
 
-/// The identity a video prompt in `haystack` names, read with the recipe
-/// catalog `config` names. See [`video_identity_among`].
-///
-/// It reads the models directory and every sidecar in it, so it blocks: async
-/// code calls it inside `tokio::task::spawn_blocking`, or scans once and asks
-/// [`video_identity_among`].
-pub fn bind_video_identity(config: &Config, haystack: &str) -> Option<VideoIdentity> {
-    let catalog = RecipeCatalog::load(config.workflow_path.as_deref()).ok()?;
-    video_identity_for_prompt(
-        &config.models_directory,
-        &catalog,
-        &config.contract,
-        haystack,
-    )
-}
-
-/// The identity a video prompt in `haystack` names among the weights under
-/// `models_directory`, as [`scan`] reads them, chosen as
-/// [`video_identity_among`] chooses.
-///
-/// It reads the models directory and every sidecar in it, so it blocks: async
-/// code calls it inside `tokio::task::spawn_blocking`, or scans once and asks
-/// [`video_identity_among`].
-pub fn video_identity_for_prompt(
-    models_directory: &Path,
-    catalog: &RecipeCatalog,
-    contract: &Contract,
-    haystack: &str,
-) -> Option<VideoIdentity> {
-    video_identity_among(
-        &scan(models_directory, catalog, contract),
-        catalog,
-        haystack,
-    )
-}
-
-/// The trigger a video prompt in `haystack` names among the ready video LoRAs
-/// and image identities in `items`, as [`scan`] listed them with `catalog`,
-/// with the video LoRA trained on it when exactly one is ready, without
-/// touching the disk.
-///
-/// Triggers are named and compared as [`identity_among`] names them, so
-/// weights whose triggers differ only in case or spacing share one trigger.
-/// When `haystack` names triggers of different lengths the longest wins; two
-/// different triggers of that length name none.
-pub fn video_identity_among(
-    items: &[InventoryItem],
-    catalog: &RecipeCatalog,
-    haystack: &str,
-) -> Option<VideoIdentity> {
-    let named = longest_triggers(
-        items
-            .iter()
-            .filter(|item| {
-                (is_video_adapter(catalog, item) || is_image_identity(catalog, item))
-                    && names_trigger(item, haystack)
-            })
-            .collect(),
-    );
-    let mut keys: Vec<String> = named
-        .iter()
-        .filter_map(|item| item.trigger.as_deref())
-        .map(phrase_key)
-        .collect();
-    keys.sort_unstable();
-    keys.dedup();
-    if keys.len() != 1 {
-        return None;
-    }
-    let loras: Vec<&InventoryItem> = named
-        .iter()
-        .copied()
-        .filter(|item| is_video_adapter(catalog, item))
-        .collect();
-    let (lora, spoken) = match loras.as_slice() {
-        [lora] => (Some(lora.filename.clone()), *lora),
-        _ => (None, *named.first()?),
-    };
-    Some(VideoIdentity {
-        trigger: spoken.trigger.clone()?,
-        lora,
-    })
-}
-
-fn media(catalog: &RecipeCatalog, item: &InventoryItem) -> Option<MediaKind> {
-    catalog.get(&item.recipe_id).map(|recipe| recipe.kind)
-}
-
 fn is_image_identity(catalog: &RecipeCatalog, item: &InventoryItem) -> bool {
     item.ready
         && item.trigger.is_some()
@@ -321,14 +231,6 @@ fn is_image_identity(catalog: &RecipeCatalog, item: &InventoryItem) -> bool {
         && catalog.get(&item.recipe_id).is_some_and(|recipe| {
             recipe.kind == MediaKind::Image && recipe.prompt_mode == PromptMode::ClipScene
         })
-}
-
-fn is_video_adapter(catalog: &RecipeCatalog, item: &InventoryItem) -> bool {
-    item.ready
-        && item.trigger.is_some()
-        && item.adapter
-        && item.kind == LORA
-        && media(catalog, item) == Some(MediaKind::Video)
 }
 
 fn names_trigger(item: &InventoryItem, haystack: &str) -> bool {
@@ -1059,7 +961,7 @@ mod tests {
         }
     }
 
-    fn write_video_identity(root: &Path, filename: &str, trigger: &str) {
+    fn write_video_adapter(root: &Path, filename: &str, trigger: &str) {
         let lora = root.join("loras").join(filename);
         fs::write(&lora, b"lora").unwrap();
         write_sidecar(
@@ -1079,44 +981,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_video_adapter_outside_loras_is_never_loaded_as_one() {
-        let root = temp_models();
-        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
-        fs::rename(
-            root.join("loras/jerry-wan.safetensors"),
-            root.join("checkpoints/jerry-wan.safetensors"),
-        )
-        .unwrap();
-        fs::rename(
-            sidecar_path(
-                &root.join("loras/jerry-wan.safetensors"),
-                &Contract::default(),
-            ),
-            sidecar_path(
-                &root.join("checkpoints/jerry-wan.safetensors"),
-                &Contract::default(),
-            ),
-        )
-        .unwrap();
-
-        let lora = video_identity_named(&root, "ohwx dancing").and_then(|identity| identity.lora);
-
-        assert_eq!(lora, None, "a checkpoint was bound as a video LoRA");
-        let _ = fs::remove_dir_all(root);
-    }
-
     fn identity_named(root: &Path, haystack: &str) -> Option<Identity> {
         identity_for_prompt(
-            root,
-            &RecipeCatalog::packaged().unwrap(),
-            &Contract::default(),
-            haystack,
-        )
-    }
-
-    fn video_identity_named(root: &Path, haystack: &str) -> Option<VideoIdentity> {
-        video_identity_for_prompt(
             root,
             &RecipeCatalog::packaged().unwrap(),
             &Contract::default(),
@@ -1377,7 +1243,6 @@ mod tests {
 
         assert!(identities(&config).is_empty());
         assert!(bind_identity(&mut config, "portrait of ohwx").is_none());
-        assert!(bind_video_identity(&config, "portrait of ohwx").is_none());
         assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
         let _ = fs::remove_dir_all(root);
     }
@@ -1407,7 +1272,6 @@ mod tests {
 
         assert!(identities(&configured(&root)).is_empty());
         assert!(identity_named(&root, "ohwx").is_none());
-        assert!(video_identity_named(&root, "ohwx").is_none());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1443,7 +1307,7 @@ mod tests {
     #[test]
     fn a_video_adapter_is_inventoried_but_not_an_image_identity() {
         let root = temp_models();
-        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
+        write_video_adapter(&root, "jerry-wan.safetensors", "ohwx");
         let items = scan(
             &root,
             &RecipeCatalog::packaged().unwrap(),
@@ -1459,63 +1323,6 @@ mod tests {
         let mut config = configured(&root);
         assert!(bind_identity(&mut config, "portrait of ohwx").is_none());
         assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
-
-        let bound = video_identity_named(&root, "portrait of ohwx").unwrap();
-        assert_eq!(bound.trigger, "ohwx");
-        assert_eq!(bound.lora.as_deref(), Some("jerry-wan.safetensors"));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn video_bind_prefixes_a_still_identity_without_a_video_lora() {
-        let root = temp_models();
-        write_identity(&root, "jerry.safetensors", "ohwx");
-        let bound = bind_video_identity(&configured(&root), "ohwx walking on the beach").unwrap();
-        assert_eq!(
-            bound,
-            VideoIdentity {
-                trigger: "ohwx".into(),
-                lora: None,
-            }
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn video_bind_prefers_the_video_lora_when_both_exist() {
-        let root = temp_models();
-        write_identity(&root, "jerry.safetensors", "ohwx");
-        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
-
-        let bound = video_identity_named(&root, "ohwx at dusk").unwrap();
-        assert_eq!(bound.trigger, "ohwx");
-        assert_eq!(bound.lora.as_deref(), Some("jerry-wan.safetensors"));
-        assert!(
-            identities(&configured(&root))
-                .iter()
-                .any(|identity| identity.filename == "jerry.safetensors")
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn video_bind_refuses_two_longest_triggers_and_keeps_a_shared_trigger_without_its_lora() {
-        let root = temp_models();
-        write_identity(&root, "jerry.safetensors", "ohwx");
-        write_video_identity(&root, "teapot-wan.safetensors", "zrkx");
-        assert!(
-            video_identity_named(&root, "ohwx holding zrkx").is_none(),
-            "two different triggers of the same length are ambiguous"
-        );
-
-        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
-        write_video_identity(&root, "twin-wan.safetensors", "ohwx");
-        let bound = video_identity_named(&root, "ohwx at dusk").unwrap();
-        assert_eq!(bound.trigger, "ohwx");
-        assert_eq!(
-            bound.lora, None,
-            "two video LoRAs on one trigger leave the choice to the trigger alone"
-        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1591,7 +1398,6 @@ mod tests {
             "an edit weight follows an instruction, not a trigger"
         );
         assert!(identity_named(&root, "portrait of ohwx").is_none());
-        assert!(video_identity_named(&root, "ohwx walking").is_none());
         let mut config = configured(&root);
         assert!(bind_identity(&mut config, "portrait of ohwx").is_none());
         assert_eq!(config.checkpoint, "flux1-schnell-fp8.safetensors");
@@ -1662,22 +1468,6 @@ mod tests {
     }
 
     #[test]
-    fn video_triggers_that_differ_only_in_case_or_spacing_are_one_trigger() {
-        let root = temp_models();
-        write_identity(&root, "jerry.safetensors", "Blue OHWX");
-        write_identity(&root, "jerry-spaced.safetensors", "blue  ohwx");
-        write_video_identity(&root, "jerry-wan.safetensors", "blue ohwx");
-
-        let bound = video_identity_named(&root, "blue ohwx at dusk").unwrap();
-        assert_eq!(
-            bound.trigger, "blue ohwx",
-            "the video LoRA's own spelling leads"
-        );
-        assert_eq!(bound.lora.as_deref(), Some("jerry-wan.safetensors"));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn a_trigger_matches_across_any_run_of_whitespace() {
         assert!(contains_phrase("a blue   cat\non a sofa", "blue cat"));
         assert!(contains_phrase("a blue cat", "blue \t cat"));
@@ -1704,7 +1494,7 @@ mod tests {
     fn identity_among_reads_only_the_items_it_is_given() {
         let root = temp_models();
         write_identity(&root, "jerry.safetensors", "ohwx");
-        write_video_identity(&root, "jerry-wan.safetensors", "ohwx");
+        write_video_adapter(&root, "jerry-wan.safetensors", "ohwx");
         let catalog = RecipeCatalog::packaged().unwrap();
         let items = scan(&root, &catalog, &Contract::default());
         fs::remove_dir_all(&root).unwrap();
@@ -1714,13 +1504,6 @@ mod tests {
             Some(Identity {
                 filename: "jerry.safetensors".into(),
                 trigger: "ohwx".into(),
-            })
-        );
-        assert_eq!(
-            video_identity_among(&items, &catalog, "ohwx at dusk"),
-            Some(VideoIdentity {
-                trigger: "ohwx".into(),
-                lora: Some("jerry-wan.safetensors".into()),
             })
         );
         assert!(identity_among(&items, &catalog, "a lighthouse").is_none());

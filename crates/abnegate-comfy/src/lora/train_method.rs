@@ -16,10 +16,10 @@ pub enum TrainMethod {
     /// trigger, published and loaded like a [`Lora`](Self::Lora). Only a
     /// training command or the host trainer trains one.
     Pivotal,
-    /// A low-rank adapter for a video recipe, trained on windows cut from the
-    /// request's clips rather than on its photos. Only the host trainer
-    /// trains one, from the job's
-    /// [`CLIPS_DIRECTORY`](crate::host::CLIPS_DIRECTORY).
+    /// A Wan 2.2 TI2V 5B video adapter. It still reads off the wire so a
+    /// request for one can be refused: every request is, with
+    /// [`VIDEO_REFUSAL`](crate::lora::VIDEO_REFUSAL), since video generation
+    /// runs Wan 2.2 A14B, which cannot load it.
     Video,
 }
 

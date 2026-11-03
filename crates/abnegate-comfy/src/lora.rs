@@ -2,7 +2,6 @@
 //! ComfyUI; [`Config::train_command`] hands the dataset to an external trainer
 //! instead.
 
-mod clips;
 mod dropped;
 mod handoff;
 mod process_group;
@@ -49,7 +48,6 @@ use crate::inventory::contains_phrase;
 use crate::inventory::publication_marker;
 use crate::inventory::sidecar_path;
 use crate::person;
-use crate::recipe::MediaKind;
 use crate::recipe::Recipe;
 use crate::recipe::RecipeCatalog;
 use crate::recipe::TrainingModel;
@@ -167,6 +165,11 @@ const SUBJECT_UNAVAILABLE: &str = "this base does not train that subject";
 const UNRUNNABLE_RULE: &str = "training rule names a recipe that cannot run its weight";
 const NEEDED_WEIGHT: &str = "this name belongs to a weight the catalog or a training rule needs";
 const NAMED_ELSEWHERE: &str = "a weight in another model folder already has this name";
+/// Why every [`TrainMethod::Video`] request is refused: the packaged trainer
+/// would make a Wan 2.2 TI2V 5B adapter, and
+/// [`Client::generate_video`](crate::Client::generate_video) runs the Wan 2.2
+/// A14B experts, which cannot load one.
+pub const VIDEO_REFUSAL: &str = "video identity training is off: it trains Wan 2.2 TI2V 5B adapters, and video generation runs Wan 2.2 A14B, which cannot load them";
 const FOREIGN_WEIGHT: &str = "a weight training did not publish already has this name";
 const LORA_ONLY: &str = "the packaged training graph trains only a LoRA; configure a training command or a host trainer";
 const SDXL_UNSUPPORTED: &str = "SDXL trains only through a training command or a host trainer";
@@ -177,8 +180,6 @@ const MISSING_COMPUTE_KEY: &str = "this compute needs its key to train";
 const HOST_FIELD: &str = "a host field may not replace a key the host job gives a meaning";
 const HOST_EDIT: &str = "an edit base trains on the host only once the host-job contract carries its references; train it through a training command or the packaged graph";
 const HOST_RENAMED: &str = "the host job names a weight file other than the one its name gives";
-const NO_CLIPS: &str = "video training needs clips";
-const VIDEO_HOST_ONLY: &str = "video training runs only on a host trainer";
 const MIXED_PERSON: &str =
     "these images look like different people, and a person weight can only learn one";
 /// The class word a person's captions bind the trigger to.
@@ -371,15 +372,7 @@ pub fn trainable_bases(config: &Config) -> Result<Vec<TrainBase>, TrainError> {
 /// with the companions [`dataset`] names beside each crop. A person set the
 /// captions read as several people is refused.
 ///
-/// A [`TrainMethod::Video`] request trains a video adapter on the host
-/// trainer instead: every clip among its files, as [`video::is_clip`]
-/// names them, is cut into two or three windows the size and length of one
-/// generated clip, without screening or captions, and the trainer reads them
-/// from the job's [`CLIPS_DIRECTORY`](host::CLIPS_DIRECTORY). The weight is
-/// published under the requested name with its rule's
-/// [`suffix`](TrainRule::suffix).
-///
-/// [`video::is_clip`]: crate::video::is_clip
+/// A [`TrainMethod::Video`] request is refused with [`VIDEO_REFUSAL`].
 ///
 /// Fails with [`TrainError::Disabled`] when neither ComfyUI nor a training
 /// command is configured, [`TrainError::Invalid`] for a request that cannot
@@ -489,9 +482,8 @@ async fn train_with_screening(
 /// weight, a name a weight in another scanned model folder already has, a
 /// name already taken by a weight no training run published, a
 /// method other than a LoRA or an SDXL base with no [`Config::train_command`]
-/// to run it, a video adapter with no [`Config::host_trainer`] or no clip
-/// among its files, a missing trigger word, and references on the wrong kind
-/// of base. A host calls it to refuse a bad request up front rather than as a
+/// to run it, any [`TrainMethod::Video`] request, with [`VIDEO_REFUSAL`], a
+/// missing trigger word, and references on the wrong kind of base. A host calls it to refuse a bad request up front rather than as a
 /// failed job.
 pub fn validate_request(config: &Config, request: &TrainRequest) -> Result<(), TrainError> {
     plan(config, request).map(|_| ())
@@ -502,14 +494,12 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
         return Err(TrainError::Disabled);
     }
     config.validate()?;
+    if request.method == TrainMethod::Video {
+        return Err(TrainError::Invalid(VIDEO_REFUSAL));
+    }
     final_filename(&request.name)?;
-    let video = request.method == TrainMethod::Video;
     if request.images.is_empty() {
-        return Err(TrainError::Invalid(if video {
-            NO_CLIPS
-        } else {
-            "training needs images"
-        }));
+        return Err(TrainError::Invalid("training needs images"));
     }
     let catalog = RecipeCatalog::load(config.workflow_path.as_deref())
         .map_err(|_| TrainError::Invalid("recipe catalog is missing"))?;
@@ -528,14 +518,6 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
     } else {
         route(config, &model, request.method)?
     };
-    if video
-        && !request
-            .images
-            .iter()
-            .any(|image| crate::video::is_clip(&image.filename))
-    {
-        return Err(TrainError::Invalid(NO_CLIPS));
-    }
     if route == Route::Host {
         validate_host_settings(request)?;
     }
@@ -557,17 +539,13 @@ fn plan(config: &Config, request: &TrainRequest) -> Result<Plan, TrainError> {
     })
 }
 
-/// What trains `method` on `model` under `config`: the host trainer for a
-/// video adapter, which nothing else trains; the training command when one is
-/// set; the host trainer for what the packaged graph cannot train, a method
+/// What trains `method` on `model` under `config`: the training command when
+/// one is set; the host trainer for what the packaged graph cannot train, a method
 /// other than a LoRA or an SDXL base, except an edit base, whose reference
 /// images the host job does not carry; otherwise the packaged graph, which
 /// needs ComfyUI enabled.
 fn route(config: &Config, model: &TrainingModel, method: TrainMethod) -> Result<Route, TrainError> {
-    if method == TrainMethod::Video && config.host_trainer.is_none() {
-        return Err(TrainError::Invalid(VIDEO_HOST_ONLY));
-    }
-    if config.train_command.is_some() && method != TrainMethod::Video {
+    if config.train_command.is_some() {
         return Ok(Route::Command);
     }
     let sdxl = matches!(model, TrainingModel::Sdxl { .. });
@@ -678,16 +656,10 @@ fn destination(
             "install the files this base needs before training on it",
         ));
     }
-    let huggingface_base = match rule.method {
-        TrainMethod::Video => catalog
-            .get(&rule.recipe_id)
-            .and_then(|runner| runner.huggingface_bases.first().cloned()),
-        _ => huggingface_base(recipe),
-    };
     Ok(Destination {
         directory: rule.directory.clone(),
         recipe_id: rule.recipe_id.clone(),
-        huggingface_base,
+        huggingface_base: huggingface_base(recipe),
         trigger: trigger(recipe, request),
         suffix: rule.suffix.clone(),
     })
@@ -742,8 +714,7 @@ fn installed(config: &Config, rule: &TrainRule) -> bool {
 /// LoRA slot over the base's Hugging Face model, reading `loras`; for a
 /// fine-tune, a base recipe with a checkpoint slot reading `checkpoints` or a
 /// UNet slot reading `diffusion_models`; either way one that makes what
-/// `base` makes. For a video adapter, a video adapter with a LoRA slot,
-/// reading `loras`, over a base that makes images.
+/// `base` makes. Nothing runs a video adapter, which is refused.
 fn runs_weight(
     runner: &Recipe,
     base: &Recipe,
@@ -752,13 +723,7 @@ fn runs_weight(
     huggingface_base: Option<&str>,
 ) -> bool {
     match method {
-        TrainMethod::Video => {
-            directory == LORAS
-                && base.kind == MediaKind::Image
-                && runner.kind == MediaKind::Video
-                && runner.adapter
-                && runner.has_lora_slot()
-        }
+        TrainMethod::Video => false,
         TrainMethod::Lora | TrainMethod::Pivotal => {
             directory == LORAS
                 && runner.kind == base.kind
@@ -843,9 +808,6 @@ async fn train_with_pipeline(
     progress: Reporter,
 ) -> Result<TrainOutcome, TrainError> {
     let planned = plan(config, &request)?;
-    if request.method == TrainMethod::Video {
-        return clips::train(config, request, planned, progress).await;
-    }
     let Plan {
         filename,
         base,
@@ -7395,6 +7357,24 @@ mod tests {
             .with_trigger("ohwx")
             .with_subject(TrainSubject::Person)
             .with_method(TrainMethod::Finetune)
+    }
+
+    #[test]
+    fn every_video_adapter_request_is_refused_with_the_reason() {
+        let (_root, config) = hosted();
+        let clip = || TrainImage::from_bytes("walk.mp4", "", vec![0; 16]);
+        for request in [
+            person(vec![clip()]),
+            person(Vec::new()),
+            request("jerry", "flux-schnell", Some("ohwx")).with_compute(host::Compute::Runpod),
+            TrainRequest::new("jerry", "sdxl", vec![clip()]),
+        ] {
+            let request = request.with_method(TrainMethod::Video);
+            match validate_request(&config, &request) {
+                Err(TrainError::Invalid(message)) => assert_eq!(message, VIDEO_REFUSAL),
+                other => panic!("video training was not refused: {other:?}"),
+            }
+        }
     }
 
     #[test]
