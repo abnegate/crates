@@ -50,6 +50,7 @@
 
 mod anchor;
 mod authentication;
+mod branch_format;
 mod diff_summary;
 mod error;
 #[cfg(unix)]
@@ -60,6 +61,7 @@ mod service;
 mod worktree_entry;
 
 pub(crate) use crate::git::anchor::Anchor;
+pub use crate::git::branch_format::BranchFormat;
 pub use crate::git::diff_summary::DiffSummary;
 pub use crate::git::error::GitError;
 pub use crate::git::error::GitResult;

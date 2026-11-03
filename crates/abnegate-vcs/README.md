@@ -10,8 +10,8 @@ merge, and `resolution::judge` refuses a repair that threw a branch's work
 away; `Subject` names a change the way a conventional-commit history names one;
 and `DependencyDiscovery` reads package manifests for the dependencies one
 organisation has on itself. With the `github` feature, `PullRequestService`
-opens, reads, checks, reviews and merges pull requests, and creates
-repositories, over GitHub's REST and GraphQL APIs. Nothing here holds
+opens, reads, checks, reviews and merges pull requests, creates repositories
+and registers their webhooks, over GitHub's REST and GraphQL APIs. Nothing here holds
 application state, so a task runner can drive it directly.
 
 ## Requirements
@@ -23,7 +23,7 @@ to take `--ref-format` for `init` and `clone`.
 
 ## Features
 
-- `github`: `PullRequestService`, which opens, reads, checks, reviews and merges pull requests on GitHub or a GitHub Enterprise install, reads back how each one was received, and creates repositories there, over the REST and GraphQL APIs.
+- `github`: `PullRequestService`, which opens, reads, checks, reviews and merges pull requests on GitHub or a GitHub Enterprise install, reads back how each one was received, and creates repositories there and registers their webhooks, over the REST and GraphQL APIs.
 - `testing`: `RepositoryUrl::local` and `PullRequestService::standing_in_for`, which reach a repository on the local disk or a mock API server; only a test should enable it.
 
 ## Usage

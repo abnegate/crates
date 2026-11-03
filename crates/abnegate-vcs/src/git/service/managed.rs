@@ -202,7 +202,7 @@ impl GitService {
 
         self.update_remote_head(path, url).await;
 
-        Self::default_branch(path).await
+        self.default_branch(path).await
     }
 
     /// Ensure a managed clone is current *and* its working tree is advanced to
@@ -235,17 +235,22 @@ impl GitService {
     /// one value alone: git reads an empty value after the address as
     /// clearing the list, and then looks for `origin` elsewhere, and an empty
     /// refspec fetches `HEAD` alone.
-    async fn verify_remote(path: &Path, url: &str) -> GitResult<()> {
-        Self::verify_base(path).await?;
+    async fn verify_remote(&self, path: &Path, url: &str) -> GitResult<()> {
+        self.verify_base(path).await?;
         let expected = address(url)?;
-        Self::verify_sole(path, ORIGIN_URL, expected.as_encoded_bytes()).await?;
-        Self::verify_sole(path, ORIGIN_FETCH, FETCH_REFSPEC.as_bytes()).await
+        self.verify_sole(path, ORIGIN_URL, expected.as_encoded_bytes())
+            .await?;
+        self.verify_sole(path, ORIGIN_FETCH, FETCH_REFSPEC.as_bytes())
+            .await
     }
 
     /// Refuse `branch` when its remote-tracking ref is a symbolic ref: a fetch
     /// naming that ref writes through the link, onto whatever ref it names.
-    async fn refuse_linked_tracking(path: &Path, branch: &BranchName) -> GitResult<()> {
-        match Self::is_symbolic(path, format!("{REMOTE_TRACKING}{branch}")).await? {
+    async fn refuse_linked_tracking(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
+        match self
+            .is_symbolic(path, format!("{REMOTE_TRACKING}{branch}"))
+            .await?
+        {
             true => Err(GitError::SymbolicBranch(branch.clone())),
             false => Ok(()),
         }
@@ -253,8 +258,10 @@ impl GitService {
 
     /// Refuse a managed clone whose own configuration gives `key` any value
     /// but `value`, no value, or that value more than once.
-    async fn verify_sole(path: &Path, key: &str, value: &[u8]) -> GitResult<()> {
-        let listed = Self::output(Self::managed_local(path).args(VALUE_LISTING).arg(key)).await?;
+    async fn verify_sole(&self, path: &Path, key: &str, value: &[u8]) -> GitResult<()> {
+        let listed = self
+            .output(Self::managed_local(path).args(VALUE_LISTING).arg(key))
+            .await?;
         match listed.status.success() && listed.stdout == [value, b"\0"].concat() {
             true => Ok(()),
             false => Err(GitError::UnsafeConfig(key.to_string())),
@@ -269,8 +276,8 @@ impl GitService {
     pub async fn fetch_all(&self, path: &Path, url: &str) -> GitResult<()> {
         tracing::debug!(repository = ?path, "Fetching all remote refs");
 
-        Self::verify_remote(path, url).await?;
-        let output = Self::output(&mut Self::fetching_all(path)).await?;
+        self.verify_remote(path, url).await?;
+        let output = self.output(&mut Self::fetching_all(path)).await?;
 
         if !output.status.success() {
             return Err(Self::failed("fetch", &output));
@@ -286,9 +293,9 @@ impl GitService {
     pub async fn fetch_branch(&self, path: &Path, url: &str, branch: &BranchName) -> GitResult<()> {
         tracing::debug!(repository = ?path, %branch, "Fetching branch");
 
-        Self::verify_remote(path, url).await?;
-        Self::refuse_linked_tracking(path, branch).await?;
-        let output = Self::output(&mut Self::fetching(path, branch)).await?;
+        self.verify_remote(path, url).await?;
+        self.refuse_linked_tracking(path, branch).await?;
+        let output = self.output(&mut Self::fetching(path, branch)).await?;
 
         if !output.status.success() {
             return Err(Self::failed("fetch branch", &output));
@@ -306,7 +313,9 @@ impl GitService {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let output = Self::output(&mut Self::cloning(&address(url)?, target)).await?;
+        let output = self
+            .output(&mut Self::cloning(&address(url)?, target))
+            .await?;
 
         if !output.status.success() {
             return Err(Self::failed("clone", &output));
@@ -322,9 +331,9 @@ impl GitService {
     async fn pull(&self, path: &Path, url: &str, branch: &BranchName) -> GitResult<()> {
         tracing::debug!(repository = ?path, %branch, "Pulling latest changes");
 
-        Self::verify_remote(path, url).await?;
-        Self::refuse_linked_tracking(path, branch).await?;
-        let output = Self::output(&mut Self::fetching(path, branch)).await?;
+        self.verify_remote(path, url).await?;
+        self.refuse_linked_tracking(path, branch).await?;
+        let output = self.output(&mut Self::fetching(path, branch)).await?;
 
         if !output.status.success() {
             return Err(Self::failed("fetch", &output));
@@ -346,12 +355,12 @@ impl GitService {
     /// whose remote-tracking ref is one, is refused with
     /// [`GitError::SymbolicBranch`].
     async fn checkout_reset(&self, path: &Path, branch: &BranchName) -> GitResult<()> {
-        Self::verify_base(path).await?;
-        if Self::is_symbolic(path, branch.reference()).await? {
+        self.verify_base(path).await?;
+        if self.is_symbolic(path, branch.reference()).await? {
             return Err(GitError::SymbolicBranch(branch.clone()));
         }
-        Self::refuse_linked_tracking(path, branch).await?;
-        let output = Self::output(&mut Self::checking_out(path, branch)).await?;
+        self.refuse_linked_tracking(path, branch).await?;
+        let output = self.output(&mut Self::checking_out(path, branch)).await?;
 
         if !output.status.success() {
             return Err(Self::failed("checkout", &output));
@@ -371,7 +380,7 @@ impl GitService {
     /// `main` when the ref cannot be read or names a remote-tracking ref that
     /// is itself a symbolic ref.
     pub async fn detect_default_branch(&self, path: &Path) -> BranchName {
-        Self::default_branch(path)
+        self.default_branch(path)
             .await
             .unwrap_or_else(|_| fallback_default_branch())
     }
@@ -382,13 +391,15 @@ impl GitService {
     /// remote-tracking ref is a symbolic ref is refused with
     /// [`GitError::SymbolicDefaultBranch`], and one that cannot be read is
     /// `main`.
-    async fn default_branch(path: &Path) -> GitResult<BranchName> {
-        let output = Self::output(Self::managed_command(Some(path)).args(DEFAULT_BRANCH)).await;
+    async fn default_branch(&self, path: &Path) -> GitResult<BranchName> {
+        let output = self
+            .output(Self::managed_command(Some(path)).args(DEFAULT_BRANCH))
+            .await;
         let branch = match output {
             Ok(result) if result.status.success() => default_branch_of(&result.stdout),
             _ => fallback_default_branch(),
         };
-        Self::refuse_linked_tracking(path, &branch)
+        self.refuse_linked_tracking(path, &branch)
             .await
             .map_err(unnamed)?;
         Ok(branch)
@@ -396,6 +407,10 @@ impl GitService {
 
     /// [`Self::detect_default_branch`] for a caller that cannot await, such as
     /// one building a file-system index.
+    ///
+    /// Unlike the async form, it is not bounded by [`Self::with_timeout`]: its
+    /// two git commands read local refs and reach no network, and the calling
+    /// thread waits for them to exit however long they take.
     pub fn detect_default_branch_blocking(&self, path: &Path) -> BranchName {
         let read = |arguments: &[&str]| {
             Self::managed_command(Some(path))
@@ -419,11 +434,11 @@ impl GitService {
     /// cannot reach it is no worse off than before. A clone configured as
     /// [`Self::fetch_all`] refuses is left as it was.
     async fn update_remote_head(&self, path: &Path, url: &str) {
-        if let Err(error) = Self::verify_remote(path, url).await {
+        if let Err(error) = self.verify_remote(path, url).await {
             tracing::warn!(repository = ?path, %error, "Refusing to update origin/HEAD");
             return;
         }
-        let output = Self::output(&mut Self::setting_head(path)).await;
+        let output = self.output(&mut Self::setting_head(path)).await;
 
         match output {
             Ok(result) if result.status.success() => {
@@ -2180,7 +2195,7 @@ mod managed_tests {
             GitService::fetching(&target, &main),
             GitService::checking_out(&target, &main),
         ] {
-            let output = GitService::output(&mut command).await.unwrap();
+            let output = GitService::new().output(&mut command).await.unwrap();
             assert!(
                 output.status.success(),
                 "{}",
@@ -2531,7 +2546,7 @@ mod managed_tests {
             let local = track_a_local_commit(&target);
             git(&target, &["config", ORIGIN_FETCH, NARROWED]);
 
-            let output = GitService::output(&mut command).await.unwrap();
+            let output = GitService::new().output(&mut command).await.unwrap();
 
             assert!(
                 output.status.success(),
@@ -2636,7 +2651,8 @@ mod managed_tests {
         let workspace = TempDir::new().unwrap();
         let service = GitService::new();
         let plain = workspace.path().join("plain");
-        let cloned = GitService::output(&mut GitService::cloning(OsStr::new(PLAIN), &plain))
+        let cloned = GitService::new()
+            .output(&mut GitService::cloning(OsStr::new(PLAIN), &plain))
             .await
             .unwrap();
         let refusal = service
@@ -2656,7 +2672,8 @@ mod managed_tests {
             .await
             .unwrap();
         git(&target, &["config", ORIGIN_URL, PLAIN]);
-        let fetched = GitService::output(&mut GitService::fetching_all(&target))
+        let fetched = GitService::new()
+            .output(&mut GitService::fetching_all(&target))
             .await
             .unwrap();
         let refusal = service
@@ -2860,7 +2877,7 @@ mod managed_tests {
             ORIGIN,
         ]);
 
-        let operation = tokio::spawn(async move { GitService::output(&mut command).await });
+        let operation = tokio::spawn(async move { GitService::new().output(&mut command).await });
         let helper = marker(workspace.path(), "helper").await;
         operation.abort();
         assert!(operation.await.unwrap_err().is_cancelled());

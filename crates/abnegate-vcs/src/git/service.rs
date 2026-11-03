@@ -3,6 +3,7 @@ use crate::branch_name::HEADS;
 use crate::checkout::Checkout;
 use crate::commit_sha::CommitSha;
 use crate::git::Anchor;
+use crate::git::BranchFormat;
 use crate::git::CONFIG_LISTING;
 use crate::git::DIFF_PREFIX;
 use crate::git::DiffSummary;
@@ -31,6 +32,7 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 mod hardened;
@@ -59,8 +61,9 @@ const SHORT_IDENTIFIER_LENGTH: usize = 8;
 /// Characters a cut branch name may not end on.
 const TRAILING: [char; 3] = ['-', '/', '.'];
 
-/// Longest a git command may run before it is torn down.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
+/// Longest a git command may run before it is torn down, until
+/// [`GitService::with_timeout`] says otherwise.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long a fetch refused by a ref lock waits before its one retry.
 const RETRY_DELAY: Duration = Duration::from_millis(500);
@@ -142,8 +145,10 @@ const CARRIED_EXTENSIONS: [(&str, &[&str]); 2] = [
 pub struct GitService {
     maximum_branch_length: usize,
     branch_prefix: BranchName,
+    branch_format: BranchFormat,
     author_name: String,
     author_email: String,
+    timeout: Duration,
 }
 
 impl Default for GitService {
@@ -153,15 +158,20 @@ impl Default for GitService {
 }
 
 impl GitService {
-    /// A service that names generated branches under `task` and commits as
-    /// the crate, until [`with_branch_prefix`](Self::with_branch_prefix) and
-    /// [`with_author`](Self::with_author) say otherwise.
+    /// A service that names generated branches under `task`, commits as the
+    /// crate and gives a git command five minutes, until
+    /// [`with_branch_prefix`](Self::with_branch_prefix),
+    /// [`with_branch_format`](Self::with_branch_format),
+    /// [`with_author`](Self::with_author) and
+    /// [`with_timeout`](Self::with_timeout) say otherwise.
     pub fn new() -> Self {
         Self {
             maximum_branch_length: MAXIMUM_BRANCH_LENGTH,
             branch_prefix: BranchName::literal(DEFAULT_BRANCH_PREFIX),
+            branch_format: BranchFormat::default(),
             author_name: DEFAULT_AUTHOR_NAME.to_string(),
             author_email: DEFAULT_AUTHOR_EMAIL.to_string(),
+            timeout: DEFAULT_TIMEOUT,
         }
     }
 
@@ -169,6 +179,25 @@ impl GitService {
     #[must_use]
     pub fn with_branch_prefix(mut self, prefix: BranchName) -> Self {
         self.branch_prefix = prefix;
+        self
+    }
+
+    /// Lay generated branch names out as `format` says rather than as
+    /// `{prefix}/{short id}-{slug}`.
+    #[must_use]
+    pub fn with_branch_format(mut self, format: BranchFormat) -> Self {
+        self.branch_format = format;
+        self
+    }
+
+    /// Tear a git command down, with every helper it started, once it has run
+    /// for `timeout` rather than five minutes, and fail it with
+    /// [`GitError::TimedOut`]. A first clone of a large repository can need
+    /// longer. A zero `timeout` leaves a command no time to run, so every
+    /// command fails.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 
@@ -195,13 +224,15 @@ impl GitService {
     }
 
     /// Name a branch after the task it carries: `{prefix}/{short id}-{slug}`,
-    /// where the slug is the title's ASCII letters and digits, lowercased, and
+    /// or `{prefix}-{short id}-{slug}` under [`BranchFormat::Joined`], where
+    /// the slug is the title's ASCII letters and digits, lowercased, and
     /// whatever else it holds is one hyphen between them.
     pub fn generate_branch_name(&self, task_id: Uuid, title: &str) -> GitResult<BranchName> {
         let identifier = task_id.simple().to_string();
         let stem = format!(
-            "{}/{}",
+            "{}{}{}",
             self.branch_prefix,
+            self.branch_format.separator(),
             &identifier[..SHORT_IDENTIFIER_LENGTH]
         );
         let slug = slug(title);
@@ -244,8 +275,8 @@ impl GitService {
     /// [`GitError::AlternateObjects`]. Run before every hardened operation,
     /// because a run's git commands can write the repository between two of
     /// them.
-    pub(crate) async fn verify_config(checkout: &Checkout) -> GitResult<()> {
-        Self::verify(
+    pub(crate) async fn verify_config(&self, checkout: &Checkout) -> GitResult<()> {
+        self.verify(
             || {
                 let mut command = Self::hardened();
                 command.current_dir(checkout.top());
@@ -258,17 +289,19 @@ impl GitService {
 
     /// [`Self::verify_config`] for the base clone whose top is `path`: a
     /// linked worktree there is refused as not being the clone.
-    pub(crate) async fn verify_base(path: &Path) -> GitResult<()> {
-        Self::verify_config(&Checkout::base(path)).await
+    pub(crate) async fn verify_base(&self, path: &Path) -> GitResult<()> {
+        self.verify_config(&Checkout::base(path)).await
     }
 
     /// [`Self::verify_config`] for commands `bind` points at the repository
     /// `anchor` names. The git directories are anchored, then walked, on the
     /// blocking pool: a clone with many loose refs and reflogs holds
     /// thousands of entries.
-    pub(crate) async fn verify(bind: impl Fn() -> Command, anchor: Anchor) -> GitResult<()> {
+    pub(crate) async fn verify(&self, bind: impl Fn() -> Command, anchor: Anchor) -> GitResult<()> {
         anchor.marked()?;
-        let listed = Self::output(bind().args(CONFIG_LISTING).stdout(Stdio::piped())).await?;
+        let listed = self
+            .output(bind().args(CONFIG_LISTING).stdout(Stdio::piped()))
+            .await?;
         if !listed.status.success() {
             return Err(GitError::CommandFailed(
                 "Cannot read the repository's configuration".to_string(),
@@ -277,7 +310,9 @@ impl GitService {
         if let Some(key) = refused(&listed.stdout) {
             return Err(GitError::UnsafeConfig(key));
         }
-        let located = Self::output(bind().args(LOCATING).stdout(Stdio::piped())).await?;
+        let located = self
+            .output(bind().args(LOCATING).stdout(Stdio::piped()))
+            .await?;
         if !located.status.success() {
             return Err(GitError::CommandFailed(
                 "Cannot locate the repository's files".to_string(),
@@ -309,18 +344,18 @@ impl GitService {
     }
 
     /// Run a git command in a process group of its own, torn down with every
-    /// helper it started if it outlives [`COMMAND_TIMEOUT`] or its caller.
-    pub(crate) async fn output(command: &mut Command) -> GitResult<Output> {
-        Self::run(command, None).await
+    /// helper it started if it outlives this service's timeout or its caller.
+    pub(crate) async fn output(&self, command: &mut Command) -> GitResult<Output> {
+        self.run(command, None).await
     }
 
     /// Run a git command as [`Self::output`] does, with `input` as the whole
     /// of its standard input.
-    pub(crate) async fn fed(command: &mut Command, input: &[u8]) -> GitResult<Output> {
-        Self::run(command.stdin(Stdio::piped()), Some(input)).await
+    pub(crate) async fn fed(&self, command: &mut Command, input: &[u8]) -> GitResult<Output> {
+        self.run(command.stdin(Stdio::piped()), Some(input)).await
     }
 
-    async fn run(command: &mut Command, input: Option<&[u8]>) -> GitResult<Output> {
+    async fn run(&self, command: &mut Command, input: Option<&[u8]>) -> GitResult<Output> {
         #[cfg(test)]
         fixtures::record(command);
         #[cfg(unix)]
@@ -340,7 +375,7 @@ impl GitService {
             }
             Ok::<(), std::io::Error>(())
         };
-        let (fed, output) = tokio::time::timeout(COMMAND_TIMEOUT, async {
+        let (fed, output) = tokio::time::timeout(self.timeout, async {
             tokio::join!(feeding, child.wait_with_output())
         })
         .await
@@ -356,8 +391,14 @@ impl GitService {
     /// bytes of its standard output and tear the process group down the instant
     /// that much has arrived, so a run cannot make the host hold an unbounded
     /// diff or listing in memory. The second value is whether the output ran
-    /// past `cap`.
-    pub(crate) async fn capped(command: &mut Command, cap: usize) -> GitResult<(Vec<u8>, bool)> {
+    /// past `cap`. Reading the output and waiting for the command to exit
+    /// share one timeout.
+    pub(crate) async fn capped(
+        &self,
+        command: &mut Command,
+        cap: usize,
+    ) -> GitResult<(Vec<u8>, bool)> {
+        let started = Instant::now();
         #[cfg(unix)]
         command.process_group(0);
         command.kill_on_drop(true).stdout(Stdio::piped());
@@ -374,7 +415,7 @@ impl GitService {
             .ok_or_else(|| std::io::Error::other("Git process has no standard output"))?;
         let ceiling = cap.saturating_add(1);
         let mut collected = Vec::new();
-        let read = tokio::time::timeout(COMMAND_TIMEOUT, async {
+        let read = tokio::time::timeout(self.timeout, async {
             let mut chunk = [0u8; 8192];
             loop {
                 let read = stdout.read(&mut chunk).await?;
@@ -393,7 +434,8 @@ impl GitService {
         let truncated = collected.len() > cap;
         match read {
             Ok(Ok(())) if !truncated => {
-                let waited = tokio::time::timeout(COMMAND_TIMEOUT, child.wait())
+                let left = self.timeout.saturating_sub(started.elapsed());
+                let waited = tokio::time::timeout(left, child.wait())
                     .await
                     .map_err(|_| GitError::TimedOut)?;
                 waited?;
@@ -407,8 +449,8 @@ impl GitService {
         }
     }
 
-    async fn finish(command: &mut Command) -> GitResult<()> {
-        let output = Self::output(command).await?;
+    async fn finish(&self, command: &mut Command) -> GitResult<()> {
+        let output = self.output(command).await?;
         if !output.status.success() {
             return Err(GitError::CommandFailed(
                 "Git operation failed; verify repository access".to_string(),
@@ -545,6 +587,51 @@ mod branch_name_tests {
     }
 
     #[test]
+    fn a_joined_format_hangs_the_identifier_off_the_prefix_s_last_segment() {
+        let service = GitService::new()
+            .with_branch_prefix(BranchName::parse("acme/task").unwrap())
+            .with_branch_format(BranchFormat::Joined);
+        let task = Uuid::parse_str("1a2b3c4d-1234-1234-1234-123456789abc").unwrap();
+
+        let branch = service.generate_branch_name(task, "Slug").unwrap();
+
+        assert_eq!(branch.to_string(), "acme/task-1a2b3c4d-slug");
+    }
+
+    #[test]
+    fn a_joined_format_cut_short_still_keeps_the_prefix_and_the_identifier() {
+        let service = GitService::new()
+            .with_branch_prefix(BranchName::parse("acme/task").unwrap())
+            .with_branch_format(BranchFormat::Joined)
+            .with_maximum_branch_length(0);
+
+        assert_eq!(generate(&service, "anything"), "acme/task-12345678");
+    }
+
+    #[test]
+    fn branches_are_namespaced_under_their_prefix_unless_asked_otherwise() {
+        assert_eq!(BranchFormat::default(), BranchFormat::Namespaced);
+        assert_eq!(
+            generate(
+                &GitService::new().with_branch_format(BranchFormat::Namespaced),
+                "title"
+            ),
+            generate(&GitService::new(), "title")
+        );
+    }
+
+    #[test]
+    fn a_git_command_is_given_five_minutes_unless_asked_otherwise() {
+        assert_eq!(GitService::new().timeout, Duration::from_secs(300));
+        assert_eq!(
+            GitService::new()
+                .with_timeout(Duration::from_secs(1800))
+                .timeout,
+            Duration::from_secs(1800)
+        );
+    }
+
+    #[test]
     fn a_prefix_too_long_for_git_to_hold_a_name_under_is_refused() {
         let service =
             GitService::new().with_branch_prefix(BranchName::parse(&"a".repeat(250)).unwrap());
@@ -555,6 +642,7 @@ mod branch_name_tests {
 
 #[cfg(all(test, unix))]
 mod process_tests {
+    use super::hardened::fixtures::SPAWN_BUDGET;
     use super::hardened::fixtures::TEARDOWN_BUDGET;
     use super::hardened::fixtures::alive;
     use super::hardened::fixtures::marker;
@@ -594,7 +682,7 @@ mod process_tests {
         command
             .env("PATH", fixture.path())
             .env("FIXTURE", fixture.path());
-        let operation = tokio::spawn(async move { GitService::finish(&mut command).await });
+        let operation = tokio::spawn(async move { GitService::new().finish(&mut command).await });
         let parent = marker(fixture.path(), "parent").await;
         let helper = marker(fixture.path(), "helper-pid").await;
         let grandchild = marker(fixture.path(), "grandchild-pid").await;
@@ -648,6 +736,74 @@ mod process_tests {
         cancellation(true).await;
     }
 
+    fn executable(fixture: &Path, name: &str, script: &str) {
+        std::fs::write(fixture.join(name), script).unwrap();
+        std::fs::set_permissions(fixture.join(name), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_git_command_past_the_configured_timeout_is_stopped() {
+        let fixture = tempfile::tempdir().unwrap();
+        executable(
+            fixture.path(),
+            "git",
+            "#!/bin/sh\n/bin/sleep 60 &\necho $! > \"$FIXTURE/helper-pid\"\necho $$ > \"$FIXTURE/parent\"\nwait\n",
+        );
+        let service = GitService::new().with_timeout(Duration::from_secs(3));
+        let mut command = GitService::hardened();
+        command
+            .env("PATH", fixture.path())
+            .env("FIXTURE", fixture.path());
+
+        let operation = tokio::spawn(async move { service.finish(&mut command).await });
+        let parent = marker(fixture.path(), "parent").await;
+        let helper = marker(fixture.path(), "helper-pid").await;
+        let result = tokio::time::timeout(SPAWN_BUDGET, operation)
+            .await
+            .expect("the command ran past the timeout it was given")
+            .unwrap();
+        let stopped = tokio::time::timeout(TEARDOWN_BUDGET, async {
+            while [parent, helper].iter().any(|pid| alive(*pid)) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok();
+        for pid in [helper, parent] {
+            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        }
+
+        assert!(matches!(result, Err(GitError::TimedOut)), "{result:?}");
+        assert!(
+            stopped,
+            "the timed-out command or its helper was left running"
+        );
+    }
+
+    #[tokio::test]
+    async fn reading_capped_output_and_waiting_for_exit_share_one_timeout() {
+        let fixture = tempfile::tempdir().unwrap();
+        executable(
+            fixture.path(),
+            "git",
+            "#!/bin/sh\nprintf diff\n/bin/sleep 2\nexec 1>&-\nexec /bin/sleep 60\n",
+        );
+        let service = GitService::new().with_timeout(Duration::from_secs(3));
+        let mut command = GitService::hardened();
+        command.env("PATH", fixture.path());
+
+        let started = Instant::now();
+        let result = service.capped(&mut command, 1024).await;
+        let elapsed = started.elapsed();
+
+        assert!(matches!(result, Err(GitError::TimedOut)), "{result:?}");
+        assert!(
+            elapsed < Duration::from_millis(4500),
+            "waiting for exit was given a timeout of its own: {elapsed:?}"
+        );
+    }
+
     /// Once a command has been waited for, its group identifier is free for
     /// the system to reuse, so nothing may be signalled through it any more.
     #[tokio::test]
@@ -668,7 +824,7 @@ mod process_tests {
             .env("PATH", fixture.path())
             .env("FIXTURE", fixture.path());
 
-        GitService::finish(&mut command).await.unwrap();
+        GitService::new().finish(&mut command).await.unwrap();
         let background = marker(fixture.path(), "background").await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         let survived = alive(background);

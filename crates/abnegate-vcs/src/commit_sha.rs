@@ -1,4 +1,6 @@
 use crate::parse_error::ParseError;
+use serde::Deserialize;
+use serde::Serialize;
 use std::fmt;
 use std::str::FromStr;
 
@@ -9,7 +11,12 @@ const SHA1_LENGTH: usize = 40;
 const SHA256_LENGTH: usize = 64;
 
 /// A full commit identifier in either of git's object formats, lowercased.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// It is written as its hex string, and read back through
+/// [`CommitSha::parse`], so a stored value this crate does not accept is an
+/// error rather than a commit.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct CommitSha(String);
 
 impl CommitSha {
@@ -37,6 +44,20 @@ impl FromStr for CommitSha {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::parse(value)
+    }
+}
+
+impl TryFrom<String> for CommitSha {
+    type Error = ParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<CommitSha> for String {
+    fn from(commit: CommitSha) -> Self {
+        commit.0
     }
 }
 
@@ -86,5 +107,19 @@ mod tests {
                 "{invalid} is not a commit"
             );
         }
+    }
+
+    #[test]
+    fn a_commit_is_written_as_its_hex_and_read_back_only_if_it_parses() {
+        let commit = CommitSha::parse(&"A".repeat(40)).unwrap();
+
+        let written = serde_json::to_value(&commit).unwrap();
+
+        assert_eq!(written, serde_json::json!("a".repeat(40)));
+        assert_eq!(
+            serde_json::from_value::<CommitSha>(written).unwrap(),
+            commit
+        );
+        assert!(serde_json::from_value::<CommitSha>(serde_json::json!("HEAD")).is_err());
     }
 }
