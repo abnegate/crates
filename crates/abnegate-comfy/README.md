@@ -152,8 +152,9 @@ Besides the graph pair and its slots, a recipe may declare:
   refused when the slot names an input its graph lacks.
 - `slots.pose`: the `LoadImage` input of an OpenPose ControlNet branch.
   `recipe::Fill::with_pose` steers that branch; without a pose the branch is
-  removed and the sampler reads the plain prompt. The packaged `sdxl` and
-  `sdxl-adapter` graphs carry one.
+  removed and the sampler reads the plain prompt. The catalog is refused when
+  no `ControlNetApply` or `ControlNetApplyAdvanced` reads that image. The
+  packaged `sdxl` and `sdxl-adapter` graphs carry one.
 - `pose_required_files`: the files only that branch loads, which a host checks
   are installed before it passes a pose. The packaged SDXL recipes declare
   `controlnet/thibaud_xl_openpose.safetensors`; `inventory::scan` does not
