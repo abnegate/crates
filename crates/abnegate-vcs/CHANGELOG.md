@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.5...abnegate-vcs/v0.1.6) - 2026-11-03
+
+### Added
+
+- *(vcs)* so zone and claudear can drop their own git and review plumbing ([#19](https://github.com/abnegate/crates/pull/19))
+
 ## [0.1.5](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.4...abnegate-vcs/v0.1.5) - 2026-11-03
 
 ### Added
