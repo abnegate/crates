@@ -1402,7 +1402,8 @@ fn hosted_embedding(job: &host::Job, filename: &str) -> Option<String> {
 /// names, is not a regular file in the models directory's `embeddings/`
 /// modified no earlier than [`MODIFIED_TOLERANCE`] before the job started,
 /// so the weight is never published naming an embedding that is missing or
-/// that an earlier run left.
+/// that an earlier run left, unless that run wrote it within the tolerance
+/// of this job being queued.
 fn require_hosted_embedding(
     config: &Config,
     job: &host::Job,

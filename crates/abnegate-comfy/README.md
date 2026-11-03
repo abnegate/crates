@@ -603,10 +603,13 @@ not a regular file there, last modified no more than two seconds before the
 job's `started_at`, fails instead of being published. The two seconds absorb
 a filesystem that keeps coarse timestamps, such as FAT, or a kernel that
 stamps files from a clock a tick behind the one `started_at` was read from.
-That check compares the file's mtime with the host's clock, so a trainer that
-writes it from another machine needs a clock that agrees within those two
-seconds, and a copy into `embeddings/` must not keep an older mtime, as
-`cp -p` or `rsync -a` would.
+They also let through an embedding of the same name that an earlier run
+wrote less than two seconds before this job was queued, should this run's
+trainer report success without replacing it. The check compares the file's
+mtime with the host's clock, so a trainer that writes it from another
+machine must not run its clock more than two seconds behind the host's; one
+ahead of it passes. A copy into `embeddings/` must not keep an older mtime,
+as `cp -p` or `rsync -a` would.
 
 ## Migrating from the pre-release defaults
 
