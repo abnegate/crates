@@ -13,6 +13,9 @@ mod ending;
 mod environment_policy;
 mod group_registry;
 mod handshake;
+#[cfg(all(test, target_os = "macos"))]
+#[allow(unsafe_code)]
+pub(crate) mod held_exit;
 mod job_handle;
 mod leader_exit;
 mod marker;

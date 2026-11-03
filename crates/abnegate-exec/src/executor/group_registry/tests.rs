@@ -27,19 +27,23 @@ const BACKGROUND_SLEEP: &str = "sleep 300 & echo $!; exec sleep 300";
 const INTERRUPT_IGNORING_LEADER: &str = "trap '' INT; sleep 300 & echo $!; exec sleep 300";
 
 /// Like [`BACKGROUND_SLEEP`], but the leader exits with status 7 on SIGINT
-/// while its background process ignores it. Perl, because a shell cannot trap
-/// a signal it inherited as ignored.
+/// while its background process ignores it from the moment it is forked, so
+/// an interrupt that lands before it first runs cannot end it. Perl, because
+/// a shell cannot trap a signal it inherited as ignored. Perl runs a handler
+/// only between its own steps, so a leader that took the signal just before
+/// it began a sleep would sleep it out: each sleep lasts a second.
 const INTERRUPTIBLE_LEADER: &str = concat!(
-    r#"exec perl -e '$| = 1; $SIG{INT} = sub { exit 7 }; "#,
+    r#"exec perl -e '$| = 1; $SIG{INT} = "IGNORE"; "#,
     r#"defined(my $pid = fork) or die; "#,
-    r#"if (!$pid) { $SIG{INT} = "IGNORE"; exec "sleep", "300" } "#,
-    r#"print "$pid\n"; sleep 300'"#,
+    r#"if (!$pid) { exec "sleep", "300" } "#,
+    r#"$SIG{INT} = sub { exit 7 }; print "$pid\n"; sleep 1 while 1'"#,
 );
 
-/// Prints its own pid, then a line for every SIGINT it receives.
+/// Prints its own pid, then reports each SIGINT it receives with a line
+/// printed within a second of it.
 const INTERRUPT_COUNTING_LEADER: &str = concat!(
     r#"exec perl -e '$| = 1; $SIG{INT} = sub { print "interrupted\n" }; "#,
-    r#"print "$$\n"; sleep 300 while 1'"#,
+    r#"print "$$\n"; sleep 1 while 1'"#,
 );
 
 /// How many groups the concurrency tests register at once.
