@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.1.8...abnegate-agent-cli/v0.1.9) - 2026-11-03
+
+### Fixed
+
+- *(llm)* so an agent timeout reads "1800 seconds", not "1800s"
+- *(llm)* so a window equals itself after a trip through JSON
+
 ## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.1.7...abnegate-agent-cli/v0.1.8) - 2026-11-03
 
 ### Other

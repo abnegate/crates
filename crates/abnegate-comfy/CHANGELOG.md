@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.1.8...abnegate-comfy/v0.2.0) - 2026-11-03
+
+### Added
+
+- *(comfy)* [**breaking**] so a video renders with the wan 2.2 a14b expert pair
+- *(comfy)* [**breaking**] so a video render gets the hours a wan 2.2 a14b clip takes
+- *(comfy)* so a host can keep what a picture must not show out of its prompt
+- *(comfy)* so a host can send any training job to a rented pod and drop a finished one
+- *(comfy)* so an identity's picture keeps its pose and its face
+- *(comfy)* so a person can be trained into a video adapter and a video prompt picks it up
+- *(comfy)* so a person trains on crops of its own aspect with the companions the host trainer reads
+- *(comfy)* so a trainer on the host can take the runs ComfyUI cannot hold
+- *(comfy)* so a prompt that names a trained identity selects its weight
+- *(comfy)* so a host can watch a training run it left running in the background
+- *(comfy)* so a host can upload raw training sets and keep its training rules to itself
+- *(comfy)* so edits, SDXL and Wan adapters run from the packaged catalog
+
+### Fixed
+
+- *(comfy)* so a pivotal embedding written in its run's first second is not refused
+- *(comfy)* so a claim a failed give-up could not release is logged
+- *(comfy)* so a missing embedding is warned about once, not on every generation
+- *(comfy)* so a filename shared in another case also binds no identity
+- *(comfy)* so a job being queued while recover sweeps is never lost or failed
+- *(comfy)* so recording an unrecorded publication first settles a promotion a crash left
+- *(comfy)* so a pose slot no controlnet reads is refused when the catalog loads
+- *(comfy)* so a prompt leads with an embedding token only when that embedding is installed
+- *(comfy)* so a host job published but not recorded is never promoted twice
+- *(comfy)* so a pivotal lora is published only with the embedding its own run wrote
+- *(comfy)* so a checkpoint whose sidecar names an adapter recipe never loads as a lora
+- *(comfy)* so a trigger never binds a weight whose filename another weight shares
+- *(comfy)* so the startup sweep never discards a job queued while it looked
+- *(comfy)* so a waiter that cannot mark a job failed lets the trainer still claim it
+- *(comfy)* so an image-to-video graph animates the image the caller uploaded
+- *(comfy)* so a failed generation returns on time while its cancel is still landing
+- *(comfy)* so a pivotal lora is never published under a name its embedding cannot be prompted by
+- *(comfy)* so a custom a14b graph or unet name that would load the wrong experts is refused
+- *(comfy)* so a garbled queue answer fails at once and a dead comfyui is not waited on twice
+- *(comfy)* so a host-trained pivotal lora keeps its embedding prefix
+- *(comfy)* [**breaking**] so a video unet is never offered as an image base
+- *(comfy)* so video stops binding identities and training adapters the a14b experts cannot load
+- *(comfy)* so a long render survives a failed poll or a slow download and gives up on a comfyui that lost it
+- *(comfy)* so a waiter never gives up a job the trainer already claimed
+- *(comfy)* so a generation reads its pose and face safely and a stuck disk never holds it
+- *(comfy)* so flux-dev edits encode the starting image
+
+### Other
+
+- *(comfy)* so the trainer contract says which way the clock may drift and what the tolerance lets through
+- *(comfy)* so the trainer contract says when a pivotal embedding must land and what its age check assumes
+- *(comfy)* so the queue-delete wait and the LoadImage class each have one name
+- *(comfy)* so trainable_bases says it lists what trains on the local compute
+- *(comfy)* so the changelog and readme state the queue, outage and expert-name rules
+- *(comfy)* so a lost connection and a failed download are proven to be retried
+- *(comfy)* so the changelog marks every change to released behaviour as breaking
+- *(comfy)* so no video-adapter api that nothing can run ships in a release
+- *(comfy)* so no test names the application a job layout came from
+
 ### Added
 
 - `Client::generate_excluding` takes a negative prompt, so what a picture must not show stays out of its prompt; `generate` is unchanged

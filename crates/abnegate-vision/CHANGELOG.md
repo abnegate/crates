@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/abnegate/crates/compare/abnegate-vision/v0.1.3...abnegate-vision/v0.1.4) - 2026-11-03
+
+### Added
+
+- *(vision)* so a training pipeline can weight its loss by the subject it cropped
+
 ## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-vision/v0.1.2...abnegate-vision/v0.1.3) - 2026-11-03
 
 ### Other
