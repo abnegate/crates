@@ -407,6 +407,10 @@ impl GitService {
 
     /// [`Self::detect_default_branch`] for a caller that cannot await, such as
     /// one building a file-system index.
+    ///
+    /// Unlike the async form, it is not bounded by [`Self::with_timeout`]: its
+    /// two git commands read local refs and reach no network, and the calling
+    /// thread waits for them to exit however long they take.
     pub fn detect_default_branch_blocking(&self, path: &Path) -> BranchName {
         let read = |arguments: &[&str]| {
             Self::managed_command(Some(path))
