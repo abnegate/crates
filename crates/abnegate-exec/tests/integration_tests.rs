@@ -456,6 +456,46 @@ async fn test_registry_cancel_stops_a_job_spawned_with_its_token() {
 }
 
 #[tokio::test]
+async fn a_forced_cancel_of_a_running_job_always_ends_cancelled() {
+    let registry = JobRegistry::new();
+    let executor = CommandExecutor::with_config(
+        ExecutorConfig::new().with_grace_period(Duration::from_millis(100)),
+    );
+
+    for attempt in 0..40 {
+        let job_id = format!("forced-{attempt}");
+        let (sender, mut receiver) = mpsc::channel(100);
+        let token = registry.register(job_id.clone()).unwrap();
+        let handle = executor
+            .spawn_with_cancellation(&create_bash_request(&job_id, "sleep 30"), sender, token)
+            .await
+            .unwrap();
+        registry
+            .set_process_group(&job_id, handle.process_group.clone())
+            .unwrap();
+        registry.cancel(&job_id, true).unwrap();
+
+        let messages = collect_messages(&mut receiver).await;
+        let terminal = messages.iter().rev().find(|message| {
+            matches!(
+                message,
+                OutboundMessage::RunExit { .. } | OutboundMessage::RunError { .. }
+            )
+        });
+        assert!(
+            matches!(
+                terminal,
+                Some(OutboundMessage::RunError {
+                    error_code: ErrorCode::Cancelled,
+                    ..
+                })
+            ),
+            "attempt {attempt} ended {terminal:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn stdin_written_through_the_registry_reaches_a_running_job() {
     let registry = JobRegistry::new();
     let executor = CommandExecutor::new();
