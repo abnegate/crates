@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.7...abnegate-exec/v0.1.8) - 2026-11-03
+
+### Fixed
+
+- *(exec)* report a forced cancel as cancelled, never as a signalled exit ([#30](https://github.com/abnegate/crates/pull/30))
+
 ## [0.1.7](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.6...abnegate-exec/v0.1.7) - 2026-11-03
 
 ### Added
