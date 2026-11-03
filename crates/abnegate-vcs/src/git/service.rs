@@ -620,18 +620,14 @@ mod process_tests {
         .await
         .is_ok();
         let survivor = unrelated.try_wait().unwrap().is_none();
-        // Clean up only this fixture's known processes, including on the seen-red path.
+        // Only a fixture process still running is killed: once one is reaped
+        // its pid is free, and a concurrent test's git may already hold it.
         for pid in [grandchild, helper, parent] {
-            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+            if alive(pid) {
+                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+            }
         }
         unrelated.kill().await.unwrap();
-        tokio::time::timeout(TEARDOWN_BUDGET, async {
-            while [parent, helper, grandchild].iter().any(|pid| alive(*pid)) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("fixture cleanup left a Git helper running");
         assert!(
             survivor,
             "cancellation killed an unrelated process outside the Git group"

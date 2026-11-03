@@ -8,6 +8,9 @@ unmaintained = "all"
 yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is pulled by tokenizers via fastembed; no safe upgrade" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is pulled by keyring's Secret Service store via zbus 5; secret-service has no zbus 6 release" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is pulled by keyring's Secret Service store via zbus 5; secret-service has no zbus 6 release" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is pulled by keyring's Secret Service store via zbus 5; secret-service has no zbus 6 release" },
 ]
 
 [licenses]

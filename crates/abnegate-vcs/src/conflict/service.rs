@@ -794,10 +794,12 @@ mod tests {
         })
         .await
         .is_ok();
-        let _ = nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(helper as i32),
-            nix::sys::signal::Signal::SIGKILL,
-        );
+        if !stopped {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(helper as i32),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
 
         assert!(stopped, "a helper outlived the abandoned repair command");
     }
