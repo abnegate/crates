@@ -29,8 +29,7 @@ pub(crate) const MINIMUM_TIMEOUT: Duration = Duration::from_secs(1);
 const MINIMUM_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const MAXIMUM_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const MAXIMUM_CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(30);
-/// Ceiling on one caption request: an hour, so a host can give a vision model
-/// on a CPU or a cold cache the half hour it gives any other completion.
+/// Ceiling on one caption request.
 const MAXIMUM_CAPTION_TIMEOUT: Duration = Duration::from_secs(3600);
 const MAXIMUM_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 /// Ceiling on the image, audio and upscale generation deadlines.
@@ -170,8 +169,7 @@ pub struct Config {
     /// Vision model that captions LoRA training images. Empty disables captioning.
     pub caption_model: String,
     /// Ceiling on one caption request, at most an hour. It is the completion
-    /// client's whole deadline and its longest silence alike, so a caption
-    /// gets all of it.
+    /// client's whole deadline, so a caption gets all of it.
     pub caption_timeout: Duration,
     /// Ceiling on any one HTTP request, at most ten minutes. Generation and
     /// training are bounded by their own deadlines, not by this.

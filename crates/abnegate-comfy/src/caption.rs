@@ -93,9 +93,8 @@ impl Captioner {
     /// `litellm_host` with `litellm_key`. Nothing is contacted until
     /// [`fill`](Self::fill) runs.
     ///
-    /// [`Config::caption_timeout`] is the completion client's whole deadline
-    /// and its longest silence, so no default of the client cuts a caption
-    /// short of it.
+    /// [`Config::caption_timeout`] is the completion client's whole deadline,
+    /// so no default of the client cuts a caption short of it.
     pub fn new(config: &Config, litellm_host: String, litellm_key: SecretValue) -> Self {
         Self {
             model: config.caption_model.clone(),
@@ -220,8 +219,7 @@ impl Captioner {
             LlmConfig::new(self.host.clone(), self.model.clone(), self.key.clone())
                 .with_temperature(0.0)
                 .with_maximum_tokens(maximum_tokens)
-                .with_timeout(self.timeout)
-                .with_read_timeout(self.timeout),
+                .with_timeout(self.timeout),
         )
     }
 }
@@ -668,9 +666,7 @@ mod tests {
         let captioner = Captioner::new(&config, "http://unused".into(), "key".into());
 
         for maximum_tokens in [SUBJECT_TOKENS, DESCRIPTION_TOKENS] {
-            let client = captioner.client(maximum_tokens);
-            assert_eq!(client.config().timeout, half_hour);
-            assert_eq!(client.config().read_timeout, half_hour);
+            assert_eq!(captioner.client(maximum_tokens).config().timeout, half_hour);
         }
     }
 
@@ -699,14 +695,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_caption_silent_for_less_than_its_caption_timeout_is_kept() {
-        let server = silent_for(Duration::from_secs(1)).await;
-        let config = config("vision").with_caption_timeout(Duration::from_secs(2));
+        let server = silent_for(Duration::from_millis(250)).await;
+        let config = config("vision").with_caption_timeout(Duration::from_secs(1));
         let captioner = Captioner::new(&config, server.uri(), "key".into());
         let mut images = vec![Draft::new("a.png", "aaa", "", 0)];
         captioner.fill(&mut images, "zrkxyz").await;
         assert_eq!(
             images[0].caption, "zrkxyz, three-quarter view, standing on concrete",
-            "a second of silence is inside a two second caption timeout"
+            "a quarter second of silence is inside a one second caption timeout"
         );
     }
 
