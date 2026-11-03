@@ -21,9 +21,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 abnegate-exec = { path = "../abnegate-exec", version = "0.1.6" }
 abnegate-llm = { path = "../abnegate-llm", version = "0.1.6" }
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.5" }
+async-stream = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
+futures = { workspace = true }
 getrandom = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

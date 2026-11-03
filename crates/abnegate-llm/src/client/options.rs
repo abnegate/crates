@@ -2,7 +2,8 @@
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct RequestOptions {
-    /// Tokens of the context kept for the answer, sent as `max_tokens`.
+    /// Tokens of the context kept for the answer, sent in the field
+    /// [`LlmConfig::dialect`](crate::LlmConfig::dialect) names for the model.
     pub reserved: u32,
 }
 

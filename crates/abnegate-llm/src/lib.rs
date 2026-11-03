@@ -6,7 +6,8 @@
 //! modality for the vendors that do not speak that API.
 //!
 //! [`LlmClient`] speaks the chat completions API, streaming or not, over a
-//! connection pool held per runtime so keep-alives survive between turns.
+//! connection pool held per runtime so keep-alives survive between turns, and
+//! shapes each request for the [`Dialect`] of the API behind the endpoint.
 //! [`CompletionProvider`] is the contract a source of completions satisfies,
 //! and [`Router`] satisfies it over a set of providers, so a consumer never
 //! learns whether it is talking to one model, an A/B split, or a fallback
@@ -65,15 +66,18 @@
 //! - `testing`: `provider::testing::StubProvider`, a completion provider whose
 //!   answers a test decides, for crates that route or wrap providers.
 
+mod budget;
 #[cfg(feature = "catalog")]
 #[cfg_attr(docsrs, doc(cfg(feature = "catalog")))]
 pub mod catalog;
 mod client;
 pub mod cost;
+mod dialect;
 #[cfg(feature = "download")]
 #[cfg_attr(docsrs, doc(cfg(feature = "download")))]
 pub mod download;
 mod error;
+pub mod finish_reason;
 pub mod hardware;
 pub mod history;
 pub mod modality;
@@ -86,9 +90,11 @@ mod wire;
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
+pub use crate::budget::Budget;
 pub use crate::client::LlmClient;
 pub use crate::client::LlmConfig;
 pub use crate::client::RequestOptions;
+pub use crate::client::Trust;
 pub use crate::cost::CostEstimate;
 pub use crate::cost::CostEstimator;
 pub use crate::cost::CostLineItem;
@@ -98,6 +104,8 @@ pub use crate::cost::PricingUnit;
 pub use crate::cost::TaskCategory;
 pub use crate::cost::TaskSpecification;
 pub use crate::cost::default_pricing;
+pub use crate::dialect::Dialect;
+pub use crate::dialect::TEMPLATE_STOPS;
 pub use crate::error::Error;
 pub use crate::hardware::GpuType;
 pub use crate::hardware::MachineProfile;
@@ -151,11 +159,14 @@ pub use crate::provider::CompletionRequest;
 pub use crate::provider::Credential;
 pub use crate::provider::ExitStatus;
 pub use crate::provider::HttpProvider;
+pub use crate::provider::Limit;
 pub use crate::provider::ProviderError;
 pub use crate::provider::ProviderKind;
 pub use crate::provider::Router;
 pub use crate::provider::SelectionStrategy;
 pub use crate::provider::Weighted;
+pub use crate::provider::Window;
+pub use crate::provider::WindowKind;
 pub use crate::reasoning::Effort;
 pub use crate::reasoning::ReasoningEffort;
 pub use crate::wire::ChatRequest;

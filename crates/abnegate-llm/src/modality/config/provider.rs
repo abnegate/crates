@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::cost::CostStrategy;
+use crate::cost::strategy::BUDGET_PREFIX;
 use crate::modality::config::AudioProviderConfig;
 use crate::modality::config::EmbeddingProviderConfig;
 use crate::modality::config::ImageProviderConfig;
@@ -12,8 +13,8 @@ use crate::modality::config::TextProviderConfig;
 use crate::modality::config::TranscriptionProviderConfig;
 use crate::modality::config::VideoProviderConfig;
 use crate::modality::config::VoiceProviderConfig;
+use crate::parse_error::ParseError;
 
-const BUDGET_PREFIX: &str = "budget:";
 const DEFAULT_BUDGET_USD: f64 = 10.0;
 
 /// Which provider serves each modality, as a configuration file names them.
@@ -45,8 +46,8 @@ pub struct ProviderConfig {
     /// Speech to text, when configured.
     pub transcription_provider: Option<TranscriptionProviderConfig>,
     /// The [`CostStrategy`] as a config file spells it, such as
-    /// `best-value` or `budget:10`; read it with
-    /// [`parse_cost_strategy`](Self::parse_cost_strategy).
+    /// `best-value` or `budget:10`. [`cost_strategy()`](Self::cost_strategy())
+    /// is the strict reader, which reports a typo instead of guessing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_strategy: Option<String>,
 }
@@ -113,7 +114,7 @@ impl ProviderConfig {
     }
 
     /// Name the [`CostStrategy`] as a config file spells it, such as
-    /// `best-value` or `budget:10`; [`Self::parse_cost_strategy`] reads it.
+    /// `best-value` or `budget:10`; [`Self::cost_strategy()`] reads it.
     pub fn with_cost_strategy(mut self, cost_strategy: impl Into<String>) -> Self {
         self.cost_strategy = Some(cost_strategy.into());
         self
@@ -133,22 +134,39 @@ impl ProviderConfig {
         Self::new(TextProviderConfig::new("openai").with_api_key(api_key))
     }
 
-    /// The `cost_strategy` field as a [`CostStrategy`], if one is set.
+    /// The `cost_strategy` field as a [`CostStrategy`], or `None` when it is
+    /// not set.
     ///
-    /// Leniently: an unrecognised name reads as [`CostStrategy::BestValue`],
-    /// and a budget that is not a finite amount of zero or more reads as a
-    /// ten dollar budget, so a typo in a config file does not stop a run. Parse
-    /// the field with [`str::parse`] to be told about the typo instead.
+    /// # Errors
+    ///
+    /// [`ParseError`] when the field names no strategy, or names a budget that
+    /// is not a finite amount of zero or more.
+    pub fn cost_strategy(&self) -> Result<Option<CostStrategy>, ParseError> {
+        self.cost_strategy.as_deref().map(str::parse).transpose()
+    }
+
+    /// The `cost_strategy` field as a [`CostStrategy`], if one is set,
+    /// guessing at one it cannot read.
+    ///
+    /// An unrecognised name reads as [`CostStrategy::BestValue`], and a budget
+    /// that is not a finite amount of zero or more reads as a ten dollar
+    /// budget, so a typo silently changes what a run spends.
+    /// [`Self::cost_strategy()`] reports the typo instead.
+    #[deprecated(
+        since = "0.1.4",
+        note = "use `cost_strategy()`, which reports a malformed budget or an unknown name instead of guessing"
+    )]
     pub fn parse_cost_strategy(&self) -> Option<CostStrategy> {
-        self.cost_strategy.as_deref().map(|strategy| {
-            strategy.parse().unwrap_or_else(|_| {
-                if strategy.starts_with(BUDGET_PREFIX) {
-                    CostStrategy::budget(DEFAULT_BUDGET_USD)
-                } else {
-                    CostStrategy::BestValue
-                }
-            })
-        })
+        self.cost_strategy()
+            .unwrap_or_else(|error| Some(guessed(error.value())))
+    }
+}
+
+fn guessed(strategy: &str) -> CostStrategy {
+    if strategy.starts_with(BUDGET_PREFIX) {
+        CostStrategy::budget(DEFAULT_BUDGET_USD)
+    } else {
+        CostStrategy::BestValue
     }
 }
 
@@ -157,6 +175,7 @@ mod tests {
     use abnegate_secret::SecretValue;
 
     use super::*;
+    use crate::cost::strategy::KIND;
 
     fn keyed(provider: &str, key: &str) -> ProviderConfig {
         ProviderConfig::new(TextProviderConfig::new(provider).with_api_key(key))
@@ -268,8 +287,8 @@ mod tests {
 
         assert!(!json.contains("sk-"), "{json}");
         assert_eq!(
-            roundtrip.parse_cost_strategy(),
-            Some(CostStrategy::budget(10.0))
+            roundtrip.cost_strategy(),
+            Ok(Some(CostStrategy::budget(10.0)))
         );
         let image = roundtrip.image_provider.unwrap();
         assert_eq!(image.provider, "openai");
@@ -316,33 +335,80 @@ mod tests {
             ("value", CostStrategy::BestValue),
             ("local-first", CostStrategy::LocalFirst),
             ("local", CostStrategy::LocalFirst),
+            ("budget:25.50", CostStrategy::budget(25.5)),
+            ("budget:0", CostStrategy::budget(0.0)),
         ];
 
         for (name, expected) in cases {
-            let mut config = keyed("anthropic", "key");
-            config.cost_strategy = Some(name.into());
-            assert_eq!(config.parse_cost_strategy(), Some(expected), "{name}");
+            let config = keyed("anthropic", "key").with_cost_strategy(name);
+            assert_eq!(config.cost_strategy(), Ok(Some(expected)), "{name}");
         }
     }
 
     #[test]
-    fn a_budget_strategy_carries_its_limit() {
-        let mut config = keyed("anthropic", "key");
-        config.cost_strategy = Some("budget:25.50".into());
+    fn no_strategy_parses_to_nothing() {
+        assert_eq!(keyed("anthropic", "key").cost_strategy(), Ok(None));
+    }
 
-        match config.parse_cost_strategy().unwrap() {
-            CostStrategy::Budget { maximum_usd } => {
-                assert!((maximum_usd - 25.50).abs() < f64::EPSILON);
-            }
-            other => panic!("expected Budget, got {other:?}"),
+    #[test]
+    fn a_malformed_budget_is_refused() {
+        for budget in [
+            "budget:lots",
+            "budget:NaN",
+            "budget:-5",
+            "budget:inf",
+            "budget:",
+        ] {
+            let config = keyed("anthropic", "key").with_cost_strategy(budget);
+
+            let error = config.cost_strategy().unwrap_err();
+
+            assert_eq!(error.kind(), KIND, "{budget}");
+            assert_eq!(error.value(), budget);
         }
     }
 
     #[test]
-    fn a_budget_that_is_not_a_finite_amount_falls_back_to_the_default() {
-        for budget in ["budget:NaN", "budget:-5", "budget:inf"] {
-            let mut config = keyed("anthropic", "key");
-            config.cost_strategy = Some(budget.into());
+    fn an_unknown_strategy_is_refused() {
+        let config = keyed("anthropic", "key").with_cost_strategy("unknown-strategy");
+
+        let error = config.cost_strategy().unwrap_err();
+
+        assert_eq!(error.kind(), KIND);
+        assert_eq!(error.value(), "unknown-strategy");
+    }
+
+    #[test]
+    #[expect(deprecated)]
+    fn the_lenient_reading_agrees_with_the_strict_one_on_what_it_can_read() {
+        for name in [
+            "cheapest",
+            "best-quality",
+            "best-value",
+            "local",
+            "budget:25.50",
+        ] {
+            let config = keyed("anthropic", "key").with_cost_strategy(name);
+            assert_eq!(
+                config.parse_cost_strategy(),
+                config.cost_strategy().unwrap(),
+                "{name}"
+            );
+        }
+        assert!(keyed("anthropic", "key").parse_cost_strategy().is_none());
+    }
+
+    #[test]
+    #[expect(deprecated)]
+    fn the_lenient_reading_takes_a_malformed_budget_as_the_default_budget() {
+        for budget in [
+            "budget:lots",
+            "budget:NaN",
+            "budget:-5",
+            "budget:inf",
+            "budget:",
+        ] {
+            let config = keyed("anthropic", "key").with_cost_strategy(budget);
 
             assert_eq!(
                 config.parse_cost_strategy(),
@@ -353,27 +419,9 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_budget_falls_back_to_the_default() {
-        let mut config = keyed("anthropic", "key");
-        config.cost_strategy = Some("budget:lots".into());
-
-        match config.parse_cost_strategy().unwrap() {
-            CostStrategy::Budget { maximum_usd } => {
-                assert!((maximum_usd - DEFAULT_BUDGET_USD).abs() < f64::EPSILON);
-            }
-            other => panic!("expected Budget, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn no_strategy_parses_to_nothing() {
-        assert!(keyed("anthropic", "key").parse_cost_strategy().is_none());
-    }
-
-    #[test]
-    fn an_unknown_strategy_reads_as_best_value() {
-        let mut config = keyed("anthropic", "key");
-        config.cost_strategy = Some("unknown-strategy".into());
+    #[expect(deprecated)]
+    fn the_lenient_reading_takes_an_unknown_name_as_best_value() {
+        let config = keyed("anthropic", "key").with_cost_strategy("unknown-strategy");
         assert_eq!(config.parse_cost_strategy(), Some(CostStrategy::BestValue));
     }
 }

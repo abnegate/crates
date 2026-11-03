@@ -7,16 +7,22 @@ conversation flattened into one prompt on stdin, reads the agent's
 newline-delimited JSON as it streams with a cap on any one event, and returns its
 final prose as a completion; `CliProvider::execute` returns the whole
 `Execution` for a caller that needs the structured answer, the session to
-resume, the cost, or the run's log files. A Claude or Codex run can attach MCP
-servers, and a Claude run can restrict its tools, or be confined to reading its
-working directory, and a run
+resume, the cost, or the run's log files, and `CliProvider::stream` yields the
+run's `AgentEvent`s as the agent emits them, ending in the error `complete`
+would have returned when the run failed. A run can start the agent's own
+`Session` under an id of the caller's choosing, or resume one. A Claude or Codex
+run can attach MCP servers, and a Claude run can restrict its tools, or be
+confined to reading its working directory, and a run
 that fails in any way takes every process the agent forked with it. The agent is
-given an allowlisted part of this process's environment, the names
+given an allowlisted part of this process's environment and its locale
+categories (`LC_CTYPE`, `LC_TIME` and the rest), the names
 `CliSettings::allow` adds (a proxy among them with
 `CliSettings::with_proxy_variables`) and what the settings hand it, or this
 process's whole environment with `CliSettings::inherit_environment`. A name the
 agent signs in with (`AgentKind::credentials`) passes only when the credential is
-inherited, however `CliSettings::allow` names it. Every value it is handed but
+inherited, however `CliSettings::allow` names it, and never, nor a cloud
+sign-in in `CLOUD_CREDENTIALS` nor its configuration variables unless allowed,
+under `CliSettings::withhold_host_credentials`. Every value it is handed but
 the allowlisted names, its configuration variables, the public variables, the
 proxy bypass list and what it inherits is scrubbed from what the run writes
 down, as written, JSON-escaped or percent-encoded; a secret the agent re-encodes
@@ -37,25 +43,45 @@ every other remote server, not from them.
 No agent is passed a permission-bypass flag, and nothing is approved in advance
 but what the settings allow. Claude's own tools keep Claude's own permission
 checks. Codex's do not: `codex exec` never asks for approval, so only its
-sandbox confines them, whichever one the user's configuration or a `--sandbox`
-argument names, and `danger-full-access` confines nothing.
+sandbox confines them, whichever one `CliSettings::with_sandbox`, the user's
+configuration or a `--sandbox` argument names, and `danger-full-access` confines
+nothing.
 
 ## Claude turns
 
 A Claude run reads its stream through one `Turn` (from `AgentKind::turn`), since
 a line's meaning can hang on the lines before it. Claude reports a refused plan
 window on a `rate_limit_event` that names no agent, so the window is remembered
-and fails the turn, as `rate limit reached: {report}: <Claude's words>`, only
-when the main agent's next line is a failed request or the result a failure. A
-stream that ends on the window alone still fails with it. A request the
-account's usage credits carry past the window is headroom, and the turn is
+and limits the turn, as `rate limit reached (<window>, <status>): <Claude's
+words>`, only when the main agent's next line is a failed request or the result
+a failure. A stream that ends on the window alone, with no line after it, still
+fails with it, as `ProviderError::Agent` in the same words rather than as a
+limit. A request
+the account's usage credits carry past the window is headroom, and the turn is
 logged once at info and named in `StdoutParseResult::credits`. A model or a
-context the account cannot fund fails in Claude's own words after
-`CREDITS_REQUIRED` or `LONG_CONTEXT_CREDITS_REQUIRED`, or after
-`CREDITS_UNCONFIRMED` when Claude could not look the credits up. A subagent's
-lines contribute only the tools it calls: its words, token counts and refusals
-stay in its own conversation, and the main agent answers without them. Nothing
-names a failure by the words it is written in.
+context the account cannot fund is limited in Claude's own words after
+`CREDITS_REQUIRED` or `LONG_CONTEXT_CREDITS_REQUIRED`, or fails after
+`CREDITS_UNCONFIRMED` when Claude could not look the credits up. A failed
+result with status 429, or in a limit's words, is a limit too, unless its
+status is 401. A subagent's lines contribute only the tools it calls: its
+words, token counts and refusals stay in its own conversation, and the main
+agent answers without them.
+
+## Limits and windows
+
+A turn a usage limit refused is `AgentEvent::Limited`, never
+`AgentEvent::Failed`, and the run fails with `ProviderError::Limited`: it
+renders exactly as the agent failure it replaces, the end of stderr included,
+and its `Limit` says when the limit lifts, which window refused the turn, and
+whether the account's usage credits ran out. `CliProvider::stream` ends with
+that error rather than yielding the event, and `complete` reports the same
+limit. `execute`'s `Execution::stdout.limit` carries the agent's words alone;
+the end of its stderr is in `Execution::stderr`. A Codex turn that fails in a
+limit's words is a limit unless they name a 401. While a Claude turn runs, a
+report of how much of a plan's window is spent is an `AgentEvent::Window`, under
+the name Claude streams it with (`five_hour`, `seven_day`, ...) and its
+`WindowKind`, and `StdoutParseResult::windows` keeps the latest report on each.
+The window only usage credits extend is never reported as one.
 
 ## Failures
 

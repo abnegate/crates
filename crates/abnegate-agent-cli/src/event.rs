@@ -2,18 +2,20 @@
 
 use std::time::Duration;
 
+use abnegate_llm::Limit;
 use abnegate_llm::ToolCall;
 use abnegate_llm::Usage;
+use abnegate_llm::Window;
 
 use crate::parser::claude::CliUsage;
 
 /// A normalised event, whichever agent produced it.
 ///
-/// There is deliberately no throttling variant. The caller already owns the
-/// vocabulary that separates a throttled run from a rejected one, and it reads
-/// that vocabulary out of the failure text. A second classifier here would be
-/// a second place to keep in step with it, so a throttled agent simply becomes
-/// a [`AgentEvent::Failed`] carrying the agent's own wording.
+/// A turn a usage limit refused is [`AgentEvent::Limited`] rather than
+/// [`AgentEvent::Failed`], so a caller that routes turns between sign-ins can
+/// tell an exhausted account from a broken turn without reading prose. Its
+/// message is still the agent's own wording, as a failure would carry it,
+/// since a caller's retry policy may read that wording.
 ///
 /// A variant may gain a field in a minor release, so a value is built with
 /// its constructor, such as [`AgentEvent::finished`], and a pattern outside
@@ -43,6 +45,15 @@ pub enum AgentEvent {
     /// The agent ended its turn in failure, in its own words. The first one
     /// a run reports is its failure.
     Failed(String),
+    /// A usage limit refused the agent's turn, which ends it like a
+    /// [`AgentEvent::Failed`] with the limit's message, and says when the
+    /// limit lifts and which window refused it when the agent said.
+    Limited(Limit),
+    /// How much of one of the plan's usage windows the account has spent,
+    /// reported while the turn goes on. The window keeps the name the agent
+    /// streams it under, with its [kind](Window::kind) when it is one of the
+    /// plan's.
+    Window(Window),
     /// The agent ended its turn, and why, in its own words.
     #[non_exhaustive]
     Finished {
@@ -93,7 +104,10 @@ impl AgentEvent {
     /// its turn, and treating that as success would hand the caller a silently
     /// truncated answer.
     pub fn terminal(&self) -> bool {
-        matches!(self, Self::Failed(_) | Self::Finished { .. })
+        matches!(
+            self,
+            Self::Failed(_) | Self::Limited(_) | Self::Finished { .. }
+        )
     }
 }
 
@@ -101,7 +115,10 @@ impl AgentEvent {
 mod tests {
     use std::time::Duration;
 
+    use abnegate_llm::Limit;
     use abnegate_llm::Usage;
+    use abnegate_llm::Window;
+    use abnegate_llm::WindowKind;
 
     use super::AgentEvent;
     use crate::parser::claude::CliUsage;
@@ -110,7 +127,17 @@ mod tests {
     fn only_a_result_ends_the_run() {
         assert!(!AgentEvent::Text("hello".to_string()).terminal());
         assert!(!AgentEvent::Usage(Usage::new(1, 1)).terminal());
+        assert!(
+            !AgentEvent::Window(
+                Window::new("five_hour")
+                    .with_used_percent(43.0)
+                    .with_kind(WindowKind::FiveHours)
+            )
+            .terminal()
+        );
+        assert!(!AgentEvent::Session("6f1".to_string()).terminal());
         assert!(AgentEvent::Failed("nope".to_string()).terminal());
+        assert!(AgentEvent::Limited(Limit::new("You've hit your session limit")).terminal());
         assert!(AgentEvent::finished(None).terminal());
     }
 

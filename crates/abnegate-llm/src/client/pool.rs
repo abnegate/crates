@@ -8,9 +8,13 @@ use std::sync::PoisonError;
 use std::thread;
 use std::time::Duration;
 
+use abnegate_http::metadata::MetadataResolver;
 use reqwest::Client;
+use reqwest::ClientBuilder;
 use reqwest::redirect::Policy;
 use tokio::runtime;
+
+use crate::client::trust::Trust;
 
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -20,12 +24,13 @@ const POOL_MAXIMUM_IDLE_PER_HOST: usize = 16;
 /// would otherwise add a pool, and every connection it holds, per task for
 /// the life of the process.
 const MINIMUM_CAPACITY: usize = 8;
+const TRUSTS: [Trust; 2] = [Trust::Operator, Trust::Tenant];
 
 static SHARED: LazyLock<Pool> = LazyLock::new(Pool::default);
 
-type Entries = VecDeque<(runtime::Id, Client)>;
+type Entries = VecDeque<((runtime::Id, Trust), Client)>;
 
-/// Connection pools held per runtime, most recently used first.
+/// Connection pools held per runtime and [`Trust`], most recently used first.
 ///
 /// Building a `reqwest::Client` per turn throws away TLS sessions and
 /// keep-alives to the endpoint, which is the whole time-to-first-token budget
@@ -37,18 +42,21 @@ type Entries = VecDeque<(runtime::Id, Client)>;
 /// first, and the send fails with "runtime dropped the dispatch task" without
 /// ever reaching the server.
 ///
-/// As many runtimes keep a pool as the machine runs threads, and never fewer
-/// than eight, so runtimes that take turns, one per core, do not evict one
-/// another's pools. A client is built outside the lock, so a runtime that
-/// already has one never waits on another's being built.
+/// As many runtimes keep a pool for each trust as the machine runs threads,
+/// and never fewer than eight, so runtimes that take turns, one per core, do
+/// not evict one another's pools. A client is built outside the lock, so a
+/// runtime that already has one never waits on another's being built.
 ///
 /// Every client refuses redirects. An endpoint that answers a completion with
 /// a redirect is misconfigured, and following one would carry a vendor's key
-/// header to whatever host the redirect names.
+/// header to whatever host the redirect names. A [`Trust::Tenant`] client
+/// also ignores the process's proxy settings, since a proxy resolves the
+/// target itself, and drops every link-local and cloud metadata address a
+/// name resolves to.
 pub(crate) struct Pool {
     clients: Mutex<Entries>,
     capacity: usize,
-    build: Box<dyn Fn() -> Client + Send + Sync>,
+    build: Box<dyn Fn(Trust) -> Client + Send + Sync>,
 }
 
 impl Default for Pool {
@@ -67,7 +75,10 @@ impl fmt::Debug for Pool {
 }
 
 impl Pool {
-    pub(crate) fn new(capacity: usize, build: impl Fn() -> Client + Send + Sync + 'static) -> Self {
+    pub(crate) fn new(
+        capacity: usize,
+        build: impl Fn(Trust) -> Client + Send + Sync + 'static,
+    ) -> Self {
         Self {
             clients: Mutex::new(VecDeque::with_capacity(capacity)),
             capacity,
@@ -80,37 +91,39 @@ impl Pool {
         &SHARED
     }
 
-    /// The shared pool for the current runtime, or a fresh client outside one.
-    pub(crate) fn client() -> Client {
-        Self::shared().for_current_runtime()
+    /// The shared pool for the current runtime and `trust`, or a fresh client
+    /// outside a runtime.
+    pub(crate) fn client(trust: Trust) -> Client {
+        Self::shared().for_current_runtime(trust)
     }
 
-    pub(crate) fn for_current_runtime(&self) -> Client {
+    pub(crate) fn for_current_runtime(&self, trust: Trust) -> Client {
         match runtime::Handle::try_current() {
-            Ok(runtime) => self.for_runtime(runtime.id()),
-            Err(_) => (self.build)(),
+            Ok(runtime) => self.for_runtime(runtime.id(), trust),
+            Err(_) => (self.build)(trust),
         }
     }
 
-    pub(crate) fn for_runtime(&self, id: runtime::Id) -> Client {
-        if let Some(client) = self.reuse(id) {
+    pub(crate) fn for_runtime(&self, id: runtime::Id, trust: Trust) -> Client {
+        let key = (id, trust);
+        if let Some(client) = self.reuse(key) {
             return client;
         }
 
-        let built = (self.build)();
+        let built = (self.build)(trust);
         let mut clients = self.lock();
-        let client = match clients.iter().position(|(owner, _)| *owner == id) {
+        let client = match clients.iter().position(|(owner, _)| *owner == key) {
             Some(index) => clients.remove(index).map_or(built, |(_, client)| client),
             None => built,
         };
-        clients.push_front((id, client.clone()));
+        clients.push_front((key, client.clone()));
         clients.truncate(self.capacity);
         client
     }
 
-    fn reuse(&self, id: runtime::Id) -> Option<Client> {
+    fn reuse(&self, key: (runtime::Id, Trust)) -> Option<Client> {
         let mut clients = self.lock();
-        let index = clients.iter().position(|(owner, _)| *owner == id)?;
+        let index = clients.iter().position(|(owner, _)| *owner == key)?;
         if index > 0 {
             let entry = clients.remove(index)?;
             clients.push_front(entry);
@@ -129,20 +142,38 @@ impl Pool {
 }
 
 fn capacity() -> usize {
+    runtimes().saturating_mul(TRUSTS.len())
+}
+
+fn runtimes() -> usize {
     thread::available_parallelism()
         .map_or(MINIMUM_CAPACITY, NonZeroUsize::get)
         .max(MINIMUM_CAPACITY)
 }
 
-fn build() -> Client {
-    Client::builder()
+/// `builder` with the guard `trust` asks for. Every client refuses
+/// redirects; a tenant's also skips the proxy and resolves through
+/// [`MetadataResolver`].
+pub(crate) fn guarded(builder: ClientBuilder, trust: Trust) -> ClientBuilder {
+    let builder = builder.redirect(Policy::none());
+    match trust {
+        Trust::Operator => builder,
+        Trust::Tenant => builder.no_proxy().dns_resolver(MetadataResolver::new()),
+    }
+}
+
+/// A tuned client for `trust`, or an untuned one with the same guard when
+/// tuning is refused. A guard is never dropped to get a client.
+fn build(trust: Trust) -> Client {
+    let tuned = Client::builder()
         .pool_max_idle_per_host(POOL_MAXIMUM_IDLE_PER_HOST)
         .pool_idle_timeout(POOL_IDLE_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
-        .redirect(Policy::none())
-        .tcp_nodelay(true)
+        .tcp_nodelay(true);
+    guarded(tuned, trust)
         .build()
-        .unwrap_or_else(|_| Client::new())
+        .or_else(|_| guarded(Client::builder(), trust).build())
+        .unwrap_or_else(|error| panic!("no HTTP client can be built: {error}"))
 }
 
 #[cfg(test)]
@@ -160,7 +191,11 @@ mod tests {
 
     use super::MINIMUM_CAPACITY;
     use super::Pool;
+    use super::TRUSTS;
     use super::build;
+    use crate::client::trust::Trust;
+
+    const OPERATOR: Trust = Trust::Operator;
 
     fn runtime() -> Runtime {
         tokio::runtime::Builder::new_current_thread()
@@ -171,9 +206,9 @@ mod tests {
     fn counted(capacity: usize) -> (Pool, Arc<AtomicUsize>) {
         let builds = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&builds);
-        let pool = Pool::new(capacity, move || {
+        let pool = Pool::new(capacity, move |trust| {
             counter.fetch_add(1, Ordering::Relaxed);
-            build()
+            build(trust)
         });
         (pool, builds)
     }
@@ -183,7 +218,7 @@ mod tests {
         let pool = Pool::default();
 
         for _ in 0..pool.capacity * 4 {
-            runtime().block_on(async { pool.for_current_runtime() });
+            runtime().block_on(async { pool.for_current_runtime(OPERATOR) });
         }
 
         assert_eq!(pool.len(), pool.capacity);
@@ -194,8 +229,8 @@ mod tests {
         let threads = thread::available_parallelism().map_or(1, usize::from);
         let capacity = Pool::default().capacity;
 
-        assert!(capacity >= threads, "{capacity} < {threads}");
-        assert!(capacity >= MINIMUM_CAPACITY, "{capacity}");
+        assert!(capacity >= threads * TRUSTS.len(), "{capacity} < {threads}");
+        assert!(capacity >= MINIMUM_CAPACITY * TRUSTS.len(), "{capacity}");
     }
 
     #[test]
@@ -205,7 +240,7 @@ mod tests {
 
         for _ in 0..3 {
             for runtime in &runtimes {
-                runtime.block_on(async { pool.for_current_runtime() });
+                runtime.block_on(async { pool.for_current_runtime(OPERATOR) });
             }
         }
 
@@ -217,18 +252,18 @@ mod tests {
         let (pool, builds) = counted(MINIMUM_CAPACITY);
         let kept = runtime();
 
-        kept.block_on(async { pool.for_current_runtime() });
+        kept.block_on(async { pool.for_current_runtime(OPERATOR) });
         for _ in 0..MINIMUM_CAPACITY - 1 {
-            runtime().block_on(async { pool.for_current_runtime() });
+            runtime().block_on(async { pool.for_current_runtime(OPERATOR) });
         }
-        kept.block_on(async { pool.for_current_runtime() });
-        runtime().block_on(async { pool.for_current_runtime() });
+        kept.block_on(async { pool.for_current_runtime(OPERATOR) });
+        runtime().block_on(async { pool.for_current_runtime(OPERATOR) });
 
-        let id = kept.handle().id();
+        let key = (kept.handle().id(), OPERATOR);
         let clients = pool.clients.lock().unwrap();
         assert_eq!(clients.len(), MINIMUM_CAPACITY);
         assert!(
-            clients.iter().any(|(owner, _)| *owner == id),
+            clients.iter().any(|(owner, _)| *owner == key),
             "the runtime used most recently lost its pool"
         );
         assert_eq!(builds.load(Ordering::Relaxed), MINIMUM_CAPACITY + 1);
@@ -237,7 +272,7 @@ mod tests {
     #[test]
     fn no_runtime_gets_a_client_of_its_own_and_leaves_the_pools_alone() {
         let pool = Pool::default();
-        pool.for_current_runtime();
+        pool.for_current_runtime(OPERATOR);
         assert_eq!(pool.len(), 0);
     }
 
@@ -247,7 +282,7 @@ mod tests {
         let (release, released) = mpsc::channel::<()>();
         let released = Mutex::new(released);
         let calls = AtomicUsize::new(0);
-        let pool = Arc::new(Pool::new(MINIMUM_CAPACITY, move || {
+        let pool = Arc::new(Pool::new(MINIMUM_CAPACITY, move |_| {
             if calls.fetch_add(1, Ordering::Relaxed) == 1 {
                 let _ = entered.send(());
                 let _ = released
@@ -258,11 +293,11 @@ mod tests {
             Client::new()
         }));
         let first = runtime();
-        first.block_on(async { pool.for_current_runtime() });
+        first.block_on(async { pool.for_current_runtime(OPERATOR) });
 
         let second = thread::spawn({
             let pool = Arc::clone(&pool);
-            move || runtime().block_on(async { pool.for_current_runtime() })
+            move || runtime().block_on(async { pool.for_current_runtime(OPERATOR) })
         });
         building
             .recv_timeout(Duration::from_secs(10))
@@ -272,7 +307,7 @@ mod tests {
             let pool = Arc::clone(&pool);
             let id = first.handle().id();
             move || {
-                pool.for_runtime(id);
+                pool.for_runtime(id, OPERATOR);
                 let _ = found.send(());
             }
         });
@@ -285,5 +320,20 @@ mod tests {
             unblocked,
             "a runtime with a client waited for another runtime's to be built"
         );
+    }
+
+    #[test]
+    fn a_runtime_keeps_one_client_per_trust_and_reuses_each() {
+        let (pool, builds) = counted(MINIMUM_CAPACITY);
+        let runtime = runtime();
+
+        for _ in 0..3 {
+            for trust in TRUSTS {
+                runtime.block_on(async { pool.for_current_runtime(trust) });
+            }
+        }
+
+        assert_eq!(builds.load(Ordering::Relaxed), TRUSTS.len());
+        assert_eq!(pool.len(), TRUSTS.len());
     }
 }

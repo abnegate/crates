@@ -1,7 +1,12 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::process::Command;
+
 use super::EnvironmentPolicy;
+use super::Proxy;
+use super::PublicWeb;
 use super::Session;
 use crate::Application;
 
@@ -61,6 +66,21 @@ pub struct ToolContext {
     /// inside `working_directory`: background job logs live in
     /// `.{application}/jobs`.
     pub application: Application,
+    /// Whether `run_command` may start `curl` or `wget`, asked before each
+    /// such call; nothing else consults it (see [`PublicWeb`]). Nothing by
+    /// default, which lets every such call through.
+    pub public_web: Option<Arc<dyn PublicWeb>>,
+    /// The proxy every child a tool starts, a background job's included, is
+    /// routed through. It is laid over [`environment`](Self::environment)
+    /// last, so neither a tool nor its call can route around it, and hands
+    /// the child the variables that route its own children the same way.
+    ///
+    /// Nothing by default, which routes each child through the proxy
+    /// [`Proxy::from_environment`] reads as it starts, as before there was a
+    /// field to set. [`Proxy::default`] lays no proxy over the child, which
+    /// then routes only as its own environment says: through whatever proxy
+    /// variables that names or inherits, and directly when it names none.
+    pub proxy: Option<Proxy>,
 }
 
 impl ToolContext {
@@ -147,6 +167,46 @@ impl ToolContext {
         self.environment = self.environment.inheriting();
         self
     }
+
+    /// The same context, asking `public_web` before `run_command` starts
+    /// `curl` or `wget`.
+    pub fn with_public_web(mut self, public_web: Arc<dyn PublicWeb>) -> Self {
+        self.public_web = Some(public_web);
+        self
+    }
+
+    /// The same context, routing every child a tool starts through `proxy`
+    /// in place of the one this process's environment names. With
+    /// [`Proxy::default`], no proxy is laid over a child, which then routes
+    /// only as its own environment says.
+    ///
+    /// ```
+    /// use abnegate_agent::ToolContext;
+    /// use abnegate_agent::tool::Proxy;
+    ///
+    /// let context = ToolContext::default()
+    ///     .with_proxy(Proxy::new("http://proxy:3128").with_bypass(["localhost", ".svc"]));
+    /// assert!(context.proxy.is_some());
+    /// ```
+    pub fn with_proxy(mut self, proxy: Proxy) -> Self {
+        self.proxy = Some(proxy);
+        self
+    }
+
+    /// Lay this context's proxy over `command`, or the one this process's
+    /// environment names when it has none of its own.
+    pub(crate) fn route(&self, command: &mut Command) {
+        match &self.proxy {
+            Some(proxy) => proxy.apply(command),
+            None => Proxy::from_environment().apply(command),
+        }
+    }
+
+    /// Why `curl` and `wget` must not start from this context, or nothing when
+    /// they may.
+    pub(crate) fn public_web_refusal(&self) -> Option<String> {
+        self.public_web.as_ref()?.refusal()
+    }
 }
 
 impl Default for ToolContext {
@@ -161,6 +221,8 @@ impl Default for ToolContext {
             denied: Vec::new(),
             session: Session::Detached,
             application: Application::default(),
+            public_web: None,
+            proxy: None,
         }
     }
 }
@@ -219,6 +281,55 @@ mod tests {
                 .environment
                 .inherits()
         );
+    }
+
+    #[derive(Debug)]
+    struct Refusing;
+
+    impl PublicWeb for Refusing {
+        fn refusal(&self) -> Option<String> {
+            Some("offline".to_string())
+        }
+    }
+
+    #[test]
+    fn the_default_context_lets_the_public_web_through() {
+        let context = ToolContext::default();
+        assert!(context.public_web.is_none());
+        assert_eq!(context.public_web_refusal(), None);
+    }
+
+    #[test]
+    fn with_public_web_asks_the_gate_it_was_given() {
+        let context = ToolContext::default().with_public_web(Arc::new(Refusing));
+        assert_eq!(context.public_web_refusal().as_deref(), Some("offline"));
+        assert_eq!(
+            context.clone().public_web_refusal().as_deref(),
+            Some("offline")
+        );
+    }
+
+    /// A gate held behind `dyn` would drop the context's unwind safety unless
+    /// the trait asks for it, and a caller catching a panic around a tool call
+    /// relied on it.
+    #[test]
+    fn a_context_holding_a_gate_stays_unwind_safe() {
+        fn unwind_safe<T: std::panic::UnwindSafe + std::panic::RefUnwindSafe>(_: &T) {}
+        unwind_safe(&ToolContext::default().with_public_web(Arc::new(Refusing)));
+    }
+
+    #[test]
+    fn the_default_context_leaves_the_proxy_to_the_environment() {
+        assert!(ToolContext::default().proxy.is_none());
+    }
+
+    #[test]
+    fn debug_never_prints_the_proxy_url() {
+        let context =
+            ToolContext::default().with_proxy(Proxy::new("http://user:hunter2@proxy:3128"));
+        let printed = format!("{context:?}");
+        assert!(printed.contains("proxy"), "{printed}");
+        assert!(!printed.contains("hunter2"), "{printed}");
     }
 
     #[test]

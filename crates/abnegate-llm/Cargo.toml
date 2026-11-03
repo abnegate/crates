@@ -38,6 +38,7 @@ abnegate-secret = { path = "../abnegate-secret", version = "0.1.5" }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true, optional = true }
+chrono = { workspace = true, features = ["serde"] }
 fastembed = { workspace = true, optional = true, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
 futures = { workspace = true }
 rand = { workspace = true }

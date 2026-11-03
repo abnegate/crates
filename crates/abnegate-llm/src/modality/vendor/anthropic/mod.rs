@@ -2,6 +2,7 @@
 //! is the CLI's own.
 
 mod authentication;
+mod cause;
 mod cli;
 mod failure;
 
@@ -26,6 +27,7 @@ use crate::provider::ExitStatus;
 use crate::provider::ProviderError;
 
 const BASE_URL: &str = "https://api.anthropic.com";
+const CLI_NAME: &str = "claude-cli";
 const DEFAULT_MODEL: &str = "claude-opus-5";
 const MAXIMUM_CONTEXT_TOKENS: u32 = 200_000;
 const NAME: &str = "anthropic";
@@ -40,6 +42,13 @@ const ANSWER_PREVIEW_CHARACTERS: usize = 300;
 /// Every call has a deadline (ten minutes unless [`Self::with_timeout`] says
 /// otherwise), and the HTTP client never follows a redirect, so the
 /// `x-api-key` header cannot be carried to another host.
+///
+/// It is named `anthropic`, or `claude-cli` when the installed CLI's own
+/// sign-in serves it, so the name says whose credential a run spent: the
+/// account the CLI is signed in to, rather than a key or token this provider
+/// was given. A failure the CLI reports carries the same name, except a
+/// dropped connection or a timeout, which is a [`ProviderError::Network`]
+/// and, like the messages API route's, names no provider.
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
     authentication: AnthropicAuthentication,
@@ -180,7 +189,10 @@ impl AnthropicProvider {
         arguments: Vec<String>,
         prompt: &str,
     ) -> Result<(serde_json::Value, String), ProviderError> {
-        let output = self.cli.run(NAME, &arguments, prompt, self.token()).await?;
+        let output = self
+            .cli
+            .run(self.name(), &arguments, prompt, self.token())
+            .await?;
         let stdout = String::from_utf8_lossy(&output).into_owned();
         let envelope = serde_json::from_str(&stdout).map_err(|error| {
             ProviderError::parse(format!(
@@ -189,7 +201,7 @@ impl AnthropicProvider {
             ))
         })?;
         if let Some(failure) = Failure::reported(&envelope) {
-            return Err(failure.into_error(NAME, ExitStatus::Code(0)));
+            return Err(failure.into_error(self.name(), ExitStatus::Code(0)));
         }
         Ok((envelope, stdout))
     }
@@ -317,7 +329,10 @@ fn usage(body: &serde_json::Value, field: &str) -> u32 {
 #[async_trait]
 impl TextProvider for AnthropicProvider {
     fn name(&self) -> &str {
-        NAME
+        match self.authentication {
+            AnthropicAuthentication::ClaudeCli => CLI_NAME,
+            AnthropicAuthentication::ApiKey(_) | AnthropicAuthentication::OAuthToken(_) => NAME,
+        }
     }
 
     fn supports_structured_output(&self) -> bool {
@@ -541,6 +556,15 @@ mod tests {
         assert_eq!(provider.name(), "anthropic");
         assert!(provider.supports_structured_output());
         assert_eq!(provider.maximum_context_tokens(), MAXIMUM_CONTEXT_TOKENS);
+    }
+
+    #[test]
+    fn the_bare_cli_route_is_named_for_itself() {
+        let cli = AnthropicProvider::with_model(AnthropicAuthentication::ClaudeCli, DEFAULT_MODEL);
+        let oauth = AnthropicProvider::with_oauth("oauth-token-123");
+
+        assert_eq!(cli.name(), "claude-cli");
+        assert_eq!(oauth.name(), "anthropic");
     }
 
     #[test]
@@ -885,6 +909,126 @@ mod tests {
                     ..
                 }
             ),
+            "{error:?}"
+        );
+        assert!(error.transient());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cli_that_lost_its_connection_is_retried_like_the_api_route() {
+        let error = cli_failure(
+            r#"printf '%s' '{"type":"result","subtype":"success","is_error":true,"result":"API Error: Connection error."}'; exit 1"#,
+        )
+        .await;
+
+        assert!(
+            matches!(&error, ProviderError::Network { detail } if detail == "API Error: Connection error."),
+            "{error:?}"
+        );
+        assert!(error.transient());
+        assert!(error.recoverable());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cli_whose_diagnostics_say_it_timed_out_is_retried() {
+        let error = cli_failure(
+            "echo 'OTLPExporterError: noise' >&2; echo 'API Error: Request timed out.' >&2; exit 1",
+        )
+        .await;
+
+        assert!(matches!(&error, ProviderError::Network { .. }), "{error:?}");
+        assert!(error.transient());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_overloaded_cli_without_a_status_is_retried_as_overloaded() {
+        let error = cli_failure(
+            r#"printf '%s' '{"is_error":true,"result":"API Error: Overloaded"}'; exit 1"#,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                &error,
+                ProviderError::Http {
+                    source: crate::Error::Api { status: 529, .. },
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(error.transient());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cli_that_cannot_parse_its_options_is_not_retried_for_its_telemetry_noise() {
+        let error = cli_failure(
+            "echo \"error: unknown option '--json-schema'\" >&2; \
+             echo 'OTLPExporterError: connect ECONNREFUSED 127.0.0.1:4318' >&2; exit 1",
+        )
+        .await;
+
+        assert!(
+            matches!(&error, ProviderError::Exit { message, .. } if message.contains("unknown option")),
+            "{error:?}"
+        );
+        assert!(!error.transient());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_bare_cli_route_names_itself_in_its_errors_too() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = fake_cli(directory.path(), "echo 'not signed in' >&2; exit 3");
+        let provider =
+            AnthropicProvider::with_model(AnthropicAuthentication::ClaudeCli, DEFAULT_MODEL)
+                .with_executable(executable);
+
+        let error = provider
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+
+        assert_eq!(provider.name(), CLI_NAME);
+        assert_eq!(error.provider(), Some(CLI_NAME));
+        assert!(error.to_string().starts_with("claude-cli: "), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_bare_cli_route_names_itself_when_a_clean_exit_reports_an_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = fake_cli(
+            directory.path(),
+            r#"printf '%s' '{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key. Please run /login"}'"#,
+        );
+        let provider =
+            AnthropicProvider::with_model(AnthropicAuthentication::ClaudeCli, DEFAULT_MODEL)
+                .with_executable(executable);
+
+        let error = provider
+            .complete(&TextRequest::new("sys", "usr"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(&error, ProviderError::Agent { .. }), "{error:?}");
+        assert_eq!(error.provider(), Some(CLI_NAME));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_api_error_after_a_flood_of_diagnostics_is_still_read() {
+        let error = cli_failure(
+            r#"{ head -c 200000 /dev/zero | tr '\0' x; echo; echo 'API Error: Request timed out.'; } >&2; exit 1"#,
+        )
+        .await;
+
+        assert!(
+            matches!(&error, ProviderError::Network { detail } if detail.ends_with("API Error: Request timed out.\n")),
             "{error:?}"
         );
         assert!(error.transient());

@@ -1,7 +1,21 @@
+use abnegate_llm::Window;
+use abnegate_llm::WindowKind;
+use chrono::DateTime;
+use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
+
+use crate::parser::claude::lenient;
 
 const ALLOWED: [&str; 2] = ["allowed", "allowed_warning"];
+
+/// The window claude reports refused when an allowance that only usage
+/// credits extend is spent. It is no part of the plan's usage.
+pub(crate) const OVERAGE_INCLUDED_WINDOW: &str = "seven_day_overage_included";
+
+/// claude reports a window's use as a fraction; a [`Window`] holds a percent.
+const PERCENT: f64 = 100.0;
 
 /// The throttling report nested inside a `rate_limit_event`.
 ///
@@ -25,7 +39,13 @@ pub struct RateLimitReport {
     )]
     pub kind: Option<String>,
     /// How much of the window is spent, as a fraction where 1 is all of it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A value of any other shape reads as absent rather than losing the
+    /// whole report.
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub utilization: Option<f64>,
     /// Whether the account's usage credits carry the request past the
     /// window, which the CLI then reports as refused.
@@ -71,11 +91,195 @@ impl RateLimitReport {
                 .as_deref()
                 .is_some_and(|status| ALLOWED.contains(&status))
     }
+
+    /// When the window starts over, read from the report's `resetsAt`, which
+    /// claude has written both in epoch seconds, as a number or a string, and
+    /// as an RFC 3339 timestamp. Any other shape is `None`.
+    pub fn resets_at(&self) -> Option<DateTime<Utc>> {
+        self.resets_at.as_ref().and_then(reset_time)
+    }
+
+    /// The plan's window this report measures, when its status reports
+    /// headroom and it says how much of the window is spent.
+    pub(crate) fn measured(&self) -> Option<Window> {
+        let headroom = self
+            .status
+            .as_deref()
+            .is_some_and(|status| ALLOWED.contains(&status));
+        if !headroom {
+            return None;
+        }
+        self.window(self.fraction()? * PERCENT)
+    }
+
+    /// The window this report refused, counted as spent in full when it does
+    /// not say how much of it was used.
+    pub(crate) fn refused(&self) -> Option<Window> {
+        self.window(
+            self.fraction()
+                .map_or(PERCENT, |fraction| fraction * PERCENT),
+        )
+    }
+
+    /// How much of the window is spent, when the report says so as a
+    /// fraction a window can hold: a use past the whole window, or below
+    /// none, is read as unknown.
+    fn fraction(&self) -> Option<f64> {
+        self.utilization
+            .filter(|fraction| (0.0..=1.0).contains(fraction))
+    }
+
+    /// The named window this report is on, `used_percent` spent, under the
+    /// name claude streams it with. The window usage credits carry a turn
+    /// past is none of the plan's.
+    fn window(&self, used_percent: f64) -> Option<Window> {
+        let name = self
+            .kind
+            .as_deref()
+            .filter(|name| *name != OVERAGE_INCLUDED_WINDOW)?;
+        let mut window = Window::new(name).with_used_percent(used_percent);
+        if let Some(resets_at) = self.resets_at() {
+            window = window.with_resets_at(resets_at);
+        }
+        if let Some(kind) = WindowKind::from_streamed(name) {
+            window = window.with_kind(kind);
+        }
+        Some(window)
+    }
+}
+
+fn reset_time(value: &Value) -> Option<DateTime<Utc>> {
+    let seconds = match value {
+        Value::Number(seconds) => seconds.as_i64(),
+        Value::String(text) => match DateTime::parse_from_rfc3339(text) {
+            Ok(time) => return Some(time.with_timezone(&Utc)),
+            Err(_) => text.trim().parse().ok(),
+        },
+        _ => None,
+    };
+    seconds.and_then(|seconds| DateTime::from_timestamp(seconds, 0))
 }
 
 #[cfg(test)]
 mod tests {
+    use abnegate_llm::WindowKind;
+    use chrono::DateTime;
+    use serde_json::json;
+
     use super::RateLimitReport;
+
+    fn report(value: serde_json::Value) -> RateLimitReport {
+        serde_json::from_value(value).expect("a rate limit report")
+    }
+
+    #[test]
+    fn a_reset_time_reads_from_seconds_or_a_timestamp_and_nothing_else() {
+        let reset = DateTime::from_timestamp(1_790_222_400, 0);
+        for (resets_at, expected) in [
+            (json!(1_790_222_400), reset),
+            (json!("1790222400"), reset),
+            (json!(" 1790222400 "), reset),
+            (json!("2026-09-24T04:00:00Z"), reset),
+            (json!("2026-09-24T16:00:00+12:00"), reset),
+            (json!(1.5), None),
+            (json!("next Tuesday"), None),
+            (json!(["2026-09-24T04:00:00Z"]), None),
+            (serde_json::Value::Null, None),
+        ] {
+            let read = report(json!({"status": "rejected", "resetsAt": resets_at}));
+            assert_eq!(read.resets_at(), expected, "{resets_at}");
+        }
+        assert_eq!(RateLimitReport::default().resets_at(), None);
+    }
+
+    #[test]
+    fn a_use_of_another_shape_reads_as_unknown_and_keeps_the_report() {
+        for utilization in [json!("0.5"), json!({"fraction": 0.5}), json!(true)] {
+            let read = report(json!({
+                "status": "rejected",
+                "rateLimitType": "five_hour",
+                "utilization": utilization,
+            }));
+            assert_eq!(read.utilization, None, "{utilization}");
+            assert_eq!(read.kind.as_deref(), Some("five_hour"), "{utilization}");
+        }
+    }
+
+    #[test]
+    fn only_headroom_that_says_its_use_measures_a_window() {
+        let measured = report(json!({
+            "status": "allowed_warning",
+            "rateLimitType": "seven_day_opus",
+            "utilization": 0.81,
+            "resetsAt": 1_790_208_000,
+        }))
+        .measured()
+        .expect("a measured window");
+        assert_eq!(measured.name, "seven_day_opus");
+        assert_eq!(measured.kind, Some(WindowKind::SevenDaysOpus));
+        assert!((measured.used_percent.expect("a use") - 81.0).abs() < 1e-9);
+        assert_eq!(
+            measured.resets_at,
+            DateTime::from_timestamp(1_790_208_000, 0)
+        );
+
+        for unmeasured in [
+            json!({"status": "allowed", "rateLimitType": "five_hour"}),
+            json!({"status": "allowed", "utilization": 0.5}),
+            json!({"status": "rejected", "rateLimitType": "five_hour", "utilization": 0.5}),
+            json!({"rateLimitType": "five_hour", "utilization": 0.5, "isUsingOverage": true}),
+            json!({"status": "allowed", "rateLimitType": "seven_day_overage_included", "utilization": 0.5}),
+        ] {
+            assert_eq!(report(unmeasured.clone()).measured(), None, "{unmeasured}");
+        }
+    }
+
+    #[test]
+    fn a_use_outside_the_window_is_never_reported_as_a_percentage() {
+        for utilization in [1.8, -0.2, f64::INFINITY] {
+            let headroom = report(json!({
+                "status": "allowed",
+                "rateLimitType": "five_hour",
+                "utilization": utilization,
+            }));
+            assert_eq!(headroom.measured(), None, "{utilization}");
+
+            let refused = report(json!({
+                "status": "rejected",
+                "rateLimitType": "five_hour",
+                "utilization": utilization,
+            }))
+            .refused()
+            .expect("a refused window");
+            assert_eq!(refused.used_percent, Some(100.0), "{utilization}");
+        }
+    }
+
+    #[test]
+    fn a_refused_window_is_spent_in_full_unless_it_says_otherwise() {
+        let refused = report(json!({"status": "rejected", "rateLimitType": "five_hour"}))
+            .refused()
+            .expect("a refused window");
+        assert_eq!(refused.used_percent, Some(100.0));
+        assert_eq!(refused.kind, Some(WindowKind::FiveHours));
+
+        let partly = report(json!({
+            "status": "rejected",
+            "rateLimitType": "hourly_burst",
+            "utilization": 0.9,
+        }))
+        .refused()
+        .expect("a refused window");
+        assert!((partly.used_percent.expect("a use") - 90.0).abs() < 1e-9);
+        assert_eq!(partly.kind, None);
+
+        for unnamed in [
+            json!({"status": "rejected"}),
+            json!({"status": "rejected", "rateLimitType": "seven_day_overage_included"}),
+        ] {
+            assert_eq!(report(unnamed.clone()).refused(), None, "{unnamed}");
+        }
+    }
 
     #[test]
     fn a_headroom_report_is_allowed() {

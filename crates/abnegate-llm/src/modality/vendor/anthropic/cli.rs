@@ -17,8 +17,10 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// The most of the CLI's JSON envelope that is read. An answer is a few
 /// kilobytes; a CLI writing more than this has gone wrong.
 const MAXIMUM_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
-/// The most of the CLI's diagnostics kept for an error message.
-const MAXIMUM_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
+/// The most of the CLI's diagnostics kept for an error message: their end,
+/// where the CLI writes the failure it gave up on.
+const MAXIMUM_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+const READ_CHUNK_BYTES: usize = 8 * 1024;
 
 /// The installed Claude Code CLI, run once per call.
 ///
@@ -26,8 +28,9 @@ const MAXIMUM_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
 /// so a prompt of any length fits and one that starts with `-` is never read
 /// as a flag. The child is killed if the call is dropped or overruns its
 /// deadline, and its output is read only up to a bound. A run that exits
-/// unsuccessfully is reported as its JSON envelope describes it, and as its
-/// diagnostics only when there is no envelope.
+/// unsuccessfully is reported as its JSON envelope describes it when stdout
+/// holds one that reports a failure, and as the end of its diagnostics
+/// otherwise.
 #[derive(Debug, Clone)]
 pub(crate) struct Cli {
     executable: PathBuf,
@@ -103,7 +106,7 @@ impl Cli {
             let (_, output, diagnostics) = tokio::try_join!(
                 write,
                 bounded(provider, stdout, MAXIMUM_OUTPUT_BYTES),
-                truncated(stderr, MAXIMUM_DIAGNOSTIC_BYTES),
+                tail(stderr, MAXIMUM_DIAGNOSTIC_BYTES),
             )?;
             let status = child
                 .wait()
@@ -144,14 +147,51 @@ async fn bounded(
     Ok(output)
 }
 
-/// The first `limit` bytes of `stream`, with the rest read and dropped so the
-/// child never blocks on a full pipe.
-async fn truncated(
-    mut stream: impl AsyncRead + Unpin,
-    limit: u64,
-) -> Result<Vec<u8>, ProviderError> {
+/// The last `limit` bytes of `stream`, from the first line that starts
+/// within them when there was more, with all of it read so the child never
+/// blocks on a full pipe.
+async fn tail(mut stream: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>, ProviderError> {
     let mut kept = Vec::new();
-    let _ = (&mut stream).take(limit).read_to_end(&mut kept).await;
-    let _ = tokio::io::copy(&mut stream, &mut tokio::io::sink()).await;
+    let mut chunk = vec![0; READ_CHUNK_BYTES];
+    let mut cut = false;
+    while let Ok(read @ 1..) = stream.read(&mut chunk).await {
+        kept.extend_from_slice(&chunk[..read]);
+        if kept.len() > 2 * limit {
+            kept.drain(..kept.len() - limit);
+            cut = true;
+        }
+    }
+    if kept.len() > limit {
+        kept.drain(..kept.len() - limit);
+        cut = true;
+    }
+    if cut && let Some(newline) = kept.iter().position(|byte| *byte == b'\n') {
+        kept.drain(..=newline);
+    }
     Ok(kept)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn short_diagnostics_are_kept_whole() {
+        let kept = tail(&b"not signed in\nretry later"[..], 64).await.unwrap();
+
+        assert_eq!(kept, b"not signed in\nretry later");
+    }
+
+    #[tokio::test]
+    async fn the_end_of_long_diagnostics_is_kept_from_a_line_start() {
+        let failure = "API Error: Request timed out.\n";
+        let diagnostics = format!("{}{failure}", "noise\n".repeat(20_000));
+
+        let kept = tail(diagnostics.as_bytes(), 64).await.unwrap();
+
+        assert_eq!(
+            String::from_utf8(kept).unwrap(),
+            format!("{}{failure}", "noise\n".repeat(5))
+        );
+    }
 }

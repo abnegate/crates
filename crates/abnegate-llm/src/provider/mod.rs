@@ -17,15 +17,18 @@ mod capabilities;
 mod completion;
 mod completion_provider;
 mod credential;
-mod error;
+pub(crate) mod error;
 mod exit_status;
 mod http;
 mod kind;
+mod limit;
 mod request;
 mod router;
 mod selection;
 mod strategy;
 mod weighted;
+mod window;
+mod window_kind;
 
 #[cfg(any(test, feature = "testing"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
@@ -39,9 +42,13 @@ pub use crate::provider::error::ProviderError;
 pub use crate::provider::exit_status::ExitStatus;
 pub use crate::provider::http::HttpProvider;
 pub use crate::provider::kind::ProviderKind;
+pub use crate::provider::limit::LIMIT_WORDINGS;
+pub use crate::provider::limit::Limit;
 pub use crate::provider::request::CompletionRequest;
 pub use crate::provider::router::Router;
 pub use crate::provider::selection::choose;
 pub use crate::provider::selection::sample;
 pub use crate::provider::strategy::SelectionStrategy;
 pub use crate::provider::weighted::Weighted;
+pub use crate::provider::window::Window;
+pub use crate::provider::window_kind::WindowKind;

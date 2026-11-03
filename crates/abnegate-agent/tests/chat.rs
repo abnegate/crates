@@ -141,14 +141,17 @@ fn a_capacity_carries_what_the_deployment_reported() {
     assert_eq!(reported.source, Source::Provider);
     assert!(reported.ollama.is_none());
     assert!(!reported.reasoning);
+    assert!(reported.vision.is_none());
     assert!(reported.reason.is_none());
 
     let local = Capacity::new("ollama/qwen3", Some(32_768), Source::Runtime)
         .with_ollama(32_768)
         .with_reasoning(true)
+        .with_vision(true)
         .with_reason("the runtime reported its loaded context");
     assert_eq!(local.ollama, Some(32_768));
     assert!(local.reasoning);
+    assert_eq!(local.vision, Some(true));
     assert_eq!(
         local.reason.as_deref(),
         Some("the runtime reported its loaded context")

@@ -39,3 +39,18 @@ async fn greet() -> Result<(), Error> {
     Ok(())
 }
 ```
+
+An endpoint a tenant saved through an API, rather than one the operator
+configured, is marked `Trust::Tenant`. Its client never reaches a link-local or
+cloud metadata address, by URL or through DNS, never goes through a proxy, never
+follows a redirect, and reports a refusal only as its status and the endpoint's
+own error message.
+
+```rust,no_run
+use abnegate_llm::{LlmClient, LlmConfig, Trust};
+
+let config = LlmConfig::new("https://tenant.example/v1", "gpt-4o", "sk-tenant")
+    .with_trust(Trust::Tenant);
+let client = LlmClient::new(config);
+# let _ = client;
+```

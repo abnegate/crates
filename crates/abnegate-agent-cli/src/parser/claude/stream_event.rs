@@ -3,6 +3,7 @@ use serde::Deserialize;
 use crate::event::AgentEvent;
 use crate::parser::claude::cli_message::CliMessage;
 use crate::parser::claude::cli_usage::CliUsage;
+use crate::parser::claude::lenient;
 use crate::parser::claude::rate_limit_report::RateLimitReport;
 use crate::parser::claude::turn::Turn;
 
@@ -97,12 +98,19 @@ pub enum StreamEvent {
         /// The tokens the whole run cost.
         #[serde(default)]
         usage: Option<CliUsage>,
+        /// The HTTP status of the request that failed the run, such as 429
+        /// for one a usage limit refused. A value of any other shape reads as
+        /// absent rather than losing the whole result.
+        #[serde(default, deserialize_with = "lenient")]
+        api_error_status: Option<u16>,
     },
-    /// A throttling report. Anything but [headroom](RateLimitReport::allowed)
-    /// is a refused window, a report with no status at all included, since
-    /// the event exists to announce a limit being hit. The event names no
-    /// agent, so the window fails the turn only when the main agent's next
-    /// line is a failed request, or the turn's result a failure.
+    /// A throttling report. Headroom on a named window of the plan, with how
+    /// much of it is spent, is a [`AgentEvent::Window`]. Anything but
+    /// [headroom](RateLimitReport::allowed) is a refused window, a report
+    /// with no status at all included, since the event exists to announce a
+    /// limit being hit. The event names no agent, so the window ends the turn
+    /// in a [`AgentEvent::Limited`] only when the main agent's next line is a
+    /// failed request, or the turn's result a failure.
     #[serde(rename = "rate_limit_event")]
     #[non_exhaustive]
     RateLimit {
@@ -259,9 +267,39 @@ mod tests {
             .interpret(&mut events);
 
         assert!(
-            matches!(events.as_slice(), [AgentEvent::Diagnostic(message)] if message.starts_with("rate limit reached: {")),
+            matches!(events.as_slice(), [AgentEvent::Diagnostic(message)] if message == "rate limit reached (five_hour, rejected)"),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn a_failed_results_status_is_read_and_a_status_of_another_shape_is_absent() {
+        for (line, expected) in [
+            (
+                r#"{"type":"result","is_error":true,"api_error_status":429}"#,
+                Some(429),
+            ),
+            (
+                r#"{"type":"result","is_error":true,"api_error_status":"429"}"#,
+                None,
+            ),
+            (
+                r#"{"type":"result","is_error":true,"api_error_status":null}"#,
+                None,
+            ),
+            (
+                r#"{"type":"result","is_error":true,"api_error_status":70000}"#,
+                None,
+            ),
+        ] {
+            let StreamEvent::Result {
+                api_error_status, ..
+            } = parse(line)
+            else {
+                panic!("{line} was not read as a result");
+            };
+            assert_eq!(api_error_status, expected, "{line}");
+        }
     }
 
     #[test]
@@ -326,6 +364,7 @@ mod tests {
                 session_id: None,
                 api_milliseconds: None,
                 usage: None,
+                api_error_status: None,
             }
         );
     }

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use abnegate_exec::PROXY_URL_VARIABLE;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -18,9 +19,15 @@ use super::limits::Limits;
 use super::log::Log;
 use super::*;
 use crate::test_support::CHILD_TEST;
+use crate::test_support::CONFIGURED_PROXY;
+use crate::test_support::ENVIRONMENT_PROXY;
 use crate::test_support::PATIENCE;
 use crate::test_support::assert_passed;
+use crate::test_support::assert_routed;
+use crate::test_support::assert_unrouted;
 use crate::test_support::captured_logs;
+use crate::test_support::ran_in_child;
+use crate::tool::Proxy;
 use crate::tool::Session;
 use crate::tool::ToolContext;
 
@@ -1493,4 +1500,52 @@ async fn the_exclude_lookup_never_sees_a_host_only_secret() {
         names.contains(&"PATH"),
         "the exclude lookup was not handed the context's environment: {names:?}"
     );
+}
+
+/// A background job starts through the same routing as a command: through
+/// its context's proxy when it has one, the environment's when not, and
+/// none at all when its proxy routes nothing.
+#[tokio::test]
+async fn a_job_is_routed_through_its_context_proxy_or_else_the_environments() {
+    if ran_in_child(
+        "tool::job::tests::a_job_is_routed_through_its_context_proxy_or_else_the_environments",
+        &[(PROXY_URL_VARIABLE, ENVIRONMENT_PROXY)],
+    )
+    .await
+    {
+        return;
+    }
+    let cwd = directory();
+    let session = chat();
+    let configured = Proxy::new(CONFIGURED_PROXY).with_bypass(["ollama"]);
+
+    for (context, routing) in [
+        (
+            context(session, cwd.path()).with_proxy(configured),
+            Some((CONFIGURED_PROXY, "ollama")),
+        ),
+        (
+            context(session, cwd.path()),
+            Some((ENVIRONMENT_PROXY, "localhost,127.0.0.1,::1")),
+        ),
+        (
+            context(session, cwd.path()).with_proxy(Proxy::default()),
+            None,
+        ),
+    ] {
+        let started = Jobs::spawn(&JobCommand::shell("env"), &context)
+            .await
+            .expect("the job starts");
+        assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
+        let tail = Jobs::read(session, &started.id, 0, 64 * 1024)
+            .await
+            .expect("the log reads");
+
+        match routing {
+            Some((url, bypass)) => assert_routed(&tail.output, url, bypass),
+            None => assert_unrouted(&tail.output),
+        }
+    }
+
+    Jobs::kill_session(session).await;
 }

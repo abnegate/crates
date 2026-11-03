@@ -12,6 +12,8 @@ use std::sync::Once;
 use std::time::Duration;
 use std::time::Instant;
 
+use abnegate_exec::PROXY_BYPASS_VARIABLE;
+use abnegate_exec::PROXY_URL_VARIABLE;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 use tracing_subscriber::fmt::MakeWriter;
@@ -108,6 +110,80 @@ pub(crate) fn assert_passed(output: &Output) {
         stdout.contains("1 passed"),
         "the child ran no test, so it proved nothing\n{stdout}"
     );
+}
+
+/// The proxy a test's child process names in its environment, which a
+/// context or hub given a proxy of its own must not route through.
+pub(crate) const ENVIRONMENT_PROXY: &str = "http://127.0.0.1:28888";
+
+/// The proxy a test hands a context or hub directly.
+pub(crate) const CONFIGURED_PROXY: &str = "http://proxy.invalid:3128";
+
+/// The variables a [`Proxy`](abnegate_exec::Proxy) sets to its URL.
+const PROXY_VARIABLES: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    PROXY_URL_VARIABLE,
+];
+
+/// The variables a [`Proxy`](abnegate_exec::Proxy) sets to its bypass list.
+const BYPASS_VARIABLES: &[&str] = &["NO_PROXY", "no_proxy", PROXY_BYPASS_VARIABLE];
+
+/// Whether this run of test `name` is the parent, which has re-run `name` in
+/// a child process holding only `PATH` and `variables` and seen it pass. The
+/// child sees itself named, answers `false`, and runs the test.
+pub(crate) async fn ran_in_child(name: &str, variables: &[(&str, &str)]) -> bool {
+    if std::env::var(CHILD_TEST).as_deref() == Ok(name) {
+        return false;
+    }
+    let output = tokio::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", name, "--nocapture"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env(CHILD_TEST, name)
+        .envs(variables.iter().copied())
+        .output()
+        .await
+        .expect("the test binary runs");
+    assert_passed(&output);
+    true
+}
+
+/// Fail unless `environment`, as `env` prints it, routes through `url` and
+/// reaches `bypass` directly, and names no other proxy.
+pub(crate) fn assert_routed(environment: &str, url: &str, bypass: &str) {
+    for (names, value) in [(PROXY_VARIABLES, url), (BYPASS_VARIABLES, bypass)] {
+        for name in names {
+            let line = format!("{name}={value}");
+            assert!(
+                environment.lines().any(|candidate| candidate == line),
+                "{line} is missing: {environment}"
+            );
+        }
+    }
+    for other in [ENVIRONMENT_PROXY, CONFIGURED_PROXY]
+        .iter()
+        .filter(|other| **other != url)
+    {
+        assert!(
+            !environment.contains(other),
+            "{other} reached the child: {environment}"
+        );
+    }
+}
+
+/// Fail if `environment`, as `env` prints it, sets any proxy variable.
+pub(crate) fn assert_unrouted(environment: &str) {
+    for (name, _) in environment.lines().filter_map(|line| line.split_once('=')) {
+        assert!(
+            !name.to_ascii_lowercase().contains("proxy"),
+            "{name} reached the child: {environment}"
+        );
+    }
 }
 
 /// One subscriber for the whole binary, because a scoped one is not

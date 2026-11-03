@@ -32,6 +32,13 @@ pub struct ChatRequest<'a> {
     /// The most tokens the answer may use. Sent as `max_tokens`.
     #[serde(rename = "max_tokens", skip_serializing_if = "Option::is_none")]
     pub maximum_tokens: Option<u32>,
+    /// The most tokens the answer may use, reasoning included, for a model
+    /// that refuses `max_tokens`. Sent as `max_completion_tokens`.
+    #[serde(
+        rename = "max_completion_tokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub maximum_completion_tokens: Option<u32>,
     /// Whether to stream the answer as server-sent events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
@@ -58,6 +65,7 @@ impl<'a> ChatRequest<'a> {
             tool_choice: None,
             temperature: None,
             maximum_tokens: None,
+            maximum_completion_tokens: None,
             stream: None,
             stop: None,
             response_format: None,
@@ -85,6 +93,12 @@ impl<'a> ChatRequest<'a> {
     /// Set [`Self::maximum_tokens`].
     pub fn with_maximum_tokens(mut self, maximum_tokens: u32) -> Self {
         self.maximum_tokens = Some(maximum_tokens);
+        self
+    }
+
+    /// Set [`Self::maximum_completion_tokens`].
+    pub fn with_maximum_completion_tokens(mut self, maximum_completion_tokens: u32) -> Self {
+        self.maximum_completion_tokens = Some(maximum_completion_tokens);
         self
     }
 
@@ -211,6 +225,18 @@ mod tests {
     }
 
     #[test]
+    fn the_completion_budget_is_sent_as_max_completion_tokens() {
+        let messages = [Message::user("Hello")];
+        let request = ChatRequest::new("o3", &messages).with_maximum_completion_tokens(1000);
+
+        let body = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(body["max_completion_tokens"], 1000);
+        assert!(body.get("maximum_completion_tokens").is_none(), "{body}");
+        assert!(body.get("max_tokens").is_none(), "{body}");
+    }
+
+    #[test]
     fn unset_options_are_omitted_rather_than_sent_as_null() {
         let messages = [Message::user("Hello")];
         let request = ChatRequest::new("gpt-4", &messages);
@@ -220,6 +246,7 @@ mod tests {
         assert!(json.contains("Hello"));
         assert!(!json.contains("temperature"));
         assert!(!json.contains("max_tokens"));
+        assert!(!json.contains("max_completion_tokens"));
         assert!(!json.contains("stream"));
     }
 

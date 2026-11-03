@@ -29,9 +29,86 @@ pub struct ChatResponse {
     pub usage: Option<Usage>,
 }
 
+impl ChatResponse {
+    const OBJECT: &str = "chat.completion";
+
+    /// A completion answering with `choices`, of the object type
+    /// `chat.completion`, with the rest of its envelope empty.
+    pub fn new(choices: Vec<Choice>) -> Self {
+        Self {
+            id: String::new(),
+            object: Self::OBJECT.to_string(),
+            created: 0,
+            model: String::new(),
+            choices,
+            usage: None,
+        }
+    }
+
+    /// The same response, identified as `id`.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
+    }
+
+    /// The same response, created at `created` Unix seconds.
+    pub fn with_created(mut self, created: i64) -> Self {
+        self.created = created;
+        self
+    }
+
+    /// The same response, answered by `model`.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    /// The same response, having taken `usage`.
+    pub fn with_usage(mut self, usage: Usage) -> Self {
+        self.usage = Some(usage);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ChatResponse;
+    use crate::wire::choice::Choice;
+    use crate::wire::message::Message;
+    use crate::wire::usage::Usage;
+
+    #[test]
+    fn a_built_response_reads_like_one_an_endpoint_sent() {
+        let response = ChatResponse::new(vec![
+            Choice::new(0, Message::assistant("It is empty.")).with_finish_reason("stop"),
+        ])
+        .with_id("claude-6f1")
+        .with_created(1_677_652_288)
+        .with_model("sonnet")
+        .with_usage(Usage::new(9, 24));
+
+        assert_eq!(response.id, "claude-6f1");
+        assert_eq!(response.object, "chat.completion");
+        assert_eq!(response.created, 1_677_652_288);
+        assert_eq!(response.model, "sonnet");
+        assert_eq!(
+            response.choices[0].message.content.as_deref(),
+            Some("It is empty.")
+        );
+        assert_eq!(response.choices[0].finish_reason.as_deref(), Some("stop"));
+        assert_eq!(response.usage, Some(Usage::new(9, 24)));
+    }
+
+    #[test]
+    fn a_new_response_has_only_its_object_type() {
+        let response = ChatResponse::new(Vec::new());
+
+        assert!(response.id.is_empty());
+        assert_eq!(response.object, "chat.completion");
+        assert_eq!(response.created, 0);
+        assert!(response.model.is_empty());
+        assert!(response.usage.is_none());
+    }
 
     #[test]
     fn a_response_carries_its_choice_and_usage() {

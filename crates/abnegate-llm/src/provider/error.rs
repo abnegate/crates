@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::error::Error;
 use crate::provider::exit_status::ExitStatus;
+use crate::provider::limit::Limit;
 
 /// A provider failure.
 ///
@@ -102,6 +103,20 @@ pub enum ProviderError {
         message: String,
     },
 
+    /// A usage limit refused the agent's turn. It renders exactly as the
+    /// [`Self::Agent`] the same refusal would be, so whatever classifies a
+    /// failure by its text reads it unchanged. Like [`Self::Agent`], it is
+    /// worth taking to the next provider but not worth asking again: the
+    /// limit lifts when [`Limit::resets_at`] says, not after a pause.
+    #[error("{provider}: {}", .limit.message)]
+    #[non_exhaustive]
+    Limited {
+        /// The provider that failed.
+        provider: String,
+        /// The refusal.
+        limit: Box<Limit>,
+    },
+
     /// The request never reached the provider, or its answer never arrived.
     #[error("network error: {detail}")]
     #[non_exhaustive]
@@ -171,7 +186,7 @@ pub enum ProviderError {
 
 const REJECTED: [u16; 4] = [400, 404, 413, 422];
 const REQUEST_TIMEOUT: u16 = 408;
-const TOO_MANY_REQUESTS: u16 = 429;
+pub(crate) const TOO_MANY_REQUESTS: u16 = 429;
 const FIRST_SERVER_ERROR: u16 = 500;
 
 fn transient_status(status: u16) -> bool {
@@ -188,7 +203,8 @@ impl ProviderError {
             | Self::Exit { provider, .. }
             | Self::Timeout { provider, .. }
             | Self::Malformed { provider, .. }
-            | Self::Agent { provider, .. } => Some(provider),
+            | Self::Agent { provider, .. }
+            | Self::Limited { provider, .. } => Some(provider),
             Self::Network { .. }
             | Self::Api { .. }
             | Self::Parse { .. }
@@ -217,6 +233,7 @@ impl ProviderError {
             | Self::Timeout { .. }
             | Self::Malformed { .. }
             | Self::Agent { .. }
+            | Self::Limited { .. }
             | Self::Network { .. }
             | Self::Parse { .. }
             | Self::Io { .. } => true,
@@ -255,6 +272,7 @@ impl ProviderError {
             Self::Unavailable { .. }
             | Self::Exit { .. }
             | Self::Agent { .. }
+            | Self::Limited { .. }
             | Self::Io { .. }
             | Self::Config { .. }
             | Self::Unconfigured
@@ -294,6 +312,16 @@ impl ProviderError {
         Self::Agent {
             provider: provider.to_string(),
             message: redact(message).into_owned(),
+        }
+    }
+
+    /// A usage limit refused `provider`'s turn, with the limit's message
+    /// redacted.
+    pub fn limited(provider: &str, limit: Limit) -> Self {
+        let message = redact(&limit.message).into_owned();
+        Self::Limited {
+            provider: provider.to_string(),
+            limit: Box::new(limit.with_message(message)),
         }
     }
 
@@ -375,6 +403,7 @@ mod tests {
     use super::ProviderError;
     use crate::error::Error;
     use crate::provider::exit_status::ExitStatus;
+    use crate::provider::limit::Limit;
 
     #[test]
     fn a_credential_echoed_by_the_agent_never_reaches_the_message() {
@@ -387,6 +416,7 @@ mod tests {
             ProviderError::agent("claude", leaked),
             ProviderError::malformed("claude", leaked),
             ProviderError::unavailable("claude", "claude", leaked),
+            ProviderError::limited("claude", Limit::new(leaked)),
             ProviderError::network(leaked),
             ProviderError::api(500, leaked),
             ProviderError::parse(leaked),
@@ -566,6 +596,24 @@ mod tests {
                 "{error:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_limit_reads_as_the_agent_failure_it_replaces_and_falls_over_like_one() {
+        let message = "rate limit reached (five_hour, rejected): You've hit your session limit";
+        let agent = ProviderError::agent("claude", message);
+        let limited = ProviderError::limited("claude", Limit::new(message).with_credits(true));
+
+        assert_eq!(limited.to_string(), agent.to_string());
+        assert_eq!(limited.provider(), Some("claude"));
+        assert_eq!(limited.recoverable(), agent.recoverable());
+        assert_eq!(limited.transient(), agent.transient());
+        assert!(limited.recoverable());
+        assert!(!limited.transient());
+        let ProviderError::Limited { limit, .. } = &limited else {
+            panic!("expected a limit, got {limited:?}");
+        };
+        assert!(limit.credits, "the constructor dropped a field: {limit:?}");
     }
 
     #[test]

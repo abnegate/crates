@@ -9,13 +9,14 @@ use reqwest::RequestBuilder;
 use tokio::runtime;
 
 use crate::client::Pool;
+use crate::client::Trust;
 use crate::provider::ProviderError;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
-/// How a vendor client reaches its API: the shared per-runtime pool, which
-/// refuses redirects so a vendor key header never follows one to another
-/// host, and a deadline on every call.
+/// How a vendor client reaches its API: the shared per-runtime
+/// [`Trust::Operator`] pool, which refuses redirects so a vendor key header
+/// never follows one to another host, and a deadline on every call.
 ///
 /// The client for the runtime of the last call is kept, and the shared pool
 /// is asked again only when a call comes from another runtime, so a provider
@@ -73,7 +74,7 @@ impl Transport {
 
     fn client(&self) -> Client {
         let Ok(runtime) = runtime::Handle::try_current() else {
-            return self.pool.for_current_runtime();
+            return self.pool.for_current_runtime(Trust::Operator);
         };
         let id = runtime.id();
         if let Some((owner, client)) = self.cached().as_ref()
@@ -82,7 +83,7 @@ impl Transport {
             return client.clone();
         }
 
-        let client = self.pool.for_runtime(id);
+        let client = self.pool.for_runtime(id, Trust::Operator);
         *self.cached() = Some((id, client.clone()));
         client
     }
@@ -117,7 +118,7 @@ mod tests {
     fn transports_on_more_runtimes_than_the_pool_holds_keep_their_clients() {
         let builds = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&builds);
-        let pool: &'static Pool = Box::leak(Box::new(Pool::new(CAPACITY, move || {
+        let pool: &'static Pool = Box::leak(Box::new(Pool::new(CAPACITY, move |_| {
             counter.fetch_add(1, Ordering::Relaxed);
             Client::new()
         })));
@@ -149,7 +150,7 @@ mod tests {
     fn a_transport_moved_to_another_runtime_takes_the_client_of_that_runtime() {
         let builds = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&builds);
-        let pool: &'static Pool = Box::leak(Box::new(Pool::new(CAPACITY, move || {
+        let pool: &'static Pool = Box::leak(Box::new(Pool::new(CAPACITY, move |_| {
             counter.fetch_add(1, Ordering::Relaxed);
             Client::new()
         })));

@@ -13,6 +13,7 @@ use crate::event::AgentEvent;
 use crate::mcp::McpServer;
 use crate::parser;
 use crate::parser::Turn;
+use crate::session::Session;
 use crate::settings::CliSettings;
 use crate::settings::READ_ONLY_OPTIONS;
 use crate::settings::READ_ONLY_SWITCHES;
@@ -34,6 +35,12 @@ const PERMISSION_MODE: &str = "--permission-mode";
 const DENY_UNLISTED: &str = "dontAsk";
 const PERMISSION_PROMPTS: &str = "--permission-prompts";
 const NOBODY: &str = "none";
+const SESSION_ID: &str = "--session-id";
+const RESUME: &str = "--resume";
+const CODEX_RESUME: &str = "resume";
+const SANDBOX: &str = "--sandbox";
+const CONFIGURATION: &str = "-c";
+const SANDBOX_MODE: &str = "sandbox_mode";
 const FLAG: &str = "-";
 const INLINE_VALUE: char = '=';
 
@@ -71,6 +78,9 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
+    /// Every agent this crate drives.
+    pub const ALL: &'static [Self] = &[Self::Claude, Self::Codex];
+
     /// The agent's lowercase name, which is also its serialized form and the
     /// default provider name.
     pub fn as_str(self) -> &'static str {
@@ -78,6 +88,15 @@ impl AgentKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
         }
+    }
+
+    /// The agent whose [name](AgentKind::as_str) is `name`, exactly as it is
+    /// spelled there, or `None` for any other name.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|agent| agent.as_str() == name)
     }
 
     /// The command looked up on `PATH` unless the settings override it.
@@ -171,7 +190,8 @@ impl AgentKind {
     /// approved in advance but what the settings allow. Claude's own tools
     /// keep Claude's own permission checks, as the user configured them.
     /// Codex's do not: `codex exec` never asks for approval, so only its
-    /// sandbox confines them, whichever one the user's configuration or a
+    /// sandbox confines them, whichever one the settings'
+    /// [sandbox](CliSettings::sandbox), the user's configuration or a
     /// `--sandbox` argument names, and `danger-full-access` confines nothing.
     pub fn arguments(self, model: Option<&str>) -> Vec<String> {
         self.invocation(model, Vec::new())
@@ -180,6 +200,22 @@ impl AgentKind {
     /// [`AgentKind::arguments`] with `options` placed after the streaming flags
     /// and before the model and the flag that makes the agent read its prompt.
     pub fn invocation(self, model: Option<&str>, options: Vec<String>) -> Vec<String> {
+        self.invocation_in(model, options, None)
+    }
+
+    /// [`AgentKind::invocation`] in `session`, named after the model and
+    /// before the flag that makes the agent read its prompt: Claude's
+    /// `--session-id <id>` for a new session and `--resume <id>` for an
+    /// existing one, and Codex's `resume <id>` for an existing one. Codex
+    /// names its own threads, so a new session leaves its invocation as it
+    /// was. The id is passed as given: [`AgentKind::options`] refuses one the
+    /// agent would read as a flag.
+    pub fn invocation_in(
+        self,
+        model: Option<&str>,
+        options: Vec<String>,
+        session: Option<&Session>,
+    ) -> Vec<String> {
         let mut arguments: Vec<String> = self
             .streaming()
             .iter()
@@ -190,6 +226,10 @@ impl AgentKind {
         if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
             arguments.push(MODEL.to_string());
             arguments.push(model.to_string());
+        }
+
+        if let Some(session) = session {
+            arguments.extend(self.continuation(session));
         }
 
         arguments.push(self.prompt().to_string());
@@ -210,12 +250,19 @@ impl AgentKind {
     ///
     /// A setting this agent has no flag for is refused rather than dropped,
     /// since a run that silently ignored its tool restrictions or its answer
-    /// schema would not be the run the caller asked for.
+    /// schema would not be the run the caller asked for. So is a caller
+    /// argument choosing what the settings' session or sandbox already chose.
+    ///
+    /// Codex runs in the settings' [sandbox](CliSettings::sandbox) with
+    /// `--sandbox`, or, resuming a [session](CliSettings::session), as the
+    /// `sandbox_mode` it would otherwise read from its configuration, since
+    /// `codex exec resume` takes no `--sandbox`.
     pub fn options(
         self,
         settings: &CliSettings,
         attachments: &Attachments<'_>,
     ) -> Result<Vec<String>, ProviderError> {
+        settings.refuse_conflicts(self)?;
         match self {
             Self::Claude => claude_options(settings, attachments),
             Self::Codex => {
@@ -240,6 +287,20 @@ impl AgentKind {
                     options.extend(CODEX_STRICT_MCP.iter().map(|option| option.to_string()));
                 }
                 options.extend(attachments.mcp_overrides.iter().cloned());
+                if let Some(sandbox) = settings.sandbox {
+                    let resumed = settings
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.resume);
+                    options.extend(if resumed {
+                        [
+                            CONFIGURATION.to_string(),
+                            format!(r#"{SANDBOX_MODE}="{sandbox}""#),
+                        ]
+                    } else {
+                        [SANDBOX.to_string(), sandbox.to_string()]
+                    });
+                }
                 options.extend(settings.arguments.iter().cloned());
                 Ok(options)
             }
@@ -283,6 +344,17 @@ impl AgentKind {
         }
     }
 
+    /// The arguments naming `session`, which the agent's prompt flag follows.
+    fn continuation(self, session: &Session) -> Vec<String> {
+        let flag = match (self, session.resume) {
+            (Self::Claude, false) => SESSION_ID,
+            (Self::Claude, true) => RESUME,
+            (Self::Codex, true) => CODEX_RESUME,
+            (Self::Codex, false) => return Vec::new(),
+        };
+        vec![flag.to_string(), session.id.clone()]
+    }
+
     fn streaming(self) -> &'static [&'static str] {
         match self {
             Self::Claude => &["--verbose", "--output-format", "stream-json"],
@@ -303,6 +375,12 @@ fn claude_options(
     attachments: &Attachments<'_>,
 ) -> Result<Vec<String>, ProviderError> {
     let mcp = attachments.mcp;
+    if settings.sandbox.is_some() {
+        return Err(ProviderError::unsupported(format!(
+            "{} has no equivalent of codex's {SANDBOX}",
+            AgentKind::Claude
+        )));
+    }
     if settings.read_only {
         refuse_unconfined(&settings.arguments)?;
     }
@@ -465,14 +543,38 @@ mod tests {
 
     use super::AgentKind;
     use crate::attachments::Attachments;
+    use crate::codex_sandbox::CodexSandbox;
     use crate::delivery::Delivery;
+    use crate::event::AgentEvent;
     use crate::mcp::McpServer;
+    use crate::session::Session;
     use crate::settings::CliSettings;
 
     #[test]
     fn the_prompt_is_never_placed_on_the_command_line() {
         for agent in [AgentKind::Claude, AgentKind::Codex] {
             assert_eq!(agent.delivery(), Delivery::Stdin, "{agent}");
+        }
+    }
+
+    #[test]
+    fn every_agent_is_listed() {
+        assert_eq!(AgentKind::ALL, [AgentKind::Claude, AgentKind::Codex]);
+    }
+
+    #[test]
+    fn an_agent_is_found_by_the_name_it_goes_by_and_no_other() {
+        for agent in AgentKind::ALL {
+            assert_eq!(AgentKind::named(agent.as_str()), Some(*agent));
+            assert_eq!(
+                serde_json::to_string(agent).expect("a serialized agent"),
+                format!("\"{agent}\""),
+                "{agent} is named differently on the wire"
+            );
+        }
+
+        for name in ["gemini", "", "Claude", "CODEX", " claude", "claude_code"] {
+            assert_eq!(AgentKind::named(name), None, "{name:?}");
         }
     }
 
@@ -1148,6 +1250,262 @@ mod tests {
                 "{flag}: {error:?}"
             );
             assert!(!error.recoverable());
+        }
+    }
+
+    const CLAUDE_SESSION: &str = "5b0c1f7e-8d43-4a77-9a3e-2f0d6c1b9e42";
+    const CODEX_THREAD: &str = "019b2c41-0000-7000-8000-000000000001";
+
+    /// What `agent` is run with under `settings`, in `session`.
+    fn invoked(agent: AgentKind, settings: &CliSettings, model: &str) -> Vec<String> {
+        let options = agent
+            .options(settings, &Attachments::default())
+            .expect("options");
+        agent.invocation_in(Some(model), options, settings.session.as_ref())
+    }
+
+    #[test]
+    fn a_new_claude_session_is_pinned_and_a_resumed_one_named() {
+        for settings in [
+            CliSettings::default(),
+            CliSettings::default().with_permissions(["Read"]),
+            CliSettings::default().read_only(),
+        ] {
+            let unpinned = invoked(AgentKind::Claude, &settings, "opus");
+            let new = invoked(
+                AgentKind::Claude,
+                &settings
+                    .clone()
+                    .with_session(Session::pinned(CLAUDE_SESSION)),
+                "opus",
+            );
+            let resume = invoked(
+                AgentKind::Claude,
+                &settings
+                    .clone()
+                    .with_session(Session::resumed(CLAUDE_SESSION)),
+                "opus",
+            );
+
+            assert!(
+                !unpinned
+                    .iter()
+                    .any(|argument| argument == "--session-id" || argument == "--resume"),
+                "{unpinned:?}"
+            );
+            assert_eq!(
+                &new[new.len() - 3..],
+                ["--session-id", CLAUDE_SESSION, "--print"]
+            );
+            assert_eq!(&new[..new.len() - 3], &unpinned[..unpinned.len() - 1]);
+            assert!(!new.contains(&"--resume".to_string()), "{new:?}");
+
+            assert_eq!(
+                &resume[resume.len() - 3..],
+                ["--resume", CLAUDE_SESSION, "--print"]
+            );
+            assert_eq!(&resume[..resume.len() - 3], &unpinned[..unpinned.len() - 1]);
+            assert!(!resume.contains(&"--session-id".to_string()), "{resume:?}");
+        }
+    }
+
+    #[test]
+    fn a_codex_resume_reads_the_prompt_from_stdin() {
+        let settings = CliSettings::default().with_sandbox(CodexSandbox::WorkspaceWrite);
+
+        let arguments = invoked(
+            AgentKind::Codex,
+            &settings
+                .clone()
+                .with_session(Session::resumed(CODEX_THREAD)),
+            "gpt-6-sol",
+        );
+        assert_eq!(
+            arguments,
+            [
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "-c",
+                r#"sandbox_mode="workspace-write""#,
+                "--model",
+                "gpt-6-sol",
+                "resume",
+                CODEX_THREAD,
+                "-",
+            ]
+        );
+
+        let new = invoked(
+            AgentKind::Codex,
+            &settings.clone().with_session(Session::pinned(CODEX_THREAD)),
+            "gpt-6-sol",
+        );
+        assert_eq!(
+            new,
+            invoked(AgentKind::Codex, &settings, "gpt-6-sol"),
+            "codex names its own thread, so a new session leaves the run as it was"
+        );
+    }
+
+    #[test]
+    fn a_resumed_codex_turn_keeps_its_sandbox_as_a_config_override() {
+        let server = McpServer::command("uvx", Vec::<String>::new());
+        for configured in [
+            CliSettings::default(),
+            CliSettings::default().with_mcp_server("appwrite", server),
+        ] {
+            for sandbox in CodexSandbox::ALL.iter().copied() {
+                let settings = configured
+                    .clone()
+                    .with_sandbox(sandbox)
+                    .with_arguments(["--ephemeral"]);
+                let fresh = invoked(AgentKind::Codex, &settings, "gpt-6-sol");
+                let arguments = invoked(
+                    AgentKind::Codex,
+                    &settings.with_session(Session::resumed(CODEX_THREAD)),
+                    "gpt-6-sol",
+                );
+
+                assert!(
+                    !arguments.contains(&"--sandbox".to_string()),
+                    "{arguments:?}"
+                );
+
+                let sandboxed = fresh
+                    .iter()
+                    .position(|argument| argument == "--sandbox")
+                    .expect("a fresh run's sandbox");
+                assert_eq!(fresh[sandboxed + 1], sandbox.as_str());
+                let mut expected = fresh[..sandboxed].to_vec();
+                expected.extend(["-c".to_string(), format!(r#"sandbox_mode="{sandbox}""#)]);
+                expected.extend_from_slice(&fresh[sandboxed + 2..fresh.len() - 1]);
+                expected.extend([
+                    "resume".to_string(),
+                    CODEX_THREAD.to_string(),
+                    "-".to_string(),
+                ]);
+                assert_eq!(
+                    arguments, expected,
+                    "a resumed run keeps every other flag a fresh one has"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn claude_refuses_a_sandbox_only_codex_has() {
+        let error = AgentKind::Claude
+            .options(
+                &CliSettings::default().with_sandbox(CodexSandbox::ReadOnly),
+                &Attachments::default(),
+            )
+            .expect_err("a refusal");
+
+        assert!(
+            matches!(error, ProviderError::Unsupported { ref detail, .. } if detail.contains("--sandbox")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn neither_agent_is_handed_a_second_session_or_sandbox_in_its_arguments() {
+        for (agent, chooser) in [
+            (AgentKind::Claude, ["--resume", "6f1"]),
+            (AgentKind::Claude, ["--continue", "--fork-session"]),
+            (AgentKind::Codex, ["resume", "019b"]),
+            (AgentKind::Codex, ["--ephemeral", "--last"]),
+        ] {
+            for settings in [
+                CliSettings::default()
+                    .with_session(Session::resumed(CLAUDE_SESSION))
+                    .with_arguments(chooser),
+                CliSettings::default()
+                    .with_session(Session::pinned(CLAUDE_SESSION))
+                    .with_arguments(chooser),
+                CliSettings::default().with_session(Session::resumed("--yolo")),
+            ] {
+                let error = agent
+                    .options(&settings, &Attachments::default())
+                    .expect_err("a refusal");
+                assert!(
+                    matches!(error, ProviderError::Config { .. }),
+                    "{agent}: {error:?}"
+                );
+            }
+        }
+
+        for chooser in [
+            ["--sandbox", "danger-full-access"],
+            ["-c", r#"sandbox_mode="danger-full-access""#],
+            ["--dangerously-bypass-approvals-and-sandbox", "--ephemeral"],
+        ] {
+            for session in [None, Some(Session::resumed(CODEX_THREAD))] {
+                let mut settings = CliSettings::default()
+                    .with_sandbox(CodexSandbox::ReadOnly)
+                    .with_arguments(chooser);
+                settings.session = session;
+                let error = AgentKind::Codex
+                    .options(&settings, &Attachments::default())
+                    .expect_err("a refusal");
+                assert!(
+                    matches!(error, ProviderError::Config { .. }),
+                    "{chooser:?}: {error:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn both_agents_announce_their_session() {
+        for (agent, stream, id) in [
+            (
+                AgentKind::Claude,
+                concat!(
+                    r#"{"type":"system","subtype":"init","cwd":"/w","session_id":"6f1","tools":["Read"],"model":"claude-opus-4"}"#,
+                    "\n",
+                    r#"{"type":"system","subtype":"status","session_id":"6f1"}"#,
+                    "\n",
+                    r#"{"type":"system","subtype":"init","session_id":"6f2"}"#,
+                    "\n",
+                    r#"{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"6f1"}"#,
+                ),
+                "6f1",
+            ),
+            (
+                AgentKind::Codex,
+                concat!(
+                    r#"{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000001"}"#,
+                    "\n",
+                    r#"{"type":"turn.started"}"#,
+                    "\n",
+                    r#"{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":2}}"#,
+                ),
+                CODEX_THREAD,
+            ),
+        ] {
+            let mut turn = agent.turn();
+            let mut events = Vec::new();
+            for line in stream.lines() {
+                turn.interpret(line, &mut events);
+            }
+
+            let sessions: Vec<&str> = events
+                .iter()
+                .filter_map(|event| match event {
+                    AgentEvent::Session(id) => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(sessions, [id], "{agent}: {events:?}");
+            assert!(
+                matches!(events.first(), Some(AgentEvent::Session(_))),
+                "{agent} announces its session before anything else: {events:?}"
+            );
+            assert!(
+                events.last().is_some_and(AgentEvent::terminal),
+                "{agent}: {events:?}"
+            );
         }
     }
 }

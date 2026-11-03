@@ -6,7 +6,7 @@ mod estimator;
 mod line_item;
 mod model_pricing;
 mod pricing_unit;
-mod strategy;
+pub(crate) mod strategy;
 mod task_category;
 mod task_specification;
 

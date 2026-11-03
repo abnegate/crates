@@ -10,6 +10,7 @@ use crate::modality::Exchange;
 use crate::modality::ResponseFormat;
 use crate::modality::TextProvider;
 use crate::modality::TextRequest;
+use crate::modality::log::Log;
 #[cfg(doc)]
 use crate::provider::ProviderError;
 
@@ -35,7 +36,7 @@ pub struct AiClient {
     provider: Option<Box<dyn TextProvider>>,
     retries: u32,
     backoff: Backoff,
-    exchanges: Mutex<Vec<Exchange>>,
+    log: Mutex<Log>,
 }
 
 impl fmt::Debug for AiClient {
@@ -58,7 +59,7 @@ impl AiClient {
             backoff: Backoff::default()
                 .with_base(BACKOFF_BASE)
                 .with_maximum(BACKOFF_MAXIMUM),
-            exchanges: Mutex::new(Vec::new()),
+            log: Mutex::new(Log::default()),
         }
     }
 
@@ -72,7 +73,7 @@ impl AiClient {
             provider: None,
             retries: 0,
             backoff: Backoff::default(),
-            exchanges: Mutex::new(Vec::new()),
+            log: Mutex::new(Log::default()),
         }
     }
 
@@ -113,11 +114,30 @@ impl AiClient {
             .map_or(0, |provider| provider.maximum_context_tokens())
     }
 
-    /// Every exchange so far.
+    /// Every exchange so far, oldest first.
+    ///
+    /// The record only grows: an exchange is kept once its answer is, and is
+    /// never removed. A structured request that runs out of retries without a
+    /// well-shaped answer records no exchange, so its tokens are not in it.
     pub fn exchanges(&self) -> Vec<Exchange> {
-        self.exchanges
+        self.log
             .lock()
-            .map(|exchanges| exchanges.clone())
+            .map(|log| log.exchanges().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// The exchanges made since the last call, oldest first, each handed out
+    /// once.
+    ///
+    /// What a host appends to its NDJSON log after each step, so the log never
+    /// repeats an exchange however many steps share this client.
+    /// [`AiClient::exchanges`] still returns every exchange. As there, a
+    /// structured request that runs out of retries records no exchange, so the
+    /// host's log has no line for it.
+    pub fn unrecorded(&self) -> Vec<Exchange> {
+        self.log
+            .lock()
+            .map(|mut log| log.unrecorded())
             .unwrap_or_default()
     }
 
@@ -157,6 +177,7 @@ impl AiClient {
             provider: provider.name().to_string(),
             model: response.model.clone(),
             schema: None,
+            response_schema: None,
             system_prompt: request.system_prompt,
             user_prompt: request.user_prompt,
             answer: response.content.clone(),
@@ -221,6 +242,7 @@ impl AiClient {
                         provider: provider.name().to_string(),
                         model: response.model,
                         schema: Some(schema_name.to_string()),
+                        response_schema: Some(schema.clone()),
                         system_prompt: request.system_prompt,
                         user_prompt: request.user_prompt,
                         answer: rendered,
@@ -255,8 +277,8 @@ impl AiClient {
     }
 
     fn record(&self, exchange: Exchange) {
-        if let Ok(mut exchanges) = self.exchanges.lock() {
-            exchanges.push(exchange);
+        if let Ok(mut log) = self.log.lock() {
+            log.push(exchange);
         }
     }
 }
@@ -413,6 +435,7 @@ mod tests {
         let log = client.exchanges();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].schema.as_deref(), Some("the facts"));
+        assert_eq!(log[0].response_schema, Some(schema()));
         assert_eq!(log[0].provider, "mock");
         assert_eq!(log[0].attempts, 1);
     }
@@ -444,6 +467,7 @@ mod tests {
 
         assert!(matches!(error, AiError::Shape { .. }), "{error:?}");
         assert!(client.exchanges().is_empty());
+        assert!(client.unrecorded().is_empty());
     }
 
     #[tokio::test]
@@ -553,5 +577,54 @@ mod tests {
     fn debug_names_the_provider() {
         let rendered = format!("{:?}", AiClient::new(Box::new(MockProvider::new(MISSING))));
         assert!(rendered.contains("mock"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn prose_records_no_response_schema() {
+        let provider = MockProvider::new(MISSING)
+            .with_answer("you-are-a-narrator", "Once upon a time there was a dragon.");
+        let client = AiClient::new(Box::new(provider));
+
+        client
+            .complete("a bridge", "You are a narrator.", "Write a line.", 100)
+            .await
+            .unwrap();
+
+        assert_eq!(client.exchanges()[0].response_schema, None);
+    }
+
+    #[tokio::test]
+    async fn unrecorded_hands_out_each_exchange_once() {
+        let provider = MockProvider::new(MISSING)
+            .with_answer("you-are-a-narrator", "Once upon a time there was a dragon.");
+        let client = AiClient::new(Box::new(provider));
+        assert!(client.unrecorded().is_empty());
+
+        client
+            .complete("a bridge", "You are a narrator.", "First line.", 100)
+            .await
+            .unwrap();
+        client
+            .complete("a bridge", "You are a narrator.", "Second line.", 100)
+            .await
+            .unwrap();
+        let first = client.unrecorded();
+
+        client
+            .complete("a bridge", "You are a narrator.", "Third line.", 100)
+            .await
+            .unwrap();
+        let second = client.unrecorded();
+
+        let prompts = |exchanges: &[Exchange]| {
+            exchanges
+                .iter()
+                .map(|exchange| exchange.user_prompt.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(prompts(&first), ["First line.", "Second line."]);
+        assert_eq!(prompts(&second), ["Third line."]);
+        assert!(client.unrecorded().is_empty());
+        assert_eq!(client.exchanges().len(), 3);
     }
 }

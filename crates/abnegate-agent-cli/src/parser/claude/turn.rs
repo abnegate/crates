@@ -1,21 +1,28 @@
 use std::time::Duration;
 
+use abnegate_llm::Limit;
 use abnegate_llm::Usage;
+use abnegate_llm::Window;
+use chrono::DateTime;
+use chrono::Utc;
 
 use crate::event::AgentEvent;
 use crate::parser::claude::CREDITS_UNCONFIRMED;
 use crate::parser::claude::cli_content_block::CliContentBlock;
 use crate::parser::claude::cli_message::CliMessage;
 use crate::parser::claude::credits_refusal::CreditsRefusal;
+use crate::parser::claude::rate_limit_report::OVERAGE_INCLUDED_WINDOW;
 use crate::parser::claude::rate_limit_report::RateLimitReport;
+use crate::parser::claude::refusal::Refusal;
+use crate::parser::claude::refusal::limited;
 use crate::parser::claude::salvage;
 use crate::parser::claude::stream_event::StreamEvent;
 
-/// The wording a throttled run is reported with.
+/// The wording a throttled run is reported with, followed by the refused
+/// window and its status in brackets.
 ///
-/// A caller recognises a throttled run by the words in the failure, and finds
-/// when to try again in the `"resetsAt"` of the report quoted after them, so
-/// both are load-bearing and not decoration.
+/// A caller recognises a throttled run by the words in the failure, so this
+/// phrase is load-bearing and not decoration.
 const THROTTLED: &str = "rate limit reached";
 
 const FAILED: &str = "the agent reported a failed run";
@@ -26,20 +33,26 @@ const NO_ARGUMENTS: &str = "{}";
 
 const UNNAMED_WINDOW: &str = "request";
 
-/// The window claude reports refused when an allowance that only usage
-/// credits extend is spent. The line after it types the refusal.
-const OVERAGE_INCLUDED_WINDOW: &str = "seven_day_overage_included";
+/// The system notice claude opens a session with, naming it.
+const INIT_SUBTYPE: &str = "init";
 
 /// Why claude could not look the account's usage credits up, which a later
 /// attempt may get past.
 const INDETERMINATE_REASONS: [&str; 2] = ["fetch_error", "unknown"];
+
+/// The status of a request a limit refused.
+const TOO_MANY_REQUESTS: u16 = 429;
+
+/// The status of a request from an account that is not signed in, which no
+/// wording makes a limit.
+const UNAUTHORIZED: u16 = 401;
 
 /// One turn of `claude --output-format stream-json`, read a line at a time.
 ///
 /// A line's meaning can hang on the lines before it. claude reports a
 /// refused request on a `rate_limit_event` that names no agent, then writes
 /// the refusal as the line of the agent whose request it was, so the window
-/// is remembered and fails the turn only on the main agent's API error or a
+/// is remembered and limits the turn only on the main agent's API error or a
 /// failed result. A line the main agent writes past it shows its own request
 /// went through, and the window was a subagent's.
 ///
@@ -47,17 +60,28 @@ const INDETERMINATE_REASONS: [&str; 2] = ["fetch_error", "unknown"];
 /// token counts and its API errors are its own conversation's, and claude
 /// hands its failure to the main agent as the result of the call that
 /// started it.
+///
+/// The session is announced once, from the first `init` notice, though
+/// claude repeats its id on other notices and on the result.
 #[derive(Debug, Clone, Default)]
 pub struct Turn {
     /// The latest reason claude gave for the account not spending usage
     /// credits.
     reason: Option<String>,
-    /// The latest refused window, as the failure it would be.
-    refusal: Option<String>,
+    /// The latest refused window, as the limit it would be.
+    refusal: Option<Refusal>,
+    /// When the latest refused request's window resets, which a limit that
+    /// ends the turn reports.
+    resets_at: Option<DateTime<Utc>>,
+    /// The latest refused request's window, which a limit that ends the turn
+    /// reports.
+    window: Option<Window>,
     /// The main agent's failed request, which the result after it repeats.
-    failure: Option<String>,
+    failure: Option<AgentEvent>,
     /// Whether the turn has said it runs on usage credits.
     credited: bool,
+    /// Whether the turn has announced its session.
+    announced: bool,
 }
 
 impl Turn {
@@ -76,9 +100,10 @@ impl Turn {
 
     pub(crate) fn read(&mut self, event: StreamEvent, events: &mut Vec<AgentEvent>) {
         match event {
-            StreamEvent::System { session_id, .. } => {
-                events.extend(session_id.map(AgentEvent::Session));
-            }
+            StreamEvent::System {
+                subtype,
+                session_id,
+            } => self.announce(subtype.as_deref(), session_id, events),
             StreamEvent::Assistant {
                 message,
                 parent_tool_use_id: Some(_),
@@ -97,11 +122,11 @@ impl Turn {
                 structured_output,
                 total_cost_usd,
                 turns,
-                session_id,
                 api_milliseconds,
                 usage,
+                api_error_status,
+                ..
             } => {
-                events.extend(session_id.map(AgentEvent::Session));
                 events.extend(structured_output.map(AgentEvent::Structured));
                 events.extend(total_cost_usd.map(AgentEvent::Cost));
                 events.extend(
@@ -120,12 +145,27 @@ impl Turn {
                     events.push(AgentEvent::Usage(Usage::from(&usage)));
                     events.push(AgentEvent::Tokens(usage));
                 }
-                events.push(self.conclusion(subtype, is_error, result));
+                events.push(self.conclusion(subtype, is_error, result, api_error_status));
             }
             StreamEvent::RateLimit { report, resets_at } => {
                 self.limit(report.unwrap_or_default(), resets_at, events);
             }
             StreamEvent::User {} | StreamEvent::Unknown => {}
+        }
+    }
+
+    fn announce(
+        &mut self,
+        subtype: Option<&str>,
+        session: Option<String>,
+        events: &mut Vec<AgentEvent>,
+    ) {
+        if self.announced || subtype != Some(INIT_SUBTYPE) {
+            return;
+        }
+        if let Some(session) = session.filter(|session| !session.is_empty()) {
+            self.announced = true;
+            events.push(AgentEvent::Session(session));
         }
     }
 
@@ -139,17 +179,22 @@ impl Turn {
         let kind = api_error.and_then(CreditsRefusal::named);
         if kind.is_some() || api_error_message {
             let words = message.as_ref().map(CliMessage::words).unwrap_or_default();
-            let failure = match kind {
-                Some(kind) => Some(self.refused(kind.marker(), &words)),
-                None => self.refusal.as_deref().map(|window| worded(window, &words)),
+            let ended = match kind {
+                Some(kind) => Some(self.unfunded(kind.marker(), &words)),
+                None => self
+                    .refusal
+                    .as_ref()
+                    .map(|refusal| refusal.limited(worded(&refusal.message, &words))),
             };
-            if let Some(failure) = failure {
-                self.failure = Some(failure.clone());
-                events.push(AgentEvent::Failed(failure));
+            if let Some(ended) = ended {
+                self.failure = Some(ended.clone());
+                events.push(ended);
             }
             return;
         }
         self.refusal = None;
+        self.resets_at = None;
+        self.window = None;
         let Some(message) = message else {
             return;
         };
@@ -172,6 +217,7 @@ impl Turn {
         subtype: Option<String>,
         is_error: bool,
         result: Option<String>,
+        status: Option<u16>,
     ) -> AgentEvent {
         let failed = is_error
             || subtype
@@ -181,51 +227,81 @@ impl Turn {
             return AgentEvent::finished(subtype);
         }
         if let Some(failure) = &self.failure {
-            return AgentEvent::Failed(failure.clone());
+            return failure.clone();
         }
         let words = result.filter(|result| !result.trim().is_empty());
-        AgentEvent::Failed(match (words, &self.refusal) {
-            (Some(words), Some(window)) => worded(window, &words),
-            (Some(words), None) => words,
-            (None, Some(window)) => window.clone(),
-            (None, None) => subtype.unwrap_or_else(|| FAILED.to_string()),
-        })
+        if status == Some(UNAUTHORIZED) {
+            return AgentEvent::Failed(
+                words.unwrap_or_else(|| subtype.unwrap_or_else(|| FAILED.to_string())),
+            );
+        }
+        match (words, &self.refusal) {
+            (Some(words), Some(refusal)) => refusal.limited(worded(&refusal.message, &words)),
+            (Some(words), None) => self.judged(words, status),
+            (None, Some(refusal)) => refusal.limited(refusal.message.clone()),
+            (None, None) => self.judged(subtype.unwrap_or_else(|| FAILED.to_string()), status),
+        }
     }
 
     fn limit(
         &mut self,
-        report: RateLimitReport,
+        mut report: RateLimitReport,
         resets_at: Option<serde_json::Value>,
         events: &mut Vec<AgentEvent>,
     ) {
+        if report.resets_at.is_none() {
+            report.resets_at = resets_at;
+        }
         self.reason.clone_from(&report.overage_disabled_reason);
         if report.is_using_overage == Some(true) && !self.credited {
             self.credited = true;
             let window = report.kind.as_deref().unwrap_or(UNNAMED_WINDOW);
             events.push(AgentEvent::Credits(window.to_string()));
         }
-        if report.allowed()
-            || report.error_code.is_some()
-            || report.kind.as_deref() == Some(OVERAGE_INCLUDED_WINDOW)
-        {
+        if report.allowed() {
+            events.extend(report.measured().map(AgentEvent::Window));
             return;
         }
-        let refusal = throttled(report, resets_at);
-        events.push(AgentEvent::Diagnostic(refusal.clone()));
-        self.refusal = Some(refusal);
+        self.resets_at = report.resets_at();
+        self.window = report.refused();
+        if report.error_code.is_some() || report.kind.as_deref() == Some(OVERAGE_INCLUDED_WINDOW) {
+            return;
+        }
+        let message = throttled(&report);
+        events.push(AgentEvent::Diagnostic(message.clone()));
+        self.refusal = Some(Refusal {
+            message,
+            resets_at: self.resets_at,
+            window: self.window.clone(),
+        });
+    }
+
+    /// The turn refused past a limit, in `message`, with whatever claude
+    /// said of the window it refused on.
+    fn limited(&self, message: String, credits: bool) -> AgentEvent {
+        limited(message, credits, self.resets_at, self.window.as_ref())
+    }
+
+    /// A failed result no refused window accounts for, which is a limit when
+    /// claude's status or its words say one refused the turn.
+    fn judged(&self, message: String, status: Option<u16>) -> AgentEvent {
+        if status == Some(TOO_MANY_REQUESTS) || Limit::worded(&message) {
+            return self.limited(message, false);
+        }
+        AgentEvent::Failed(message)
     }
 
     /// claude's `words` for a turn usage credits could not fund, begun with
-    /// `marker`, or with [`CREDITS_UNCONFIRMED`] when claude could not look
-    /// the account's usage credits up for the request it refused.
-    fn refused(&self, marker: &str, words: &str) -> String {
-        let marker = match self.reason.as_deref() {
+    /// `marker`, or a failure begun with [`CREDITS_UNCONFIRMED`] when claude
+    /// could not look the account's usage credits up for the request it
+    /// refused.
+    fn unfunded(&self, marker: &str, words: &str) -> AgentEvent {
+        match self.reason.as_deref() {
             Some(reason) if INDETERMINATE_REASONS.contains(&reason) => {
-                format!("{CREDITS_UNCONFIRMED} ({reason})")
+                AgentEvent::Failed(worded(&format!("{CREDITS_UNCONFIRMED} ({reason})"), words))
             }
-            _ => marker.to_string(),
-        };
-        worded(&marker, words)
+            _ => self.limited(worded(marker, words), true),
+        }
     }
 }
 
@@ -258,16 +334,21 @@ fn worded(marker: &str, words: &str) -> String {
     }
 }
 
-fn throttled(mut report: RateLimitReport, resets_at: Option<serde_json::Value>) -> String {
-    if report.resets_at.is_none() {
-        report.resets_at = resets_at;
-    }
-    let quoted = serde_json::to_string(&report).unwrap_or_default();
-    format!("{THROTTLED}: {quoted}")
+/// A refused request as a caller reads a rate limit, naming its window and
+/// its status.
+fn throttled(report: &RateLimitReport) -> String {
+    let window = report.kind.as_deref().unwrap_or(UNNAMED_WINDOW);
+    let status = report.status.as_deref().unwrap_or_default();
+    format!("{THROTTLED} ({window}, {status})")
 }
 
 #[cfg(test)]
 mod tests {
+    use abnegate_llm::Limit;
+    use abnegate_llm::Window;
+    use abnegate_llm::WindowKind;
+    use chrono::DateTime;
+    use chrono::Utc;
     use serde_json::Value;
     use serde_json::json;
 
@@ -277,7 +358,7 @@ mod tests {
     use crate::parser::claude::CREDITS_REQUIRED;
     use crate::parser::claude::CREDITS_UNCONFIRMED;
     use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
-    use crate::parser::claude::rate_limit_report::RateLimitReport;
+    use crate::parser::claude::rate_limit_report::OVERAGE_INCLUDED_WINDOW;
     use crate::stdout_parse_result::StdoutParseResult;
 
     /// Recorded from `claude --verbose --output-format stream-json --print`.
@@ -352,14 +433,41 @@ mod tests {
             .collect()
     }
 
+    /// The words of every event that ended the turn unanswered, a limit's
+    /// as much as a failure's: a caller reads both the same way.
     fn failures(events: &[AgentEvent]) -> Vec<&str> {
         events
             .iter()
             .filter_map(|event| match event {
                 AgentEvent::Failed(message) => Some(message.as_str()),
+                AgentEvent::Limited(limit) => Some(limit.message.as_str()),
                 _ => None,
             })
             .collect()
+    }
+
+    fn limits(events: &[AgentEvent]) -> Vec<&Limit> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Limited(limit) => Some(limit),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn windows(events: &[AgentEvent]) -> Vec<&Window> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Window(window) => Some(window),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn at(seconds: i64) -> Option<DateTime<Utc>> {
+        DateTime::from_timestamp(seconds, 0)
     }
 
     fn diagnostics(events: &[AgentEvent]) -> Vec<&str> {
@@ -430,11 +538,15 @@ mod tests {
     }
 
     fn failed_result(words: &str) -> Value {
+        failed_with(words, 429)
+    }
+
+    fn failed_with(words: &str, status: u16) -> Value {
         json!({
             "type": "result",
             "subtype": "success",
             "is_error": true,
-            "api_error_status": 429,
+            "api_error_status": status,
             "result": words,
             "session_id": "6f1",
         })
@@ -503,12 +615,11 @@ mod tests {
         lines.join("\n")
     }
 
-    /// The failure a refused window `info` reads as, in claude's `words`.
+    /// The limit a refused window `info` reads as, in claude's `words`.
     fn throttled(info: &Value, words: &str) -> String {
-        let report: RateLimitReport =
-            serde_json::from_value(info.clone()).expect("a rate limit report");
-        let quoted = serde_json::to_string(&report).expect("serialisable");
-        format!("{THROTTLED}: {quoted}: {words}")
+        let window = info["rateLimitType"].as_str().unwrap_or("request");
+        let status = info["status"].as_str().unwrap_or_default();
+        format!("{THROTTLED} ({window}, {status}): {words}")
     }
 
     fn credits_required(words: &str) -> String {
@@ -707,6 +818,15 @@ mod tests {
                 failures.iter().all(|message| !message.contains(THROTTLED)),
                 "{failures:?}"
             );
+            assert_eq!(
+                limits(&events).len(),
+                failures.len(),
+                "a refusal was not a limit: {events:?}"
+            );
+            assert!(
+                limits(&events).iter().all(|limit| limit.credits),
+                "{events:?}"
+            );
             assert_eq!(text(&events), "", "claude's refusal read as an answer");
         }
     }
@@ -769,6 +889,10 @@ mod tests {
                 Some(credits_required(words).as_str()),
                 "{reason}"
             );
+            assert!(
+                limits(&events).first().is_some_and(|limit| limit.credits),
+                "{reason}: {events:?}"
+            );
             assert_eq!(text(&events), "", "{reason}");
         }
     }
@@ -808,8 +932,41 @@ mod tests {
                             && !message.contains(LONG_CONTEXT_CREDITS_REQUIRED)),
                     "{failures:?}"
                 );
+                assert!(
+                    matches!(
+                        events.iter().find(|event| event.terminal()),
+                        Some(AgentEvent::Failed(_))
+                    ),
+                    "{reason}, {kind}: claude could not check the credits, so no limit: {events:?}"
+                );
+                assert!(
+                    limits(&events).iter().all(|limit| !limit.credits),
+                    "{reason}, {kind}: {events:?}"
+                );
             }
         }
+    }
+
+    /// A report that refuses nothing in words of its own, such as a credits
+    /// code, leaves the refused window's limit as it was: its words, its
+    /// window and its reset time all come from the one refusal.
+    #[test]
+    fn a_limit_keeps_the_window_and_reset_of_the_refusal_it_words() {
+        let events = interpret_all(&stream(&[
+            refused_past_the_opus_limit(),
+            refused_for_credits(),
+            api_error("You've hit your limit", None).to_string(),
+        ]));
+
+        let limits = limits(&events);
+        assert_eq!(limits.len(), 1, "{events:?}");
+        assert!(limits[0].message.contains("seven_day_opus"), "{events:?}");
+        assert_eq!(
+            limits[0].window.as_ref().map(|window| window.name.as_str()),
+            Some("seven_day_opus"),
+            "{events:?}"
+        );
+        assert_eq!(limits[0].resets_at, at(1_790_208_000), "{events:?}");
     }
 
     /// The reason that counts is the one claude gave for the request it
@@ -937,10 +1094,13 @@ mod tests {
             subagents(api_error(OPUS_LIMIT, None)).to_string(),
             said("Opus is past its weekly limit, so I will review the change.").to_string(),
             api_error(OVERLOADED, None).to_string(),
-            failed_result(OVERLOADED).to_string(),
+            failed_with(OVERLOADED, 529).to_string(),
         ]));
 
-        assert_eq!(failures(&events), [OVERLOADED]);
+        assert!(
+            matches!(events.last(), Some(AgentEvent::Failed(message)) if message == OVERLOADED),
+            "{events:?}"
+        );
     }
 
     /// claude refuses a request past the plan's window on an event that
@@ -1090,8 +1250,8 @@ mod tests {
         assert!(credits(&events).is_empty(), "{events:?}");
     }
 
-    /// Nothing here names a refusal by the words it is written in: a failed
-    /// result keeps them, whatever they resemble.
+    /// Nothing here names a credits refusal by the words it is written in: a
+    /// failed result keeps them, whatever they resemble.
     #[test]
     fn a_failed_result_that_resembles_a_credits_refusal_keeps_its_own_words() {
         for words in [
@@ -1104,6 +1264,10 @@ mod tests {
             let events = interpret_all(&failed_result(words).to_string());
 
             assert_eq!(failures(&events), [words], "{words}");
+            assert!(
+                limits(&events).iter().all(|limit| !limit.credits),
+                "{words}: {events:?}"
+            );
         }
     }
 
@@ -1121,5 +1285,292 @@ mod tests {
         let failure = result.failure.expect("a failed run");
         assert!(failure.starts_with(THROTTLED), "{failure}");
         assert!(failure.contains("five_hour"), "{failure}");
+    }
+
+    #[test]
+    fn a_headroom_report_becomes_a_window_and_not_a_failure() {
+        for status in ["allowed", "allowed_warning"] {
+            let events = interpret_all(&limit(&json!({
+                "status": status,
+                "resetsAt": 1_790_208_000,
+                "rateLimitType": "five_hour",
+                "utilization": 0.43,
+                "isUsingOverage": false,
+            })));
+
+            assert!(failures(&events).is_empty(), "{status}: {events:?}");
+            assert!(diagnostics(&events).is_empty(), "{status}: {events:?}");
+            let expected = Window::new("five_hour")
+                .with_used_percent(43.0)
+                .with_resets_at(at(1_790_208_000).expect("a valid timestamp"))
+                .with_kind(WindowKind::FiveHours);
+            assert_eq!(windows(&events), [&expected], "{status}");
+        }
+    }
+
+    #[test]
+    fn a_headroom_report_without_its_use_or_its_window_reports_no_window() {
+        for info in [
+            json!({"status": "allowed", "rateLimitType": "five_hour", "isUsingOverage": false}),
+            json!({"status": "allowed", "utilization": 0.43, "isUsingOverage": false}),
+        ] {
+            let events = interpret_all(&limit(&info));
+            assert!(events.is_empty(), "{info}: {events:?}");
+        }
+    }
+
+    /// The window keeps the name claude streams it under, so a caller that
+    /// records windows under names of its own maps each by its kind.
+    #[test]
+    fn a_window_keeps_the_name_claude_streams_it_under_beside_its_kind() {
+        for (streamed, kind) in [
+            ("five_hour", Some(WindowKind::FiveHours)),
+            ("seven_day", Some(WindowKind::SevenDays)),
+            ("seven_day_opus", Some(WindowKind::SevenDaysOpus)),
+            ("seven_day_sonnet", Some(WindowKind::SevenDaysSonnet)),
+            ("hourly_burst", None),
+        ] {
+            let reported = interpret_all(&limit(&json!({
+                "status": "allowed",
+                "rateLimitType": streamed,
+                "utilization": 0.43,
+                "isUsingOverage": false,
+            })));
+            let refused = interpret_all(&stream(&[
+                limit(&json!({"status": "rejected", "rateLimitType": streamed})),
+                api_error(SESSION_LIMIT, None).to_string(),
+            ]));
+
+            let [window] = windows(&reported)[..] else {
+                panic!("{streamed}: expected one window, got {reported:?}");
+            };
+            assert_eq!((window.name.as_str(), window.kind), (streamed, kind));
+            let [limit] = limits(&refused)[..] else {
+                panic!("{streamed}: expected one limit, got {refused:?}");
+            };
+            let window = limit.window.as_ref().expect("the refused window");
+            assert_eq!((window.name.as_str(), window.kind), (streamed, kind));
+            assert_eq!(
+                limit.message,
+                format!("{THROTTLED} ({streamed}, rejected): {SESSION_LIMIT}"),
+                "a caller still reads the window as claude names it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_report_on_the_credits_window_is_no_window_of_the_plan() {
+        let events = interpret_all(&limit(&json!({
+            "status": "allowed",
+            "rateLimitType": OVERAGE_INCLUDED_WINDOW,
+            "utilization": 1.0,
+            "isUsingOverage": false,
+        })));
+
+        assert!(windows(&events).is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn a_refused_request_past_the_credits_window_is_a_limit_with_its_reset_time_and_no_window() {
+        let events = interpret_all(OVERAGE_INCLUDED_WINDOW_SPENT_STREAM);
+
+        let limits = limits(&events);
+        assert!(!limits.is_empty(), "no limit in {events:?}");
+        for limit in limits {
+            assert!(limit.credits, "{limit:?}");
+            assert_eq!(limit.resets_at, at(1_790_208_000), "{limit:?}");
+            assert_eq!(
+                limit.window, None,
+                "the window usage credits carry a turn past is no part of the plan's usage"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rejected_window_keeps_the_wording_a_caller_reads() {
+        let events = interpret_all(&stream(&[
+            limit(&json!({
+                "status": "rejected",
+                "resetsAt": 1_790_208_000,
+                "rateLimitType": "five_hour",
+                "utilization": 1.0,
+                "isUsingOverage": false,
+            })),
+            api_error(SESSION_LIMIT, None).to_string(),
+        ]));
+
+        let [AgentEvent::Diagnostic(_), AgentEvent::Limited(limit)] = events.as_slice() else {
+            panic!("expected the remembered window, then one limit, got {events:?}");
+        };
+        assert_eq!(
+            limit.message,
+            format!("rate limit reached (five_hour, rejected): {SESSION_LIMIT}")
+        );
+        assert!(!limit.credits, "{limit:?}");
+        assert_eq!(limit.resets_at, at(1_790_208_000));
+        assert_eq!(
+            limit.window.as_ref().and_then(|window| window.used_percent),
+            Some(100.0)
+        );
+        assert_eq!(
+            limit.window.as_ref().and_then(|window| window.kind),
+            Some(WindowKind::FiveHours)
+        );
+    }
+
+    #[test]
+    fn a_refused_window_that_does_not_say_its_use_is_counted_as_spent() {
+        let events = interpret_all(&stream(&[
+            limit(&json!({"status": "rejected", "rateLimitType": "seven_day"})),
+            api_error(LIMIT_HIT, None).to_string(),
+        ]));
+
+        let [limit] = limits(&events)[..] else {
+            panic!("expected one limit, got {events:?}");
+        };
+        assert_eq!(
+            limit.window.as_ref().and_then(|window| window.used_percent),
+            Some(100.0)
+        );
+    }
+
+    #[test]
+    fn a_failed_result_in_limit_words_or_a_429_is_a_limit_without_a_reset_time() {
+        for line in [
+            failed_with(SESSION_LIMIT, 400),
+            failed_with("Request refused", 429),
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "result": LIMIT_HIT}),
+        ] {
+            let events = interpret_all(&line.to_string());
+
+            let [AgentEvent::Limited(limit)] = events.as_slice() else {
+                panic!("expected one limit for {line}, got {events:?}");
+            };
+            assert_eq!(Some(limit.message.as_str()), line["result"].as_str());
+            assert_eq!(limit.resets_at, None, "{line}");
+            assert_eq!(limit.window, None, "{line}");
+            assert!(!limit.credits, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_signed_out_result_is_a_failure_and_not_a_limit() {
+        for line in [
+            failed_with("Not logged in \u{b7} Please run /login", 401),
+            failed_with("Invalid API key \u{b7} Please run /login", 401),
+            failed_with("You've hit your session limit, so sign in again", 401),
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "result": "OAuth token has expired. Please obtain a new token or refresh your existing token."}),
+        ] {
+            let events = interpret_all(&line.to_string());
+
+            assert!(
+                matches!(events.as_slice(), [AgentEvent::Failed(message)] if Some(message.as_str()) == line["result"].as_str()),
+                "{line}: {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_signed_out_result_after_a_refused_window_is_still_a_failure() {
+        let events = interpret_all(&stream(&[
+            limit(&json!({
+                "status": "rejected",
+                "resetsAt": 1_790_208_000,
+                "rateLimitType": "five_hour",
+                "isUsingOverage": false,
+            })),
+            failed_with("Not logged in \u{b7} Please run /login", 401).to_string(),
+        ]));
+
+        assert!(
+            matches!(
+                events.last(),
+                Some(AgentEvent::Failed(message)) if message == "Not logged in \u{b7} Please run /login"
+            ),
+            "{events:?}"
+        );
+        assert!(limits(&events).is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn a_reset_time_reads_as_seconds_or_a_timestamp() {
+        for (resets_at, expected) in [
+            (json!(1_790_208_000), at(1_790_208_000)),
+            (json!("1790208000"), at(1_790_208_000)),
+            (json!("2026-09-24T04:00:00Z"), at(1_790_222_400)),
+            (json!("2026-09-24T16:00:00+12:00"), at(1_790_222_400)),
+            (json!("next Tuesday"), None),
+            (json!({"seconds": 1_790_208_000}), None),
+            (Value::Null, None),
+        ] {
+            let events = interpret_all(&stream(&[
+                limit(&json!({
+                    "status": "rejected",
+                    "resetsAt": resets_at,
+                    "rateLimitType": "five_hour",
+                    "isUsingOverage": false,
+                })),
+                api_error(SESSION_LIMIT, None).to_string(),
+            ]));
+
+            let [limit] = limits(&events)[..] else {
+                panic!("{resets_at}: a reset time it cannot read lost the refusal: {events:?}");
+            };
+            assert_eq!(limit.resets_at, expected, "{resets_at}");
+        }
+    }
+
+    #[test]
+    fn a_reset_time_at_the_top_of_the_event_still_reaches_the_limit() {
+        let line = json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour"},
+            "resetsAt": "2026-09-24T04:00:00Z",
+        });
+        let events = interpret_all(&stream(&[
+            line.to_string(),
+            api_error(SESSION_LIMIT, None).to_string(),
+        ]));
+
+        let [limit] = limits(&events)[..] else {
+            panic!("expected one limit, got {events:?}");
+        };
+        assert_eq!(limit.resets_at, at(1_790_222_400));
+    }
+
+    #[test]
+    fn a_use_of_another_shape_loses_neither_the_refusal_nor_its_window() {
+        let events = interpret_all(&stream(&[
+            limit(&json!({
+                "status": "rejected",
+                "rateLimitType": "five_hour",
+                "utilization": "most of it",
+            })),
+            api_error(SESSION_LIMIT, None).to_string(),
+        ]));
+
+        let [limit] = limits(&events)[..] else {
+            panic!("a use it cannot read lost the refusal: {events:?}");
+        };
+        assert_eq!(
+            limit.window.as_ref().and_then(|window| window.used_percent),
+            Some(100.0)
+        );
+    }
+
+    #[test]
+    fn a_window_the_main_agent_writes_past_leaves_no_reset_time_on_a_later_limit() {
+        let events = interpret_all(&stream(&[
+            refused_past_the_opus_limit(),
+            said("Opus is past its weekly limit, so I will answer myself.").to_string(),
+            failed_with(LIMIT_HIT, 429).to_string(),
+        ]));
+
+        let [limit] = limits(&events)[..] else {
+            panic!("expected one limit, got {events:?}");
+        };
+        assert_eq!(limit.message, LIMIT_HIT);
+        assert_eq!(limit.resets_at, None, "{limit:?}");
+        assert_eq!(limit.window, None, "{limit:?}");
     }
 }

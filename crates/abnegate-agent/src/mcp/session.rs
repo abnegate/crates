@@ -58,14 +58,15 @@ impl McpSession {
         }
     }
 
-    /// Start the command server `server` under `name`, and complete its
-    /// handshake within `limit`.
+    /// Start the command server `server` under `name`, routed through
+    /// `proxy`, and complete its handshake within `limit`.
     pub(super) async fn connect_with_timeout(
         name: &str,
         server: &McpServer,
+        proxy: &Proxy,
         limit: Duration,
     ) -> Result<Self, McpError> {
-        match tokio::time::timeout(limit, Self::handshake(name, server)).await {
+        match tokio::time::timeout(limit, Self::handshake(name, server, proxy)).await {
             Ok(result) => result,
             Err(_) => Err(McpError::Handshake {
                 server: name.to_string(),
@@ -76,11 +77,10 @@ impl McpSession {
 
     /// The server's references are expanded from the secrets bound to it and
     /// then this process's environment, as a CLI expands them. The child is
-    /// given the server's environment
-    /// policy, and then the process-level proxy policy on top of it. Its
-    /// stderr is logged, up to a bound, rather than written over this
+    /// given the server's environment policy, and then `proxy` on top of it.
+    /// Its stderr is logged, up to a bound, rather than written over this
     /// process's own.
-    async fn handshake(name: &str, server: &McpServer) -> Result<Self, McpError> {
+    async fn handshake(name: &str, server: &McpServer, proxy: &Proxy) -> Result<Self, McpError> {
         let server = server.expanded(&|variable| std::env::var(variable).ok());
         let Some(program) = &server.command else {
             return Err(McpError::Spawn {
@@ -97,7 +97,7 @@ impl McpSession {
             .kill_on_drop(true)
             .process_group(0);
         server.environment_policy().apply(&mut command);
-        Proxy::from_environment().apply(&mut command);
+        proxy.apply(&mut command);
         if let Some(directory) = &server.working_directory {
             command.current_dir(directory);
         }
@@ -263,7 +263,13 @@ mod tests {
             .with_environment("NO_PROXY", "*")
             .with_environment("no_proxy", "*")
             .with_environment(PROXY_URL_VARIABLE, "");
-        let result = McpSession::connect_with_timeout("environment", &server, LIMIT).await;
+        let result = McpSession::connect_with_timeout(
+            "environment",
+            &server,
+            &Proxy::from_environment(),
+            LIMIT,
+        )
+        .await;
         assert!(matches!(result, Err(McpError::Handshake { .. })));
         let output = std::fs::read_to_string(path).unwrap();
         for key in [
@@ -302,7 +308,8 @@ mod tests {
         let path = directory.path().join("directory");
         let server = recorder("pwd -P", &path).with_working_directory(start.path());
 
-        let result = McpSession::connect_with_timeout("directory", &server, LIMIT).await;
+        let result =
+            McpSession::connect_with_timeout("directory", &server, &Proxy::default(), LIMIT).await;
 
         assert!(matches!(result, Err(McpError::Handshake { .. })));
         assert_eq!(
@@ -316,6 +323,7 @@ mod tests {
         let result = McpSession::connect_with_timeout(
             "remote",
             &McpServer::remote("https://example.com/mcp"),
+            &Proxy::default(),
             LIMIT,
         )
         .await;
@@ -339,7 +347,8 @@ mod tests {
         let pid_file = directory.path().join("helper");
         let server = recorder("sleep 30 > /dev/null 2>&1 & echo $!", &pid_file);
 
-        let result = McpSession::connect_with_timeout("helper", &server, LIMIT).await;
+        let result =
+            McpSession::connect_with_timeout("helper", &server, &Proxy::default(), LIMIT).await;
         assert!(matches!(result, Err(McpError::Handshake { .. })));
 
         let pid: i32 = std::fs::read_to_string(&pid_file)
@@ -417,9 +426,14 @@ done"#;
         let directory = tempfile::tempdir().unwrap();
         let pids = directory.path().join("pids");
 
-        let session = McpSession::connect_with_timeout("lingering", &lingering(&pids), LIMIT)
-            .await
-            .expect("the handshake completes");
+        let session = McpSession::connect_with_timeout(
+            "lingering",
+            &lingering(&pids),
+            &Proxy::default(),
+            LIMIT,
+        )
+        .await
+        .expect("the handshake completes");
         assert!(
             eventually(|| pids.exists()).await,
             "the server never listed its tools"

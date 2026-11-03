@@ -123,7 +123,10 @@ it starts, as Claude Code expands it: from the secrets bound to the server with
 `McpServer::with_secret` or `McpConfig::with_secret` first, and then from this
 process's environment. Each server's
 child sees only the allowlisted environment plus its own `env`, unless it sets
-`inherit_environment`, and starts in its `cwd` when it names one.
+`inherit_environment`, and starts in its `cwd` when it names one. The proxy
+`ABNEGATE_EXEC_PROXY_URL` names is laid over that before the handshake, or the
+one a host hands `McpHub::connect_through`, as `ToolContext::with_proxy` hands
+one to every command and background job a tool starts.
 
 This example needs the `mcp` feature, so it is not compiled with this README;
 the same example is compiled in the `mcp` module's documentation.

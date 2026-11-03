@@ -4,10 +4,12 @@ mod config;
 mod events;
 mod options;
 mod pool;
+mod reporter;
+mod trust;
 
 use std::time::Duration;
 
-use abnegate_secret::redact;
+use abnegate_http::metadata;
 use futures::Stream;
 use futures::StreamExt;
 use reqwest::Client;
@@ -16,8 +18,12 @@ use reqwest::Url;
 pub use crate::client::config::LlmConfig;
 pub use crate::client::options::RequestOptions;
 pub(crate) use crate::client::pool::Pool;
+pub use crate::client::trust::Trust;
 
+use crate::budget::Budget;
 use crate::client::events::EventDecoder;
+use crate::client::reporter::Reporter;
+use crate::dialect::Dialect;
 use crate::error::Error;
 use crate::provider::CompletionRequest;
 use crate::reasoning::Effort;
@@ -29,9 +35,19 @@ use crate::wire::ToolDefinition;
 
 /// A client for an OpenAI-compatible chat completions endpoint.
 ///
+/// Every request is shaped for [`LlmConfig::dialect`] before it is sent: the
+/// stops, temperature, output budget field, messages and tools a provider's
+/// own API would refuse are adjusted, and a compatible endpoint is sent the
+/// request unchanged.
+///
 /// A non-streaming completion must finish within [`LlmConfig::timeout`]; a
 /// streamed one may run as long as it keeps sending, but fails once it goes
 /// [`LlmConfig::read_timeout`] without a byte.
+///
+/// A refusal reaches the caller as [`Error::Api`], and an error sent in place
+/// of a streamed chunk as [`Error::Stream`], without the key the client sent;
+/// for an endpoint a [`Trust::Tenant`] chose, as nothing but its status and
+/// the endpoint's own error message.
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     client: Client,
@@ -44,10 +60,16 @@ pub struct LlmClient {
 
 impl LlmClient {
     /// A client for the endpoint `config` names. Every client in the process
-    /// shares one connection pool, so building one is cheap.
+    /// with the same [`LlmConfig::trust`] shares one connection pool, so
+    /// building one is cheap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no HTTP client can be built at all, as when no TLS backend
+    /// can be initialised, just as `reqwest::Client::new` does.
     pub fn new(config: LlmConfig) -> Self {
         Self {
-            client: Pool::client(),
+            client: Pool::client(config.trust),
             config,
             stop: Vec::new(),
             ollama: None,
@@ -70,14 +92,16 @@ impl LlmClient {
 
     /// Set a verified Ollama route's context capacity. The alias guard prevents
     /// forwarding provider-specific options after changing models; `num_ctx` is
-    /// accepted as a top-level non-OpenAI option.
+    /// accepted as a top-level non-OpenAI option, so it is sent only to a
+    /// [`Dialect::Compatible`](crate::Dialect::Compatible) endpoint.
     pub fn with_ollama_context(mut self, model: impl Into<String>, limit: u64) -> Self {
         self.ollama = Some((model.into(), limit));
         self
     }
 
     /// Enable thinking for this alias. `reasoning_effort` maps onto Ollama
-    /// `think`, Anthropic extended thinking, and OpenAI o-series.
+    /// `think`, Anthropic extended thinking, and OpenAI o-series; it is sent
+    /// only where [`Dialect::effort`](crate::Dialect::effort) allows it.
     pub fn with_reasoning(mut self, model: impl Into<String>, effort: Effort) -> Self {
         self.reasoning = Some((model.into(), effort));
         self
@@ -95,18 +119,43 @@ impl LlmClient {
     }
 
     fn body(&self, request: ChatRequest<'_>) -> Result<serde_json::Value, Error> {
-        let mut body = serde_json::to_value(&request)?;
-        if let Some((model, limit)) = &self.ollama
-            && model == request.model
+        let dialect = self.config.dialect;
+        let model = request.model;
+        let stops = dialect.stops(model, request.stop.unwrap_or_default());
+        let stop = match dialect {
+            Dialect::Compatible => request.stop,
+            _ => (!stops.is_empty()).then_some(&*stops),
+        };
+        let messages = dialect.messages(request.messages);
+        let tools = dialect.tools(request.tools);
+        let response_format = dialect.response_format(request.response_format);
+        let (maximum_tokens, maximum_completion_tokens) = budgeted(dialect, &request);
+        let shaped = ChatRequest {
+            messages: &messages,
+            tools: tools.as_deref(),
+            temperature: request
+                .temperature
+                .and_then(|temperature| dialect.temperature(model, temperature)),
+            maximum_tokens,
+            maximum_completion_tokens,
+            stop,
+            response_format,
+            ..request
+        };
+        let mut body = serde_json::to_value(&shaped)?;
+        if let Some((alias, limit)) = &self.ollama
+            && alias == model
+            && dialect.extended()
         {
             body["num_ctx"] = (*limit).into();
         }
-        if let Some((model, effort)) = &self.reasoning
-            && model == request.model
+        if let Some((alias, effort)) = &self.reasoning
+            && alias == model
+            && dialect.effort(model)
         {
             body["reasoning_effort"] = effort.as_str().into();
         }
-        if request.stream == Some(true) {
+        if shaped.stream == Some(true) {
             body["stream_options"] = serde_json::json!({ "include_usage": true });
         }
         Ok(body)
@@ -114,9 +163,15 @@ impl LlmClient {
 
     async fn send(&self, url: &str, body: &serde_json::Value) -> Result<reqwest::Response, Error> {
         let url = validate(url)?;
+        if self.config.trust == Trust::Tenant && metadata::is_url(&url) {
+            return Err(Error::InvalidConfig(
+                "LLM base_url must not point at a link-local or cloud metadata address".to_string(),
+            ));
+        }
         let mut request = self.client.post(url).json(body);
-        if !self.config.api_key.is_empty() {
-            request = request.bearer_auth(self.config.api_key.expose());
+        let key = self.config.api_key.expose().trim();
+        if !key.is_empty() {
+            request = request.bearer_auth(key);
         }
         Ok(request.send().await?)
     }
@@ -125,16 +180,15 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.config.base_url);
         let response = self.send(&url, &self.body(request)?).await?;
 
-        let status = response.status();
-        if status.is_success() {
+        if response.status().is_success() {
             return Ok(response);
         }
 
-        let body = response.text().await.unwrap_or_default();
-        Err(Error::Api {
-            status: status.as_u16(),
-            message: redact(&body).into_owned(),
-        })
+        Err(self.reporter().rejected(response).await)
+    }
+
+    fn reporter(&self) -> Reporter {
+        Reporter::new(self.config.trust, self.config.api_key.clone())
     }
 
     fn request<'a>(
@@ -152,6 +206,7 @@ impl LlmClient {
             tool_choice: None,
             temperature: Some(self.config.temperature),
             maximum_tokens: Some(options.reserved),
+            maximum_completion_tokens: None,
             stream: Some(stream),
             stop: (!self.stop.is_empty()).then_some(self.stop.as_slice()),
             response_format: None,
@@ -267,12 +322,30 @@ impl LlmClient {
         .await
         .map_err(|_| Error::Timeout(read_timeout))??;
 
-        Ok(events(response, read_timeout))
+        Ok(events(response, read_timeout, self.reporter()))
+    }
+}
+
+/// The `max_tokens` and `max_completion_tokens` `request` is sent with: as the
+/// caller set them for a compatible endpoint, and otherwise the budget moved
+/// into the one field the model reads.
+fn budgeted(dialect: Dialect, request: &ChatRequest<'_>) -> (Option<u32>, Option<u32>) {
+    if dialect == Dialect::Compatible {
+        return (request.maximum_tokens, request.maximum_completion_tokens);
+    }
+    let reserved = request.maximum_tokens.or(request.maximum_completion_tokens);
+    match dialect.budget(request.model) {
+        Budget::MaximumTokens => (reserved, None),
+        Budget::MaximumCompletionTokens => (None, reserved),
     }
 }
 
 /// Check an outbound request URL and hand back the URL to request, so a
 /// caller can only send the value that was checked.
+///
+/// Loopback, LAN and single-label hosts pass: a self-hosted endpoint lives
+/// there. The metadata guard a [`Trust::Tenant`] endpoint needs is applied
+/// by the caller, against the URL this returns.
 fn validate(url: &str) -> Result<Url, Error> {
     let parsed = Url::parse(url).map_err(|_| {
         Error::InvalidConfig("LLM base_url must be a valid absolute URL".to_string())
@@ -299,20 +372,17 @@ fn validate(url: &str) -> Result<Url, Error> {
         ));
     }
 
-    // No private-network rule here on purpose. Every caller passes an
-    // operator-configured host, and a self-hosted deployment points at
-    // loopback, a LAN address or a compose service name. The check belongs
-    // where a tenant-supplied host is first accepted, against that value.
     Ok(parsed)
 }
 
 fn events(
     response: reqwest::Response,
     read_timeout: Duration,
+    reporter: Reporter,
 ) -> impl Stream<Item = Result<ChatStreamChunk, Error>> {
     async_stream::stream! {
         let mut bytes = response.bytes_stream();
-        let mut decoder = EventDecoder::default();
+        let mut decoder = EventDecoder::new(reporter);
 
         while !decoder.is_finished() {
             let Ok(next) = tokio::time::timeout(read_timeout, bytes.next()).await else {

@@ -61,7 +61,7 @@ pub fn unique_qualified_tool_name(used: &mut HashSet<String>, server: &str, tool
 }
 
 /// The prefix every tool attached from `server` is named under.
-pub(super) fn server_prefix(server: &str) -> String {
+pub(crate) fn server_prefix(server: &str) -> String {
     format!("{}{SEPARATOR}", server_identifier(server))
 }
 
