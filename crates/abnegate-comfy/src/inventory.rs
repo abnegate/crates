@@ -212,8 +212,8 @@ pub fn identity_for_prompt(
 /// whitespace standing for one space. When `haystack` names triggers of
 /// different lengths the longest wins; when the longest is shared by two
 /// weights, or two different triggers share that length, it names none. A
-/// weight whose filename another of `items` shares names none either, since
-/// selecting that filename could load the other.
+/// weight whose filename another of `items` shares, in any ASCII case, names
+/// none either, since selecting that filename could load the other.
 pub fn identity_among(
     items: &[InventoryItem],
     catalog: &RecipeCatalog,
@@ -229,7 +229,7 @@ pub fn identity_among(
         [item]
             if items
                 .iter()
-                .filter(|other| other.filename == item.filename)
+                .filter(|other| other.filename.eq_ignore_ascii_case(&item.filename))
                 .count()
                 == 1 =>
         {
@@ -1193,6 +1193,28 @@ mod tests {
         assert_eq!(
             config.checkpoint, "flux1-schnell-fp8.safetensors",
             "binding the LoRA's filename would load the checkpoint of that name"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_trigger_never_binds_a_filename_another_weight_shares_in_another_case() {
+        let root = temp_models();
+        write_identity(&root, "jerry.safetensors", "ohwx");
+        let checkpoint = root.join("checkpoints/Jerry.safetensors");
+        fs::write(&checkpoint, b"base").unwrap();
+        write_sidecar(
+            &checkpoint,
+            &WeightSidecar::new("sdxl"),
+            &Contract::default(),
+        )
+        .unwrap();
+        let mut config = configured(&root);
+
+        assert_eq!(
+            bind_identity(&mut config, "portrait of ohwx"),
+            None,
+            "a case-insensitive filesystem or ComfyUI could load either"
         );
         let _ = fs::remove_dir_all(root);
     }
