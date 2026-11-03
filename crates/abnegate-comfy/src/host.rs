@@ -370,8 +370,9 @@ fn recover_job(config: &Config, id: Uuid) -> Option<Result<PathBuf, TrainError>>
     ))
 }
 
-/// Removes every job directory under `root` that holds no `job.json` and
-/// whose lock nobody holds.
+/// Removes every job directory under `root` whose lock nobody holds and that
+/// holds no `job.json` once its lock is taken, since whoever queues a job
+/// publishes `job.json` while holding that lock.
 fn discard_unqueued(root: &Path) {
     for entry in fs::read_dir(root).into_iter().flatten().flatten() {
         let is_job = entry.file_type().is_ok_and(|kind| kind.is_dir())
@@ -383,10 +384,10 @@ fn discard_unqueued(root: &Path) {
             continue;
         }
         let directory = JobDirectory::at(entry.path());
-        if fs::symlink_metadata(directory.path().join(JOB_FILE)).is_ok() {
+        let Ok(Some(_lock)) = directory.try_lock() else {
             continue;
-        }
-        if let Ok(Some(_lock)) = directory.try_lock() {
+        };
+        if fs::symlink_metadata(directory.path().join(JOB_FILE)).is_err() {
             let _ = directory.discard();
         }
     }
@@ -1153,6 +1154,63 @@ mod tests {
         );
         assert!(stranger.is_dir(), "a directory that is no job was removed");
         drop(held);
+    }
+
+    #[test]
+    fn the_sweep_never_discards_a_job_queued_while_it_looked() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        let (root_directory, config) = models();
+        let jobs = root(&config);
+        fs::create_dir_all(&jobs).unwrap();
+        let archive = root_directory.path().join("archive");
+        fs::create_dir_all(&archive).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let passes = Arc::new(AtomicUsize::new(0));
+        let sweeper = std::thread::spawn({
+            let jobs = jobs.clone();
+            let stop = Arc::clone(&stop);
+            let passes = Arc::clone(&passes);
+            move || {
+                while !stop.load(Ordering::Acquire) {
+                    discard_unqueued(&jobs);
+                    passes.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+        });
+        let mut discarded = 0;
+        for _ in 0..2000 {
+            let id = Uuid::new_v4();
+            let directory = JobDirectory::new(&config, id);
+            if directory.create().is_err() {
+                continue;
+            }
+            let Ok(Some(lock)) = directory.try_lock() else {
+                continue;
+            };
+            let written = directory.path().join("job.json.next");
+            if fs::write(&written, b"{}").is_err()
+                || fs::rename(&written, directory.path().join(JOB_FILE)).is_err()
+            {
+                continue;
+            }
+            drop(lock);
+            let seen = passes.load(Ordering::Acquire);
+            while passes.load(Ordering::Acquire) < seen + 2 {
+                std::thread::yield_now();
+            }
+            if directory.path().join(JOB_FILE).is_file() {
+                fs::rename(directory.path(), archive.join(id.to_string())).unwrap();
+            } else {
+                discarded += 1;
+            }
+        }
+        stop.store(true, Ordering::Release);
+        sweeper.join().unwrap();
+        assert_eq!(discarded, 0, "the sweep discarded jobs that were queued");
     }
 
     #[cfg(unix)]
