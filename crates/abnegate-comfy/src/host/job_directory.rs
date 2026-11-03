@@ -9,6 +9,7 @@ use crate::host::Job;
 use crate::host::LOCK_FILE;
 use crate::host::PREVIEWS_DIRECTORY;
 use crate::host::PROGRESS_FILE;
+use crate::host::PUBLICATION_FILE;
 use crate::host::SCHEMA_VERSION;
 use crate::host::root;
 use crate::inventory::WEIGHT_EXTENSION;
@@ -33,6 +34,7 @@ const RESERVED: &[&str] = &[
     LOCK_FILE,
     CLAIM_FILE,
     DISMISSED_FILE,
+    PUBLICATION_FILE,
     PREVIEWS_DIRECTORY,
     DATASET_DIRECTORY,
     DATA_DIRECTORY,
@@ -215,6 +217,18 @@ impl JobDirectory {
             Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
             Err(error) => Err(failed(error)),
         }
+    }
+
+    /// Notes `generation`, the training attempt whose sidecar the job's
+    /// weight is about to be published with, before it is promoted.
+    pub(crate) fn write_publication(&self, generation: &str) -> Result<(), TrainError> {
+        self.replace(PUBLICATION_FILE, generation.as_bytes(), SHARED_FILE)
+    }
+
+    /// The generation [`JobDirectory::write_publication`] noted last.
+    pub(crate) fn publication(&self) -> Option<String> {
+        let generation = fs::read_to_string(self.path.join(PUBLICATION_FILE)).ok()?;
+        Some(generation.trim().to_string()).filter(|generation| !generation.is_empty())
     }
 
     /// Lets the job's [claim](CLAIM_FILE) go, for a claimer that could not

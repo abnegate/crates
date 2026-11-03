@@ -514,6 +514,7 @@ temporary name, flushed, and renamed into place:
 | `publish.lock` | crate | locked by whoever publishes the job, from queueing it until the weight is published; the trainer leaves it alone |
 | `claimed` | trainer or crate | empty; created exclusively by whoever moves a queued job on: the trainer before it writes `running`, or the crate before it gives up on the job |
 | `dismissed` | crate | empty; marks a finished job `host::dismiss` hid |
+| `publication` | crate | the training generation the crate notes just before it promotes the weight, so a publication whose record in `job.json` failed is recorded later rather than promoted again; the trainer leaves it alone |
 | `runpod.key` | crate | the key of a `Compute::Runpod` job, one line, mode `0600`, listed in `secrets` and removed when the job ends |
 | any other file | crate | a secret from `TrainRequest::with_host_secret`, one line, mode `0600`, listed in `secrets` and removed when the job ends |
 
@@ -585,7 +586,9 @@ left between writing its secrets and queueing it;
 a key never waits for a restart once the run waiting on its job was dropped.
 Whoever publishes a job holds its `publish.lock` and records `published` in
 `job.json` before removing the weight, so a job is published once: `recover`
-skips a job another waiter holds and one already published, and `resume` of a
+skips a job another waiter holds and one already published, records without
+promoting it again a weight already published under the generation in
+`publication` when that record failed, and `resume` of a
 published job returns where it went. Either way the weight's sidecar carries
 the job's `trigger`, so a prompt that names it binds the weight as it would
 one trained here. A `pivotal` job's trainer writes the embedding it trains to

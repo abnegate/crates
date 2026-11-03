@@ -85,6 +85,9 @@ pub const LOCK_FILE: &str = "publish.lock";
 pub const CLAIM_FILE: &str = "claimed";
 /// The empty marker of a finished job a host no longer shows.
 pub const DISMISSED_FILE: &str = "dismissed";
+/// The training generation whoever publishes the job noted before it
+/// promoted the job's weight.
+pub(crate) const PUBLICATION_FILE: &str = "publication";
 /// Samples the trainer renders while it trains.
 pub const PREVIEWS_DIRECTORY: &str = "previews";
 /// The image set and its captions and companions.

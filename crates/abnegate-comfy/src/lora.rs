@@ -1363,6 +1363,15 @@ pub(crate) fn publish_host_job(
         return Ok(path);
     }
     let (destination, filename) = host_destination(config, &job)?;
+    if let Some(output) = unrecorded_publication(config, directory, &destination, &filename) {
+        return Ok(record_hosted(
+            directory,
+            job,
+            &destination,
+            &filename,
+            output,
+        ));
+    }
     let weight = hosted_weight(directory, &filename)?;
     require_hosted_embedding(config, &job, &filename)?;
     let attempt = Attempt::create(&config.models_directory)?;
@@ -1467,20 +1476,21 @@ fn link_or_copy(weight: &Path, staged: &Path) -> Result<(), TrainError> {
 }
 
 /// Promotes the host job's weight staged in `attempt` to `destination`, bound
-/// to the embedding a pivotal job trains, records where it went in `job.json`
-/// before the job directory gives up its copy, and removes the job's secrets
-/// and what it trained on.
+/// to the embedding a pivotal job trains, having first noted the attempt's
+/// generation in the job directory, then [records](record_hosted) where it
+/// went.
 fn finish_hosted(
     config: &Config,
     attempt: &Attempt,
     directory: &JobDirectory,
-    mut job: host::Job,
+    job: host::Job,
     staged: &Path,
     destination: &Destination,
     filename: &str,
     progress: &Reporter,
 ) -> Result<PathBuf, TrainError> {
     let embedding = hosted_embedding(&job, filename);
+    directory.write_publication(&attempt.id)?;
     let output = publish(
         config,
         attempt,
@@ -1490,6 +1500,21 @@ fn finish_hosted(
         embedding.as_deref(),
         progress,
     )?;
+    Ok(record_hosted(directory, job, destination, filename, output))
+}
+
+/// Records in `job.json` that `job` was published to `output`, then gives up
+/// the job directory's copy of the weight, the job's secrets and what it
+/// trained on. A record that cannot be written leaves them all, and
+/// [`unrecorded_publication`] finds the weight again, so the next attempt
+/// records it without promoting it twice.
+fn record_hosted(
+    directory: &JobDirectory,
+    mut job: host::Job,
+    destination: &Destination,
+    filename: &str,
+    output: PathBuf,
+) -> PathBuf {
     job.published = Some(format!("{}/{filename}", destination.directory));
     if let Err(error) = directory.write_job(&job) {
         tracing::warn!(
@@ -1497,12 +1522,31 @@ fn finish_hosted(
             %error,
             "the published host job could not be marked published"
         );
-        return Ok(output);
+        return output;
     }
     let _ = fs::remove_file(directory.path().join(filename));
     directory.remove_job_secrets(&job);
     directory.prune();
-    Ok(output)
+    output
+}
+
+/// The weight an earlier attempt published for the job in `directory` but
+/// never recorded in `job.json`: the one at `filename` under `destination`
+/// whose sidecar names the generation the attempt noted before promoting it.
+fn unrecorded_publication(
+    config: &Config,
+    directory: &JobDirectory,
+    destination: &Destination,
+    filename: &str,
+) -> Option<PathBuf> {
+    let generation = directory.publication()?;
+    let output = config
+        .models_directory
+        .join(&destination.directory)
+        .join(filename);
+    (read_generation(&sidecar_path(&output, &config.contract)).as_deref()
+        == Some(generation.as_str()))
+    .then_some(output)
 }
 
 /// What the external trainer is given besides its run's own variables:
@@ -6781,6 +6825,38 @@ mod tests {
             matches!(&recovered[1], Err(TrainError::Invalid(message)) if message.starts_with("install the files")),
             "{recovered:?}"
         );
+    }
+
+    #[test]
+    fn a_job_published_but_not_recorded_is_recorded_without_being_promoted_again() {
+        let (_root, config) = hosted();
+        let directory = finished(&config, person_job("jerry", "finetune"), Some(b"tuned"));
+        let published = config
+            .models_directory
+            .join("checkpoints/jerry.safetensors");
+        let sidecar = sidecar_path(&published, &config.contract);
+        let recovered = host::recover(&config);
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        let generation = read_generation(&sidecar).expect("the weight was published");
+        let mut unrecorded = directory.read_job().unwrap();
+        unrecorded.published = None;
+        directory.write_job(&unrecorded).unwrap();
+        fs::write(directory.path().join("jerry.safetensors"), b"tuned").unwrap();
+
+        let recovered = host::recover(&config);
+
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert_eq!(recovered[0].as_ref().unwrap(), &published);
+        assert_eq!(
+            read_generation(&sidecar),
+            Some(generation),
+            "the weight was promoted again under a new generation"
+        );
+        assert_eq!(
+            directory.read_job().unwrap().published.as_deref(),
+            Some("checkpoints/jerry.safetensors")
+        );
+        assert!(!directory.path().join("jerry.safetensors").exists());
     }
 
     #[test]
