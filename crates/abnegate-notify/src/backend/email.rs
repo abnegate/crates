@@ -16,7 +16,7 @@ use crate::notification::Notification;
 use crate::notifier::Notifier;
 use crate::smtp::SmtpConfig;
 use crate::smtp::failure;
-use crate::smtp::mailbox;
+use crate::smtp::parse_mailbox;
 
 /// Delivers to a fixed set of recipients through one SMTP relay.
 ///
@@ -33,7 +33,8 @@ pub struct Email {
 }
 
 impl Email {
-    /// Configure delivery through the relay in `config` to `recipients`.
+    /// Configure delivery through the relay in `config` to `recipients`, each
+    /// a bare address or a `Name <address>` mailbox.
     ///
     /// Nothing connects until a notification is delivered.
     pub fn new(config: &SmtpConfig, recipients: &[&str]) -> Result<Self, Error> {
@@ -46,7 +47,7 @@ impl Email {
         let from = config.sender.mailbox()?;
         let recipients = recipients
             .iter()
-            .map(|recipient| mailbox(recipient, None))
+            .map(|recipient| parse_mailbox(recipient))
             .collect::<Result<Vec<Mailbox>, Error>>()?;
 
         Ok(Self {
@@ -124,6 +125,7 @@ mod tests {
     use super::*;
     use crate::severity::Severity;
     use crate::smtp::Sender;
+    use crate::smtp::SmtpSecurity;
 
     fn config_from(sender: Sender) -> SmtpConfig {
         SmtpConfig::new(
@@ -212,6 +214,41 @@ mod tests {
 
         assert!(message.contains("sam@example.test"));
         assert!(message.contains("alex@example.test"));
+    }
+
+    #[test]
+    fn a_named_recipient_is_addressed_by_name() {
+        let email = Email::new(
+            &config(),
+            &["Sam Example <sam@example.test>", "alex@example.test"],
+        )
+        .expect("configured");
+        let message = String::from_utf8(
+            email
+                .compose(&Notification::new("Title", "Body"))
+                .expect("composed")
+                .formatted(),
+        )
+        .expect("utf-8");
+
+        assert!(
+            message.contains("To: \"Sam Example\" <sam@example.test>, alex@example.test\r\n"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_half_written_mailbox_is_refused() {
+        let error = Email::new(&config(), &["Sam <sam@example.test"]).expect_err("unclosed");
+        assert!(matches!(error, Error::Malformed { .. }));
+    }
+
+    #[test]
+    fn a_channel_is_built_for_an_unauthenticated_plaintext_relay() {
+        let relay =
+            SmtpConfig::unauthenticated("relay.example.test", 25, Sender::new("a@example.test"))
+                .with_security(SmtpSecurity::Plaintext);
+        drop(Email::new(&relay, &["sam@example.test"]).expect("configured"));
     }
 
     #[test]

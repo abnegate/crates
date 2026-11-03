@@ -64,9 +64,7 @@ impl<'key> Loader<'key> {
     /// Read the file, failing with [`Error::Missing`] when it is absent.
     pub fn load<T: DeserializeOwned>(&self) -> Result<Config<T>, Error> {
         if !self.exists() {
-            return Err(Error::Missing {
-                path: self.path.clone(),
-            });
+            return Err(Error::missing(self.path.clone()));
         }
 
         self.read()
@@ -82,26 +80,24 @@ impl<'key> Loader<'key> {
     }
 
     fn read<T: DeserializeOwned>(&self) -> Result<Config<T>, Error> {
-        let content = fs::read_to_string(&self.path).map_err(|source| Error::Read {
-            path: self.path.clone(),
-            source,
-        })?;
+        let content = fs::read_to_string(&self.path)
+            .map_err(|source| Error::read(self.path.clone(), source))?;
 
-        let mut document: Value = toml::from_str(&content).map_err(|source| Error::Parse {
-            path: self.path.clone(),
-            source,
-        })?;
+        let mut document: Value =
+            toml::from_str(&content).map_err(|source| Error::parse(self.path.clone(), source))?;
 
         let sealed = envelope::unseal(&mut document, self.key)?;
         let key = self.key.filter(|_| !sealed.is_empty()).and_then(duplicate);
 
-        let value = document.try_into().map_err(|source| Error::Parse {
-            path: self.path.clone(),
-            source: if sealed.is_empty() {
-                source
-            } else {
-                rejection_as_written::<T>(&content)
-            },
+        let value = document.try_into().map_err(|source| {
+            Error::parse(
+                self.path.clone(),
+                if sealed.is_empty() {
+                    source
+                } else {
+                    rejection_as_written::<T>(&content)
+                },
+            )
         })?;
 
         Ok(Config::loaded(self.path.clone(), value, key, sealed))

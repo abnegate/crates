@@ -78,10 +78,8 @@ impl Discord {
     #[cfg(test)]
     pub(crate) fn at_test_server(base_url: &str) -> Self {
         Self {
-            webhook: Webhook::new(Endpoint::for_test(&format!(
-                "{base_url}/api/webhooks/1/secret"
-            )))
-            .expect("test client"),
+            webhook: Webhook::for_test(&format!("{base_url}/api/webhooks/1/secret"))
+                .expect("test client"),
             name: None,
             footer: None,
         }

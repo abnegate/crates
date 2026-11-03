@@ -21,8 +21,8 @@ pub(crate) const MAXIMUM_ERROR_BODY_CHARACTERS: usize = 512;
 /// [`Notifier`](crate::Notifier) or a [`Mail`](crate::Mail) builds the error it
 /// fails with through a constructor, which sanitizes the text it is given:
 /// [`Error::timeout`], [`Error::rejected`], [`Error::rate_limited`],
-/// [`Error::unreachable`], [`Error::smtp`] or [`Error::malformed`]. A pattern
-/// outside this crate ends in `..`.
+/// [`Error::unreachable`], [`Error::unreadable`], [`Error::smtp`] or
+/// [`Error::malformed`]. A pattern outside this crate ends in `..`.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
@@ -68,6 +68,21 @@ pub enum Error {
         /// The provider's host, which is safe to log.
         host: String,
         /// The transport's reason, with the request URL removed.
+        message: String,
+    },
+
+    /// The provider accepted the request, but its answer could not be read:
+    /// it was cut short, larger than the caller allowed, or not the shape the
+    /// caller expected.
+    ///
+    /// The provider took the request, so sending it again would likely
+    /// deliver it twice, and this is never retryable.
+    #[error("{host} accepted the request, but its answer could not be read: {message}")]
+    #[non_exhaustive]
+    Unreadable {
+        /// The provider's host, which is safe to log.
+        host: String,
+        /// Why the answer could not be read, bounded and sanitized.
         message: String,
     },
 
@@ -129,6 +144,18 @@ impl Error {
         }
     }
 
+    /// `host` accepted the request, but its answer could not be read, for
+    /// `message`. Both are sanitized, and `message` is cut to its start.
+    pub fn unreadable(host: &str, message: impl fmt::Display) -> Self {
+        Self::Unreadable {
+            host: sanitize(host).into_owned(),
+            message: truncate(
+                sanitize(message.to_string().trim()).trim(),
+                MAXIMUM_ERROR_BODY_CHARACTERS,
+            ),
+        }
+    }
+
     /// The mail relay at `host` could not be reached, or refused the message,
     /// for `message`. Both are sanitized.
     pub fn smtp(host: &str, message: impl fmt::Display) -> Self {
@@ -151,13 +178,17 @@ impl Error {
     ///
     /// A rejected payload and an unusable endpoint will fail identically no
     /// matter how often they are retried; a timeout, a rate limit and a
-    /// transport fault will not.
+    /// transport fault will not. An unreadable answer followed an accepted
+    /// request, so retrying it would deliver twice.
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Timeout { .. } | Self::RateLimited { .. } | Self::Unreachable { .. } => true,
             Self::Rejected { status, .. } => *status >= 500 || *status == 408 || *status == 429,
             Self::Smtp { .. } => true,
-            Self::Panicked | Self::Malformed { .. } | Self::Endpoint(_) => false,
+            Self::Panicked
+            | Self::Unreadable { .. }
+            | Self::Malformed { .. }
+            | Self::Endpoint(_) => false,
         }
     }
 
@@ -273,6 +304,13 @@ mod tests {
             }
         );
         assert_eq!(
+            Error::unreadable("api.example.test", "missing field `id`"),
+            Error::Unreadable {
+                host: "api.example.test".to_string(),
+                message: "missing field `id`".to_string(),
+            }
+        );
+        assert_eq!(
             Error::smtp("smtp.example.test", "421 try again later"),
             Error::Smtp {
                 host: "smtp.example.test".to_string(),
@@ -299,6 +337,7 @@ mod tests {
 
         let unreachable = Error::unreachable("database", format!("cannot connect to {url}"));
         let malformed = Error::malformed(format!("no client for {url}"));
+        let unreadable = Error::unreadable("api.example.test", format!("{control}{url}"));
         let rate_limited = Error::rate_limited(&format!("{control}{url}"), None);
         let smtp = Error::smtp(
             "smtp.example.test",
@@ -310,7 +349,14 @@ mod tests {
             &format!("{control}{padding}{url} {}", "x".repeat(4_096)),
         );
 
-        for error in [&unreachable, &malformed, &rate_limited, &smtp, &rejected] {
+        for error in [
+            &unreachable,
+            &malformed,
+            &unreadable,
+            &rate_limited,
+            &smtp,
+            &rejected,
+        ] {
             let rendered = error.to_string();
             assert!(!rendered.contains(secret), "{rendered}");
             assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
@@ -323,6 +369,26 @@ mod tests {
             "the body was cut through the credential before it was sanitized: {body:?}"
         );
         assert!(body.chars().count() <= MAXIMUM_ERROR_BODY_CHARACTERS);
+    }
+
+    #[test]
+    fn an_unreadable_answer_is_never_retried_because_the_request_landed() {
+        let error = Error::unreadable("api.example.test", "expected value at line 1 column 1");
+        assert!(!error.is_retryable());
+        assert_eq!(
+            error.to_string(),
+            "api.example.test accepted the request, but its answer could not be read: \
+             expected value at line 1 column 1"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_message_is_cut_to_its_start() {
+        let error = Error::unreadable("api.example.test", "x".repeat(4_096));
+        let Error::Unreadable { message, .. } = &error else {
+            panic!("expected an unreadable answer, got {error:?}");
+        };
+        assert!(message.chars().count() <= MAXIMUM_ERROR_BODY_CHARACTERS);
     }
 
     #[test]

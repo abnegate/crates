@@ -21,6 +21,12 @@ impl StdinHandle {
     pub fn close(self) {
         drop(self);
     }
+
+    /// The channel this handle writes through. The process sees EOF once
+    /// the sender and every clone of it are dropped.
+    pub fn into_sender(self) -> mpsc::Sender<Vec<u8>> {
+        self.sender
+    }
 }
 
 #[cfg(test)]
@@ -62,5 +68,17 @@ mod tests {
         stdin_handle.close();
 
         assert!(receiver.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_sender_taken_from_the_handle_still_reaches_the_process() {
+        let (sender, mut receiver) = mpsc::channel::<Vec<u8>>(10);
+        let sender = StdinHandle { sender }.into_sender();
+
+        sender.send(b"hello".to_vec()).await.unwrap();
+        drop(sender);
+
+        assert_eq!(receiver.recv().await, Some(b"hello".to_vec()));
+        assert_eq!(receiver.recv().await, None);
     }
 }

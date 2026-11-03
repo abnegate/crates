@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::error::Result;
 use crate::public::client::PublicClient;
+use crate::public::target_policy::TargetPolicy;
 use reqwest::Body;
 use reqwest::Request;
 use reqwest::RequestBuilder;
@@ -58,12 +59,14 @@ use std::time::Duration;
 #[must_use = "a request does nothing until it is sent"]
 pub struct PublicRequest {
     builder: Result<RequestBuilder>,
+    policy: TargetPolicy,
 }
 
 impl PublicRequest {
-    pub(super) fn new(builder: RequestBuilder) -> Self {
+    pub(super) fn new(builder: RequestBuilder, policy: TargetPolicy) -> Self {
         Self {
             builder: Ok(builder),
+            policy,
         }
     }
 
@@ -140,7 +143,7 @@ impl PublicRequest {
     /// Copy the request, unless its body is a stream or it has already failed.
     pub fn try_clone(&self) -> Option<Self> {
         let builder = self.builder.as_ref().ok()?.try_clone()?;
-        Some(Self::new(builder))
+        Some(Self::new(builder, self.policy))
     }
 
     /// Build the request without sending it.
@@ -154,18 +157,22 @@ impl PublicRequest {
     /// fetched.
     pub async fn send(self) -> Result<Response> {
         let (client, request) = self.builder?.build_split();
-        PublicClient::new(client).execute(request?).await
+        PublicClient::new(client, self.policy)
+            .execute(request?)
+            .await
     }
 
     fn map(self, apply: impl FnOnce(RequestBuilder) -> RequestBuilder) -> Self {
         Self {
             builder: self.builder.map(apply),
+            ..self
         }
     }
 
     fn and_then(self, apply: impl FnOnce(RequestBuilder) -> Result<RequestBuilder>) -> Self {
         Self {
             builder: self.builder.and_then(apply),
+            ..self
         }
     }
 }
@@ -174,6 +181,7 @@ impl PublicRequest {
 mod tests {
     use super::*;
     use crate::public::public_client;
+    use crate::public::public_client_builder;
     use crate::test_support::LOOPBACK_SPELLINGS;
     use crate::test_support::assert_untouched;
     use crate::test_support::loopback_listener;
@@ -221,10 +229,11 @@ mod tests {
     /// Point a started request at `url` behind the check that started it, as
     /// a method that rewrote the URL would.
     fn retarget(request: PublicRequest, url: &Url) -> PublicRequest {
+        let policy = request.policy;
         let (client, request) = request.builder.expect("the request started").build_split();
         let mut request = request.expect("the request builds");
         *request.url_mut() = url.clone();
-        PublicRequest::new(RequestBuilder::from_parts(client, request))
+        PublicRequest::new(RequestBuilder::from_parts(client, request), policy)
     }
 
     fn loopback(spelling: &str, port: u16) -> Url {
@@ -275,6 +284,23 @@ mod tests {
                 );
             }
             assert_untouched(&listener);
+        }
+    }
+
+    #[tokio::test]
+    async fn every_shape_sent_to_a_metadata_target_is_refused_under_its_own_policy() {
+        let client = public_client_builder(TIMEOUT)
+            .with_target_policy(TargetPolicy::ExceptMetadata)
+            .build()
+            .expect("a guarded client");
+        let metadata = Url::parse("http://169.254.169.254/latest/meta-data/").expect("a URL");
+
+        for (shape, request) in every_shape(&client) {
+            let error = retarget(request, &metadata)
+                .send()
+                .await
+                .expect_err("a metadata target must not be fetched");
+            assert!(matches!(error, Error::MetadataTarget), "{shape}: {error}");
         }
     }
 

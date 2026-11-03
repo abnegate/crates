@@ -456,6 +456,50 @@ async fn test_registry_cancel_stops_a_job_spawned_with_its_token() {
 }
 
 #[tokio::test]
+async fn stdin_written_through_the_registry_reaches_a_running_job() {
+    let registry = JobRegistry::new();
+    let executor = CommandExecutor::new();
+    let (sender, mut receiver) = mpsc::channel(100);
+    let cancellation = registry.register("stdin".to_string()).unwrap();
+    let request = RunStart::new("stdin", "/tmp", "cat").with_timeout(TIMEOUT);
+
+    let mut handle = executor
+        .spawn_with_cancellation(&request, sender, cancellation)
+        .await
+        .unwrap();
+    registry
+        .set_stdin_handle("stdin", handle.stdin.take().expect("the job has a stdin"))
+        .unwrap();
+    let stdin = registry
+        .get_stdin("stdin")
+        .expect("the registry holds the stdin");
+    stdin.send(b"hello ".to_vec()).await.unwrap();
+    stdin.send(b"world\n".to_vec()).await.unwrap();
+    drop(stdin);
+    registry.close_stdin("stdin");
+    let messages = collect_messages(&mut receiver).await;
+
+    let stdout: String = messages
+        .iter()
+        .filter_map(|message| match message {
+            OutboundMessage::RunStdout { data, .. } => Some(decode_output_data(data)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stdout, "hello world\n");
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            OutboundMessage::RunExit {
+                exit_code: Some(0),
+                ..
+            }
+        )),
+        "cat never saw EOF: {messages:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_unicode_output() {
     let executor = CommandExecutor::new();
     let (sender, mut receiver) = mpsc::channel(100);

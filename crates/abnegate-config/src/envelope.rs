@@ -53,9 +53,7 @@ pub(crate) fn seal(
     key: Option<&MasterKey>,
 ) -> Result<(), Error> {
     if let Some(lost) = sealed.iter().find(|value| value.is_lost(document)) {
-        return Err(Error::SealedShapeChanged {
-            field: lost.location().to_string(),
-        });
+        return Err(Error::sealed_shape_changed(lost.location().to_string()));
     }
 
     let targets: Vec<Location> = sealed
@@ -89,9 +87,7 @@ fn seal_at(
             *text = encrypt(text, location, key)?;
             Ok(())
         }
-        Some(_) => Err(Error::SealedShapeChanged {
-            field: location.to_string(),
-        }),
+        Some(_) => Err(Error::sealed_shape_changed(location.to_string())),
     }
 }
 
@@ -104,10 +100,8 @@ fn decrypt(
         return Ok(SecretValue::new(text.as_str()));
     };
 
-    let plaintext = decrypt_value(text, key).map_err(|source| Error::Decrypt {
-        field: location.to_string(),
-        source,
-    })?;
+    let plaintext =
+        decrypt_value(text, key).map_err(|source| Error::decrypt(location.to_string(), source))?;
     *text = plaintext.expose().to_string();
 
     Ok(plaintext)
@@ -115,15 +109,11 @@ fn decrypt(
 
 fn encrypt(text: &str, location: &Location, key: Option<&MasterKey>) -> Result<String, Error> {
     let Some(key) = key else {
-        return Err(Error::SealedWithoutKey {
-            field: location.to_string(),
-        });
+        return Err(Error::sealed_without_key(location.to_string()));
     };
 
-    encrypt_value(&SecretValue::new(text), key).map_err(|source| Error::Encrypt {
-        field: location.to_string(),
-        source,
-    })
+    encrypt_value(&SecretValue::new(text), key)
+        .map_err(|source| Error::encrypt(location.to_string(), source))
 }
 
 fn visit<Visitor>(

@@ -2,6 +2,7 @@ mod builder;
 mod client;
 mod request;
 mod resolver;
+mod target_policy;
 
 use crate::error::Result;
 use std::time::Duration;
@@ -9,6 +10,7 @@ use std::time::Duration;
 pub use crate::public::builder::PublicClientBuilder;
 pub use crate::public::client::PublicClient;
 pub use crate::public::request::PublicRequest;
+pub use crate::public::target_policy::TargetPolicy;
 
 /// A builder for a [`PublicClient`], with `timeout` bounding each request.
 ///

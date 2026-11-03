@@ -2,6 +2,7 @@ use crate::address::literal;
 use crate::address::must_not_be_fetched;
 use crate::error::Error;
 use crate::error::Result;
+use crate::metadata;
 use reqwest::dns::Addrs;
 use reqwest::dns::Name;
 use reqwest::dns::Resolve;
@@ -27,6 +28,9 @@ impl Resolve for PublicResolver {
                 if must_not_be_fetched(ip) {
                     return Err(Error::PrivateAddress.into());
                 }
+                if metadata::is_address(ip) {
+                    return Err(Error::MetadataTarget.into());
+                }
                 return Ok(Box::new(iter::once(SocketAddr::new(ip, 0))) as Addrs);
             }
 
@@ -44,7 +48,7 @@ impl Resolve for PublicResolver {
 /// back through the list cannot arrive at it.
 fn public_only(addresses: impl Iterator<Item = SocketAddr>, host: &str) -> Result<Vec<SocketAddr>> {
     let public: Vec<SocketAddr> = addresses
-        .filter(|address| !must_not_be_fetched(address.ip()))
+        .filter(|address| !must_not_be_fetched(address.ip()) && !metadata::is_address(address.ip()))
         .collect();
 
     if public.is_empty() {
@@ -99,6 +103,40 @@ mod tests {
             public,
             vec![address("93.184.216.34:0")],
             "the loopback address survived alongside the public one"
+        );
+    }
+
+    #[test]
+    fn a_metadata_address_in_a_public_range_is_dropped() {
+        let error = public_only(
+            [
+                address("168.63.129.16:0"),
+                address("[::ffff:168.63.129.16]:0"),
+            ]
+            .into_iter(),
+            "wireserver.example",
+        )
+        .expect_err("the Azure WireServer must not be fetched");
+        assert!(error.to_string().contains("wireserver.example"), "{error}");
+
+        let public = public_only(
+            [address("168.63.129.16:0"), address("93.184.216.34:0")].into_iter(),
+            "both.example",
+        )
+        .expect("the public address stands");
+        assert_eq!(public, vec![address("93.184.216.34:0")]);
+    }
+
+    #[tokio::test]
+    async fn the_resolver_refuses_a_metadata_literal_in_a_public_range() {
+        let error = Resolve::resolve(&PublicResolver, name("168.63.129.16"))
+            .await
+            .err()
+            .expect("the Azure WireServer must not be fetched");
+
+        assert!(
+            matches!(error.downcast_ref::<Error>(), Some(Error::MetadataTarget)),
+            "{error}"
         );
     }
 

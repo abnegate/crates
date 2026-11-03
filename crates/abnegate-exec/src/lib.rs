@@ -69,11 +69,13 @@
 //!
 //! # Proxy routing
 //!
-//! [`Proxy::from_environment`] reads [`PROXY_URL_VARIABLE`] and, when it is
-//! set, overlays the standard proxy variables onto every unconfined command
-//! after its own environment, so a tool cannot accidentally route around it.
-//! Only loopback bypasses the proxy unless [`PROXY_BYPASS_VARIABLE`] names
-//! other hosts. Confined commands reach no network at all and are unaffected.
+//! [`ExecutorConfig::proxy`] overlays the standard proxy variables onto every
+//! unconfined command after its own environment, so a tool cannot
+//! accidentally route around it. It defaults to [`Proxy::from_environment`],
+//! which reads [`PROXY_URL_VARIABLE`] when the config is built;
+//! [`ExecutorConfig::with_proxy`] sets another. Only loopback bypasses the
+//! proxy unless [`PROXY_BYPASS_VARIABLE`] or [`Proxy::with_bypass`] names other
+//! hosts. Confined commands reach no network at all and are unaffected.
 //!
 //! # Platform support
 //!

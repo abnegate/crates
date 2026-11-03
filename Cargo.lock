@@ -181,6 +181,7 @@ version = "0.1.5"
 dependencies = [
  "abnegate-secret",
  "async-trait",
+ "base64 0.23.1",
  "chrono",
  "futures",
  "lettre",

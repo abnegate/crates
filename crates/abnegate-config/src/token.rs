@@ -137,9 +137,7 @@ impl TokenStore {
 
     fn failure(&self, name: &str, source: KeyringError) -> Error {
         match source {
-            KeyringError::NoEntry => Error::NoCredential {
-                name: name.to_string(),
-            },
+            KeyringError::NoEntry => Error::no_credential(name),
             other => Error::from(other),
         }
     }

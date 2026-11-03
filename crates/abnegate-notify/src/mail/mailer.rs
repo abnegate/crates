@@ -14,9 +14,11 @@ use crate::error::Error;
 use crate::mail::Mail;
 use crate::smtp::SmtpConfig;
 use crate::smtp::failure;
-use crate::smtp::mailbox;
+use crate::smtp::parse_mailbox;
 
 /// A [`Mail`] that sends through an SMTP relay.
+///
+/// A recipient is a bare address or a `Name <address>` mailbox.
 ///
 /// The transport is built for each message rather than held, so a mailer can
 /// be constructed and dropped without a Tokio runtime, even in a build where
@@ -48,7 +50,7 @@ impl Mailer {
     fn compose(&self, recipient: &str, subject: &str, body: &str) -> Result<Message, Error> {
         Message::builder()
             .from(self.from.clone())
-            .to(mailbox(recipient, None)?)
+            .to(parse_mailbox(recipient)?)
             .subject(subject)
             .header(ContentType::TEXT_PLAIN)
             .body(body.to_string())
@@ -88,6 +90,7 @@ impl fmt::Debug for Mailer {
 mod tests {
     use super::*;
     use crate::smtp::Sender;
+    use crate::smtp::SmtpSecurity;
 
     fn config_from(sender: Sender) -> SmtpConfig {
         SmtpConfig::new(
@@ -151,6 +154,89 @@ mod tests {
             Mailer::new(&broken).expect_err("bad sender"),
             Error::Malformed { .. }
         ));
+    }
+
+    #[test]
+    fn a_named_recipient_is_addressed_by_name() {
+        let message = rendered("Sam Example <person@example.test>", "Subject", "Body");
+        assert!(
+            message.contains("To: \"Sam Example\" <person@example.test>\r\n"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_line_break_in_a_recipient_name_never_reaches_the_headers() {
+        for recipient in [
+            "Sam\r\nBcc: hidden@example.test <person@example.test>",
+            "Sam\r\n Bcc: hidden@example.test <person@example.test>",
+            "\"Sam\r\nBcc: hidden@example.test\" <person@example.test>",
+            "Sam\nBcc: hidden@example.test <person@example.test>",
+        ] {
+            let error = mailer()
+                .compose(recipient, "Subject", "Body")
+                .expect_err(recipient);
+            assert!(matches!(error, Error::Malformed { .. }), "{recipient:?}");
+        }
+    }
+
+    #[test]
+    fn an_encoded_line_break_stays_inside_the_name() {
+        let message = rendered(
+            "=?utf-8?b?U2FtDQpCY2M6IGhpZGRlbkBleGFtcGxlLnRlc3Q=?= <person@example.test>",
+            "Subject",
+            "Body",
+        );
+        let headers = message.split("\r\n\r\n").next().expect("headers");
+        assert!(
+            !headers
+                .split("\r\n")
+                .any(|line| line.to_ascii_lowercase().starts_with("bcc:")),
+            "{headers}"
+        );
+        assert!(!headers.contains("hidden@example.test"), "{headers}");
+    }
+
+    #[test]
+    fn a_line_break_in_the_sender_name_is_refused_rather_than_panicking() {
+        for name in [
+            "Alerts\r\nBcc: hidden@example.test",
+            "Alerts\nBcc: x",
+            "Alerts\r",
+        ] {
+            let broken = config_from(Sender::new("alerts@example.test").with_name(name));
+            assert!(
+                matches!(Mailer::new(&broken), Err(Error::Malformed { .. })),
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_half_written_mailbox_is_refused() {
+        for recipient in [
+            "Sam <person@example.test",
+            "Sam person@example.test>",
+            "Sam <>",
+        ] {
+            let error = mailer()
+                .compose(recipient, "Subject", "Body")
+                .expect_err(recipient);
+            assert!(matches!(error, Error::Malformed { .. }), "{recipient}");
+        }
+    }
+
+    #[test]
+    fn a_mailer_is_built_for_every_security_and_without_credentials() {
+        for security in [
+            SmtpSecurity::Implicit,
+            SmtpSecurity::StartTls,
+            SmtpSecurity::Plaintext,
+        ] {
+            let relay = config().with_security(security);
+            drop(Mailer::new(&relay).expect("signs in"));
+            drop(Mailer::new(&relay.without_credentials()).expect("anonymous"));
+        }
     }
 
     #[test]

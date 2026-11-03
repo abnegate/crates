@@ -26,7 +26,8 @@ pub struct TokenMetadata {
 
 impl TokenMetadata {
     /// A token issued by `host` that expires at `expires_at`, with no identity
-    /// attached: set `user_id` and `email` on the result when they are known.
+    /// attached: add one with [`with_user_id`](Self::with_user_id) and
+    /// [`with_email`](Self::with_email) when it is known.
     pub fn new(host: impl Into<String>, expires_at: DateTime<Utc>) -> Self {
         Self {
             host: host.into(),
@@ -34,6 +35,21 @@ impl TokenMetadata {
             user_id: None,
             email: None,
         }
+    }
+
+    /// The same metadata, naming the account by the issuing server's
+    /// identifier `user_id`.
+    #[must_use]
+    pub fn with_user_id(mut self, user_id: impl Into<String>) -> Self {
+        self.user_id = Some(user_id.into());
+        self
+    }
+
+    /// The same metadata, naming the account by its email address `email`.
+    #[must_use]
+    pub fn with_email(mut self, email: impl Into<String>) -> Self {
+        self.email = Some(email.into());
+        self
     }
 
     /// Whether [`expires_at`](Self::expires_at) is now or already past.
@@ -207,5 +223,31 @@ mod tests {
 
         assert!(metadata.user_id.is_none());
         assert!(metadata.email.is_none());
+    }
+
+    #[test]
+    fn the_builders_attach_an_identity() {
+        let expires_at = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        let built = TokenMetadata::new("https://api.example.com", expires_at)
+            .with_user_id("user-123")
+            .with_email("person@example.com");
+
+        assert_eq!(built, metadata());
+    }
+
+    #[test]
+    fn each_builder_sets_only_its_own_field() {
+        let expires_at = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        let identified =
+            TokenMetadata::new("https://api.example.com", expires_at).with_user_id("user-123");
+        let addressed = TokenMetadata::new("https://api.example.com", expires_at)
+            .with_email("person@example.com");
+
+        assert_eq!(identified.user_id.as_deref(), Some("user-123"));
+        assert!(identified.email.is_none());
+        assert_eq!(addressed.email.as_deref(), Some("person@example.com"));
+        assert!(addressed.user_id.is_none());
     }
 }

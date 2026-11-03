@@ -14,7 +14,7 @@ redacts credentials.
 ## Features
 
 - `smtp`: the `Email` channel, and `Mailer`, which sends one message through a relay; both pull in `lettre`.
-- `testing`: `MockMailer`, a `Mail` that records instead of sending, for a caller's own tests.
+- `testing`: `MockMailer`, a `Mail` that records instead of sending, and `Endpoint::for_test` and `Webhook::for_test`, which point a webhook at a server on the local machine such as wiremock, for a caller's own tests.
 
 ## Usage
 
@@ -42,5 +42,33 @@ async fn announce() -> Result<(), Error> {
         eprintln!("{} did not take it: {:?}", failure.name(), failure.error());
     }
     Ok(())
+}
+```
+
+A channel of your own posts through `Webhook`, which keeps the same guarantees:
+its URL is checked against an allowlist, redirects are refused, and neither the
+URL nor a bearer or basic credential reaches an error or `Debug` output. It
+posts JSON or a form, and reads back a provider's answer, bounded by
+`with_body_limit`. The example derives `Deserialize`, so it also needs
+`cargo add serde --features derive`:
+
+```rust,no_run
+use abnegate_notify::Endpoint;
+use abnegate_notify::Error;
+use abnegate_notify::Webhook;
+
+#[derive(serde::Deserialize)]
+struct Created {
+    sid: String,
+}
+
+async fn text(account: &str, token: &str) -> Result<String, Error> {
+    let url = format!("https://api.example.com/Accounts/{account}/Messages.json");
+    let webhook = Webhook::new(Endpoint::new(&url, &["api.example.com"])?)?
+        .with_basic(account, token);
+    let created: Created = webhook
+        .post_form_for(&[("To", "+15550001111"), ("Body", "deployed")])
+        .await?;
+    Ok(created.sid)
 }
 ```

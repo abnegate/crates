@@ -42,6 +42,7 @@ use crate::catalog::text::use_cases_from_pipeline;
 use async_trait::async_trait;
 use regex::Regex;
 use reqwest::Client;
+use reqwest::Response;
 use reqwest::Url;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -377,14 +378,7 @@ async fn fetch_page(
     limit: usize,
 ) -> Result<(Vec<ModelEntry>, Option<String>), CatalogError> {
     let url = search_url(catalog_url, options, cursor, limit)?;
-    let response = client.get(url).send().await?;
-
-    if !response.status().is_success() {
-        return Err(CatalogError::Unavailable(format!(
-            "HuggingFace API returned status: {}",
-            response.status()
-        )));
-    }
+    let response = successful(client.get(url).send().await?)?;
 
     let next_cursor = response
         .headers()
@@ -402,6 +396,15 @@ async fn fetch_page(
     })?;
 
     Ok((models.into_iter().map(to_model).collect(), next_cursor))
+}
+
+fn successful(response: Response) -> Result<Response, CatalogError> {
+    let status = response.status();
+    if status.is_success() {
+        Ok(response)
+    } else {
+        Err(CatalogError::Status(status.as_u16()))
+    }
 }
 
 /// Read the `rel="next"` link's pagination token.
@@ -493,6 +496,11 @@ fn to_model(model: HuggingFaceModel) -> ModelEntry {
     } else {
         safetensors_variants(&id, siblings)
     };
+    let quantization_level = if format == "gguf" {
+        gguf_quantization(siblings, sizes.as_deref())
+    } else {
+        None
+    };
     let use_cases = nonempty_vec(use_cases_from_pipeline(pipeline.as_deref(), &tags));
     let mut capabilities = declared_capabilities(
         pipeline
@@ -539,6 +547,7 @@ fn to_model(model: HuggingFaceModel) -> ModelEntry {
             format: Some(format),
             family,
             parameter_size,
+            quantization_level,
             context_length,
             license,
             ..Default::default()
@@ -725,6 +734,21 @@ fn gguf_variants(id: &str, siblings: &[HuggingFaceSibling]) -> Option<Vec<ModelS
     Some(sizes)
 }
 
+/// The quantization of the first download listed, or of the repository's only
+/// GGUF weight file when it offers no choice.
+fn gguf_quantization(
+    siblings: &[HuggingFaceSibling],
+    sizes: Option<&[ModelSize]>,
+) -> Option<String> {
+    match sizes.and_then(<[ModelSize]>::first) {
+        Some(first) => extract_quantization(&first.label),
+        None => siblings
+            .iter()
+            .find(|sibling| is_gguf_weight_file(&sibling.rfilename))
+            .and_then(|sibling| extract_quantization(&sibling.rfilename)),
+    }
+}
+
 fn compare_downloads(left: &ModelSize, right: &ModelSize) -> Ordering {
     compare(
         download_parameter_billions(&left.label),
@@ -780,13 +804,7 @@ async fn fetch_adapter_page(
     limit: usize,
 ) -> Result<Vec<ModelEntry>, CatalogError> {
     let url = adapter_url(catalog_url, query, base, limit)?;
-    let response = client.get(url).send().await?;
-    if !response.status().is_success() {
-        return Err(CatalogError::Unavailable(format!(
-            "HuggingFace API returned status: {}",
-            response.status()
-        )));
-    }
+    let response = successful(client.get(url).send().await?)?;
     let body = response.text().await?;
     let models: Vec<HuggingFaceModel> =
         serde_json::from_str(&body).map_err(|error| CatalogError::Parse(error.to_string()))?;
@@ -874,13 +892,7 @@ pub async fn huggingface_repository_downloads(
         .append_pair("blobs", "true")
         .append_pair(EXPAND_PARAMETER, "gguf")
         .append_pair(EXPAND_PARAMETER, "siblings");
-    let response = client.get(url).send().await?;
-    if !response.status().is_success() {
-        return Err(CatalogError::Unavailable(format!(
-            "HuggingFace API returned status: {}",
-            response.status()
-        )));
-    }
+    let response = successful(client.get(url).send().await?)?;
     let parsed: HuggingFaceModel = response.json().await.map_err(|error| {
         CatalogError::Parse(format!(
             "Failed to parse HuggingFace model: {}",
@@ -1347,11 +1359,62 @@ mod tests {
             ]
         }"#;
         let parsed: HuggingFaceModel = serde_json::from_str(json).unwrap();
-        let sizes = to_model(parsed).sizes.expect("gguf downloads");
+        let model = to_model(parsed);
+        let sizes = model.sizes.expect("gguf downloads");
         assert_eq!(sizes.len(), 3);
         assert_eq!(sizes[0].label, "Q4_0");
         assert_eq!(sizes[1].label, "Q5_K_M");
         assert_eq!(sizes[2].label, "Q8_0");
+        assert_eq!(
+            model.details.unwrap().quantization_level.as_deref(),
+            Some("Q4_0")
+        );
+    }
+
+    #[test]
+    fn to_model_reads_the_quantization_of_the_first_disambiguated_download() {
+        let parsed: HuggingFaceModel = serde_json::from_value(serde_json::json!({
+            "id": "Qwen/Qwen3-GGUF",
+            "gguf": {"architecture": "qwen3"},
+            "siblings": [
+                {"rfilename": "Qwen3-8B-Q8_0.gguf", "size": 8_500_000_000_u64},
+                {"rfilename": "Qwen3-0.6B-Q4_K_M.gguf", "size": 350_u64},
+                {"rfilename": "Qwen3-8B-Q4_K_M.gguf", "size": 4_700_000_000_u64}
+            ]
+        }))
+        .unwrap();
+
+        let model = to_model(parsed);
+
+        assert_eq!(model.sizes.as_ref().unwrap()[0].label, "0.6B · Q4_K_M");
+        assert_eq!(
+            model.details.unwrap().quantization_level.as_deref(),
+            Some("Q4_K_M")
+        );
+    }
+
+    #[test]
+    fn to_model_leaves_an_unquantized_repository_without_a_level() {
+        let gguf: HuggingFaceModel = serde_json::from_value(serde_json::json!({
+            "id": "owner/model-GGUF",
+            "gguf": {"architecture": "llama"}
+        }))
+        .unwrap();
+        let adapter: HuggingFaceModel = serde_json::from_value(serde_json::json!({
+            "id": "owner/edit-lora",
+            "tags": ["lora"],
+            "siblings": [{"rfilename": "edit-Q4_0.safetensors", "size": 1_000_u64}]
+        }))
+        .unwrap();
+
+        assert!(to_model(gguf).details.unwrap().quantization_level.is_none());
+        assert!(
+            to_model(adapter)
+                .details
+                .unwrap()
+                .quantization_level
+                .is_none()
+        );
     }
 
     #[test]
@@ -1514,7 +1577,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_reports_an_unavailable_catalog() {
+    async fn search_reports_a_failing_status() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(500))
@@ -1526,7 +1589,83 @@ mod tests {
             .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
             .await
             .unwrap_err();
-        assert!(matches!(error, CatalogError::Unavailable(_)));
+        assert!(matches!(error, CatalogError::Status(500)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn search_reports_a_missing_catalog_as_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let error = provider
+            .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, CatalogError::Status(404)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn search_adapters_reports_a_missing_catalog_as_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let error = provider
+            .search_adapters(
+                browse(ModelSort::Relevance, None, ModelSizeFilter::All),
+                &["Qwen/Qwen-Image-Edit".to_string()],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, CatalogError::Status(404)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn search_reports_the_quantization_of_the_first_download() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                    "gguf": {"totalFileSize": 4_700_000_000_u64, "architecture": "qwen2"},
+                    "siblings": [
+                        {"rfilename": "qwen2.5-coder-7b-q8_0.gguf", "size": 8_100_000_000_u64},
+                        {"rfilename": "qwen2.5-coder-7b-q4_k_m.gguf", "size": 4_700_000_000_u64}
+                    ]
+                }])),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let page = provider
+            .search(browse(ModelSort::Relevance, None, ModelSizeFilter::All))
+            .await
+            .unwrap();
+
+        let model = &page.models[0];
+        assert_eq!(model.sizes.as_ref().unwrap()[0].label, "Q4_K_M");
+        assert_eq!(
+            model
+                .details
+                .as_ref()
+                .unwrap()
+                .quantization_level
+                .as_deref(),
+            Some("Q4_K_M")
+        );
     }
 
     #[tokio::test]
@@ -1630,10 +1769,14 @@ mod tests {
         assert_eq!(sizes[0].label, "Q4_0");
         assert_eq!(sizes[1].label, "Q5_K_M");
         assert_eq!(sizes[2].label, "Q8_0");
+        assert_eq!(
+            model.details.unwrap().quantization_level.as_deref(),
+            Some("Q4_0")
+        );
     }
 
     #[tokio::test]
-    async fn repository_downloads_reports_a_missing_repository() {
+    async fn repository_downloads_reports_a_missing_repository_as_not_found() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(404))
@@ -1644,7 +1787,36 @@ mod tests {
         let error = huggingface_repository_downloads(&catalog, None, "owner/missing")
             .await
             .unwrap_err();
-        assert!(matches!(error, CatalogError::Unavailable(_)));
+        assert!(matches!(error, CatalogError::Status(404)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn repository_downloads_reports_the_quantization_of_its_only_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/models/owner/model-GGUF"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "owner/model-GGUF",
+                "gguf": {"totalFileSize": 4_108_917_024_u64, "architecture": "llama"},
+                "siblings": [
+                    {"rfilename": "README.md", "size": 100_u64},
+                    {"rfilename": "mmproj-model-f16.gguf", "size": 600_000_000_u64},
+                    {"rfilename": "model-Q5_K_M.gguf", "size": 4_108_917_024_u64}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let catalog = format!("{}/api/models", server.uri());
+        let model = huggingface_repository_downloads(&catalog, None, "owner/model-GGUF")
+            .await
+            .unwrap();
+
+        assert!(model.sizes.is_none());
+        assert_eq!(
+            model.details.unwrap().quantization_level.as_deref(),
+            Some("Q5_K_M")
+        );
     }
 
     #[tokio::test]

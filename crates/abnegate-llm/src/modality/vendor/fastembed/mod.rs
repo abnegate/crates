@@ -1,5 +1,6 @@
 //! Local ONNX embeddings through fastembed.
 
+mod cache;
 mod config;
 
 use std::sync::Arc;
@@ -20,7 +21,7 @@ const NAME: &str = "fastembed";
 
 /// Local ONNX embeddings, loaded through fastembed.
 ///
-/// The first call downloads the model into the cache directory when it is
+/// [`Self::new`] downloads the model into the cache directory when it is
 /// not already there. Inference is synchronous inside the process; the
 /// [`EmbeddingProvider`] methods run it on `spawn_blocking` so a tokio
 /// worker is not stalled, and [`Self::embed_blocking`] is the same work
@@ -47,15 +48,30 @@ impl std::fmt::Debug for FastembedProvider {
 
 impl FastembedProvider {
     /// Load the model `config` names.
+    ///
+    /// Loaders of the same model into the same cache directory, in this
+    /// process or another, take turns through a lock file under the cache's
+    /// `.locks` directory instead of failing each other's download. The lock
+    /// is held while the model downloads and while the first ONNX session is
+    /// built, so loaders with a warm cache also build their first session
+    /// one at a time. Waiting has no timeout and blocks the calling thread;
+    /// async callers should run this on `spawn_blocking`. A cache directory
+    /// that cannot hold a lock file (read-only, or without file locking)
+    /// loads without one.
     pub fn new(config: FastembedConfig) -> Result<Self, ProviderError> {
         let model = config.embedding_model()?;
-        let dimensions = TextEmbedding::get_model_info(&model)
-            .map(|info| info.dim as u32)
+        let info = TextEmbedding::get_model_info(&model)
             .map_err(|error| ProviderError::config(error.to_string()))?;
+        let dimensions = info.dim as u32;
         let model_name = model.to_string();
         let pool_size = config.pool_size.max(1);
         let mut pool = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
+        pool.push(Arc::new(Mutex::new(load_cached_session(
+            &config,
+            &model,
+            &info.model_code,
+        )?)));
+        for _ in 1..pool_size {
             pool.push(Arc::new(Mutex::new(load_session(&config, &model)?)));
         }
         Ok(Self {
@@ -97,6 +113,25 @@ impl FastembedProvider {
         let index = self.next.fetch_add(1, Ordering::Relaxed) % self.pool.len();
         self.pool[index].clone()
     }
+}
+
+fn load_cached_session(
+    config: &FastembedConfig,
+    model: &fastembed::EmbeddingModel,
+    model_code: &str,
+) -> Result<TextEmbedding, ProviderError> {
+    while_holding_the_cache(config, model_code, || load_session(config, model))
+}
+
+/// `load`'s answer, run once this process holds `model_code`'s lock in the
+/// cache `config` resolves to.
+fn while_holding_the_cache<T>(
+    config: &FastembedConfig,
+    model_code: &str,
+    load: impl FnOnce() -> Result<T, ProviderError>,
+) -> Result<T, ProviderError> {
+    let _lock = cache::lock(&cache::directory(config), model_code)?;
+    load()
 }
 
 fn load_session(
@@ -166,9 +201,17 @@ impl FastembedProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use fastembed::TextEmbedding;
+
     use super::FastembedConfig;
     use super::FastembedProvider;
+    use super::cache;
     use crate::modality::EmbeddingProvider;
+
+    const HOLD: Duration = Duration::from_secs(1);
 
     #[test]
     fn an_unknown_model_fails_before_the_session_loads() {
@@ -203,5 +246,55 @@ mod tests {
         assert_eq!(vectors[0].len(), provider.dimensions() as usize);
         let single = provider.embed_single("hello").await.unwrap();
         assert_eq!(single.len(), provider.dimensions() as usize);
+    }
+
+    #[test]
+    fn a_load_starts_only_once_another_loader_releases_the_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = FastembedConfig::fast().with_cache_directory(directory.path());
+        let code = "Qdrant/all-MiniLM-L6-v2-onnx";
+        let held = cache::lock(&cache::directory(&config), code)
+            .unwrap()
+            .expect("the test cache holds a lock");
+        let loader = std::thread::spawn(move || {
+            super::while_holding_the_cache(&config, code, || Ok(Instant::now()))
+        });
+        std::thread::sleep(HOLD);
+        let released = Instant::now();
+        drop(held);
+        let started = loader.join().unwrap().unwrap();
+        assert!(
+            started >= released,
+            "started loading {:?} before the cache was released",
+            released - started
+        );
+    }
+
+    #[test]
+    fn a_loader_waits_while_another_holds_the_model_cache() {
+        let config = FastembedConfig::fast().with_show_download_progress(false);
+        let model = config.embedding_model().unwrap();
+        let code = TextEmbedding::get_model_info(&model)
+            .unwrap()
+            .model_code
+            .clone();
+        let held = cache::lock(&cache::directory(&config), &code)
+            .unwrap()
+            .expect("the test cache holds a lock");
+        let loader = std::thread::spawn(move || {
+            let provider = FastembedProvider::new(config);
+            (provider, Instant::now())
+        });
+        std::thread::sleep(HOLD);
+        let released = Instant::now();
+        drop(held);
+        let (provider, loaded) = loader.join().unwrap();
+        let provider = provider.unwrap();
+        assert!(
+            loaded >= released,
+            "loaded {:?} before another loader released the cache",
+            released - loaded
+        );
+        assert_eq!(provider.dimensions(), 384);
     }
 }

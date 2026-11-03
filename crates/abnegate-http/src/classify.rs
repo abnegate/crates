@@ -27,10 +27,12 @@ fn is_allowed_rate_limit_event(record: &str) -> bool {
 }
 
 fn is_rate_limit_error_lower(lower: &str) -> bool {
-    const PATTERNS: [&str; 8] = [
+    const PATTERNS: &[&str] = &[
         "rate limit",
         "ratelimit",
-        "hit your limit",
+        "usage limit reached",
+        "5-hour limit reached",
+        "weekly limit reached",
         "too many requests",
         "quota exceeded",
         "resource exhausted",
@@ -38,7 +40,53 @@ fn is_rate_limit_error_lower(lower: &str) -> bool {
         "try again later",
     ];
 
-    PATTERNS.iter().any(|needle| lower.contains(needle)) || contains_standalone_429(lower)
+    PATTERNS.iter().any(|needle| lower.contains(needle))
+        || names_a_hit_limit(lower)
+        || contains_standalone_429(lower)
+}
+
+/// Whether `lower` says the caller hit a limit, however the limit is named:
+/// "you've hit your limit", "you've hit your weekly limit", "you've hit your
+/// monthly spend limit".
+///
+/// The limit has to follow within a few words and in the same clause, so
+/// "the retry hit your webhook twice" and "it hit your cache. limit the ttl"
+/// are not read as one. A full stop inside a word, as in "gpt-4.1", ends no
+/// clause. A context limit is the model's window, not a rate limit.
+fn names_a_hit_limit(lower: &str) -> bool {
+    const HIT: &str = "hit your ";
+    const WORDS_BEFORE_THE_LIMIT: usize = 4;
+
+    lower.match_indices(HIT).any(|(at, hit)| {
+        let words: Vec<&str> = clause(&lower[at + hit.len()..])
+            .split_whitespace()
+            .take(WORDS_BEFORE_THE_LIMIT)
+            .map(|word| word.trim_matches(|character: char| !character.is_alphanumeric()))
+            .collect();
+        words.iter().any(|word| is_limit_word(word)) && !words.contains(&"context")
+    })
+}
+
+/// `text` up to the end of its first clause.
+fn clause(text: &str) -> &str {
+    const CLAUSE_ENDS: &[char] = &[',', ';', '|', '·', '∙', '\n'];
+
+    let end = text
+        .char_indices()
+        .find(|&(at, character)| {
+            CLAUSE_ENDS.contains(&character)
+                || (character == '.'
+                    && text[at + 1..]
+                        .chars()
+                        .next()
+                        .is_none_or(char::is_whitespace))
+        })
+        .map_or(text.len(), |(at, _)| at);
+    &text[..end]
+}
+
+fn is_limit_word(word: &str) -> bool {
+    matches!(word, "limit" | "limits")
 }
 
 /// Whether `429` appears as a status code rather than as part of something
@@ -88,14 +136,20 @@ fn is_json_value(bytes: &[u8], at: usize) -> bool {
 
 /// Whether `message` describes a failure that will not improve on its own and
 /// should be escalated rather than retried quietly.
+///
+/// That includes the failures `abnegate-agent-cli` reports for an agent it
+/// could not start, stop, read or finish in time.
 pub fn is_hard_error(message: &str) -> bool {
-    const PATTERNS: [&str; 11] = [
+    const PATTERNS: &[&str] = &[
         "failed to spawn",
         "failed to wait for",
         "failed to capture stdout",
         "failed to capture stderr",
         "process timed out",
         "timed out after",
+        "could not be started",
+        "could not be stopped",
+        "agent output could not be parsed",
         "connection reset",
         "service unavailable",
         "internal server error",
@@ -161,6 +215,108 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_error_usage_limit_with_reset_epoch() {
+        assert!(is_rate_limit_error(
+            "Claude AI usage limit reached|1790262000"
+        ));
+    }
+
+    #[test]
+    fn rate_limit_error_usage_limit_banner() {
+        assert!(is_rate_limit_error(
+            "Usage limit reached · continuing automatically at 3pm · esc to cancel"
+        ));
+    }
+
+    #[test]
+    fn rate_limit_error_five_hour_limit() {
+        assert!(is_rate_limit_error("5-hour limit reached ∙ resets 3pm"));
+    }
+
+    #[test]
+    fn rate_limit_error_weekly_limit() {
+        assert!(is_rate_limit_error(
+            "Opus weekly limit reached ∙ resets Oct 9, 10am"
+        ));
+    }
+
+    #[test]
+    fn rate_limit_error_named_limits() {
+        assert!(is_rate_limit_error(
+            "You've hit your weekly limit · resets Oct 9, 10am"
+        ));
+        assert!(is_rate_limit_error(
+            "You've hit your session limit · resets 3pm"
+        ));
+        assert!(is_rate_limit_error("You've hit your Opus limit"));
+        assert!(is_rate_limit_error("You've hit your monthly spend limit."));
+        assert!(is_rate_limit_error("You've hit your limits for today"));
+    }
+
+    #[test]
+    fn rate_limit_error_hit_your_without_a_limit() {
+        assert!(!is_rate_limit_error("The retry hit your webhook twice"));
+        assert!(!is_rate_limit_error(
+            "It hit your cache. Limit the TTL instead"
+        ));
+    }
+
+    #[test]
+    fn rate_limit_error_limit_too_far_after_hit_your() {
+        assert!(!is_rate_limit_error(
+            "The probe hit your very own personal monthly limit dashboard"
+        ));
+        assert!(is_rate_limit_error(
+            "You've hit your own personal monthly limit"
+        ));
+    }
+
+    #[test]
+    fn rate_limit_error_limit_across_a_clause_boundary() {
+        for message in [
+            "It hit your cache, limit the TTL instead",
+            "It hit your cache; limit the TTL instead",
+            "It hit your cache | limit 10",
+            "It hit your cache · limit 10",
+            "It hit your cache ∙ limit 10",
+            "It hit your cache\nlimit 10",
+        ] {
+            assert!(!is_rate_limit_error(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn rate_limit_error_a_dotted_model_name_stays_in_its_clause() {
+        assert!(is_rate_limit_error("You've hit your GPT-4.1 limit"));
+        assert!(is_rate_limit_error(
+            "You've hit your claude-3.5 usage limits"
+        ));
+        assert!(!is_rate_limit_error("It hit your cache.limit the TTL"));
+    }
+
+    #[test]
+    fn rate_limit_error_a_context_limit_is_not_a_rate_limit() {
+        assert!(!is_rate_limit_error("You've hit your context limit"));
+        assert!(!is_rate_limit_error("You've hit your context window limit"));
+    }
+
+    #[test]
+    fn rate_limit_error_a_word_that_only_starts_with_limit() {
+        assert!(!is_rate_limit_error(
+            "The demo hit your limitless potential"
+        ));
+    }
+
+    #[test]
+    fn rate_limit_error_other_limits_reached_are_not_rate_limits() {
+        assert!(!is_rate_limit_error("Context limit reached"));
+        assert!(!is_rate_limit_error(
+            "Subagent nesting limit reached (depth 3)"
+        ));
+        assert!(!is_rate_limit_error("Budget limit reached ($5.00 of $5)"));
+    }
+
+    #[test]
     fn rate_limit_error_case_insensitive() {
         assert!(is_rate_limit_error("RATE LIMIT EXCEEDED"));
         assert!(is_rate_limit_error("Rate Limit"));
@@ -198,6 +354,33 @@ mod tests {
     fn hard_error_timeout() {
         assert!(is_hard_error("Process timed out"));
         assert!(is_hard_error("Timed out after 3600 seconds"));
+    }
+
+    #[test]
+    fn hard_error_agent_could_not_be_started() {
+        assert!(is_hard_error(
+            "claude: agent command claude could not be started: No such file or directory (os error 2)"
+        ));
+    }
+
+    #[test]
+    fn hard_error_agent_could_not_be_stopped() {
+        assert!(is_hard_error("the agent could not be stopped"));
+        assert!(is_hard_error(
+            "claude: agent output could not be parsed: the agent could not be stopped"
+        ));
+    }
+
+    #[test]
+    fn hard_error_agent_output_could_not_be_parsed() {
+        assert!(is_hard_error(
+            "codex: agent output could not be parsed: expected value at line 1 column 1"
+        ));
+    }
+
+    #[test]
+    fn hard_error_agent_timed_out() {
+        assert!(is_hard_error("claude: agent command timed out after 5s"));
     }
 
     #[test]

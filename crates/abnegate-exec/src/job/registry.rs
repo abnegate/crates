@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::JobError;
 use crate::executor::ProcessGroup;
+use crate::executor::StdinHandle;
 use crate::protocol::ErrorCode;
 use crate::protocol::OutboundMessage;
 
@@ -158,6 +159,16 @@ impl JobRegistry {
     pub fn set_stdin(&self, job_id: &str, sender: mpsc::Sender<Vec<u8>>) -> Result<(), JobError> {
         self.unfinished(job_id, true)?.stdin = Some(sender);
         Ok(())
+    }
+
+    /// Route stdin written through [`JobRegistry::get_stdin`] to the job
+    /// `handle` belongs to: pass the
+    /// [`JobHandle::stdin`](crate::executor::JobHandle::stdin) its spawn
+    /// returned. [`JobRegistry::close_stdin`] drops the registry's sender; the
+    /// job reads EOF once every sender [`JobRegistry::get_stdin`] handed out
+    /// is dropped too. A job that has already finished is refused.
+    pub fn set_stdin_handle(&self, job_id: &str, handle: StdinHandle) -> Result<(), JobError> {
+        self.set_stdin(job_id, handle.into_sender())
     }
 
     /// Get the stdin channel for a job

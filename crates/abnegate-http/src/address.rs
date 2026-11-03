@@ -1,5 +1,5 @@
 mod ipv4_block;
-mod ipv6_block;
+pub(crate) mod ipv6_block;
 
 use crate::address::ipv4_block::Ipv4Block;
 use crate::address::ipv6_block::Ipv6Block;
@@ -85,7 +85,7 @@ fn ipv6_must_not_be_fetched(ip: Ipv6Addr) -> bool {
 /// A NAT64 gateway forwards the well-known prefix to the IPv4 address in its
 /// last 32 bits, so that address is what decides; refusing the whole prefix
 /// would cut an IPv6-only host off from every IPv4-only site.
-fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+pub(crate) fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
     if Ipv6Block::NAT64.contains(ip) {
         let [.., first, second, third, fourth] = ip.octets();
         return Some(Ipv4Addr::new(first, second, third, fourth));

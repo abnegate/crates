@@ -15,6 +15,8 @@ pub use crate::endpoint::error::EndpointError;
 const LOOPBACK_SUFFIX: &str = ".localhost";
 const LOOPBACK_NAME: &str = "localhost";
 const REQUIRED_SCHEME: &str = "https";
+#[cfg(any(test, feature = "testing"))]
+const TEST_SCHEMES: &[&str] = &["http", REQUIRED_SCHEME];
 
 /// A validated webhook URL, held as the credential it is.
 ///
@@ -103,17 +105,54 @@ impl Endpoint {
         client.post(self.url.expose())
     }
 
-    /// An endpoint pointed at a local test server, bypassing every check.
-    #[cfg(test)]
-    pub(crate) fn for_test(url: &str) -> Self {
-        let host = Url::parse(url)
-            .ok()
-            .and_then(|parsed| parsed.host_str().map(str::to_string))
-            .unwrap_or_else(|| "test".to_string());
-        Self {
-            url: SecretValue::new(url),
-            host,
+    /// An endpoint on the local machine, for pointing a [`Webhook`](crate::Webhook)
+    /// at a test server such as wiremock.
+    ///
+    /// It accepts `http` as well as `https`, any port, and no allowlist, but
+    /// only a loopback address such as `127.0.0.1` or `::1`. A name, even
+    /// `localhost`, is refused, since a resolver can send it off the machine.
+    /// Anything else is [`EndpointError::HostNotAllowed`], so enabling the
+    /// `testing` feature never opens a route to another machine. Credentials in the authority
+    /// are refused as [`Endpoint::new`] refuses them.
+    ///
+    /// ```
+    /// use abnegate_notify::Endpoint;
+    ///
+    /// let endpoint = Endpoint::for_test("http://127.0.0.1:8080/hook")?;
+    /// assert_eq!(endpoint.host(), "127.0.0.1");
+    /// assert!(Endpoint::for_test("http://example.com/hook").is_err());
+    /// # Ok::<(), abnegate_notify::EndpointError>(())
+    /// ```
+    #[cfg(any(test, feature = "testing"))]
+    #[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
+    pub fn for_test(url: &str) -> Result<Self, EndpointError> {
+        let parsed = Url::parse(url).map_err(|_| EndpointError::Malformed)?;
+
+        if !TEST_SCHEMES.contains(&parsed.scheme()) {
+            return Err(EndpointError::Scheme {
+                scheme: parsed.scheme().to_string(),
+            });
         }
+
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err(EndpointError::EmbeddedCredentials);
+        }
+
+        let host = parsed.host().ok_or(EndpointError::MissingHost)?;
+        let (name, loopback) = match host {
+            Host::Domain(domain) => (domain.to_string(), false),
+            Host::Ipv4(address) => (address.to_string(), address.is_loopback()),
+            Host::Ipv6(address) => (address.to_string(), address.is_loopback()),
+        };
+
+        if !loopback {
+            return Err(EndpointError::HostNotAllowed { host: name });
+        }
+
+        Ok(Self {
+            url: SecretValue::new(parsed.as_str()),
+            host: name,
+        })
     }
 }
 
@@ -305,5 +344,70 @@ mod tests {
             endpoint.url.expose(),
             "https://hooks.slack.com/services/T/B/x"
         );
+    }
+
+    #[test]
+    fn a_test_endpoint_accepts_plain_http_on_any_loopback_port() {
+        for (url, host) in [
+            ("http://127.0.0.1:61234/hook", "127.0.0.1"),
+            ("http://127.8.9.10:1/hook", "127.8.9.10"),
+            ("https://[::1]:8443/hook", "::1"),
+        ] {
+            let endpoint = Endpoint::for_test(url).expect("a loopback host");
+            assert_eq!(endpoint.host(), host);
+        }
+    }
+
+    #[test]
+    fn a_test_endpoint_never_reaches_another_machine() {
+        for (url, host) in [
+            ("http://example.com/hook", "example.com"),
+            ("http://localhost:3000/hook", "localhost"),
+            ("http://api.localhost:3000/hook", "api.localhost"),
+            (
+                "http://169.254.169.254/latest/meta-data/",
+                "169.254.169.254",
+            ),
+            ("http://10.0.0.1/hook", "10.0.0.1"),
+            ("http://[fd00::1]/hook", "fd00::1"),
+            (
+                "http://localhost.attacker.test/hook",
+                "localhost.attacker.test",
+            ),
+        ] {
+            assert_eq!(
+                Endpoint::for_test(url).expect_err("must be refused"),
+                EndpointError::HostNotAllowed {
+                    host: host.to_string()
+                },
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_test_endpoint_still_refuses_other_schemes_and_embedded_credentials() {
+        assert_eq!(
+            Endpoint::for_test("ftp://127.0.0.1/hook").expect_err("must be refused"),
+            EndpointError::Scheme {
+                scheme: "ftp".to_string()
+            }
+        );
+        assert_eq!(
+            Endpoint::for_test("http://user:pass@127.0.0.1/hook").expect_err("must be refused"),
+            EndpointError::EmbeddedCredentials
+        );
+        assert_eq!(
+            Endpoint::for_test("not a url").expect_err("must be refused"),
+            EndpointError::Malformed
+        );
+    }
+
+    #[test]
+    fn a_test_endpoint_keeps_its_url_redacted() {
+        let endpoint =
+            Endpoint::for_test("http://127.0.0.1:9/services/xxxxSECRETxxxx").expect("loopback");
+        assert!(!format!("{endpoint:?}").contains("xxxxSECRETxxxx"));
+        assert_eq!(endpoint.to_string(), "127.0.0.1");
     }
 }
