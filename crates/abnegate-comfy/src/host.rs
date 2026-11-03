@@ -702,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn a_job_json_zone_writes_today_still_reads_and_keeps_its_keys() {
+    fn a_job_json_a_host_writes_today_still_reads_and_keeps_its_keys() {
         let written = json!({
             "schema_version": 1,
             "id": "6f1c9a2e-5d4b-4c3a-9e8f-7a6b5c4d3e2f",
