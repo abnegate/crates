@@ -218,7 +218,8 @@ pub struct Config {
     /// run when no [`Config::train_command`] is set. `None` refuses them.
     pub host_trainer: Option<Trainer>,
     /// Wall clock budget for a training run, graph or command, at most four
-    /// hours.
+    /// hours. It starts when the trainer does: captioning comes first and
+    /// is bounded only by [`Config::caption_timeout`] per request.
     pub train_timeout: Duration,
     /// Which subjects and methods each base trains and where each method's
     /// weight is published. Empty trains a LoRA on every trainable base.

@@ -236,7 +236,9 @@ gets `Config::caption_timeout` (`COMFYUI_CAPTION_TIMEOUT_SECONDS`), a minute
 unless set and at most an hour, as the completion client's whole deadline and
 its longest silence, so no client default cuts it short. A host whose other
 completions wait half an hour for a model on a CPU or a cold cache gives its
-captioner the same with `Config::with_caption_timeout`.
+captioner the same with `Config::with_caption_timeout`. Captioning comes
+before the trainer starts, one shot at a time, so it is not part of
+`Config::train_timeout`.
 
 ## Training a person
 
