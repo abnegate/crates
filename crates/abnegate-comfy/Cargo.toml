@@ -52,4 +52,5 @@ nix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }

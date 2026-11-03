@@ -76,9 +76,8 @@ const PACKAGED_AUDIO_WORKFLOW: &str =
 const PACKAGED_UPSCALE_WORKFLOW: &str = include_str!("../comfyui/workflows/upscale-image-api.json");
 const PACKAGED_UPSCALE_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/upscale-video-api.json");
-/// Floor on one output download: a finished clip can outlast the request
-/// timeout on its way back.
 const DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(300);
+const ABANDON_TIMEOUT: Duration = Duration::from_secs(5);
 const LOST_PROMPT: &str = "it no longer has the prompt, most likely because it restarted";
 
 /// Runs generation and upscaling workflows on one ComfyUI server.
@@ -1066,6 +1065,9 @@ impl Client {
                             let result = self.fetch_outputs(outputs, cancel, deadline).await;
                             match &result {
                                 Ok(_) => self.clear_history(&prompt_id).await,
+                                Err(Error::Http(error)) if is_transient(error) => {
+                                    self.abandon(&prompt_id).await;
+                                }
                                 Err(_) => self.cancel(&prompt_id).await,
                             }
                             return result;
@@ -1078,7 +1080,7 @@ impl Client {
                                     error = %error,
                                     "ComfyUI kept failing; giving up on the prompt"
                                 );
-                                self.cancel(&prompt_id).await;
+                                self.abandon(&prompt_id).await;
                                 return Err(Error::Http(error));
                             }
                             tracing::warn!(
@@ -1225,7 +1227,18 @@ impl Client {
                     .json::<Queue>()
                     .await
             })
-            .await?;
+            .await
+            .inspect_err(|error| {
+                if let Error::Http(error) = error
+                    && !is_transient(error)
+                {
+                    tracing::warn!(
+                        prompt_id = %prompt_id,
+                        error = %error,
+                        "ComfyUI queue check failed; giving up on the prompt"
+                    );
+                }
+            })?;
         if queue.holds(prompt_id) {
             return Ok(None);
         }
@@ -1345,9 +1358,19 @@ impl Client {
     }
 
     async fn cancel(&self, prompt_id: &str) {
+        self.delete_from_queue(prompt_id, crate::http::request_timeout(&self.config))
+            .await;
+    }
+
+    async fn abandon(&self, prompt_id: &str) {
+        self.delete_from_queue(prompt_id, ABANDON_TIMEOUT).await;
+    }
+
+    async fn delete_from_queue(&self, prompt_id: &str, timeout: Duration) {
         if let Err(error) = self
             .authorize(self.client.post(format!("{}/queue", self.config.base_url)))
             .json(&json!({ "delete": [prompt_id] }))
+            .timeout(timeout)
             .send()
             .await
         {
@@ -1898,9 +1921,10 @@ fn apply_ace_step_workflow_inputs(
 }
 
 /// Whether a failed request could succeed if sent again: no answer at all,
-/// or a 5xx, 408 or 429 status.
+/// or a 5xx, 408 or 429 status. A body that does not parse never heals.
 fn is_transient(error: &reqwest::Error) -> bool {
     !error.is_builder()
+        && !error.is_decode()
         && error.status().is_none_or(|status| {
             status.is_server_error()
                 || status == reqwest::StatusCode::REQUEST_TIMEOUT
@@ -3500,6 +3524,44 @@ mod tests {
             .await;
     }
 
+    async fn mock_unanswered_queue_delete(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/queue"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(server)
+            .await;
+    }
+
+    #[derive(Clone, Default)]
+    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Logs {
+        fn capture() -> (Self, tracing::subscriber::DefaultGuard) {
+            let logs = Self::default();
+            let writer = logs.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish();
+            (logs, tracing::subscriber::set_default(subscriber))
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     async fn mock_queue(server: &MockServer, running: Value) {
         Mock::given(method("GET"))
             .and(path("/queue"))
@@ -3747,6 +3809,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_malformed_queue_answer_fails_the_render_and_names_the_queue_check() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "garbled").await;
+        empty_history("garbled").mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/queue"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>proxy</html>"))
+            .mount(&server)
+            .await;
+        mock_queue_delete(&server).await;
+        let config = video_config(&server)
+            .with_queue_check_interval(Duration::ZERO)
+            .with_outage_window(Duration::from_secs(60));
+        let (logs, _logging) = Logs::capture();
+        let result = tokio::time::timeout(REQUEST_WAIT, generate_clip(config))
+            .await
+            .expect("a queue answer that can never parse must not be retried as an outage");
+        assert!(
+            matches!(&result, Err(Error::Http(error)) if error.is_decode()),
+            "{result:?}"
+        );
+        assert!(
+            logs.text().contains("ComfyUI queue check failed"),
+            "{}",
+            logs.text()
+        );
+        assert_eq!(
+            posted_bodies(&server, "/queue").await,
+            [json!({"delete": ["garbled"]})]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_render_that_outlasts_an_outage_does_not_wait_on_its_cancel() {
+        let server = MockServer::start().await;
+        mock_video_prompt(&server, "down").await;
+        Mock::given(method("GET"))
+            .and(path("/history/down"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        mock_unanswered_queue_delete(&server).await;
+        let config = video_config(&server).with_outage_window(Duration::from_secs(1));
+        let result = tokio::time::timeout(REQUEST_WAIT, generate_clip(config))
+            .await
+            .expect("a cancel sent after the outage window must not hold the render");
+        assert!(
+            matches!(
+                &result,
+                Err(Error::Http(error))
+                    if error.status() == Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR)
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            posted_bodies(&server, "/queue").await,
+            [json!({"delete": ["down"]})]
+        );
+    }
+
+    #[tokio::test]
     async fn a_download_that_keeps_failing_gives_up_within_the_window() {
         let server = MockServer::start().await;
         mock_video_prompt(&server, "stuck").await;
@@ -3756,7 +3879,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(503))
             .mount(&server)
             .await;
-        mock_queue_delete(&server).await;
+        mock_unanswered_queue_delete(&server).await;
         let config = video_config(&server).with_outage_window(Duration::from_secs(1));
         let result = tokio::time::timeout(REQUEST_WAIT, generate_clip(config))
             .await
