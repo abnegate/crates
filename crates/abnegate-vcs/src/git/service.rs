@@ -589,23 +589,23 @@ mod branch_name_tests {
     #[test]
     fn a_joined_format_hangs_the_identifier_off_the_prefix_s_last_segment() {
         let service = GitService::new()
-            .with_branch_prefix(BranchName::parse("zone/task").unwrap())
+            .with_branch_prefix(BranchName::parse("acme/task").unwrap())
             .with_branch_format(BranchFormat::Joined);
         let task = Uuid::parse_str("1a2b3c4d-1234-1234-1234-123456789abc").unwrap();
 
         let branch = service.generate_branch_name(task, "Slug").unwrap();
 
-        assert_eq!(branch.to_string(), "zone/task-1a2b3c4d-slug");
+        assert_eq!(branch.to_string(), "acme/task-1a2b3c4d-slug");
     }
 
     #[test]
     fn a_joined_format_cut_short_still_keeps_the_prefix_and_the_identifier() {
         let service = GitService::new()
-            .with_branch_prefix(BranchName::parse("zone/task").unwrap())
+            .with_branch_prefix(BranchName::parse("acme/task").unwrap())
             .with_branch_format(BranchFormat::Joined)
             .with_maximum_branch_length(0);
 
-        assert_eq!(generate(&service, "anything"), "zone/task-12345678");
+        assert_eq!(generate(&service, "anything"), "acme/task-12345678");
     }
 
     #[test]

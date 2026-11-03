@@ -8,7 +8,7 @@ pub enum BranchFormat {
     #[default]
     Namespaced,
     /// `{prefix}-{short id}-{slug}`: the prefix leads the branch's own last
-    /// segment, as `zone/task-1a2b3c4d-add-rate-limiting` under `zone/task`.
+    /// segment, as `acme/task-1a2b3c4d-add-rate-limiting` under `acme/task`.
     Joined,
 }
 

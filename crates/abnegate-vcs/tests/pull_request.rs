@@ -47,13 +47,13 @@ mod branch_names {
     #[test]
     fn a_caller_can_hang_the_task_off_its_own_prefix() {
         let service = GitService::new()
-            .with_branch_prefix(abnegate_vcs::BranchName::parse("zone/task").unwrap())
+            .with_branch_prefix(abnegate_vcs::BranchName::parse("acme/task").unwrap())
             .with_branch_format(abnegate_vcs::BranchFormat::Joined);
         let task = uuid::Uuid::parse_str("1a2b3c4d-1234-1234-1234-123456789abc").unwrap();
 
         let branch = service.generate_branch_name(task, "slug").unwrap();
 
-        assert_eq!(branch.to_string(), "zone/task-1a2b3c4d-slug");
+        assert_eq!(branch.to_string(), "acme/task-1a2b3c4d-slug");
     }
 }
 
