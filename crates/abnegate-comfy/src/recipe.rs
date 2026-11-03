@@ -42,6 +42,8 @@ pub(crate) const MAXIMUM_PROMPT_BYTES: usize = 100_000;
 const LATENT_INPUTS: &[&str] = &["latent_image", "samples"];
 const CONDITIONING_CLASSES: &[&str] = &["FluxGuidance"];
 const CONDITIONING_CLASS_PREFIXES: &[&str] = &["CLIPTextEncode", "Conditioning", "ControlNetApply"];
+/// The ComfyUI node class that loads an uploaded image.
+pub(crate) const LOAD_IMAGE: &str = "LoadImage";
 /// The directory of the IP-Adapter weight a face reference runs through.
 pub(crate) const IPADAPTER_DIRECTORY: &str = "ipadapter";
 /// The directory of the CLIP vision encoder a face reference is read with.
@@ -757,7 +759,7 @@ fn validate_graph(workflow: &Value, slots: &RecipeSlots, with_source: bool) -> R
         if workflow
             .pointer(&source_class_pointer(source))
             .and_then(Value::as_str)
-            != Some("LoadImage")
+            != Some(LOAD_IMAGE)
         {
             return Err(Error::Configuration(
                 "source graph must load a source image",
@@ -831,7 +833,7 @@ fn validate_pose(workflow: &Value, pointer: &str) -> Result<(), Error> {
     if workflow
         .pointer(&source_class_pointer(pointer))
         .and_then(Value::as_str)
-        != Some("LoadImage")
+        != Some(LOAD_IMAGE)
     {
         return Err(Error::Configuration("pose slot must fill a LoadImage node"));
     }

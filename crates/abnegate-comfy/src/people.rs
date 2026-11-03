@@ -19,6 +19,7 @@ use crate::inventory::WeightSidecar;
 use crate::person;
 use crate::recipe::CLIP_VISION_DIRECTORY;
 use crate::recipe::IPADAPTER_DIRECTORY;
+use crate::recipe::LOAD_IMAGE;
 use crate::recipe::Recipe;
 use crate::recipe::RecipeExtra;
 use crate::recipe::RequiredFile;
@@ -59,7 +60,6 @@ pub(crate) const EMBEDDINGS_DIRECTORY: &str = "embeddings";
 /// once rather than on every generation.
 static MISSING_EMBEDDINGS: LazyLock<Mutex<HashSet<PathBuf>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
-const LOAD_IMAGE: &str = "LoadImage";
 const CLIP_VISION_LOADER: &str = "CLIPVisionLoader";
 
 /// Which extras a generation with `recipe` runs for the selected weight,

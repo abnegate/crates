@@ -44,6 +44,7 @@ use crate::media::MediaType;
 use crate::people;
 use crate::people::PoseImage;
 use crate::recipe::Fill;
+use crate::recipe::LOAD_IMAGE;
 use crate::recipe::MAXIMUM_PROMPT_BYTES;
 use crate::recipe::MediaKind;
 use crate::recipe::PromptMode;
@@ -76,15 +77,15 @@ const LOW_NOISE_SAMPLER: &str = "14";
 const UNET_LOADERS: &[&str] = &["UNETLoader", "UnetLoaderGGUF"];
 const IMAGE_TO_VIDEO_LATENT: &str = "WanImageToVideo";
 const SOURCE_IMAGE_NODE: &str = "11";
-const LOAD_IMAGE: &str = "LoadImage";
 const PACKAGED_AUDIO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/ace-step-v1-3.5b-api.json");
 const PACKAGED_UPSCALE_WORKFLOW: &str = include_str!("../comfyui/workflows/upscale-image-api.json");
 const PACKAGED_UPSCALE_VIDEO_WORKFLOW: &str =
     include_str!("../comfyui/workflows/upscale-video-api.json");
 const DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(300);
-const ABANDON_TIMEOUT: Duration = Duration::from_secs(5);
-const CANCEL_WAIT: Duration = Duration::from_secs(5);
+/// How long a queue delete is waited on before the generation that sent it
+/// returns.
+const QUEUE_DELETE_WAIT: Duration = Duration::from_secs(5);
 const LOST_PROMPT: &str = "it no longer has the prompt, most likely because it restarted";
 
 /// Runs generation and upscaling workflows on one ComfyUI server.
@@ -1367,7 +1368,7 @@ impl Client {
     }
 
     /// Deletes `prompt_id` from the queue within the request timeout, but
-    /// returns after [`CANCEL_WAIT`] at most, leaving a slow delete to land
+    /// returns after [`QUEUE_DELETE_WAIT`] at most, leaving a slow delete to land
     /// on its own.
     async fn cancel(&self, prompt_id: &str) {
         let client = self.clone();
@@ -1376,11 +1377,11 @@ impl Client {
             let timeout = crate::http::request_timeout(&client.config);
             client.delete_from_queue(&prompt_id, timeout).await;
         });
-        let _ = tokio::time::timeout(CANCEL_WAIT, delete).await;
+        let _ = tokio::time::timeout(QUEUE_DELETE_WAIT, delete).await;
     }
 
     async fn abandon(&self, prompt_id: &str) {
-        self.delete_from_queue(prompt_id, ABANDON_TIMEOUT).await;
+        self.delete_from_queue(prompt_id, QUEUE_DELETE_WAIT).await;
     }
 
     async fn delete_from_queue(&self, prompt_id: &str, timeout: Duration) {
