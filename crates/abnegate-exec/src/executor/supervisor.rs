@@ -74,10 +74,13 @@ impl Supervisor {
         };
 
         let remaining = self.timeout.saturating_sub(self.started_at.elapsed());
+        // A forced cancel kills the group as it cancels, so the exit it causes
+        // can be ready together with the cancellation: the cancellation wins.
         let ending = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Ending::Cancelled,
             exited = exit.wait() => Ending::Exited(exited.map(drop)),
             () = tokio::time::sleep(remaining) => Ending::TimedOut,
-            () = cancellation.cancelled() => Ending::Cancelled,
         };
 
         match ending {
@@ -91,6 +94,7 @@ impl Supervisor {
                 let status = self.reap(&mut child).await;
                 match (drained, status) {
                     (None, _) => self.report_cancelled().await,
+                    (Some(_), _) if cancellation.is_cancelled() => self.report_cancelled().await,
                     (Some(finished), Ok(status)) => {
                         self.warn_unless_drained(finished).await;
                         self.report(OutboundMessage::RunExit {
