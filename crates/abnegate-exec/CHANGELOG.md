@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.5...abnegate-exec/v0.1.6) - 2026-11-03
+
+### Added
+
+- *(exec)* so a host can answer pings, choose its proxy and feed stdin through the registry
+
 ## [0.1.5](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.4...abnegate-exec/v0.1.5) - 2026-11-03
 
 ### Other

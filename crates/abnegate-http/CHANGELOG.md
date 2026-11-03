@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/abnegate/crates/compare/abnegate-http/v0.1.3...abnegate-http/v0.1.4) - 2026-11-03
+
+### Added
+
+- *(http)* so a host reads every limit banner and agent failure the same way
+- *(http)* so an endpoint someone configured can reach loopback and the lan but never the instance's metadata
+
+### Fixed
+
+- *(http)* so the public guard refuses every target the metadata guard does
+
 ## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-http/v0.1.2...abnegate-http/v0.1.3) - 2026-11-03
 
 ### Other
