@@ -1320,11 +1320,8 @@ fn queue_on_host(
 ) -> Result<(host::Pending, fs::File, TrainProgress), TrainError> {
     let root = ensure_child_directory(&config.models_directory, &config.contract.host_directory)?;
     let mut pending = host::Pending::new(directory.clone());
-    directory.create()?;
+    let lock = directory.create_locked()?;
     require_confined_directory(&root, directory.path())?;
-    let lock = directory.try_lock()?.ok_or_else(|| {
-        TrainError::Failed("another process holds a job that was just created".to_string())
-    })?;
     host::remove_ended_secrets(config);
     let dataset = directory.path().join(host::DATASET_DIRECTORY);
     if fs::rename(staged, &dataset).is_err() {

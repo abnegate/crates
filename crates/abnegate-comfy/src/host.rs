@@ -56,6 +56,7 @@ pub use trainer::Trainer;
 
 pub(crate) use compute::KEY_FILES;
 pub(crate) use job::is_reserved;
+use job_directory::DISCARDED_SUFFIX;
 pub(crate) use job_directory::is_secret_name;
 pub(crate) use pending::Pending;
 
@@ -375,9 +376,19 @@ fn recover_job(config: &Config, id: Uuid) -> Option<Result<PathBuf, TrainError>>
 
 /// Removes every job directory under `root` whose lock nobody holds and that
 /// holds no `job.json` once its lock is taken, since whoever queues a job
-/// publishes `job.json` while holding that lock.
+/// publishes `job.json` while holding that lock, and every directory a
+/// [discard](JobDirectory::discard) moved aside but could not finish removing.
 fn discard_unqueued(root: &Path) {
     for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        let moved_aside = entry.file_type().is_ok_and(|kind| kind.is_dir())
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with('.') && name.ends_with(DISCARDED_SUFFIX));
+        if moved_aside {
+            let _ = fs::remove_dir_all(entry.path());
+            continue;
+        }
         let is_job = entry.file_type().is_ok_and(|kind| kind.is_dir())
             && entry
                 .file_name()
@@ -1147,6 +1158,9 @@ mod tests {
         let held = staging.try_lock().unwrap().expect("nobody holds the job");
         let stranger = root(&config).join("not-a-job");
         fs::create_dir_all(&stranger).unwrap();
+        let moved_aside =
+            root(&config).join(format!(".{}.{}.discarded", Uuid::new_v4(), Uuid::new_v4()));
+        fs::create_dir_all(moved_aside.join(DATASET_DIRECTORY)).unwrap();
 
         assert!(recover(&config).is_empty());
 
@@ -1156,6 +1170,10 @@ mod tests {
             "a job being staged lost its key"
         );
         assert!(stranger.is_dir(), "a directory that is no job was removed");
+        assert!(
+            !moved_aside.exists(),
+            "a discard left half-removed was kept"
+        );
         drop(held);
     }
 
@@ -1188,16 +1206,15 @@ mod tests {
         for _ in 0..2000 {
             let id = Uuid::new_v4();
             let directory = JobDirectory::new(&config, id);
-            if directory.create().is_err() {
-                continue;
-            }
-            let Ok(Some(lock)) = directory.try_lock() else {
+            let Ok(lock) = directory.create_locked() else {
+                discarded += 1;
                 continue;
             };
             let written = directory.path().join("job.json.next");
             if fs::write(&written, b"{}").is_err()
                 || fs::rename(&written, directory.path().join(JOB_FILE)).is_err()
             {
+                discarded += 1;
                 continue;
             }
             drop(lock);
