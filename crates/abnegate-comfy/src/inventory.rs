@@ -12,8 +12,8 @@ pub use video_identity::VideoIdentity;
 pub(crate) use weight_document::WeightDocument;
 pub use weight_sidecar::WeightSidecar;
 
-use crate::client::MAXIMUM_SOURCE_IMAGE_BYTES;
 use crate::config::Config;
+use crate::media::MAXIMUM_SOURCE_IMAGE_BYTES;
 use crate::recipe::MediaKind;
 use crate::recipe::PromptMode;
 use crate::recipe::Recipe;
@@ -469,11 +469,12 @@ pub(crate) fn face_path(
         .then_some(path)
 }
 
-/// The bytes of the face reference at `path`, when the file opened there is
-/// a regular file no larger than [`MAXIMUM_SOURCE_IMAGE_BYTES`]. A link in
-/// its place is not followed, and the type and size are those of the file
-/// opened, so a face swapped after [`face_path`] found it is never read.
-pub(crate) fn read_face(path: &Path) -> Option<Vec<u8>> {
+/// The bytes of the image at `path`, such as a face reference or a pose,
+/// when the file opened there is a regular file no larger than
+/// [`MAXIMUM_SOURCE_IMAGE_BYTES`]. The type and size are those of the file
+/// opened, and on unix a link in its place is not followed and a pipe is
+/// not waited on, so a file swapped after it was found is never read.
+pub(crate) fn read_image(path: &Path) -> Option<Vec<u8>> {
     let file = open_unfollowed(path).ok()?;
     let metadata = file.metadata().ok()?;
     let limit = MAXIMUM_SOURCE_IMAGE_BYTES as u64;
@@ -497,7 +498,8 @@ fn open_unfollowed(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-/// Opens `path` for reading, refusing a link in its place.
+/// Opens `path` for reading, refusing what is a link when it is checked. A
+/// link swapped in between the check and the open is followed.
 #[cfg(not(unix))]
 fn open_unfollowed(path: &Path) -> io::Result<File> {
     if fs::symlink_metadata(path)?.file_type().is_symlink() {
@@ -1326,41 +1328,41 @@ mod tests {
     }
 
     #[test]
-    fn a_face_is_read_only_when_it_fits_a_source_image() {
+    fn an_image_is_read_only_when_it_fits_a_source_image() {
         let root = tempfile::tempdir().unwrap();
         let face = root.path().join("jerry.face.png");
         fs::write(&face, b"face").unwrap();
-        assert_eq!(read_face(&face).as_deref(), Some(b"face".as_slice()));
+        assert_eq!(read_image(&face).as_deref(), Some(b"face".as_slice()));
         let file = File::options().write(true).open(&face).unwrap();
         file.set_len(MAXIMUM_SOURCE_IMAGE_BYTES as u64 + 1).unwrap();
-        assert_eq!(read_face(&face), None, "an oversized face is refused");
+        assert_eq!(read_image(&face), None, "an oversized face is refused");
         file.set_len(MAXIMUM_SOURCE_IMAGE_BYTES as u64).unwrap();
         assert_eq!(
-            read_face(&face).map(|bytes| bytes.len()),
+            read_image(&face).map(|bytes| bytes.len()),
             Some(MAXIMUM_SOURCE_IMAGE_BYTES)
         );
-        assert_eq!(read_face(root.path()), None, "a directory is no face");
-        assert_eq!(read_face(&root.path().join("missing.png")), None);
+        assert_eq!(read_image(root.path()), None, "a directory is no face");
+        assert_eq!(read_image(&root.path().join("missing.png")), None);
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_face_swapped_for_a_link_is_not_read() {
+    fn an_image_swapped_for_a_link_is_not_read() {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("elsewhere.png");
         fs::write(&target, b"secret").unwrap();
         let face = root.path().join("jerry.face.png");
         std::os::unix::fs::symlink(&target, &face).unwrap();
-        assert_eq!(read_face(&face), None);
+        assert_eq!(read_image(&face), None);
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_face_swapped_for_a_pipe_is_not_waited_on() {
+    fn an_image_swapped_for_a_pipe_is_not_waited_on() {
         let root = tempfile::tempdir().unwrap();
         let face = root.path().join("jerry.face.png");
         nix::unistd::mkfifo(&face, nix::sys::stat::Mode::S_IRWXU).unwrap();
-        assert_eq!(read_face(&face), None);
+        assert_eq!(read_image(&face), None);
     }
 
     #[test]

@@ -3,6 +3,10 @@
 //! One table, so a filename, a stored artifact, and a chat attachment can never
 //! disagree about what a `.flac` or a `.opus` is.
 
+/// The largest source image [`SourceImage::new`](crate::SourceImage::new)
+/// accepts, and the largest pose or face image a generation reads: 8 MiB.
+pub const MAXIMUM_SOURCE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lane {
     Image,

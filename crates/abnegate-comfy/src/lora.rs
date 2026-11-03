@@ -1617,16 +1617,17 @@ async fn settle(mut reader: JoinHandle<()>) {
     }
 }
 
-/// Runs CPU-bound work on the blocking pool, so decoding, screening and
-/// framing a large set never stalls a runtime worker.
+/// Runs CPU-bound work on the blocking pool through
+/// [`crate::blocking::run`], so decoding, screening and framing a large set
+/// never stalls a runtime worker.
 async fn blocking<T, F>(work: F) -> Result<T, TrainError>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(work)
+    crate::blocking::run(work)
         .await
-        .map_err(|error| TrainError::Failed(error.to_string()))
+        .ok_or_else(|| TrainError::Failed("the runtime shut down".to_string()))
 }
 
 /// Moves every upload's encoded image out of `images`, so the set is held once.

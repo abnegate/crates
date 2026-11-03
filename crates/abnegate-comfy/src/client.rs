@@ -4,17 +4,21 @@
 
 mod error;
 mod generated_image;
+mod plan;
 mod prepared;
+#[cfg(test)]
+mod probe;
 mod source_image;
 mod source_video;
 
+pub use crate::media::MAXIMUM_SOURCE_IMAGE_BYTES;
 pub use error::Error;
 pub use generated_image::GeneratedImage;
-pub use source_image::MAXIMUM_SOURCE_IMAGE_BYTES;
 pub use source_image::SourceImage;
 pub use source_video::MAXIMUM_SOURCE_VIDEO_BYTES;
 pub use source_video::SourceVideo;
 
+use plan::Plan;
 use prepared::Prepared;
 
 use reqwest::Client as HttpClient;
@@ -35,6 +39,7 @@ use crate::inventory::VideoIdentity;
 use crate::inventory::WeightSidecar;
 use crate::media::MediaType;
 use crate::people;
+use crate::people::PoseImage;
 use crate::recipe::Fill;
 use crate::recipe::IMAGE_TO_VIDEO_ADAPTER_WORKFLOW;
 use crate::recipe::LORA_LOADER;
@@ -289,11 +294,21 @@ impl Client {
         self.catalog.image_recipe_for(selected)
     }
 
+    #[cfg(test)]
     fn generation_plan(
         &self,
         has_source: bool,
     ) -> Result<(&Recipe, HashMap<String, String>), Error> {
-        let recipe = self.image_recipe()?;
+        self.plan_for(self.image_recipe()?, has_source)
+    }
+
+    /// The recipe a pass over the selected checkpoint's `recipe` runs, and
+    /// its weights: `recipe` itself, or its edit recipe for a source.
+    fn plan_for<'a>(
+        &'a self,
+        recipe: &'a Recipe,
+        has_source: bool,
+    ) -> Result<(&'a Recipe, HashMap<String, String>), Error> {
         if has_source {
             let edit = self
                 .catalog
@@ -349,18 +364,29 @@ impl Client {
     }
 
     /// The identity `prompt` names among the weights installed now, read off
-    /// the async runtime.
-    async fn video_identity(&self, prompt: &str) -> Option<VideoIdentity> {
+    /// the async runtime. A cancel or the deadline returns at once; a scan
+    /// that panics finds no identity.
+    async fn video_identity(
+        &self,
+        prompt: &str,
+        cancel: &mut broadcast::Receiver<()>,
+        deadline: tokio::time::Instant,
+    ) -> Result<Option<VideoIdentity>, Error> {
         let models = self.config.models_directory.clone();
         let catalog = Arc::clone(&self.catalog);
         let contract = self.config.contract.clone();
         let prompt = prompt.to_string();
-        tokio::task::spawn_blocking(move || {
+        let scan = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            probe::entered(&models);
             crate::inventory::video_identity_for_prompt(&models, &catalog, &contract, &prompt)
-        })
-        .await
-        .ok()
-        .flatten()
+        });
+        tokio::select! {
+            biased;
+            _ = cancel.recv() => Err(Error::Cancelled),
+            _ = tokio::time::sleep_until(deadline) => Err(Error::Timeout),
+            scanned = scan => Ok(scanned.ok().flatten()),
+        }
     }
 
     fn audio_workflow(&self) -> Result<Value, Error> {
@@ -398,8 +424,12 @@ impl Client {
     /// for an identity, runs each result's head through its source graph again
     /// at a low denoise and pastes it back, within the same time limit as the
     /// first pass. A result whose refine pass fails, or that the time limit
-    /// cuts short, is returned as it was; once the first pass has its results
+    /// cuts short, is returned as it was, and no refine starts with less than
+    /// one [`Config::poll_interval`] left; once the first pass has its results
     /// only a cancellation fails the call.
+    ///
+    /// Everything the generation reads from disk is read on the blocking
+    /// pool, and a cancellation or the time limit returns while it is read.
     ///
     /// Progress messages are sent on `progress`, and a message on `cancel`
     /// stops the run. [`generate_excluding`](Client::generate_excluding)
@@ -447,41 +477,47 @@ impl Client {
         } else {
             prompt
         };
-        let (sidecar, refines) = self
-            .blocking(|client| {
-                let sidecar = client.selected_sidecar();
-                let refines = people::refines(client.image_recipe()?, sidecar.as_ref());
-                Ok((sidecar, refines))
+        let prepared = {
+            let prompt = prompt.to_string();
+            let has_source = source.is_some();
+            self.off_runtime(cancel, deadline, move |client| {
+                client.prepare(&prompt, has_source)
             })
-            .await?;
+            .await?
+        };
+        let prompt = people::prefix_embedding(prompt, prepared.sidecar.as_ref());
         let images = self
             .generate_image(
-                prompt,
+                &prompt,
                 negative,
                 source,
-                sidecar.as_ref(),
+                &prepared.first,
+                prepared.pose.as_ref(),
+                prepared.face.as_ref(),
                 Pass::First,
                 cancel,
                 deadline,
                 progress.clone(),
             )
             .await?;
-        if !refines {
+        let Some(plan) = &prepared.refine else {
             return Ok(images);
-        }
+        };
         let subject = Subject::shared(&self.config).await;
         let mut refined = Vec::with_capacity(images.len());
         for image in images {
-            if tokio::time::Instant::now() >= deadline {
+            if deadline.saturating_duration_since(tokio::time::Instant::now())
+                < self.config.poll_interval
+            {
                 refined.push(image);
                 continue;
             }
             refined.push(
                 self.refine(
-                    prompt,
+                    &prompt,
                     negative,
                     image,
-                    sidecar.as_ref(),
+                    plan,
                     &subject,
                     cancel,
                     deadline,
@@ -494,54 +530,85 @@ impl Client {
     }
 
     /// Runs `work` on the blocking pool with a clone of this client, for the
-    /// filesystem reads a generation makes before it submits anything.
-    async fn blocking<T, F>(&self, work: F) -> Result<T, Error>
+    /// filesystem reads a generation makes before it submits anything. A
+    /// cancel or the deadline returns at once, leaving `work` to finish on
+    /// its own.
+    async fn off_runtime<T, F>(
+        &self,
+        cancel: &mut broadcast::Receiver<()>,
+        deadline: tokio::time::Instant,
+        work: F,
+    ) -> Result<T, Error>
     where
         F: FnOnce(&Client) -> Result<T, Error> + Send + 'static,
         T: Send + 'static,
     {
         let client = self.clone();
-        match tokio::task::spawn_blocking(move || work(&client)).await {
-            Ok(result) => result,
-            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-            Err(_) => Err(Error::Cancelled),
+        tokio::select! {
+            biased;
+            _ = cancel.recv() => Err(Error::Cancelled),
+            _ = tokio::time::sleep_until(deadline) => Err(Error::Timeout),
+            result = crate::blocking::run(move || work(&client)) => {
+                result.unwrap_or(Err(Error::Cancelled))
+            }
         }
     }
 
-    /// Reads what `pass` needs from disk: the recipe and weights it runs, and
-    /// for a first pass the pose and face images of the extras it gets.
-    fn prepare(
-        &self,
-        prompt: &str,
-        has_source: bool,
-        sidecar: Option<&WeightSidecar>,
-        pass: Pass,
-    ) -> Result<Prepared, Error> {
-        let (recipe, weights) = self.generation_plan(has_source)?;
-        let extras = match pass {
-            Pass::First => people::extras(&self.config, recipe, sidecar, has_source),
-            Pass::Refine => people::Extras::default(),
+    /// Reads what a generation needs from disk: the selected weight's
+    /// binding, the recipe and weights of its first pass and of its face
+    /// refine when its recipe gets one, and the pose and face images of its
+    /// person extras. A refine that cannot be planned is left out.
+    fn prepare(&self, prompt: &str, has_source: bool) -> Result<Prepared, Error> {
+        #[cfg(test)]
+        probe::entered(&self.config.models_directory);
+        let sidecar = self.selected_sidecar();
+        let image = self.image_recipe()?;
+        let (recipe, weights) = self.plan_for(image, has_source)?;
+        let first = Plan {
+            recipe: recipe.id.clone(),
+            weights,
         };
+        let refine = if people::refines(image, sidecar.as_ref()) {
+            match self.plan_for(image, true) {
+                Ok((recipe, weights)) => Some(Plan {
+                    recipe: recipe.id.clone(),
+                    weights,
+                }),
+                Err(error) => {
+                    tracing::warn!(%error, "the face refine cannot be planned; skipping it");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let extras = people::extras(&self.config, recipe, sidecar.as_ref(), has_source);
         let pose = extras
             .pose
             .then_some(self.config.poses_directory.as_deref())
             .flatten()
-            .and_then(|directory| people::pose_image(directory, prompt));
+            .and_then(|directory| {
+                people::pose_image(
+                    directory,
+                    &people::prefix_embedding(prompt, sidecar.as_ref()),
+                )
+            });
         let face = extras
             .face
             .then(|| {
                 crate::inventory::face_path(
                     &self.config.models_directory,
                     &self.config.checkpoint,
-                    sidecar,
+                    sidecar.as_ref(),
                 )
             })
             .flatten()
-            .and_then(|path| crate::inventory::read_face(&path))
+            .and_then(|path| crate::inventory::read_image(&path))
             .and_then(|bytes| SourceImage::from_bytes(bytes).ok());
         Ok(Prepared {
-            recipe: recipe.clone(),
-            weights,
+            sidecar,
+            first,
+            refine,
             pose,
             face,
         })
@@ -560,25 +627,22 @@ impl Client {
         prompt: &str,
         negative: Option<&str>,
         source: Option<&SourceImage>,
-        sidecar: Option<&WeightSidecar>,
+        plan: &Plan,
+        pose: Option<&PoseImage>,
+        face: Option<&SourceImage>,
         pass: Pass,
         cancel: &mut broadcast::Receiver<()>,
         deadline: tokio::time::Instant,
         progress: mpsc::UnboundedSender<String>,
     ) -> Result<Vec<GeneratedImage>, Error> {
-        let prompt = people::prefix_embedding(prompt, sidecar);
-        let prepared = {
-            let prompt = prompt.clone();
-            let sidecar = sidecar.cloned();
-            let has_source = source.is_some();
-            self.blocking(move |client| client.prepare(&prompt, has_source, sidecar.as_ref(), pass))
-                .await?
-        };
-        let recipe = &prepared.recipe;
-        let pose = match prepared.pose {
+        let recipe = self
+            .catalog
+            .get(&plan.recipe)
+            .ok_or(Error::Configuration("planned recipe is not in the catalog"))?;
+        let pose = match pose {
             Some(pose) => Some(
                 self.upload_media(
-                    &bytes::Bytes::from(pose.bytes),
+                    &bytes::Bytes::copy_from_slice(&pose.bytes),
                     &pose.name,
                     MediaType::PNG.mime,
                     cancel,
@@ -588,17 +652,17 @@ impl Client {
             ),
             None => None,
         };
-        let face = match &prepared.face {
+        let face = match face {
             Some(face) => Some(self.upload_source(face, cancel, deadline).await?),
             None => None,
         };
-        let fill_weights: HashMap<&str, &str> = prepared
+        let fill_weights: HashMap<&str, &str> = plan
             .weights
             .iter()
             .map(|(name, filename)| (name.as_str(), filename.as_str()))
             .collect();
         let mut fill = Fill::new(
-            &prompt,
+            prompt,
             rand::random::<u64>() & i64::MAX as u64,
             fill_weights,
         );
@@ -653,7 +717,7 @@ impl Client {
         prompt: &str,
         negative: Option<&str>,
         image: GeneratedImage,
-        sidecar: Option<&WeightSidecar>,
+        plan: &Plan,
         subject: &Subject,
         cancel: &mut broadcast::Receiver<()>,
         deadline: tokio::time::Instant,
@@ -676,7 +740,9 @@ impl Client {
                 prompt,
                 negative,
                 Some(&head),
-                sidecar,
+                plan,
+                None,
+                None,
                 Pass::Refine,
                 cancel,
                 deadline,
@@ -748,7 +814,7 @@ impl Client {
         } else {
             prompt.to_string()
         };
-        let identity = self.video_identity(&prompt).await;
+        let identity = self.video_identity(&prompt, cancel, deadline).await?;
         if let Some(identity) = &identity {
             prompt = crate::lora::identity_caption(&prompt, &identity.trigger);
         }
@@ -3743,115 +3809,229 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_refine_the_time_limit_cuts_short_keeps_the_unrefined_image() {
-        let server = MockServer::start().await;
-        let (_root, models) = person_models(
-            crate::inventory::WeightSidecar::new("sdxl-adapter").with_huggingface_base(PEOPLE_BASE),
-            &[],
-        );
-        let first = rgb_png(64, 96, [10, 20, 30]);
-        mock_uploads(&server).await;
+    async fn mock_first_pass(server: &MockServer, images: &[(&str, Vec<u8>)]) {
         Mock::given(method("POST"))
             .and(path("/prompt"))
             .and(wiremock::matchers::body_string_contains("EmptyLatentImage"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "first"})))
             .expect(1)
-            .mount(&server)
+            .mount(server)
             .await;
+        let listed: Vec<Value> = images
+            .iter()
+            .map(|(filename, _)| json!({"filename": filename, "subfolder": "", "type": "temp"}))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/history/first"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "first": {"status": {"status_str": "success"}, "outputs": {
+                    "9": {"images": listed}
+                }}
+            })))
+            .mount(server)
+            .await;
+        for (filename, body) in images {
+            Mock::given(method("GET"))
+                .and(path("/view"))
+                .and(wiremock::matchers::query_param("filename", *filename))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "image/png")
+                        .set_body_bytes(body.clone()),
+                )
+                .mount(server)
+                .await;
+        }
+    }
+
+    async fn mock_stuck_refine(server: &MockServer, submitted: u64) {
         Mock::given(method("POST"))
             .and(path("/prompt"))
             .and(wiremock::matchers::body_string_contains("\"denoise\":0.3"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "refine"})))
-            .expect(1)
-            .mount(&server)
+            .expect(submitted)
+            .mount(server)
             .await;
         Mock::given(method("GET"))
             .and(path("/history/refine"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-            .mount(&server)
+            .mount(server)
             .await;
-        mock_output(&server, "first", "one.png", first.clone()).await;
+    }
+
+    fn refined_models() -> (tempfile::TempDir, PathBuf) {
+        person_models(
+            crate::inventory::WeightSidecar::new("sdxl-adapter").with_huggingface_base(PEOPLE_BASE),
+            &[],
+        )
+    }
+
+    #[tokio::test]
+    async fn a_refine_the_time_limit_cuts_short_keeps_the_unrefined_images() {
+        let server = MockServer::start().await;
+        let (_root, models) = refined_models();
+        let one = rgb_png(64, 96, [10, 20, 30]);
+        let two = rgb_png(64, 96, [30, 20, 10]);
+        mock_uploads(&server).await;
+        mock_first_pass(
+            &server,
+            &[("one.png", one.clone()), ("two.png", two.clone())],
+        )
+        .await;
+        mock_stuck_refine(&server, 1).await;
         let mut client = person_client(&server, models, "jerry.safetensors");
-        client.config.generation_timeout = Duration::from_secs(2);
+        client.config.generation_timeout = Duration::from_secs(5);
         let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
         let (progress_tx, _) = mpsc::unbounded_channel();
 
         let images = client
             .generate("a person standing", None, &mut cancel_rx, progress_tx)
             .await
-            .expect("a generated image outlives a refine the time limit cut short");
+            .expect("generated images outlive a refine the time limit cut short");
 
-        assert_eq!(images.len(), 1);
-        assert_eq!(images[0].bytes.as_ref(), first.as_slice());
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].bytes.as_ref(), one.as_slice());
+        assert_eq!(
+            images[1].bytes.as_ref(),
+            two.as_slice(),
+            "no refine starts once the time limit has passed"
+        );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn an_identity_reads_its_pose_image_off_the_runtime() {
+    #[tokio::test]
+    async fn a_refine_with_less_than_one_poll_left_is_never_started() {
+        let server = MockServer::start().await;
+        let (_root, models) = refined_models();
+        let one = rgb_png(64, 96, [10, 20, 30]);
+        mock_uploads(&server).await;
+        mock_first_pass(&server, &[("one.png", one.clone())]).await;
+        mock_stuck_refine(&server, 0).await;
+        let mut client = person_client(&server, models, "jerry.safetensors");
+        client.config.poll_interval = Duration::from_secs(2);
+        client.config.generation_timeout = Duration::from_secs(3);
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+
+        let images = client
+            .generate("a person standing", None, &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
+
+        assert_eq!(images[0].bytes.as_ref(), one.as_slice());
+    }
+
+    #[tokio::test]
+    async fn an_identity_prepares_its_generation_off_the_runtime() {
+        let runtime = std::thread::current().id();
+        let server = MockServer::start().await;
+        let (_root, models) = person_models(
+            identity_sidecar(),
+            &[("controlnet", "thibaud_xl_openpose.safetensors")],
+        );
         let poses = tempfile::tempdir().unwrap();
-        let pose = poses.path().join("sitting.png");
-        nix::unistd::mkfifo(&pose, nix::sys::stat::Mode::S_IRWXU).unwrap();
-        let (done, finished) = std::sync::mpsc::channel();
-        let directory = poses.path().to_path_buf();
-        let writer = pose.clone();
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let uploads = runtime.block_on(async move {
-                let server = MockServer::start().await;
-                let (_root, models) = person_models(
-                    identity_sidecar(),
-                    &[("controlnet", "thibaud_xl_openpose.safetensors")],
-                );
-                mock_uploads(&server).await;
-                Mock::given(method("POST"))
-                    .and(path("/prompt"))
-                    .respond_with(
-                        ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "posed"})),
-                    )
-                    .mount(&server)
-                    .await;
-                mock_output(&server, "posed", "posed.png", vec![1, 2, 3]).await;
-                let mut client = person_client(&server, models, "jerry.safetensors");
-                client.config.poses_directory = Some(directory);
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    tokio::fs::write(writer, rgb_png(8, 8, [0, 0, 0])).await
-                });
-                let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
-                let (progress_tx, _) = mpsc::unbounded_channel();
-                client
-                    .generate("ohwx sitting", None, &mut cancel_rx, progress_tx)
-                    .await
-                    .unwrap();
-                server
-                    .received_requests()
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .filter(|request| request.url.path() == "/upload/image")
-                    .map(|request| String::from_utf8_lossy(&request.body).into_owned())
-                    .collect::<Vec<String>>()
-            });
-            let _ = done.send(uploads);
-            runtime.shutdown_background();
-        });
+        std::fs::write(poses.path().join("sitting.png"), rgb_png(8, 8, [0, 0, 0])).unwrap();
+        mock_uploads(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/prompt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"prompt_id": "posed"})))
+            .mount(&server)
+            .await;
+        mock_output(&server, "posed", "posed.png", vec![1, 2, 3]).await;
+        let mut client = person_client(&server, models.clone(), "jerry.safetensors");
+        client.config.poses_directory = Some(poses.path().to_path_buf());
+        let (_cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
 
-        let uploads = finished
-            .recv_timeout(Duration::from_secs(20))
-            .unwrap_or_else(|_| {
-                let _ = std::fs::write(&pose, b"");
-                panic!("reading the pose image blocked the async runtime");
-            });
+        client
+            .generate("ohwx sitting", None, &mut cancel_rx, progress_tx)
+            .await
+            .unwrap();
 
+        let threads = probe::threads(&models);
+        assert!(!threads.is_empty(), "nothing prepared the generation");
+        assert!(
+            threads.iter().all(|thread| *thread != runtime),
+            "the generation read the disk on the runtime's thread"
+        );
+        let uploads: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/upload/image")
+            .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+            .collect();
         assert!(
             uploads
                 .iter()
                 .any(|body| body.contains("filename=\"pose-sitting.png\"")),
             "the prompt's pose is uploaded"
         );
+    }
+
+    async fn stuck_in_preparation(
+        configure: impl FnOnce(&mut Client),
+        cancel_after: Option<Duration>,
+    ) -> Result<Vec<GeneratedImage>, Error> {
+        let server = MockServer::start().await;
+        let (_root, models) = refined_models();
+        let mut client = person_client(&server, models.clone(), "jerry.safetensors");
+        configure(&mut client);
+        let (cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        if let Some(after) = cancel_after {
+            tokio::spawn(async move {
+                tokio::time::sleep(after).await;
+                let _ = cancel_tx.send(());
+            });
+        }
+        probe::hold(&models);
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.generate("a person standing", None, &mut cancel_rx, progress_tx),
+        )
+        .await;
+        probe::release(&models);
+        result.expect("a stuck preparation held the call")
+    }
+
+    #[tokio::test]
+    async fn a_cancel_while_the_disk_is_read_returns_at_once() {
+        let result = stuck_in_preparation(|_| {}, Some(Duration::from_millis(50))).await;
+        assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_deadline_while_the_disk_is_read_times_out() {
+        let result = stuck_in_preparation(
+            |client| client.config.generation_timeout = Duration::from_millis(100),
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Timeout)), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_cancel_while_a_video_prompt_is_matched_returns_at_once() {
+        let server = MockServer::start().await;
+        let (_root, models) = refined_models();
+        let client = person_client(&server, models.clone(), "jerry.safetensors");
+        let (cancel_tx, mut cancel_rx) = broadcast::channel(1);
+        let (progress_tx, _) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = cancel_tx.send(());
+        });
+        probe::hold(&models);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.generate_video("ohwx dancing", None, &mut cancel_rx, progress_tx),
+        )
+        .await;
+        probe::release(&models);
+
+        let result = result.expect("a stuck identity scan held the call");
+        assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
     }
 }

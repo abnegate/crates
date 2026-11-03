@@ -107,12 +107,12 @@ pub(crate) fn pose_cluster(prompt: &str) -> &'static str {
 }
 
 /// The OpenPose image in `directory` for the pose `prompt` names, or `None`
-/// when it is missing or empty.
+/// when it is missing, does not decode as an image, or is not an image
+/// [`inventory::read_image`] reads.
 pub(crate) fn pose_image(directory: &Path, prompt: &str) -> Option<PoseImage> {
     let filename = dataset::pose_filename(pose_cluster(prompt))?;
-    let bytes = std::fs::read(directory.join(&filename))
-        .ok()
-        .filter(|bytes| !bytes.is_empty())?;
+    let bytes = inventory::read_image(&directory.join(&filename))
+        .filter(|bytes| decode::decode(bytes).is_ok())?;
     let name = sanitize_upload_name(&format!("{POSE_UPLOAD_PREFIX}{filename}")).ok()?;
     Some(PoseImage { name, bytes })
 }
@@ -400,10 +400,11 @@ mod tests {
             pose_image(poses.path(), "ohwx sitting").is_none(),
             "an empty image poses nothing"
         );
-        std::fs::write(poses.path().join("sitting.png"), b"openpose").unwrap();
+        let openpose = png(4, 4, [0, 0, 0]);
+        std::fs::write(poses.path().join("sitting.png"), &openpose).unwrap();
         let image = pose_image(poses.path(), "ohwx sitting").unwrap();
         assert_eq!(image.name, "pose-sitting.png");
-        assert_eq!(image.bytes, b"openpose");
+        assert_eq!(image.bytes, openpose);
     }
 
     #[test]
@@ -532,6 +533,29 @@ mod tests {
         let below = crop.region.y + crop.region.height;
         assert!(below < 96);
         assert_eq!(at(0, below), [12, 34, 56], "outside the head is untouched");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pose_swapped_for_a_link_is_not_read() {
+        let poses = tempfile::tempdir().unwrap();
+        let elsewhere = poses.path().join("elsewhere.png");
+        std::fs::write(&elsewhere, b"secret").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, poses.path().join("standing.png")).unwrap();
+
+        assert!(pose_image(poses.path(), "a person").is_none());
+
+        std::fs::remove_file(poses.path().join("standing.png")).unwrap();
+        std::fs::write(poses.path().join("standing.png"), b"pose").unwrap();
+        assert!(
+            pose_image(poses.path(), "a person").is_none(),
+            "a pose that is no image is left out"
+        );
+        let png = encode(&[0, 0, 0], 1, 1, Layout::Rgb).unwrap();
+        std::fs::write(poses.path().join("standing.png"), &png).unwrap();
+        let pose = pose_image(poses.path(), "a person").unwrap();
+        assert_eq!(pose.bytes, png);
+        assert_eq!(pose.name, "pose-standing.png");
     }
 
     #[test]

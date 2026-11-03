@@ -91,6 +91,7 @@
 //! ones `abnegate-exec` supports, because the training command, ffmpeg and
 //! ffprobe run under its environment policy.
 
+mod blocking;
 mod caption;
 #[cfg(test)]
 mod child;

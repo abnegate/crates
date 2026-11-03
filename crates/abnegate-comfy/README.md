@@ -287,8 +287,10 @@ back: the head and shoulders square a person's training set would crop (the
 whole image when that square is all of it), placed on the subject when
 `Config::vision_model` is set. The refine runs within the same generation
 time limit as the first pass. A refine pass that fails, or that the time limit
-cuts short, keeps the unrefined image; once the first pass has its results
-only a cancellation fails the call.
+cuts short, keeps the unrefined image, and no refine starts with less than one
+`Config::poll_interval` left; once the first pass has its results only a
+cancellation fails the call. The pose and face images are read without
+following a link or waiting on a pipe, up to the source-image limit.
 
 ## Watching a run
 

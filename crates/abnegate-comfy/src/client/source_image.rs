@@ -1,10 +1,8 @@
 use crate::client::Error;
+use crate::media::MAXIMUM_SOURCE_IMAGE_BYTES;
 use crate::media::MediaType;
 use std::fmt;
 use uuid::Uuid;
-
-/// The largest source image [`SourceImage::new`] accepts: 8 MiB.
-pub const MAXIMUM_SOURCE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 /// An image to upload as the source of an edit or an upscale.
 #[derive(Clone)]
