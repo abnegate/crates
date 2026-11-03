@@ -82,6 +82,7 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::Weak;
 use std::time::Duration;
+use std::time::SystemTime;
 use tokio::io::AsyncReadExt;
 use tokio::process::ChildStderr;
 use tokio::process::Command;
@@ -187,6 +188,10 @@ const STDERR_TAIL: usize = 4096;
 const STDERR_CHUNK: usize = 1024;
 /// How long a finished trainer's stderr is given to reach end of file.
 const STDERR_DRAIN: Duration = Duration::from_millis(250);
+/// How long before a job's `started_at` its embedding's modification time
+/// may read and still be taken as its run's: FAT's two-second granularity,
+/// the coarsest a models directory is likely to sit on.
+const MODIFIED_TOLERANCE: Duration = Duration::from_secs(2);
 
 /// Name the weight a publication replaces is kept under inside its attempt,
 /// until the replacement is durable. Recovery after a crash reads it back.
@@ -1395,8 +1400,10 @@ fn hosted_embedding(job: &host::Job, filename: &str) -> Option<String> {
 
 /// Refuses a pivotal job whose embedding, the one [`hosted_embedding`]
 /// names, is not a regular file in the models directory's `embeddings/`
-/// written since the job started, so the weight is never published naming
-/// an embedding that is missing or that an earlier run left.
+/// modified no earlier than [`MODIFIED_TOLERANCE`] before the job started,
+/// so the weight is never published naming an embedding that is missing or
+/// that an earlier run left, unless that run wrote it within the tolerance
+/// of this job being queued.
 fn require_hosted_embedding(
     config: &Config,
     job: &host::Job,
@@ -1413,7 +1420,8 @@ fn require_hosted_embedding(
         .ok()
         .filter(fs::Metadata::is_file)
         .and_then(|metadata| metadata.modified().ok())
-        .is_some_and(|modified| chrono::DateTime::<chrono::Utc>::from(modified) >= job.started_at);
+        .and_then(|modified| modified.checked_add(MODIFIED_TOLERANCE))
+        .is_some_and(|latest| latest >= SystemTime::from(job.started_at));
     if !written {
         return Err(TrainError::Failed(MISSING_EMBEDDING.to_string()));
     }
@@ -3579,7 +3587,7 @@ mod tests {
         config.train_timeout = Duration::from_secs(1);
 
         let error = rejected(&config, identity("slow")).await;
-        let returned = std::time::SystemTime::now();
+        let returned = SystemTime::now();
 
         assert!(
             matches!(&error, TrainError::Failed(message) if message.contains("timed out")),
@@ -7037,8 +7045,10 @@ mod tests {
                 )
                 .with_subjects([TrainSubject::Person]),
             );
-        finished(&config, person_job("jerry", "pivotal"), Some(b"adapter"));
-        write_embedding(&config, "jerry.safetensors");
+        let jerry = person_job("jerry", "pivotal");
+        let started = SystemTime::from(jerry.started_at);
+        finished(&config, jerry, Some(b"adapter"));
+        write_embedding(&config, "jerry.safetensors", started);
         let mut tuned = person_job("yvonne", "finetune");
         tuned.started_at += chrono::Duration::seconds(1);
         finished(&config, tuned, Some(b"tuned"));
@@ -7095,12 +7105,51 @@ mod tests {
         }
     }
 
-    fn write_embedding(config: &Config, filename: &str) -> PathBuf {
+    fn write_embedding(config: &Config, filename: &str, modified: SystemTime) {
         let embeddings = config.models_directory.join("embeddings");
         fs::create_dir_all(&embeddings).unwrap();
         let embedding = embeddings.join(filename);
         fs::write(&embedding, b"embedding").unwrap();
-        embedding
+        fs::File::options()
+            .write(true)
+            .open(&embedding)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    fn recover_pivotal(modified_before_start: Duration) -> Vec<Result<PathBuf, TrainError>> {
+        let (_root, mut config) = hosted();
+        config.train_policy = pivotal_policy();
+        let job = person_job("jerry", "pivotal");
+        let started = SystemTime::from(job.started_at);
+        finished(&config, job, Some(b"adapter"));
+        write_embedding(
+            &config,
+            "jerry.safetensors",
+            started - modified_before_start,
+        );
+        host::recover(&config)
+    }
+
+    #[test]
+    fn a_pivotal_embedding_stamped_by_a_coarse_clock_is_its_runs() {
+        for before in [Duration::from_millis(4), Duration::from_secs(1)] {
+            let recovered = recover_pivotal(before);
+            assert!(
+                matches!(recovered.as_slice(), [Ok(published)] if published.ends_with("loras/jerry.safetensors")),
+                "an embedding stamped {before:?} before the job started was refused: {recovered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pivotal_embedding_older_than_a_coarse_clock_explains_is_refused() {
+        let recovered = recover_pivotal(MODIFIED_TOLERANCE + Duration::from_secs(1));
+        assert!(
+            matches!(recovered.as_slice(), [Err(TrainError::Failed(message))] if message == MISSING_EMBEDDING),
+            "{recovered:?}"
+        );
     }
 
     #[test]
@@ -7119,14 +7168,11 @@ mod tests {
         );
         assert!(!published.exists(), "published with no embedding");
 
-        let stale = write_embedding(&config, "jerry.safetensors");
-        let earlier = std::time::SystemTime::now() - Duration::from_secs(3600);
-        fs::File::options()
-            .write(true)
-            .open(&stale)
-            .unwrap()
-            .set_modified(earlier)
-            .unwrap();
+        write_embedding(
+            &config,
+            "jerry.safetensors",
+            SystemTime::now() - Duration::from_secs(3600),
+        );
         let outdated = host::recover(&config);
         assert!(
             matches!(outdated.as_slice(), [Err(TrainError::Failed(_))]),
@@ -7137,7 +7183,7 @@ mod tests {
             "published with an earlier run's embedding"
         );
 
-        write_embedding(&config, "jerry.safetensors");
+        write_embedding(&config, "jerry.safetensors", SystemTime::now());
         let recovered = host::recover(&config);
         assert_eq!(recovered.len(), 1, "{recovered:?}");
         assert_eq!(recovered[0].as_ref().unwrap(), &published);
