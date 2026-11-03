@@ -842,6 +842,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_timeout_after_an_answer_starts_the_count_again() {
+        let server = MockServer::start().await;
+        let slow = || {
+            ResponseTemplate::new(200)
+                .set_body_json(answer("a teapot robot"))
+                .set_delay(Duration::from_secs(2))
+        };
+        Mock::given(method("POST"))
+            .and(body_string_contains("main object in this photo"))
+            .respond_with(slow())
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("base64,bbb"))
+            .respond_with(slow())
+            .mount(&server)
+            .await;
+        for (image, description) in [
+            ("base64,aaa", "three-quarter view, standing on concrete"),
+            ("base64,ccc", "close-up, sitting on a wooden stool"),
+        ] {
+            Mock::given(method("POST"))
+                .and(body_string_contains("Write a short caption"))
+                .and(body_string_contains(image))
+                .respond_with(ResponseTemplate::new(200).set_body_json(answer(description)))
+                .mount(&server)
+                .await;
+        }
+        let config = config("vision").with_caption_timeout(Duration::from_millis(200));
+        let captioner = Captioner::new(&config, server.uri(), "key".into());
+        let mut images = vec![
+            Draft::new("a.png", "aaa", "", 0),
+            Draft::new("b.png", "bbb", "", 1),
+            Draft::new("c.png", "ccc", "", 2),
+        ];
+        captioner.fill(&mut images, "zrkxyz").await;
+
+        assert_eq!(images[1].caption, "zrkxyz", "the shot that timed out");
+        assert_eq!(
+            images[2].caption, "zrkxyz, close-up, sitting on a wooden stool",
+            "timeouts either side of an answer are not two in a row"
+        );
+    }
+
+    #[tokio::test]
     async fn an_endpoint_that_drops_the_connection_is_asked_once() {
         use std::sync::Arc;
         use std::sync::atomic::AtomicUsize;
