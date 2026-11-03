@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(comfy)* so a host can give its captioner the completion timeouts the rest of its completions get: `Config::caption_timeout` may now be up to an hour rather than ten minutes, is the caption client's whole deadline and longest silence rather than sitting under the client's ten-minute default, and `Config::with_caption_timeout` sets it
+
 ## [0.2.0](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.1.8...abnegate-comfy/v0.2.0) - 2026-11-03
 
 ### Added

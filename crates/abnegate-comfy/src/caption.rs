@@ -92,6 +92,10 @@ impl Captioner {
     /// A captioner using `config`'s caption model and time limit, reached at
     /// `litellm_host` with `litellm_key`. Nothing is contacted until
     /// [`fill`](Self::fill) runs.
+    ///
+    /// [`Config::caption_timeout`] is the completion client's whole deadline
+    /// and its longest silence, so no default of the client cuts a caption
+    /// short of it.
     pub fn new(config: &Config, litellm_host: String, litellm_key: SecretValue) -> Self {
         Self {
             model: config.caption_model.clone(),
@@ -200,23 +204,25 @@ impl Captioner {
     }
 
     async fn ask(&self, message: Message, maximum_tokens: u32) -> Option<String> {
-        let client = LlmClient::new(
-            LlmConfig::new(self.host.clone(), self.model.clone(), self.key.clone())
-                .with_temperature(0.0)
-                .with_maximum_tokens(maximum_tokens),
-        );
-        let result = tokio::time::timeout(
-            self.timeout,
-            client.chat_with_model(&self.model, &[message], None),
-        )
-        .await;
-        let Ok(Ok(response)) = result else {
-            return None;
-        };
+        let response = self
+            .client(maximum_tokens)
+            .chat_with_model(&self.model, &[message], None)
+            .await
+            .ok()?;
         response
             .choices
             .first()
             .and_then(|choice| choice.message.content.clone())
+    }
+
+    fn client(&self, maximum_tokens: u32) -> LlmClient {
+        LlmClient::new(
+            LlmConfig::new(self.host.clone(), self.model.clone(), self.key.clone())
+                .with_temperature(0.0)
+                .with_maximum_tokens(maximum_tokens)
+                .with_timeout(self.timeout)
+                .with_read_timeout(self.timeout),
+        )
     }
 }
 
@@ -653,6 +659,65 @@ mod tests {
         );
         let mut images = vec![Draft::new("a.png", "aaa", "", 0)];
         captioner.fill(&mut images, "zrkxyz").await;
+    }
+
+    #[test]
+    fn a_caption_request_is_given_the_whole_caption_timeout() {
+        let half_hour = Duration::from_secs(30 * 60);
+        let config = Config::default().with_caption_timeout(half_hour);
+        let captioner = Captioner::new(&config, "http://unused".into(), "key".into());
+
+        for maximum_tokens in [SUBJECT_TOKENS, DESCRIPTION_TOKENS] {
+            let client = captioner.client(maximum_tokens);
+            assert_eq!(client.config().timeout, half_hour);
+            assert_eq!(client.config().read_timeout, half_hour);
+        }
+    }
+
+    async fn silent_for(silence: Duration) -> MockServer {
+        let server = MockServer::start().await;
+        for (prompt, content) in [
+            ("main object in this photo", "a teapot robot"),
+            (
+                "Write a short caption",
+                "three-quarter view, standing on concrete",
+            ),
+        ] {
+            Mock::given(method("POST"))
+                .and(path("/chat/completions"))
+                .and(body_string_contains(prompt))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(answer(content))
+                        .set_delay(silence),
+                )
+                .mount(&server)
+                .await;
+        }
+        server
+    }
+
+    #[tokio::test]
+    async fn a_caption_silent_for_less_than_its_caption_timeout_is_kept() {
+        let server = silent_for(Duration::from_secs(1)).await;
+        let config = config("vision").with_caption_timeout(Duration::from_secs(2));
+        let captioner = Captioner::new(&config, server.uri(), "key".into());
+        let mut images = vec![Draft::new("a.png", "aaa", "", 0)];
+        captioner.fill(&mut images, "zrkxyz").await;
+        assert_eq!(
+            images[0].caption, "zrkxyz, three-quarter view, standing on concrete",
+            "a second of silence is inside a two second caption timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_caption_silent_past_its_caption_timeout_leaves_the_trigger_only_caption() {
+        let server = silent_for(Duration::from_secs(2)).await;
+        let config = config("vision").with_caption_timeout(Duration::from_secs(1));
+        let captioner = Captioner::new(&config, server.uri(), "key".into());
+        let mut images = vec![Draft::new("a.png", "aaa", "", 0)];
+        captioner.fill(&mut images, "zrkxyz").await;
+        assert_eq!(images[0].caption, "zrkxyz");
     }
 
     #[tokio::test]
