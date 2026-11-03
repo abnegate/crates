@@ -29,7 +29,8 @@ pub(crate) const MINIMUM_TIMEOUT: Duration = Duration::from_secs(1);
 const MINIMUM_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const MAXIMUM_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const MAXIMUM_CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(30);
-const MAXIMUM_CAPTION_TIMEOUT: Duration = Duration::from_secs(600);
+/// Ceiling on one caption request.
+const MAXIMUM_CAPTION_TIMEOUT: Duration = Duration::from_secs(3600);
 const MAXIMUM_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 /// Ceiling on the image, audio and upscale generation deadlines.
 const MAXIMUM_GENERATION_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -167,7 +168,11 @@ pub struct Config {
     pub classifier_timeout: Duration,
     /// Vision model that captions LoRA training images. Empty disables captioning.
     pub caption_model: String,
-    /// Ceiling on one caption request, at most ten minutes.
+    /// Ceiling on one caption request, at most an hour. It is the completion
+    /// client's whole deadline, so a caption gets all of it. Captioning ends
+    /// at the first request that cannot reach the endpoint or the second in
+    /// a row that times out, so a dead endpoint costs a training run at most
+    /// two of these, however many shots it holds.
     pub caption_timeout: Duration,
     /// Ceiling on any one HTTP request, at most ten minutes. Generation and
     /// training are bounded by their own deadlines, not by this.
@@ -214,7 +219,8 @@ pub struct Config {
     /// run when no [`Config::train_command`] is set. `None` refuses them.
     pub host_trainer: Option<Trainer>,
     /// Wall clock budget for a training run, graph or command, at most four
-    /// hours.
+    /// hours. It starts when the trainer does: captioning comes first and
+    /// is bounded by [`Config::caption_timeout`] per request.
     pub train_timeout: Duration,
     /// Which subjects and methods each base trains and where each method's
     /// weight is published. Empty trains a LoRA on every trainable base.
@@ -345,7 +351,7 @@ impl Config {
             (
                 self.caption_timeout,
                 MAXIMUM_CAPTION_TIMEOUT,
-                "COMFYUI_CAPTION_TIMEOUT_SECONDS must be between one second and ten minutes",
+                "COMFYUI_CAPTION_TIMEOUT_SECONDS must be between one second and an hour",
             ),
             (
                 self.classifier_timeout,
@@ -421,6 +427,12 @@ impl Config {
     /// queues a prompt whose history is empty.
     pub fn with_queue_check_interval(mut self, interval: Duration) -> Self {
         self.queue_check_interval = interval;
+        self
+    }
+
+    /// The same settings, giving each caption request `timeout`.
+    pub fn with_caption_timeout(mut self, timeout: Duration) -> Self {
+        self.caption_timeout = timeout;
         self
     }
 
@@ -722,6 +734,17 @@ mod tests {
             config.poses_directory,
             Some(PathBuf::from("/srv/comfyui/poses"))
         );
+    }
+
+    #[test]
+    fn a_caption_may_be_given_the_half_hour_any_completion_gets() {
+        let half_hour = Duration::from_secs(30 * 60);
+        let built = Config::default().with_caption_timeout(half_hour);
+        assert_eq!(built.caption_timeout, half_hour);
+        assert_eq!(built.validate(), Ok(()));
+        let read = configured(&[("COMFYUI_CAPTION_TIMEOUT_SECONDS", "1800")]);
+        assert_eq!(read.caption_timeout, half_hour);
+        assert_eq!(read.validate(), Ok(()));
     }
 
     #[test]

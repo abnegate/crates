@@ -227,6 +227,22 @@ fn person(photo: Vec<u8>) -> Result<TrainRequest, TrainError> {
 }
 ```
 
+## Captioning
+
+Training captions every image left blank with `Config::caption_model`, a vision
+model reached through an OpenAI-compatible endpoint, and leaves the trigger as
+the only caption of any image the model does not answer for. Each request gets
+`Config::caption_timeout` (`COMFYUI_CAPTION_TIMEOUT_SECONDS`), a minute unless
+set and at most an hour, as the completion client's whole deadline, so no
+client default cuts it short. A host whose other completions wait half an hour
+for a model on a CPU or a cold cache gives its captioner the same with
+`Config::with_caption_timeout`. Captioning stops at the first request that
+cannot reach the endpoint, or at the second in a row that times out, since the
+first may only have waited out a cold model's load. Every shot not yet
+described keeps the trigger, so a dead endpoint costs at most two
+`Config::caption_timeout`s however many shots the set holds. Captioning comes before the trainer starts,
+one shot at a time, so it is not part of `Config::train_timeout`.
+
 ## Training a person
 
 A request whose subject is `TrainSubject::Person` is framed for a person
