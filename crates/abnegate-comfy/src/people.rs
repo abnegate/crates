@@ -44,6 +44,9 @@ const IPADAPTER_STRENGTH: f64 = 0.4;
 pub(crate) const REFINE_DENOISE: f64 = 0.3;
 const POSE_UPLOAD_PREFIX: &str = "pose-";
 const EMBEDDING_PREFIX: &str = "embedding:";
+/// The directory under the models root ComfyUI reads textual-inversion
+/// embeddings from.
+pub(crate) const EMBEDDINGS_DIRECTORY: &str = "embeddings";
 const LOAD_IMAGE: &str = "LoadImage";
 const CLIP_VISION_LOADER: &str = "CLIPVisionLoader";
 

@@ -591,7 +591,8 @@ the job's `trigger`, so a prompt that names it binds the weight as it would
 one trained here. A `pivotal` job's trainer writes the embedding it trains to
 the models directory's `embeddings/` under the job's `filename`, and the
 sidecar names it as `embedding`, so `embedding:<stem>` leads every prompt run
-on the weight.
+on the weight. A pivotal job whose embedding is not a regular file there,
+written since the job's `started_at`, fails instead of being published.
 
 ## Migrating from the pre-release defaults
 

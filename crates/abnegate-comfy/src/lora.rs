@@ -175,6 +175,8 @@ const HOST_FIELD: &str = "a host field may not replace a key the host job gives 
 const HOST_EDIT: &str = "an edit base trains on the host only once the host-job contract carries its references; train it through a training command or the packaged graph";
 const HOST_RENAMED: &str = "the host job names a weight file other than the one its name gives";
 const EMBEDDING_NAME: &str = "a pivotal weight's name must be letters, digits, dashes or underscores, so its embedding can be prompted";
+const MISSING_EMBEDDING: &str =
+    "the host trainer wrote no embedding for the pivotal weight during this run";
 const MIXED_PERSON: &str =
     "these images look like different people, and a person weight can only learn one";
 /// The class word a person's captions bind the trigger to.
@@ -1286,6 +1288,7 @@ async fn train_on_host(
         .clone()
         .ok_or(TrainError::Invalid(HOST_RENAMED))?;
     let weight = hosted_weight(&directory, &filename)?;
+    require_hosted_embedding(config, &finished, &filename)?;
     let staged = attempt.output();
     let linked = staged.clone();
     blocking(move || link_or_copy(&weight, &linked)).await??;
@@ -1361,6 +1364,7 @@ pub(crate) fn publish_host_job(
     }
     let (destination, filename) = host_destination(config, &job)?;
     let weight = hosted_weight(directory, &filename)?;
+    require_hosted_embedding(config, &job, &filename)?;
     let attempt = Attempt::create(&config.models_directory)?;
     let staged = attempt.output();
     link_or_copy(&weight, &staged)?;
@@ -1381,6 +1385,33 @@ pub(crate) fn publish_host_job(
 /// `embeddings/`. Every other method trains none.
 fn hosted_embedding(job: &host::Job, filename: &str) -> Option<String> {
     (job.method == TrainMethod::Pivotal.as_str()).then(|| filename.to_string())
+}
+
+/// Refuses a pivotal job whose embedding, the one [`hosted_embedding`]
+/// names, is not a regular file in the models directory's `embeddings/`
+/// written since the job started, so the weight is never published naming
+/// an embedding that is missing or that an earlier run left.
+fn require_hosted_embedding(
+    config: &Config,
+    job: &host::Job,
+    filename: &str,
+) -> Result<(), TrainError> {
+    let Some(embedding) = hosted_embedding(job, filename) else {
+        return Ok(());
+    };
+    let path = config
+        .models_directory
+        .join(crate::people::EMBEDDINGS_DIRECTORY)
+        .join(embedding);
+    let written = fs::symlink_metadata(path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .and_then(|metadata| metadata.modified().ok())
+        .is_some_and(|modified| chrono::DateTime::<chrono::Utc>::from(modified) >= job.started_at);
+    if !written {
+        return Err(TrainError::Failed(MISSING_EMBEDDING.to_string()));
+    }
+    Ok(())
 }
 
 /// Where `job` publishes under `config`, and the weight file it publishes.
@@ -6870,6 +6901,7 @@ mod tests {
                 .with_subjects([TrainSubject::Person]),
             );
         finished(&config, person_job("jerry", "pivotal"), Some(b"adapter"));
+        write_embedding(&config, "jerry.safetensors");
         let mut tuned = person_job("yvonne", "finetune");
         tuned.started_at += chrono::Duration::seconds(1);
         finished(&config, tuned, Some(b"tuned"));
@@ -6924,6 +6956,54 @@ mod tests {
         for name in ["jerry.v2", "jerry v2", "jérry"] {
             assert_eq!(refused(&config, &pivotal(name)), EMBEDDING_NAME, "{name:?}");
         }
+    }
+
+    fn write_embedding(config: &Config, filename: &str) -> PathBuf {
+        let embeddings = config.models_directory.join("embeddings");
+        fs::create_dir_all(&embeddings).unwrap();
+        let embedding = embeddings.join(filename);
+        fs::write(&embedding, b"embedding").unwrap();
+        embedding
+    }
+
+    #[test]
+    fn a_pivotal_host_job_is_published_only_with_the_embedding_its_run_wrote() {
+        let (_root, mut config) = hosted();
+        config.train_policy = pivotal_policy();
+        let mut job = person_job("jerry", "pivotal");
+        job.started_at -= chrono::Duration::minutes(1);
+        finished(&config, job, Some(b"adapter"));
+        let published = config.models_directory.join("loras/jerry.safetensors");
+
+        let missing = host::recover(&config);
+        assert!(
+            matches!(missing.as_slice(), [Err(TrainError::Failed(_))]),
+            "{missing:?}"
+        );
+        assert!(!published.exists(), "published with no embedding");
+
+        let stale = write_embedding(&config, "jerry.safetensors");
+        let earlier = std::time::SystemTime::now() - Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        let outdated = host::recover(&config);
+        assert!(
+            matches!(outdated.as_slice(), [Err(TrainError::Failed(_))]),
+            "{outdated:?}"
+        );
+        assert!(
+            !published.exists(),
+            "published with an earlier run's embedding"
+        );
+
+        write_embedding(&config, "jerry.safetensors");
+        let recovered = host::recover(&config);
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert_eq!(recovered[0].as_ref().unwrap(), &published);
     }
 
     #[test]

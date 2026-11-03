@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Any error after ComfyUI accepted a prompt deletes it from the queue, and history is cleared only once the outputs landed
 - A `/history` or `/queue` answer that does not parse fails the generation at once instead of being retried as an outage, and a failed queue check is logged as one
 - The queue delete sent after `Config::outage_window` gives up on a ComfyUI waits at most five seconds instead of the request timeout
+- A pivotal host job is published only when its embedding is a regular file in `embeddings/` written since the job started, so a weight never names an embedding that is missing or left by an earlier run
 - `inventory::scan` reads a checkpoint or diffusion model whose sidecar names an adapter recipe as if the sidecar named no recipe, so it is never listed as an adapter, bound as an identity and then loaded into a LoRA slot
 - `inventory::bind_identity` and `identity_among` select no weight whose filename another scanned weight shares, such as a LoRA and a checkpoint of one name, since generation would load whichever the scan listed first
 - `host::recover` takes a job directory's lock before it looks for `job.json`, so a job queued while the sweep looked is never removed with its inputs and secrets
