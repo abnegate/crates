@@ -116,7 +116,7 @@ mod tests {
     const SIGNING: &str = "signing-secret-sentinel";
 
     fn delivery() -> Url {
-        Url::parse("https://zone.test/api/webhooks/sync/1/github").unwrap()
+        Url::parse("https://hooks.example.test/api/webhooks/sync/1/github").unwrap()
     }
 
     fn secret() -> SecretValue {
@@ -135,7 +135,7 @@ mod tests {
                 "active": true,
                 "events": ["issues", "issue_comment"],
                 "config": {
-                    "url": "https://zone.test/api/webhooks/sync/1/github",
+                    "url": "https://hooks.example.test/api/webhooks/sync/1/github",
                     "content_type": "json",
                     "secret": SIGNING,
                     "insecure_ssl": "0",
@@ -240,7 +240,7 @@ mod tests {
             .and(path(format!("{HOOKS}/4242/config")))
             .and(header("authorization", "Bearer token"))
             .and(body_json(json!({
-                "url": "https://zone.test/api/webhooks/sync/1/github",
+                "url": "https://hooks.example.test/api/webhooks/sync/1/github",
                 "content_type": "json",
                 "secret": SIGNING,
                 "insecure_ssl": "0",
