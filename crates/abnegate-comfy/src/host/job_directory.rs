@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::host::CLAIM_FILE;
 use crate::host::CLIPS_DIRECTORY;
 use crate::host::Compute;
 use crate::host::DATA_DIRECTORY;
@@ -31,6 +32,7 @@ const RESERVED: &[&str] = &[
     JOB_FILE,
     PROGRESS_FILE,
     LOCK_FILE,
+    CLAIM_FILE,
     DISMISSED_FILE,
     PREVIEWS_DIRECTORY,
     DATASET_DIRECTORY,
@@ -139,12 +141,19 @@ impl JobDirectory {
     /// readable only by its owner, for a credential the trainer needs and
     /// `job.json` must never hold. The name is one plain file name the job
     /// does not use for anything else, and a link in its place is refused
-    /// rather than followed, as is a value of more than one line. List it with
+    /// rather than followed, as is a value that holds a line break or any
+    /// other control character once trimmed. List it with
     /// [`Job::with_secret`] so it is removed once the job ends.
     pub fn write_secret(&self, name: &str, value: &SecretValue) -> Result<(), TrainError> {
         if !is_secret_name(name) {
             return Err(TrainError::Invalid(
                 "a job secret needs a plain file name the job does not use",
+            ));
+        }
+        let value = value.expose().trim();
+        if value.chars().any(is_line_break_or_control) {
+            return Err(TrainError::Invalid(
+                "a job secret is one line of printable text",
             ));
         }
         self.create()?;
@@ -157,10 +166,6 @@ impl JobDirectory {
             Ok(_) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(failed(error)),
-        }
-        let value = value.expose().trim();
-        if value.contains(['\n', '\r']) {
-            return Err(TrainError::Invalid("a job secret is one line"));
         }
         let line = format!("{value}\n");
         self.replace(name, line.as_bytes(), PRIVATE_FILE)
@@ -198,6 +203,20 @@ impl JobDirectory {
     pub(crate) fn dismissed(&self) -> bool {
         fs::symlink_metadata(self.path.join(DISMISSED_FILE))
             .is_ok_and(|metadata| metadata.is_file())
+    }
+
+    /// Takes the job's [claim](CLAIM_FILE) by creating it exclusively.
+    /// `false` when the trainer or another waiter holds it already.
+    pub(crate) fn claim(&self) -> Result<bool, TrainError> {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(self.path.join(CLAIM_FILE))
+        {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(failed(error)),
+        }
     }
 
     /// Marks the job dismissed, once.
@@ -334,6 +353,12 @@ impl JobDirectory {
         let _ = File::open(&self.path).and_then(|directory| directory.sync_all());
         Ok(())
     }
+}
+
+/// Whether `character` breaks a line or is any other control character,
+/// counting the Unicode line and paragraph separators.
+fn is_line_break_or_control(character: char) -> bool {
+    character.is_control() || matches!(character, '\u{85}' | '\u{2028}' | '\u{2029}')
 }
 
 /// Whether `name` can be a secret file beside `job.json`. A name that

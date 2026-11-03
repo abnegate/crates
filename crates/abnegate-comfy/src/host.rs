@@ -8,6 +8,13 @@
 //!
 //! - [`JOB_FILE`]: the [`Job`], whose `status` the trainer moves from
 //!   `queued` through `running` to `succeeded` or `failed`.
+//! - [`CLAIM_FILE`]: the claim on a queued job, created with exclusive
+//!   create (`O_CREAT | O_EXCL`) by whoever takes the job out of `queued`.
+//!   The trainer creates it before it writes `running`, and a waiter that
+//!   gives up on the job creates it before it writes `failed`; only the one
+//!   that created it may move the job on, so a trainer that loses the claim
+//!   leaves the job alone. A trainer that writes `running` without the claim
+//!   can still race a waiter giving up.
 //! - [`PROGRESS_FILE`]: one [`TrainProgress`] the trainer rewrites as it
 //!   goes.
 //! - [`PREVIEWS_DIRECTORY`]: the samples `progress.json` names in
@@ -72,6 +79,9 @@ pub const JOB_FILE: &str = "job.json";
 pub const PROGRESS_FILE: &str = "progress.json";
 /// The lock whoever publishes the job holds while it waits and publishes.
 pub const LOCK_FILE: &str = "publish.lock";
+/// The empty claim on a queued job: whoever creates it, the trainer or a
+/// waiter giving up, alone moves the job out of `queued`.
+pub const CLAIM_FILE: &str = "claimed";
 /// The empty marker of a finished job a host no longer shows.
 pub const DISMISSED_FILE: &str = "dismissed";
 /// Samples the trainer renders while it trains.
@@ -96,6 +106,8 @@ const ANOTHER_JOB: &str = "job.json names another job";
 const UNPUBLISHED: &str = "a job with no base is the host's to publish";
 const PUBLISHED_OUTSIDE: &str = "a job's published weight is not a path under the models directory";
 const STILL_BUSY: &str = "a job the host trainer may still hold is not removed";
+const UNREADABLE: &str =
+    "a job whose job.json cannot be read, which the host trainer may still hold, is not removed";
 const BEING_PUBLISHED: &str = "a job that is being waited on or published is not removed";
 const STILL_RUNNING: &str = "a training job is already running";
 
@@ -241,9 +253,8 @@ pub fn recover(config: &Config) -> Vec<Result<PathBuf, TrainError>> {
 }
 
 /// Removes the job `id` and everything in its directory. Refuses a job the
-/// trainer may still hold, including one whose `job.json` cannot be read,
-/// and one another waiter holds. A job that is not
-/// there is already removed.
+/// trainer may still hold, a job whose `job.json` cannot be read, and one
+/// another waiter holds. A job that is not there is already removed.
 pub fn remove(config: &Config, id: Uuid) -> Result<(), TrainError> {
     let directory = JobDirectory::new(config, id);
     match fs::symlink_metadata(directory.path()) {
@@ -256,8 +267,12 @@ pub fn remove(config: &Config, id: Uuid) -> Result<(), TrainError> {
         fs::symlink_metadata(directory.path().join(JOB_FILE)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound
     );
-    if !unrecorded && !directory.read_job().is_ok_and(|job| !job.busy()) {
-        return Err(TrainError::Invalid(STILL_BUSY));
+    if !unrecorded {
+        match directory.read_job() {
+            Ok(job) if job.busy() => return Err(TrainError::Invalid(STILL_BUSY)),
+            Ok(_) => {}
+            Err(_) => return Err(TrainError::Invalid(UNREADABLE)),
+        }
     }
     let _lock = directory
         .try_lock()?
@@ -459,10 +474,13 @@ pub(crate) async fn wait_with(
     }
 }
 
-/// Marks the job failed when it is still queued, and returns it when the
-/// mark held: a trainer that claimed it at the same moment wins, and reads
-/// `job.json` back after claiming to learn whether it did.
+/// Marks the job failed when it is still queued and this waiter wins its
+/// [claim](CLAIM_FILE), and returns it when the mark held. A trainer that
+/// claimed the job first keeps it, even before it writes `running`.
 fn give_up(directory: &JobDirectory) -> Result<Option<Job>, TrainError> {
+    if directory.read_job()?.status != Status::Queued || !directory.claim()? {
+        return Ok(None);
+    }
     let mut job = directory.read_job()?;
     if job.status != Status::Queued {
         return Ok(None);
@@ -1210,6 +1228,40 @@ mod tests {
         assert!(jobs(&config).is_empty());
     }
 
+    #[tokio::test]
+    async fn a_job_the_trainer_claimed_before_running_keeps_its_inputs() {
+        let (root, config) = models();
+        let job = Job::new("jerry", "lora", "base.safetensors");
+        let directory = queued(&config, &job);
+        let source = root.path().join("set");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("0000.png"), b"png").unwrap();
+        directory.stage(&source, DATASET_DIRECTORY).unwrap();
+        fs::write(directory.path().join(CLAIM_FILE), b"").unwrap();
+        let trainer = Trainer::new()
+            .with_poll_interval(Duration::from_millis(5))
+            .with_pickup(Duration::from_millis(10));
+
+        let waited = tokio::time::timeout(
+            Duration::from_millis(300),
+            wait_with(&trainer, &directory, &Reporter::default()),
+        )
+        .await;
+
+        assert!(
+            waited.is_err(),
+            "the waiter gave up a claimed job: {waited:?}"
+        );
+        assert_eq!(directory.read_job().unwrap().status, Status::Queued);
+        assert!(
+            directory
+                .path()
+                .join(DATASET_DIRECTORY)
+                .join("0000.png")
+                .is_file()
+        );
+    }
+
     #[test]
     fn a_job_the_trainer_claimed_is_never_given_up() {
         let (_root, config) = models();
@@ -1274,7 +1326,7 @@ mod tests {
         fs::write(directory.path().join(JOB_FILE), b"{ half written").unwrap();
 
         assert!(
-            matches!(remove(&config, id), Err(TrainError::Invalid(message)) if message == STILL_BUSY)
+            matches!(remove(&config, id), Err(TrainError::Invalid(message)) if message == UNREADABLE)
         );
         assert!(directory.path().is_dir());
 
@@ -1286,12 +1338,27 @@ mod tests {
     #[test]
     fn a_secret_of_more_than_one_line_is_refused() {
         let (_root, config) = models();
-        let directory = JobDirectory::new(&config, Uuid::new_v4());
-        let error = directory
-            .write_secret("runpod.key", &SecretValue::new(" rp-secret\nPATH=/tmp \n"))
-            .unwrap_err();
-        assert!(matches!(error, TrainError::Invalid(_)), "{error:?}");
-        assert!(!directory.path().join("runpod.key").exists());
+        for value in [
+            " rp-secret\nPATH=/tmp \n",
+            "rp\rsecret",
+            "rp\tsecret",
+            "rp\u{85}secret",
+            "rp\u{2028}secret",
+            "rp\u{2029}secret",
+        ] {
+            let directory = JobDirectory::new(&config, Uuid::new_v4());
+            let error = directory
+                .write_secret("runpod.key", &SecretValue::new(value))
+                .unwrap_err();
+            assert!(
+                matches!(error, TrainError::Invalid(_)),
+                "{value:?}: {error:?}"
+            );
+            assert!(
+                !directory.path().exists(),
+                "{value:?} created the job directory before it was refused"
+            );
+        }
     }
 
     #[cfg(unix)]
