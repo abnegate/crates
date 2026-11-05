@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.7...abnegate-vcs/v0.1.8) - 2026-11-05
+
+### Added
+
+- *(vcs)* read a configuration file's origin without trusting the file or the environment ([#42](https://github.com/abnegate/crates/pull/42))
+
+### Fixed
+
+- *(vcs)* refuse a configured_origin path that is not a regular file ([#45](https://github.com/abnegate/crates/pull/45))
+
 ## [0.1.7](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.6...abnegate-vcs/v0.1.7) - 2026-11-05
 
 ### Added

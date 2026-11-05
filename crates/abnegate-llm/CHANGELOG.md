@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.8...abnegate-llm/v0.1.9) - 2026-11-05
+
+### Added
+
+- *(llm)* report installed system memory as measured bytes ([#40](https://github.com/abnegate/crates/pull/40))
+
+### Fixed
+
+- *(llm)* run macOS's own sysctl rather than whichever one PATH finds first ([#44](https://github.com/abnegate/crates/pull/44))
+
 ## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.7...abnegate-llm/v0.1.8) - 2026-11-03
 
 ### Added
