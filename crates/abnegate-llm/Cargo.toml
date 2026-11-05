@@ -29,6 +29,7 @@ catalog = ["dep:regex", "dep:scraper"]
 download = ["tokio/fs", "tokio/sync"]
 fastembed = ["dep:fastembed"]
 google = []
+ollama = []
 openai = ["dep:base64", "reqwest/multipart", "tokio/fs"]
 testing = []
 

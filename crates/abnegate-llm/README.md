@@ -18,6 +18,7 @@ locally, and `catalog` browses the model catalogues those choices are made from.
 - `google`: the Gemini client behind `TextProvider`.
 - `openai`: the OpenAI client behind the text, image, embedding and transcription traits.
 - `fastembed`: local ONNX embeddings behind `EmbeddingProvider`.
+- `ollama`: an Ollama server's native `/api/embeddings` API behind `EmbeddingProvider`.
 - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter catalogues through one `catalog::ModelProvider` trait.
 - `download`: resumable file downloads that only splice a resume onto the same upstream file and verify a SHA-256 when one is given.
 - `testing`: `provider::testing::StubProvider`, a completion provider whose answers a test decides.
