@@ -82,8 +82,18 @@ pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error>
 /// envelope of another version is [`Error::UnsupportedVersion`], and one that
 /// is never closed is [`Error::Truncated`].
 ///
+/// [`is_encrypted`] is false for a bare body, so a migration that consults it
+/// would take the stored text for plaintext. After a successful read, re-seal
+/// the value this returns with [`encrypt_value`]; never seal the stored text
+/// again, which would wrap the old ciphertext rather than the credential. Each
+/// bare body read is reported through `tracing::debug!`, without its value.
+///
 /// ```
-/// use abnegate_secret::{Error, MasterKey, SecretValue, decrypt_legacy_value, encrypt_value};
+/// use abnegate_secret::Error;
+/// use abnegate_secret::MasterKey;
+/// use abnegate_secret::SecretValue;
+/// use abnegate_secret::decrypt_legacy_value;
+/// use abnegate_secret::encrypt_value;
 ///
 /// let key = MasterKey::generate()?;
 /// let sealed = encrypt_value(&SecretValue::new("sk-live-0123456789"), &key)?;
@@ -97,7 +107,13 @@ pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error>
 pub fn decrypt_legacy_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error> {
     match Envelope::open(value) {
         Some(envelope) => open_envelope(envelope, key),
-        None => open_body(value, key),
+        None => {
+            let secret = open_body(value, key)?;
+            tracing::debug!(
+                "Secret sealed before the envelope existed read from storage; re-save it to seal it in an ENC[v1:...] envelope"
+            );
+            Ok(secret)
+        }
     }
 }
 

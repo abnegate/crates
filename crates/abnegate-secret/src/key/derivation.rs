@@ -66,14 +66,19 @@ impl MasterKey {
     /// Stretch `passphrase` into a key with Argon2id, under the domain
     /// `derivation` names.
     ///
-    /// The same passphrase and domain always derive the same key. The salt
+    /// The same passphrase and domain always derive the same key, from the
+    /// passphrase's exact bytes: it is never trimmed or normalised. The salt
     /// comes from the passphrase itself, so the key is only as strong as the
     /// passphrase: the caller is responsible for its entropy, and this crate
-    /// imposes no length limit. Argon2id is memory-hard on purpose, so this
-    /// takes a noticeable moment, and far longer in an unoptimised build.
+    /// imposes no minimum length beyond refusing an empty one. Argon2id is
+    /// memory-hard on purpose, so this takes a noticeable moment, and far
+    /// longer in an unoptimised build. The working memory it allocates for
+    /// Argon2id is wiped when the derivation ends.
     ///
-    /// Fails with [`Error::Derivation`] when Argon2id cannot allocate its
-    /// working memory or refuses the passphrase's length.
+    /// Fails with [`Error::EmptyPassphrase`] when the passphrase is empty,
+    /// before any hashing, since that key is the same for everyone who knows
+    /// the domain. Fails with [`Error::Derivation`] when Argon2id cannot
+    /// allocate its working memory or refuses the passphrase's length.
     ///
     /// ```no_run
     /// use abnegate_secret::KeyDerivation;
@@ -88,6 +93,9 @@ impl MasterKey {
     #[cfg_attr(docsrs, doc(cfg(feature = "derivation")))]
     pub fn derive(passphrase: &SecretValue, derivation: &KeyDerivation) -> Result<Self, Error> {
         let passphrase = passphrase.expose().as_bytes();
+        if passphrase.is_empty() {
+            return Err(Error::EmptyPassphrase);
+        }
         let salt = derivation.salt(passphrase);
         let mut memory: Zeroizing<Vec<Block>> = Zeroizing::new(Vec::new());
         memory

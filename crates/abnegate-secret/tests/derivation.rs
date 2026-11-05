@@ -19,7 +19,11 @@ use abnegate_secret::encrypt_value;
 /// The passphrase [`DERIVED`] is derived from.
 const PASSPHRASE: &str = "a-high-entropy-passphrase-of-at-least-32-bytes";
 
-/// The domain [`DERIVED`] and [`DERIVED_FROM_NOTHING`] are derived under.
+/// The passphrase [`DERIVED_FROM_EXACT_BYTES`] is derived from: non-ASCII
+/// characters and a trailing newline, which no trim or normalisation may touch.
+const UNNORMALISED_PASSPHRASE: &str = "pässphrase-with-ünïcödé-and-a-trailing-newline\n";
+
+/// The domain [`DERIVED`] and [`DERIVED_FROM_EXACT_BYTES`] are derived under.
 const DOMAIN: &[u8] = b"abnegate-secret-derivation-v1";
 
 /// [`PASSPHRASE`] stretched under [`DOMAIN`]. Computed by the absorbed
@@ -28,12 +32,14 @@ const DOMAIN: &[u8] = b"abnegate-secret-derivation-v1";
 /// derived from a passphrase.
 const DERIVED: &str = "d1e5afd2f9eaad526e02dcfe601c47c4eebf5dc561eb72ba16aef3d05228d52f";
 
-/// The empty passphrase stretched under [`DOMAIN`]. The absorbed derivation
-/// refuses passphrases under 32 bytes, so this was computed with the same salt
-/// recipe and the explicit Argon2id parameters; it pins that this crate
-/// accepts an empty passphrase. Never regenerate it.
-const DERIVED_FROM_NOTHING: &str =
-    "f935bc5024b9a09a0e8f91ccbcad392204427cb4eaa6ead34a662d143a2518ca";
+/// [`UNNORMALISED_PASSPHRASE`] stretched under [`DOMAIN`]. Computed before
+/// this test existed by two independent oracles that agree: the absorbed
+/// derivation, run verbatim with only its domain replaced, and the Argon2
+/// reference command-line tool given the same salt recipe and the explicit
+/// Argon2id parameters. Never regenerate it: it pins that a key is derived
+/// from the passphrase's exact bytes.
+const DERIVED_FROM_EXACT_BYTES: &str =
+    "50de995ce40631e1324241f97753cea5cd5a37e012542c7262263c534a4dc9eb";
 
 fn derive(passphrase: &str, domain: &[u8]) -> Result<MasterKey, Error> {
     MasterKey::derive(&SecretValue::new(passphrase), &KeyDerivation::new(domain))
@@ -83,10 +89,17 @@ fn a_derived_key_seals_and_opens_an_envelope() -> Result<(), Error> {
 }
 
 #[test]
-fn an_empty_passphrase_derives_the_pinned_key() -> Result<(), Error> {
+fn a_passphrase_is_derived_from_its_exact_bytes() -> Result<(), Error> {
     assert_eq!(
-        derive("", DOMAIN)?.to_hexadecimal().as_str(),
-        DERIVED_FROM_NOTHING
+        derive(UNNORMALISED_PASSPHRASE, DOMAIN)?
+            .to_hexadecimal()
+            .as_str(),
+        DERIVED_FROM_EXACT_BYTES
     );
     Ok(())
+}
+
+#[test]
+fn an_empty_passphrase_is_refused() {
+    assert!(matches!(derive("", DOMAIN), Err(Error::EmptyPassphrase)));
 }

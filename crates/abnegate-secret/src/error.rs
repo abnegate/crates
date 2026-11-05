@@ -11,12 +11,16 @@ pub enum Error {
     /// The envelope, or a value sealed before the envelope existed, did not
     /// open under the key: the key is wrong, the value was altered, or it is
     /// plaintext that happens to be long base64.
-    #[error("Decryption failed: invalid key or corrupted envelope")]
+    #[error("Decryption failed: invalid key or corrupted value")]
     Decryption,
     /// Argon2id could not derive a key from the passphrase: it could not
     /// allocate its working memory, or refused the passphrase's length.
     #[error("Key derivation failed")]
     Derivation,
+    /// The passphrase to derive a key from is empty, so the key would be the
+    /// same for everyone who knows the domain.
+    #[error("Cannot derive a key from an empty passphrase")]
+    EmptyPassphrase,
     /// The envelope's body, or a value sealed before the envelope existed, is
     /// not base64.
     #[error("Invalid base64 in encrypted value")]
