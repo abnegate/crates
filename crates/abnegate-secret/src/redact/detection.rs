@@ -18,12 +18,16 @@ const KELVIN: &[u8] = "\u{212A}".as_bytes();
 /// log when it looks like a credential. It is true wherever
 /// [`redact`](crate::redact) would remove something, but for a value assigned
 /// to a key word that carries no digit and is shorter than 16 bytes or reads
-/// as words, as the `refresh` of a script named `token:refresh` does. It errs toward true
-/// beyond that: a credential prefix with enough after it counts even when
-/// what follows reads as words, or when it is spelt with `ſ` for `s` or the
-/// Kelvin sign for `k`, and so does any run of 32 or more base64 or URL-safe
-/// characters that mixes letters with digits at high entropy, a commit hash
-/// included, whether or not an assignment names it.
+/// as words, as the `refresh` of a script named `token:refresh` does.
+///
+/// It errs toward true beyond that. A widely issued prefix, such as `ghp_`,
+/// `sk-` or `AKIA`, with enough after it counts even when what follows reads
+/// as words, or when it is spelt with `ſ` for `s` or the Kelvin sign for `k`,
+/// and so does any run of 32 or more base64 or URL-safe characters that mixes
+/// letters with digits at high entropy, a commit hash included, whether or not
+/// an assignment names it. A less widely issued prefix, such as `xai_` or
+/// `sk_`, counts only where redaction would remove it, so that
+/// `xai_list_models` is a name.
 ///
 /// Time is linear in the length of `value`.
 ///
@@ -271,6 +275,23 @@ mod tests {
         ] {
             assert!(!contains_credential(value), "{value}");
             assert_ne!(crate::redact(value), value, "redaction still takes it out");
+        }
+    }
+
+    #[test]
+    fn a_name_spelt_like_a_less_known_credential_is_not_one() {
+        for value in [
+            "xai_list_models",
+            "xai-chat-completions",
+            "xapp-socket-mode",
+            "lin_api_create_issue",
+            "sntryu_release_health",
+            "sk_test_connection_pool",
+            "rk_live_reload_watcher",
+            "tools/testing/selftests/net/sk_bind_sendto_listen.c",
+            "search sk_write_pending_queue",
+        ] {
+            assert!(!contains_credential(value), "{value}");
         }
     }
 

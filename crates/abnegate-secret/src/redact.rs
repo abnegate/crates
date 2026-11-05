@@ -1,6 +1,7 @@
 mod character_set;
 mod credential;
 mod detection;
+mod evidence;
 mod naming;
 
 use std::borrow::Cow;
