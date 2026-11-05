@@ -65,8 +65,12 @@ impl FastembedProvider {
     /// async callers should run this on `spawn_blocking`. A cache directory
     /// that cannot hold a lock file (read-only, or without file locking)
     /// loads without one.
+    ///
+    /// The provider reports [`FastembedConfig::maximum_input_tokens`], or
+    /// fastembed's 512 when unset, lowered to the limit the model's own
+    /// tokenizer applies, such as 256 for all-MiniLM-L6-v2.
     pub fn new(config: FastembedConfig) -> Result<Self, ProviderError> {
-        let maximum_input_tokens = config
+        let configured_input_tokens = config
             .checked_maximum_input_tokens()?
             .unwrap_or(DEFAULT_MAXIMUM_INPUT_TOKENS);
         let model = config.embedding_model()?;
@@ -76,11 +80,12 @@ impl FastembedProvider {
         let model_name = model.to_string();
         let pool_size = config.pool_size.max(1);
         let mut pool = Vec::with_capacity(pool_size);
-        pool.push(Arc::new(Mutex::new(load_cached_session(
-            &config,
-            &model,
-            &info.model_code,
-        )?)));
+        let first = load_cached_session(&config, &model, &info.model_code)?;
+        let maximum_input_tokens = truncation_length(&first)
+            .map_or(configured_input_tokens, |length| {
+                configured_input_tokens.min(length)
+            });
+        pool.push(Arc::new(Mutex::new(first)));
         for _ in 1..pool_size {
             pool.push(Arc::new(Mutex::new(load_session(&config, &model)?)));
         }
@@ -179,6 +184,15 @@ fn restore_order<T>(order: &[usize], sorted: Vec<T>) -> Result<Vec<T>, ProviderE
     let mut placed: Vec<(usize, T)> = order.iter().copied().zip(sorted).collect();
     placed.sort_unstable_by_key(|&(index, _)| index);
     Ok(placed.into_iter().map(|(_, item)| item).collect())
+}
+
+/// The most tokens `session`'s tokenizer keeps of an input, or `None` when
+/// it does not truncate.
+fn truncation_length(session: &TextEmbedding) -> Option<u32> {
+    session
+        .tokenizer
+        .get_truncation()
+        .map(|truncation| u32::try_from(truncation.max_length).unwrap_or(u32::MAX))
 }
 
 fn load_cached_session(
@@ -299,6 +313,7 @@ mod tests {
     const OLLAMA_URL: &str = "http://127.0.0.1:11434";
     const TRUNCATED_MODEL: &str = "all-minilm:latest";
     const TRUNCATED_INPUT_TOKENS: u32 = 8;
+    const TOKENIZER_INPUT_TOKENS: u32 = 256;
     const SAME_VECTOR: f32 = 1e-5;
     const NEAR_VECTOR: f32 = 1e-3;
     const SHARED_PREFIX: &str = "the quick brown fox jumps over the lazy dog while the sleepy \
@@ -366,10 +381,14 @@ mod tests {
     }
 
     #[test]
-    fn a_local_model_keeps_fastembeds_length_unless_told_otherwise() {
+    fn a_local_model_reports_its_tokenizers_length_unless_told_otherwise() {
         assert!(FastembedConfig::fast().maximum_input_tokens.is_none());
         let provider = FastembedProvider::for_tests();
-        assert_eq!(provider.maximum_input_tokens(), 512);
+        assert_eq!(provider.maximum_input_tokens(), TOKENIZER_INPUT_TOKENS);
+        assert_eq!(
+            super::truncation_length(&provider.acquire().lock().unwrap()),
+            Some(TOKENIZER_INPUT_TOKENS)
+        );
         let vectors = provider.embed_blocking(&diverging_tails()).unwrap();
         assert!(
             distance(&vectors[0], &vectors[1]) > SAME_VECTOR,
