@@ -13,16 +13,14 @@ const BYTES_PER_KIBIBYTE: u64 = 1024;
 /// On macOS it is the physical size from `sysctl hw.memsize`, whatever the
 /// CPU. On Linux it is `MemTotal` in `/proc/meminfo`: usable RAM, which is
 /// physical RAM less reserved memory and the kernel image. Every other
-/// platform is `None`. It runs `sysctl` or reads `/proc`, so it blocks the
-/// calling thread.
+/// platform is `None`. It runs `/usr/sbin/sysctl`, never one found on
+/// `PATH`, or reads `/proc`, so it blocks the calling thread.
 pub fn system_memory_bytes() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("sysctl")
-            .args(["-n", SYSCTL_MEMORY_KEY])
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+        crate::hardware::sysctl::read(SYSCTL_MEMORY_KEY)?
+            .parse()
+            .ok()
     }
     #[cfg(target_os = "linux")]
     {
@@ -51,6 +49,14 @@ fn total_from_meminfo(meminfo: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a test run again in a child process finds set, naming the test.
+    #[cfg(target_os = "macos")]
+    const CHILD: &str = "ABNEGATE_LLM_TEST_CHILD";
+
+    /// What a `sysctl` planted on `PATH` reports.
+    #[cfg(target_os = "macos")]
+    const PLANTED: u64 = 4096;
 
     const MEMINFO: &str = "MemTotal:       65777208 kB\n\
                            MemFree:         1234567 kB\n\
@@ -100,5 +106,35 @@ mod tests {
     #[test]
     fn an_unsupported_platform_reports_no_memory() {
         assert_eq!(system_memory_bytes(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sysctl_on_the_path_is_never_run() {
+        use std::os::unix::fs::PermissionsExt;
+        const NAME: &str = "hardware::system_memory::tests::a_sysctl_on_the_path_is_never_run";
+        if std::env::var(CHILD).as_deref() == Ok(NAME) {
+            let bytes = system_memory_bytes();
+            assert!(bytes.is_some_and(|bytes| bytes != PLANTED), "{bytes:?}");
+            return;
+        }
+        let directory = tempfile::TempDir::new().unwrap();
+        let planted = directory.path().join("sysctl");
+        std::fs::write(&planted, format!("#!/bin/sh\necho {PLANTED}\n")).unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD, NAME)
+            .env("PATH", directory.path())
+            .output()
+            .expect("the child runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
