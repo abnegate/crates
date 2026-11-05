@@ -15,7 +15,13 @@
 //! the same way. [`RateLimiter`] counts requests
 //! against whatever key a caller limits by, [`Backoff`] spaces retries out, and
 //! [`is_rate_limit_error`] and [`is_hard_error`] read a failure message to
-//! decide which of the two a failure deserves.
+//! decide which of the two a failure deserves. [`contains_standalone_status`]
+//! finds a status code in that message only where no ASCII letter or digit
+//! touches it, so `14290` holds no `429` but `request_404_id` holds a `404`,
+//! and not directly after `":` or `": ` as a JSON object value, even one that
+//! is a status. [`RetryAfter`] reads how long a server asked to be left alone,
+//! from a `Retry-After` header or a failure message, and leaves capping that
+//! wait to the caller.
 //!
 //! ```
 //! use abnegate_http::{Backoff, Error, is_rate_limit_error, validate_public_url};
@@ -43,6 +49,7 @@ mod limit;
 pub mod metadata;
 mod public;
 mod response;
+mod retry_after;
 #[cfg(test)]
 mod test_support;
 mod transport;
@@ -50,6 +57,7 @@ mod url;
 
 pub use crate::backoff::Backoff;
 pub use crate::body::read_capped;
+pub use crate::classify::contains_standalone_status;
 pub use crate::classify::is_hard_error;
 pub use crate::classify::is_rate_limit_error;
 pub use crate::client::HttpClient;
@@ -65,6 +73,7 @@ pub use crate::public::TargetPolicy;
 pub use crate::public::public_client;
 pub use crate::public::public_client_builder;
 pub use crate::response::HttpResponse;
+pub use crate::retry_after::RetryAfter;
 pub use crate::transport::ReqwestHttpClient;
 pub use crate::url::validate_public_url;
 

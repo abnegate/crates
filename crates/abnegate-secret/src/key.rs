@@ -1,3 +1,6 @@
+#[cfg(feature = "derivation")]
+mod derivation;
+
 use std::env;
 use std::ffi::OsString;
 use std::fmt;
@@ -19,6 +22,9 @@ use zeroize::Zeroizing;
 use crate::error::Error;
 use crate::random;
 use crate::redact::REDACTED;
+
+#[cfg(feature = "derivation")]
+pub use crate::key::derivation::KeyDerivation;
 
 pub(crate) const KEY_BYTES: usize = 32;
 

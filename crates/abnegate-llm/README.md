@@ -7,19 +7,22 @@ streaming or not. `CompletionProvider` is the contract a source of completions
 satisfies, and `Router` satisfies it over a set of providers, so a consumer never
 learns whether it is talking to one model, an A/B split, or a fallback chain.
 `modality` holds one trait per modality (text, image, audio, voice, video, 3D
-model, embedding and transcription) with the vendor-native Anthropic, Gemini,
-OpenAI and local fastembed clients behind their features; `cost` picks a model
-for a task under a `CostStrategy`, `hardware` says what a machine can run
-locally, and `catalog` browses the model catalogues those choices are made from.
+model, embedding and transcription) with the vendor-native Anthropic, Gemini
+and OpenAI clients, and the Ollama embedding, OpenAI-compatible embedding and
+local fastembed clients, behind their features; `cost` picks a model for a task
+under a `CostStrategy`, `hardware` says what a machine can run locally, and
+`catalog` browses the model catalogues those choices are made from.
 
 ## Features
 
 - `anthropic`: the Anthropic messages client behind `TextProvider`.
 - `google`: the Gemini client behind `TextProvider`.
 - `openai`: the OpenAI client behind the text, image, embedding and transcription traits.
+- `openai-compatible`: `OpenAiCompatibleEmbeddingProvider`, any OpenAI-compatible embeddings endpoint (LiteLLM, vLLM, Ollama's `/v1`, a gateway) behind `EmbeddingProvider`.
 - `fastembed`: local ONNX embeddings behind `EmbeddingProvider`.
+- `ollama`: an Ollama server's native `/api/embeddings` API behind `EmbeddingProvider`.
 - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter catalogues through one `catalog::ModelProvider` trait.
-- `download`: resumable GGUF downloads that only splice a resume onto the same upstream file and verify a SHA-256 when one is given.
+- `download`: resumable file downloads that only splice a resume onto the same upstream file and verify a SHA-256 when one is given.
 - `testing`: `provider::testing::StubProvider`, a completion provider whose answers a test decides.
 
 ## Usage

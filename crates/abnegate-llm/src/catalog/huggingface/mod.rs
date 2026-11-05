@@ -131,6 +131,45 @@ impl HuggingFaceProvider {
         models.dedup_by(|left, right| left.name == right.name);
         Ok(refine_models(models, &options))
     }
+
+    /// A [`search`](ModelProvider::search) with the adapters published
+    /// against `bases` beside it, as one catalogue page lists them.
+    ///
+    /// An image-generation browse is the adapters alone, on one page. The
+    /// first page of a search across every medium lists the adapters ahead
+    /// of the models it found and keeps the search's cursor; a later page,
+    /// fetched with that cursor, is the search alone, so the adapters are
+    /// listed once. Any other browse is the search alone, and asks for no
+    /// adapters.
+    pub async fn search_with_adapters(
+        &self,
+        options: BrowseQuery<'_>,
+        bases: &[String],
+    ) -> Result<ModelPage, CatalogError> {
+        match options.medium {
+            ModelMediumFilter::ImageGeneration => Ok(ModelPage {
+                models: self.search_adapters(options, bases).await?,
+                next_cursor: None,
+            }),
+            ModelMediumFilter::All if has_search(&options) && options.cursor.is_none() => {
+                let (page, mut models) =
+                    futures::try_join!(self.search(options), self.search_adapters(options, bases))?;
+                models.extend(page.models);
+                Ok(ModelPage {
+                    models,
+                    next_cursor: page.next_cursor,
+                })
+            }
+            _ => self.search(options).await,
+        }
+    }
+}
+
+fn has_search(options: &BrowseQuery<'_>) -> bool {
+    options
+        .query
+        .map(str::trim)
+        .is_some_and(|query| !query.is_empty())
 }
 
 #[async_trait]
@@ -910,6 +949,11 @@ mod tests {
     use wiremock::ResponseTemplate;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
+    use wiremock::matchers::query_param;
+
+    const ADAPTER_BASE: &str = "Qwen/Qwen-Image-Edit";
+    const ADAPTER_FILTER: &str = "base_model:adapter:Qwen/Qwen-Image-Edit";
+    const GGUF_FILTER: &str = "gguf";
 
     fn browse<'a>(
         sort: ModelSort,
@@ -1859,5 +1903,186 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, CatalogError::Parse(_)), "{error:?}");
+    }
+
+    fn adapter_bases() -> Vec<String> {
+        vec![ADAPTER_BASE.to_string()]
+    }
+
+    async fn mount_adapters(server: &MockServer, expected: u64) {
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .and(query_param("filter", ADAPTER_FILTER))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": "owner/edit-lora",
+                    "modelId": "owner/edit-lora",
+                    "downloads": 40,
+                    "tags": ["lora", ADAPTER_FILTER],
+                    "siblings": [{"rfilename": "edit.safetensors", "size": 1_000_u64}]
+                }])),
+            )
+            .expect(expected)
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_gguf_page(server: &MockServer, expected: u64) {
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .and(query_param("filter", GGUF_FILTER))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{
+                        "id": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                        "modelId": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                        "downloads": 1234,
+                        "gguf": {"totalFileSize": 4_700_000_000_u64, "architecture": "qwen2"}
+                    }]))
+                    .insert_header(
+                        "link",
+                        r#"<https://huggingface.co/api/models?cursor=next123>; rel="next""#,
+                    ),
+            )
+            .expect(expected)
+            .mount(server)
+            .await;
+    }
+
+    fn names(page: &ModelPage) -> Vec<&str> {
+        page.models
+            .iter()
+            .map(|model| model.name.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn search_with_adapters_lists_only_adapters_for_image_generation() {
+        let server = MockServer::start().await;
+        mount_adapters(&server, 1).await;
+        mount_gguf_page(&server, 0).await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let page = provider
+            .search_with_adapters(
+                browse_with_medium(
+                    ModelSort::Relevance,
+                    None,
+                    ModelSizeFilter::All,
+                    ModelMediumFilter::ImageGeneration,
+                ),
+                &adapter_bases(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(names(&page), vec!["owner/edit-lora"]);
+        assert_eq!(page.next_cursor, None);
+    }
+
+    #[tokio::test]
+    async fn search_with_adapters_puts_adapters_before_a_searched_page() {
+        let server = MockServer::start().await;
+        mount_adapters(&server, 1).await;
+        mount_gguf_page(&server, 1).await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let page = provider
+            .search_with_adapters(
+                browse(ModelSort::Relevance, None, ModelSizeFilter::All).with_query("qwen"),
+                &adapter_bases(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            names(&page),
+            vec!["owner/edit-lora", "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"]
+        );
+        assert_eq!(page.next_cursor.as_deref(), Some("next123"));
+    }
+
+    #[tokio::test]
+    async fn search_with_adapters_lists_adapters_on_the_first_page_only() {
+        let server = MockServer::start().await;
+        mount_adapters(&server, 1).await;
+        mount_gguf_page(&server, 3).await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let options = browse(ModelSort::Relevance, None, ModelSizeFilter::All).with_query("qwen");
+        let first = provider
+            .search_with_adapters(options, &adapter_bases())
+            .await
+            .unwrap();
+        let cursor = first.next_cursor.as_deref().expect("a next cursor");
+        let second = provider
+            .search_with_adapters(options.with_cursor(cursor), &adapter_bases())
+            .await
+            .unwrap();
+
+        assert_eq!(names(&first)[0], "owner/edit-lora");
+        assert_eq!(
+            second,
+            provider.search(options.with_cursor(cursor)).await.unwrap()
+        );
+        assert_eq!(names(&second), vec!["Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"]);
+        assert_eq!(second.next_cursor.as_deref(), Some("next123"));
+    }
+
+    #[tokio::test]
+    async fn search_with_adapters_leaves_a_plain_browse_alone() {
+        let server = MockServer::start().await;
+        mount_adapters(&server, 0).await;
+        mount_gguf_page(&server, 4).await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        for options in [
+            browse(ModelSort::Relevance, None, ModelSizeFilter::All),
+            browse(ModelSort::Relevance, None, ModelSizeFilter::All).with_query("  "),
+        ] {
+            let page = provider
+                .search_with_adapters(options, &adapter_bases())
+                .await
+                .unwrap();
+
+            assert_eq!(page, provider.search(options).await.unwrap());
+            assert_eq!(names(&page), vec!["Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn search_with_adapters_leaves_a_text_search_alone() {
+        let server = MockServer::start().await;
+        mount_adapters(&server, 0).await;
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .and(query_param("filter", GGUF_FILTER))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                    "modelId": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                    "downloads": 1234,
+                    "gguf": {"totalFileSize": 4_700_000_000_u64, "architecture": "qwen2"}
+                }])),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let options = browse_with_medium(
+            ModelSort::Relevance,
+            None,
+            ModelSizeFilter::All,
+            ModelMediumFilter::Text,
+        )
+        .with_query("qwen");
+        let page = provider
+            .search_with_adapters(options, &adapter_bases())
+            .await
+            .unwrap();
+
+        assert_eq!(page, provider.search(options).await.unwrap());
+        assert_eq!(names(&page), vec!["Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"]);
     }
 }

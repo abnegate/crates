@@ -4,7 +4,7 @@ mod config;
 mod events;
 mod options;
 mod pool;
-mod reporter;
+pub(crate) mod reporter;
 mod trust;
 
 use std::time::Duration;

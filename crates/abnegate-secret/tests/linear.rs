@@ -6,7 +6,7 @@
 //! Run it in a release build, as CI does:
 //!
 //! ```sh
-//! cargo test -p abnegate-secret --release -- --ignored
+//! cargo test -p abnegate-secret --release --features derivation -- --ignored
 //! ```
 
 use std::hint::black_box;
@@ -85,7 +85,7 @@ const SANITIZED: &[(&str, &str)] = &[
 ];
 
 #[test]
-#[ignore = "times the scanners, so run it in a release build: cargo test -p abnegate-secret --release -- --ignored"]
+#[ignore = "times the scanners, so run it in a release build: cargo test -p abnegate-secret --release --features derivation -- --ignored"]
 fn each_scanner_takes_time_linear_in_its_input() {
     let failures = [
         failures("redact", redacting, REDACTED),

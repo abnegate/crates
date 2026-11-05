@@ -19,6 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["encryption"]
+derivation = ["encryption", "dep:argon2", "dep:sha2"]
 encryption = [
     "dep:aes-gcm",
     "dep:base64",
@@ -33,12 +34,14 @@ sqlx = ["dep:sqlx"]
 
 [dependencies]
 aes-gcm = { workspace = true, optional = true, features = ["zeroize"] }
+argon2 = { workspace = true, optional = true, features = ["zeroize"] }
 base64 = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true, features = ["std"] }
 hex = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true, optional = true, features = ["zeroize"] }
 sqlx = { workspace = true, optional = true }
 subtle = { workspace = true }
 thiserror = { workspace = true, optional = true }

@@ -10,7 +10,7 @@ const HEXADECIMAL_RADIX: u32 = 16;
 ///
 /// HuggingFace publishes one for every LFS file as its `oid`, so a caller that
 /// has the repository listing can hand it to
-/// [`download_gguf`](crate::download::download_gguf) and have a spliced or
+/// [`fetch`](crate::download::fetch) and have a spliced or
 /// truncated file refused rather than installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Checksum([u8; DIGEST_BYTES]);

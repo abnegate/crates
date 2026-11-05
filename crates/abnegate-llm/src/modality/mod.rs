@@ -270,6 +270,31 @@ mod tests {
         }
     }
 
+    struct Tokens(u32);
+
+    #[async_trait]
+    impl EmbeddingProvider for Tokens {
+        fn name(&self) -> &str {
+            "tokens"
+        }
+
+        fn dimensions(&self) -> u32 {
+            0
+        }
+
+        fn maximum_input_tokens(&self) -> u32 {
+            self.0
+        }
+
+        async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, ProviderError> {
+            Err(ProviderError::unsupported("embed"))
+        }
+
+        async fn embed_single(&self, _text: &str) -> Result<Vec<f32>, ProviderError> {
+            Err(ProviderError::unsupported("embed_single"))
+        }
+    }
+
     #[async_trait]
     impl TranscriptionProvider for Everything {
         fn name(&self) -> &str {
@@ -303,6 +328,37 @@ mod tests {
         let longest: Duration = audio.maximum_duration();
 
         assert_eq!(longest, LONGEST_CLIP);
+    }
+
+    #[test]
+    fn an_embedding_provider_reports_its_name_as_its_model_by_default() {
+        let embedding: Box<dyn EmbeddingProvider> = Box::new(Everything);
+
+        assert_eq!(embedding.model(), "everything");
+    }
+
+    #[test]
+    fn an_embedding_provider_allows_512_input_tokens_by_default() {
+        let embedding: Box<dyn EmbeddingProvider> = Box::new(Everything);
+
+        assert_eq!(embedding.maximum_input_tokens(), 512);
+    }
+
+    #[test]
+    fn a_character_budget_is_one_and_a_half_characters_per_token() {
+        assert_eq!(Tokens(1024).maximum_input_characters(), 1536);
+    }
+
+    #[test]
+    fn a_character_budget_never_drops_below_512() {
+        assert_eq!(Tokens(0).maximum_input_characters(), 512);
+        assert_eq!(Tokens(128).maximum_input_characters(), 512);
+    }
+
+    #[test]
+    fn a_character_budget_never_exceeds_3000() {
+        assert_eq!(Tokens(8192).maximum_input_characters(), 3000);
+        assert_eq!(Tokens(u32::MAX).maximum_input_characters(), 3000);
     }
 
     #[cfg(feature = "openai")]
