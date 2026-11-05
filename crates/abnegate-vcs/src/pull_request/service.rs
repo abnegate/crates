@@ -42,6 +42,7 @@ mod branches;
 mod checks;
 mod contents;
 mod conversation;
+mod deployments;
 #[cfg(test)]
 mod fixtures;
 mod graphql;
@@ -167,6 +168,7 @@ const GIT_SUFFIX: &str = ".git";
 /// - Actions: [`Self::list_workflow_runs`], [`Self::fetch_workflow_job`] and
 ///   [`Self::fetch_job_log`].
 /// - Releases: [`Self::list_releases`] and [`Self::fetch_release`].
+/// - Deployments: [`Self::list_deployments`].
 ///
 /// Review threads, resolving one, an administrator's merge, auto-merge,
 /// drafts and a repository's merge settings go to GitHub's GraphQL API;
