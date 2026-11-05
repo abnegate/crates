@@ -31,8 +31,10 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio::process::Child;
 use tokio::process::Command;
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -375,13 +377,15 @@ impl GitService {
         #[cfg(unix)]
         command.process_group(0);
         command.kill_on_drop(true);
-        let mut child = command.spawn()?;
+        let child = command.spawn()?;
         #[cfg(unix)]
-        let mut group = Group::new(nix::unistd::Pid::from_raw(
-            child
-                .id()
-                .ok_or_else(|| std::io::Error::other("Git process has no ID"))? as i32,
-        ));
+        let mut group = Self::grouped(child)?;
+        #[cfg(unix)]
+        let child = group.leader();
+        #[cfg(not(unix))]
+        let mut child = child;
+        #[cfg(not(unix))]
+        let child = &mut child;
         let stdin = child.stdin.take();
         let feeding = async {
             if let (Some(mut stdin), Some(input)) = (stdin, input) {
@@ -390,7 +394,7 @@ impl GitService {
             Ok::<(), std::io::Error>(())
         };
         let (fed, output) = tokio::time::timeout(self.timeout, async {
-            tokio::join!(feeding, child.wait_with_output())
+            tokio::join!(feeding, Self::collected(child))
         })
         .await
         .map_err(|_| GitError::TimedOut)?;
@@ -416,13 +420,15 @@ impl GitService {
         #[cfg(unix)]
         command.process_group(0);
         command.kill_on_drop(true).stdout(Stdio::piped());
-        let mut child = command.spawn()?;
+        let child = command.spawn()?;
         #[cfg(unix)]
-        let mut group = Group::new(nix::unistd::Pid::from_raw(
-            child
-                .id()
-                .ok_or_else(|| std::io::Error::other("Git process has no ID"))? as i32,
-        ));
+        let mut group = Self::grouped(child)?;
+        #[cfg(unix)]
+        let child = group.leader();
+        #[cfg(not(unix))]
+        let mut child = child;
+        #[cfg(not(unix))]
+        let child = &mut child;
         let mut stdout = child
             .stdout
             .take()
@@ -461,6 +467,38 @@ impl GitService {
             Ok(Err(error)) => Err(error.into()),
             Err(_) => Err(GitError::TimedOut),
         }
+    }
+
+    /// The process group `child` was started as the first process of.
+    #[cfg(unix)]
+    fn grouped(child: Child) -> std::io::Result<Group<Child>> {
+        let id = child
+            .id()
+            .ok_or_else(|| std::io::Error::other("Git process has no ID"))?;
+        Ok(Group::new(nix::unistd::Pid::from_raw(id as i32), child))
+    }
+
+    /// Everything `child` writes to its standard output and error, read
+    /// while it runs, and how it exited.
+    async fn collected(child: &mut Child) -> std::io::Result<Output> {
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let (status, stdout, stderr) =
+            tokio::try_join!(child.wait(), Self::drained(stdout), Self::drained(stderr))?;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+
+    /// Everything `pipe` holds until it is closed; nothing when there is none.
+    async fn drained(pipe: Option<impl AsyncRead + Unpin>) -> std::io::Result<Vec<u8>> {
+        let mut read = Vec::new();
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut read).await?;
+        }
+        Ok(read)
     }
 
     async fn finish(&self, command: &mut Command) -> GitResult<()> {

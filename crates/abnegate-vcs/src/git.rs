@@ -56,6 +56,10 @@ mod error;
 #[cfg(unix)]
 pub(crate) mod group;
 mod hardening;
+#[cfg(unix)]
+pub(crate) mod leader;
+#[cfg(unix)]
+mod pursuit;
 mod remote_head;
 mod service;
 mod worktree_entry;
