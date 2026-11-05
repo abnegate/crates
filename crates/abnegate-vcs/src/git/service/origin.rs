@@ -1,6 +1,6 @@
 use super::*;
+use std::fs::File;
 use std::io::ErrorKind;
-use std::io::Write;
 
 /// Lists every value `remote.origin.url` holds in the configuration on
 /// standard input, each ended by a NUL, following no include it names.
@@ -24,26 +24,28 @@ impl GitService {
     /// is followed, no repository around it or named by the environment is
     /// consulted, and the host's system and global configuration are ignored.
     ///
-    /// A file that cannot be read is refused with [`GitError::Io`], one git
-    /// cannot parse with [`GitError::CommandFailed`], and an `origin` with
-    /// more than one address, which fetches from the first and pushes to
-    /// every one, with [`GitError::UnsafeConfig`].
+    /// A link is followed. What is not a regular file once opened, such as a
+    /// directory, a named pipe or a device, and a file that cannot be read,
+    /// are refused with [`GitError::Io`], one git cannot parse with
+    /// [`GitError::CommandFailed`], and an `origin` with more than one
+    /// address, which fetches from the first and pushes to every one, with
+    /// [`GitError::UnsafeConfig`].
     ///
     /// It blocks the calling thread until git exits, and is not bounded by
     /// [`Self::with_timeout`]: git reaches no network and reads only what it
     /// is handed. A caller that can await runs it on the blocking pool.
     pub fn configured_origin(file: &Path) -> GitResult<Option<String>> {
-        let configuration = std::fs::read(file)?;
+        let configuration = regular(file)?;
         let mut command = std::process::Command::new("git");
         harden(&mut command);
-        command
+        let output = command
             .env("GIT_ALLOW_PROTOCOL", "")
             .current_dir("/")
             .args(ORIGIN_LISTING)
-            .stdin(Stdio::piped())
+            .stdin(configuration)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = fed_blocking(&mut command, &configuration)?;
+            .stderr(Stdio::piped())
+            .output()?;
         match output.status.code() {
             Some(0) => sole_origin(&output.stdout).map(Some),
             Some(NOT_SET) => Ok(None),
@@ -52,21 +54,33 @@ impl GitService {
     }
 }
 
-/// Run `command` to its exit with `input` as the whole of its standard input.
-/// Git stops reading at a line it cannot parse, so a write it no longer
-/// reads is left to its exit status to report.
-fn fed_blocking(command: &mut std::process::Command, input: &[u8]) -> GitResult<Output> {
-    let mut child = command.spawn()?;
-    let written = child
-        .stdin
-        .take()
-        .ok_or_else(|| std::io::Error::other("Git process has no standard input"))
-        .and_then(|mut stdin| stdin.write_all(input));
-    let output = child.wait_with_output()?;
-    match written {
-        Err(error) if error.kind() != ErrorKind::BrokenPipe => Err(error.into()),
-        _ => Ok(output),
+/// The file at `file`, opened for git to read as its standard input, or a
+/// refusal when it is not a regular file. It is opened without waiting for a
+/// writer, so a named pipe is refused rather than waited on, and checked once
+/// open, so what is checked is what git reads.
+fn regular(file: &Path) -> std::io::Result<File> {
+    let opened = opened(file)?;
+    match opened.metadata()?.is_file() {
+        true => Ok(opened),
+        false => Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "The git configuration is not a regular file",
+        )),
     }
+}
+
+#[cfg(unix)]
+fn opened(file: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+        .open(file)
+}
+
+#[cfg(not(unix))]
+fn opened(file: &Path) -> std::io::Result<File> {
+    File::open(file)
 }
 
 /// The one address an [`ORIGIN_LISTING`] holds.
@@ -217,6 +231,53 @@ mod tests {
             matches!(&refusal, Err(GitError::Io(error)) if error.kind() == ErrorKind::PermissionDenied),
             "{refusal:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_device_is_refused_rather_than_read_as_a_configuration() {
+        let directory = TempDir::new().unwrap();
+        let file = directory.path().join("config");
+        std::os::unix::fs::symlink("/dev/null", &file).unwrap();
+
+        let refusal = GitService::configured_origin(&file);
+
+        assert!(
+            matches!(&refusal, Err(GitError::Io(error)) if error.kind() == ErrorKind::InvalidInput),
+            "{refusal:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_is_refused_rather_than_waited_on() {
+        let directory = TempDir::new().unwrap();
+        let file = directory.path().join("config");
+        nix::unistd::mkfifo(&file, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || sender.send(GitService::configured_origin(&file)));
+        let refusal = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a named pipe was waited on");
+
+        assert!(
+            matches!(&refusal, Err(GitError::Io(error)) if error.kind() == ErrorKind::InvalidInput),
+            "{refusal:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_configuration_is_followed() {
+        let directory = TempDir::new().unwrap();
+        let target = configuration(&directory, "target", &origin(ADDRESS));
+        let file = directory.path().join("config");
+        std::os::unix::fs::symlink(&target, &file).unwrap();
+
+        let read = GitService::configured_origin(&file).unwrap();
+
+        assert_eq!(read.as_deref(), Some(ADDRESS));
     }
 
     /// Every way the environment can hand git configuration or a repository
