@@ -29,6 +29,15 @@ const PATH: &str = "/api/embeddings";
 const SHORT_PROMPT_CHARACTERS: usize = 2000;
 const DEFAULT_DIMENSIONS: u32 = 768;
 const QWEN3_EMBEDDING: &str = "qwen3-embedding";
+const QWEN3_EMBEDDING_DIMENSIONS: u32 = 1024;
+const QWEN3_EMBEDDING_MAXIMUM_INPUT_TOKENS: u32 = 8192;
+const NOMIC_DIMENSIONS: u32 = 768;
+const NOMIC_MAXIMUM_INPUT_TOKENS: u32 = 8192;
+const MXBAI_DIMENSIONS: u32 = 1024;
+const SNOWFLAKE_ARCTIC_DIMENSIONS: u32 = 1024;
+const BGE_SMALL_DIMENSIONS: u32 = 384;
+const MINILM_DIMENSIONS: u32 = 384;
+const MINILM_MAXIMUM_INPUT_TOKENS: u32 = 256;
 const SECONDS_PER_MINUTE: u64 = 60;
 const NANOSECONDS_PER_MILLISECOND: u32 = 1_000_000;
 
@@ -195,12 +204,14 @@ fn model_base(model: &str) -> String {
 fn model_dimensions(model: &str) -> u32 {
     let base = model_base(model);
     if base.contains(QWEN3_EMBEDDING) {
-        return 1024;
+        return QWEN3_EMBEDDING_DIMENSIONS;
     }
     match base.as_str() {
-        "nomic-embed-text" | "nomic-embed-text-v1.5" | "nomic-embed-text-v1" => 768,
-        "mxbai-embed-large" | "snowflake-arctic-embed" => 1024,
-        "bge-small-en" | "bge-small-en-v1.5" | "all-minilm" | "all-minilm-l6-v2" => 384,
+        "nomic-embed-text" | "nomic-embed-text-v1.5" | "nomic-embed-text-v1" => NOMIC_DIMENSIONS,
+        "mxbai-embed-large" => MXBAI_DIMENSIONS,
+        "snowflake-arctic-embed" => SNOWFLAKE_ARCTIC_DIMENSIONS,
+        "bge-small-en" | "bge-small-en-v1.5" => BGE_SMALL_DIMENSIONS,
+        "all-minilm" | "all-minilm-l6-v2" => MINILM_DIMENSIONS,
         _ => DEFAULT_DIMENSIONS,
     }
 }
@@ -208,11 +219,13 @@ fn model_dimensions(model: &str) -> u32 {
 fn model_maximum_input_tokens(model: &str) -> u32 {
     let base = model_base(model);
     if base.starts_with(QWEN3_EMBEDDING) {
-        return 8192;
+        return QWEN3_EMBEDDING_MAXIMUM_INPUT_TOKENS;
     }
     match base.as_str() {
-        "nomic-embed-text" | "nomic-embed-text-v1.5" | "nomic-embed-text-v1" => 8192,
-        "all-minilm" | "all-minilm-l6-v2" => 256,
+        "nomic-embed-text" | "nomic-embed-text-v1.5" | "nomic-embed-text-v1" => {
+            NOMIC_MAXIMUM_INPUT_TOKENS
+        }
+        "all-minilm" | "all-minilm-l6-v2" => MINILM_MAXIMUM_INPUT_TOKENS,
         _ => DEFAULT_MAXIMUM_INPUT_TOKENS,
     }
 }
