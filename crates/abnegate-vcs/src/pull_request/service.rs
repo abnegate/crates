@@ -71,6 +71,10 @@ pub(super) const ACCEPT: &str = "application/vnd.github+json";
 /// The media type that asks GitHub for a file's or a blob's bytes as they are.
 pub(super) const RAW: &str = "application/vnd.github.raw+json";
 
+/// The header that names the version of GitHub's REST API a request was
+/// written against.
+const API_VERSION: &str = "x-github-api-version";
+
 /// Rows GitHub returns per page; its maximum for these collections.
 const PAGE_SIZE: usize = 100;
 
@@ -208,6 +212,9 @@ const GIT_SUFFIX: &str = ".git";
 /// again. One that outlasts them is [`PullRequestError::Http`], whose error
 /// says it timed out.
 ///
+/// No request names a version of GitHub's REST API, so GitHub answers in its
+/// default one, until [`Self::with_api_version`] names one for every request.
+///
 /// A status that says what it means on its own is reported as that: 401 as
 /// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
 /// rate limit as [`PullRequestError::RateLimited`], any other 403 as
@@ -247,6 +254,7 @@ pub struct PullRequestService {
     writer: Client,
     origin: Origin,
     timeout: Duration,
+    api_version: Option<String>,
 }
 
 impl PullRequestService {
@@ -295,7 +303,22 @@ impl PullRequestService {
             writer: client(https_only, timeout, Policy::none())?,
             origin,
             timeout,
+            api_version: None,
         })
+    }
+
+    /// Name `version` of GitHub's REST API, such as `2022-11-28`, in the
+    /// `X-GitHub-Api-Version` header of every request this service sends:
+    /// every read and write, every GraphQL call, and the request for a job's
+    /// log, though not the download of the log from where GitHub stores it.
+    ///
+    /// Without it no version is named, and GitHub answers in its default one.
+    /// A version that cannot be sent as a header value fails every request,
+    /// unsent, as [`PullRequestError::Http`].
+    #[must_use]
+    pub fn with_api_version(mut self, version: impl Into<String>) -> Self {
+        self.api_version = Some(version.into());
+        self
     }
 
     /// Parse the repository a URL names.
@@ -551,7 +574,8 @@ impl PullRequestService {
     }
 
     /// A request to `url` sent by `client`, carrying `token`, asking for an
-    /// answer in `accept`, and given up on after this service's timeout.
+    /// answer in `accept`, naming the API version this service was given if
+    /// any, and given up on after this service's timeout.
     fn request_on(
         &self,
         client: &Client,
@@ -560,11 +584,15 @@ impl PullRequestService {
         token: &SecretValue,
         accept: &'static str,
     ) -> RequestBuilder {
-        client
+        let request = client
             .request(method, url)
             .bearer_auth(token.expose())
             .header(header::ACCEPT, accept)
-            .timeout(self.timeout)
+            .timeout(self.timeout);
+        match &self.api_version {
+            Some(version) => request.header(API_VERSION, version.as_str()),
+            None => request,
+        }
     }
 
     /// Send `request` and read its answer as `T`, or as the refusal it is.
@@ -1023,6 +1051,7 @@ fn separates(character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::IssueReference;
     use crate::pull_request::PullRequestState;
     use crate::pull_request::ReviewTally;
     use crate::pull_request::service::fixtures::Expected;
@@ -1039,6 +1068,7 @@ mod tests {
     use wiremock::ResponseTemplate;
     use wiremock::matchers::body_partial_json;
     use wiremock::matchers::header;
+    use wiremock::matchers::header_exists;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
     use wiremock::matchers::query_param;
@@ -2223,5 +2253,99 @@ mod tests {
             .expect_err("an unauthorised read must not look like an empty pull request");
 
         assert!(matches!(failure, PullRequestError::AuthenticationFailed));
+    }
+
+    const VERSION: &str = "2026-03-10";
+
+    /// Every kind of request this service sends, each answered once: a
+    /// read, a write, a GraphQL call and the request for a job's log, and
+    /// each only when it names `version`, where one is given.
+    async fn every_kind(server: &MockServer, version: Option<&str>) {
+        let routes = [
+            (
+                "GET",
+                "/repos/acme/project",
+                serde_json::json!({ "default_branch": "main" }),
+            ),
+            (
+                "PATCH",
+                "/repos/acme/project/issues/5",
+                serde_json::json!({}),
+            ),
+            ("POST", "/graphql", serde_json::json!({ "data": {} })),
+            (
+                "GET",
+                "/repos/acme/project/actions/jobs/9/logs",
+                serde_json::json!("log"),
+            ),
+        ];
+        for (verb, route, answer) in routes {
+            let mock = Mock::given(method(verb)).and(path(route));
+            let mock = match version {
+                Some(version) => mock.and(header(API_VERSION, version)),
+                None => mock,
+            };
+            mock.respond_with(ResponseTemplate::new(200).set_body_json(answer))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+    }
+
+    /// Send one request of every kind `every_kind` answers.
+    async fn send_every_kind(service: &PullRequestService) -> PullRequestResult<()> {
+        let repository = project(service);
+        let issue = IssueReference::new(repository.clone(), NonZeroU64::new(5).unwrap());
+        service.get_default_branch(&repository, &token()).await?;
+        service.close_issue(&issue, &token()).await?;
+        service.resolve_review_thread("PRRT_1", &token()).await?;
+        service
+            .fetch_job_log(&repository, &token(), NonZeroU64::new(9).unwrap(), 64)
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_api_version_once_given_is_named_on_every_request() {
+        let server = MockServer::start().await;
+        every_kind(&server, Some(VERSION)).await;
+        let service = stand_in(&server).await.with_api_version(VERSION);
+
+        send_every_kind(&service).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn no_api_version_is_named_until_one_is_given() {
+        let server = MockServer::start().await;
+        Mock::given(header_exists(API_VERSION))
+            .respond_with(ResponseTemplate::new(500))
+            .with_priority(1)
+            .expect(0)
+            .mount(&server)
+            .await;
+        every_kind(&server, None).await;
+        let service = stand_in(&server).await;
+
+        send_every_kind(&service).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_api_version_no_header_can_carry_fails_every_request_unsent() {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server)
+            .await
+            .with_api_version("2026-03-10\r\nx: y");
+
+        let failure = service
+            .get_default_branch(&project(&service), &token())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::Http(_)), "{failure:?}");
     }
 }
