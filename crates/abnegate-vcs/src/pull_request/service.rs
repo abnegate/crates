@@ -155,8 +155,8 @@ const GIT_SUFFIX: &str = ".git";
 ///   and [`Self::fetch_reception`].
 /// - Resolving a branch, tag or commit to the commit it names:
 ///   [`Self::resolve_commit`].
-/// - Checking: [`Self::fetch_checks`], [`Self::fetch_check_runs`] and
-///   [`Self::fetch_statuses`].
+/// - Checking: [`Self::fetch_checks`], [`Self::collect_check_runs`] and
+///   [`Self::collect_statuses`].
 /// - Reviewing: [`Self::fetch_issue_comments`], [`Self::post_issue_comment`],
 ///   [`Self::fetch_reviews`], [`Self::submit_review`],
 ///   [`Self::fetch_review_threads`], [`Self::collect_review_threads`],
@@ -171,8 +171,8 @@ const GIT_SUFFIX: &str = ".git";
 ///   [`Self::delete_webhook`].
 /// - Finding and listing pull requests: [`Self::find_pull_request`],
 ///   [`Self::list_pull_requests`] and [`Self::list_files`].
-/// - Actions: [`Self::list_workflow_runs`], [`Self::fetch_workflow_job`] and
-///   [`Self::fetch_job_log`].
+/// - Actions: [`Self::collect_workflow_runs`], [`Self::fetch_workflow_job`]
+///   and [`Self::fetch_job_log`].
 /// - Releases: [`Self::list_releases`] and [`Self::fetch_release`].
 /// - Deployments: [`Self::list_deployments`].
 /// - Issues: [`Self::list_issues`], [`Self::fetch_issue`],

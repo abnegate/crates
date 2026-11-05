@@ -1,5 +1,6 @@
 use super::*;
 use crate::commit_sha::CommitSha;
+use crate::pull_request::Collected;
 use crate::pull_request::JobLog;
 use crate::pull_request::JobLogError;
 use crate::pull_request::WorkflowJob;
@@ -24,21 +25,31 @@ const SECURE_SCHEME: &str = "https";
 
 impl PullRequestService {
     /// Every workflow run in `repository` that `filter` admits, newest first,
-    /// as GitHub lists them.
+    /// as GitHub lists them, read a hundred a page until a short page, and
+    /// whether that is every one.
     ///
-    /// The runs are read a hundred a page until a short page. GitHub lists
-    /// at most 1,000 runs of any filter, so when more match, or when GitHub
-    /// counted more than it listed, the answer is
-    /// [`PullRequestError::SearchLimitReached`], never a partial list. A run
-    /// whose commit is not a full commit identifier is
-    /// [`PullRequestError::Parse`]. A run GitHub lists twice, as it may while
-    /// a run is retried during the walk, is listed twice here.
-    pub async fn list_workflow_runs(
+    /// The read stops at the tenth page, so it reaches at most 1,000 runs,
+    /// and GitHub lists at most 1,000 of any filtered listing. The read is
+    /// [`Collected::complete`] when it read every run GitHub counted, even on
+    /// a full tenth page, so exactly 1,000 counted and read is complete. It is
+    /// `false`, never an error, when GitHub counted more than were read: when
+    /// more than 1,000 match a filter, when an unfiltered listing holds more
+    /// than 1,000, or when the walk ended short of the count, as it may when
+    /// runs start while it reads. Without a count, a full tenth page is
+    /// `false` too.
+    ///
+    /// A run without a field GitHub always sends, its identifier and its
+    /// workflow's among them, or whose attempt does not fit a `u32`, is
+    /// [`PullRequestError::GitHubApi`], and one whose commit is not a full
+    /// commit identifier is [`PullRequestError::Parse`]: never a shorter list.
+    /// A run GitHub lists twice, as it may while a run is retried during the
+    /// walk, is listed twice here.
+    pub async fn collect_workflow_runs(
         &self,
         repository: &Repository,
         token: &SecretValue,
         filter: &WorkflowRunFilter,
-    ) -> PullRequestResult<Vec<WorkflowRun>> {
+    ) -> PullRequestResult<Collected<WorkflowRun>> {
         let mut url = self.origin.endpoint(&[
             "repos",
             repository.owner(),
@@ -48,23 +59,30 @@ impl PullRequestService {
         ]);
         url.query_pairs_mut().extend_pairs(filter.pairs());
 
-        let (rows, every) = walk(self, &url, token, |page: GitHubWorkflowRuns| {
-            (page.total_count, page.workflow_runs)
-        })
+        let runs = walk(
+            self,
+            &url,
+            token,
+            |page: GitHubWorkflowRuns| (page.total_count, page.workflow_runs),
+            read_as_counted,
+        )
         .await?;
-        if !every {
-            return Err(PullRequestError::SearchLimitReached);
-        }
-        rows.into_iter().map(run).collect()
+        let items = runs
+            .items
+            .into_iter()
+            .map(run)
+            .collect::<PullRequestResult<Vec<_>>>()?;
+
+        Ok(Collected::new(items, runs.complete))
     }
 
     /// The workflow job GitHub identifies by `job` in `repository`.
     ///
-    /// An answer without the job's identifier is
-    /// [`PullRequestError::GitHubApi`], and one whose commit is not a full
-    /// commit identifier is [`PullRequestError::Parse`]. Whether the job
-    /// belongs to the run, commit or pull request a caller has in mind is the
-    /// caller's to check.
+    /// An answer without a field GitHub always sends, the job's identifier,
+    /// run, name, status and commit, is [`PullRequestError::GitHubApi`], and
+    /// one whose commit is not a full commit identifier is
+    /// [`PullRequestError::Parse`]. Whether the job belongs to the run, commit
+    /// or pull request a caller has in mind is the caller's to check.
     pub async fn fetch_workflow_job(
         &self,
         repository: &Repository,
@@ -91,21 +109,28 @@ impl PullRequestService {
     /// The first `limit` bytes of the log of the workflow job `job` in
     /// `repository`, and whether the log went on past them.
     ///
+    /// `limit` is the caller's bound on the buffer it is handed: however long
+    /// the log, no more than `limit` bytes of it are held.
+    ///
     /// GitHub answers the request for a log, which carries the token, with
     /// the log itself or with a redirect to where it stores it, under an
     /// address it signs. That redirect is followed once, and without the
-    /// token, only to this service's own origin or over HTTPS to a host
-    /// GitHub stores logs on or one under it, and never to an address that
-    /// carries credentials; anywhere else is
+    /// token, only to this service's own origin or over HTTPS, on its default
+    /// port, to a host GitHub stores logs on or one under it, and never to an
+    /// address that carries credentials; anywhere else is
     /// [`JobLogError::UnexpectedHost`], and a redirect that names nowhere is
-    /// [`JobLogError::Undirected`]. Both requests together spend the one
-    /// timeout a request is given.
+    /// [`JobLogError::Undirected`]. A redirect within the origin drops the
+    /// token too, so the log of a private repository that was renamed, which
+    /// GitHub redirects to the new name, is [`JobLogError::Refused`] with
+    /// 404. Both requests together spend the one timeout a request is given.
     ///
     /// A refusal of the request for the log is reported as any refusal of
     /// this service's is. Where the log is stored, a status other than a
-    /// success is [`JobLogError::Refused`], a download that could not be
-    /// sent or ran out of time is [`JobLogError::Unreachable`], and a log
-    /// that stops arriving part way through, from either, is
+    /// success, a redirect included, which is not followed, is
+    /// [`JobLogError::Refused`], and a download that could not be sent, or
+    /// whose time ran out before the store answered, is
+    /// [`JobLogError::Unreachable`]. A log that stops arriving part way
+    /// through, from either, or whose time runs out while it arrives, is
     /// [`JobLogError::Interrupted`]: never a shorter log. No error carries
     /// the signed address.
     pub async fn fetch_job_log(
@@ -144,6 +169,18 @@ impl PullRequestService {
         }
 
         let target = destination(&self.origin, &response)?;
+        self.stored(target, deadline, limit).await
+    }
+
+    /// The first `limit` bytes of the log stored at `target`, asked for
+    /// without the token and with what is left of the time before
+    /// `deadline`; none left is [`JobLogError::Unreachable`], unsent.
+    async fn stored(
+        &self,
+        target: Url,
+        deadline: Option<Instant>,
+        limit: usize,
+    ) -> PullRequestResult<JobLog> {
         let left = match deadline {
             Some(deadline) => remaining(deadline).ok_or(JobLogError::Unreachable)?,
             None => self.timeout,
@@ -162,29 +199,34 @@ impl PullRequestService {
     }
 }
 
+/// Whether a walk that read `read` rows reached every one GitHub `counted`:
+/// exactly that many, or more on a walk that `ended` on a short page. Without
+/// a count, only a walk that ended on a short page did.
+fn read_as_counted(read: u64, counted: Option<u64>, ended: bool) -> bool {
+    match counted {
+        Some(counted) => read == counted || (ended && read > counted),
+        None => ended,
+    }
+}
+
 /// A workflow run GitHub listed, its commit parsed.
 fn run(row: GitHubWorkflowRun) -> PullRequestResult<WorkflowRun> {
     Ok(WorkflowRun {
         id: row.id,
         workflow_id: row.workflow_id,
-        attempt: row
-            .run_attempt
-            .and_then(|attempt| u32::try_from(attempt).ok()),
+        attempt: row.run_attempt,
         name: row.name,
         path: row.path,
         event: row.event,
         status: row.status,
         conclusion: row.conclusion,
         head_branch: row.head_branch,
-        head_sha: row.head_sha.as_deref().map(CommitSha::parse).transpose()?,
+        head_sha: CommitSha::parse(&row.head_sha)?,
         created_at: row.created_at,
         started_at: row.run_started_at,
         updated_at: row.updated_at,
         url: row.html_url,
-        repository: row
-            .repository
-            .map(|repository| repository.full_name)
-            .unwrap_or_default(),
+        repository: row.repository.full_name,
     })
 }
 
@@ -196,7 +238,7 @@ fn workflow_job(job: GitHubWorkflowJob) -> PullRequestResult<WorkflowJob> {
         name: job.name,
         status: job.status,
         conclusion: job.conclusion,
-        head_sha: job.head_sha.as_deref().map(CommitSha::parse).transpose()?,
+        head_sha: CommitSha::parse(&job.head_sha)?,
         url: job.html_url,
         started_at: job.started_at,
         completed_at: job.completed_at,
@@ -224,8 +266,8 @@ fn destination(origin: &Origin, response: &Response) -> Result<Url, JobLogError>
 }
 
 /// `location`, resolved against `from`, when it is on `origin` or is an
-/// HTTPS address on a host GitHub stores logs on, and carries no
-/// credentials.
+/// HTTPS address, on its default port, on a host GitHub stores logs on, and
+/// carries no credentials.
 fn followed(origin: &Origin, from: &Url, location: &str) -> Result<Url, JobLogError> {
     let target = from
         .join(location)
@@ -237,10 +279,11 @@ fn followed(origin: &Origin, from: &Url, location: &str) -> Result<Url, JobLogEr
     }
 }
 
-/// Whether `target` is an HTTPS address on one of [`LOG_HOSTS`] or a host
-/// under one.
+/// Whether `target` is an HTTPS address, on HTTPS's default port, on one of
+/// [`LOG_HOSTS`] or a host under one.
 fn stores_logs(target: &Url) -> bool {
     target.scheme() == SECURE_SCHEME
+        && target.port().is_none()
         && target.host_str().is_some_and(|host| {
             LOG_HOSTS.iter().any(|stored| {
                 host.strip_suffix(stored)
@@ -252,8 +295,10 @@ fn stores_logs(target: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::branch_name::BranchName;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::Value;
@@ -316,11 +361,94 @@ mod tests {
             .await;
     }
 
+    /// A run numbered `id` of one workflow at `sha`, with every field GitHub
+    /// always sends and none it may leave out.
+    fn run_row(id: usize, sha: &CommitSha) -> Value {
+        json!({
+            "id": id,
+            "workflow_id": 1,
+            "path": ".github/workflows/ci.yml",
+            "event": "push",
+            "head_sha": sha.as_str(),
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:09:00Z",
+            "html_url": format!("https://github.com/acme/project/actions/runs/{id}"),
+            "repository": { "full_name": "acme/project" },
+        })
+    }
+
     /// `count` runs of one workflow at one commit, each with its own id.
     fn runs(count: usize, sha: &CommitSha) -> Vec<Value> {
-        (1..=count)
-            .map(|id| json!({ "id": id, "workflow_id": 1, "head_sha": sha.as_str() }))
-            .collect()
+        (1..=count).map(|id| run_row(id, sha)).collect()
+    }
+
+    /// A job with every field GitHub always sends and none it may leave out.
+    fn job_row(sha: &CommitSha) -> Value {
+        json!({
+            "id": 9,
+            "run_id": 30,
+            "name": "test",
+            "status": "completed",
+            "head_sha": sha.as_str(),
+        })
+    }
+
+    async fn collect(
+        service: &PullRequestService,
+        filter: &WorkflowRunFilter,
+    ) -> PullRequestResult<Collected<WorkflowRun>> {
+        service
+            .collect_workflow_runs(&project(service), &token(), filter)
+            .await
+    }
+
+    /// What listing a page of one well-formed run and `row` comes to.
+    async fn listing(row: Value) -> PullRequestResult<Collected<WorkflowRun>> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(RUNS))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "total_count": 2,
+                "workflow_runs": [run_row(1, &commit('a')), row],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        collect(&stand_in(&server).await, &WorkflowRunFilter::new()).await
+    }
+
+    /// What reading a job GitHub answers with `body` comes to.
+    async fn reading(body: Value) -> PullRequestResult<WorkflowJob> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(JOB))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+        service
+            .fetch_workflow_job(&project(&service), &token(), job())
+            .await
+    }
+
+    /// Whether `read` is the error an answer this crate cannot read is.
+    fn unreadable<T: std::fmt::Debug>(read: &PullRequestResult<T>) -> bool {
+        matches!(read, Err(PullRequestError::GitHubApi(said)) if said == UNREADABLE)
+    }
+
+    /// `row` without `field`.
+    fn without(mut row: Value, field: &str) -> Value {
+        row.as_object_mut()
+            .expect("a row is an object")
+            .remove(field);
+        row
+    }
+
+    /// `row` with `field` set to `value`.
+    fn with(mut row: Value, field: &str, value: Value) -> Value {
+        row[field] = value;
+        row
     }
 
     /// A stand-in server on a loopback port that answers each request with
@@ -438,6 +566,7 @@ mod tests {
             "https://objects.githubusercontent.com/logs/9",
             "https://blob.core.windows.net/logs/9",
             "https://api.github.com/storage/9",
+            "https://objects.githubusercontent.com:443/logs/9",
             "/storage/9",
         ] {
             assert!(
@@ -453,6 +582,8 @@ mod tests {
             "https://user@api.github.com/storage/9",
             "http://api.github.com/storage/9",
             "https://evil.test/logs/9",
+            "https://objects.githubusercontent.com:8443/logs/9",
+            "https://x.blob.core.windows.net:444/logs/9",
         ] {
             assert_eq!(
                 followed(&origin, &from, refused),
@@ -591,31 +722,128 @@ mod tests {
         assert!(!format!("{refused:?}").contains("sig="), "{refused:?}");
     }
 
+    /// The one timeout both hops of a log read share.
+    const SHARED_TIMEOUT: Duration = Duration::from_secs(4);
+
+    /// How long the first hop takes to redirect: well within the timeout.
+    const FIRST_HOP_DELAY: Duration = Duration::from_secs(2);
+
+    /// How long the store takes to answer: within a fresh timeout, past what
+    /// the first hop left of the shared one.
+    const STORE_DELAY: Duration = Duration::from_secs(3);
+
     #[tokio::test]
-    async fn more_runs_than_github_lists_are_refused_whole() {
+    async fn both_hops_of_a_log_spend_one_timeout() {
         let server = MockServer::start().await;
-        let sha = commit('0');
         Mock::given(method("GET"))
-            .and(path(RUNS))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                json!({ "total_count": 1001, "workflow_runs": runs(PAGE_SIZE, &sha) }),
-            ))
-            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
+            .and(path(JOB_LOG))
+            .respond_with(redirect(SIGNED_LOG).set_delay(FIRST_HOP_DELAY))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(STORED_LOG))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("step one\n")
+                    .set_delay(STORE_DELAY),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::addressing(
+            Origin::standing_in_for("github.com", &server.uri()).unwrap(),
+            false,
+            SHARED_TIMEOUT,
+        )
+        .unwrap();
+
+        let refused = log(&service, LIMIT).await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(PullRequestError::JobLog(JobLogError::Unreachable))
+            ),
+            "the store is given only what the first hop left: {refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_log_whose_time_ran_out_before_the_store_is_never_asked_for() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(STORED_LOG))
+            .respond_with(ResponseTemplate::new(200).set_body_string("step one\n"))
+            .expect(0)
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
+        let spent = Instant::now();
+        let target = Url::parse(&format!("{}{SIGNED_LOG}", server.uri())).unwrap();
 
-        let refused = service
-            .list_workflow_runs(
-                &project(&service),
-                &token(),
-                &WorkflowRunFilter::new().with_head_sha(sha),
-            )
-            .await;
+        let refused = service.stored(target, Some(spent), LIMIT).await;
 
         assert!(
-            matches!(refused, Err(PullRequestError::SearchLimitReached)),
+            matches!(
+                refused,
+                Err(PullRequestError::JobLog(JobLogError::Unreachable))
+            ),
             "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_that_redirects_is_refused_and_not_followed() {
+        let server = MockServer::start().await;
+        redirecting(&server, SIGNED_LOG).await;
+        storing(&server, redirect("/storage/elsewhere")).await;
+        Mock::given(method("GET"))
+            .and(path("/storage/elsewhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("step one\n"))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let refused = log(&stand_in(&server).await, LIMIT).await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(PullRequestError::JobLog(JobLogError::Refused(302)))
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_renamed_private_repository_s_log_is_refused_as_not_found() {
+        let server = MockServer::start().await;
+        let renamed = "/repos/acme/renamed/actions/jobs/9/logs";
+        redirecting(&server, renamed).await;
+        Mock::given(method("GET"))
+            .and(path(renamed))
+            .and(header_exists("authorization"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("step one\n"))
+            .with_priority(1)
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(renamed))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let refused = log(&stand_in(&server).await, LIMIT).await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(PullRequestError::JobLog(JobLogError::Refused(404)))
+            ),
+            "the token is not carried on, even within the origin: {refused:?}"
         );
     }
 
@@ -626,12 +854,14 @@ mod tests {
         for (page, count) in [("1", PAGE_SIZE), ("2", 3)] {
             Mock::given(method("GET"))
                 .and(path(RUNS))
-                .and(query_param("head_sha", sha.as_str()))
-                .and(query_param("event", "release"))
-                .and(query_param("branch", "main"))
-                .and(query_param("created", ">=2026-01-01"))
-                .and(query_param("per_page", "100"))
-                .and(query_param("page", page))
+                .and(query_is(&[
+                    ("head_sha", sha.as_str()),
+                    ("event", "release"),
+                    ("branch", "main"),
+                    ("created", ">=2026-01-01"),
+                    ("per_page", "100"),
+                    ("page", page),
+                ]))
                 .respond_with(ResponseTemplate::new(200).set_body_json(
                     json!({ "total_count": PAGE_SIZE + 3, "workflow_runs": runs(count, &sha) }),
                 ))
@@ -643,16 +873,154 @@ mod tests {
         let filter = WorkflowRunFilter::new()
             .with_head_sha(sha.clone())
             .with_event("release")
-            .with_branch("main")
+            .with_branch(BranchName::parse("main").unwrap())
             .with_created(">=2026-01-01");
 
-        let listed = service
-            .list_workflow_runs(&project(&service), &token(), &filter)
+        let listed = collect(&service, &filter).await.unwrap();
+
+        assert_eq!(listed.items.len(), PAGE_SIZE + 3);
+        assert!(listed.items.iter().all(|run| run.head_sha == sha));
+        assert!(listed.complete, "every counted run was read");
+    }
+
+    #[tokio::test]
+    async fn an_unfiltered_listing_asks_for_nothing_but_its_page() {
+        let server = MockServer::start().await;
+        let sha = commit('a');
+        Mock::given(method("GET"))
+            .and(path(RUNS))
+            .and(query_is(&[("per_page", "100"), ("page", "1")]))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "total_count": 1, "workflow_runs": runs(1, &sha) })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let listed = collect(&stand_in(&server).await, &WorkflowRunFilter::new())
             .await
             .unwrap();
 
-        assert_eq!(listed.len(), PAGE_SIZE + 3);
-        assert!(listed.iter().all(|run| run.head_sha.as_ref() == Some(&sha)));
+        assert_eq!(
+            listed,
+            Collected::new(
+                vec![WorkflowRun::new(
+                    NonZeroU64::new(1).unwrap(),
+                    NonZeroU64::new(1).unwrap(),
+                    ".github/workflows/ci.yml",
+                    "push",
+                    sha,
+                    "2026-01-01T00:00:00Z",
+                    "2026-01-01T00:09:00Z",
+                    "https://github.com/acme/project/actions/runs/1",
+                    "acme/project",
+                )],
+                true,
+            )
+        );
+    }
+
+    /// What walking ten full pages of runs, each saying GitHub counted
+    /// `counted`, comes to, filtered by `filter`.
+    async fn capped(counted: Option<usize>, filter: &WorkflowRunFilter) -> Collected<WorkflowRun> {
+        let server = MockServer::start().await;
+        let sha = commit('0');
+        let mut page = json!({ "workflow_runs": runs(PAGE_SIZE, &sha) });
+        if let Some(counted) = counted {
+            page["total_count"] = json!(counted);
+        }
+        Mock::given(method("GET"))
+            .and(path(RUNS))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page))
+            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
+            .mount(&server)
+            .await;
+        collect(&stand_in(&server).await, filter).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn exactly_as_many_runs_as_github_counted_are_complete_on_a_full_tenth_page() {
+        let filter = WorkflowRunFilter::new().with_head_sha(commit('0'));
+
+        let listed = capped(Some(PAGE_SIZE * MAXIMUM_PAGES), &filter).await;
+
+        assert_eq!(listed.items.len(), PAGE_SIZE * MAXIMUM_PAGES);
+        assert!(
+            listed.complete,
+            "1,000 runs read of 1,000 counted are all of them"
+        );
+    }
+
+    #[tokio::test]
+    async fn more_runs_than_github_lists_are_incomplete_and_never_an_error() {
+        let filter = WorkflowRunFilter::new().with_head_sha(commit('0'));
+
+        let listed = capped(Some(PAGE_SIZE * MAXIMUM_PAGES + 1), &filter).await;
+
+        assert_eq!(listed.items.len(), PAGE_SIZE * MAXIMUM_PAGES);
+        assert!(
+            !listed.complete,
+            "1,000 runs read of 1,001 counted are not all of them"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unfiltered_walk_past_the_cap_is_incomplete() {
+        for counted in [Some(PAGE_SIZE * MAXIMUM_PAGES + PAGE_SIZE * 5), None] {
+            let listed = capped(counted, &WorkflowRunFilter::new()).await;
+
+            assert_eq!(listed.items.len(), PAGE_SIZE * MAXIMUM_PAGES);
+            assert!(
+                !listed.complete,
+                "a full tenth page of an unfiltered listing counting {counted:?} is not every run"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_walk_that_ends_short_of_githubs_count_is_incomplete() {
+        let server = MockServer::start().await;
+        let sha = commit('1');
+        Mock::given(method("GET"))
+            .and(path(RUNS))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "total_count": 5, "workflow_runs": runs(3, &sha) })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let listed = collect(&stand_in(&server).await, &WorkflowRunFilter::new())
+            .await
+            .unwrap();
+
+        assert_eq!(listed.items.len(), 3);
+        assert!(
+            !listed.complete,
+            "3 runs read of 5 counted are not all of them"
+        );
+    }
+
+    #[test]
+    fn a_walk_reads_as_counted_only_when_it_read_every_counted_row() {
+        for (read, counted, ended, expected) in [
+            (1_000, Some(1_000), false, true),
+            (1_000, Some(1_001), false, false),
+            (1_000, Some(999), false, false),
+            (1_000, None, false, false),
+            (3, Some(3), true, true),
+            (3, Some(2), true, true),
+            (3, Some(5), true, false),
+            (3, None, true, true),
+        ] {
+            assert_eq!(
+                read_as_counted(read, counted, ended),
+                expected,
+                "{read} read of {counted:?} counted, ended on a short page: {ended}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -683,9 +1051,16 @@ mod tests {
                         "repository": { "full_name": "acme/project" },
                     },
                     {
+                        "id": 31,
                         "workflow_id": 1,
+                        "path": ".github/workflows/ci.yml",
+                        "event": "push",
                         "head_sha": sha.as_str(),
-                        "status": "completed",
+                        "created_at": "2026-01-02T00:00:00Z",
+                        "updated_at": "2026-01-02T00:09:00Z",
+                        "html_url": "https://github.com/acme/project/actions/runs/31",
+                        "repository": { "full_name": "acme/project" },
+                        "status": null,
                         "conclusion": null,
                         "name": null,
                         "head_branch": null,
@@ -697,57 +1072,130 @@ mod tests {
             .await;
         let service = stand_in(&server).await;
 
-        let listed = service
-            .list_workflow_runs(&project(&service), &token(), &WorkflowRunFilter::new())
-            .await
-            .unwrap();
+        let listed = collect(&service, &WorkflowRunFilter::new()).await.unwrap();
 
         assert_eq!(
             listed,
-            vec![
-                WorkflowRun::new(30)
-                    .with_workflow_id(4)
+            Collected::new(
+                vec![
+                    WorkflowRun::new(
+                        NonZeroU64::new(30).unwrap(),
+                        NonZeroU64::new(4).unwrap(),
+                        ".github/workflows/release.yml",
+                        "release",
+                        sha.clone(),
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:09:00Z",
+                        "https://github.com/acme/project/actions/runs/30",
+                        "acme/project",
+                    )
                     .with_attempt(2)
                     .with_name("Release")
-                    .with_path(".github/workflows/release.yml")
-                    .with_event("release")
                     .with_status("completed")
                     .with_conclusion("success")
                     .with_head_branch("main")
-                    .with_head_sha(sha.clone())
-                    .with_created_at("2026-01-01T00:00:00Z")
-                    .with_started_at("2026-01-01T00:01:00Z")
-                    .with_updated_at("2026-01-01T00:09:00Z")
-                    .with_url("https://github.com/acme/project/actions/runs/30")
-                    .with_repository("acme/project"),
-                WorkflowRun::new(0)
-                    .with_workflow_id(1)
-                    .with_status("completed")
-                    .with_head_sha(sha),
-            ]
+                    .with_started_at("2026-01-01T00:01:00Z"),
+                    WorkflowRun::new(
+                        NonZeroU64::new(31).unwrap(),
+                        NonZeroU64::new(1).unwrap(),
+                        ".github/workflows/ci.yml",
+                        "push",
+                        sha,
+                        "2026-01-02T00:00:00Z",
+                        "2026-01-02T00:09:00Z",
+                        "https://github.com/acme/project/actions/runs/31",
+                        "acme/project",
+                    ),
+                ],
+                true,
+            )
         );
     }
 
     #[tokio::test]
     async fn a_run_at_a_malformed_commit_is_a_parse_error_not_a_shorter_list() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(RUNS))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "workflow_runs": [{ "id": 1, "head_sha": "not-a-commit" }],
-            })))
-            .mount(&server)
-            .await;
-        let service = stand_in(&server).await;
-
-        let refused = service
-            .list_workflow_runs(&project(&service), &token(), &WorkflowRunFilter::new())
-            .await;
+        let refused = listing(with(
+            run_row(2, &commit('a')),
+            "head_sha",
+            json!("not-a-commit"),
+        ))
+        .await;
 
         assert!(
             matches!(refused, Err(PullRequestError::Parse(_))),
             "{refused:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_run_without_its_identifier_fails_the_list() {
+        let row = run_row(2, &commit('a'));
+        for missing in [
+            without(row.clone(), "id"),
+            with(row.clone(), "id", json!(null)),
+            with(row, "id", json!(0)),
+        ] {
+            let refused = listing(missing.clone()).await;
+
+            assert!(unreadable(&refused), "{missing}: {refused:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_without_its_workflow_fails_the_list() {
+        let row = run_row(2, &commit('a'));
+        for missing in [
+            without(row.clone(), "workflow_id"),
+            with(row.clone(), "workflow_id", json!(null)),
+            with(row, "workflow_id", json!(0)),
+        ] {
+            let refused = listing(missing.clone()).await;
+
+            assert!(unreadable(&refused), "{missing}: {refused:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_without_a_field_github_always_sends_fails_the_list() {
+        let row = run_row(2, &commit('a'));
+        let mut missing: Vec<Value> = [
+            "path",
+            "event",
+            "head_sha",
+            "created_at",
+            "updated_at",
+            "html_url",
+            "repository",
+        ]
+        .into_iter()
+        .flat_map(|field| {
+            [
+                without(row.clone(), field),
+                with(row.clone(), field, json!(null)),
+            ]
+        })
+        .collect();
+        missing.push(with(row, "repository", json!({})));
+
+        for missing in missing {
+            let refused = listing(missing.clone()).await;
+
+            assert!(unreadable(&refused), "{missing}: {refused:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_attempt_that_does_not_fit_a_u32_fails_the_list() {
+        let row = run_row(2, &commit('a'));
+
+        let largest = listing(with(row.clone(), "run_attempt", json!(u32::MAX)))
+            .await
+            .unwrap();
+        assert_eq!(largest.items[1].attempt, Some(u32::MAX));
+
+        let past = with(row, "run_attempt", json!(u64::from(u32::MAX) + 1));
+        let refused = listing(past.clone()).await;
+        assert!(unreadable(&refused), "{past}: {refused:?}");
     }
 
     #[tokio::test]
@@ -757,6 +1205,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(JOB))
             .and(header("authorization", "Bearer token"))
+            .and(query_is(&[]))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": 9,
                 "run_id": 30,
@@ -779,37 +1228,78 @@ mod tests {
 
         assert_eq!(
             read,
-            WorkflowJob::new(9)
-                .with_run_id(30)
-                .with_name("test")
-                .with_status("completed")
-                .with_conclusion("failure")
-                .with_head_sha(sha)
-                .with_url("https://github.com/acme/project/actions/runs/30/job/9")
-                .with_started_at("2026-01-01T00:01:00Z")
+            WorkflowJob::new(
+                job(),
+                NonZeroU64::new(30).unwrap(),
+                "test",
+                "completed",
+                sha
+            )
+            .with_conclusion("failure")
+            .with_url("https://github.com/acme/project/actions/runs/30/job/9")
+            .with_started_at("2026-01-01T00:01:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_without_what_github_may_leave_out_is_read() {
+        let sha = commit('c');
+
+        let read = reading(job_row(&sha)).await.unwrap();
+
+        assert_eq!(
+            read,
+            WorkflowJob::new(
+                job(),
+                NonZeroU64::new(30).unwrap(),
+                "test",
+                "completed",
+                sha
+            )
         );
     }
 
     #[tokio::test]
     async fn a_job_without_its_identifier_is_unreadable() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(JOB))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({ "run_id": 30, "status": "completed" })),
-            )
-            .mount(&server)
-            .await;
-        let service = stand_in(&server).await;
+        let row = job_row(&commit('c'));
+        for missing in [without(row.clone(), "id"), with(row, "id", json!(0))] {
+            let refused = reading(missing.clone()).await;
 
-        let refused = service
-            .fetch_workflow_job(&project(&service), &token(), job())
-            .await;
+            assert!(unreadable(&refused), "{missing}: {refused:?}");
+        }
+    }
 
-        assert!(
-            matches!(&refused, Err(PullRequestError::GitHubApi(said)) if said == UNREADABLE),
-            "{refused:?}"
-        );
+    #[tokio::test]
+    async fn a_job_without_its_status_is_unreadable() {
+        let row = job_row(&commit('c'));
+        for missing in [
+            without(row.clone(), "status"),
+            with(row, "status", json!(null)),
+        ] {
+            let refused = reading(missing.clone()).await;
+
+            assert!(unreadable(&refused), "{missing}: {refused:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_job_without_its_run_name_or_commit_is_unreadable() {
+        let row = job_row(&commit('c'));
+        let mut missing: Vec<Value> = ["run_id", "name", "head_sha"]
+            .into_iter()
+            .flat_map(|field| {
+                [
+                    without(row.clone(), field),
+                    with(row.clone(), field, json!(null)),
+                ]
+            })
+            .collect();
+        missing.push(with(row, "run_id", json!(0)));
+
+        for missing in missing {
+            let refused = reading(missing.clone()).await;
+
+            assert!(unreadable(&refused), "{missing}: {refused:?}");
+        }
     }
 }

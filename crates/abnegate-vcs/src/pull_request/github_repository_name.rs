@@ -4,6 +4,5 @@ use serde::Deserialize;
 /// `owner/name`.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GitHubRepositoryName {
-    #[serde(default)]
     pub(super) full_name: String,
 }

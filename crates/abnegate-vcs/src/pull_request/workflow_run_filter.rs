@@ -1,3 +1,4 @@
+use crate::branch_name::BranchName;
 use crate::commit_sha::CommitSha;
 
 /// Which of a repository's workflow runs a list holds: every one, unless a
@@ -6,7 +7,7 @@ use crate::commit_sha::CommitSha;
 pub struct WorkflowRunFilter {
     head_sha: Option<CommitSha>,
     event: Option<String>,
-    branch: Option<String>,
+    branch: Option<BranchName>,
     created: Option<String>,
 }
 
@@ -30,10 +31,10 @@ impl WorkflowRunFilter {
         self
     }
 
-    /// Only the runs of `branch`.
+    /// Only the runs of `branch`, which for a run a tag started is the tag.
     #[must_use]
-    pub fn with_branch(mut self, branch: impl Into<String>) -> Self {
-        self.branch = Some(branch.into());
+    pub fn with_branch(mut self, branch: BranchName) -> Self {
+        self.branch = Some(branch);
         self
     }
 
@@ -51,7 +52,7 @@ impl WorkflowRunFilter {
         [
             ("head_sha", self.head_sha.as_ref().map(CommitSha::as_str)),
             ("event", self.event.as_deref()),
-            ("branch", self.branch.as_deref()),
+            ("branch", self.branch.as_ref().map(BranchName::as_str)),
             ("created", self.created.as_deref()),
         ]
         .into_iter()

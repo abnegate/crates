@@ -18,7 +18,8 @@ pub enum JobLogError {
     UnexpectedHost,
 
     /// The log could not be reached where it is stored, or the time to
-    /// download it ran out first.
+    /// download it ran out before the store answered. Time running out once
+    /// the log has begun to arrive is [`JobLogError::Interrupted`].
     #[error("The job log download failed or timed out")]
     Unreachable,
 
@@ -26,7 +27,8 @@ pub enum JobLogError {
     #[error("The job log download returned HTTP {0}")]
     Refused(u16),
 
-    /// The log stopped arriving part way through.
+    /// The log stopped arriving part way through, or the time to download it
+    /// ran out while it was arriving.
     #[error("The job log download failed part way through")]
     Interrupted,
 }

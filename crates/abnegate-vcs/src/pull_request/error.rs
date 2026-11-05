@@ -68,12 +68,6 @@ pub enum PullRequestError {
     #[error("The pull request can be merged now")]
     AlreadyMergeable,
 
-    /// More matched than GitHub lists of a search, which is 1,000, or GitHub
-    /// counted more than it listed; either way the list could not be read
-    /// whole, and no part of it is returned.
-    #[error("More matched than GitHub lists, so the list could not be read whole")]
-    SearchLimitReached,
-
     /// A job's log could not be downloaded, for the reason given.
     #[error(transparent)]
     JobLog(#[from] JobLogError),

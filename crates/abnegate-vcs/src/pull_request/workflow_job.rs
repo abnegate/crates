@@ -1,17 +1,18 @@
 use crate::commit_sha::CommitSha;
+use std::num::NonZeroU64;
 
 /// One job of a GitHub Actions workflow run, in GitHub's own words.
 ///
 /// Its status and conclusion are GitHub's words as it sent them. A field
-/// GitHub may leave out or send as `null` is `None`; a text GitHub always
-/// sends is empty when it did not.
+/// GitHub may leave out or send as `null` is `None`; every other field is one
+/// GitHub always sends, and a job without it is never read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WorkflowJob {
     /// GitHub's identifier for the job.
-    pub id: u64,
+    pub id: NonZeroU64,
     /// GitHub's identifier for the run the job is part of.
-    pub run_id: Option<u64>,
+    pub run_id: NonZeroU64,
     /// The job's name.
     pub name: String,
     /// Where the job is, such as `queued`, `in_progress` or `completed`.
@@ -19,8 +20,8 @@ pub struct WorkflowJob {
     /// How the job finished, such as `success` or `failure`, once it has.
     pub conclusion: Option<String>,
     /// The commit the job ran on.
-    pub head_sha: Option<CommitSha>,
-    /// Where the job can be read in a browser.
+    pub head_sha: CommitSha,
+    /// Where the job can be read in a browser: GitHub's `html_url`.
     pub url: Option<String>,
     /// When the job started, as RFC 3339.
     pub started_at: Option<String>,
@@ -29,54 +30,35 @@ pub struct WorkflowJob {
 }
 
 impl WorkflowJob {
-    /// The job GitHub identifies by `id`, with every other field empty or
-    /// `None` until the `with_*` methods say otherwise.
-    pub fn new(id: u64) -> Self {
+    /// The job GitHub identifies by `id`, named `name`, of the run `run_id`
+    /// on `head_sha`, at `status`.
+    ///
+    /// Its conclusion, address, start and finish are unknown until the
+    /// `with_*` methods say otherwise.
+    pub fn new(
+        id: NonZeroU64,
+        run_id: NonZeroU64,
+        name: impl Into<String>,
+        status: impl Into<String>,
+        head_sha: CommitSha,
+    ) -> Self {
         Self {
             id,
-            run_id: None,
-            name: String::new(),
-            status: String::new(),
+            run_id,
+            name: name.into(),
+            status: status.into(),
             conclusion: None,
-            head_sha: None,
+            head_sha,
             url: None,
             started_at: None,
             completed_at: None,
         }
     }
 
-    /// GitHub's identifier for the run the job is part of.
-    #[must_use]
-    pub fn with_run_id(mut self, run_id: u64) -> Self {
-        self.run_id = Some(run_id);
-        self
-    }
-
-    /// The job's name.
-    #[must_use]
-    pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = name.into();
-        self
-    }
-
-    /// Where the job is.
-    #[must_use]
-    pub fn with_status(mut self, status: impl Into<String>) -> Self {
-        self.status = status.into();
-        self
-    }
-
     /// How the job finished.
     #[must_use]
     pub fn with_conclusion(mut self, conclusion: impl Into<String>) -> Self {
         self.conclusion = Some(conclusion.into());
-        self
-    }
-
-    /// The commit the job ran on.
-    #[must_use]
-    pub fn with_head_sha(mut self, head_sha: CommitSha) -> Self {
-        self.head_sha = Some(head_sha);
         self
     }
 

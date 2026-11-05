@@ -64,29 +64,31 @@ impl PullRequestService {
         token: &SecretValue,
         commit: &CommitSha,
     ) -> PullRequestResult<ChecksOutcome> {
-        let commits = [
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "commits",
-            commit.as_str(),
-        ];
-        let mut runs = self
-            .origin
-            .endpoint(&[&commits[..], &["check-runs"]].concat());
-        runs.query_pairs_mut().append_pair("filter", "latest");
-        let statuses = self.origin.endpoint(&[&commits[..], &["status"]].concat());
+        let runs = self.latest_check_runs(repository, commit);
+        let statuses = self.on_commit(repository, commit, "status");
 
-        let ((runs, every_run), (statuses, every_status)) = tokio::try_join!(
-            walk(self, &runs, token, |page: GitHubCheckRuns| {
-                (page.total_count, page.check_runs)
-            }),
-            walk(self, &statuses, token, |page: GitHubCombinedStatus| {
-                (page.total_count, page.statuses)
-            }),
+        let (runs, statuses) = tokio::try_join!(
+            walk(
+                self,
+                &runs,
+                token,
+                |page: GitHubCheckRuns| (page.total_count, page.check_runs),
+                read_to_the_end,
+            ),
+            walk(
+                self,
+                &statuses,
+                token,
+                |page: GitHubCombinedStatus| (page.total_count, page.statuses),
+                read_to_the_end,
+            ),
         )?;
 
-        Ok(fold(&runs, &statuses, every_run && every_status))
+        Ok(fold(
+            &runs.items,
+            &statuses.items,
+            runs.complete && statuses.complete,
+        ))
     }
 
     /// The latest attempt of every check run on `commit`, in the order GitHub
@@ -98,28 +100,27 @@ impl PullRequestService {
     /// status, or a page longer than the 16 MiB this crate reads, is
     /// [`PullRequestError::GitHubApi`], and a run on a commit this crate does
     /// not accept is [`PullRequestError::Parse`]: never a partial list.
-    pub async fn fetch_check_runs(
+    pub async fn collect_check_runs(
         &self,
         repository: &Repository,
         token: &SecretValue,
         commit: &CommitSha,
     ) -> PullRequestResult<Collected<CheckRun>> {
-        let mut url = self.on_commit(repository, commit, "check-runs");
-        url.query_pairs_mut().append_pair("filter", "latest");
-
-        let (runs, complete) = walk(
+        let runs = walk(
             self,
-            &url,
+            &self.latest_check_runs(repository, commit),
             token,
             |page: GitHubCheckRuns<GitHubCheckRunRecord>| (page.total_count, page.check_runs),
+            read_to_the_end,
         )
         .await?;
-        let runs = runs
+        let items = runs
+            .items
             .into_iter()
             .map(CheckRun::try_from)
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Collected::new(runs, complete))
+        Ok(Collected::new(items, runs.complete))
     }
 
     /// The latest status every context reported on `commit`, from its
@@ -132,28 +133,35 @@ impl PullRequestService {
     /// counted, is [`Collected::complete`] `false`. A status GitHub sends
     /// without its context or state, or a page longer than the 16 MiB this
     /// crate reads, is [`PullRequestError::GitHubApi`]: never a partial list.
-    pub async fn fetch_statuses(
+    pub async fn collect_statuses(
         &self,
         repository: &Repository,
         token: &SecretValue,
         commit: &CommitSha,
     ) -> PullRequestResult<Collected<CommitStatus>> {
-        let url = self.on_commit(repository, commit, "status");
-
-        let (statuses, complete) = walk(
+        let statuses = walk(
             self,
-            &url,
+            &self.on_commit(repository, commit, "status"),
             token,
             |page: GitHubCombinedStatus<GitHubCommitStatusRecord>| {
                 (page.total_count, page.statuses)
             },
+            read_to_the_end,
         )
         .await?;
 
         Ok(Collected::new(
-            statuses.into_iter().map(CommitStatus::from).collect(),
-            complete,
+            statuses.items.into_iter().map(CommitStatus::from).collect(),
+            statuses.complete,
         ))
+    }
+
+    /// Where the latest attempt of each check run on `commit` in `repository`
+    /// is read.
+    fn latest_check_runs(&self, repository: &Repository, commit: &CommitSha) -> Url {
+        let mut url = self.on_commit(repository, commit, "check-runs");
+        url.query_pairs_mut().append_pair("filter", "latest");
+        url
     }
 
     /// Where `resource` on `commit` in `repository` is read.
@@ -170,18 +178,19 @@ impl PullRequestService {
 }
 
 /// Every row a paged answer at `url` holds, page after page until a short
-/// one, and whether that is all of them.
-///
-/// It is not when the walk stopped at [`MAXIMUM_PAGES`] on a full page, or
-/// when it collected fewer rows than the largest count a page gave.
+/// one or [`MAXIMUM_PAGES`], and whether that is all of them, as `complete`
+/// judges from the rows read, the largest count a page gave, and whether the
+/// walk ended on a short page.
 pub(super) async fn walk<P: DeserializeOwned, R>(
     service: &PullRequestService,
     url: &Url,
     token: &SecretValue,
     rows: impl Fn(P) -> (Option<u64>, Vec<R>),
-) -> PullRequestResult<(Vec<R>, bool)> {
+    complete: fn(u64, Option<u64>, bool) -> bool,
+) -> PullRequestResult<Collected<R>> {
     let mut collected: Vec<R> = Vec::new();
-    let mut total: Option<u64> = None;
+    let mut counted: Option<u64> = None;
+    let mut ended = false;
 
     for page in 1..=MAXIMUM_PAGES {
         let mut paged = url.clone();
@@ -190,18 +199,24 @@ pub(super) async fn walk<P: DeserializeOwned, R>(
             .append_pair("per_page", &PAGE_SIZE.to_string())
             .append_pair("page", &page.to_string());
         let (count, batch) = rows(service.get(paged, token).await?);
-        total = total.max(count);
-        let short = batch.len() < PAGE_SIZE;
+        counted = counted.max(count);
+        ended = batch.len() < PAGE_SIZE;
         collected.extend(batch);
-        if short {
-            let every = total.is_none_or(|counted| {
-                u64::try_from(collected.len()).is_ok_and(|read| counted <= read)
-            });
-            return Ok((collected, every));
+        if ended {
+            break;
         }
     }
 
-    Ok((collected, false))
+    let read = u64::try_from(collected.len()).unwrap_or(u64::MAX);
+    let every = complete(read, counted, ended);
+    Ok(Collected::new(collected, every))
+}
+
+/// Whether a walk that read `read` rows reached every one: only when it
+/// `ended` on a short page, having read at least as many as GitHub
+/// `counted`, if it counted any.
+fn read_to_the_end(read: u64, counted: Option<u64>, ended: bool) -> bool {
+    ended && counted.is_none_or(|counted| counted <= read)
 }
 
 /// What the runs and statuses read add up to: every failure, named, ahead of
@@ -251,6 +266,7 @@ mod tests {
     use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::Value;
@@ -261,7 +277,6 @@ mod tests {
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
-    use wiremock::matchers::query_param;
     use wiremock::matchers::query_param_is_missing;
 
     fn runs(sha: &CommitSha) -> String {
@@ -340,13 +355,21 @@ mod tests {
         let sha = commit('3');
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
-            .and(query_param("page", "1"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
             .respond_with(answer(json!({ "check_runs": passing(PAGE_SIZE) })))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
-            .and(query_param("page", "2"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "2"),
+            ]))
             .respond_with(answer(json!({
                 "check_runs": [{ "name": "deploy", "status": "completed", "conclusion": "failure" }]
             })))
@@ -410,8 +433,7 @@ mod tests {
         .await;
         Mock::given(method("GET"))
             .and(path(statuses(&sha)))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[("per_page", "100"), ("page", "1")]))
             .respond_with(answer(json!({
                 "state": "failure",
                 "total_count": PAGE_SIZE + 1,
@@ -422,8 +444,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path(statuses(&sha)))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "2"))
+            .and(query_is(&[("per_page", "100"), ("page", "2")]))
             .respond_with(answer(json!({
                 "state": "failure",
                 "total_count": PAGE_SIZE + 1,
@@ -582,9 +603,11 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
             .and(header("authorization", "Bearer token"))
-            .and(query_param("filter", "latest"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
             .respond_with(answer(json!({
                 "total_count": 1,
                 "check_runs": [{ "name": "test", "status": "completed", "conclusion": "success" }],
@@ -595,9 +618,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(statuses(&sha)))
             .and(header("authorization", "Bearer token"))
-            .and(query_param_is_missing("filter"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[("per_page", "100"), ("page", "1")]))
             .respond_with(answer(json!({ "total_count": 0, "statuses": [] })))
             .expect(1)
             .mount(&server)
@@ -802,7 +823,7 @@ mod tests {
     async fn check_runs(server: &MockServer, sha: &CommitSha) -> Collected<CheckRun> {
         let service = stand_in(server).await;
         service
-            .fetch_check_runs(&project(&service), &token(), sha)
+            .collect_check_runs(&project(&service), &token(), sha)
             .await
             .unwrap()
     }
@@ -810,7 +831,7 @@ mod tests {
     async fn commit_statuses(server: &MockServer, sha: &CommitSha) -> Collected<CommitStatus> {
         let service = stand_in(server).await;
         service
-            .fetch_statuses(&project(&service), &token(), sha)
+            .collect_statuses(&project(&service), &token(), sha)
             .await
             .unwrap()
     }
@@ -822,18 +843,22 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
             .and(header("authorization", "Bearer token"))
-            .and(query_param("filter", "latest"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
             .respond_with(answer(json!({ "check_runs": passing_on(&sha, PAGE_SIZE) })))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
-            .and(query_param("filter", "latest"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "2"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "2"),
+            ]))
             .respond_with(answer(json!({
                 "check_runs": [{
                     "id": 900,
@@ -874,7 +899,11 @@ mod tests {
         let counted = 150;
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
-            .and(query_param("page", "1"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
             .respond_with(answer(json!({
                 "total_count": counted,
                 "check_runs": passing_on(&sha, PAGE_SIZE),
@@ -884,7 +913,11 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
-            .and(query_param("page", "2"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "2"),
+            ]))
             .respond_with(answer(json!({
                 "total_count": counted,
                 "check_runs": passing_on(&sha, 10),
@@ -991,7 +1024,7 @@ mod tests {
             let service = stand_in(&server).await;
 
             let read = service
-                .fetch_check_runs(&project(&service), &token(), &sha)
+                .collect_check_runs(&project(&service), &token(), &sha)
                 .await;
 
             assert!(read.as_ref().is_err_and(expected), "{row}: {read:?}");
@@ -1014,9 +1047,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(format!("/repos/acme/project/commits/{sha}/status")))
             .and(header("authorization", "Bearer token"))
-            .and(query_param_is_missing("filter"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[("per_page", "100"), ("page", "1")]))
             .respond_with(answer(json!({
                 "state": "failure",
                 "total_count": PAGE_SIZE + 1,
@@ -1027,8 +1058,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path(format!("/repos/acme/project/commits/{sha}/status")))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "2"))
+            .and(query_is(&[("per_page", "100"), ("page", "2")]))
             .respond_with(answer(json!({
                 "state": "failure",
                 "total_count": PAGE_SIZE + 1,
