@@ -17,6 +17,7 @@ const MINIMUM_CONCEALED_KEY_LENGTH: usize = 8;
 const TOKEN_SEPARATORS: [char; 16] = [
     '"', '\'', '`', ',', ';', '(', ')', '[', ']', '{', '}', '<', '>', '=', ':', '\\',
 ];
+const OPENING_SEPARATORS: [char; 3] = ['-', '/', '.'];
 const MESSAGE_POINTERS: [&str; 3] = ["/error/message", "/error", "/message"];
 const TENANT_BODY_LIMIT: usize = 64 * 1024;
 
@@ -131,12 +132,14 @@ fn conceal_bounded(text: &str, key: &str) -> String {
 }
 
 /// Whether a word may start after `before`: at the start of the text, or
-/// after whitespace or one of the [`TOKEN_SEPARATORS`].
+/// after whitespace, one of the [`TOKEN_SEPARATORS`] or one of the
+/// [`OPENING_SEPARATORS`] that join a key onto a scheme, a path or a name.
 fn opens(before: &str) -> bool {
-    before
-        .chars()
-        .next_back()
-        .is_none_or(|character| character.is_whitespace() || TOKEN_SEPARATORS.contains(&character))
+    before.chars().next_back().is_none_or(|character| {
+        character.is_whitespace()
+            || TOKEN_SEPARATORS.contains(&character)
+            || OPENING_SEPARATORS.contains(&character)
+    })
 }
 
 /// Whether a word may end before `after`: at the end of the text, or before
@@ -273,9 +276,20 @@ mod tests {
 
     #[test]
     fn a_short_key_inside_a_longer_token_is_left_alone() {
-        let text = "sk-12345 xsk-1234 sk-1234a -sk-1234 sk-1234é";
+        let text = "sk-12345 xsk-1234 sk-1234a sk-1234é";
 
         assert_eq!(conceal_key(text, SHORT_KEY), text);
+    }
+
+    #[test]
+    fn a_short_key_after_a_hyphen_slash_or_dot_is_concealed() {
+        for (key, echoed, concealed) in [
+            (SHORT_KEY, "Bearer-sk-1234", format!("Bearer-{REDACTED}")),
+            ("hunter2", "/keys/hunter2", format!("/keys/{REDACTED}")),
+            ("abc1234", "key.abc1234", format!("key.{REDACTED}")),
+        ] {
+            assert_eq!(conceal_key(echoed, key), concealed, "{echoed:?}");
+        }
     }
 
     #[test]
