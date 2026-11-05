@@ -7,12 +7,14 @@ const MEMINFO_TOTAL_PREFIX: &str = "MemTotal:";
 #[cfg(any(target_os = "linux", test))]
 const BYTES_PER_KIBIBYTE: u64 = 1024;
 
-/// The system memory installed in this machine, in bytes, or `None` when it
-/// cannot be read.
+/// The system memory of this machine, in bytes, or `None` when it cannot be
+/// read.
 ///
-/// On macOS it is `sysctl hw.memsize`, whatever the CPU; on Linux it is
-/// `MemTotal` in `/proc/meminfo`. Every other platform is `None`. It runs
-/// `sysctl` or reads `/proc`, so it blocks the calling thread.
+/// On macOS it is the physical size from `sysctl hw.memsize`, whatever the
+/// CPU. On Linux it is `MemTotal` in `/proc/meminfo`: usable RAM, which is
+/// physical RAM less reserved memory and the kernel image. Every other
+/// platform is `None`. It runs `sysctl` or reads `/proc`, so it blocks the
+/// calling thread.
 pub fn system_memory_bytes() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
