@@ -135,10 +135,12 @@ impl HuggingFaceProvider {
     /// A [`search`](ModelProvider::search) with the adapters published
     /// against `bases` beside it, as one catalogue page lists them.
     ///
-    /// An image-generation browse is the adapters alone, on one page. A
-    /// search across every medium lists the adapters ahead of the models it
-    /// found and keeps the search's cursor. Any other browse is the search
-    /// alone, and asks for no adapters.
+    /// An image-generation browse is the adapters alone, on one page. The
+    /// first page of a search across every medium lists the adapters ahead
+    /// of the models it found and keeps the search's cursor; a later page,
+    /// fetched with that cursor, is the search alone, so the adapters are
+    /// listed once. Any other browse is the search alone, and asks for no
+    /// adapters.
     pub async fn search_with_adapters(
         &self,
         options: BrowseQuery<'_>,
@@ -149,7 +151,7 @@ impl HuggingFaceProvider {
                 models: self.search_adapters(options, bases).await?,
                 next_cursor: None,
             }),
-            ModelMediumFilter::All if has_search(&options) => {
+            ModelMediumFilter::All if has_search(&options) && options.cursor.is_none() => {
                 let (page, mut models) =
                     futures::try_join!(self.search(options), self.search_adapters(options, bases))?;
                 models.extend(page.models);
@@ -1998,6 +2000,33 @@ mod tests {
             vec!["owner/edit-lora", "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"]
         );
         assert_eq!(page.next_cursor.as_deref(), Some("next123"));
+    }
+
+    #[tokio::test]
+    async fn search_with_adapters_lists_adapters_on_the_first_page_only() {
+        let server = MockServer::start().await;
+        mount_adapters(&server, 1).await;
+        mount_gguf_page(&server, 3).await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let options = browse(ModelSort::Relevance, None, ModelSizeFilter::All).with_query("qwen");
+        let first = provider
+            .search_with_adapters(options, &adapter_bases())
+            .await
+            .unwrap();
+        let cursor = first.next_cursor.as_deref().expect("a next cursor");
+        let second = provider
+            .search_with_adapters(options.with_cursor(cursor), &adapter_bases())
+            .await
+            .unwrap();
+
+        assert_eq!(names(&first)[0], "owner/edit-lora");
+        assert_eq!(
+            second,
+            provider.search(options.with_cursor(cursor)).await.unwrap()
+        );
+        assert_eq!(names(&second), vec!["Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"]);
+        assert_eq!(second.next_cursor.as_deref(), Some("next123"));
     }
 
     #[tokio::test]
