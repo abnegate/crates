@@ -67,6 +67,14 @@ impl OpenAiCompatibleEmbeddingProvider {
         })
     }
 
+    fn bearer(&self) -> Option<&str> {
+        self.config
+            .api_key
+            .as_ref()
+            .map(|key| key.expose().trim())
+            .filter(|key| !key.is_empty())
+    }
+
     fn concealed(&self, error: ProviderError) -> ProviderError {
         match (&self.config.api_key, error) {
             (Some(key), ProviderError::Api { status, message }) => {
@@ -107,8 +115,8 @@ impl EmbeddingProvider for OpenAiCompatibleEmbeddingProvider {
             input: texts,
             dimensions: self.config.dimensions,
         });
-        if let Some(key) = self.config.api_key.as_ref().filter(|key| !key.is_empty()) {
-            request = request.bearer_auth(key.expose());
+        if let Some(key) = self.bearer() {
+            request = request.bearer_auth(key);
         }
 
         let body = self

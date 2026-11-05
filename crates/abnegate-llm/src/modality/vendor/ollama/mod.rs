@@ -94,7 +94,7 @@ impl OllamaEmbeddingProvider {
                 .dimensions
                 .unwrap_or_else(|| model_dimensions(&config.model)),
             maximum_input_tokens: model_maximum_input_tokens(&config.model),
-            api_key: config.api_key.filter(|key| !key.is_empty()),
+            api_key: config.api_key,
             keep_alive: config.keep_alive.map(render_keep_alive),
             concurrency: config.concurrency.max(1),
             short: Transport::with_timeout(config.short_prompt_timeout),
@@ -114,8 +114,8 @@ impl OllamaEmbeddingProvider {
             prompt,
             keep_alive: self.keep_alive.as_deref(),
         });
-        if let Some(key) = &self.api_key {
-            request = request.bearer_auth(key.expose());
+        if let Some(key) = self.bearer() {
+            request = request.bearer_auth(key);
         }
         let body = transport
             .send(request)
@@ -129,6 +129,13 @@ impl OllamaEmbeddingProvider {
             )));
         }
         Ok(response.embedding)
+    }
+
+    fn bearer(&self) -> Option<&str> {
+        self.api_key
+            .as_ref()
+            .map(|key| key.expose().trim())
+            .filter(|key| !key.is_empty())
     }
 
     async fn embed_indexed(
@@ -385,6 +392,38 @@ mod tests {
 
         let requests = server.received_requests().await.unwrap();
         assert!(!requests[0].headers.contains_key("authorization"));
+    }
+
+    #[tokio::test]
+    async fn a_blank_key_sends_no_authorization() {
+        let server = answering(&[0.5]).await;
+
+        provider(config(&server).with_api_key(" \t\n "))
+            .embed_single("hello")
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(!requests[0].headers.contains_key("authorization"));
+    }
+
+    #[tokio::test]
+    async fn a_padded_key_is_sent_trimmed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(PATH))
+            .and(header("Authorization", format!("Bearer {KEY}").as_str()))
+            .respond_with(embedding(&[0.5]))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let embedded = provider(config(&server).with_api_key(format!("  {KEY}\n")))
+            .embed_single("hello")
+            .await
+            .unwrap();
+
+        assert_eq!(embedded, vec![0.5]);
     }
 
     #[tokio::test]

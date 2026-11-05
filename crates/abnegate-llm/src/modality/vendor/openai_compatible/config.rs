@@ -21,8 +21,8 @@ pub struct OpenAiCompatibleEmbeddingConfig {
     pub base_url: String,
     /// The model to embed with, as the endpoint names it.
     pub model: String,
-    /// The bearer token to send, or `None` (or an empty key) to send no
-    /// `Authorization` header.
+    /// The bearer token to send, trimmed, or `None` (or a blank key) to send
+    /// no `Authorization` header.
     pub api_key: Option<SecretValue>,
     /// The width to ask the model for, sent as `dimensions` only when set.
     /// Unset, the provider reports a width of 0 until the first answer, and

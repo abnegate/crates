@@ -20,7 +20,8 @@ pub struct OllamaEmbeddingConfig {
     /// `qwen3-embedding:0.6b`.
     pub model: String,
     /// A key sent as a bearer token, for a server behind a proxy that asks
-    /// for one. `None` or an empty key sends no `Authorization` header.
+    /// for one. The key is sent trimmed, and `None` or a blank key sends no
+    /// `Authorization` header.
     pub api_key: Option<SecretValue>,
     /// The width each embedding is expected to have, or `None` for the width
     /// Ollama's own build of the model gives.

@@ -142,10 +142,31 @@ async fn a_key_is_sent_as_a_bearer_token() {
 }
 
 #[tokio::test]
+async fn a_padded_key_is_sent_trimmed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(EMBEDDINGS))
+        .and(header("Authorization", format!("Bearer {KEY}").as_str()))
+        .respond_with(answer(json!([item(0, &[0.1])])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    provider(
+        OpenAiCompatibleEmbeddingConfig::new(base(&server), MODEL)
+            .with_api_key(format!("  {KEY}\n")),
+    )
+    .embed(&texts(&["hello"]))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn no_authorization_is_sent_without_a_key() {
     for config in [
         OpenAiCompatibleEmbeddingConfig::new("", MODEL),
         OpenAiCompatibleEmbeddingConfig::new("", MODEL).with_api_key(""),
+        OpenAiCompatibleEmbeddingConfig::new("", MODEL).with_api_key(" \t\n "),
     ] {
         let server = MockServer::start().await;
         serve(&server, answer(json!([item(0, &[0.1])]))).await;
