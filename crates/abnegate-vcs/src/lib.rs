@@ -64,6 +64,7 @@ mod commit_sha;
 pub mod conflict;
 pub mod discovery;
 pub mod git;
+mod object_id;
 mod parse_error;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -91,6 +92,7 @@ pub use crate::git::DiffSummary;
 pub use crate::git::GitError;
 pub use crate::git::GitService;
 pub use crate::git::RemoteHead;
+pub use crate::object_id::ObjectId;
 pub use crate::parse_error::ParseError;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]

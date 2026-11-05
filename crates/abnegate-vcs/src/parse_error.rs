@@ -12,6 +12,10 @@ pub enum ParseError {
     #[error("Invalid commit identifier: {0:?}")]
     CommitSha(String),
 
+    /// Not a full git object name.
+    #[error("Invalid object name: {0:?}")]
+    ObjectId(String),
+
     /// Not a path in a repository: empty, or with an empty or dot segment, or
     /// a control character.
     #[error("Invalid repository path: {0:?}")]

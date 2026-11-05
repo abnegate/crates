@@ -1,14 +1,9 @@
+use crate::object_id::named;
 use crate::parse_error::ParseError;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
 use std::str::FromStr;
-
-/// Hex digits in a SHA-1 object name.
-const SHA1_LENGTH: usize = 40;
-
-/// Hex digits in a SHA-256 object name.
-const SHA256_LENGTH: usize = 64;
 
 /// A full commit identifier in either of git's object formats, lowercased.
 ///
@@ -24,13 +19,9 @@ impl CommitSha {
     /// of surrounding whitespace and lowercased, or fail with
     /// [`ParseError::CommitSha`]. An abbreviated identifier is refused.
     pub fn parse(value: &str) -> Result<Self, ParseError> {
-        let trimmed = value.trim();
-        let accepted = matches!(trimmed.len(), SHA1_LENGTH | SHA256_LENGTH)
-            && trimmed.bytes().all(|byte| byte.is_ascii_hexdigit());
-        match accepted {
-            true => Ok(Self(trimmed.to_ascii_lowercase())),
-            false => Err(ParseError::CommitSha(value.to_string())),
-        }
+        named(value)
+            .map(Self)
+            .ok_or_else(|| ParseError::CommitSha(value.to_string()))
     }
 
     /// The identifier as lowercase hex.
