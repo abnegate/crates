@@ -41,30 +41,17 @@ pub fn is_encrypted(value: &str) -> bool {
 /// # Ok::<(), abnegate_secret::Error>(())
 /// ```
 pub fn encrypt_value(value: &SecretValue, key: &MasterKey) -> Result<String, Error> {
-    let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).map_err(|_| Error::Encryption)?;
-
-    let mut nonce_bytes = [0u8; NONCE_BYTES];
-    random::fill(&mut nonce_bytes)?;
-    let nonce = Nonce::<U12>::try_from(nonce_bytes.as_slice()).map_err(|_| Error::Encryption)?;
-
-    let ciphertext = cipher
-        .encrypt(&nonce, value.expose().as_bytes())
-        .map_err(|_| Error::Encryption)?;
-
-    let mut sealed = Vec::with_capacity(NONCE_BYTES + ciphertext.len());
-    sealed.extend_from_slice(&nonce_bytes);
-    sealed.extend_from_slice(&ciphertext);
-
-    Ok(Envelope::seal(&BASE64.encode(&sealed)))
+    Ok(Envelope::seal(&seal_body(value.expose().as_bytes(), key)?))
 }
 
 /// Unwrap a stored value, passing plaintext straight through.
 ///
-/// Values written before the envelope existed keep working; each one is
-/// reported through `tracing::debug!` as it is read. A value that opens an
-/// envelope is never plaintext: an envelope of any version but v1 is
-/// [`Error::UnsupportedVersion`], and one that is never closed is
-/// [`Error::Truncated`].
+/// Plaintext values written before the envelope existed pass straight
+/// through; each one is reported through `tracing::debug!` as it is read. A
+/// value that opens an envelope is never plaintext: an envelope of any version
+/// but v1 is [`Error::UnsupportedVersion`], and one that is never closed is
+/// [`Error::Truncated`]. To read values sealed before the envelope existed,
+/// and refuse plaintext, use [`decrypt_legacy_value`].
 pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error> {
     let Some(envelope) = Envelope::open(value) else {
         tracing::debug!(
@@ -73,6 +60,66 @@ pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error>
         return Ok(SecretValue::new(value));
     };
 
+    open_envelope(envelope, key)
+}
+
+/// Unwrap a stored value that is either an envelope or the bare format sealed
+/// before the envelope existed: `base64(nonce ‖ ciphertext ‖ tag)` under the
+/// standard alphabet with padding, a 12-byte nonce, AES-256-GCM, a 16-byte
+/// tag, and no envelope around it.
+///
+/// Plaintext is always an error, never handed back as the credential. A value
+/// that opens no envelope is read as a bare body, and is refused when:
+///
+/// - it is not base64: [`Error::InvalidBase64`];
+/// - it decodes to under 28 bytes, a 12-byte nonce plus a 16-byte tag:
+///   [`Error::Truncated`];
+/// - it fails authentication, because the key is wrong, the value was altered,
+///   or it is plaintext that happens to be long base64: [`Error::Decryption`];
+/// - it opens to bytes that are not UTF-8: [`Error::InvalidUtf8`].
+///
+/// A value that opens an envelope is read as [`decrypt_value`] reads it: an
+/// envelope of another version is [`Error::UnsupportedVersion`], and one that
+/// is never closed is [`Error::Truncated`].
+///
+/// ```
+/// use abnegate_secret::{Error, MasterKey, SecretValue, decrypt_legacy_value, encrypt_value};
+///
+/// let key = MasterKey::generate()?;
+/// let sealed = encrypt_value(&SecretValue::new("sk-live-0123456789"), &key)?;
+/// assert_eq!(decrypt_legacy_value(&sealed, &key)?.expose(), "sk-live-0123456789");
+/// assert!(matches!(
+///     decrypt_legacy_value("ghp_plaintext_token!", &key),
+///     Err(Error::InvalidBase64)
+/// ));
+/// # Ok::<(), Error>(())
+/// ```
+pub fn decrypt_legacy_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error> {
+    match Envelope::open(value) {
+        Some(envelope) => open_envelope(envelope, key),
+        None => open_body(value, key),
+    }
+}
+
+fn seal_body(plaintext: &[u8], key: &MasterKey) -> Result<String, Error> {
+    let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).map_err(|_| Error::Encryption)?;
+
+    let mut nonce_bytes = [0u8; NONCE_BYTES];
+    random::fill(&mut nonce_bytes)?;
+    let nonce = Nonce::<U12>::try_from(nonce_bytes.as_slice()).map_err(|_| Error::Encryption)?;
+
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|_| Error::Encryption)?;
+
+    let mut sealed = Vec::with_capacity(NONCE_BYTES + ciphertext.len());
+    sealed.extend_from_slice(&nonce_bytes);
+    sealed.extend_from_slice(&ciphertext);
+
+    Ok(BASE64.encode(&sealed))
+}
+
+fn open_envelope(envelope: Envelope<'_>, key: &MasterKey) -> Result<SecretValue, Error> {
     if envelope.version() != Envelope::VERSION {
         return Err(Error::UnsupportedVersion {
             version: envelope.version().to_owned(),
@@ -80,6 +127,10 @@ pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error>
     }
 
     let encoded = envelope.encoded().ok_or(Error::Truncated)?;
+    open_body(encoded, key)
+}
+
+fn open_body(encoded: &str, key: &MasterKey) -> Result<SecretValue, Error> {
     let sealed = BASE64.decode(encoded).map_err(|_| Error::InvalidBase64)?;
 
     if sealed.len() < NONCE_BYTES + TAG_BYTES {
@@ -107,6 +158,8 @@ pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NOT_UTF8: &[u8] = &[0xC3, 0x28];
 
     #[test]
     fn round_trips_a_credential() {
@@ -290,5 +343,98 @@ mod tests {
             decrypt_value(&sealed, &restored).unwrap().expose(),
             "sk-live-restored"
         );
+    }
+
+    #[test]
+    fn a_bare_body_sealed_at_runtime_opens() {
+        let key = MasterKey::generate().unwrap();
+        let body = seal_body("sk-live-bare-body".as_bytes(), &key).unwrap();
+
+        assert!(!is_encrypted(&body));
+        assert_eq!(
+            decrypt_legacy_value(&body, &key).unwrap().expose(),
+            "sk-live-bare-body"
+        );
+    }
+
+    #[test]
+    fn an_envelope_opens_through_the_legacy_reader() {
+        let key = MasterKey::generate().unwrap();
+        let secret = SecretValue::new("sk-live-enveloped");
+        let sealed = encrypt_value(&secret, &key).unwrap();
+
+        assert_eq!(decrypt_legacy_value(&sealed, &key).unwrap(), secret);
+    }
+
+    #[test]
+    fn a_body_one_byte_short_of_a_nonce_and_tag_is_truncated() {
+        let key = MasterKey::generate().unwrap();
+        let short = BASE64.encode([0u8; NONCE_BYTES + TAG_BYTES - 1]);
+
+        assert!(matches!(
+            decrypt_legacy_value(&short, &key),
+            Err(Error::Truncated)
+        ));
+    }
+
+    #[test]
+    fn a_body_exactly_a_nonce_and_tag_long_fails_authentication() {
+        let key = MasterKey::generate().unwrap();
+        let empty = BASE64.encode([0u8; NONCE_BYTES + TAG_BYTES]);
+
+        assert!(matches!(
+            decrypt_legacy_value(&empty, &key),
+            Err(Error::Decryption)
+        ));
+    }
+
+    #[test]
+    fn a_tampered_body_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let body = seal_body(b"sk-live-tampered", &key).unwrap();
+
+        let mut sealed = BASE64.decode(&body).unwrap();
+        let last = sealed.last_mut().unwrap();
+        *last = !*last;
+        let tampered = BASE64.encode(&sealed);
+
+        assert!(matches!(
+            decrypt_legacy_value(&tampered, &key),
+            Err(Error::Decryption)
+        ));
+    }
+
+    #[test]
+    fn a_body_that_opens_to_bytes_that_are_not_utf8_is_refused() {
+        let key = MasterKey::generate().unwrap();
+        let body = seal_body(NOT_UTF8, &key).unwrap();
+
+        assert!(matches!(
+            decrypt_legacy_value(&body, &key),
+            Err(Error::InvalidUtf8)
+        ));
+    }
+
+    #[test]
+    fn an_envelope_of_another_version_is_refused_not_read_as_a_bare_body() {
+        let key = MasterKey::generate().unwrap();
+        let body = seal_body(b"sk-live-later", &key).unwrap();
+
+        let opened = decrypt_legacy_value(&format!("ENC[v2:{body}]"), &key);
+        assert!(
+            matches!(&opened, Err(Error::UnsupportedVersion { version }) if version == "2"),
+            "{opened:?}"
+        );
+    }
+
+    #[test]
+    fn an_unclosed_envelope_is_truncated() {
+        let key = MasterKey::generate().unwrap();
+        let body = seal_body(b"sk-live-unclosed", &key).unwrap();
+
+        assert!(matches!(
+            decrypt_legacy_value(&format!("ENC[v1:{body}"), &key),
+            Err(Error::Truncated)
+        ));
     }
 }

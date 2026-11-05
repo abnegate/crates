@@ -8,19 +8,21 @@ pub enum Error {
     /// The cipher could not seal the value.
     #[error("Encryption failed")]
     Encryption,
-    /// The envelope did not open under the key: the key is wrong, or the
-    /// envelope was altered.
+    /// The envelope, or a value sealed before the envelope existed, did not
+    /// open under the key: the key is wrong, the value was altered, or it is
+    /// plaintext that happens to be long base64.
     #[error("Decryption failed: invalid key or corrupted envelope")]
     Decryption,
     /// Argon2id could not derive a key from the passphrase: it could not
     /// allocate its working memory, or refused the passphrase's length.
     #[error("Key derivation failed")]
     Derivation,
-    /// The envelope's body is not base64.
+    /// The envelope's body, or a value sealed before the envelope existed, is
+    /// not base64.
     #[error("Invalid base64 in encrypted value")]
     InvalidBase64,
-    /// The envelope is never closed, or its body is too short to hold a nonce
-    /// and a tag.
+    /// The envelope is never closed, or its body, or a value sealed before the
+    /// envelope existed, is too short to hold a nonce and a tag.
     #[error("Encrypted value is truncated")]
     Truncated,
     /// The value is sealed in an envelope version this release cannot open.

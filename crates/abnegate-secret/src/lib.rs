@@ -37,9 +37,10 @@
 //!
 //! # Features
 //!
-//! - `encryption`, on by default: `encrypt_value`, `decrypt_value` and the
-//!   `MasterKey` they seal under, with the AES-256-GCM, random source and key
-//!   file dependencies they need. Turn default features off to only redact.
+//! - `encryption`, on by default: `encrypt_value`, `decrypt_value`,
+//!   `decrypt_legacy_value` for values sealed before the envelope existed, and
+//!   the `MasterKey` they seal under, with the AES-256-GCM, random source and
+//!   key file dependencies they need. Turn default features off to only redact.
 //! - `derivation`: `MasterKey::derive`, which stretches a passphrase into a key
 //!   with Argon2id, and the `KeyDerivation` that names its domain. Implies
 //!   `encryption`.
@@ -70,6 +71,8 @@ mod value;
 mod work;
 
 pub use crate::conceal::conceal;
+#[cfg(feature = "encryption")]
+pub use crate::encryption::decrypt_legacy_value;
 #[cfg(feature = "encryption")]
 pub use crate::encryption::decrypt_value;
 #[cfg(feature = "encryption")]
