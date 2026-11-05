@@ -260,6 +260,10 @@ mod tests {
     use super::length_order;
     use super::restore_order;
     use crate::modality::EmbeddingProvider;
+    #[cfg(all(feature = "fastembed", feature = "ollama"))]
+    use crate::modality::vendor::ollama::OllamaEmbeddingConfig;
+    #[cfg(all(feature = "fastembed", feature = "ollama"))]
+    use crate::modality::vendor::ollama::OllamaEmbeddingProvider;
 
     const HOLD: Duration = Duration::from_secs(1);
     const TRUNCATED_MODEL: &str = "all-minilm:latest";
@@ -453,5 +457,36 @@ mod tests {
             released - loaded
         );
         assert_eq!(provider.dimensions(), 384);
+    }
+
+    #[cfg(all(feature = "fastembed", feature = "ollama"))]
+    #[test]
+    fn a_local_model_has_the_width_ollama_gives_it() {
+        let widths = [
+            ("nomic-embed-text", 768),
+            ("nomic-embed-text-v1", 768),
+            ("nomic-embed-text-v1.5", 768),
+            ("mxbai-embed-large", 1024),
+            ("snowflake-arctic-embed", 1024),
+            ("bge-small-en", 384),
+            ("bge-small-en-v1.5", 384),
+            ("all-minilm", 384),
+            ("all-minilm-l6-v2", 384),
+        ];
+        for (name, width) in widths {
+            let model = FastembedConfig::new()
+                .with_model(name)
+                .embedding_model()
+                .unwrap();
+            let local = TextEmbedding::get_model_info(&model).unwrap().dim as u32;
+            let ollama = OllamaEmbeddingProvider::new(OllamaEmbeddingConfig::new(
+                "http://127.0.0.1:11434",
+                name,
+            ))
+            .unwrap()
+            .dimensions();
+            assert_eq!(ollama, width, "Ollama's width for {name}");
+            assert_eq!(local, ollama, "fastembed's width for {name}");
+        }
     }
 }
