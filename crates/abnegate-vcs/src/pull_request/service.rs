@@ -310,7 +310,8 @@ impl PullRequestService {
     /// Name `version` of GitHub's REST API, such as `2022-11-28`, in the
     /// `X-GitHub-Api-Version` header of every request this service sends:
     /// every read and write, every GraphQL call, and the request for a job's
-    /// log, though not the download of the log from where GitHub stores it.
+    /// log and its redirect within the origin, though not the download of the
+    /// log from where GitHub stores it off the origin.
     ///
     /// Without it no version is named, and GitHub answers in its default one.
     /// A version that cannot be sent as a header value fails every request,

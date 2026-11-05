@@ -148,7 +148,9 @@ impl PullRequestService {
 
     /// The first `limit` bytes of the log stored at `target`, asked for
     /// without the token and with what is left of the time before
-    /// `deadline`; none left is [`JobLogError::Unreachable`], unsent.
+    /// `deadline`; none left is [`JobLogError::Unreachable`], unsent. A
+    /// target on this service's origin is asked under the API version this
+    /// service names, if any, and one anywhere else under none.
     async fn stored(
         &self,
         target: Url,
@@ -159,13 +161,16 @@ impl PullRequestService {
             Some(deadline) => remaining(deadline).ok_or(JobLogError::Unreachable)?,
             None => self.timeout,
         };
-        let stored = self
-            .writer
-            .get(target)
-            .timeout(left)
-            .send()
-            .await
-            .map_err(|_| JobLogError::Unreachable)?;
+        let versioned = self
+            .api_version
+            .as_deref()
+            .filter(|_| self.origin.holds(&target));
+        let request = self.writer.get(target).timeout(left);
+        let request = match versioned {
+            Some(version) => request.header(API_VERSION, version),
+            None => request,
+        };
+        let stored = request.send().await.map_err(|_| JobLogError::Unreachable)?;
         if !stored.status().is_success() {
             return Err(JobLogError::Refused(stored.status().as_u16()).into());
         }
@@ -490,6 +495,57 @@ mod tests {
         let read = log(&stand_in(&server).await, LIMIT).await.unwrap();
 
         assert_eq!(read, JobLog::new(b"step one\nstep two\n".to_vec(), false));
+    }
+
+    /// The API version the versioned tests name.
+    const VERSION: &str = "2026-03-10";
+
+    #[tokio::test]
+    async fn a_log_redirected_within_the_origin_is_asked_for_under_the_api_version() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(JOB_LOG))
+            .and(header(API_VERSION, VERSION))
+            .respond_with(redirect(SIGNED_LOG))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(STORED_LOG))
+            .and(header(API_VERSION, VERSION))
+            .respond_with(ResponseTemplate::new(200).set_body_string("step one\n"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await.with_api_version(VERSION);
+
+        let read = log(&service, LIMIT).await.unwrap();
+
+        assert_eq!(read, JobLog::new(b"step one\n".to_vec(), false));
+    }
+
+    #[tokio::test]
+    async fn a_log_stored_off_the_origin_is_asked_for_under_no_api_version() {
+        let origin = MockServer::start().await;
+        let store = MockServer::start().await;
+        Mock::given(header_exists(API_VERSION))
+            .respond_with(ResponseTemplate::new(500))
+            .with_priority(1)
+            .expect(0)
+            .mount(&store)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(STORED_LOG))
+            .respond_with(ResponseTemplate::new(200).set_body_string("step one\n"))
+            .expect(1)
+            .mount(&store)
+            .await;
+        let service = stand_in(&origin).await.with_api_version(VERSION);
+        let target = Url::parse(&format!("{}{SIGNED_LOG}", store.uri())).unwrap();
+
+        let read = service.stored(target, None, LIMIT).await.unwrap();
+
+        assert_eq!(read, JobLog::new(b"step one\n".to_vec(), false));
     }
 
     #[tokio::test]
