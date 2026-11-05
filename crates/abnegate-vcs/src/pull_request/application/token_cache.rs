@@ -8,6 +8,11 @@ use std::time::SystemTime;
 /// An installation token per installation, held until it comes within
 /// [`InstallationToken::SAFETY_MARGIN`] of expiring.
 ///
+/// A cache belongs to one [`crate::pull_request::InstallationIssuer`] and one
+/// App. GitHub numbers installations uniquely only within one host, so a cache
+/// shared with an issuer for another host could hand one installation the
+/// token minted for the same number there. Keep one cache per issuer and App.
+///
 /// Every method returns owned data, so no lock is ever held across an
 /// `await`, and a lock a panicking thread left poisoned is used as it stands,
 /// since no method leaves the map part way through a change.

@@ -4,8 +4,8 @@ use std::time::UNIX_EPOCH;
 
 /// A throwaway RSA key, generated for these tests and used nowhere else.
 ///
-/// It cannot be replaced: [`crate::pull_request::Claims`]'s tests pin a JWT
-/// OpenSSL signed with it.
+/// It cannot be replaced: [`crate::pull_request::ApplicationClaims`]'s tests
+/// pin a JWT OpenSSL signed with it.
 pub(super) const PRIVATE_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----
 MIIEogIBAAKCAQEAu5dqhjvoHZtbdSz9bGJAMp3r+1bqzy/9lhjVz5crI2yWhz7I
 z3M0H74MQPCHhlOn8nyeOs1cclBLRt7iX7/wgkaP9mGGpvCzLXYdLH4JrrMZj7r5

@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 /// An installation access token, and when GitHub said it expires.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct InstallationToken {
     secret: SecretValue,
     expires_at: SystemTime,
@@ -34,14 +34,17 @@ impl InstallationToken {
         Self { secret, expires_at }
     }
 
-    /// GitHub's answer to an installation token request: its `token` and
-    /// its RFC 3339 `expires_at`.
+    /// GitHub's answer to an installation token request: its `token`, which
+    /// is never empty, and its RFC 3339 `expires_at`.
     ///
     /// Any failure is [`ApplicationError::Response`] alone, since the answer
     /// that failed to parse is the one that may hold the token.
     pub(super) fn parse(body: &[u8]) -> Result<Self, ApplicationError> {
         let payload: Payload =
             serde_json::from_slice(body).map_err(|_| ApplicationError::Response)?;
+        if payload.token.expose().is_empty() {
+            return Err(ApplicationError::Response);
+        }
         let expires_at = instant(&payload.expires_at).ok_or(ApplicationError::Response)?;
         Ok(Self::new(payload.token, expires_at))
     }
@@ -184,6 +187,15 @@ mod tests {
             assert!(matches!(error, ApplicationError::Response));
             assert!(!error.to_string().contains("ghs_leaky"));
         }
+    }
+
+    #[test]
+    fn an_empty_token_is_an_unreadable_response() {
+        let error =
+            InstallationToken::parse(br#"{"token":"","expires_at":"2026-01-15T12:00:00Z"}"#)
+                .expect_err("an empty token authenticates nothing");
+
+        assert!(matches!(error, ApplicationError::Response));
     }
 
     #[test]

@@ -1,15 +1,20 @@
 use crate::pull_request::application::ApplicationError;
 use crate::pull_request::application::ApplicationId;
 use abnegate_secret::SecretValue;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jsonwebtoken::Algorithm;
 use jsonwebtoken::EncodingKey;
 use jsonwebtoken::Header;
-use jsonwebtoken::encode;
+use jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER;
 use serde::Deserialize;
 use serde::Serialize;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+
+/// The algorithm GitHub requires an App's JWT to be signed with.
+const ALGORITHM: Algorithm = Algorithm::RS256;
 
 /// The claims of a JWT that authenticates as a GitHub App itself, rather than
 /// as one of its installations.
@@ -17,7 +22,7 @@ use std::time::UNIX_EPOCH;
 /// Each time is whole seconds since the Unix epoch, as GitHub reads a JWT's,
 /// and is negative before it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Claims {
+pub struct ApplicationClaims {
     #[serde(rename = "iat")]
     issued_at: i64,
     #[serde(rename = "exp")]
@@ -26,7 +31,7 @@ pub struct Claims {
     issuer: String,
 }
 
-impl Claims {
+impl ApplicationClaims {
     /// How far a JWT's issue time is set back from now.
     ///
     /// GitHub refuses a JWT issued in the future by its own clock, and a
@@ -78,14 +83,31 @@ impl Claims {
     /// The JWT is a bearer credential for the whole App, so it is a
     /// [`SecretValue`] and never a `String`. Neither failure keeps the
     /// signer's own error, whose message can quote the key it failed to
-    /// read.
+    /// read. It is signed through aws-lc-rs by name rather than through
+    /// `jsonwebtoken`'s process-wide default provider, which panics when
+    /// feature unification enables both of its backends.
     pub fn sign(&self, private_key: &SecretValue) -> Result<SecretValue, ApplicationError> {
         let key = EncodingKey::from_rsa_pem(private_key.expose().as_bytes())
             .map_err(|_| ApplicationError::PrivateKey)?;
-        encode(&Header::new(Algorithm::RS256), self, &key)
-            .map(SecretValue::new)
-            .map_err(|_| ApplicationError::Signing)
+        let signer = (DEFAULT_PROVIDER.signer_factory)(&ALGORITHM, &key)
+            .map_err(|_| ApplicationError::PrivateKey)?;
+        let message = format!("{}.{}", encoded(&Header::new(ALGORITHM))?, encoded(self)?);
+        let signature = signer
+            .try_sign(message.as_bytes())
+            .map_err(|_| ApplicationError::Signing)?;
+        Ok(SecretValue::new(format!(
+            "{message}.{}",
+            URL_SAFE_NO_PAD.encode(signature)
+        )))
     }
+}
+
+/// `part` of a JWT, its header or its claims, as base64url JSON without
+/// padding.
+fn encoded(part: &impl Serialize) -> Result<String, ApplicationError> {
+    serde_json::to_vec(part)
+        .map(|json| URL_SAFE_NO_PAD.encode(json))
+        .map_err(|_| ApplicationError::Signing)
 }
 
 /// `instant` in whole seconds since the Unix epoch, rounded down, so negative
@@ -114,11 +136,9 @@ mod tests {
     use crate::pull_request::application::fixtures::PRIVATE_KEY;
     use crate::pull_request::application::fixtures::PUBLIC_KEY;
     use crate::pull_request::application::fixtures::at;
-    use base64::Engine;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use jsonwebtoken::DecodingKey;
-    use jsonwebtoken::Validation;
-    use jsonwebtoken::decode;
+    use jsonwebtoken::crypto::CryptoProvider;
+    use jsonwebtoken::crypto::KeyUtils;
     use serde_json::Value;
 
     /// An instant well after the Unix epoch.
@@ -127,14 +147,28 @@ mod tests {
     /// `openssl dgst -sha256 -sign` over this JWT's header and claims with
     /// [`PRIVATE_KEY`], so the signature it carries owes nothing to
     /// `jsonwebtoken`.
+    ///
+    /// Its header bytes, `{"typ":"JWT","alg":"RS256"}`, are pinned on
+    /// purpose: GitHub reads the header's fields in any order, but the
+    /// signature covers its exact bytes, so a change to how the header is
+    /// written has to be made here deliberately rather than slip through.
     const OPENSSL_SIGNED_JWT: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJpYXQiOjE2OTk5OTk5NDAsImV4cCI6MTcwMDAwMDQ4MCwiaXNzIjoiMTIzNDUifQ.s-lV36kULTAVFysUYkpQT7-REG0frHVaOrcQZy3zk60Ob_p-SOh4ESN6hjsS3y4qwcuJAPNsT5lsLJg7lYabSpNflnqJlqHNACgkwgCk-Er8GTLV2ENU_hFcY4g6BcW7-ZyKo6bMDsR6ZnhIZNqGwOonNAT31WQnmePvTVUekTQvkGUA4oLHdsEdIdiCdHSR9z8jLfUanjy1aYqhupr1ppAFsrw1U_InDKN0urpCrTnUavd5lucjJqPBGIasPOHuT5tfUnLbbYxnmAE4aQwcByI92MUrxskfwSTc3J4y2kePVUUesZX99gfSKKfyTN87Pwi7thLnlpigfjWh8GAkcg";
+
+    /// A process-default provider that refuses to sign, standing in for the
+    /// one `jsonwebtoken` falls back to when both of its backends are
+    /// enabled, which panics the same way.
+    static REFUSING: CryptoProvider = CryptoProvider {
+        signer_factory: |_, _| panic!("signing consulted the process-default CryptoProvider"),
+        verifier_factory: |algorithm, key| (DEFAULT_PROVIDER.verifier_factory)(algorithm, key),
+        key_utils: KeyUtils::new_unimplemented(),
+    };
 
     fn application() -> ApplicationId {
         ApplicationId::new(12345)
     }
 
     fn signed(now: SystemTime) -> SecretValue {
-        Claims::issue(application(), now)
+        ApplicationClaims::issue(application(), now)
             .sign(&SecretValue::new(PRIVATE_KEY))
             .unwrap()
     }
@@ -144,16 +178,21 @@ mod tests {
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap()
     }
 
-    fn verify(jwt: &str) -> jsonwebtoken::errors::Result<Claims> {
+    /// The claims of `jwt` when the App's public key verifies its RS256
+    /// signature, through aws-lc-rs by name, as [`ApplicationClaims::sign`]
+    /// signs, so no test reads the process-default provider.
+    fn verify(jwt: &str) -> Option<ApplicationClaims> {
+        let (message, signature) = jwt.rsplit_once('.')?;
         let key = DecodingKey::from_rsa_pem(PUBLIC_KEY.as_bytes()).unwrap();
-        let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_issuer(&["12345"]);
-        decode::<Claims>(jwt, &key, &validation).map(|data| data.claims)
+        let verifier = (DEFAULT_PROVIDER.verifier_factory)(&ALGORITHM, &key).unwrap();
+        let signature = URL_SAFE_NO_PAD.decode(signature).ok()?;
+        verifier.verify(message.as_bytes(), &signature).ok()?;
+        serde_json::from_value(part(jwt, 1)).ok()
     }
 
     #[test]
     fn issued_at_is_backdated_for_clock_skew() {
-        let claims = Claims::issue(application(), at(NOW));
+        let claims = ApplicationClaims::issue(application(), at(NOW));
 
         assert_eq!(claims.issued_at(), 1_700_000_000 - 60);
         assert!(
@@ -164,7 +203,7 @@ mod tests {
 
     #[test]
     fn expiry_is_bounded_by_githubs_ten_minute_cap() {
-        let claims = Claims::issue(application(), at(NOW));
+        let claims = ApplicationClaims::issue(application(), at(NOW));
 
         assert_eq!(claims.expires_at() - claims.issued_at(), 9 * 60);
         assert!(
@@ -175,23 +214,27 @@ mod tests {
 
     #[test]
     fn expiry_is_still_in_the_future_after_backdating() {
-        let claims = Claims::issue(application(), at(NOW));
+        let claims = ApplicationClaims::issue(application(), at(NOW));
 
         assert!(claims.expires_at() > 1_700_000_000);
     }
 
     #[test]
     fn issuer_is_the_application_id() {
-        assert_eq!(Claims::issue(application(), at(NOW)).issuer(), "12345");
+        assert_eq!(
+            ApplicationClaims::issue(application(), at(NOW)).issuer(),
+            "12345"
+        );
     }
 
     #[test]
     fn a_time_before_the_epoch_is_issued_without_panicking() {
-        let claims = Claims::issue(application(), UNIX_EPOCH - Duration::from_secs(30));
+        let claims = ApplicationClaims::issue(application(), UNIX_EPOCH - Duration::from_secs(30));
         assert_eq!(claims.issued_at(), -90);
         assert_eq!(claims.expires_at(), -90 + 9 * 60);
 
-        let partial = Claims::issue(application(), UNIX_EPOCH - Duration::from_millis(500));
+        let partial =
+            ApplicationClaims::issue(application(), UNIX_EPOCH - Duration::from_millis(500));
         assert_eq!(
             partial.issued_at(),
             -61,
@@ -206,7 +249,7 @@ mod tests {
         let claims = verify(signed(now).expose())
             .expect("GitHub verifies the JWT with the App's public key");
 
-        assert_eq!(claims, Claims::issue(application(), now));
+        assert_eq!(claims, ApplicationClaims::issue(application(), now));
     }
 
     #[test]
@@ -219,17 +262,24 @@ mod tests {
     }
 
     #[test]
+    fn signing_never_consults_the_process_default_provider() {
+        assert!(
+            CryptoProvider::install_default(&REFUSING).is_ok(),
+            "no other test in this binary may install or read jsonwebtoken's process default"
+        );
+
+        assert_eq!(
+            signed(at(NOW)).expose(),
+            OPENSSL_SIGNED_JWT,
+            "signing goes through aws-lc-rs by name, whatever the process default is"
+        );
+    }
+
+    #[test]
     fn the_openssl_signed_jwt_verifies_with_the_apps_public_key() {
-        let key = DecodingKey::from_rsa_pem(PUBLIC_KEY.as_bytes()).unwrap();
-        let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_issuer(&["12345"]);
-        validation.validate_exp = false;
+        let claims = verify(OPENSSL_SIGNED_JWT).expect("OpenSSL's signature verifies");
 
-        let claims = decode::<Claims>(OPENSSL_SIGNED_JWT, &key, &validation)
-            .unwrap()
-            .claims;
-
-        assert_eq!(claims, Claims::issue(application(), at(NOW)));
+        assert_eq!(claims, ApplicationClaims::issue(application(), at(NOW)));
     }
 
     #[test]
@@ -240,7 +290,7 @@ mod tests {
         parts[1] = &forged;
 
         assert!(
-            verify(&parts.join(".")).is_err(),
+            verify(&parts.join(".")).is_none(),
             "a signature must not carry over to claims it did not sign"
         );
     }
@@ -277,7 +327,7 @@ mod tests {
 
     #[test]
     fn a_broken_private_key_is_rejected_without_quoting_it() {
-        let error = Claims::issue(application(), SystemTime::now())
+        let error = ApplicationClaims::issue(application(), SystemTime::now())
             .sign(&SecretValue::new(
                 "-----BEGIN RSA PRIVATE KEY-----\nnot-a-key\n-----END RSA PRIVATE KEY-----",
             ))

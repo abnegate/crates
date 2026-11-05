@@ -33,12 +33,12 @@ const MAXIMUM_ANSWER_BYTES: usize = 64 * 1024;
 /// authentication routinely quotes what was sent. A request is given 30
 /// seconds from sending to the last byte of its answer.
 #[derive(Debug, Clone)]
-pub struct Issuer {
+pub struct InstallationIssuer {
     client: Client,
     origin: Origin,
 }
 
-impl Issuer {
+impl InstallationIssuer {
     /// Ask GitHub's own API.
     pub fn new() -> Result<Self, ApplicationError> {
         Self::configured(GITHUB_API_URL)
@@ -70,8 +70,8 @@ impl Issuer {
         Ok(Self { client, origin })
     }
 
-    /// Trade `jwt`, from [`crate::pull_request::Claims::sign`], for a token
-    /// scoped to `installation`.
+    /// Trade `jwt`, from [`crate::pull_request::ApplicationClaims::sign`], for
+    /// a token scoped to `installation`.
     pub async fn issue(
         &self,
         jwt: &SecretValue,
@@ -137,8 +137,8 @@ mod tests {
         InstallationId::new(67890)
     }
 
-    fn stand_in(server: &MockServer) -> Issuer {
-        Issuer::standing_in_for(&server.uri()).unwrap()
+    fn stand_in(server: &MockServer) -> InstallationIssuer {
+        InstallationIssuer::standing_in_for(&server.uri()).unwrap()
     }
 
     fn issued() -> ResponseTemplate {
@@ -161,7 +161,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                Issuer::configured(configured)
+                InstallationIssuer::configured(configured)
                     .unwrap()
                     .endpoint(installation())
                     .as_str(),
@@ -170,7 +170,10 @@ mod tests {
             );
         }
         assert_eq!(
-            Issuer::new().unwrap().endpoint(installation()).as_str(),
+            InstallationIssuer::new()
+                .unwrap()
+                .endpoint(installation())
+                .as_str(),
             "https://api.github.com/app/installations/67890/access_tokens"
         );
     }
@@ -185,7 +188,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    Issuer::configured(refused),
+                    InstallationIssuer::configured(refused),
                     Err(ApplicationError::InvalidOrigin)
                 ),
                 "{refused}"
@@ -238,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_host_surfaces_without_the_credentialed_url() {
-        let error = Issuer::standing_in_for("http://127.0.0.1:1")
+        let error = InstallationIssuer::standing_in_for("http://127.0.0.1:1")
             .unwrap()
             .issue(&jwt(), installation())
             .await

@@ -47,15 +47,16 @@
 //!   webhooks, over the REST and GraphQL APIs; and
 //!   `pull_request::WebhookSignature`, which checks that a webhook delivery was
 //!   signed with the secret its webhook was registered with.
-//! - `github-app`: `github`, plus `pull_request::Claims`, which signs the JWT
-//!   that authenticates as a GitHub App, `pull_request::Issuer`, which trades
-//!   it for an installation access token, and `pull_request::TokenCache`,
-//!   which holds each installation's token until it nears expiry.
+//! - `github-app`: `github`, plus `pull_request::ApplicationClaims`, which
+//!   signs the JWT that authenticates as a GitHub App,
+//!   `pull_request::InstallationIssuer`, which trades it for an installation
+//!   access token, and `pull_request::TokenCache`, which holds each
+//!   installation's token until it nears expiry.
 //! - `testing`: `RepositoryUrl::local`,
 //!   `pull_request::PullRequestService::standing_in_for` and, with
-//!   `github-app`, `pull_request::Issuer::standing_in_for`, which reach a
-//!   repository on the local disk or a mock API server. Nothing a caller
-//!   configures produces any of them, so only a test should enable it.
+//!   `github-app`, `pull_request::InstallationIssuer::standing_in_for`, which
+//!   reach a repository on the local disk or a mock API server. Nothing a
+//!   caller configures produces any of them, so only a test should enable it.
 
 mod branch_name;
 mod checkout;
@@ -93,6 +94,9 @@ pub use crate::git::RemoteHead;
 pub use crate::parse_error::ParseError;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::ApplicationClaims;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::ApplicationError;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
@@ -112,9 +116,6 @@ pub use crate::pull_request::CheckRun;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ChecksOutcome;
-#[cfg(feature = "github-app")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
-pub use crate::pull_request::Claims;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Collected;
@@ -159,6 +160,9 @@ pub use crate::pull_request::GitHubPullRequest;
 pub use crate::pull_request::InstallationId;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::InstallationIssuer;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::InstallationToken;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -175,9 +179,6 @@ pub use crate::pull_request::IssueState;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::IssueUpdate;
-#[cfg(feature = "github-app")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
-pub use crate::pull_request::Issuer;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::JobLog;

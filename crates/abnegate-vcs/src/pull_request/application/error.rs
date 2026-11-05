@@ -1,4 +1,9 @@
+use std::iter::successors;
 use thiserror::Error;
+
+/// What separates one cause from the next in a [`ApplicationError::Transport`]
+/// message.
+const CAUSE_SEPARATOR: &str = ": ";
 
 /// What went wrong authenticating as a GitHub App, worded so that no variant
 /// can carry a credential, the private key, or the URL a request was sent to.
@@ -26,7 +31,7 @@ pub enum ApplicationError {
     Signing,
 
     /// The installation token request did not complete, for the reason
-    /// given, with the URL it was sent to removed.
+    /// given and each cause beneath it, with the URL it was sent to removed.
     #[error("The installation token request failed: {0}")]
     Transport(String),
 
@@ -42,11 +47,18 @@ pub enum ApplicationError {
 }
 
 impl ApplicationError {
-    /// `error` as [`Self::Transport`], without the URL `reqwest` appends to
-    /// its message, which a redirect, a proxy or a later caller could put a
-    /// credential in.
+    /// `error` as [`Self::Transport`], followed by each cause beneath it,
+    /// without the URL `reqwest` appends to its message, which a redirect, a
+    /// proxy or a later caller could put a credential in.
     pub(super) fn transport(error: reqwest::Error) -> Self {
-        Self::Transport(error.without_url().to_string())
+        let error = error.without_url();
+        let causes: Vec<String> = successors(
+            Some(&error as &dyn std::error::Error),
+            |cause: &&dyn std::error::Error| cause.source(),
+        )
+        .map(ToString::to_string)
+        .collect();
+        Self::Transport(causes.join(CAUSE_SEPARATOR))
     }
 }
 
@@ -81,6 +93,32 @@ mod tests {
         let rendered = ApplicationError::transport(error).to_string();
         assert!(
             !rendered.contains("credential=leaked") && !rendered.contains("127.0.0.1"),
+            "the request URL survived into the error: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_errors_keep_their_causes_without_the_request_url() {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let error = client
+            .post("http://127.0.0.1:1/app/installations/1/access_tokens?credential=leaked")
+            .send()
+            .await
+            .unwrap_err();
+
+        let rendered = ApplicationError::transport(error).to_string();
+        assert!(
+            rendered.to_lowercase().contains("refused"),
+            "the cause beneath reqwest's own message was dropped: {rendered}"
+        );
+        assert!(
+            !rendered.contains("credential=leaked")
+                && !rendered.contains("127.0.0.1")
+                && !rendered.contains("access_tokens"),
             "the request URL survived into the error: {rendered}"
         );
     }
