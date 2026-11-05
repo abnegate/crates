@@ -53,7 +53,8 @@ impl PullRequestService {
     /// GitHub is asked for the blob's bytes as they are, and its answer is
     /// read no further than `limit` bytes, the caller's bound on what it
     /// holds in memory. An answer longer than that is
-    /// [`PullRequestError::TooLarge`] and is never returned in part.
+    /// [`PullRequestError::TooLarge`] and is never returned in part; one
+    /// whose declared length is longer is refused before any of it is read.
     pub async fn fetch_blob(
         &self,
         repository: &Repository,
@@ -64,6 +65,12 @@ impl PullRequestService {
         let url = self.repository_endpoint(repository, &["git", "blobs", blob.as_str()])?;
 
         let response = answered(self.request(Method::GET, url, token, RAW)).await?;
+        let declared_past_limit = response
+            .content_length()
+            .is_some_and(|declared| u64::try_from(limit).is_ok_and(|limit| declared > limit));
+        if declared_past_limit {
+            return Err(PullRequestError::TooLarge);
+        }
         let (content, more) = read_prefix(response, limit).await?;
         if more {
             return Err(PullRequestError::TooLarge);
@@ -92,6 +99,7 @@ mod tests {
     use crate::parse_error::ParseError;
     use crate::pull_request::TreeEntryKind;
     use crate::pull_request::service::fixtures::commit;
+    use crate::pull_request::service::fixtures::hanging_up;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
@@ -190,6 +198,23 @@ mod tests {
         service
             .fetch_blob(&project(&service), &token(), &object('f'), limit)
             .await
+    }
+
+    /// A blob answer that declares eleven bytes and then hangs up before
+    /// sending any of them.
+    const DECLARED_ELEVEN: &str =
+        "HTTP/1.1 200 OK\r\ncontent-length: 11\r\nconnection: close\r\n\r\n";
+
+    #[tokio::test]
+    async fn a_blob_declared_past_the_limit_is_too_large_before_it_is_read() {
+        let service = hanging_up(|_| DECLARED_ELEVEN).await;
+
+        let failure = service
+            .fetch_blob(&project(&service), &token(), &object('f'), 10)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::TooLarge), "{failure:?}");
     }
 
     fn is_unreadable(failure: &PullRequestError) -> bool {
