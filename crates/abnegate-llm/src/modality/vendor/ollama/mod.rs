@@ -15,6 +15,7 @@ use reqwest::Url;
 
 pub use crate::modality::vendor::ollama::config::OllamaEmbeddingConfig;
 
+use crate::client::reporter::conceal_key;
 use crate::modality::EmbeddingProvider;
 use crate::modality::embedding_provider::DEFAULT_MAXIMUM_INPUT_TOKENS;
 use crate::modality::vendor::endpoint::endpoint;
@@ -41,7 +42,7 @@ const NANOSECONDS_PER_MILLISECOND: u32 = 1_000_000;
 /// any longer one the long deadline.
 ///
 /// A refusal is a [`ProviderError::Api`] holding Ollama's status and its
-/// redacted body, so a caller can tell a rejected key, a throttled request
+/// body, with the configured key and any other credential scrubbed out, so a caller can tell a rejected key, a throttled request
 /// or an input past the model's context length apart. The vector is passed
 /// on at whatever width Ollama returns; compare its length with
 /// [`EmbeddingProvider::dimensions`] where the width matters. An empty
@@ -95,7 +96,10 @@ impl OllamaEmbeddingProvider {
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key.expose());
         }
-        let body = transport.send(request).await?;
+        let body = transport
+            .send(request)
+            .await
+            .map_err(|error| self.concealed(error))?;
         let response: Response = serde_json::from_value(body).map_err(ProviderError::parse)?;
         if response.embedding.is_empty() {
             return Err(ProviderError::parse(format!(
@@ -104,6 +108,15 @@ impl OllamaEmbeddingProvider {
             )));
         }
         Ok(response.embedding)
+    }
+
+    fn concealed(&self, error: ProviderError) -> ProviderError {
+        match (&self.api_key, error) {
+            (Some(key), ProviderError::Api { status, message }) => {
+                ProviderError::api(status, conceal_key(&message, key.expose()))
+            }
+            (_, error) => error,
+        }
     }
 }
 
@@ -196,6 +209,7 @@ fn model_maximum_input_tokens(model: &str) -> u32 {
 mod tests {
     use std::time::Instant;
 
+    use abnegate_secret::REDACTED;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -452,6 +466,65 @@ mod tests {
             assert!(
                 error.to_string().to_lowercase().contains("context length"),
                 "{status}: the message was lost: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_key_echoed_in_a_refusal_is_redacted() {
+        let masked = format!("{}****{}", &KEY[..6], &KEY[KEY.len() - 4..]);
+        for echoed in [KEY.to_string(), masked] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(PATH))
+                .respond_with(ResponseTemplate::new(401).set_body_string(format!(
+                    r#"{{"error":"Authentication Error, Invalid proxy server token passed. Received API Key = {echoed}"}}"#
+                )))
+                .mount(&server)
+                .await;
+
+            let error = provider(config(&server).with_api_key(KEY))
+                .embed_single("hello")
+                .await
+                .unwrap_err();
+            let rendered = error.to_string();
+
+            assert!(
+                matches!(error, ProviderError::Api { status: 401, .. }),
+                "{error:?}"
+            );
+            assert!(!rendered.contains(&echoed), "{rendered}");
+            assert!(rendered.contains(REDACTED), "{rendered}");
+            assert!(
+                rendered.contains("Invalid proxy server token"),
+                "{rendered}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_short_key_never_hides_a_context_length_rejection() {
+        for key in ["x", "token", "len"] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(PATH))
+                .respond_with(
+                    ResponseTemplate::new(500).set_body_string(
+                        r#"{"error":"the input length exceeds the context length"}"#,
+                    ),
+                )
+                .mount(&server)
+                .await;
+
+            let error = provider(config(&server).with_api_key(key))
+                .embed_single("hello")
+                .await
+                .unwrap_err();
+            let rendered = error.to_string();
+
+            assert!(
+                rendered.contains("the input length exceeds the context length"),
+                "the key {key:?} garbled the refusal: {rendered}"
             );
         }
     }
