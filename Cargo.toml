@@ -17,6 +17,7 @@ too_many_arguments = "allow"
 
 [workspace.dependencies]
 aes-gcm = "0.11"
+argon2 = { version = "0.6", default-features = false }
 async-stream = "0.3"
 # Pre-release candidates bump breakingly, so this is not a caret: rc.10 would
 # resolve alongside rc.9 and mix two Stripe client generations.

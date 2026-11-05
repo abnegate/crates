@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-/// Every way this crate can fail to seal, unseal, or persist a credential.
+/// Every way this crate can fail to derive a key, or to seal, unseal or persist a credential.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -12,6 +12,10 @@ pub enum Error {
     /// envelope was altered.
     #[error("Decryption failed: invalid key or corrupted envelope")]
     Decryption,
+    /// Argon2id could not derive a key from the passphrase: it could not
+    /// allocate its working memory, or refused the passphrase's length.
+    #[error("Key derivation failed")]
+    Derivation,
     /// The envelope's body is not base64.
     #[error("Invalid base64 in encrypted value")]
     InvalidBase64,

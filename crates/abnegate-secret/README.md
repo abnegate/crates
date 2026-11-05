@@ -11,6 +11,7 @@ one, `conceal` removes one known key however a provider echoes it back, and
 ## Features
 
 - `encryption`, on by default: `encrypt_value`, `decrypt_value` and `MasterKey`, with the AES-256-GCM, random source and key file dependencies they need.
+- `derivation`: `MasterKey::derive`, which stretches a passphrase into a key with Argon2id, and the `KeyDerivation` that names its domain. Implies `encryption`.
 - `sqlx`: `Encode`, `Decode` and `Type` for `SecretValue` over every database that stores a `String`.
 - `rusqlite`: `ToSql` and `FromSql` for `SecretValue`, the same for SQLite.
 
