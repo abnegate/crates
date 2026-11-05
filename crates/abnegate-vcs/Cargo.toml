@@ -20,6 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 github = ["dep:chrono", "dep:hex", "dep:hmac", "dep:reqwest", "dep:sha2"]
+github-app = ["github", "dep:jsonwebtoken"]
 testing = []
 
 [dependencies]
@@ -28,6 +29,7 @@ base64 = { workspace = true }
 chrono = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

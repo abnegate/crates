@@ -39,6 +39,7 @@ getrandom = "0.4"
 hex = "0.4"
 hmac = "0.13"
 image = { version = "0.25", default-features = false }
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 keyring = "4"
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-native-tls"] }
 nix = "0.31"

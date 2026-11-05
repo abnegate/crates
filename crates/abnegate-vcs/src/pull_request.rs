@@ -40,7 +40,15 @@
 //!
 //! [`WebhookSignature`] checks that a webhook delivery was signed with the
 //! secret its webhook was registered with, before anything reads it.
+//!
+//! The `github-app` feature adds what authenticating as a GitHub App
+//! installation takes, rather than with a personal access token: `Claims`
+//! signs the JWT that proves the caller is the App, `Issuer` trades it for an
+//! installation access token, and `TokenCache` holds each installation's
+//! token until it comes within five minutes of expiring.
 
+#[cfg(feature = "github-app")]
+mod application;
 mod auto_merge;
 mod automation;
 mod blob;
@@ -159,6 +167,20 @@ mod workflow_job;
 mod workflow_run;
 mod workflow_run_filter;
 
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::ApplicationError;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::ApplicationId;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::Claims;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::InstallationId;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::InstallationToken;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::Issuer;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::TokenCache;
 pub use crate::pull_request::auto_merge::AutoMerge;
 pub use crate::pull_request::automation::PullRequestAutomation;
 pub use crate::pull_request::blob::Blob;

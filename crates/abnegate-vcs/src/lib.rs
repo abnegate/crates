@@ -45,10 +45,15 @@
 //!   merge once they are ready and moves them in and out of draft, reads back
 //!   how each one was received, and creates repositories there and registers their
 //!   webhooks, over the REST and GraphQL APIs.
-//! - `testing`: `RepositoryUrl::local` and
-//!   `pull_request::PullRequestService::standing_in_for`, which reach a
+//! - `github-app`: `github`, plus `pull_request::Claims`, which signs the JWT
+//!   that authenticates as a GitHub App, `pull_request::Issuer`, which trades
+//!   it for an installation access token, and `pull_request::TokenCache`,
+//!   which holds each installation's token until it nears expiry.
+//! - `testing`: `RepositoryUrl::local`,
+//!   `pull_request::PullRequestService::standing_in_for` and, with
+//!   `github-app`, `pull_request::Issuer::standing_in_for`, which reach a
 //!   repository on the local disk or a mock API server. Nothing a caller
-//!   configures produces either, so only a test should enable it.
+//!   configures produces any of them, so only a test should enable it.
 
 mod branch_name;
 mod checkout;
@@ -84,6 +89,12 @@ pub use crate::git::GitError;
 pub use crate::git::GitService;
 pub use crate::git::RemoteHead;
 pub use crate::parse_error::ParseError;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::ApplicationError;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::ApplicationId;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::AutoMerge;
@@ -99,6 +110,9 @@ pub use crate::pull_request::CheckRun;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ChecksOutcome;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::Claims;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Collected;
@@ -138,12 +152,21 @@ pub use crate::pull_request::GitHubBranch;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::GitHubPullRequest;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::InstallationId;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::InstallationToken;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Issue;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::IssueComment;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::Issuer;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::IssueReference;
@@ -237,6 +260,9 @@ pub use crate::pull_request::SubmittedReview;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ThreadComment;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::TokenCache;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Tree;

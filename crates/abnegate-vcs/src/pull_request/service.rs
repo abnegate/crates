@@ -61,10 +61,10 @@ mod webhooks;
 const USER_AGENT: &str = "abnegate-vcs";
 
 /// GitHub's own REST origin, which answers for repositories on `github.com`.
-const GITHUB_API_URL: &str = "https://api.github.com";
+pub(super) const GITHUB_API_URL: &str = "https://api.github.com";
 
 /// The media type GitHub's REST API answers in.
-const ACCEPT: &str = "application/vnd.github+json";
+pub(super) const ACCEPT: &str = "application/vnd.github+json";
 
 /// Rows GitHub returns per page; its maximum for these collections.
 const PAGE_SIZE: usize = 100;
@@ -75,7 +75,7 @@ const PAGE_SIZE: usize = 100;
 const MAXIMUM_PAGES: usize = 10;
 
 /// Longest a request may take from sending to the last byte of its answer.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Longest a connection may take to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -644,7 +644,11 @@ impl PullRequestService {
 /// opted in to plain HTTP or it is standing in for a test's mock server.
 ///
 /// A redirect it will not follow comes back as the answer itself.
-fn client(https_only: bool, timeout: Duration, redirect: Policy) -> PullRequestResult<Client> {
+pub(super) fn client(
+    https_only: bool,
+    timeout: Duration,
+    redirect: Policy,
+) -> PullRequestResult<Client> {
     Ok(Client::builder()
         .user_agent(USER_AGENT)
         .timeout(timeout)
@@ -837,7 +841,10 @@ fn returned(status: StatusCode) -> String {
 /// Room is set aside up front for the length the answer declares, but never
 /// for more than `limit` or [`MAXIMUM_ANSWER_BYTES`]; past that the prefix
 /// grows only as bytes arrive.
-async fn read_prefix(mut response: Response, limit: usize) -> PullRequestResult<(Vec<u8>, bool)> {
+pub(super) async fn read_prefix(
+    mut response: Response,
+    limit: usize,
+) -> PullRequestResult<(Vec<u8>, bool)> {
     let declared = response
         .content_length()
         .map_or(0, |length| usize::try_from(length).unwrap_or(usize::MAX));
