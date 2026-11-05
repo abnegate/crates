@@ -24,12 +24,14 @@ impl GitService {
     /// is followed, no repository around it or named by the environment is
     /// consulted, and the host's system and global configuration are ignored.
     ///
-    /// A link is followed. What is not a regular file once opened, such as a
-    /// directory, a named pipe or a device, and a file that cannot be read,
-    /// are refused with [`GitError::Io`], one git cannot parse with
-    /// [`GitError::CommandFailed`], and an `origin` with more than one
-    /// address, which fetches from the first and pushes to every one, with
-    /// [`GitError::UnsafeConfig`].
+    /// A link is followed. These are refused:
+    ///
+    /// - with [`GitError::Io`], a file that cannot be read, and anything that
+    ///   is not a regular file, such as a directory, a named pipe or a device,
+    ///   which is refused before it is opened;
+    /// - with [`GitError::CommandFailed`], a file git cannot parse;
+    /// - with [`GitError::UnsafeConfig`], an `origin` with more than one
+    ///   address, which fetches from the first and pushes to every one.
     ///
     /// It blocks the calling thread until git exits, and is not bounded by
     /// [`Self::with_timeout`]: git reaches no network and reads only what it
@@ -55,18 +57,41 @@ impl GitService {
 }
 
 /// The file at `file`, opened for git to read as its standard input, or a
-/// refusal when it is not a regular file. It is opened without waiting for a
-/// writer, so a named pipe is refused rather than waited on, and checked once
-/// open, so what is checked is what git reads.
+/// refusal when it is not a regular file.
+///
+/// It is examined before it is opened, because opening a device can act on
+/// it: a terminal opened by a process with none becomes its controlling one.
+/// It is checked again once open, and must still be the file examined, so
+/// what is checked is what git reads.
 fn regular(file: &Path) -> std::io::Result<File> {
-    let opened = opened(file)?;
-    match opened.metadata()?.is_file() {
-        true => Ok(opened),
-        false => Err(std::io::Error::new(
-            ErrorKind::InvalidInput,
-            "The git configuration is not a regular file",
-        )),
+    let examined = std::fs::metadata(file)?;
+    if !examined.is_file() {
+        return Err(not_regular());
     }
+    let opened = opened(file)?;
+    let metadata = opened.metadata()?;
+    if !metadata.is_file() || !same_file(&examined, &metadata) {
+        return Err(not_regular());
+    }
+    Ok(opened)
+}
+
+fn not_regular() -> std::io::Error {
+    std::io::Error::new(
+        ErrorKind::InvalidInput,
+        "The git configuration is not a regular file",
+    )
+}
+
+#[cfg(unix)]
+fn same_file(examined: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    examined.dev() == opened.dev() && examined.ino() == opened.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_examined: &std::fs::Metadata, _opened: &std::fs::Metadata) -> bool {
+    true
 }
 
 #[cfg(unix)]
@@ -74,7 +99,7 @@ fn opened(file: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+        .custom_flags((nix::fcntl::OFlag::O_NONBLOCK | nix::fcntl::OFlag::O_NOCTTY).bits())
         .open(file)
 }
 
@@ -211,7 +236,25 @@ mod tests {
 
         let refusal = GitService::configured_origin(directory.path());
 
-        assert!(matches!(refusal, Err(GitError::Io(_))), "{refusal:?}");
+        assert!(
+            matches!(&refusal, Err(GitError::Io(error)) if error.kind() == ErrorKind::InvalidInput),
+            "{refusal:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_swapped_after_it_was_examined_is_not_the_same_file() {
+        let directory = TempDir::new().unwrap();
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        std::fs::write(&first, "").unwrap();
+        std::fs::write(&second, "").unwrap();
+
+        let examined = std::fs::metadata(&first).unwrap();
+
+        assert!(same_file(&examined, &std::fs::metadata(&first).unwrap()));
+        assert!(!same_file(&examined, &std::fs::metadata(&second).unwrap()));
     }
 
     #[cfg(unix)]
