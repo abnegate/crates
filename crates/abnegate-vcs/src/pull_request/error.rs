@@ -1,5 +1,6 @@
 use crate::branch_name::BranchName;
 use crate::parse_error::ParseError;
+use crate::pull_request::JobLogError;
 use thiserror::Error;
 
 /// What went wrong asking GitHub about, or acting on, a pull request or a
@@ -66,6 +67,16 @@ pub enum PullRequestError {
     /// to merge once it is ready: it can be merged now.
     #[error("The pull request can be merged now")]
     AlreadyMergeable,
+
+    /// More matched than GitHub lists of a search, which is 1,000, or GitHub
+    /// counted more than it listed; either way the list could not be read
+    /// whole, and no part of it is returned.
+    #[error("More matched than GitHub lists, so the list could not be read whole")]
+    SearchLimitReached,
+
+    /// A job's log could not be downloaded, for the reason given.
+    #[error(transparent)]
+    JobLog(#[from] JobLogError),
 
     /// The request did not complete, or its answer could not be read.
     #[error("HTTP error: {0}")]

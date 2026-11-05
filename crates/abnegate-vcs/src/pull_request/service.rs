@@ -36,6 +36,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use url::Url;
 
+mod actions;
 mod automation;
 mod branches;
 mod checks;
@@ -162,6 +163,8 @@ const GIT_SUFFIX: &str = ".git";
 ///   [`Self::delete_webhook`].
 /// - Finding and listing pull requests: [`Self::find_pull_request`],
 ///   [`Self::list_pull_requests`] and [`Self::list_files`].
+/// - Actions: [`Self::list_workflow_runs`], [`Self::fetch_workflow_job`] and
+///   [`Self::fetch_job_log`].
 ///
 /// Review threads, resolving one, an administrator's merge, auto-merge,
 /// drafts and a repository's merge settings go to GitHub's GraphQL API;
@@ -177,7 +180,9 @@ const GIT_SUFFIX: &str = ".git";
 /// body; a redirect to another origin, which would carry the token there; one
 /// whose `Location` is missing or cannot be read; one past the tenth hop; one
 /// that answers once the write's time is spent; and any redirect of a write
-/// whose body can be sent only once.
+/// whose body can be sent only once. [`Self::fetch_job_log`] alone follows
+/// one redirect off the origin, without the token, to where GitHub stores
+/// logs.
 ///
 /// A request is given 30 seconds from when it is first sent to the last byte
 /// of its answer, and every hop of a redirect spends them rather than starting

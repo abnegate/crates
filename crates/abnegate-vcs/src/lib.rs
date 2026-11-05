@@ -134,6 +134,12 @@ pub use crate::pull_request::GitHubPullRequest;
 pub use crate::pull_request::IssueComment;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::JobLog;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::JobLogError;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ListedPullRequest;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -207,6 +213,15 @@ pub use crate::pull_request::ThreadComment;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::WebhookEvent;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::WorkflowJob;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::WorkflowRun;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::WorkflowRunFilter;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::minutes_between;

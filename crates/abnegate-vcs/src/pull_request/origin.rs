@@ -105,6 +105,14 @@ impl Origin {
             .is_some_and(|addressed| host.eq_ignore_ascii_case(addressed))
     }
 
+    /// Whether `url` is on this origin: the same scheme, host and port, the
+    /// port a scheme implies counted as named.
+    pub(super) fn holds(&self, url: &Url) -> bool {
+        url.scheme() == self.url.scheme()
+            && url.host_str() == self.url.host_str()
+            && url.port_or_known_default() == self.url.port_or_known_default()
+    }
+
     /// The origin's URL with `segments` appended, each one percent-encoded as
     /// a single path segment, and never an empty segment where the configured
     /// URL ended in a slash.
@@ -228,6 +236,29 @@ mod tests {
                 .as_str(),
             "https://api.github.com/repos/acme/project"
         );
+    }
+
+    #[test]
+    fn an_origin_holds_only_its_own_scheme_host_and_port() {
+        let origin = Origin::configured("https://github.example.com/api/v3", false).unwrap();
+        for held in [
+            "https://github.example.com/storage/9",
+            "https://GitHub.Example.com:443/api/v3/x",
+        ] {
+            assert!(origin.holds(&Url::parse(held).unwrap()), "{held}");
+        }
+        for elsewhere in [
+            "http://github.example.com/storage/9",
+            "http://github.example.com:443/storage/9",
+            "https://github.example.com:8443/storage/9",
+            "https://api.github.example.com/storage/9",
+            "https://example.com/storage/9",
+        ] {
+            assert!(
+                !origin.holds(&Url::parse(elsewhere).unwrap()),
+                "{elsewhere}"
+            );
+        }
     }
 
     #[test]

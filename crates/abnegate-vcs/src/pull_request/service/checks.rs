@@ -174,7 +174,7 @@ impl PullRequestService {
 ///
 /// It is not when the walk stopped at [`MAXIMUM_PAGES`] on a full page, or
 /// when it collected fewer rows than the largest count a page gave.
-async fn walk<P: DeserializeOwned, R>(
+pub(super) async fn walk<P: DeserializeOwned, R>(
     service: &PullRequestService,
     url: &Url,
     token: &SecretValue,
