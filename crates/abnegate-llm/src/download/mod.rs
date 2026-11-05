@@ -1,6 +1,6 @@
-//! Resumable downloads of large model files.
+//! Resumable downloads of large files, such as model weights.
 //!
-//! [`download_gguf`] writes into a sibling `.part` file and renames it onto
+//! [`fetch`] writes into a sibling `.part` file and renames it onto
 //! the target only once the transfer is complete and, when the caller has
 //! one, its SHA-256 matches. A resume is only ever spliced onto the bytes of
 //! the same upstream file: the `.part` file's URL and its `ETag` or
@@ -54,7 +54,8 @@ const HASH_BUFFER_BYTES: usize = 1 << 20;
 /// A resume, then one fresh start if the resume could not be trusted.
 const ATTEMPTS: usize = 2;
 
-/// Download a GGUF file, resuming a partial download when one is present.
+/// Download the file at `url` to `target`, resuming a partial download when
+/// one is present.
 ///
 /// Bytes land in a sibling `.part` file that is renamed onto `target` only once
 /// the transfer completes, so an interrupted download never looks finished.
@@ -65,7 +66,7 @@ const ATTEMPTS: usize = 2;
 /// second is refused with [`DownloadError::InProgress`] rather than left to
 /// write into the same `.part` file. A transfer that fails or is dropped keeps
 /// the target until the bytes it had already received are on disk.
-pub async fn download_gguf(
+pub async fn fetch(
     url: &str,
     target: &Path,
     expected: Option<Checksum>,
@@ -81,6 +82,21 @@ pub async fn download_gguf(
             Err(error)
         }
     }
+}
+
+/// The former name of [`fetch`], from when the downloader was only used for
+/// GGUF weights.
+#[deprecated(
+    since = "0.1.10",
+    note = "renamed to `fetch`, which downloads any file"
+)]
+pub async fn download_gguf(
+    url: &str,
+    target: &Path,
+    expected: Option<Checksum>,
+    progress: Arc<DownloadProgress>,
+) -> Result<(), DownloadError> {
+    fetch(url, target, expected, progress).await
 }
 
 async fn transfer(
@@ -101,7 +117,7 @@ async fn transfer(
         .build()?;
 
     for _ in 0..ATTEMPTS {
-        if fetch(&client, url, &part, &lock, progress).await? {
+        if attempt(&client, url, &part, &lock, progress).await? {
             return finish(&part, target, expected).await;
         }
         discard(&part).await?;
@@ -117,7 +133,7 @@ async fn transfer(
 /// its end is no longer the offset of the next upstream byte. A body that
 /// fails partway leaves the `.part` file for the next call to resume, unless
 /// its length is wrong too, when it is discarded before the error returns.
-async fn fetch(
+async fn attempt(
     client: &Client,
     url: &str,
     part: &Path,
