@@ -170,8 +170,6 @@ fn to_model(model: Gpt4AllModel) -> ModelEntry {
     }
 }
 
-/// GPT4All publishes `filesize` as a string in some entries and a number in
-/// others.
 #[cfg(test)]
 mod tests {
     use super::*;
