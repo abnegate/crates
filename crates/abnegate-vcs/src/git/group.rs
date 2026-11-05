@@ -41,7 +41,7 @@ impl<L: Leader> Group<L> {
 
     /// A group torn down by `kill` in place of SIGKILL.
     #[cfg(test)]
-    fn killed_by(id: Pid, leader: L, kill: fn(Pid) -> nix::Result<()>) -> Self {
+    pub(crate) fn killed_by(id: Pid, leader: L, kill: fn(Pid) -> nix::Result<()>) -> Self {
         Self {
             id,
             leader: Some(leader),

@@ -28,6 +28,7 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
@@ -154,6 +155,8 @@ pub struct GitService {
     author_name: String,
     author_email: String,
     timeout: Duration,
+    #[cfg(all(test, unix))]
+    kill: Option<fn(nix::unistd::Pid) -> nix::Result<()>>,
 }
 
 impl Default for GitService {
@@ -177,6 +180,8 @@ impl GitService {
             author_name: DEFAULT_AUTHOR_NAME.to_string(),
             author_email: DEFAULT_AUTHOR_EMAIL.to_string(),
             timeout: DEFAULT_TIMEOUT,
+            #[cfg(all(test, unix))]
+            kill: None,
         }
     }
 
@@ -379,7 +384,7 @@ impl GitService {
         command.kill_on_drop(true);
         let child = command.spawn()?;
         #[cfg(unix)]
-        let mut group = Self::grouped(child)?;
+        let mut group = self.grouped(child)?;
         #[cfg(unix)]
         let child = group.leader();
         #[cfg(not(unix))]
@@ -393,16 +398,23 @@ impl GitService {
             }
             Ok::<(), std::io::Error>(())
         };
-        let (fed, output) = tokio::time::timeout(self.timeout, async {
+        let (fed, (status, drained)) = tokio::time::timeout(self.timeout, async {
             tokio::join!(feeding, Self::collected(child))
         })
         .await
         .map_err(|_| GitError::TimedOut)?;
-        fed?;
-        let output = output?;
         #[cfg(unix)]
-        group.disarm();
-        Ok(output)
+        if status.is_ok() {
+            group.disarm();
+        }
+        fed?;
+        let status = status?;
+        let (stdout, stderr) = drained?;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
     }
 
     /// Run a git command as [`Self::output`] does, but read at most `cap + 1`
@@ -422,7 +434,7 @@ impl GitService {
         command.kill_on_drop(true).stdout(Stdio::piped());
         let child = command.spawn()?;
         #[cfg(unix)]
-        let mut group = Self::grouped(child)?;
+        let mut group = self.grouped(child)?;
         #[cfg(unix)]
         let child = group.leader();
         #[cfg(not(unix))]
@@ -471,25 +483,32 @@ impl GitService {
 
     /// The process group `child` was started as the first process of.
     #[cfg(unix)]
-    fn grouped(child: Child) -> std::io::Result<Group<Child>> {
+    fn grouped(&self, child: Child) -> std::io::Result<Group<Child>> {
         let id = child
             .id()
             .ok_or_else(|| std::io::Error::other("Git process has no ID"))?;
-        Ok(Group::new(nix::unistd::Pid::from_raw(id as i32), child))
+        let id = nix::unistd::Pid::from_raw(id as i32);
+        #[cfg(test)]
+        if let Some(kill) = self.kill {
+            return Ok(Group::killed_by(id, child, kill));
+        }
+        Ok(Group::new(id, child))
     }
 
-    /// Everything `child` writes to its standard output and error, read
-    /// while it runs, and how it exited.
-    async fn collected(child: &mut Child) -> std::io::Result<Output> {
+    /// How `child` exited, and everything it wrote to its standard output
+    /// and error, read while it ran. The exit is kept apart from the reads,
+    /// so a read that fails cannot hide that the child was reaped.
+    async fn collected(
+        child: &mut Child,
+    ) -> (
+        std::io::Result<ExitStatus>,
+        std::io::Result<(Vec<u8>, Vec<u8>)>,
+    ) {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let (status, stdout, stderr) =
-            tokio::try_join!(child.wait(), Self::drained(stdout), Self::drained(stderr))?;
-        Ok(Output {
-            status,
-            stdout,
-            stderr,
-        })
+            tokio::join!(child.wait(), Self::drained(stdout), Self::drained(stderr));
+        (status, stdout.and_then(|stdout| Ok((stdout, stderr?))))
     }
 
     /// Everything `pipe` holds until it is closed; nothing when there is none.
@@ -699,10 +718,18 @@ mod process_tests {
     use super::hardened::fixtures::alive;
     use super::hardened::fixtures::marker;
     use super::*;
+    use nix::errno::Errno;
     use nix::sys::signal::Signal;
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
+    use std::io::ErrorKind;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    /// More standard input than a pipe holds, so feeding it cannot finish
+    /// before the command reading it has exited.
+    const UNREAD: usize = 1 << 20;
 
     async fn cancellation(timeout: bool) {
         let fixture = tempfile::tempdir().unwrap();
@@ -878,5 +905,34 @@ mod process_tests {
         let _ = kill(Pid::from_raw(background as i32), Signal::SIGKILL);
 
         assert!(survived, "a reaped command's group was signalled");
+    }
+
+    /// A command that exits before reading its standard input fails the
+    /// feed, but it was reaped first, so its group identifier is already free
+    /// and nothing may be signalled through it.
+    #[tokio::test]
+    async fn a_command_that_exits_before_its_input_is_fed_leaves_its_group_alone() {
+        static SENT: AtomicUsize = AtomicUsize::new(0);
+        fn counted(_group: Pid) -> nix::Result<()> {
+            SENT.fetch_add(1, Ordering::SeqCst);
+            Err(Errno::ESRCH)
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        executable(fixture.path(), "git", "#!/bin/sh\nexit 0\n");
+        let mut service = GitService::new();
+        service.kill = Some(counted);
+        let mut command = GitService::invoking(&fixture.path().join("git"));
+
+        let result = service.fed(&mut command, &vec![0; UNREAD]).await;
+
+        assert!(
+            matches!(&result, Err(GitError::Io(error)) if error.kind() == ErrorKind::BrokenPipe),
+            "{result:?}"
+        );
+        assert_eq!(
+            SENT.load(Ordering::SeqCst),
+            0,
+            "a reaped command's group was signalled"
+        );
     }
 }
