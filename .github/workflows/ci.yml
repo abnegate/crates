@@ -203,9 +203,9 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
-      - name: Time the secret scanners in a release build
+      - name: Run the slow secret tests in a release build
         if: contains(fromJSON(needs.changes.outputs.packages), 'abnegate-secret')
-        run: cargo test -p abnegate-secret --release -- --ignored
+        run: cargo test -p abnegate-secret --release --features derivation -- --ignored
         env:
           RUST_BACKTRACE: 1
 
