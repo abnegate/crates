@@ -15,6 +15,7 @@ use fastembed::TextInitOptions;
 pub use crate::modality::vendor::fastembed::config::FastembedConfig;
 
 use crate::modality::EmbeddingProvider;
+use crate::modality::embedding_provider::DEFAULT_MAXIMUM_INPUT_TOKENS;
 use crate::provider::ProviderError;
 
 const NAME: &str = "fastembed";
@@ -31,6 +32,8 @@ pub struct FastembedProvider {
     next: AtomicUsize,
     dimensions: u32,
     model_name: String,
+    configured_model: String,
+    maximum_input_tokens: u32,
     batch_size: Option<usize>,
 }
 
@@ -39,7 +42,9 @@ impl std::fmt::Debug for FastembedProvider {
         formatter
             .debug_struct("FastembedProvider")
             .field("model", &self.model_name)
+            .field("configured_model", &self.configured_model)
             .field("dimensions", &self.dimensions)
+            .field("maximum_input_tokens", &self.maximum_input_tokens)
             .field("pool_size", &self.pool.len())
             .field("batch_size", &self.batch_size)
             .finish()
@@ -79,27 +84,24 @@ impl FastembedProvider {
             next: AtomicUsize::new(0),
             dimensions,
             model_name,
+            configured_model: config.model_name().to_string(),
+            maximum_input_tokens: config
+                .maximum_input_tokens
+                .unwrap_or(DEFAULT_MAXIMUM_INPUT_TOKENS),
             batch_size: config.batch_size,
         })
     }
 
-    /// The model this provider loaded.
+    /// The fastembed model this provider loaded, such as `AllMiniLML6V2`.
+    /// [`EmbeddingProvider::model`] answers with the name the config gave
+    /// instead, such as `all-minilm:latest`.
     pub fn model(&self) -> &str {
         &self.model_name
     }
 
     /// One embedding for each of `texts`, on this thread.
     pub fn embed_blocking(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ProviderError> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let instance = self.acquire();
-        let mut model = instance.lock().map_err(|error| {
-            ProviderError::agent(NAME, &format!("model lock poisoned: {error}"))
-        })?;
-        model
-            .embed(texts, self.batch_size)
-            .map_err(|error| ProviderError::agent(NAME, &error.to_string()))
+        embed_in_length_order(&self.acquire(), texts, self.batch_size)
     }
 
     /// The embedding of `text` alone, on this thread.
@@ -113,6 +115,45 @@ impl FastembedProvider {
         let index = self.next.fetch_add(1, Ordering::Relaxed) % self.pool.len();
         self.pool[index].clone()
     }
+}
+
+/// One embedding for each of `texts`, in input order, from a session that
+/// saw them shortest first.
+fn embed_in_length_order(
+    session: &Mutex<TextEmbedding>,
+    texts: &[String],
+    batch_size: Option<usize>,
+) -> Result<Vec<Vec<f32>>, ProviderError> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let order = length_order(texts);
+    let sorted: Vec<&str> = order.iter().map(|&index| texts[index].as_str()).collect();
+    let embeddings = {
+        let mut model = session.lock().map_err(|error| {
+            ProviderError::agent(NAME, &format!("model lock poisoned: {error}"))
+        })?;
+        model
+            .embed(&sorted, batch_size)
+            .map_err(|error| ProviderError::agent(NAME, &error.to_string()))?
+    };
+    Ok(restore_order(&order, embeddings))
+}
+
+/// The indices of `texts`, shortest text first, with texts of equal length
+/// kept in input order.
+fn length_order(texts: &[String]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..texts.len()).collect();
+    order.sort_by_key(|&index| texts[index].len());
+    order
+}
+
+/// `sorted` put back in input order, where `sorted[position]` belongs at
+/// `order[position]`.
+fn restore_order<T>(order: &[usize], sorted: Vec<T>) -> Vec<T> {
+    let mut placed: Vec<(usize, T)> = order.iter().copied().zip(sorted).collect();
+    placed.sort_unstable_by_key(|&(index, _)| index);
+    placed.into_iter().map(|(_, item)| item).collect()
 }
 
 fn load_cached_session(
@@ -143,6 +184,10 @@ fn load_session(
     if let Some(cache_directory) = &config.cache_directory {
         options = options.with_cache_dir(cache_directory.clone());
     }
+    if let Some(maximum_input_tokens) = config.maximum_input_tokens {
+        options =
+            options.with_max_length(usize::try_from(maximum_input_tokens).unwrap_or(usize::MAX));
+    }
     TextEmbedding::try_new(options).map_err(|error| ProviderError::config(error.to_string()))
 }
 
@@ -156,20 +201,23 @@ impl EmbeddingProvider for FastembedProvider {
         self.dimensions
     }
 
+    fn model(&self) -> &str {
+        &self.configured_model
+    }
+
+    fn maximum_input_tokens(&self) -> u32 {
+        self.maximum_input_tokens
+    }
+
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ProviderError> {
         let instance = self.acquire();
         let batch_size = self.batch_size;
         let texts = texts.to_vec();
-        tokio::task::spawn_blocking(move || {
-            let mut model = instance.lock().map_err(|error| {
-                ProviderError::agent(NAME, &format!("model lock poisoned: {error}"))
-            })?;
-            model
-                .embed(texts, batch_size)
-                .map_err(|error| ProviderError::agent(NAME, &error.to_string()))
-        })
-        .await
-        .map_err(|error| ProviderError::agent(NAME, &format!("embedding task panicked: {error}")))?
+        tokio::task::spawn_blocking(move || embed_in_length_order(&instance, &texts, batch_size))
+            .await
+            .map_err(|error| {
+                ProviderError::agent(NAME, &format!("embedding task panicked: {error}"))
+            })?
     }
 
     async fn embed_single(&self, text: &str) -> Result<Vec<f32>, ProviderError> {
@@ -209,9 +257,43 @@ mod tests {
     use super::FastembedConfig;
     use super::FastembedProvider;
     use super::cache;
+    use super::length_order;
+    use super::restore_order;
     use crate::modality::EmbeddingProvider;
 
     const HOLD: Duration = Duration::from_secs(1);
+    const TRUNCATED_MODEL: &str = "all-minilm:latest";
+    const TRUNCATED_INPUT_TOKENS: u32 = 8;
+    const SAME_VECTOR: f32 = 1e-5;
+    const NEAR_VECTOR: f32 = 1e-3;
+    const SHARED_PREFIX: &str = "the quick brown fox jumps over the lazy dog while the sleepy \
+        cat watches from a sunny window ledge every single morning";
+
+    fn truncated() -> &'static FastembedProvider {
+        static PROVIDER: std::sync::OnceLock<FastembedProvider> = std::sync::OnceLock::new();
+        PROVIDER.get_or_init(|| {
+            FastembedProvider::new(
+                FastembedConfig::fast()
+                    .with_model(TRUNCATED_MODEL)
+                    .with_maximum_input_tokens(TRUNCATED_INPUT_TOKENS),
+            )
+            .expect("truncated test embedding model")
+        })
+    }
+
+    fn distance(left: &[f32], right: &[f32]) -> f32 {
+        left.iter()
+            .zip(right)
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0, f32::max)
+    }
+
+    fn diverging_tails() -> Vec<String> {
+        vec![
+            format!("{SHARED_PREFIX} before the rain arrives over the hills"),
+            format!("{SHARED_PREFIX} and quantum chromodynamics explains hadron masses"),
+        ]
+    }
 
     #[test]
     fn an_unknown_model_fails_before_the_session_loads() {
@@ -246,6 +328,81 @@ mod tests {
         assert_eq!(vectors[0].len(), provider.dimensions() as usize);
         let single = provider.embed_single("hello").await.unwrap();
         assert_eq!(single.len(), provider.dimensions() as usize);
+    }
+
+    #[test]
+    fn a_local_model_keeps_fastembeds_length_unless_told_otherwise() {
+        assert!(FastembedConfig::fast().maximum_input_tokens.is_none());
+        let provider = FastembedProvider::for_tests();
+        assert_eq!(provider.maximum_input_tokens(), 512);
+        let vectors = provider.embed_blocking(&diverging_tails()).unwrap();
+        assert!(
+            distance(&vectors[0], &vectors[1]) > SAME_VECTOR,
+            "the default length dropped the tails"
+        );
+    }
+
+    #[test]
+    fn a_local_model_ignores_text_past_its_maximum_input_tokens() {
+        let vectors = truncated().embed_blocking(&diverging_tails()).unwrap();
+        assert!(
+            distance(&vectors[0], &vectors[1]) <= SAME_VECTOR,
+            "read past {TRUNCATED_INPUT_TOKENS} tokens"
+        );
+    }
+
+    #[test]
+    fn a_local_model_reports_its_model_and_input_limit() {
+        let provider = truncated();
+        assert_eq!(EmbeddingProvider::model(provider), TRUNCATED_MODEL);
+        assert_eq!(provider.model(), "AllMiniLML6V2");
+        assert_eq!(provider.maximum_input_tokens(), TRUNCATED_INPUT_TOKENS);
+        assert_eq!(provider.maximum_input_characters(), 512);
+        let default = FastembedProvider::for_tests();
+        assert_eq!(EmbeddingProvider::model(&*default), "all-minilm-l6-v2");
+        let unnamed = FastembedConfig::new().with_model(" ");
+        assert_eq!(unnamed.model_name(), "nomic-embed-text-v1.5");
+    }
+
+    #[test]
+    fn a_batch_is_ordered_by_length_and_restored() {
+        let texts: Vec<String> = ["ccc", "a", "bb", "d", "", "eee"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let order = length_order(&texts);
+        assert_eq!(order, [4, 1, 3, 2, 0, 5]);
+        let sorted: Vec<String> = order.iter().map(|&index| texts[index].clone()).collect();
+        assert_eq!(sorted, ["", "a", "d", "bb", "ccc", "eee"]);
+        assert_eq!(restore_order(&order, sorted), texts);
+        assert!(length_order(&[]).is_empty());
+        assert!(restore_order::<String>(&[], Vec::new()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_mixed_batch_comes_back_in_input_order() {
+        let provider = FastembedProvider::for_tests();
+        let texts = vec![
+            format!("{SHARED_PREFIX} and then some more words to make it longest"),
+            "hi".to_string(),
+            SHARED_PREFIX.to_string(),
+        ];
+        let singles: Vec<Vec<f32>> = texts
+            .iter()
+            .map(|text| provider.embed_single_blocking(text).unwrap())
+            .collect();
+        let blocking = provider.embed_blocking(&texts).unwrap();
+        let through_the_trait = provider.embed(&texts).await.unwrap();
+        for (position, single) in singles.iter().enumerate() {
+            assert!(
+                distance(&blocking[position], single) < NEAR_VECTOR,
+                "blocking embedding {position} moved"
+            );
+            assert!(
+                distance(&through_the_trait[position], single) < NEAR_VECTOR,
+                "trait embedding {position} moved"
+            );
+        }
     }
 
     #[test]
