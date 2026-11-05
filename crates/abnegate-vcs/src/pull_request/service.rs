@@ -54,6 +54,7 @@ mod redirect_tests;
 mod releases;
 mod repositories;
 mod threads;
+mod trees;
 mod webhooks;
 
 /// What this crate calls itself to the GitHub API.
@@ -173,6 +174,7 @@ const GIT_SUFFIX: &str = ".git";
 /// - Issues: [`Self::list_issues`], [`Self::fetch_issue`],
 ///   [`Self::list_comments`], [`Self::create_issue`], [`Self::update_issue`],
 ///   [`Self::close_issue`] and [`Self::post_comment`].
+/// - Trees and blobs: [`Self::fetch_tree`] and [`Self::fetch_blob`].
 ///
 /// Review threads, resolving one, an administrator's merge, auto-merge,
 /// drafts and a repository's merge settings go to GitHub's GraphQL API;
@@ -213,7 +215,9 @@ const GIT_SUFFIX: &str = ".git";
 /// 16 MiB and never parsed in part, so a longer page is
 /// [`PullRequestError::GitHubApi`] rather than a shorter list.
 /// [`Self::fetch_diff`] and [`Self::fetch_file`] read only as far as the limit
-/// their caller passes.
+/// their caller passes, and [`Self::fetch_blob`] only as far as the base64
+/// that limit takes, reporting a blob past it as
+/// [`PullRequestError::TooLarge`].
 ///
 /// [`Self::merge`] asks through REST first, and only a refusal by branch
 /// protection is asked again through the administrator's GraphQL mutation.

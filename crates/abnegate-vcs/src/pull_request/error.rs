@@ -78,6 +78,11 @@ pub enum PullRequestError {
     #[error(transparent)]
     JobLog(#[from] JobLogError),
 
+    /// The content is larger than the limit the caller set, so it was not
+    /// read.
+    #[error("The content is larger than the limit the caller set")]
+    TooLarge,
+
     /// The request did not complete, or its answer could not be read.
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
