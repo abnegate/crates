@@ -17,7 +17,6 @@ const MINIMUM_CONCEALED_KEY_LENGTH: usize = 8;
 const TOKEN_SEPARATORS: [char; 16] = [
     '"', '\'', '`', ',', ';', '(', ')', '[', ']', '{', '}', '<', '>', '=', ':', '\\',
 ];
-const TERMINAL_PUNCTUATION: [char; 2] = ['.', '!'];
 const MESSAGE_POINTERS: [&str; 3] = ["/error/message", "/error", "/message"];
 const TENANT_BODY_LIMIT: usize = 64 * 1024;
 
@@ -89,53 +88,65 @@ impl Reporter {
 ///
 /// A trimmed `key` of at least [`MINIMUM_CONCEALED_KEY_LENGTH`] characters is
 /// concealed by [`conceal`], wherever it appears, whole or masked. A shorter
-/// one, such as `sk-1234` or `hunter2`, is concealed only where it stands as
-/// a whole token, so that a placeholder such as `len` or `token` cannot
-/// garble "the input length" or "too many tokens". A blank `key` leaves
-/// `text` untouched.
+/// one, such as `sk-1234` or `hunter2`, is concealed only where it stands
+/// between word boundaries, so that a placeholder such as `len` or `token`
+/// cannot garble "the input length" or "too many tokens". A blank `key`
+/// leaves `text` untouched.
 pub(crate) fn conceal_key(text: &str, key: &str) -> String {
     let key = key.trim();
     if key.is_empty() {
         return text.to_string();
     }
     if key.chars().count() < MINIMUM_CONCEALED_KEY_LENGTH {
-        return conceal_tokens(text, key);
+        return conceal_bounded(text, key);
     }
     conceal(text, key)
 }
 
-/// `text` with every token that is `key` replaced by [`REDACTED`], and every
-/// separator around it kept as it was.
-fn conceal_tokens(text: &str, key: &str) -> String {
+/// `text` with every echo of `key` that [`opens`] and [`closes`] a word
+/// replaced by [`REDACTED`], and every byte outside those echoes kept as it
+/// was.
+///
+/// An echo that is not bounded is stepped past one character at a time, not
+/// by its whole length, so a bounded echo overlapping it is still found when
+/// `key` holds a separator.
+fn conceal_bounded(text: &str, key: &str) -> String {
     let mut concealed = String::with_capacity(text.len());
-    for piece in text.split_inclusive(separates) {
-        let token = piece.strip_suffix(separates).unwrap_or(piece);
-        match echoed(token, key) {
-            Some(punctuation) => {
-                concealed.push_str(REDACTED);
-                concealed.push_str(punctuation);
-            }
-            None => concealed.push_str(token),
+    let mut kept = 0;
+    let mut from = 0;
+    while let Some(found) = text[from..].find(key) {
+        let start = from + found;
+        let end = start + key.len();
+        if opens(&text[..start]) && closes(&text[end..]) {
+            concealed.push_str(&text[kept..start]);
+            concealed.push_str(REDACTED);
+            kept = end;
+            from = end;
+        } else {
+            from = start + text[start..].chars().next().map_or(1, char::len_utf8);
         }
-        concealed.push_str(&piece[token.len()..]);
     }
+    concealed.push_str(&text[kept..]);
     concealed
 }
 
-/// The [`TERMINAL_PUNCTUATION`] that follows `key` in `token`, empty when
-/// `token` is `key` itself, or `None` when `token` is not an echo of `key`.
-fn echoed<'a>(token: &'a str, key: &str) -> Option<&'a str> {
-    if token == key {
-        return Some("");
-    }
-    token
-        .strip_suffix(TERMINAL_PUNCTUATION)
-        .filter(|stripped| *stripped == key)
-        .map(|stripped| &token[stripped.len()..])
+/// Whether a word may start after `before`: at the start of the text, or
+/// after whitespace or one of the [`TOKEN_SEPARATORS`].
+fn opens(before: &str) -> bool {
+    before
+        .chars()
+        .next_back()
+        .is_none_or(|character| character.is_whitespace() || TOKEN_SEPARATORS.contains(&character))
 }
 
-fn separates(character: char) -> bool {
-    character.is_whitespace() || TOKEN_SEPARATORS.contains(&character)
+/// Whether a word may end before `after`: at the end of the text, or before
+/// whitespace or any ASCII punctuation, which covers every one of the
+/// [`TOKEN_SEPARATORS`].
+fn closes(after: &str) -> bool {
+    after
+        .chars()
+        .next()
+        .is_none_or(|character| character.is_whitespace() || character.is_ascii_punctuation())
 }
 
 /// At most `limit` bytes of `body`, read chunk by chunk and no further, as
@@ -262,9 +273,46 @@ mod tests {
 
     #[test]
     fn a_short_key_inside_a_longer_token_is_left_alone() {
-        let text = "sk-12345 xsk-1234 sk-1234.5 sk-1234?";
+        let text = "sk-12345 xsk-1234 sk-1234a -sk-1234 sk-1234é";
 
         assert_eq!(conceal_key(text, SHORT_KEY), text);
+    }
+
+    #[test]
+    fn a_short_key_holding_a_separator_is_concealed() {
+        for (key, echoed, concealed) in [
+            (
+                "pa:ss1",
+                "bad password pa:ss1",
+                format!("bad password {REDACTED}"),
+            ),
+            (
+                "a=b c",
+                "key a=b c rejected",
+                format!("key {REDACTED} rejected"),
+            ),
+            ("b:b", "xb:b:b", format!("xb:{REDACTED}")),
+        ] {
+            assert_eq!(conceal_key(echoed, key), concealed, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn a_short_key_before_any_punctuation_is_concealed() {
+        for echoed in ["sk-1234?", "sk-1234)", r#""sk-1234","#, "sk-1234.5"] {
+            let concealed = conceal_key(echoed, SHORT_KEY);
+
+            assert_eq!(concealed, echoed.replace(SHORT_KEY, REDACTED), "{echoed:?}");
+        }
+    }
+
+    #[test]
+    fn a_short_placeholder_never_mangles_a_word_holding_it() {
+        let phrases =
+            "the input length exceeds the context length; too many tokens, EMPTYING ollamas";
+        for key in ["x", "len", "token", "e", "EMPTY", "ollama"] {
+            assert_eq!(conceal_key(phrases, key), phrases, "{key:?}");
+        }
     }
 
     #[test]
