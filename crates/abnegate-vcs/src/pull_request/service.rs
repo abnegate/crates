@@ -146,7 +146,8 @@ const GIT_SUFFIX: &str = ".git";
 /// - Reading: [`Self::fetch_pull`], [`Self::fetch_files`],
 ///   [`Self::fetch_diff`], [`Self::fetch_file`], [`Self::fetch_mergeability`]
 ///   and [`Self::fetch_reception`].
-/// - Checking: [`Self::fetch_checks`].
+/// - Checking: [`Self::fetch_checks`], [`Self::fetch_check_runs`] and
+///   [`Self::fetch_statuses`].
 /// - Reviewing: [`Self::fetch_issue_comments`], [`Self::post_issue_comment`],
 ///   [`Self::fetch_reviews`], [`Self::submit_review`],
 ///   [`Self::fetch_review_threads`],

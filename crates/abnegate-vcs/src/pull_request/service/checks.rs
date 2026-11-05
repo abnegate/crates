@@ -1,12 +1,17 @@
 use super::*;
 use crate::commit_sha::CommitSha;
+use crate::pull_request::CheckRun;
 use crate::pull_request::ChecksOutcome;
+use crate::pull_request::Collected;
+use crate::pull_request::CommitStatus;
 use crate::pull_request::github_check_conclusion::GitHubCheckConclusion;
 use crate::pull_request::github_check_run::GitHubCheckRun;
+use crate::pull_request::github_check_run_record::GitHubCheckRunRecord;
 use crate::pull_request::github_check_runs::GitHubCheckRuns;
 use crate::pull_request::github_check_status::GitHubCheckStatus;
 use crate::pull_request::github_combined_status::GitHubCombinedStatus;
 use crate::pull_request::github_commit_status::GitHubCommitStatus;
+use crate::pull_request::github_commit_status_record::GitHubCommitStatusRecord;
 use crate::pull_request::github_status_state::GitHubStatusState;
 use std::collections::BTreeSet;
 
@@ -82,6 +87,85 @@ impl PullRequestService {
         )?;
 
         Ok(fold(&runs, &statuses, every_run && every_status))
+    }
+
+    /// The latest attempt of every check run on `commit`, in the order GitHub
+    /// lists them, read page after page, and whether that is every run.
+    ///
+    /// The read stops at the tenth page, so a full tenth page, or fewer runs
+    /// than GitHub counted, is [`Collected::complete`] `false`, never a
+    /// shorter list passed off as all of them. A run GitHub sends without a
+    /// status, or a page longer than the 16 MiB this crate reads, is
+    /// [`PullRequestError::GitHubApi`], and a run on a commit this crate does
+    /// not accept is [`PullRequestError::Parse`]: never a partial list.
+    pub async fn fetch_check_runs(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        commit: &CommitSha,
+    ) -> PullRequestResult<Collected<CheckRun>> {
+        let mut url = self.on_commit(repository, commit, "check-runs");
+        url.query_pairs_mut().append_pair("filter", "latest");
+
+        let (runs, complete) = walk(
+            self,
+            &url,
+            token,
+            |page: GitHubCheckRuns<GitHubCheckRunRecord>| (page.total_count, page.check_runs),
+        )
+        .await?;
+        let runs = runs
+            .into_iter()
+            .map(CheckRun::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Collected::new(runs, complete))
+    }
+
+    /// The latest status every context reported on `commit`, from its
+    /// combined status, in the order GitHub lists them, read page after page,
+    /// and whether that is every status.
+    ///
+    /// GitHub keeps only each context's latest status there, so a context
+    /// that failed and then passed reads as passed. The read stops at the
+    /// tenth page, so a full tenth page, or fewer statuses than GitHub
+    /// counted, is [`Collected::complete`] `false`. A status GitHub sends
+    /// without its context or state, or a page longer than the 16 MiB this
+    /// crate reads, is [`PullRequestError::GitHubApi`]: never a partial list.
+    pub async fn fetch_statuses(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        commit: &CommitSha,
+    ) -> PullRequestResult<Collected<CommitStatus>> {
+        let url = self.on_commit(repository, commit, "status");
+
+        let (statuses, complete) = walk(
+            self,
+            &url,
+            token,
+            |page: GitHubCombinedStatus<GitHubCommitStatusRecord>| {
+                (page.total_count, page.statuses)
+            },
+        )
+        .await?;
+
+        Ok(Collected::new(
+            statuses.into_iter().map(CommitStatus::from).collect(),
+            complete,
+        ))
+    }
+
+    /// Where `resource` on `commit` in `repository` is read.
+    fn on_commit(&self, repository: &Repository, commit: &CommitSha, resource: &str) -> Url {
+        self.origin.endpoint(&[
+            "repos",
+            repository.owner(),
+            repository.name(),
+            "commits",
+            commit.as_str(),
+            resource,
+        ])
     }
 }
 
@@ -163,6 +247,7 @@ fn concluded(run: &GitHubCheckRun, conclusions: &[GitHubCheckConclusion]) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse_error::ParseError;
     use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
@@ -695,6 +780,338 @@ mod tests {
             outcome(&server, &sha).await,
             ChecksOutcome::Pending,
             "a run GitHub marked stale never said it passed"
+        );
+    }
+
+    /// `count` runs on `sha` that finished and passed, each under its own
+    /// name and identifier.
+    fn passing_on(sha: &CommitSha, count: usize) -> Vec<Value> {
+        (0..count)
+            .map(|index| {
+                json!({
+                    "id": index,
+                    "name": format!("check-{index}"),
+                    "head_sha": sha.as_str(),
+                    "status": "completed",
+                    "conclusion": "success",
+                })
+            })
+            .collect()
+    }
+
+    async fn check_runs(server: &MockServer, sha: &CommitSha) -> Collected<CheckRun> {
+        let service = stand_in(server).await;
+        service
+            .fetch_check_runs(&project(&service), &token(), sha)
+            .await
+            .unwrap()
+    }
+
+    async fn commit_statuses(server: &MockServer, sha: &CommitSha) -> Collected<CommitStatus> {
+        let service = stand_in(server).await;
+        service
+            .fetch_statuses(&project(&service), &token(), sha)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_failed_run_past_the_first_page_is_returned() {
+        let server = MockServer::start().await;
+        let sha = commit('1');
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .and(header("authorization", "Bearer token"))
+            .and(query_param("filter", "latest"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(answer(json!({ "check_runs": passing_on(&sha, PAGE_SIZE) })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .and(query_param("filter", "latest"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "2"))
+            .respond_with(answer(json!({
+                "check_runs": [{
+                    "id": 900,
+                    "name": "deploy",
+                    "head_sha": sha.as_str(),
+                    "status": "completed",
+                    "conclusion": "failure",
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 1);
+        assert_eq!(
+            read.items.last(),
+            Some(
+                &CheckRun::new("completed")
+                    .with_id(900)
+                    .with_name("deploy")
+                    .with_head_sha(sha.clone())
+                    .with_conclusion("failure")
+            ),
+            "the failure on the second page is read"
+        );
+        assert!(
+            read.complete,
+            "a short second page ends the walk with every run"
+        );
+    }
+
+    #[tokio::test]
+    async fn fewer_runs_than_github_counted_are_incomplete() {
+        let server = MockServer::start().await;
+        let sha = commit('2');
+        let counted = 150;
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .and(query_param("page", "1"))
+            .respond_with(answer(json!({
+                "total_count": counted,
+                "check_runs": passing_on(&sha, PAGE_SIZE),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .and(query_param("page", "2"))
+            .respond_with(answer(json!({
+                "total_count": counted,
+                "check_runs": passing_on(&sha, 10),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 10);
+        assert!(
+            !read.complete,
+            "110 runs read of 150 counted are not every run"
+        );
+    }
+
+    #[tokio::test]
+    async fn runs_stopped_at_the_page_limit_on_a_full_page_are_incomplete() {
+        let server = MockServer::start().await;
+        let sha = commit('3');
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .respond_with(answer(json!({ "check_runs": passing_on(&sha, PAGE_SIZE) })))
+            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
+            .mount(&server)
+            .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE * MAXIMUM_PAGES);
+        assert!(
+            !read.complete,
+            "a walk stopped on a full tenth page may have missed a run"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_field_of_a_run_is_read_and_a_missing_head_sha_is_none() {
+        let server = MockServer::start().await;
+        let sha = commit('4');
+        answering(
+            &server,
+            runs(&sha),
+            json!({
+                "total_count": 2,
+                "check_runs": [
+                    {
+                        "id": 7,
+                        "name": "build",
+                        "head_sha": sha.as_str().to_ascii_uppercase(),
+                        "status": "completed",
+                        "conclusion": "success",
+                        "html_url": "https://github.com/acme/project/runs/7",
+                        "details_url": "https://ci.example/7",
+                        "started_at": "2026-09-28T02:51:09Z",
+                        "completed_at": "2026-09-28T02:52:09Z",
+                    },
+                    { "status": "in_progress", "conclusion": null },
+                ],
+            }),
+        )
+        .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(
+            read,
+            Collected::new(
+                vec![
+                    CheckRun::new("completed")
+                        .with_id(7)
+                        .with_name("build")
+                        .with_head_sha(sha.clone())
+                        .with_conclusion("success")
+                        .with_url("https://github.com/acme/project/runs/7")
+                        .with_details_url("https://ci.example/7")
+                        .with_started_at("2026-09-28T02:51:09Z")
+                        .with_completed_at("2026-09-28T02:52:09Z"),
+                    CheckRun::new("in_progress"),
+                ],
+                true,
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_this_crate_cannot_hold_fails_the_whole_read() {
+        let refusals: [(Value, Expected); 2] = [
+            (
+                json!({ "name": "build", "head_sha": "HEAD", "status": "completed" }),
+                |failure| matches!(failure, PullRequestError::Parse(ParseError::CommitSha(value)) if value == "HEAD"),
+            ),
+            (
+                json!({ "name": "build", "conclusion": "success" }),
+                |failure| matches!(failure, PullRequestError::GitHubApi(text) if text == UNREADABLE),
+            ),
+        ];
+
+        for (row, expected) in refusals {
+            let server = MockServer::start().await;
+            let sha = commit('5');
+            answering(&server, runs(&sha), json!({ "check_runs": [row] })).await;
+            let service = stand_in(&server).await;
+
+            let read = service
+                .fetch_check_runs(&project(&service), &token(), &sha)
+                .await;
+
+            assert!(read.as_ref().is_err_and(expected), "{row}: {read:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn statuses_are_read_from_the_combined_status_page_after_page() {
+        let server = MockServer::start().await;
+        let sha = commit('6');
+        let first: Vec<Value> = (0..PAGE_SIZE)
+            .map(|index| json!({ "context": format!("ci/{index}"), "state": "success" }))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/acme/project/commits/{sha}/statuses")))
+            .respond_with(answer(json!([])))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/acme/project/commits/{sha}/status")))
+            .and(header("authorization", "Bearer token"))
+            .and(query_param_is_missing("filter"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(answer(json!({
+                "state": "failure",
+                "total_count": PAGE_SIZE + 1,
+                "statuses": first,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/acme/project/commits/{sha}/status")))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "2"))
+            .respond_with(answer(json!({
+                "state": "failure",
+                "total_count": PAGE_SIZE + 1,
+                "statuses": [{ "context": "ci/deploy", "state": "failure" }],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let read = commit_statuses(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 1);
+        assert_eq!(
+            read.items.last(),
+            Some(&CommitStatus::new("ci/deploy", "failure")),
+            "the status on the second page is read"
+        );
+        assert!(read.complete);
+    }
+
+    #[tokio::test]
+    async fn statuses_come_back_as_github_listed_them() {
+        let server = MockServer::start().await;
+        let sha = commit('7');
+        answering(
+            &server,
+            statuses(&sha),
+            json!({
+                "state": "pending",
+                "total_count": 3,
+                "statuses": [
+                    {
+                        "context": "ci/test",
+                        "state": "pending",
+                        "description": "Running",
+                        "target_url": "https://ci.example/test",
+                        "created_at": "2026-09-28T02:51:09Z",
+                    },
+                    { "context": "ci/deploy", "state": "error", "description": null },
+                    { "context": "ci/build", "state": "success" },
+                ],
+            }),
+        )
+        .await;
+
+        let read = commit_statuses(&server, &sha).await;
+
+        assert_eq!(
+            read,
+            Collected::new(
+                vec![
+                    CommitStatus::new("ci/test", "pending")
+                        .with_description("Running")
+                        .with_target_url("https://ci.example/test")
+                        .with_created_at("2026-09-28T02:51:09Z"),
+                    CommitStatus::new("ci/deploy", "error"),
+                    CommitStatus::new("ci/build", "success"),
+                ],
+                true,
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn fewer_statuses_than_github_counted_are_incomplete() {
+        let server = MockServer::start().await;
+        let sha = commit('8');
+        answering(
+            &server,
+            statuses(&sha),
+            json!({
+                "total_count": 2,
+                "statuses": [{ "context": "ci/deploy", "state": "success" }],
+            }),
+        )
+        .await;
+
+        let read = commit_statuses(&server, &sha).await;
+
+        assert_eq!(read.items, vec![CommitStatus::new("ci/deploy", "success")]);
+        assert!(
+            !read.complete,
+            "one status read of two counted is not every status"
         );
     }
 }
