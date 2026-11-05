@@ -5,8 +5,10 @@ use crate::hardware::GpuType;
 use crate::hardware::ModelRecommendation;
 use crate::hardware::NO_LOCAL_MODEL;
 use crate::hardware::RecommendedModels;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crate::hardware::system_memory_bytes;
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const BYTES_PER_GIGABYTE: f64 = 1024.0 * 1024.0 * 1024.0;
 #[cfg(any(target_os = "linux", test))]
 const MEGABYTES_PER_GIGABYTE: f64 = 1024.0;
@@ -244,15 +246,7 @@ impl MachineProfile {
             .ok()?;
         let brand = String::from_utf8_lossy(&brand.stdout).trim().to_string();
 
-        let memory = std::process::Command::new("sysctl")
-            .args(["-n", "hw.memsize"])
-            .output()
-            .ok()?;
-        let memory_bytes: u64 = String::from_utf8_lossy(&memory.stdout)
-            .trim()
-            .parse()
-            .ok()?;
-        let memory_gigabytes = Self::memory_gigabytes(memory_bytes);
+        let memory_gigabytes = Self::memory_gigabytes(system_memory_bytes()?);
 
         if brand.contains("Apple") {
             let chip = if brand.contains("M4 Max") {
@@ -320,7 +314,7 @@ impl MachineProfile {
 
     #[cfg(target_os = "linux")]
     fn detect_linux() -> Option<Self> {
-        let system_ram_gb = Self::linux_system_ram_gb()?;
+        let system_ram_gb = Self::memory_gigabytes(system_memory_bytes()?);
 
         let Some((gpu, vram_gb)) = Self::linux_gpu() else {
             return Some(Self {
@@ -356,22 +350,9 @@ impl MachineProfile {
 
     /// Installed memory in whole gigabytes, as the machine is sold: 36 GB
     /// reads as 36, not rounded to a multiple of anything.
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "linux", test))]
     fn memory_gigabytes(bytes: u64) -> f64 {
         (bytes as f64 / BYTES_PER_GIGABYTE).round()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn linux_system_ram_gb() -> Option<f64> {
-        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-        let kilobytes: u64 = meminfo
-            .lines()
-            .find(|line| line.starts_with("MemTotal:"))?
-            .split_whitespace()
-            .nth(1)?
-            .parse()
-            .ok()?;
-        Some((kilobytes as f64 / (1024.0 * 1024.0)).round())
     }
 
     /// The first NVIDIA GPU `nvidia-smi` reports, and its VRAM in gigabytes.
