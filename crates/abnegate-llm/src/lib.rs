@@ -33,9 +33,10 @@
 //! # Vendors
 //!
 //! The vendor-native clients shipped here are Anthropic (the messages API, or
-//! the Claude Code CLI for an OAuth token), Gemini, OpenAI, and local ONNX
-//! embeddings through fastembed, each behind its feature. Every
-//! OpenAI-compatible server — Ollama, LiteLLM, vLLM, a gateway — is reached
+//! the Claude Code CLI for an OAuth token), Gemini, OpenAI, Ollama's native
+//! embeddings API, any OpenAI-compatible embeddings endpoint, and local ONNX
+//! embeddings through fastembed, each behind its feature. Chat completions
+//! from every OpenAI-compatible server — Ollama, LiteLLM, vLLM, a gateway — go
 //! through [`HttpProvider`] instead. [`ProviderConfig`] can name any
 //! provider, but it is configuration only: nothing here constructs a provider
 //! from it, and a name outside this set is one the caller supplies.

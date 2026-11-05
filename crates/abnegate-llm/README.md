@@ -7,10 +7,11 @@ streaming or not. `CompletionProvider` is the contract a source of completions
 satisfies, and `Router` satisfies it over a set of providers, so a consumer never
 learns whether it is talking to one model, an A/B split, or a fallback chain.
 `modality` holds one trait per modality (text, image, audio, voice, video, 3D
-model, embedding and transcription) with the vendor-native Anthropic, Gemini,
-OpenAI and local fastembed clients behind their features; `cost` picks a model
-for a task under a `CostStrategy`, `hardware` says what a machine can run
-locally, and `catalog` browses the model catalogues those choices are made from.
+model, embedding and transcription) with the vendor-native Anthropic, Gemini
+and OpenAI clients, and the Ollama embedding, OpenAI-compatible embedding and
+local fastembed clients, behind their features; `cost` picks a model for a task
+under a `CostStrategy`, `hardware` says what a machine can run locally, and
+`catalog` browses the model catalogues those choices are made from.
 
 ## Features
 
