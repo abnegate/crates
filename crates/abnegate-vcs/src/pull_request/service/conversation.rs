@@ -1,6 +1,7 @@
 use super::*;
 use crate::commit_sha::CommitSha;
 use crate::pull_request::IssueComment;
+use crate::pull_request::IssueReference;
 use crate::pull_request::ReviewEvent;
 use crate::pull_request::ReviewRecord;
 use crate::pull_request::comment_request::CommentRequest;
@@ -106,6 +107,31 @@ impl PullRequestService {
         Ok(posted.id)
     }
 
+    /// Comment on an issue's conversation, or a pull request's through
+    /// [`IssueReference::from`], and return the comment as GitHub recorded it.
+    ///
+    /// An error can follow a comment GitHub accepted: an answer this crate
+    /// cannot read, or that is too long to, is [`PullRequestError::GitHubApi`]
+    /// although the comment was posted. A caller that retries on an error may
+    /// post it twice, so it should look for the comment before posting again.
+    pub async fn post_comment(
+        &self,
+        reference: &IssueReference,
+        token: &SecretValue,
+        body: &str,
+    ) -> PullRequestResult<IssueComment> {
+        let number = reference.number().to_string();
+        let url = self.issues(reference.repository(), &[&number, "comments"]);
+
+        let posted: GitHubIssueComment = self
+            .exchange(
+                self.request(Method::POST, url, token, ACCEPT)
+                    .json(&CommentRequest { body }),
+            )
+            .await?;
+        Ok(IssueComment::from(posted))
+    }
+
     /// Submit a review of the pull request as it stood at `commit`, and return
     /// the identifier GitHub gave the review.
     ///
@@ -206,6 +232,7 @@ mod tests {
     use super::*;
     use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
+    use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::seven;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
@@ -537,6 +564,76 @@ mod tests {
             .unwrap();
 
         assert_eq!(id, posted.id);
+    }
+
+    #[tokio::test]
+    async fn a_comment_is_posted_to_an_issue_or_a_pull_request_and_returned_whole() {
+        for (number, posted) in [(5, 1_234_567_890_124), (7, 1_234_567_890_123)] {
+            let server = MockServer::start().await;
+            let comment = IssueComment::new(
+                posted,
+                "automation",
+                "Looking into it.",
+                format!("https://github.com/acme/project/issues/{number}#issuecomment-{posted}"),
+                "2026-09-03T00:00:00Z",
+            );
+            Mock::given(method("POST"))
+                .and(path(format!(
+                    "/repos/acme/project/issues/{number}/comments"
+                )))
+                .and(header("authorization", "Bearer token"))
+                .and(header("accept", ACCEPT))
+                .and(body_json(json!({ "body": "Looking into it." })))
+                .respond_with(ResponseTemplate::new(201).set_body_json(described(&comment)))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+            let reference = match number {
+                7 => IssueReference::from(&seven(&service)),
+                _ => IssueReference::new(project(&service), NonZeroU64::new(number).unwrap()),
+            };
+
+            let returned = service
+                .post_comment(&reference, &token(), "Looking into it.")
+                .await
+                .unwrap();
+
+            assert_eq!(returned, comment, "#{number}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_posted_comment_github_describes_in_part_is_an_error() {
+        for answer in [
+            json!({ "id": 1, "body": SENTINEL, "created_at": "2026-09-03T00:00:00Z" }),
+            json!({ "id": 1, "body": SENTINEL, "html_url": SENTINEL }),
+            json!({ "body": SENTINEL, "html_url": SENTINEL, "created_at": SENTINEL }),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/repos/acme/project/issues/7/comments"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(&answer))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .post_comment(
+                    &IssueReference::from(&seven(&service)),
+                    &token(),
+                    "Looking into it.",
+                )
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+                "{answer}: {failure:?}"
+            );
+            assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+        }
     }
 
     #[tokio::test]

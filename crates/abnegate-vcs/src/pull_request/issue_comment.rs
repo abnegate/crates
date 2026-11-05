@@ -1,5 +1,5 @@
-/// A comment on a pull request's conversation, where review bots leave their
-/// summaries.
+/// A comment on an issue's or a pull request's conversation, where review
+/// bots leave their summaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct IssueComment {
