@@ -16,6 +16,7 @@ use crate::git::PINS;
 use crate::git::REPOSITORY_ENVIRONMENT;
 use crate::git::RemoteHead;
 use crate::git::authentication::authenticate;
+use crate::git::executable;
 #[cfg(unix)]
 use crate::git::group::Group;
 use crate::git::harden;
@@ -255,7 +256,13 @@ impl GitService {
     /// A git invocation that reads nothing from the host's configuration and
     /// runs no program the repository's configuration names.
     pub(crate) fn hardened() -> Command {
-        let mut command = Command::new("git");
+        Self::invoking(&executable())
+    }
+
+    /// A git invocation hardened as [`Self::hardened`] is, that runs
+    /// `program`.
+    pub(crate) fn invoking(program: &Path) -> Command {
+        let mut command = Command::new(program);
         harden(command.as_std_mut());
         command
             .stdout(Stdio::null())
@@ -676,13 +683,13 @@ mod process_tests {
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let mut command = GitService::connected(
+        let mut command = GitService::invoking(&fixture.path().join("git"));
+        GitService::connect(
+            &mut command,
             &RepositoryUrl::parse("https://github.com/fixture/repository").unwrap(),
             Some(&SecretValue::new("fixture-credential")),
         );
-        command
-            .env("PATH", fixture.path())
-            .env("FIXTURE", fixture.path());
+        command.env("FIXTURE", fixture.path());
         let operation = tokio::spawn(async move { GitService::new().finish(&mut command).await });
         let parent = marker(fixture.path(), "parent").await;
         let helper = marker(fixture.path(), "helper-pid").await;
@@ -752,10 +759,8 @@ mod process_tests {
             "#!/bin/sh\n/bin/sleep 60 &\necho $! > \"$FIXTURE/helper-pid\"\necho $$ > \"$FIXTURE/parent\"\nwait\n",
         );
         let service = GitService::new().with_timeout(Duration::from_secs(3));
-        let mut command = GitService::hardened();
-        command
-            .env("PATH", fixture.path())
-            .env("FIXTURE", fixture.path());
+        let mut command = GitService::invoking(&fixture.path().join("git"));
+        command.env("FIXTURE", fixture.path());
 
         let operation = tokio::spawn(async move { service.finish(&mut command).await });
         let parent = marker(fixture.path(), "parent").await;
@@ -791,8 +796,7 @@ mod process_tests {
             "#!/bin/sh\nprintf diff\n/bin/sleep 2\nexec 1>&-\nexec /bin/sleep 60\n",
         );
         let service = GitService::new().with_timeout(Duration::from_secs(3));
-        let mut command = GitService::hardened();
-        command.env("PATH", fixture.path());
+        let mut command = GitService::invoking(&fixture.path().join("git"));
 
         let started = Instant::now();
         let result = service.capped(&mut command, 1024).await;
@@ -820,10 +824,8 @@ mod process_tests {
             std::fs::Permissions::from_mode(0o700),
         )
         .unwrap();
-        let mut command = GitService::hardened();
-        command
-            .env("PATH", fixture.path())
-            .env("FIXTURE", fixture.path());
+        let mut command = GitService::invoking(&fixture.path().join("git"));
+        command.env("FIXTURE", fixture.path());
 
         GitService::new().finish(&mut command).await.unwrap();
         let background = marker(fixture.path(), "background").await;

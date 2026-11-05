@@ -659,8 +659,7 @@ mod tests {
         std::fs::write(&git, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
         std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o700)).unwrap();
         let service = ConflictService::new().with_timeout(Duration::from_secs(1));
-        let mut command = GitService::hardened();
-        command.env("PATH", fixture.path());
+        let mut command = GitService::invoking(&git);
 
         let result = tokio::time::timeout(SPAWN_BUDGET, service.execute(&mut command))
             .await
@@ -818,14 +817,9 @@ mod tests {
             std::fs::Permissions::from_mode(0o700),
         )
         .unwrap();
-        let root = TempDir::new().unwrap();
-        let layout = Layout::under(root.path());
-        layout.create().unwrap();
         let service = ConflictService::new();
-        let mut command = service.bound(&layout);
-        command
-            .env("PATH", fixture.path())
-            .env("FIXTURE", fixture.path());
+        let mut command = GitService::invoking(&fixture.path().join("git"));
+        command.env("FIXTURE", fixture.path());
 
         let operation = tokio::spawn(async move { service.execute(&mut command).await });
         let helper = marker(fixture.path(), "helper").await;

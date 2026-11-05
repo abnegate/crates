@@ -4,6 +4,8 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -187,6 +189,49 @@ pub(crate) const NO_FETCH_HEAD: &str = "--no-write-fetch-head";
 /// driver a repository could name, and no descent into a nested repository.
 pub(crate) const DIFF_PREFIX: [&str; 4] =
     ["diff", "--no-ext-diff", "--no-textconv", IGNORE_SUBMODULES];
+
+/// The name of the program every hardened command runs.
+const GIT: &str = "git";
+
+/// The permission bits of which any one lets someone execute a file.
+#[cfg(unix)]
+const EXECUTABLE: u32 = 0o111;
+
+/// The git every hardened command runs: the first executable `git` in an
+/// [`absolute`] entry of the host's `PATH`, named by its whole path, or `git`
+/// alone where no entry holds one, which then fails to start.
+///
+/// A command given a `PATH` of its own and a program to find on it cannot be
+/// started with `posix_spawn`: the host forks, and the child searches that
+/// `PATH` before it executes. In a host with many threads that child can
+/// crash before git ever runs, and the command fails as though git had. A
+/// command named by the program's path is spawned whole.
+#[cfg(unix)]
+pub(crate) fn executable() -> PathBuf {
+    found(&std::env::var_os("PATH").unwrap_or_default()).unwrap_or_else(|| PathBuf::from(GIT))
+}
+
+/// The git every hardened command runs, found on the `PATH` it is given by
+/// the system call that starts it, which forks nothing.
+#[cfg(not(unix))]
+pub(crate) fn executable() -> PathBuf {
+    PathBuf::from(GIT)
+}
+
+/// The first executable `git` in an [`absolute`] entry of `path`.
+#[cfg(unix)]
+fn found(path: &OsStr) -> Option<PathBuf> {
+    std::env::split_paths(&absolute(path))
+        .map(|entry| entry.join(GIT))
+        .find(|candidate| runnable(candidate))
+}
+
+/// Whether `candidate` is a file someone may execute.
+#[cfg(unix)]
+fn runnable(candidate: &Path) -> bool {
+    std::fs::metadata(candidate)
+        .is_ok_and(|details| details.is_file() && details.permissions().mode() & EXECUTABLE != 0)
+}
 
 /// Apply the pins and environment every hardened git command runs with.
 pub(crate) fn harden(command: &mut Command) {
@@ -734,6 +779,59 @@ mod tests {
                 std::path::PathBuf::from("/bin")
             ]
         );
+    }
+
+    /// Git is found where `execvp` would find it on the hardened `PATH`:
+    /// the first absolute entry holding a `git` file someone may execute.
+    #[cfg(unix)]
+    #[test]
+    fn git_is_the_first_executable_one_an_absolute_entry_holds() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = |name: &str| {
+            let directory = root.path().join(name);
+            std::fs::create_dir(&directory).unwrap();
+            directory
+        };
+        let missing = entry("missing");
+        let unexecutable = entry("unexecutable");
+        std::fs::write(unexecutable.join(GIT), "").unwrap();
+        let nested = entry("nested");
+        std::fs::create_dir(nested.join(GIT)).unwrap();
+        let first = entry("first");
+        let second = entry("second");
+        for directory in [&first, &second] {
+            std::fs::write(directory.join(GIT), "").unwrap();
+            std::fs::set_permissions(directory.join(GIT), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let relative = Path::new("relative");
+        let joined =
+            std::env::join_paths([relative, &missing, &unexecutable, &nested, &first, &second])
+                .unwrap();
+
+        assert_eq!(found(&joined), Some(first.join(GIT)));
+        assert_eq!(found(&std::env::join_paths([&missing]).unwrap()), None);
+    }
+
+    /// A hardened command that names git by a bare name while setting a
+    /// `PATH` of its own is forked rather than spawned, and its child can
+    /// crash before git starts in a host with many threads.
+    #[cfg(unix)]
+    #[test]
+    fn every_hardened_command_names_git_by_its_whole_path() {
+        for command in [
+            crate::git::GitService::hardened().as_std(),
+            crate::git::GitService::connected(
+                &crate::repository_url::RepositoryUrl::parse("https://github.com/owner/repository")
+                    .unwrap(),
+                None,
+            )
+            .as_std(),
+        ] {
+            let program = Path::new(command.get_program());
+            assert!(program.is_absolute(), "{}", program.display());
+            assert!(runnable(program), "{}", program.display());
+        }
     }
 
     #[test]

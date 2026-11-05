@@ -38,7 +38,7 @@ impl GitService {
     /// is handed. A caller that can await runs it on the blocking pool.
     pub fn configured_origin(file: &Path) -> GitResult<Option<String>> {
         let configuration = regular(file)?;
-        let mut command = std::process::Command::new("git");
+        let mut command = std::process::Command::new(executable());
         harden(&mut command);
         let output = command
             .env("GIT_ALLOW_PROTOCOL", "")
