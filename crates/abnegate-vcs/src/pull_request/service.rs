@@ -49,6 +49,7 @@ mod merging;
 mod pulls;
 #[cfg(test)]
 mod redirect_tests;
+mod releases;
 mod repositories;
 mod threads;
 mod webhooks;
@@ -165,6 +166,7 @@ const GIT_SUFFIX: &str = ".git";
 ///   [`Self::list_pull_requests`] and [`Self::list_files`].
 /// - Actions: [`Self::list_workflow_runs`], [`Self::fetch_workflow_job`] and
 ///   [`Self::fetch_job_log`].
+/// - Releases: [`Self::list_releases`] and [`Self::fetch_release`].
 ///
 /// Review threads, resolving one, an administrator's merge, auto-merge,
 /// drafts and a repository's merge settings go to GitHub's GraphQL API;

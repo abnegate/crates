@@ -182,6 +182,9 @@ pub use crate::pull_request::PullRequestService;
 pub use crate::pull_request::PullRequestState;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Release;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Repository;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
