@@ -8,6 +8,8 @@ use crate::hardware::RecommendedModels;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::hardware::system_memory_bytes;
 
+#[cfg(target_os = "macos")]
+const SYSCTL_BRAND_KEY: &str = "machdep.cpu.brand_string";
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 const BYTES_PER_GIGABYTE: f64 = 1024.0 * 1024.0 * 1024.0;
 #[cfg(any(target_os = "linux", test))]
@@ -240,11 +242,7 @@ impl MachineProfile {
 
     #[cfg(target_os = "macos")]
     fn detect_macos() -> Option<Self> {
-        let brand = std::process::Command::new("sysctl")
-            .args(["-n", "machdep.cpu.brand_string"])
-            .output()
-            .ok()?;
-        let brand = String::from_utf8_lossy(&brand.stdout).trim().to_string();
+        let brand = crate::hardware::sysctl::read(SYSCTL_BRAND_KEY)?;
 
         let memory_gigabytes = Self::memory_gigabytes(system_memory_bytes()?);
 

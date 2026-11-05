@@ -4,6 +4,8 @@ mod gpu_type;
 mod machine_profile;
 mod model_recommendation;
 mod recommended_models;
+#[cfg(target_os = "macos")]
+mod sysctl;
 mod system_memory;
 
 pub use crate::hardware::gpu_type::GpuType;
