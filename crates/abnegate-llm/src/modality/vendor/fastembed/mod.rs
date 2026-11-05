@@ -5,6 +5,8 @@ mod config;
 
 use std::sync::Arc;
 use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -64,6 +66,9 @@ impl FastembedProvider {
     /// that cannot hold a lock file (read-only, or without file locking)
     /// loads without one.
     pub fn new(config: FastembedConfig) -> Result<Self, ProviderError> {
+        let maximum_input_tokens = config
+            .checked_maximum_input_tokens()?
+            .unwrap_or(DEFAULT_MAXIMUM_INPUT_TOKENS);
         let model = config.embedding_model()?;
         let info = TextEmbedding::get_model_info(&model)
             .map_err(|error| ProviderError::config(error.to_string()))?;
@@ -85,17 +90,26 @@ impl FastembedProvider {
             dimensions,
             model_name,
             configured_model: config.model_name().to_string(),
-            maximum_input_tokens: config
-                .maximum_input_tokens
-                .unwrap_or(DEFAULT_MAXIMUM_INPUT_TOKENS),
+            maximum_input_tokens,
             batch_size: config.batch_size,
         })
     }
 
     /// The fastembed model this provider loaded, such as `AllMiniLML6V2`.
+    /// Deprecated because it shadows [`EmbeddingProvider::model`], which
+    /// names the configured model; use [`Self::loaded_model`] instead.
+    #[deprecated(
+        since = "0.1.10",
+        note = "use `loaded_model`; `EmbeddingProvider::model` names the configured model"
+    )]
+    pub fn model(&self) -> &str {
+        self.loaded_model()
+    }
+
+    /// The fastembed model this provider loaded, such as `AllMiniLML6V2`.
     /// [`EmbeddingProvider::model`] answers with the name the config gave
     /// instead, such as `all-minilm:latest`.
-    pub fn model(&self) -> &str {
+    pub fn loaded_model(&self) -> &str {
         &self.model_name
     }
 
@@ -137,7 +151,7 @@ fn embed_in_length_order(
             .embed(&sorted, batch_size)
             .map_err(|error| ProviderError::agent(NAME, &error.to_string()))?
     };
-    Ok(restore_order(&order, embeddings))
+    restore_order(&order, embeddings)
 }
 
 /// The indices of `texts`, shortest text first, with texts of equal length
@@ -149,11 +163,22 @@ fn length_order(texts: &[String]) -> Vec<usize> {
 }
 
 /// `sorted` put back in input order, where `sorted[position]` belongs at
-/// `order[position]`.
-fn restore_order<T>(order: &[usize], sorted: Vec<T>) -> Vec<T> {
+/// `order[position]`. Fails when the two lengths differ, rather than drop
+/// the unmatched items.
+fn restore_order<T>(order: &[usize], sorted: Vec<T>) -> Result<Vec<T>, ProviderError> {
+    if sorted.len() != order.len() {
+        return Err(ProviderError::agent(
+            NAME,
+            &format!(
+                "the model returned {} embeddings for {} texts",
+                sorted.len(),
+                order.len()
+            ),
+        ));
+    }
     let mut placed: Vec<(usize, T)> = order.iter().copied().zip(sorted).collect();
     placed.sort_unstable_by_key(|&(index, _)| index);
-    placed.into_iter().map(|(_, item)| item).collect()
+    Ok(placed.into_iter().map(|(_, item)| item).collect())
 }
 
 fn load_cached_session(
@@ -231,7 +256,7 @@ impl EmbeddingProvider for FastembedProvider {
 #[cfg(test)]
 impl FastembedProvider {
     pub(crate) fn for_tests() -> Arc<Self> {
-        static CLIENT: std::sync::OnceLock<Arc<FastembedProvider>> = std::sync::OnceLock::new();
+        static CLIENT: OnceLock<Arc<FastembedProvider>> = OnceLock::new();
         CLIENT
             .get_or_init(|| {
                 Arc::new(
@@ -249,6 +274,7 @@ impl FastembedProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -260,12 +286,17 @@ mod tests {
     use super::length_order;
     use super::restore_order;
     use crate::modality::EmbeddingProvider;
-    #[cfg(all(feature = "fastembed", feature = "ollama"))]
+    #[cfg(feature = "ollama")]
     use crate::modality::vendor::ollama::OllamaEmbeddingConfig;
-    #[cfg(all(feature = "fastembed", feature = "ollama"))]
+    #[cfg(feature = "ollama")]
     use crate::modality::vendor::ollama::OllamaEmbeddingProvider;
+    use crate::provider::ProviderError;
 
     const HOLD: Duration = Duration::from_secs(1);
+    const LOADED_MODEL: &str = "AllMiniLML6V2";
+    const PADDED_MODEL: &str = " all-minilm:latest ";
+    #[cfg(feature = "ollama")]
+    const OLLAMA_URL: &str = "http://127.0.0.1:11434";
     const TRUNCATED_MODEL: &str = "all-minilm:latest";
     const TRUNCATED_INPUT_TOKENS: u32 = 8;
     const SAME_VECTOR: f32 = 1e-5;
@@ -274,7 +305,7 @@ mod tests {
         cat watches from a sunny window ledge every single morning";
 
     fn truncated() -> &'static FastembedProvider {
-        static PROVIDER: std::sync::OnceLock<FastembedProvider> = std::sync::OnceLock::new();
+        static PROVIDER: OnceLock<FastembedProvider> = OnceLock::new();
         PROVIDER.get_or_init(|| {
             FastembedProvider::new(
                 FastembedConfig::fast()
@@ -356,16 +387,70 @@ mod tests {
     }
 
     #[test]
-    fn a_local_model_reports_its_model_and_input_limit() {
+    fn a_local_model_reports_its_input_limit() {
         let provider = truncated();
-        assert_eq!(EmbeddingProvider::model(provider), TRUNCATED_MODEL);
-        assert_eq!(provider.model(), "AllMiniLML6V2");
         assert_eq!(provider.maximum_input_tokens(), TRUNCATED_INPUT_TOKENS);
         assert_eq!(provider.maximum_input_characters(), 512);
+    }
+
+    #[test]
+    fn the_loaded_model_names_the_fastembed_variant() {
+        assert_eq!(truncated().loaded_model(), LOADED_MODEL);
+        assert_eq!(FastembedProvider::for_tests().loaded_model(), LOADED_MODEL);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn the_deprecated_model_still_names_the_loaded_model() {
+        let provider = truncated();
+        assert_eq!(provider.model(), provider.loaded_model());
+        assert_eq!(provider.model(), LOADED_MODEL);
+    }
+
+    #[test]
+    fn the_trait_model_names_the_configured_model() {
+        assert_eq!(EmbeddingProvider::model(truncated()), TRUNCATED_MODEL);
         let default = FastembedProvider::for_tests();
         assert_eq!(EmbeddingProvider::model(&*default), "all-minilm-l6-v2");
-        let unnamed = FastembedConfig::new().with_model(" ");
-        assert_eq!(unnamed.model_name(), "nomic-embed-text-v1.5");
+        let padded = FastembedProvider::new(FastembedConfig::fast().with_model(PADDED_MODEL))
+            .expect("padded test embedding model");
+        assert_eq!(EmbeddingProvider::model(&padded), PADDED_MODEL.trim());
+        assert_eq!(padded.loaded_model(), LOADED_MODEL);
+    }
+
+    #[test]
+    fn a_zero_maximum_input_tokens_fails_before_the_model_downloads() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = FastembedProvider::new(
+            FastembedConfig::fast()
+                .with_cache_directory(directory.path())
+                .with_maximum_input_tokens(0),
+        )
+        .unwrap_err();
+        assert!(matches!(error, ProviderError::Config { .. }), "{error:?}");
+        assert!(
+            error.to_string().contains("maximum input tokens"),
+            "{error}"
+        );
+        assert!(
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .next()
+                .is_none(),
+            "touched the cache before refusing the length"
+        );
+    }
+
+    #[test]
+    fn a_short_embedding_response_is_an_error_not_a_lost_vector() {
+        let order = [2, 0, 1];
+        let error = restore_order(&order, vec!["c", "a"]).unwrap_err();
+        assert!(matches!(error, ProviderError::Agent { .. }), "{error:?}");
+        let rendered = error.to_string();
+        assert!(rendered.contains("fastembed"), "{rendered}");
+        assert!(rendered.contains("2 embeddings for 3 texts"), "{rendered}");
+        assert!(restore_order(&order, vec!["c", "a", "b", "d"]).is_err());
+        assert!(restore_order::<&str>(&[], vec!["a"]).is_err());
     }
 
     #[test]
@@ -378,9 +463,9 @@ mod tests {
         assert_eq!(order, [4, 1, 3, 2, 0, 5]);
         let sorted: Vec<String> = order.iter().map(|&index| texts[index].clone()).collect();
         assert_eq!(sorted, ["", "a", "d", "bb", "ccc", "eee"]);
-        assert_eq!(restore_order(&order, sorted), texts);
+        assert_eq!(restore_order(&order, sorted).unwrap(), texts);
         assert!(length_order(&[]).is_empty());
-        assert!(restore_order::<String>(&[], Vec::new()).is_empty());
+        assert!(restore_order::<String>(&[], Vec::new()).unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -459,10 +544,23 @@ mod tests {
         assert_eq!(provider.dimensions(), 384);
     }
 
-    #[cfg(all(feature = "fastembed", feature = "ollama"))]
+    #[cfg(feature = "ollama")]
+    fn widths(name: &str) -> (u32, u32) {
+        let model = FastembedConfig::new()
+            .with_model(name)
+            .embedding_model()
+            .unwrap();
+        let local = TextEmbedding::get_model_info(&model).unwrap().dim as u32;
+        let ollama = OllamaEmbeddingProvider::new(OllamaEmbeddingConfig::new(OLLAMA_URL, name))
+            .unwrap()
+            .dimensions();
+        (local, ollama)
+    }
+
+    #[cfg(feature = "ollama")]
     #[test]
-    fn a_local_model_has_the_width_ollama_gives_it() {
-        let widths = [
+    fn the_local_and_ollama_widths_agree_except_where_known_to_differ() {
+        let agreements = [
             ("nomic-embed-text", 768),
             ("nomic-embed-text-v1", 768),
             ("nomic-embed-text-v1.5", 768),
@@ -473,20 +571,22 @@ mod tests {
             ("all-minilm", 384),
             ("all-minilm-l6-v2", 384),
         ];
-        for (name, width) in widths {
-            let model = FastembedConfig::new()
-                .with_model(name)
-                .embedding_model()
-                .unwrap();
-            let local = TextEmbedding::get_model_info(&model).unwrap().dim as u32;
-            let ollama = OllamaEmbeddingProvider::new(OllamaEmbeddingConfig::new(
-                "http://127.0.0.1:11434",
-                name,
-            ))
-            .unwrap()
-            .dimensions();
+        for (name, width) in agreements {
+            let (local, ollama) = widths(name);
             assert_eq!(ollama, width, "Ollama's width for {name}");
             assert_eq!(local, ollama, "fastembed's width for {name}");
+        }
+        let disagreements = [
+            ("bge-large-en", 1024, 768),
+            ("bge-m3", 1024, 768),
+            ("snowflake-arctic-embed-s", 384, 768),
+            ("all-minilm-l12-v2", 384, 768),
+        ];
+        for (name, expected_local, expected_ollama) in disagreements {
+            let (local, ollama) = widths(name);
+            assert_eq!(local, expected_local, "fastembed's width for {name}");
+            assert_eq!(ollama, expected_ollama, "Ollama's width for {name}");
+            assert_ne!(local, ollama, "{name} no longer disagrees; move it");
         }
     }
 }

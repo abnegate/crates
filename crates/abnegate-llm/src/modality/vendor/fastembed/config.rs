@@ -94,7 +94,8 @@ impl FastembedConfig {
         self
     }
 
-    /// Read at most `maximum_input_tokens` tokens of each input.
+    /// Read at most `maximum_input_tokens` tokens of each input. Zero is
+    /// refused when the provider is built.
     pub fn with_maximum_input_tokens(mut self, maximum_input_tokens: u32) -> Self {
         self.maximum_input_tokens = Some(maximum_input_tokens);
         self
@@ -115,10 +116,20 @@ impl FastembedConfig {
     }
 
     pub(crate) fn model_name(&self) -> &str {
-        if self.model.trim().is_empty() {
+        let trimmed = self.model.trim();
+        if trimmed.is_empty() {
             DEFAULT_MODEL
         } else {
-            &self.model
+            trimmed
+        }
+    }
+
+    pub(crate) fn checked_maximum_input_tokens(&self) -> Result<Option<u32>, ProviderError> {
+        match self.maximum_input_tokens {
+            Some(0) => Err(ProviderError::config(
+                "maximum input tokens must be at least 1",
+            )),
+            maximum_input_tokens => Ok(maximum_input_tokens),
         }
     }
 }
@@ -202,6 +213,7 @@ mod tests {
     use super::by_model_code;
     use super::full_precision;
     use super::parse_model;
+    use crate::provider::ProviderError;
 
     #[test]
     fn the_default_config_names_nomic_embed_text_v15() {
@@ -425,5 +437,38 @@ mod tests {
             Some(std::path::Path::new("/tmp/embeddings"))
         );
         assert_eq!(config.maximum_input_tokens, Some(2048));
+    }
+
+    #[test]
+    fn the_configured_name_is_trimmed() {
+        for (name, expected) in [
+            (" nomic-embed-text ", "nomic-embed-text"),
+            ("\tall-minilm:latest\n", "all-minilm:latest"),
+            ("bge-m3", "bge-m3"),
+            ("   ", DEFAULT_MODEL),
+            ("", DEFAULT_MODEL),
+        ] {
+            let config = FastembedConfig::new().with_model(name);
+            assert_eq!(config.model_name(), expected, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_zero_maximum_input_tokens_is_refused() {
+        let error = FastembedConfig::new()
+            .with_maximum_input_tokens(0)
+            .checked_maximum_input_tokens()
+            .unwrap_err();
+        assert!(matches!(error, ProviderError::Config { .. }), "{error:?}");
+        assert!(
+            error.to_string().contains("maximum input tokens"),
+            "{error}"
+        );
+        for (config, expected) in [
+            (FastembedConfig::new(), None),
+            (FastembedConfig::new().with_maximum_input_tokens(1), Some(1)),
+        ] {
+            assert_eq!(config.checked_maximum_input_tokens().unwrap(), expected);
+        }
     }
 }
