@@ -961,6 +961,47 @@ mod tests {
         }
     }
 
+    /// Of two absolute entries that each hold a git, a hardened command runs
+    /// the first one's, as `execvp` searching the same `PATH` would.
+    #[cfg(unix)]
+    #[test]
+    fn a_hardened_command_runs_the_git_of_the_first_entry_that_holds_one() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const NAME: &str = "git::hardening::tests::a_hardened_command_runs_the_git_of_the_first_entry_that_holds_one";
+        if std::env::var(CHILD).as_deref() == Ok(NAME) {
+            let search = std::env::var_os(SEARCH).expect("the parent sets it");
+            let first = std::env::split_paths(&search)
+                .next()
+                .expect("the parent names two entries");
+            assert_eq!(Path::new(hardened().get_program()), first.join(GIT));
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let entries = ["first", "second"].map(|name| {
+            let entry = directory.path().join(name);
+            std::fs::create_dir(&entry).unwrap();
+            std::fs::write(entry.join(GIT), "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(entry.join(GIT), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            entry
+        });
+
+        let output = Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD, NAME)
+            .env(SEARCH, std::env::join_paths(&entries).unwrap())
+            .output()
+            .expect("the child runs");
+
+        let printed = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && printed.contains("1 passed"),
+            "{printed}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// Every hardened command is built by [`hardened`]: git named by the
     /// path it found, the search path it read, and the pins first.
     #[cfg(unix)]
