@@ -2,12 +2,17 @@ use super::*;
 use crate::commit_sha::CommitSha;
 use crate::pull_request::ChangedFile;
 use crate::pull_request::FoundPullRequest;
+use crate::pull_request::ListedPullRequest;
+use crate::pull_request::Page;
 use crate::pull_request::PullRequestDetail;
 use crate::pull_request::PullRequestState;
+use crate::pull_request::StateFilter;
 use crate::pull_request::github_listed_branch::GitHubListedBranch;
 use crate::pull_request::github_listed_pull::GitHubListedPull;
 use crate::pull_request::github_pull::GitHubPull;
 use crate::pull_request::repository::named;
+use std::num::NonZeroU8;
+use std::num::NonZeroU32;
 
 impl PullRequestService {
     /// Read a pull request back as GitHub describes it now.
@@ -88,6 +93,41 @@ impl PullRequestService {
         chosen.map(|pull| found(repository, pull)).transpose()
     }
 
+    /// Page `page` of `repository`'s pull requests in `state`, the most
+    /// recently updated first, at `per_page` rows a page up to GitHub's
+    /// hundred.
+    ///
+    /// Each row is read whole or not at all: one that does not say whether it
+    /// is a draft, or that this crate cannot otherwise read, is
+    /// [`PullRequestError::GitHubApi`], and one whose branch or head commit
+    /// this crate does not accept is [`PullRequestError::Parse`], never a page
+    /// without it. A row that names no head commit is listed with none.
+    pub async fn list_pull_requests(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        state: StateFilter,
+        page: NonZeroU32,
+        per_page: NonZeroU8,
+    ) -> PullRequestResult<Page<ListedPullRequest>> {
+        let asked = asked(per_page);
+        let mut url =
+            self.origin
+                .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        url.query_pairs_mut()
+            .append_pair("state", state.as_str())
+            .append_pair("sort", "updated")
+            .append_pair("direction", "desc");
+        let rows: Vec<GitHubListedPull> = self.get(paged(url, page, asked), token).await?;
+        let read = rows.len();
+
+        let pulls = rows
+            .into_iter()
+            .map(|pull| listed(repository, pull))
+            .collect::<PullRequestResult<Vec<ListedPullRequest>>>()?;
+        Ok(Page::after(pulls, page, read, asked))
+    }
+
     /// Every file a pull request changes, in the order GitHub lists them.
     ///
     /// Files are read a hundred at a time for at most ten pages, so a pull
@@ -114,6 +154,51 @@ impl PullRequestService {
         )
         .await
     }
+
+    /// Page `page` of the files a pull request changes, in the order GitHub
+    /// lists them, at `per_page` rows a page up to GitHub's hundred.
+    ///
+    /// Unlike [`Self::fetch_files`], which stops after ten pages, this reads
+    /// as far as a caller follows [`Page::next`], up to the three thousand
+    /// files GitHub lists for a pull request. A page longer than the 16 MiB
+    /// this crate reads is [`PullRequestError::GitHubApi`], never a partial
+    /// or empty page.
+    pub async fn list_files(
+        &self,
+        reference: &PullRequestReference,
+        token: &SecretValue,
+        page: NonZeroU32,
+        per_page: NonZeroU8,
+    ) -> PullRequestResult<Page<ChangedFile>> {
+        let asked = asked(per_page);
+        let number = reference.number().to_string();
+        let repository = reference.repository();
+        let url = self.origin.endpoint(&[
+            "repos",
+            repository.owner(),
+            repository.name(),
+            "pulls",
+            &number,
+            "files",
+        ]);
+        let files: Vec<ChangedFile> = self.get(paged(url, page, asked), token).await?;
+        let read = files.len();
+        Ok(Page::after(files, page, read, asked))
+    }
+}
+
+/// The rows to ask for when `per_page` are wanted: never more than GitHub
+/// sends.
+fn asked(per_page: NonZeroU8) -> usize {
+    usize::from(per_page.get()).min(PAGE_SIZE)
+}
+
+/// `url` asking for page `page` of `asked` rows.
+fn paged(mut url: Url, page: NonZeroU32, asked: usize) -> Url {
+    url.query_pairs_mut()
+        .append_pair("per_page", &asked.to_string())
+        .append_pair("page", &page.to_string());
+    url
 }
 
 /// Whether a listed pull request's head is `owner`'s branch `head`, by the
@@ -134,12 +219,33 @@ fn found(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<F
     Ok(FoundPullRequest {
         reference: PullRequestReference::new(repository.clone(), pull.number),
         node_id: pull.node_id,
+        title: pull.title,
         url: pull.html_url,
         head: BranchName::parse(&pull.head.reference)?,
         base: BranchName::parse(&pull.base.reference)?,
         state: pull.state,
-        draft: pull.draft,
+        draft: pull.draft.unwrap_or(false),
         merged: pull.merged_at.is_some_and(|at| !at.is_empty()),
+    })
+}
+
+/// A pull request listed in `repository`, its branches and head commit
+/// parsed; one that does not say whether it is a draft is unreadable.
+fn listed(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<ListedPullRequest> {
+    let draft = pull
+        .draft
+        .ok_or_else(|| PullRequestError::GitHubApi(UNREADABLE.to_string()))?;
+    Ok(ListedPullRequest {
+        reference: PullRequestReference::new(repository.clone(), pull.number),
+        node_id: pull.node_id,
+        title: pull.title,
+        url: pull.html_url,
+        state: pull.state,
+        draft,
+        head: BranchName::parse(&pull.head.reference)?,
+        base: BranchName::parse(&pull.base.reference)?,
+        head_sha: pull.head.sha.as_deref().map(CommitSha::parse).transpose()?,
+        updated_at: pull.updated_at,
     })
 }
 
@@ -168,6 +274,7 @@ fn detail(pull: GitHubPull) -> PullRequestResult<PullRequestDetail> {
         deletions: pull.deletions,
         commits: pull.commits,
         url: pull.html_url,
+        updated_at: pull.updated_at,
     })
 }
 
@@ -179,6 +286,7 @@ mod tests {
     use crate::pull_request::MergeableState;
     use crate::pull_request::PullRequestState;
     use crate::pull_request::service::fixtures::commit;
+    use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::seven;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
@@ -186,6 +294,7 @@ mod tests {
     use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
+    use wiremock::Request;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::header;
     use wiremock::matchers::method;
@@ -195,6 +304,10 @@ mod tests {
     const PULL: &str = "/repos/acme/project/pulls/7";
 
     const FILES: &str = "/repos/acme/project/pulls/7/files";
+
+    const PULLS: &str = "/repos/acme/project/pulls";
+
+    const UPDATED: &str = "2026-11-06T09:30:00Z";
 
     fn whole() -> Value {
         json!({
@@ -215,6 +328,7 @@ mod tests {
             "additions": 120,
             "deletions": 14,
             "commits": 2,
+            "updated_at": UPDATED,
         })
     }
 
@@ -282,6 +396,7 @@ mod tests {
                 deletions: 14,
                 commits: 2,
                 url: "https://github.com/acme/project/pull/7".to_string(),
+                updated_at: Some(UPDATED.to_string()),
             }
         );
     }
@@ -327,6 +442,7 @@ mod tests {
             "additions",
             "deletions",
             "commits",
+            "updated_at",
         ] {
             fields.remove(optional);
         }
@@ -348,6 +464,7 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
+        assert_eq!(pull.updated_at, None);
         assert_eq!(pull.head_sha, commit('a'));
     }
 
@@ -516,5 +633,490 @@ mod tests {
 
         assert!(matches!(pull, PullRequestError::NotFound), "{pull:?}");
         assert!(matches!(files, PullRequestError::NotFound), "{files:?}");
+    }
+
+    fn branch(name: &str) -> BranchName {
+        BranchName::parse(name).unwrap()
+    }
+
+    fn page(number: u32) -> NonZeroU32 {
+        NonZeroU32::new(number).unwrap()
+    }
+
+    fn rows(count: u8) -> NonZeroU8 {
+        NonZeroU8::new(count).unwrap()
+    }
+
+    /// A pull request as GitHub lists it, numbered `number`, in `state`,
+    /// merging the branch `label` names into `base`.
+    fn row(number: u64, state: &str, label: &str, base: &str) -> Value {
+        let (_, head) = label.split_once(':').unwrap();
+        json!({
+            "node_id": format!("PR_{number}"),
+            "number": number,
+            "title": format!("pull request {number}"),
+            "html_url": format!("https://github.com/acme/project/pull/{number}"),
+            "state": state,
+            "draft": false,
+            "updated_at": UPDATED,
+            "head": { "ref": head, "label": label, "sha": commit('a').as_str() },
+            "base": { "ref": base, "label": format!("acme:{base}") },
+        })
+    }
+
+    /// `count` open pull requests numbered from `first`, each from its own
+    /// branch into `main`.
+    fn listing_of(first: u64, count: u64) -> Vec<Value> {
+        (first..first + count)
+            .map(|number| row(number, "open", &format!("acme:task/{number}"), "main"))
+            .collect()
+    }
+
+    /// Whether a request's query is exactly `expected`, in any order, with
+    /// nothing added.
+    fn queried(expected: &[(&str, &str)]) -> impl Fn(&Request) -> bool + Send + Sync + 'static {
+        let mut expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        expected.sort();
+        move |request: &Request| {
+            let mut sent: Vec<(String, String)> = request
+                .url
+                .query_pairs()
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            sent.sort();
+            sent == expected
+        }
+    }
+
+    async fn listing(answer: Vec<Value>) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(PULLS))
+            .respond_with(ResponseTemplate::new(200).set_body_json(answer))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn find(
+        server: &MockServer,
+        fork: Option<&str>,
+    ) -> PullRequestResult<Option<FoundPullRequest>> {
+        let service = stand_in(server).await;
+        service
+            .find_pull_request(
+                &project(&service),
+                &token(),
+                &branch("feature"),
+                &branch("main"),
+                fork,
+            )
+            .await
+    }
+
+    async fn list(
+        server: &MockServer,
+        state: StateFilter,
+        number: u32,
+        per_page: u8,
+    ) -> PullRequestResult<Page<ListedPullRequest>> {
+        let service = stand_in(server).await;
+        service
+            .list_pull_requests(
+                &project(&service),
+                &token(),
+                state,
+                page(number),
+                rows(per_page),
+            )
+            .await
+    }
+
+    fn numbers(pulls: &[ListedPullRequest]) -> Vec<u64> {
+        pulls
+            .iter()
+            .map(|pull| pull.reference.number().get())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_open_pull_request_listed_after_a_newer_closed_one_is_chosen() {
+        let server = listing(vec![
+            row(9, "closed", "acme:feature", "main"),
+            row(8, "open", "acme:feature", "main"),
+            row(7, "closed", "acme:feature", "main"),
+        ])
+        .await;
+
+        let found = find(&server, None).await.unwrap().unwrap();
+
+        assert_eq!(found.reference.number().get(), 8);
+        assert_eq!(found.state, PullRequestState::Open);
+    }
+
+    #[tokio::test]
+    async fn the_newest_closed_pull_request_is_chosen_when_none_is_open() {
+        let mut merged = row(9, "closed", "acme:feature", "main");
+        merged["merged_at"] = json!(UPDATED);
+        let server = listing(vec![merged, row(7, "closed", "acme:feature", "main")]).await;
+
+        let found = find(&server, None).await.unwrap().unwrap();
+
+        assert_eq!(found.reference.number().get(), 9);
+        assert!(found.merged);
+    }
+
+    #[tokio::test]
+    async fn a_found_pull_request_is_read_with_its_title() {
+        let mut untitled = row(8, "open", "acme:feature", "main");
+        untitled.as_object_mut().unwrap().remove("title");
+        let server = listing(vec![row(8, "open", "acme:feature", "main")]).await;
+        let quiet = listing(vec![untitled]).await;
+        let service = stand_in(&server).await;
+
+        let found = find(&server, None).await.unwrap().unwrap();
+        let unnamed = find(&quiet, None).await.unwrap().unwrap();
+
+        assert_eq!(
+            found,
+            FoundPullRequest::new(
+                PullRequestReference::new(project(&service), NonZeroU64::new(8).unwrap()),
+                "PR_8",
+                "https://github.com/acme/project/pull/8",
+                branch("feature"),
+                branch("main"),
+            )
+            .with_title("pull request 8")
+        );
+        assert_eq!(unnamed.title, "", "a row GitHub gives no title is untitled");
+    }
+
+    #[tokio::test]
+    async fn a_fork_s_label_names_its_owner_whatever_the_case() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(PULLS))
+            .and(query_param("head", "fork-owner:feature"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                row(5, "open", "other-owner:feature", "main"),
+                row(4, "open", "Fork-Owner:feature", "develop"),
+                row(3, "open", "Fork-Owner:feature", "main"),
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let found = find(&server, Some("fork-owner")).await.unwrap().unwrap();
+
+        assert_eq!(
+            found.reference.number().get(),
+            3,
+            "another owner's branch and another base are passed over"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_lookup_asks_for_every_state_newest_first_and_reads_to_its_last_row() {
+        let mut answer: Vec<Value> = (1..100)
+            .map(|number| row(number, "open", "acme:other", "main"))
+            .collect();
+        answer.push(row(100, "open", "acme:feature", "main"));
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(PULLS))
+            .and(queried(&[
+                ("head", "acme:feature"),
+                ("base", "main"),
+                ("state", "all"),
+                ("sort", "created"),
+                ("direction", "desc"),
+                ("per_page", "100"),
+            ]))
+            .respond_with(ResponseTemplate::new(200).set_body_json(answer))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let found = find(&server, None).await.unwrap().unwrap();
+
+        assert_eq!(found.reference.number().get(), 100);
+    }
+
+    #[tokio::test]
+    async fn no_matching_pull_request_is_none() {
+        let server = listing(vec![
+            row(2, "open", "acme:other", "main"),
+            row(1, "open", "acme:feature", "develop"),
+        ])
+        .await;
+
+        assert_eq!(find(&server, None).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_fork_owner_github_does_not_allow_is_refused_before_asking() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        for owner in ["", "fork owner", "..", "owner/other"] {
+            let failure = find(&server, Some(owner))
+                .await
+                .expect_err("an owner GitHub does not allow must not be asked for");
+
+            assert!(
+                matches!(failure, PullRequestError::InvalidRepositoryName),
+                "{owner:?} gave {failure:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_repository_is_built_on_the_host_github_answers_for_or_its_api_host() {
+        let github = PullRequestService::new().unwrap();
+
+        for host in ["github.com", "API.github.com", " github.com "] {
+            let repository = github.repository_on(host, "acme", "project").expect(host);
+
+            assert_eq!(repository, Repository::new("acme", "project").unwrap());
+        }
+        for host in [
+            "gitlab.com",
+            "github.example.com",
+            "github.com.attacker.test",
+            "",
+        ] {
+            assert!(
+                matches!(
+                    github.repository_on(host, "acme", "project"),
+                    Err(PullRequestError::InvalidRepositoryUrl)
+                ),
+                "{host:?} was accepted for api.github.com"
+            );
+        }
+        assert!(matches!(
+            github.repository_on("github.com", "acme", "../project"),
+            Err(PullRequestError::InvalidRepositoryName)
+        ));
+    }
+
+    #[test]
+    fn an_enterprise_install_builds_repositories_only_on_its_own_host() {
+        let enterprise =
+            PullRequestService::configured("https://github.example.com/api/v3").unwrap();
+
+        assert_eq!(
+            enterprise
+                .repository_on("github.example.com", "acme", "project")
+                .unwrap(),
+            Repository::new("acme", "project").unwrap()
+        );
+        for host in ["github.com", "api.github.com"] {
+            assert!(
+                matches!(
+                    enterprise.repository_on(host, "acme", "project"),
+                    Err(PullRequestError::InvalidRepositoryUrl)
+                ),
+                "{host} was accepted for an Enterprise install"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_listing_asks_for_its_state_and_page_most_recently_updated_first() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(PULLS))
+            .and(header("authorization", "Bearer token"))
+            .and(queried(&[
+                ("state", "closed"),
+                ("sort", "updated"),
+                ("direction", "desc"),
+                ("per_page", "10"),
+                ("page", "2"),
+            ]))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(11, 10)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let listed = list(&server, StateFilter::Closed, 2, 10).await.unwrap();
+
+        assert_eq!(numbers(&listed.items), (11..21).collect::<Vec<u64>>());
+        assert_eq!(listed.next, Some(page(3)), "a full page is followed");
+    }
+
+    #[tokio::test]
+    async fn a_short_listing_page_is_the_last() {
+        let server = listing(listing_of(11, 9)).await;
+
+        let listed = list(&server, StateFilter::Open, 2, 10).await.unwrap();
+
+        assert_eq!(listed.items.len(), 9);
+        assert_eq!(listed.next, None);
+    }
+
+    #[tokio::test]
+    async fn a_listing_page_never_asks_for_more_than_github_sends() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(PULLS))
+            .and(queried(&[
+                ("state", "all"),
+                ("sort", "updated"),
+                ("direction", "desc"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(1, 100)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let listed = list(&server, StateFilter::All, 1, 200).await.unwrap();
+
+        assert_eq!(listed.items.len(), 100);
+        assert_eq!(listed.next, Some(page(2)), "a hundred of a hundred is full");
+    }
+
+    #[tokio::test]
+    async fn a_listed_pull_request_is_read_whole() {
+        let mut drafted = row(12, "closed", "acme:task/one", "main");
+        drafted["draft"] = json!(true);
+        let server = listing(vec![drafted]).await;
+        let service = stand_in(&server).await;
+
+        let listed = list(&server, StateFilter::All, 1, 10).await.unwrap();
+
+        assert_eq!(
+            listed.items,
+            vec![
+                ListedPullRequest::new(
+                    PullRequestReference::new(project(&service), NonZeroU64::new(12).unwrap()),
+                    "PR_12",
+                    "https://github.com/acme/project/pull/12",
+                    branch("task/one"),
+                    branch("main"),
+                )
+                .with_title("pull request 12")
+                .with_state(PullRequestState::Closed)
+                .with_draft(true)
+                .with_head_sha(commit('a'))
+                .with_updated_at(UPDATED)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_listed_row_that_does_not_say_whether_it_is_a_draft_fails_the_page() {
+        let mut undecided = row(2, "open", "acme:task/two", "main");
+        undecided.as_object_mut().unwrap().remove("draft");
+        let server = listing(vec![row(1, "open", "acme:task/one", "main"), undecided]).await;
+
+        let failure = list(&server, StateFilter::Open, 1, 10)
+            .await
+            .expect_err("a row with no draft state must not be read as ready, nor left out");
+
+        assert!(
+            matches!(&failure, PullRequestError::GitHubApi(message) if message == UNREADABLE),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_listed_head_with_no_commit_has_none_and_a_malformed_one_is_refused() {
+        let mut unpointed = row(1, "open", "acme:task/one", "main");
+        unpointed["head"].as_object_mut().unwrap().remove("sha");
+        let mut malformed = row(2, "open", "acme:task/two", "main");
+        malformed["head"]["sha"] = json!("abc123");
+        let quiet = listing(vec![unpointed]).await;
+        let garbled = listing(vec![row(3, "open", "acme:task/three", "main"), malformed]).await;
+
+        let listed = list(&quiet, StateFilter::Open, 1, 10).await.unwrap();
+        let failure = list(&garbled, StateFilter::Open, 1, 10)
+            .await
+            .expect_err("a head commit this crate does not accept must not be dropped");
+
+        assert_eq!(listed.items[0].head_sha, None);
+        assert!(
+            matches!(&failure, PullRequestError::Parse(ParseError::CommitSha(value)) if value == "abc123"),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn changed_files_are_listed_a_page_at_a_time() {
+        let file = |name: &str| json!({ "filename": name, "status": "modified", "additions": 1, "deletions": 1 });
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(FILES))
+            .and(header("authorization", "Bearer token"))
+            .and(queried(&[("per_page", "2"), ("page", "1")]))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([file("src/a.rs"), file("src/b.rs")])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(FILES))
+            .and(queried(&[("per_page", "2"), ("page", "2")]))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([file("src/c.rs")])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+        let reference = seven(&service);
+
+        let first = service
+            .list_files(&reference, &token(), page(1), rows(2))
+            .await
+            .unwrap();
+        let last = service
+            .list_files(&reference, &token(), first.next.unwrap(), rows(2))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            first,
+            Page::new(
+                vec![
+                    changed("src/a.rs", FileStatus::Modified, 1),
+                    changed("src/b.rs", FileStatus::Modified, 1),
+                ],
+                Some(page(2))
+            )
+        );
+        assert_eq!(
+            last,
+            Page::new(vec![changed("src/c.rs", FileStatus::Modified, 1)], None)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_files_page_never_asks_for_more_than_github_sends() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(FILES))
+            .and(queried(&[("per_page", "100"), ("page", "4")]))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let files = service
+            .list_files(&seven(&service), &token(), page(4), rows(u8::MAX))
+            .await
+            .unwrap();
+
+        assert_eq!(files, Page::new(Vec::new(), None));
     }
 }

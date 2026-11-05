@@ -47,6 +47,9 @@ pub struct PullRequestDetail {
     pub commits: u32,
     /// Where it can be read in a browser.
     pub url: String,
+    /// When it last changed, as GitHub's ISO 8601 timestamp, or `None` when
+    /// GitHub does not say.
+    pub updated_at: Option<String>,
 }
 
 impl PullRequestDetail {
@@ -55,9 +58,9 @@ impl PullRequestDetail {
     /// `head_sha` into `base`, and readable at `url`.
     ///
     /// It is open, has no body, is no draft, has not merged, has no merge
-    /// commit, changes nothing, and GitHub has yet to work out whether it
-    /// merges or what stands in its way, until the `with_*` methods say
-    /// otherwise.
+    /// commit, changes nothing, has no recorded last change, and GitHub has
+    /// yet to work out whether it merges or what stands in its way, until the
+    /// `with_*` methods say otherwise.
     pub fn new(
         node_id: impl Into<String>,
         number: NonZeroU64,
@@ -86,6 +89,7 @@ impl PullRequestDetail {
             deletions: 0,
             commits: 0,
             url: url.into(),
+            updated_at: None,
         }
     }
 
@@ -166,6 +170,13 @@ impl PullRequestDetail {
         self.commits = commits;
         self
     }
+
+    /// When it last changed, as GitHub's ISO 8601 timestamp.
+    #[must_use]
+    pub fn with_updated_at(mut self, updated_at: impl Into<String>) -> Self {
+        self.updated_at = Some(updated_at.into());
+        self
+    }
 }
 
 #[cfg(test)]
@@ -211,6 +222,7 @@ mod tests {
                 deletions: 0,
                 commits: 0,
                 url: "https://github.com/acme/project/pull/7".to_string(),
+                updated_at: None,
             }
         );
     }
@@ -228,7 +240,8 @@ mod tests {
             .with_changed_files(3)
             .with_additions(120)
             .with_deletions(14)
-            .with_commits(2);
+            .with_commits(2)
+            .with_updated_at("2026-11-06T09:30:00Z");
 
         assert_eq!(
             built,
@@ -244,6 +257,7 @@ mod tests {
                 additions: 120,
                 deletions: 14,
                 commits: 2,
+                updated_at: Some("2026-11-06T09:30:00Z".to_string()),
                 ..opened()
             }
         );

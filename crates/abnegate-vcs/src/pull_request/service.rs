@@ -159,6 +159,8 @@ const GIT_SUFFIX: &str = ".git";
 /// - Creating a repository: [`Self::create_repository`].
 /// - Webhooks: [`Self::create_webhook`], [`Self::update_webhook`] and
 ///   [`Self::delete_webhook`].
+/// - Finding and listing pull requests: [`Self::find_pull_request`],
+///   [`Self::list_pull_requests`] and [`Self::list_files`].
 ///
 /// Review threads, resolving one, an administrator's merge, auto-merge,
 /// drafts and a repository's merge settings go to GitHub's GraphQL API;

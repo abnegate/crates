@@ -12,6 +12,8 @@ pub struct FoundPullRequest {
     /// GitHub's global node identifier, which its GraphQL API addresses the
     /// pull request by.
     pub node_id: String,
+    /// Its title, empty when GitHub gives none.
+    pub title: String,
     /// Where it can be read in a browser.
     pub url: String,
     /// The branch it merges from.
@@ -31,8 +33,8 @@ impl FoundPullRequest {
     /// addresses as `node_id`, merging `head` into `base`, and readable at
     /// `url`.
     ///
-    /// It is open, no draft, and has not merged, until the `with_*` methods
-    /// say otherwise.
+    /// It is untitled, open, no draft, and has not merged, until the `with_*`
+    /// methods say otherwise.
     pub fn new(
         reference: PullRequestReference,
         node_id: impl Into<String>,
@@ -43,6 +45,7 @@ impl FoundPullRequest {
         Self {
             reference,
             node_id: node_id.into(),
+            title: String::new(),
             url: url.into(),
             head,
             base,
@@ -50,6 +53,13 @@ impl FoundPullRequest {
             draft: false,
             merged: false,
         }
+    }
+
+    /// Its title.
+    #[must_use]
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
     }
 
     /// Whether it is open.

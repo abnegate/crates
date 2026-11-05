@@ -13,7 +13,11 @@ pub(super) struct GitHubListedPull {
     pub(super) head: GitHubListedBranch,
     pub(super) base: GitHubListedBranch,
     #[serde(default)]
-    pub(super) draft: bool,
+    pub(super) title: String,
+    #[serde(default)]
+    pub(super) draft: Option<bool>,
     #[serde(default)]
     pub(super) merged_at: Option<String>,
+    #[serde(default)]
+    pub(super) updated_at: Option<String>,
 }
