@@ -13,8 +13,11 @@ use nix::unistd::Pid;
 const ROUND: Duration = Duration::from_millis(1);
 
 /// How long a kill goes on repeating itself for a group that still answers.
+/// A group stops answering as soon as its members are gone, so this bounds
+/// only a member that cannot die; on a loaded host, members already sent
+/// SIGKILL can go on answering for a second or more.
 #[cfg(not(target_os = "linux"))]
-const BUDGET: Duration = Duration::from_millis(100);
+const BUDGET: Duration = Duration::from_secs(10);
 
 /// The process group a git command and every helper it starts run in, killed
 /// when the command is abandoned -- timed out, or its future dropped -- and
