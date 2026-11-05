@@ -320,7 +320,29 @@ impl PullRequestService {
             return Err(invalid());
         }
 
-        Repository::new(owner, name).ok_or_else(invalid)
+        Repository::new(owner, name).map_err(|_| invalid())
+    }
+
+    /// The repository `name` belonging to `owner` on `host`, which has to be
+    /// the host this service answers for, such as `github.com` or an
+    /// Enterprise install's, or the host its API is reached at, such as
+    /// `api.github.com`.
+    ///
+    /// Any other host is [`PullRequestError::InvalidRepositoryUrl`], because
+    /// its repository's requests, and the token sent with them, would go to
+    /// this service's origin instead; an owner or name GitHub does not allow
+    /// is [`PullRequestError::InvalidRepositoryName`].
+    pub fn repository_on(
+        &self,
+        host: &str,
+        owner: &str,
+        name: &str,
+    ) -> PullRequestResult<Repository> {
+        let host = host.trim();
+        if !self.origin.answers_for(host) && !self.origin.addressed_at(host) {
+            return Err(PullRequestError::InvalidRepositoryUrl);
+        }
+        Repository::new(owner, name)
     }
 
     /// Recover where a pull request lives from the URL a run recorded.
@@ -361,7 +383,7 @@ impl PullRequestService {
         }
 
         Ok(PullRequestReference::new(
-            Repository::new(owner, name).ok_or_else(invalid)?,
+            Repository::new(owner, name).map_err(|_| invalid())?,
             number,
         ))
     }

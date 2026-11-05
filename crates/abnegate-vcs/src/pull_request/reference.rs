@@ -1,8 +1,10 @@
 use crate::pull_request::Repository;
 use std::num::NonZeroU64;
 
-/// Where a pull request lives, recovered from the URL a run recorded. Only
-/// [`crate::pull_request::PullRequestService::pull_request`] makes one.
+/// Where a pull request lives: recovered from the URL a run recorded by
+/// [`crate::pull_request::PullRequestService::pull_request`], found by
+/// [`crate::pull_request::PullRequestService::find_pull_request`], or made
+/// with [`Self::new`] from a repository and a number.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestReference {
     repository: Repository,
@@ -10,7 +12,8 @@ pub struct PullRequestReference {
 }
 
 impl PullRequestReference {
-    pub(super) fn new(repository: Repository, number: NonZeroU64) -> Self {
+    /// Pull request `number` in `repository`.
+    pub fn new(repository: Repository, number: NonZeroU64) -> Self {
         Self { repository, number }
     }
 

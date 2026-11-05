@@ -97,6 +97,14 @@ impl Origin {
         !self.host.is_empty() && host.eq_ignore_ascii_case(&self.host)
     }
 
+    /// Whether `host` is the one this origin's API itself is reached at, such
+    /// as `api.github.com`, which may differ from the host it answers for.
+    pub(super) fn addressed_at(&self, host: &str) -> bool {
+        self.url
+            .host_str()
+            .is_some_and(|addressed| host.eq_ignore_ascii_case(addressed))
+    }
+
     /// The origin's URL with `segments` appended, each one percent-encoded as
     /// a single path segment, and never an empty segment where the configured
     /// URL ended in a slash.

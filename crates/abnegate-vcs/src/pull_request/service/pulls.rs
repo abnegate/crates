@@ -1,8 +1,13 @@
 use super::*;
 use crate::commit_sha::CommitSha;
 use crate::pull_request::ChangedFile;
+use crate::pull_request::FoundPullRequest;
 use crate::pull_request::PullRequestDetail;
+use crate::pull_request::PullRequestState;
+use crate::pull_request::github_listed_branch::GitHubListedBranch;
+use crate::pull_request::github_listed_pull::GitHubListedPull;
 use crate::pull_request::github_pull::GitHubPull;
+use crate::pull_request::repository::named;
 
 impl PullRequestService {
     /// Read a pull request back as GitHub describes it now.
@@ -35,6 +40,54 @@ impl PullRequestService {
         detail(pull)
     }
 
+    /// The pull request from `head` into `base`: the open one if there is
+    /// one, or else the one most recently opened, whether it was closed or
+    /// merged. `None` when there is none.
+    ///
+    /// `head` is a branch of the repository itself, or, when `fork` names its
+    /// owner, of that owner's fork. GitHub is asked for both branches, and
+    /// only a pull request whose head is that owner's `head` and whose base is
+    /// `base` is taken, whatever else GitHub's answer holds. A `fork` owner
+    /// GitHub does not allow is [`PullRequestError::InvalidRepositoryName`].
+    /// Only the hundred pull requests GitHub lists first, newest first, are
+    /// looked through.
+    pub async fn find_pull_request(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        head: &BranchName,
+        base: &BranchName,
+        fork: Option<&str>,
+    ) -> PullRequestResult<Option<FoundPullRequest>> {
+        let owner = fork.unwrap_or(repository.owner());
+        if !named(owner) {
+            return Err(PullRequestError::InvalidRepositoryName);
+        }
+        let mut url =
+            self.origin
+                .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        url.query_pairs_mut()
+            .append_pair("head", &format!("{owner}:{head}"))
+            .append_pair("base", base.as_str())
+            .append_pair("state", "all")
+            .append_pair("sort", "created")
+            .append_pair("direction", "desc")
+            .append_pair("per_page", &PAGE_SIZE.to_string());
+
+        let listed: Vec<GitHubListedPull> = self.get(url, token).await?;
+        let mut matching = listed
+            .into_iter()
+            .filter(|pull| pull.base.reference == base.as_str() && headed(&pull.head, owner, head));
+        let first = matching.next();
+        let chosen = match first.as_ref().map(|pull| pull.state) {
+            Some(PullRequestState::Open) | None => first,
+            Some(_) => matching
+                .find(|pull| pull.state == PullRequestState::Open)
+                .or(first),
+        };
+        chosen.map(|pull| found(repository, pull)).transpose()
+    }
+
     /// Every file a pull request changes, in the order GitHub lists them.
     ///
     /// Files are read a hundred at a time for at most ten pages, so a pull
@@ -61,6 +114,33 @@ impl PullRequestService {
         )
         .await
     }
+}
+
+/// Whether a listed pull request's head is `owner`'s branch `head`, by the
+/// `owner:branch` label GitHub gives it; an owner is matched without regard
+/// to case, as GitHub matches one, and a branch exactly.
+fn headed(listed: &GitHubListedBranch, owner: &str, head: &BranchName) -> bool {
+    listed
+        .label
+        .as_deref()
+        .and_then(|label| label.split_once(':'))
+        .is_some_and(|(labelled, branch)| {
+            labelled.eq_ignore_ascii_case(owner) && branch == head.as_str()
+        })
+}
+
+/// A pull request found in `repository`, its branches parsed.
+fn found(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<FoundPullRequest> {
+    Ok(FoundPullRequest {
+        reference: PullRequestReference::new(repository.clone(), pull.number),
+        node_id: pull.node_id,
+        url: pull.html_url,
+        head: BranchName::parse(&pull.head.reference)?,
+        base: BranchName::parse(&pull.base.reference)?,
+        state: pull.state,
+        draft: pull.draft,
+        merged: pull.merged_at.is_some_and(|at| !at.is_empty()),
+    })
 }
 
 /// The pull request GitHub answered with, its branches and commits parsed.
