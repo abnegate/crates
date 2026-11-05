@@ -72,6 +72,10 @@ const SCANNERS: &[(&str, &str)] = &[
         "redact/credential.rs",
         include_str!("../redact/credential.rs"),
     ),
+    (
+        "redact/detection.rs",
+        include_str!("../redact/detection.rs"),
+    ),
     ("sanitize.rs", include_str!("../sanitize.rs")),
     (
         "sanitize/terminators.rs",
@@ -147,11 +151,14 @@ const TABLE_LOOKUPS: &[&str] = &["contains", "get"];
 /// name with a method of a string, a slice, a vector, an option or an
 /// iterator, whose calls the rule could not then tell from these.
 const SCANNER_METHODS: &[&str] = &[
+    "body_at",
     "covers",
     "device_control",
     "end_at",
     "operating_system_command",
     "run",
+    "starts_at",
+    "through_paths",
 ];
 
 /// Functions from outside the scanners that take constant time.

@@ -39,11 +39,7 @@ impl Credential {
         if prose.is_some_and(|prose| prose.covers(self, index)) {
             return None;
         }
-        let prefix = self.prefix.as_bytes();
-        let body = index + prefix.len();
-        if !bytes.get(index..body)?.eq_ignore_ascii_case(prefix) {
-            return None;
-        }
+        let body = self.body_at(bytes, index)?;
         let end = self.body.run(bytes, body);
         if end - body < self.minimum {
             return None;
@@ -56,6 +52,28 @@ impl Credential {
             return None;
         }
         Some(end)
+    }
+
+    /// Whether this credential starts at `index` of a value read whole.
+    ///
+    /// Unlike [`end_at`](Self::end_at), a body that reads as words still
+    /// counts, and a segment runs on through the path separators that end it
+    /// in text: a value meant to be a plain name has no use for a credential
+    /// prefix at all.
+    pub(super) fn starts_at(&self, bytes: &[u8], index: usize) -> bool {
+        self.body_at(bytes, index)
+            .is_some_and(|body| self.body.through_paths().run(bytes, body) - body >= self.minimum)
+    }
+
+    /// Where this credential's body starts when its prefix, in any case, is at
+    /// `index`.
+    fn body_at(&self, bytes: &[u8], index: usize) -> Option<usize> {
+        let prefix = self.prefix.as_bytes();
+        let body = index + prefix.len();
+        bytes
+            .get(index..body)?
+            .eq_ignore_ascii_case(prefix)
+            .then_some(body)
     }
 }
 
@@ -123,3 +141,8 @@ pub(super) const CREDENTIALS: &[Credential] = &[
     Credential::new("hf_", CharacterSet::Alphanumeric, 30),
     Credential::new("AIzaSy", CharacterSet::Word, 20),
 ];
+
+/// An AWS access key ID read as loosely as any other prefix, for a value read
+/// whole. Redaction matches the exact twenty-character shape instead, so that
+/// it takes out the key and nothing after it.
+pub(super) const AWS_ACCESS_KEY: Credential = Credential::new("AKIA", CharacterSet::Token, 8);

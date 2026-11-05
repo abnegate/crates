@@ -1,5 +1,6 @@
 mod character_set;
 mod credential;
+mod detection;
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -9,6 +10,8 @@ use crate::redact::credential::CREDENTIALS;
 use crate::redact::credential::Credential;
 use crate::redact::credential::Prose;
 use crate::work;
+
+pub use crate::redact::detection::contains_credential;
 
 /// Stands in for every credential this module removes, and for the body of a
 /// [`SecretValue`](crate::SecretValue) that is printed.
@@ -626,9 +629,14 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 fn is_secret_like(candidate: &[u8]) -> bool {
-    if is_digest(candidate) || longest_alphanumeric_run(candidate) < MINIMUM_ALPHANUMERIC_RUN {
-        return false;
-    }
+    !is_digest(candidate)
+        && longest_alphanumeric_run(candidate) >= MINIMUM_ALPHANUMERIC_RUN
+        && is_high_entropy(candidate)
+}
+
+/// Whether a run mixes letters with digits and spreads over enough distinct
+/// characters, evenly enough, to have been generated rather than written.
+fn is_high_entropy(candidate: &[u8]) -> bool {
     if !work::any(candidate, |byte| byte.is_ascii_alphabetic())
         || !work::any(candidate, |byte| byte.is_ascii_digit())
     {

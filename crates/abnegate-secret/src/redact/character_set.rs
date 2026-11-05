@@ -26,6 +26,15 @@ impl CharacterSet {
             }
     }
 
+    /// This set, but for a segment, which becomes a token so that it runs on
+    /// through path separators.
+    pub(super) fn through_paths(self) -> Self {
+        match self {
+            Self::Segment => Self::Token,
+            other => other,
+        }
+    }
+
     /// Where the run of this set's bytes that starts at `from` ends.
     pub(super) fn run(self, bytes: &[u8], from: usize) -> usize {
         work::run(bytes, from, |byte| self.contains(byte))
