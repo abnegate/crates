@@ -64,10 +64,7 @@ impl PullRequestService {
         base: &BranchName,
         fork: Option<&str>,
     ) -> PullRequestResult<Option<FoundPullRequest>> {
-        let owner = fork.unwrap_or(repository.owner());
-        if !named(owner) {
-            return Err(PullRequestError::InvalidRepositoryName);
-        }
+        let owner = owned(fork.unwrap_or(repository.owner()))?;
         let mut url =
             self.origin
                 .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
@@ -91,6 +88,39 @@ impl PullRequestService {
                 .or(first),
         };
         chosen.map(|pull| found(repository, pull)).transpose()
+    }
+
+    /// Open a pull request into `base` from `head` on `fork`'s fork of
+    /// `repository`, sent to GitHub as `fork:head`.
+    ///
+    /// A `fork` owner GitHub does not allow is
+    /// [`PullRequestError::InvalidRepositoryName`], and nothing is sent. One
+    /// already open from that head is
+    /// [`PullRequestError::PullRequestAlreadyExists`], naming `head` without
+    /// its owner; [`Self::find_pull_request`] with the same `fork` finds it.
+    pub async fn create_pull_request_from(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        fork: &str,
+        head: &BranchName,
+        base: &BranchName,
+        title: &str,
+        body: &str,
+        draft: bool,
+    ) -> PullRequestResult<CreatedPullRequest> {
+        let owner = owned(fork)?;
+        self.open_pull_request(
+            repository,
+            token,
+            &format!("{owner}:{head}"),
+            head,
+            base,
+            title,
+            body,
+            draft,
+        )
+        .await
     }
 
     /// Page `page` of `repository`'s pull requests in `state`, the most
@@ -184,6 +214,16 @@ impl PullRequestService {
         let files: Vec<ChangedFile> = self.get(paged(url, page, asked), token).await?;
         let read = files.len();
         Ok(Page::after(files, page, read, asked))
+    }
+}
+
+/// `owner` when GitHub allows it to own a repository, or else
+/// [`PullRequestError::InvalidRepositoryName`].
+fn owned(owner: &str) -> PullRequestResult<&str> {
+    if named(owner) {
+        Ok(owner)
+    } else {
+        Err(PullRequestError::InvalidRepositoryName)
     }
 }
 
@@ -282,6 +322,7 @@ mod tests {
     use wiremock::MockServer;
     use wiremock::Request;
     use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_json;
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
@@ -703,6 +744,63 @@ mod tests {
             .await
     }
 
+    fn opened(head: &str) -> Value {
+        json!({
+            "id": 9,
+            "number": 12,
+            "html_url": "https://github.com/acme/project/pull/12",
+            "state": "open",
+            "title": "(feat): basket totals",
+            "body": "Adds totals to the basket.",
+            "head": { "ref": head, "sha": commit('a').as_str() },
+            "base": { "ref": "main", "sha": commit('b').as_str() },
+        })
+    }
+
+    /// The exact body a pull request from `head` into `main` is opened with.
+    fn opening(head: &str) -> Value {
+        json!({
+            "title": "(feat): basket totals",
+            "body": "Adds totals to the basket.",
+            "head": head,
+            "base": "main",
+            "draft": false,
+        })
+    }
+
+    async fn open(
+        server: &MockServer,
+        fork: Option<&str>,
+    ) -> PullRequestResult<CreatedPullRequest> {
+        let service = stand_in(server).await;
+        let repository = project(&service);
+        let head = branch("feature/one");
+        let base = branch("main");
+        let title = "(feat): basket totals";
+        let body = "Adds totals to the basket.";
+        match fork {
+            Some(fork) => {
+                service
+                    .create_pull_request_from(
+                        &repository,
+                        &token(),
+                        fork,
+                        &head,
+                        &base,
+                        title,
+                        body,
+                        false,
+                    )
+                    .await
+            }
+            None => {
+                service
+                    .create_pull_request(&repository, &token(), &head, &base, title, body, false)
+                    .await
+            }
+        }
+    }
+
     async fn list(
         server: &MockServer,
         state: StateFilter,
@@ -855,6 +953,91 @@ mod tests {
             let failure = find(&server, Some(owner))
                 .await
                 .expect_err("an owner GitHub does not allow must not be asked for");
+
+            assert!(
+                matches!(failure, PullRequestError::InvalidRepositoryName),
+                "{owner:?} gave {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_from_a_fork_is_sent_with_its_owner_s_label() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(PULLS))
+            .and(header("authorization", "Bearer token"))
+            .and(body_json(opening("fork-owner:feature/one")))
+            .respond_with(ResponseTemplate::new(201).set_body_json(opened("feature/one")))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let created = open(&server, Some("fork-owner")).await.unwrap();
+
+        assert_eq!(created.number.get(), 12);
+        assert_eq!(created.state, PullRequestState::Open);
+        assert_eq!(created.url, "https://github.com/acme/project/pull/12");
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_from_the_repository_itself_is_sent_its_bare_head() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(PULLS))
+            .and(body_json(opening("feature/one")))
+            .respond_with(ResponseTemplate::new(201).set_body_json(opened("feature/one")))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let created = open(&server, None).await.unwrap();
+
+        assert_eq!(created.number.get(), 12);
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_already_open_from_a_fork_s_head_is_reported_as_existing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(PULLS))
+            .and(body_json(opening("fork-owner:feature/one")))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "message": "Validation Failed",
+                "errors": [{
+                    "resource": "PullRequest",
+                    "code": "custom",
+                    "message": "A pull request already exists for fork-owner:feature/one.",
+                }],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let failure = open(&server, Some("fork-owner")).await.unwrap_err();
+
+        assert!(
+            matches!(
+                &failure,
+                PullRequestError::PullRequestAlreadyExists(head) if *head == branch("feature/one")
+            ),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_owner_github_does_not_allow_opens_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(opened("feature/one")))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        for owner in ["", "fork owner", "..", "owner/other", "owner:other"] {
+            let failure = open(&server, Some(owner))
+                .await
+                .expect_err("an owner GitHub does not allow must not be sent");
 
             assert!(
                 matches!(failure, PullRequestError::InvalidRepositoryName),

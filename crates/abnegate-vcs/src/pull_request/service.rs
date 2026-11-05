@@ -148,8 +148,8 @@ const GIT_SUFFIX: &str = ".git";
 /// creates repositories there.
 ///
 /// - Opening: [`Self::get_default_branch`],
-///   [`Self::pull_request_exists_for_branch`] and
-///   [`Self::create_pull_request`].
+///   [`Self::pull_request_exists_for_branch`],
+///   [`Self::create_pull_request`] and [`Self::create_pull_request_from`].
 /// - Reading: [`Self::fetch_pull`], [`Self::fetch_files`],
 ///   [`Self::fetch_diff`], [`Self::fetch_file`], [`Self::fetch_mergeability`]
 ///   and [`Self::fetch_reception`].
@@ -423,13 +423,39 @@ impl PullRequestService {
         body: &str,
         draft: bool,
     ) -> PullRequestResult<CreatedPullRequest> {
+        self.open_pull_request(
+            repository,
+            token,
+            head.as_str(),
+            head,
+            base,
+            title,
+            body,
+            draft,
+        )
+        .await
+    }
+
+    /// Open a pull request into `base` whose head GitHub is sent as `label`,
+    /// `head` itself or a fork's `owner:head`.
+    async fn open_pull_request(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        label: &str,
+        head: &BranchName,
+        base: &BranchName,
+        title: &str,
+        body: &str,
+        draft: bool,
+    ) -> PullRequestResult<CreatedPullRequest> {
         let url = self
             .origin
             .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
         let request = CreateRequest {
             title,
             body,
-            head: head.as_str(),
+            head: label,
             base: base.as_str(),
             draft,
         };
