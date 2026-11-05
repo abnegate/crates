@@ -25,6 +25,7 @@ use crate::modality::vendor::transport::Transport;
 use crate::provider::ProviderError;
 
 const NAME: &str = "ollama";
+const TAG_SEPARATOR: char = ':';
 const PATH: &str = "/api/embeddings";
 const SHORT_PROMPT_CHARACTERS: usize = 2000;
 const DEFAULT_DIMENSIONS: u32 = 768;
@@ -34,7 +35,17 @@ const QWEN3_EMBEDDING_MAXIMUM_INPUT_TOKENS: u32 = 8192;
 const NOMIC_DIMENSIONS: u32 = 768;
 const NOMIC_MAXIMUM_INPUT_TOKENS: u32 = 8192;
 const MXBAI_DIMENSIONS: u32 = 1024;
-const SNOWFLAKE_ARCTIC_DIMENSIONS: u32 = 1024;
+const SNOWFLAKE_ARCTIC_EMBED: &str = "snowflake-arctic-embed";
+const SNOWFLAKE_ARCTIC_SMALL_DIMENSIONS: u32 = 384;
+const SNOWFLAKE_ARCTIC_MEDIUM_DIMENSIONS: u32 = 768;
+const SNOWFLAKE_ARCTIC_LARGE_DIMENSIONS: u32 = 1024;
+const SNOWFLAKE_ARCTIC_EMBED_SIZES: [(&str, u32); 5] = [
+    ("22m", SNOWFLAKE_ARCTIC_SMALL_DIMENSIONS),
+    ("33m", SNOWFLAKE_ARCTIC_SMALL_DIMENSIONS),
+    ("110m", SNOWFLAKE_ARCTIC_MEDIUM_DIMENSIONS),
+    ("137m", SNOWFLAKE_ARCTIC_MEDIUM_DIMENSIONS),
+    ("335m", SNOWFLAKE_ARCTIC_LARGE_DIMENSIONS),
+];
 const BGE_SMALL_DIMENSIONS: u32 = 384;
 const MINILM_DIMENSIONS: u32 = 384;
 const MINILM_MAXIMUM_INPUT_TOKENS: u32 = 256;
@@ -195,13 +206,27 @@ fn render_keep_alive(keep_alive: Duration) -> String {
 
 fn model_base(model: &str) -> String {
     model
-        .split(':')
+        .split(TAG_SEPARATOR)
         .next()
         .unwrap_or(model)
         .to_ascii_lowercase()
 }
 
+fn sized_dimensions(model: &str) -> Option<u32> {
+    let (base, tag) = model.split_once(TAG_SEPARATOR)?;
+    if !base.eq_ignore_ascii_case(SNOWFLAKE_ARCTIC_EMBED) {
+        return None;
+    }
+    SNOWFLAKE_ARCTIC_EMBED_SIZES
+        .iter()
+        .find(|(size, _)| size.eq_ignore_ascii_case(tag))
+        .map(|(_, dimensions)| *dimensions)
+}
+
 fn model_dimensions(model: &str) -> u32 {
+    if let Some(dimensions) = sized_dimensions(model) {
+        return dimensions;
+    }
     let base = model_base(model);
     if base.contains(QWEN3_EMBEDDING) {
         return QWEN3_EMBEDDING_DIMENSIONS;
@@ -209,7 +234,7 @@ fn model_dimensions(model: &str) -> u32 {
     match base.as_str() {
         "nomic-embed-text" | "nomic-embed-text-v1.5" | "nomic-embed-text-v1" => NOMIC_DIMENSIONS,
         "mxbai-embed-large" => MXBAI_DIMENSIONS,
-        "snowflake-arctic-embed" => SNOWFLAKE_ARCTIC_DIMENSIONS,
+        SNOWFLAKE_ARCTIC_EMBED => SNOWFLAKE_ARCTIC_LARGE_DIMENSIONS,
         "bge-small-en" | "bge-small-en-v1.5" => BGE_SMALL_DIMENSIONS,
         "all-minilm" | "all-minilm-l6-v2" => MINILM_DIMENSIONS,
         _ => DEFAULT_DIMENSIONS,
@@ -711,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tables_match_zone() {
+    fn the_tables_match_zone_except_for_snowflake_sizes() {
         for (model, dimensions, tokens) in [
             ("qwen3-embedding", 1024, 8192),
             ("qwen3-embedding:0.6b", 1024, 8192),
@@ -722,6 +747,13 @@ mod tests {
             ("nomic-embed-text-v1", 768, 8192),
             ("mxbai-embed-large", 1024, 512),
             ("snowflake-arctic-embed", 1024, 512),
+            ("snowflake-arctic-embed:latest", 1024, 512),
+            ("snowflake-arctic-embed:22m", 384, 512),
+            ("snowflake-arctic-embed:33m", 384, 512),
+            ("snowflake-arctic-embed:110m", 768, 512),
+            ("snowflake-arctic-embed:137m", 768, 512),
+            ("snowflake-arctic-embed:335m", 1024, 512),
+            ("Snowflake-Arctic-Embed:22M", 384, 512),
             ("bge-small-en", 384, 512),
             ("bge-small-en-v1.5", 384, 512),
             ("all-minilm", 384, 256),
@@ -733,6 +765,16 @@ mod tests {
             assert_eq!(model_dimensions(model), dimensions, "{model} dimensions");
             assert_eq!(model_maximum_input_tokens(model), tokens, "{model} tokens");
         }
+    }
+
+    #[test]
+    fn configured_dimensions_override_a_snowflake_size_tag() {
+        let provider = provider(
+            OllamaEmbeddingConfig::new("http://localhost:11434", "snowflake-arctic-embed:22m")
+                .with_dimensions(1024),
+        );
+
+        assert_eq!(provider.dimensions(), 1024);
     }
 
     #[test]

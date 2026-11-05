@@ -13,6 +13,14 @@ const TAG_SEPARATOR: char = ':';
 const NOMIC_MAXIMUM_INPUT_TOKENS: u32 = 2048;
 const MINILM_MAXIMUM_INPUT_TOKENS: u32 = 256;
 const BGE_M3_MAXIMUM_INPUT_TOKENS: u32 = 8192;
+const SNOWFLAKE_ARCTIC_EMBED: &str = "snowflake-arctic-embed";
+const SNOWFLAKE_ARCTIC_EMBED_SIZES: [(&str, EmbeddingModel); 5] = [
+    ("22m", EmbeddingModel::SnowflakeArcticEmbedXS),
+    ("33m", EmbeddingModel::SnowflakeArcticEmbedS),
+    ("110m", EmbeddingModel::SnowflakeArcticEmbedM),
+    ("137m", EmbeddingModel::SnowflakeArcticEmbedMLong),
+    ("335m", EmbeddingModel::SnowflakeArcticEmbedL),
+];
 
 /// How to load a local ONNX embedding model.
 #[derive(Debug, Clone)]
@@ -21,7 +29,9 @@ pub struct FastembedConfig {
     /// The model to load. Short aliases (`nomic`, `minilm`, `bge-small`),
     /// Ollama names with or without a tag (`nomic-embed-text:latest`,
     /// `mxbai-embed-large`), Hugging Face ids in any case and fastembed's
-    /// own model names all work; empty means `nomic-embed-text-v1.5`.
+    /// own model names all work; empty means `nomic-embed-text-v1.5`. The
+    /// tag is ignored except for Ollama's `snowflake-arctic-embed` size
+    /// tags, so `snowflake-arctic-embed:22m` loads the xs model.
     pub model: String,
     /// Where to cache downloaded ONNX files, or `None` for fastembed's
     /// default cache.
@@ -139,14 +149,26 @@ pub(crate) fn parse_model(name: &str) -> Result<EmbeddingModel, ProviderError> {
     if trimmed.is_empty() {
         return Ok(EmbeddingModel::NomicEmbedTextV15);
     }
-    let id = trimmed
-        .split_once(TAG_SEPARATOR)
-        .map_or(trimmed, |(base, _)| base)
-        .trim();
-    alias(&id.to_ascii_lowercase())
+    let (id, tag) = match trimmed.split_once(TAG_SEPARATOR) {
+        Some((base, tag)) => (base.trim(), Some(tag.trim())),
+        None => (trimmed, None),
+    };
+    sized(id, tag)
+        .or_else(|| alias(&id.to_ascii_lowercase()))
         .or_else(|| by_model_code(id))
         .or_else(|| id.parse().ok())
         .ok_or_else(|| ProviderError::config(format!("unknown embedding model {trimmed}")))
+}
+
+fn sized(id: &str, tag: Option<&str>) -> Option<EmbeddingModel> {
+    let tag = tag?;
+    if !id.eq_ignore_ascii_case(SNOWFLAKE_ARCTIC_EMBED) {
+        return None;
+    }
+    SNOWFLAKE_ARCTIC_EMBED_SIZES
+        .iter()
+        .find(|(size, _)| size.eq_ignore_ascii_case(tag))
+        .map(|(_, model)| model.clone())
 }
 
 fn alias(key: &str) -> Option<EmbeddingModel> {
@@ -160,11 +182,12 @@ fn alias(key: &str) -> Option<EmbeddingModel> {
         "bge-large" | "bge-large-en" | "bge-large-en-v1.5" => EmbeddingModel::BGELargeENV15,
         "bge-m3" => EmbeddingModel::BGEM3,
         "mxbai-embed-large" => EmbeddingModel::MxbaiEmbedLargeV1,
-        "snowflake-arctic-embed" | "snowflake-arctic-embed-l" => {
+        SNOWFLAKE_ARCTIC_EMBED | "snowflake-arctic-embed-l" => {
             EmbeddingModel::SnowflakeArcticEmbedL
         }
         "snowflake-arctic-embed-m" => EmbeddingModel::SnowflakeArcticEmbedM,
         "snowflake-arctic-embed-s" => EmbeddingModel::SnowflakeArcticEmbedS,
+        "snowflake-arctic-embed-xs" => EmbeddingModel::SnowflakeArcticEmbedXS,
         _ => return None,
     };
     Some(model)
@@ -283,8 +306,12 @@ mod tests {
                 EmbeddingModel::SnowflakeArcticEmbedS,
             ),
             (
+                "snowflake-arctic-embed-xs",
+                EmbeddingModel::SnowflakeArcticEmbedXS,
+            ),
+            (
                 "snowflake-arctic-embed:22m",
-                EmbeddingModel::SnowflakeArcticEmbedL,
+                EmbeddingModel::SnowflakeArcticEmbedXS,
             ),
             ("bge-small-en", EmbeddingModel::BGESmallENV15),
             ("bge-base-en", EmbeddingModel::BGEBaseENV15),
@@ -294,6 +321,50 @@ mod tests {
             ("bge-m3:567m", EmbeddingModel::BGEM3),
             ("all-minilm:latest", EmbeddingModel::AllMiniLML6V2),
             ("all-minilm-l12-v2", EmbeddingModel::AllMiniLML12V2),
+        ] {
+            assert_eq!(parse_model(name).unwrap(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn ollamas_snowflake_size_tags_resolve_to_their_own_model() {
+        for (name, expected) in [
+            (
+                "snowflake-arctic-embed:22m",
+                EmbeddingModel::SnowflakeArcticEmbedXS,
+            ),
+            (
+                "snowflake-arctic-embed:33m",
+                EmbeddingModel::SnowflakeArcticEmbedS,
+            ),
+            (
+                "snowflake-arctic-embed:110m",
+                EmbeddingModel::SnowflakeArcticEmbedM,
+            ),
+            (
+                "snowflake-arctic-embed:137m",
+                EmbeddingModel::SnowflakeArcticEmbedMLong,
+            ),
+            (
+                "snowflake-arctic-embed:335m",
+                EmbeddingModel::SnowflakeArcticEmbedL,
+            ),
+            (
+                " Snowflake-Arctic-Embed : 22M ",
+                EmbeddingModel::SnowflakeArcticEmbedXS,
+            ),
+            (
+                "snowflake-arctic-embed:latest",
+                EmbeddingModel::SnowflakeArcticEmbedL,
+            ),
+            (
+                "snowflake-arctic-embed",
+                EmbeddingModel::SnowflakeArcticEmbedL,
+            ),
+            (
+                "snowflake-arctic-embed-m:22m",
+                EmbeddingModel::SnowflakeArcticEmbedM,
+            ),
         ] {
             assert_eq!(parse_model(name).unwrap(), expected, "{name}");
         }
