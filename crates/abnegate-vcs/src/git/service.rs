@@ -39,6 +39,7 @@ mod hardened;
 #[cfg(all(test, unix))]
 mod linked_tests;
 mod managed;
+mod origin;
 #[cfg(test)]
 mod redirected_tests;
 mod worktrees;
