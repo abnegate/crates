@@ -167,7 +167,7 @@ async fn download_with_writes_held_back(
         release.send(()).unwrap();
     };
     let progress = Arc::new(DownloadProgress::new());
-    let (result, ()) = tokio::join!(download_gguf(url, target, None, progress), hold);
+    let (result, ()) = tokio::join!(fetch(url, target, None, progress), hold);
     result
 }
 
@@ -208,7 +208,7 @@ async fn download(
     expected: Option<Checksum>,
 ) -> (Result<(), DownloadError>, Arc<DownloadProgress>) {
     let progress = Arc::new(DownloadProgress::new());
-    let result = download_gguf(&server.uri(), target, expected, Arc::clone(&progress)).await;
+    let result = fetch(&server.uri(), target, expected, Arc::clone(&progress)).await;
     (result, progress)
 }
 
@@ -620,7 +620,7 @@ async fn a_second_download_to_the_same_file_is_refused_while_the_first_runs() {
     let first = tokio::spawn({
         let url = server.uri();
         let target = target.clone();
-        async move { download_gguf(&url, &target, None, Arc::new(DownloadProgress::new())).await }
+        async move { fetch(&url, &target, None, Arc::new(DownloadProgress::new())).await }
     });
     tokio::time::timeout(Duration::from_secs(5), async {
         while server
@@ -679,7 +679,7 @@ fn a_download_retried_straight_after_a_failure_resumes_where_the_part_ends() {
 
     let first = failing.block_on(download_with_writes_held_back(&url, &target, release));
     let progress = Arc::new(DownloadProgress::new());
-    let second = retrying.block_on(download_gguf(&url, &target, None, progress));
+    let second = retrying.block_on(fetch(&url, &target, None, progress));
     drop(failing);
 
     assert!(matches!(first, Err(DownloadError::Http(_))), "{first:?}");
@@ -786,7 +786,7 @@ async fn a_part_that_holds_more_than_was_received_is_discarded_when_the_body_fai
         }
     });
 
-    let failed = download_gguf(&url, &target, None, Arc::new(DownloadProgress::new())).await;
+    let failed = fetch(&url, &target, None, Arc::new(DownloadProgress::new())).await;
     let (resumed, offsets) = interference.join().unwrap();
 
     assert!(matches!(failed, Err(DownloadError::Http(_))), "{failed:?}");
@@ -797,7 +797,7 @@ async fn a_part_that_holds_more_than_was_received_is_discarded_when_the_body_fai
     );
     assert!(!Validator::path(&part).exists());
 
-    let retried = download_gguf(&url, &target, None, Arc::new(DownloadProgress::new())).await;
+    let retried = fetch(&url, &target, None, Arc::new(DownloadProgress::new())).await;
     retried.unwrap();
 
     assert_eq!(
@@ -809,4 +809,26 @@ async fn a_part_that_holds_more_than_was_received_is_discarded_when_the_body_fai
         fs::read(&target).await.unwrap() == *body,
         "the next download is not the upstream file"
     );
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn the_deprecated_name_still_installs_the_file() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(BODY.to_vec()))
+        .mount(&server)
+        .await;
+
+    let directory = tempdir().unwrap();
+    let target = directory.path().join("model.gguf");
+    let progress = Arc::new(DownloadProgress::new());
+
+    download_gguf(&server.uri(), &target, None, Arc::clone(&progress))
+        .await
+        .unwrap();
+
+    assert_eq!(fs::read(&target).await.unwrap(), BODY);
+    assert!(!part_path(&target).exists());
+    assert!(progress.completed.load(Ordering::Relaxed));
 }

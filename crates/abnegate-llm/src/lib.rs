@@ -33,9 +33,10 @@
 //! # Vendors
 //!
 //! The vendor-native clients shipped here are Anthropic (the messages API, or
-//! the Claude Code CLI for an OAuth token), Gemini, OpenAI, and local ONNX
-//! embeddings through fastembed, each behind its feature. Every
-//! OpenAI-compatible server — Ollama, LiteLLM, vLLM, a gateway — is reached
+//! the Claude Code CLI for an OAuth token), Gemini, OpenAI, Ollama's native
+//! embeddings API, any OpenAI-compatible embeddings endpoint, and local ONNX
+//! embeddings through fastembed, each behind its feature. Chat completions
+//! from every OpenAI-compatible server — Ollama, LiteLLM, vLLM, a gateway — go
 //! through [`HttpProvider`] instead. [`ProviderConfig`] can name any
 //! provider, but it is configuration only: nothing here constructs a provider
 //! from it, and a name outside this set is one the caller supplies.
@@ -58,10 +59,15 @@
 //! - `google`: the Gemini client behind [`TextProvider`].
 //! - `openai`: the OpenAI client behind the text, image, embedding and
 //!   transcription traits.
+//! - `openai-compatible`: `OpenAiCompatibleEmbeddingProvider`, any
+//!   OpenAI-compatible embeddings endpoint (LiteLLM, vLLM, Ollama's `/v1`, a
+//!   gateway) behind [`EmbeddingProvider`].
 //! - `fastembed`: local ONNX embeddings behind [`EmbeddingProvider`].
+//! - `ollama`: an Ollama server's native `/api/embeddings` API behind
+//!   [`EmbeddingProvider`].
 //! - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter
 //!   catalogues through one `catalog::ModelProvider` trait.
-//! - `download`: resumable GGUF downloads that only splice a resume onto the
+//! - `download`: resumable file downloads that only splice a resume onto the
 //!   same upstream file and verify a SHA-256 when one is given.
 //! - `testing`: `provider::testing::StubProvider`, a completion provider whose
 //!   answers a test decides, for crates that route or wrap providers.

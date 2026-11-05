@@ -28,6 +28,7 @@ use crate::provider::ProviderError;
 const BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_MODEL: &str = "gpt-5.4";
 const EMBEDDING_DIMENSIONS: u32 = 768;
+const EMBEDDING_MAXIMUM_INPUT_TOKENS: u32 = 8192;
 const EMBEDDING_MODEL: &str = "text-embedding-3-small";
 const IMAGE_MODEL: &str = "dall-e-3";
 const MAXIMUM_CONTEXT_TOKENS: u32 = 128_000;
@@ -349,6 +350,14 @@ impl EmbeddingProvider for OpenAiProvider {
 
     fn dimensions(&self) -> u32 {
         EMBEDDING_DIMENSIONS
+    }
+
+    fn model(&self) -> &str {
+        EMBEDDING_MODEL
+    }
+
+    fn maximum_input_tokens(&self) -> u32 {
+        EMBEDDING_MAXIMUM_INPUT_TOKENS
     }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ProviderError> {
@@ -907,6 +916,18 @@ mod tests {
         assert_eq!(response.width, 512);
         assert_eq!(response.format, "png");
         assert_eq!(response.revised_prompt.as_deref(), Some("a revised prompt"));
+    }
+
+    #[test]
+    fn the_embedding_side_reports_its_own_model_and_input_limit() {
+        let provider = OpenAiProvider::with_model("key", "gpt-4o");
+
+        assert_eq!(
+            EmbeddingProvider::model(&provider),
+            "text-embedding-3-small"
+        );
+        assert_eq!(provider.maximum_input_tokens(), 8192);
+        assert_eq!(provider.maximum_input_characters(), 3000);
     }
 
     #[tokio::test]
