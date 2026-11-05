@@ -2020,4 +2020,40 @@ mod tests {
             assert_eq!(names(&page), vec!["Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"]);
         }
     }
+
+    #[tokio::test]
+    async fn search_with_adapters_leaves_a_text_search_alone() {
+        let server = MockServer::start().await;
+        mount_adapters(&server, 0).await;
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .and(query_param("filter", GGUF_FILTER))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                    "modelId": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                    "downloads": 1234,
+                    "gguf": {"totalFileSize": 4_700_000_000_u64, "architecture": "qwen2"}
+                }])),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let provider = HuggingFaceProvider::new(format!("{}/api/models", server.uri())).unwrap();
+        let options = browse_with_medium(
+            ModelSort::Relevance,
+            None,
+            ModelSizeFilter::All,
+            ModelMediumFilter::Text,
+        )
+        .with_query("qwen");
+        let page = provider
+            .search_with_adapters(options, &adapter_bases())
+            .await
+            .unwrap();
+
+        assert_eq!(page, provider.search(options).await.unwrap());
+        assert_eq!(names(&page), vec!["Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"]);
+    }
 }
