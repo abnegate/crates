@@ -66,13 +66,17 @@ async fn sent_body(server: &MockServer) -> Value {
 }
 
 async fn refusal(status: u16, body: &str) -> ProviderError {
+    refusal_with_key(status, body, KEY).await
+}
+
+async fn refusal_with_key(status: u16, body: &str, key: &str) -> ProviderError {
     let server = MockServer::start().await;
     serve(
         &server,
         ResponseTemplate::new(status).set_body_raw(body.to_string(), "application/json"),
     )
     .await;
-    provider(OpenAiCompatibleEmbeddingConfig::new(base(&server), MODEL).with_api_key(KEY))
+    provider(OpenAiCompatibleEmbeddingConfig::new(base(&server), MODEL).with_api_key(key))
         .embed(&texts(&["hello"]))
         .await
         .unwrap_err()
@@ -318,6 +322,26 @@ async fn a_context_window_rejection_still_reads_as_one() {
             reads_as_context_length(&error),
             "{error} no longer reads as a context-window rejection"
         );
+    }
+}
+
+#[tokio::test]
+async fn a_short_key_never_hides_a_context_length_rejection() {
+    for key in ["x", "token", "len"] {
+        for (status, body, phrase) in [
+            (400, OPENAI_CONTEXT_LENGTH, "context length"),
+            (400, LITELLM_CONTEXT_WINDOW, "context length"),
+            (500, OLLAMA_CONTEXT_LENGTH, "input length"),
+        ] {
+            let error = refusal_with_key(status, body, key).await;
+            let rendered = error.to_string().to_ascii_lowercase();
+
+            assert!(
+                rendered.contains(phrase),
+                "the key {key:?} hid {phrase:?}: {rendered}"
+            );
+            assert!(reads_as_context_length(&error), "{key:?}: {rendered}");
+        }
     }
 }
 

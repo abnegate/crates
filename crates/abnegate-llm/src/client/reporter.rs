@@ -12,6 +12,7 @@ use crate::error::Error;
 pub(crate) const REPORTED_LIMIT: usize = 500;
 pub(crate) const ELLIPSIS: char = '…';
 pub(crate) const UNEXPLAINED: &str = "the endpoint reported an error";
+const MINIMUM_CONCEALED_KEY_LENGTH: usize = 8;
 const MESSAGE_POINTERS: [&str; 3] = ["/error/message", "/error", "/message"];
 const TENANT_BODY_LIMIT: usize = 64 * 1024;
 
@@ -71,12 +72,25 @@ impl Reporter {
     }
 
     fn shaped(&self, message: &str) -> String {
-        let concealed = redact(&conceal(message, self.key.expose())).into_owned();
+        let concealed = redact(&conceal_key(message, self.key.expose())).into_owned();
         match self.trust {
             Trust::Operator => concealed,
             Trust::Tenant => capped(&concealed),
         }
     }
+}
+
+/// `text` with every echo of `key` concealed, or `text` untouched when the
+/// trimmed `key` is shorter than [`MINIMUM_CONCEALED_KEY_LENGTH`] characters.
+///
+/// A key that short is a placeholder, such as `x` or `token`, not a secret,
+/// and concealing it would garble the words around it: `len` would turn
+/// "the input length" into "the input [REDACTED]gth".
+pub(crate) fn conceal_key(text: &str, key: &str) -> String {
+    if key.trim().chars().count() < MINIMUM_CONCEALED_KEY_LENGTH {
+        return text.to_string();
+    }
+    conceal(text, key)
 }
 
 /// At most `limit` bytes of `body`, read chunk by chunk and no further, as
@@ -130,9 +144,12 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
+    use abnegate_secret::REDACTED;
+    use abnegate_secret::SecretValue;
     use futures::stream;
+    use serde_json::json;
 
-    use super::bounded;
+    use super::*;
 
     const CHUNK: usize = 16 * 1024;
 
@@ -149,5 +166,46 @@ mod tests {
 
         assert_eq!(body.len(), 4 * CHUNK + 1);
         assert_eq!(read.load(Ordering::SeqCst), 5, "chunks read past the limit");
+    }
+
+    const CONTEXT_LENGTH: &str = "the input length exceeds the context length";
+    const KEY: &str = concat!("sk-", "proxy-master-0123456789");
+
+    #[test]
+    fn a_short_key_never_mangles_a_message() {
+        for key in ["x", "token", "len", "  len  "] {
+            let reporter = Reporter::new(Trust::Operator, SecretValue::new(key));
+
+            let reported = reporter.streamed(&json!({ "message": CONTEXT_LENGTH }));
+
+            assert_eq!(reported, CONTEXT_LENGTH, "{key:?} mangled the message");
+        }
+    }
+
+    #[test]
+    fn a_long_key_is_still_concealed() {
+        let masked = format!("{}****{}", &KEY[..6], &KEY[KEY.len() - 4..]);
+        for echoed in [KEY.to_string(), masked] {
+            for trust in [Trust::Operator, Trust::Tenant] {
+                let reporter = Reporter::new(trust, SecretValue::new(KEY));
+
+                let reported = reporter.streamed(&json!({
+                    "message": format!("{CONTEXT_LENGTH}; Received API Key = {echoed}")
+                }));
+
+                assert!(!reported.contains(&echoed), "{trust:?}: {reported}");
+                assert!(reported.contains(REDACTED), "{trust:?}: {reported}");
+                assert!(reported.contains(CONTEXT_LENGTH), "{trust:?}: {reported}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_key_of_the_minimum_length_is_concealed() {
+        let key = "k".repeat(MINIMUM_CONCEALED_KEY_LENGTH);
+
+        let concealed = conceal_key(&format!("bad key {key}"), &key);
+
+        assert_eq!(concealed, format!("bad key {REDACTED}"));
     }
 }

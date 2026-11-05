@@ -10,12 +10,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 
-use abnegate_secret::conceal;
 use async_trait::async_trait;
 use reqwest::Url;
 
 pub use crate::modality::vendor::openai_compatible::config::OpenAiCompatibleEmbeddingConfig;
 
+use crate::client::reporter::conceal_key;
 use crate::modality::EmbeddingProvider;
 use crate::modality::vendor::endpoint::endpoint;
 use crate::modality::vendor::openai_compatible::request::Request;
@@ -63,7 +63,7 @@ impl OpenAiCompatibleEmbeddingProvider {
     fn concealed(&self, error: ProviderError) -> ProviderError {
         match (&self.config.api_key, error) {
             (Some(key), ProviderError::Api { status, message }) => {
-                ProviderError::api(status, conceal(&message, key.expose()))
+                ProviderError::api(status, conceal_key(&message, key.expose()))
             }
             (_, error) => error,
         }
