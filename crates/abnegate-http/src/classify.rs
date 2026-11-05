@@ -1,5 +1,8 @@
+use reqwest::StatusCode;
+
 const RATE_LIMIT_EVENT: &str = "rate_limit_event";
 const ALLOWED_STATUSES: [&str; 2] = ["\"status\":\"allowed\"", "\"status\":\"allowed_warning\""];
+const TOO_MANY_REQUESTS: u16 = StatusCode::TOO_MANY_REQUESTS.as_u16();
 
 /// Whether `message` describes a rate limit, however the far side spelled it.
 ///
@@ -42,7 +45,7 @@ fn is_rate_limit_error_lower(lower: &str) -> bool {
 
     PATTERNS.iter().any(|needle| lower.contains(needle))
         || names_a_hit_limit(lower)
-        || contains_standalone_429(lower)
+        || contains_standalone_status(lower, TOO_MANY_REQUESTS)
 }
 
 /// Whether `lower` says the caller hit a limit, however the limit is named:
@@ -89,24 +92,40 @@ fn is_limit_word(word: &str) -> bool {
     matches!(word, "limit" | "limits")
 }
 
-/// Whether `429` appears as a status code rather than as part of something
-/// else.
+/// Whether `status` appears in `text` as a status code rather than as part of
+/// something else.
 ///
-/// A rejection is inferred from text, and that text is often a whole JSON
-/// stream: `4299` inside a UUID and `"input_tokens":429` both carry the digits
-/// without being a status, so a bare substring search reports rate limits that
-/// never happened.
-fn contains_standalone_429(text: &str) -> bool {
-    const CODE: &str = "429";
-
+/// The digits count only when no ASCII letter or digit touches them on either
+/// side and they do not directly follow `":` or `": `, the end of a JSON
+/// object key. Anything else may touch them, an underscore included, so
+/// `request_404_id` counts. A failure is inferred from text, and that text is
+/// often a whole JSON stream: `4299` inside a UUID and `"input_tokens":429`
+/// both carry the digits without being a status, so a bare substring search
+/// reports failures that never happened. A JSON object value is skipped even
+/// when it is a status, so `{"code":404}` is `false`. Plain text such as
+/// `status:429`, and a key spaced from its colon as in `"code" : 429`, still
+/// counts.
+///
+/// ```
+/// use abnegate_http::contains_standalone_status;
+///
+/// assert!(contains_standalone_status("HTTP 404 Not Found", 404));
+/// assert!(contains_standalone_status("status:403", 403));
+/// assert!(contains_standalone_status("request_404_id", 404));
+/// assert!(contains_standalone_status(r#"{"error":"HTTP 429"}"#, 429));
+///
+/// assert!(!contains_standalone_status("request 8842995 dropped", 429));
+/// assert!(!contains_standalone_status(r#"{"input_tokens":429}"#, 429));
+/// assert!(!contains_standalone_status(r#"{"code":404}"#, 404));
+/// assert!(!contains_standalone_status("HTTP 404 Not Found", 429));
+/// ```
+pub fn contains_standalone_status(text: &str, status: u16) -> bool {
+    let code = status.to_string();
     let bytes = text.as_bytes();
     let mut start = 0;
-    while start + CODE.len() <= bytes.len() {
-        let Some(position) = text[start..].find(CODE) else {
-            break;
-        };
+    while let Some(position) = text[start..].find(code.as_str()) {
         let at = start + position;
-        let after = at + CODE.len();
+        let after = at + code.len();
 
         let bounded = (at == 0 || !bytes[at - 1].is_ascii_alphanumeric())
             && (after >= bytes.len() || !bytes[after].is_ascii_alphanumeric());
@@ -529,5 +548,105 @@ mod tests {
         let record = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"seven_day","utilization":0.81}}"#;
 
         assert!(!is_hard_error(record));
+    }
+
+    const STATUSES: &[StatusCode] = &[
+        StatusCode::OK,
+        StatusCode::BAD_REQUEST,
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::SERVICE_UNAVAILABLE,
+    ];
+
+    #[test]
+    fn a_standalone_status_is_found() {
+        for status in STATUSES.iter().map(StatusCode::as_u16) {
+            for text in [
+                format!("HTTP {status} Not Found"),
+                format!("status:{status}"),
+                format!("({status})"),
+                format!("{status} at the start"),
+                format!("at the end {status}"),
+                status.to_string(),
+                format!(r#"{{"error":"HTTP {status}"}}"#),
+            ] {
+                assert!(contains_standalone_status(&text, status), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_status_inside_a_longer_number_is_not_found() {
+        assert!(!contains_standalone_status("request 8842995 dropped", 429));
+        assert!(!contains_standalone_status("14040", 404));
+    }
+
+    #[test]
+    fn a_status_touching_a_letter_is_not_found() {
+        assert!(!contains_standalone_status("a401b", 401));
+        assert!(!contains_standalone_status(
+            "26355e0a-810a-4011-a2e5-4cea5f762d2e",
+            401
+        ));
+    }
+
+    #[test]
+    fn a_status_touching_only_underscores_is_found() {
+        assert!(
+            contains_standalone_status("request_404_id", 404),
+            "only an ASCII letter or digit blocks a match"
+        );
+    }
+
+    #[test]
+    fn a_status_as_a_json_value_is_not_found() {
+        assert!(!contains_standalone_status(r#"{"tokens":429}"#, 429));
+        assert!(!contains_standalone_status(r#"{"count": 404}"#, 404));
+        assert!(contains_standalone_status(r#"{"error":"HTTP 404"}"#, 404));
+    }
+
+    #[test]
+    fn a_status_as_a_json_value_is_not_found_even_under_a_status_key() {
+        assert!(
+            !contains_standalone_status(r#"{"error":{"code":429}}"#, 429),
+            "a JSON object value is skipped even when it names a status"
+        );
+    }
+
+    #[test]
+    fn a_status_after_a_colon_spaced_from_its_key_is_found() {
+        assert!(
+            contains_standalone_status(r#""key" : 429"#, 429),
+            "only a number directly after a closing quote and colon is skipped"
+        );
+    }
+
+    #[test]
+    fn a_different_status_is_not_found() {
+        assert!(!contains_standalone_status("HTTP 404", 429));
+        assert!(!contains_standalone_status("HTTP 429", 404));
+    }
+
+    #[test]
+    fn a_status_among_non_ascii_text_is_found() {
+        assert!(contains_standalone_status("错误 404 未找到", 404));
+        assert!(contains_standalone_status("错误404未找到", 404));
+        assert!(!contains_standalone_status("错误 14040 未找到", 404));
+    }
+
+    #[test]
+    fn a_later_standalone_status_is_found_after_one_that_does_not_count() {
+        assert!(contains_standalone_status(
+            r#"{"tokens":429} then 429"#,
+            429
+        ));
+        assert!(contains_standalone_status("x4290y then 429", 429));
+        assert!(!contains_standalone_status(
+            r#"{"tokens":429} then x4290y"#,
+            429
+        ));
     }
 }

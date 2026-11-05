@@ -127,6 +127,7 @@ version = "0.1.4"
 dependencies = [
  "async-trait",
  "dashmap",
+ "httpdate",
  "rand 0.10.3",
  "reqwest 0.13.5",
  "serde",
