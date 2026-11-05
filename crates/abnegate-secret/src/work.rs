@@ -94,6 +94,11 @@ pub(crate) fn each(bytes: &[u8], mut visit: impl FnMut(u8)) {
     counted(bytes.iter()).for_each(|byte| visit(*byte));
 }
 
+/// Hand each index of `bytes` to `visit`, in order.
+pub(crate) fn each_index(bytes: &[u8], visit: impl FnMut(usize)) {
+    counted(0..bytes.len()).for_each(visit);
+}
+
 /// Where each occurrence of `needle` in `text` starts, left to right and
 /// without overlap, as [`str::match_indices`] finds them.
 pub(crate) fn occurrences<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usize> {

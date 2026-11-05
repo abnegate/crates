@@ -76,6 +76,8 @@ const SCANNERS: &[(&str, &str)] = &[
         "redact/detection.rs",
         include_str!("../redact/detection.rs"),
     ),
+    ("redact/evidence.rs", include_str!("../redact/evidence.rs")),
+    ("redact/naming.rs", include_str!("../redact/naming.rs")),
     ("sanitize.rs", include_str!("../sanitize.rs")),
     (
         "sanitize/terminators.rs",

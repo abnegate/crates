@@ -1,23 +1,38 @@
-use std::borrow::Cow;
-
 use crate::redact::MINIMUM_ENCODED_LENGTH;
+use crate::redact::carries_shaped_secret;
 use crate::redact::character_set::CharacterSet;
 use crate::redact::credential::AWS_ACCESS_KEY;
 use crate::redact::credential::CREDENTIALS;
 use crate::redact::is_high_entropy;
-use crate::redact::redact;
 use crate::work;
+
+/// `ſ`, which Unicode case folding equates with `s`.
+const LONG_S: &[u8] = "\u{17F}".as_bytes();
+/// The Kelvin sign, which Unicode case folding equates with `k`.
+const KELVIN: &[u8] = "\u{212A}".as_bytes();
 
 /// Whether `value` carries a credential anywhere in it.
 ///
 /// Meant for a value that should be a plain name, such as a script, a tool or
 /// a search term, and that is refused rather than echoed into a citation or a
-/// log when it looks like a credential. It is true wherever [`redact`] would
-/// remove something, and errs toward true beyond that: a credential prefix
-/// with enough after it counts even when what follows reads as words, and so
-/// does any run of 32 or more base64 or URL-safe characters that mixes letters
-/// with digits at high entropy, a commit hash included, whether or not an
-/// assignment names it.
+/// log when it looks like a credential. It is true wherever
+/// [`redact`](crate::redact) would remove something, but for a value assigned
+/// to a key word that reads as a name: one that carries no digit and is
+/// shorter than 16 bytes or reads as words, as the `refresh` of a script named
+/// `token:refresh` does, or one that carries a letter and whose every hyphen-
+/// or underscore-separated part is a word, a number, or a word and a number
+/// side by side, as the `sync-s3` of `secrets:sync-s3` does. So
+/// `password=hunter2` reads as a name, while `password=P4ssword` and
+/// `token:12345678` count.
+///
+/// It errs toward true beyond that. A widely issued prefix, such as `ghp_`,
+/// `sk-` or `AKIA`, with enough after it counts even when what follows reads
+/// as words, or when it is spelt with `ſ` for `s` or the Kelvin sign for `k`,
+/// and so does any run of 32 or more base64 or URL-safe characters that mixes
+/// letters with digits at high entropy, a commit hash included, whether or not
+/// an assignment names it. A less widely issued prefix, such as `xai_` or
+/// `sk_`, counts only where redaction would remove it, so that
+/// `xai_list_models` is a name.
 ///
 /// Time is linear in the length of `value`.
 ///
@@ -26,9 +41,14 @@ use crate::work;
 ///
 /// assert!(contains_credential(concat!("ghp_", "0123456789abcdefghij")));
 /// assert!(!contains_credential("cargo-test-all"));
+/// assert!(!contains_credential("signature:sha256"));
+/// assert!(contains_credential("password:P4ssword"));
 /// ```
 pub fn contains_credential(value: &str) -> bool {
-    issued_or_high_entropy(value.as_bytes()) || matches!(redact(value), Cow::Owned(_))
+    let bytes = value.as_bytes();
+    issued_or_high_entropy(bytes)
+        || (has_folding(bytes) && issued(&folded(bytes)))
+        || carries_shaped_secret(value)
 }
 
 fn issued_or_high_entropy(bytes: &[u8]) -> bool {
@@ -36,6 +56,47 @@ fn issued_or_high_entropy(bytes: &[u8]) -> bool {
         issued_at(bytes, index) || high_entropy_at(bytes, index)
     })
     .is_some()
+}
+
+fn issued(bytes: &[u8]) -> bool {
+    work::find(bytes, 0, |index| issued_at(bytes, index)).is_some()
+}
+
+fn has_folding(bytes: &[u8]) -> bool {
+    work::find(bytes, 0, |index| {
+        bytes[index..].starts_with(LONG_S) || bytes[index..].starts_with(KELVIN)
+    })
+    .is_some()
+}
+
+/// `bytes` with each [`LONG_S`] and [`KELVIN`] folded to the ASCII letter it
+/// equates with.
+fn folded(bytes: &[u8]) -> Vec<u8> {
+    let mut folded = Vec::new();
+    work::each_index(bytes, |index| {
+        if let Some(byte) = folded_at(bytes, index) {
+            folded.push(byte);
+        }
+    });
+    folded
+}
+
+/// What the byte at `index` folds to: itself, the letter that a folding
+/// character it ends equates with, or nothing when it starts one.
+fn folded_at(bytes: &[u8], index: usize) -> Option<u8> {
+    let through = |end: usize| bytes.get(..end).unwrap_or(&[]);
+    if through(index + 1).ends_with(LONG_S) {
+        Some(b's')
+    } else if through(index + 1).ends_with(KELVIN) {
+        Some(b'k')
+    } else if through(index + LONG_S.len()).ends_with(LONG_S)
+        || through(index + KELVIN.len() - 1).ends_with(KELVIN)
+        || through(index + KELVIN.len()).ends_with(KELVIN)
+    {
+        None
+    } else {
+        Some(bytes[index])
+    }
 }
 
 fn issued_at(bytes: &[u8], index: usize) -> bool {
@@ -192,9 +253,9 @@ mod tests {
     }
 
     #[test]
-    fn finds_whatever_redact_removes() {
+    fn finds_what_redact_removes_when_it_does_not_read_as_a_name() {
         for value in [
-            "login failed: password=hunter2",
+            "login failed: password=hunt3r2",
             concat!("ASIA", "0123456789ABCDEF"),
             "https://user:p4ssw0rd@example.com/repository.git",
             concat!(
@@ -203,6 +264,105 @@ mod tests {
             ),
         ] {
             assert!(contains_credential(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_name_namespaced_by_a_key_word_is_not_a_credential() {
+        for value in [
+            "token:refresh",
+            "token:generate",
+            "tokens:revoke",
+            "secrets:rotate",
+            "access_token:refresh",
+            "api_key:rotate",
+            "signature:verify",
+            "token:refresh-every-session",
+            "Remember to rotate the secret: weekly",
+        ] {
+            assert!(!contains_credential(value), "{value}");
+            assert_ne!(crate::redact(value), value, "redaction still takes it out");
+        }
+    }
+
+    #[test]
+    fn a_name_spelt_like_a_less_known_credential_is_not_one() {
+        for value in [
+            "xai_list_models",
+            "xai-chat-completions",
+            "xapp-socket-mode",
+            "lin_api_create_issue",
+            "sntryu_release_health",
+            "sk_test_connection_pool",
+            "rk_live_reload_watcher",
+            "tools/testing/selftests/net/sk_bind_sendto_listen.c",
+            "search sk_write_pending_queue",
+        ] {
+            assert!(!contains_credential(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_word_and_a_number_a_key_word_names_is_a_name_not_a_credential() {
+        for value in [
+            "secrets:sync-s3",
+            "signature:sha256",
+            "password:hash-argon2",
+            "access_token:refresh-oauth2",
+            "secret_scanning:enable-2fa",
+            "token:generate-v2",
+            "signature:hmac-sha256-v2",
+            "token:refresh2",
+            "password:Summer2024",
+            "password:SUMMER2024",
+            "password:2024Summer",
+            "login failed: password=hunter2",
+        ] {
+            assert!(!contains_credential(value), "{value}");
+            assert_ne!(crate::redact(value), value, "redaction still takes it out");
+        }
+    }
+
+    #[test]
+    fn a_value_a_key_word_names_counts_when_shaped_like_a_credential() {
+        for value in [
+            "token:12345678",
+            "token:1234-5678",
+            "password:s3cr3t-key",
+            "password:SuMmEr2024",
+            "password:SuMmEr-2024",
+            "password:2024sUmmer",
+            "password:P4ssword",
+            "secret: a1b2c3d4",
+            "token:Xq7Lm/Zp+Rt",
+        ] {
+            assert!(contains_credential(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_prefix_spelt_with_a_folding_character_counts() {
+        for value in [
+            concat!("\u{17F}k-", "a1b2c3d4"),
+            concat!("s\u{212A}-", "a1b2c3d4"),
+            concat!("A\u{212A}IA", "a1b2c3d4"),
+            concat!("xoxa-", "Zk\u{17F}q8Lr2Vx7"),
+            concat!("ghp_", "a1b\u{212A}2c3d"),
+            concat!("Remember my key is \u{17F}k-", "proj1234abcd"),
+        ] {
+            assert!(contains_credential(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn other_characters_outside_ascii_do_not_lengthen_a_body() {
+        for value in [
+            "npm_install\u{2014}fa\u{17F}t",
+            "\u{17F}k-abc\u{142}defgh",
+            "\u{17F}k-gro\u{DF}stadt",
+            "s\u{212A}-\u{1F600}abcdefgh",
+        ] {
+            assert!(!contains_credential(value), "{value}");
         }
     }
 
@@ -224,5 +384,38 @@ mod tests {
                 },
             );
         }
+        for unit in ["\u{17F}k-a1 ", "x\u{212A}\u{17F}", "\u{17F}"] {
+            work::assert_linear(
+                LENGTH / unit.len(),
+                |repetitions| unit.repeat(repetitions),
+                |value| {
+                    let bytes = value.as_bytes();
+                    assert!(!(has_folding(bytes) && issued(&folded(bytes))), "{value}");
+                },
+            );
+        }
+        for unit in [
+            "token:refresh ",
+            "secret:abcdefghijklmno ",
+            "token:refresh-every-session ",
+            "token=\"refresh\" ",
+            "secrets:sync-s3 ",
+        ] {
+            work::assert_linear(
+                LENGTH / unit.len(),
+                |repetitions| unit.repeat(repetitions),
+                |value| {
+                    assert!(!carries_shaped_secret(value), "{value}");
+                },
+            );
+        }
+        let unit = "s3-";
+        work::assert_linear(
+            LENGTH / unit.len(),
+            |repetitions| format!("token:{}", unit.repeat(repetitions)),
+            |value| {
+                assert!(!carries_shaped_secret(value), "{value}");
+            },
+        );
     }
 }

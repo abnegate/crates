@@ -1,6 +1,8 @@
 mod character_set;
 mod credential;
 mod detection;
+mod evidence;
+mod naming;
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -9,6 +11,7 @@ use crate::redact::character_set::CharacterSet;
 use crate::redact::credential::CREDENTIALS;
 use crate::redact::credential::Credential;
 use crate::redact::credential::Prose;
+use crate::redact::naming::Naming;
 use crate::work;
 
 pub use crate::redact::detection::contains_credential;
@@ -131,25 +134,7 @@ const AWS_ACCESS_KEY_BODY: usize = 16;
 /// Text with nothing to redact is returned untouched and unallocated. Time is
 /// linear in the length of `text`.
 pub fn redact(text: &str) -> Cow<'_, str> {
-    let bytes = text.as_bytes();
-    let mut spans: Vec<(usize, usize)> = Vec::new();
-    let mut userinfo: Option<usize> = None;
-    let mut prose: Option<Prose> = None;
-    let mut index = 0;
-
-    while index < bytes.len() {
-        if may_start_secret(bytes, index, userinfo)
-            && let Some(end) = secret_at(text, index, &mut userinfo, &mut prose)
-        {
-            spans.push((index, end));
-            userinfo = None;
-            index = end;
-            continue;
-        }
-        userinfo = userinfo_after(bytes, index, userinfo);
-        index += 1;
-    }
-
+    let spans = spans(text, Naming::Any);
     if spans.is_empty() {
         return Cow::Borrowed(text);
     }
@@ -163,6 +148,36 @@ pub fn redact(text: &str) -> Cow<'_, str> {
     }
     output.push_str(&text[cursor..]);
     Cow::Owned(output)
+}
+
+/// Where each credential in `text` starts and ends, taking a value a key word
+/// names for one as `naming` says.
+fn spans(text: &str, naming: Naming) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut userinfo: Option<usize> = None;
+    let mut prose: Option<Prose> = None;
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if may_start_secret(bytes, index, userinfo)
+            && let Some(end) = secret_at(text, index, &mut userinfo, &mut prose, naming)
+        {
+            spans.push((index, end));
+            userinfo = None;
+            index = end;
+            continue;
+        }
+        userinfo = userinfo_after(bytes, index, userinfo);
+        index += 1;
+    }
+    spans
+}
+
+/// Whether [`redact`] would remove something from `text` but a value assigned
+/// to a key word that [`Naming::Shaped`] does not [admit](admits).
+fn carries_shaped_secret(text: &str) -> bool {
+    !spans(text, Naming::Shaped).is_empty()
 }
 
 /// Whether any scanner could match at `index`: every one starts on a token
@@ -185,6 +200,7 @@ fn secret_at(
     index: usize,
     userinfo: &mut Option<usize>,
     prose: &mut Option<Prose>,
+    naming: Naming,
 ) -> Option<usize> {
     let bytes = text.as_bytes();
     private_key_at(text, index)
@@ -193,7 +209,7 @@ fn secret_at(
         .or_else(|| json_web_token_at(bytes, index))
         .or_else(|| url_password_at(bytes, index, userinfo))
         .or_else(|| encoded_at(bytes, index))
-        .or_else(|| named_at(bytes, index))
+        .or_else(|| named_at(bytes, index, naming))
 }
 
 /// The body of a PEM or PGP private key, from its BEGIN line to the end of its
@@ -294,17 +310,17 @@ fn url_password_at(bytes: &[u8], index: usize, userinfo: &mut Option<usize>) -> 
 /// Only a run that starts after a colon can overlap the run before it, so one
 /// is scanned only once an assignment is known to name it; a scan that finds
 /// the value is skipped past, and one that does not stops short.
-fn named_at(bytes: &[u8], index: usize) -> Option<usize> {
+fn named_at(bytes: &[u8], index: usize, naming: Naming) -> Option<usize> {
     let first = *bytes.get(index)?;
     let previous = bytes[index.checked_sub(1)?];
     if !opens_value(first) {
         return None;
     }
     match previous {
-        b'=' | b':' => assigned_value_at(bytes, index, None),
-        b' ' | b'\t' => assigned_value_at(bytes, index, None)
+        b'=' | b':' => assigned_value_at(bytes, index, None, naming),
+        b' ' | b'\t' => assigned_value_at(bytes, index, None, naming)
             .or_else(|| introduced_value_at(bytes, index, None)),
-        quote if QUOTES.contains(&quote) => assigned_value_at(bytes, index, Some(quote))
+        quote if QUOTES.contains(&quote) => assigned_value_at(bytes, index, Some(quote), naming)
             .or_else(|| introduced_value_at(bytes, index, Some(quote))),
         _ => None,
     }
@@ -316,17 +332,31 @@ fn opens_value(byte: u8) -> bool {
     !byte.is_ascii_whitespace() && !QUOTES.contains(&byte) && !matches!(byte, b':' | b'=')
 }
 
-fn assigned_value_at(bytes: &[u8], index: usize, quote: Option<u8>) -> Option<usize> {
+fn assigned_value_at(
+    bytes: &[u8],
+    index: usize,
+    quote: Option<u8>,
+    naming: Naming,
+) -> Option<usize> {
     if !assigned_to(bytes, index, NAMED_SECRET_KEY_WORDS) {
         return None;
     }
     let end = value_end(bytes, index, quote);
     if end - index < MINIMUM_NAMED_LENGTH
         || (is_number(&bytes[index..end]) && assigned_to(bytes, index, COUNT_KEY_WORDS))
+        || !admits(naming, &bytes[index..end])
     {
         return None;
     }
     Some(end)
+}
+
+/// Whether `naming` takes `value`, assigned to a key word, for a credential.
+fn admits(naming: Naming, value: &[u8]) -> bool {
+    match naming {
+        Naming::Any => true,
+        Naming::Shaped => is_secret_shaped(value) && !reads_as_words_and_numbers(value),
+    }
 }
 
 /// Whether a value is digits, grouped as `200000`, `200_000` or `200,000`.
@@ -485,6 +515,46 @@ fn reads_as_words(candidate: &[u8]) -> bool {
         first = false;
         byte.is_ascii_alphabetic()
     }) && (lowercase_tail || uppercase)
+}
+
+/// Whether a run carries a letter and every hyphen- or underscore-separated
+/// part is a word, a number, or a word and a number side by side, as `s3`,
+/// `sha256` and `2fa` are: a name's version or algorithm, not a key.
+fn reads_as_words_and_numbers(candidate: &[u8]) -> bool {
+    let mut letters = false;
+    let mut first_letter = true;
+    let mut lowercase_tail = true;
+    let mut uppercase = true;
+    let mut started = false;
+    let mut previous_digit = false;
+    let mut switched = false;
+    work::all(candidate, |byte| {
+        if matches!(byte, b'-' | b'_') {
+            let cased = lowercase_tail || uppercase;
+            (first_letter, lowercase_tail, uppercase) = (true, true, true);
+            (started, switched) = (false, false);
+            return cased;
+        }
+        let digit = byte.is_ascii_digit();
+        if !digit && !byte.is_ascii_alphabetic() {
+            return false;
+        }
+        if started && digit != previous_digit {
+            if switched {
+                return false;
+            }
+            switched = true;
+        }
+        (started, previous_digit) = (true, digit);
+        if !digit {
+            letters = true;
+            lowercase_tail &= first_letter || byte.is_ascii_lowercase();
+            uppercase &= byte.is_ascii_uppercase();
+            first_letter = false;
+        }
+        true
+    }) && letters
+        && (lowercase_tail || uppercase)
 }
 
 fn credential_at(bytes: &[u8], index: usize, prose: &mut Option<Prose>) -> Option<usize> {
@@ -1400,21 +1470,7 @@ mod tests {
                             || word.iter().all(u8::is_ascii_uppercase))
                 })
         };
-        let alphabet = b"aZ-_1";
-        let mut candidates = vec![Vec::new()];
-        for length in 1..=6 {
-            let longer: Vec<Vec<u8>> = candidates
-                .iter()
-                .filter(|candidate| candidate.len() == length - 1)
-                .flat_map(|candidate| {
-                    alphabet
-                        .iter()
-                        .map(move |byte| [candidate.as_slice(), &[*byte]].concat())
-                })
-                .collect();
-            candidates.extend(longer);
-        }
-        for candidate in candidates {
+        for candidate in strings_of(b"aZ-_1", 6) {
             assert_eq!(
                 reads_as_words(&candidate),
                 split(&candidate),
@@ -1422,6 +1478,63 @@ mod tests {
                 String::from_utf8_lossy(&candidate)
             );
         }
+    }
+
+    /// Every string of up to seven bytes drawn from a letter of each case, a
+    /// digit, the separators and a byte that is none of those reads as words
+    /// and numbers exactly when it carries a letter and splitting it at its
+    /// separators leaves nothing but words, numbers, and a word and a number
+    /// side by side.
+    #[test]
+    fn reads_as_words_and_numbers_agrees_with_splitting_into_parts() {
+        let reads_as_part = |part: &[u8]| {
+            let switches = part
+                .windows(2)
+                .filter(|pair| pair[0].is_ascii_digit() != pair[1].is_ascii_digit())
+                .count();
+            let letters: Vec<u8> = part
+                .iter()
+                .copied()
+                .filter(u8::is_ascii_alphabetic)
+                .collect();
+            let tail = letters.get(1..).unwrap_or_default();
+            part.iter().all(u8::is_ascii_alphanumeric)
+                && switches <= 1
+                && (tail.iter().all(u8::is_ascii_lowercase)
+                    || letters.iter().all(u8::is_ascii_uppercase))
+        };
+        let split = |candidate: &[u8]| {
+            candidate.iter().any(u8::is_ascii_alphabetic)
+                && candidate
+                    .split(|byte| matches!(byte, b'-' | b'_'))
+                    .all(reads_as_part)
+        };
+        for candidate in strings_of(b"aZ1-_.", 7) {
+            assert_eq!(
+                reads_as_words_and_numbers(&candidate),
+                split(&candidate),
+                "{:?}",
+                String::from_utf8_lossy(&candidate)
+            );
+        }
+    }
+
+    /// Every string of at most `longest` bytes drawn from `alphabet`.
+    fn strings_of(alphabet: &[u8], longest: usize) -> Vec<Vec<u8>> {
+        let mut strings = vec![Vec::new()];
+        for length in 1..=longest {
+            let longer: Vec<Vec<u8>> = strings
+                .iter()
+                .filter(|string| string.len() == length - 1)
+                .flat_map(|string| {
+                    alphabet
+                        .iter()
+                        .map(move |byte| [string.as_slice(), &[*byte]].concat())
+                })
+                .collect();
+            strings.extend(longer);
+        }
+        strings
     }
 
     #[test]
