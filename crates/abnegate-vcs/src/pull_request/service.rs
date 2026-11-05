@@ -153,6 +153,8 @@ const GIT_SUFFIX: &str = ".git";
 /// - Reading: [`Self::fetch_pull`], [`Self::fetch_files`],
 ///   [`Self::fetch_diff`], [`Self::fetch_file`], [`Self::fetch_mergeability`]
 ///   and [`Self::fetch_reception`].
+/// - Resolving a branch, tag or commit to the commit it names:
+///   [`Self::resolve_commit`].
 /// - Checking: [`Self::fetch_checks`], [`Self::fetch_check_runs`] and
 ///   [`Self::fetch_statuses`].
 /// - Reviewing: [`Self::fetch_issue_comments`], [`Self::post_issue_comment`],

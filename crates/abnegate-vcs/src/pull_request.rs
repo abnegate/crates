@@ -24,11 +24,12 @@
 //! percent-encoded under the configured origin, as path segments or as a query
 //! value: the owner and head branch
 //! [`PullRequestService::pull_request_exists_for_branch`] looks for travel
-//! together as `head`, and the commit [`PullRequestService::fetch_file`] reads
-//! at travels as `ref`. So no value, not even a path someone else chose,
-//! reaches another endpoint or adds a parameter. Everything else a call sends,
-//! such as a GraphQL node id, a title or a body, travels in its JSON, never in
-//! its URL. What GitHub answers is held to the same types: a branch or commit
+//! together as `head`, the commit [`PullRequestService::fetch_file`] reads at
+//! travels as `ref`, and the reference [`PullRequestService::resolve_commit`]
+//! resolves, held to a [`crate::BranchName`]'s rules, travels as one path
+//! segment. So no value, not even a path someone else chose, reaches another
+//! endpoint or adds a parameter. Everything else a call sends, such as a
+//! GraphQL node id, a title or a body, travels in its JSON, never in its URL. What GitHub answers is held to the same types: a branch or commit
 //! this crate does not accept is [`PullRequestError::Parse`], never read as
 //! something else.
 //!
@@ -79,6 +80,7 @@ mod github_check_runs;
 mod github_check_status;
 mod github_combined_status;
 mod github_comment;
+mod github_commit;
 mod github_commit_status;
 mod github_commit_status_record;
 mod github_created_repository;
