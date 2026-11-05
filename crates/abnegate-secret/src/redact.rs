@@ -355,7 +355,7 @@ fn assigned_value_at(
 fn admits(naming: Naming, value: &[u8]) -> bool {
     match naming {
         Naming::Any => true,
-        Naming::Shaped => is_secret_shaped(value),
+        Naming::Shaped => is_secret_shaped(value) && !reads_as_words_and_numbers(value),
     }
 }
 
@@ -515,6 +515,46 @@ fn reads_as_words(candidate: &[u8]) -> bool {
         first = false;
         byte.is_ascii_alphabetic()
     }) && (lowercase_tail || uppercase)
+}
+
+/// Whether a run carries a letter and every hyphen- or underscore-separated
+/// part is a word, a number, or a word and a number side by side, as `s3`,
+/// `sha256` and `2fa` are: a name's version or algorithm, not a key.
+fn reads_as_words_and_numbers(candidate: &[u8]) -> bool {
+    let mut letters = false;
+    let mut first_letter = true;
+    let mut lowercase_tail = true;
+    let mut uppercase = true;
+    let mut started = false;
+    let mut previous_digit = false;
+    let mut switched = false;
+    work::all(candidate, |byte| {
+        if matches!(byte, b'-' | b'_') {
+            let cased = lowercase_tail || uppercase;
+            (first_letter, lowercase_tail, uppercase) = (true, true, true);
+            (started, switched) = (false, false);
+            return cased;
+        }
+        let digit = byte.is_ascii_digit();
+        if !digit && !byte.is_ascii_alphabetic() {
+            return false;
+        }
+        if started && digit != previous_digit {
+            if switched {
+                return false;
+            }
+            switched = true;
+        }
+        (started, previous_digit) = (true, digit);
+        if !digit {
+            letters = true;
+            lowercase_tail &= first_letter || byte.is_ascii_lowercase();
+            uppercase &= byte.is_ascii_uppercase();
+            first_letter = false;
+        }
+        true
+    }) && letters
+        && (lowercase_tail || uppercase)
 }
 
 fn credential_at(bytes: &[u8], index: usize, prose: &mut Option<Prose>) -> Option<usize> {

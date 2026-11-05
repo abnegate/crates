@@ -246,9 +246,9 @@ mod tests {
     }
 
     #[test]
-    fn finds_whatever_redact_removes() {
+    fn finds_what_redact_removes_when_it_does_not_read_as_a_name() {
         for value in [
-            "login failed: password=hunter2",
+            "login failed: password=hunt3r2",
             concat!("ASIA", "0123456789ABCDEF"),
             "https://user:p4ssw0rd@example.com/repository.git",
             concat!(
@@ -296,9 +296,27 @@ mod tests {
     }
 
     #[test]
+    fn a_word_and_a_number_a_key_word_names_is_a_name_not_a_credential() {
+        for value in [
+            "secrets:sync-s3",
+            "signature:sha256",
+            "password:hash-argon2",
+            "access_token:refresh-oauth2",
+            "secret_scanning:enable-2fa",
+            "token:generate-v2",
+            "token:refresh2",
+            "password:Summer2024",
+            "login failed: password=hunter2",
+        ] {
+            assert!(!contains_credential(value), "{value}");
+        }
+    }
+
+    #[test]
     fn a_value_a_key_word_names_counts_when_shaped_like_a_credential() {
         for value in [
-            "token:refresh2",
+            "token:12345678",
+            "password:s3cr3t-key",
             "password:P4ssword",
             "secret: a1b2c3d4",
             "token:Xq7Lm/Zp+Rt",

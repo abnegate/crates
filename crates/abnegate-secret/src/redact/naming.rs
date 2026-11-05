@@ -5,6 +5,7 @@ pub(super) enum Naming {
     /// a chosen passphrase reads as words.
     Any,
     /// Only one shaped like a credential, as a value meant to be a plain name
-    /// needs: in a name, `token:refresh` is a script, not an assignment.
+    /// needs: in a name, `token:refresh` and `signature:sha256` are scripts,
+    /// not assignments.
     Shaped,
 }
