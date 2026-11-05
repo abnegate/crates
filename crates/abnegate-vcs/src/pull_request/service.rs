@@ -36,6 +36,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use url::Url;
 
+mod automation;
 mod branches;
 mod checks;
 mod contents;
@@ -151,12 +152,17 @@ const GIT_SUFFIX: &str = ".git";
 ///   [`Self::fetch_review_threads`],
 ///   [`Self::reply_to_review_comment`] and [`Self::resolve_review_thread`].
 /// - Merging: [`Self::merge`], then [`Self::delete_branch`].
+/// - Merging once ready: [`Self::fetch_merge_settings`],
+///   [`Self::fetch_automation`], [`Self::enable_auto_merge`] and
+///   [`Self::disable_auto_merge`].
+/// - Drafts: [`Self::convert_to_draft`] and [`Self::mark_ready_for_review`].
 /// - Creating a repository: [`Self::create_repository`].
 /// - Webhooks: [`Self::create_webhook`], [`Self::update_webhook`] and
 ///   [`Self::delete_webhook`].
 ///
-/// Review threads, resolving one, and an administrator's merge go to GitHub's
-/// GraphQL API; everything else goes to its REST API, at the same origin.
+/// Review threads, resolving one, an administrator's merge, auto-merge,
+/// drafts and a repository's merge settings go to GitHub's GraphQL API;
+/// everything else goes to its REST API, at the same origin.
 ///
 /// A read follows a redirect only while it stays on that origin, for at most
 /// ten hops. A write, meaning any request but a GET and so every GraphQL call,

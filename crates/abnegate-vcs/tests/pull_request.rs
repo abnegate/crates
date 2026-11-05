@@ -73,16 +73,20 @@ fn a_pull_request_is_titled_with_a_conventional_commit_subject() {
 #[cfg(all(feature = "github", feature = "testing"))]
 mod pull_requests {
     use abnegate_secret::SecretValue;
+    use abnegate_vcs::AutoMerge;
     use abnegate_vcs::BranchName;
     use abnegate_vcs::ChecksOutcome;
     use abnegate_vcs::CommitSha;
     use abnegate_vcs::Description;
     use abnegate_vcs::IssueComment;
     use abnegate_vcs::MergeMethod;
+    use abnegate_vcs::MergeSettings;
     use abnegate_vcs::Mergeability;
     use abnegate_vcs::MergeableState;
     use abnegate_vcs::MergedPullRequest;
+    use abnegate_vcs::PullRequestAutomation;
     use abnegate_vcs::PullRequestDetail;
+    use abnegate_vcs::PullRequestError;
     use abnegate_vcs::PullRequestService;
     use abnegate_vcs::ReviewRecord;
     use abnegate_vcs::ReviewState;
@@ -96,6 +100,8 @@ mod pull_requests {
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::body_json;
+    use wiremock::matchers::body_partial_json;
+    use wiremock::matchers::body_string_contains;
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
@@ -468,6 +474,99 @@ mod pull_requests {
                 )
                 .with_outdated(true),
             ]
+        );
+    }
+
+    /// A draft is read, taken out of draft and set to merge once it is ready
+    /// by the node id the read named, and a caller builds what it expects the
+    /// way this crate reads it back.
+    #[tokio::test]
+    async fn a_draft_is_made_ready_and_set_to_merge_through_the_public_api() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("autoMergeAllowed"))
+            .and(body_partial_json(
+                json!({ "variables": { "owner": "acme", "name": "project", "number": 7 } }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "repository": {
+                    "autoMergeAllowed": true,
+                    "squashMergeAllowed": true,
+                    "mergeCommitAllowed": true,
+                    "rebaseMergeAllowed": false,
+                    "pullRequest": {
+                        "id": "PR_node",
+                        "isDraft": true,
+                        "autoMergeRequest": null,
+                        "viewerCanEnableAutoMerge": true,
+                        "viewerCanDisableAutoMerge": false,
+                    },
+                } },
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("markPullRequestReadyForReview"))
+            .and(body_json(json!({
+                "query": "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){clientMutationId}}",
+                "variables": { "id": "PR_node" },
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "markPullRequestReadyForReview": { "clientMutationId": null } },
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("enablePullRequestAutoMerge"))
+            .and(body_partial_json(json!({ "variables": { "input": {
+                "pullRequestId": "PR_node",
+                "mergeMethod": "SQUASH",
+            } } })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": null,
+                "errors": [{ "message": "Pull request Pull request is in clean status" }],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::standing_in_for("github.com", &server.uri()).unwrap();
+        let reference = service
+            .pull_request("https://github.com/acme/project/pull/7")
+            .unwrap();
+        let token = SecretValue::new("token");
+
+        let automation = service.fetch_automation(&reference, &token).await.unwrap();
+        assert_eq!(
+            automation,
+            PullRequestAutomation::new(
+                "PR_node",
+                MergeSettings::new(true, vec![MergeMethod::Squash, MergeMethod::Merge]),
+            )
+            .with_draft(true)
+            .with_can_enable_auto_merge(true)
+        );
+
+        service
+            .mark_ready_for_review(&automation.node_id, &token)
+            .await
+            .unwrap();
+        let refused = service
+            .enable_auto_merge(
+                &automation.node_id,
+                &token,
+                &AutoMerge::new(MergeMethod::Squash),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(refused, PullRequestError::AlreadyMergeable),
+            "{refused:?}"
         );
     }
 }

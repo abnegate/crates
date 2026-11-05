@@ -62,7 +62,7 @@ impl PullRequestService {
 /// The refusal a set of GraphQL errors names: a spent rate limit ahead of
 /// anything missing, anything missing ahead of anything forbidden, and
 /// GitHub's own words for the rest.
-fn rejection(errors: &[GraphQlError]) -> PullRequestError {
+pub(super) fn rejection(errors: &[GraphQlError]) -> PullRequestError {
     if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
     }

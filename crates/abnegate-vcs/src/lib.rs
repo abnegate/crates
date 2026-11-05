@@ -14,7 +14,8 @@
 //! names one; [`discovery::DependencyDiscovery`] reads package manifests for
 //! the dependencies one organisation has on itself. With the `github` feature,
 //! `pull_request::PullRequestService` opens, reads, checks, reviews and merges
-//! pull requests, creates repositories and registers their webhooks, over
+//! pull requests, sets them to merge once they are ready, moves them in and
+//! out of draft, creates repositories and registers their webhooks, over
 //! GitHub's REST and GraphQL APIs.
 //!
 //! Nothing here holds application state, so a task runner can drive it directly.
@@ -40,8 +41,9 @@
 //! # Features
 //!
 //! - `github`: `pull_request`, which opens, reads, checks, reviews and merges
-//!   pull requests on GitHub or a GitHub Enterprise install, reads back how
-//!   each one was received, and creates repositories there and registers their
+//!   pull requests on GitHub or a GitHub Enterprise install, sets them to
+//!   merge once they are ready and moves them in and out of draft, reads back
+//!   how each one was received, and creates repositories there and registers their
 //!   webhooks, over the REST and GraphQL APIs.
 //! - `testing`: `RepositoryUrl::local` and
 //!   `pull_request::PullRequestService::standing_in_for`, which reach a
@@ -84,6 +86,9 @@ pub use crate::git::RemoteHead;
 pub use crate::parse_error::ParseError;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::AutoMerge;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ChangedFile;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -97,6 +102,9 @@ pub use crate::pull_request::CreatedRepository;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Description;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::EnabledAutoMerge;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Excerpt;
@@ -117,6 +125,9 @@ pub use crate::pull_request::IssueComment;
 pub use crate::pull_request::MergeMethod;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::MergeSettings;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Mergeability;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -124,6 +135,9 @@ pub use crate::pull_request::MergeableState;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::MergedPullRequest;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::PullRequestAutomation;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::PullRequestDetail;
