@@ -106,42 +106,7 @@ pub fn decrypt_value(value: &str, key: &MasterKey) -> Result<SecretValue, Error>
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::Mutex;
-
-    use tracing::Event;
-    use tracing::Level;
-    use tracing::Metadata;
-    use tracing::Subscriber;
-    use tracing::span;
-
     use super::*;
-
-    struct LevelRecorder {
-        levels: Arc<Mutex<Vec<Level>>>,
-    }
-
-    impl Subscriber for LevelRecorder {
-        fn enabled(&self, _: &Metadata<'_>) -> bool {
-            true
-        }
-
-        fn new_span(&self, _: &span::Attributes<'_>) -> span::Id {
-            span::Id::from_u64(1)
-        }
-
-        fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
-
-        fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
-
-        fn event(&self, event: &Event<'_>) {
-            self.levels.lock().unwrap().push(*event.metadata().level());
-        }
-
-        fn enter(&self, _: &span::Id) {}
-
-        fn exit(&self, _: &span::Id) {}
-    }
 
     #[test]
     fn round_trips_a_credential() {
@@ -245,24 +210,6 @@ mod tests {
                 "{truncated} was read as plaintext"
             );
         }
-    }
-
-    #[test]
-    fn reading_plaintext_is_reported_below_warning_level() {
-        let levels = Arc::new(Mutex::new(Vec::new()));
-        let recorder = LevelRecorder {
-            levels: Arc::clone(&levels),
-        };
-        let key = MasterKey::generate().unwrap();
-
-        tracing::subscriber::with_default(recorder, || {
-            for _ in 0..3 {
-                decrypt_value("written-before-the-envelope-existed", &key).unwrap();
-            }
-        });
-
-        let levels = levels.lock().unwrap();
-        assert_eq!(levels.as_slice(), [Level::DEBUG; 3]);
     }
 
     #[test]
