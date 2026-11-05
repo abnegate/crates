@@ -20,6 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 async-trait = { workspace = true }
 dashmap = { workspace = true }
+httpdate = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["form", "json", "multipart", "query"] }
 serde = { workspace = true }
