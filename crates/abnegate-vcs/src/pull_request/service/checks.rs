@@ -14,6 +14,8 @@ use crate::pull_request::github_commit_status::GitHubCommitStatus;
 use crate::pull_request::github_commit_status_record::GitHubCommitStatusRecord;
 use crate::pull_request::github_status_state::GitHubStatusState;
 use std::collections::BTreeSet;
+use std::collections::HashSet;
+use std::hash::Hash;
 
 /// Conclusions that fail a commit.
 const FAILING_CONCLUSIONS: [GitHubCheckConclusion; 6] = [
@@ -49,8 +51,10 @@ impl PullRequestService {
     /// finished stale, with a conclusion this crate does not know or with
     /// none, a status pending or in a state this crate does not know, and a
     /// read that could not reach every row all make it pending. A walk
-    /// stopped at the page limit on a full page, or one that collected fewer
-    /// rows than GitHub counted, is never a success. A neutral or skipped run
+    /// stopped at the page limit on a full page, one that collected fewer
+    /// rows than GitHub counted, or one whose rows moved between pages, as
+    /// [`Collected::complete`] describes, is never a success. A neutral or
+    /// skipped run
     /// fails nothing and counts as passing. Nothing reporting at all is
     /// [`ChecksOutcome::Absent`], whose meaning a caller decides: a new
     /// repository has no checks yet, and that is not a pass.
@@ -73,6 +77,7 @@ impl PullRequestService {
                 &runs,
                 token,
                 |page: GitHubCheckRuns| (page.total_count, page.check_runs),
+                |run: &GitHubCheckRun| run.id,
                 read_to_the_end,
             ),
             walk(
@@ -80,6 +85,7 @@ impl PullRequestService {
                 &statuses,
                 token,
                 |page: GitHubCombinedStatus| (page.total_count, page.statuses),
+                |status: &GitHubCommitStatus| Some(status.context.clone()),
                 read_to_the_end,
             ),
         )?;
@@ -94,9 +100,11 @@ impl PullRequestService {
     /// The latest attempt of every check run on `commit`, in the order GitHub
     /// lists them, read page after page, and whether that is every run.
     ///
-    /// The read stops at the tenth page, so a full tenth page, or fewer runs
-    /// than GitHub counted, is [`Collected::complete`] `false`, never a
-    /// shorter list passed off as all of them. A run GitHub sends without a
+    /// The read stops at the tenth page, so a full tenth page, fewer runs
+    /// than GitHub counted, or a run listed twice because the runs moved
+    /// between pages, is [`Collected::complete`] `false`, never a shorter
+    /// list passed off as all of them; so is a read of more than one page
+    /// whose runs GitHub sent without their identifiers. A run GitHub sends without a
     /// status, or a page longer than the 16 MiB this crate reads, is
     /// [`PullRequestError::GitHubApi`], and a run on a commit this crate does
     /// not accept is [`PullRequestError::Parse`]: never a partial list.
@@ -111,6 +119,7 @@ impl PullRequestService {
             &self.latest_check_runs(repository, commit)?,
             token,
             |page: GitHubCheckRuns<GitHubCheckRunRecord>| (page.total_count, page.check_runs),
+            |run: &GitHubCheckRunRecord| run.id,
             read_to_the_end,
         )
         .await?;
@@ -129,8 +138,9 @@ impl PullRequestService {
     ///
     /// GitHub keeps only each context's latest status there, so a context
     /// that failed and then passed reads as passed. The read stops at the
-    /// tenth page, so a full tenth page, or fewer statuses than GitHub
-    /// counted, is [`Collected::complete`] `false`. A status GitHub sends
+    /// tenth page, so a full tenth page, fewer statuses than GitHub counted,
+    /// or a context listed twice because the statuses moved between pages,
+    /// is [`Collected::complete`] `false`. A status GitHub sends
     /// without its context or state, or a page longer than the 16 MiB this
     /// crate reads, is [`PullRequestError::GitHubApi`]: never a partial list.
     pub async fn collect_statuses(
@@ -146,6 +156,7 @@ impl PullRequestService {
             |page: GitHubCombinedStatus<GitHubCommitStatusRecord>| {
                 (page.total_count, page.statuses)
             },
+            |status: &GitHubCommitStatusRecord| Some(status.context.clone()),
             read_to_the_end,
         )
         .await?;
@@ -180,19 +191,29 @@ impl PullRequestService {
 }
 
 /// Every row a paged answer at `url` holds, page after page until a short
-/// one or [`MAXIMUM_PAGES`], and whether that is all of them, as `complete`
-/// judges from the rows read, the largest count a page gave, and whether the
-/// walk ended on a short page.
-pub(super) async fn walk<P: DeserializeOwned, R>(
+/// one or [`MAXIMUM_PAGES`], and whether that is all of them.
+///
+/// `complete` judges that from the rows read, the largest count a page gave,
+/// and whether the walk ended on a short page. A walk is never complete when
+/// a row it reached was one `identity` names as already read, since the rows
+/// moved between pages and one may have moved past the pages read, nor when
+/// it read more than one page and `identity` names no row of it, since a
+/// move could not then be seen.
+pub(super) async fn walk<P: DeserializeOwned, R, K: Eq + Hash>(
     service: &PullRequestService,
     url: &Url,
     token: &SecretValue,
     rows: impl Fn(P) -> (Option<u64>, Vec<R>),
+    identity: fn(&R) -> Option<K>,
     complete: fn(u64, Option<u64>, bool) -> bool,
 ) -> PullRequestResult<Collected<R>> {
     let mut collected: Vec<R> = Vec::new();
     let mut counted: Option<u64> = None;
     let mut ended = false;
+    let mut identified: HashSet<K> = HashSet::new();
+    let mut repeated = false;
+    let mut anonymous = false;
+    let mut pages = 0;
 
     for page in 1..=MAXIMUM_PAGES {
         let mut paged = url.clone();
@@ -201,8 +222,15 @@ pub(super) async fn walk<P: DeserializeOwned, R>(
             .append_pair("per_page", &PAGE_SIZE.to_string())
             .append_pair("page", &page.to_string());
         let (count, batch) = rows(service.get(paged, token).await?);
+        pages = page;
         counted = counted.max(count);
         ended = batch.len() < PAGE_SIZE;
+        for row in &batch {
+            match identity(row) {
+                Some(key) => repeated |= !identified.insert(key),
+                None => anonymous = true,
+            }
+        }
         collected.extend(batch);
         if ended {
             break;
@@ -210,7 +238,8 @@ pub(super) async fn walk<P: DeserializeOwned, R>(
     }
 
     let read = u64::try_from(collected.len()).unwrap_or(u64::MAX);
-    let every = complete(read, counted, ended);
+    let shifted = repeated || (anonymous && pages > 1);
+    let every = !shifted && complete(read, counted, ended);
     Ok(Collected::new(collected, every))
 }
 
@@ -279,6 +308,7 @@ mod tests {
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
+    use wiremock::matchers::query_param;
     use wiremock::matchers::query_param_is_missing;
 
     const SENTINEL: &str = "RAW-SENTINEL";
@@ -295,13 +325,31 @@ mod tests {
         ResponseTemplate::new(200).set_body_json(body)
     }
 
-    /// `count` runs that finished and passed, each under its own name.
-    fn passing(count: usize) -> Vec<Value> {
-        (0..count)
-            .map(|index| {
-                json!({ "name": format!("check-{index}"), "status": "completed", "conclusion": "success" })
+    /// `count` runs that finished and passed, numbered on from `first`, each
+    /// under its own name.
+    fn passing(first: usize, count: usize) -> Vec<Value> {
+        (first..first + count)
+            .map(|id| {
+                json!({ "id": id, "name": format!("check-{id}"), "status": "completed", "conclusion": "success" })
             })
             .collect()
+    }
+
+    /// Ten full pages of check runs at `route`, page `n` holding what `rows`
+    /// gives for the runs numbered on from `(n - 1) * PAGE_SIZE`, each page
+    /// asked for once.
+    async fn full_pages(server: &MockServer, route: String, rows: impl Fn(usize) -> Vec<Value>) {
+        for number in 1..=MAXIMUM_PAGES {
+            Mock::given(method("GET"))
+                .and(path(route.clone()))
+                .and(query_param("page", number.to_string()))
+                .respond_with(answer(
+                    json!({ "check_runs": rows((number - 1) * PAGE_SIZE) }),
+                ))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
     }
 
     async fn answering(server: &MockServer, route: String, body: Value) {
@@ -364,7 +412,7 @@ mod tests {
                 ("per_page", "100"),
                 ("page", "1"),
             ]))
-            .respond_with(answer(json!({ "check_runs": passing(PAGE_SIZE) })))
+            .respond_with(answer(json!({ "check_runs": passing(0, PAGE_SIZE) })))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -474,15 +522,10 @@ mod tests {
         let statuses_short = commit('8');
         let unsent = commit('9');
 
-        Mock::given(method("GET"))
-            .and(path(runs(&capped)))
-            .respond_with(answer(json!({ "check_runs": passing(PAGE_SIZE) })))
-            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
-            .mount(&server)
-            .await;
+        full_pages(&server, runs(&capped), |first| passing(first, PAGE_SIZE)).await;
         answering(&server, statuses(&capped), json!({ "statuses": [] })).await;
 
-        let mut timed_out = passing(PAGE_SIZE - 1);
+        let mut timed_out = passing(0, PAGE_SIZE - 1);
         timed_out
             .push(json!({ "name": "deploy", "status": "completed", "conclusion": "timed_out" }));
         answering(&server, runs(&failing), json!({ "check_runs": timed_out })).await;
@@ -491,7 +534,7 @@ mod tests {
         answering(
             &server,
             runs(&runs_short),
-            json!({ "total_count": 3, "check_runs": passing(2) }),
+            json!({ "total_count": 3, "check_runs": passing(0, 2) }),
         )
         .await;
         answering(
@@ -504,7 +547,7 @@ mod tests {
         answering(
             &server,
             runs(&statuses_short),
-            json!({ "total_count": 1, "check_runs": passing(1) }),
+            json!({ "total_count": 1, "check_runs": passing(0, 1) }),
         )
         .await;
         answering(
@@ -641,7 +684,7 @@ mod tests {
         let sha = commit('d');
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
-            .respond_with(answer(json!({ "check_runs": passing(3) })))
+            .respond_with(answer(json!({ "check_runs": passing(0, 3) })))
             .expect(1)
             .mount(&server)
             .await;
@@ -808,14 +851,14 @@ mod tests {
         );
     }
 
-    /// `count` runs on `sha` that finished and passed, each under its own
-    /// name and identifier.
-    fn passing_on(sha: &CommitSha, count: usize) -> Vec<Value> {
-        (0..count)
-            .map(|index| {
+    /// `count` runs on `sha` that finished and passed, numbered on from
+    /// `first`, each under its own name.
+    fn passing_on(sha: &CommitSha, first: usize, count: usize) -> Vec<Value> {
+        (first..first + count)
+            .map(|id| {
                 json!({
-                    "id": index,
-                    "name": format!("check-{index}"),
+                    "id": id,
+                    "name": format!("check-{id}"),
                     "head_sha": sha.as_str(),
                     "status": "completed",
                     "conclusion": "success",
@@ -852,7 +895,9 @@ mod tests {
                 ("per_page", "100"),
                 ("page", "1"),
             ]))
-            .respond_with(answer(json!({ "check_runs": passing_on(&sha, PAGE_SIZE) })))
+            .respond_with(answer(
+                json!({ "check_runs": passing_on(&sha, 0, PAGE_SIZE) }),
+            ))
             .expect(1)
             .mount(&server)
             .await;
@@ -910,7 +955,7 @@ mod tests {
             ]))
             .respond_with(answer(json!({
                 "total_count": counted,
-                "check_runs": passing_on(&sha, PAGE_SIZE),
+                "check_runs": passing_on(&sha, 0, PAGE_SIZE),
             })))
             .expect(1)
             .mount(&server)
@@ -924,7 +969,7 @@ mod tests {
             ]))
             .respond_with(answer(json!({
                 "total_count": counted,
-                "check_runs": passing_on(&sha, 10),
+                "check_runs": passing_on(&sha, PAGE_SIZE, 10),
             })))
             .expect(1)
             .mount(&server)
@@ -943,12 +988,10 @@ mod tests {
     async fn runs_stopped_at_the_page_limit_on_a_full_page_are_incomplete() {
         let server = MockServer::start().await;
         let sha = commit('3');
-        Mock::given(method("GET"))
-            .and(path(runs(&sha)))
-            .respond_with(answer(json!({ "check_runs": passing_on(&sha, PAGE_SIZE) })))
-            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
-            .mount(&server)
-            .await;
+        full_pages(&server, runs(&sha), |first| {
+            passing_on(&sha, first, PAGE_SIZE)
+        })
+        .await;
 
         let read = check_runs(&server, &sha).await;
 
@@ -1202,5 +1245,134 @@ mod tests {
             );
             assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
         }
+    }
+
+    /// Two pages at `route` that each say GitHub counted 150 rows: a full
+    /// first page, and a second of fifty, so the walk reads as many rows as
+    /// were counted.
+    async fn two_pages(
+        server: &MockServer,
+        route: String,
+        key: &str,
+        first: Vec<Value>,
+        second: Vec<Value>,
+    ) {
+        for (number, rows) in [("1", first), ("2", second)] {
+            let mut body = json!({ "total_count": PAGE_SIZE + 50 });
+            body[key] = Value::Array(rows);
+            Mock::given(method("GET"))
+                .and(path(route.clone()))
+                .and(query_param("page", number))
+                .respond_with(answer(body))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_listed_on_two_pages_is_never_complete() {
+        let server = MockServer::start().await;
+        let sha = commit('a');
+        two_pages(
+            &server,
+            runs(&sha),
+            "check_runs",
+            passing_on(&sha, 0, PAGE_SIZE),
+            passing_on(&sha, PAGE_SIZE - 1, 50),
+        )
+        .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 50);
+        assert!(
+            !read.complete,
+            "a run listed twice moved between pages, and another may have moved past them"
+        );
+    }
+
+    #[tokio::test]
+    async fn runs_without_identifiers_past_one_page_are_never_complete() {
+        let server = MockServer::start().await;
+        let sha = commit('b');
+        let anonymous = |first, count| {
+            passing_on(&sha, first, count)
+                .into_iter()
+                .map(|mut run| {
+                    run.as_object_mut().unwrap().remove("id");
+                    run
+                })
+                .collect::<Vec<Value>>()
+        };
+        two_pages(
+            &server,
+            runs(&sha),
+            "check_runs",
+            anonymous(0, PAGE_SIZE),
+            anonymous(PAGE_SIZE, 50),
+        )
+        .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 50);
+        assert!(
+            !read.complete,
+            "runs that cannot be told apart cannot show that they moved between pages"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_listed_on_two_pages_keeps_the_commit_pending() {
+        let server = MockServer::start().await;
+        let sha = commit('c');
+        two_pages(
+            &server,
+            runs(&sha),
+            "check_runs",
+            passing(0, PAGE_SIZE),
+            passing(PAGE_SIZE - 1, 50),
+        )
+        .await;
+        answering(
+            &server,
+            statuses(&sha),
+            json!({ "total_count": 0, "statuses": [] }),
+        )
+        .await;
+
+        assert_eq!(
+            outcome(&server, &sha).await,
+            ChecksOutcome::Pending,
+            "a run that moved between pages may have pushed a failure past them"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_context_listed_on_two_pages_is_never_complete() {
+        let server = MockServer::start().await;
+        let sha = commit('d');
+        let reported = |first: usize, count: usize| {
+            (first..first + count)
+                .map(|index| json!({ "context": format!("ci/{index}"), "state": "success" }))
+                .collect::<Vec<Value>>()
+        };
+        two_pages(
+            &server,
+            statuses(&sha),
+            "statuses",
+            reported(0, PAGE_SIZE),
+            reported(PAGE_SIZE - 1, 50),
+        )
+        .await;
+
+        let read = commit_statuses(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 50);
+        assert!(
+            !read.complete,
+            "a context listed twice moved between pages, and another may have moved past them"
+        );
     }
 }

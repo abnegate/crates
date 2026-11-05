@@ -43,7 +43,8 @@ impl PullRequestService {
     /// [`PullRequestError::GitHubApi`], and one whose commit is not a full
     /// commit identifier is [`PullRequestError::Parse`]: never a shorter list.
     /// A run GitHub lists twice, as it may while a run is retried during the
-    /// walk, is listed twice here.
+    /// walk, is listed twice here, and the read is then not complete: the
+    /// runs moved between pages, and one may have moved past those read.
     pub async fn collect_workflow_runs(
         &self,
         repository: &Repository,
@@ -58,6 +59,7 @@ impl PullRequestService {
             &url,
             token,
             |page: GitHubWorkflowRuns| (page.total_count, page.workflow_runs),
+            |run: &GitHubWorkflowRun| Some(run.id),
             read_as_counted,
         )
         .await?;
@@ -349,9 +351,9 @@ mod tests {
         })
     }
 
-    /// `count` runs of one workflow at one commit, each with its own id.
-    fn runs(count: usize, sha: &CommitSha) -> Vec<Value> {
-        (1..=count).map(|id| run_row(id, sha)).collect()
+    /// `count` runs of one workflow at one commit, numbered on from `first`.
+    fn runs(first: usize, count: usize, sha: &CommitSha) -> Vec<Value> {
+        (first..first + count).map(|id| run_row(id, sha)).collect()
     }
 
     /// A job with every field GitHub always sends and none it may leave out.
@@ -823,7 +825,7 @@ mod tests {
     async fn the_run_filter_reaches_the_query_and_pages_are_followed_until_a_short_one() {
         let server = MockServer::start().await;
         let sha = commit('a');
-        for (page, count) in [("1", PAGE_SIZE), ("2", 3)] {
+        for (page, first, count) in [("1", 1, PAGE_SIZE), ("2", PAGE_SIZE + 1, 3)] {
             Mock::given(method("GET"))
                 .and(path(RUNS))
                 .and(query_is(&[
@@ -835,7 +837,7 @@ mod tests {
                     ("page", page),
                 ]))
                 .respond_with(ResponseTemplate::new(200).set_body_json(
-                    json!({ "total_count": PAGE_SIZE + 3, "workflow_runs": runs(count, &sha) }),
+                    json!({ "total_count": PAGE_SIZE + 3, "workflow_runs": runs(first, count, &sha) }),
                 ))
                 .expect(1)
                 .mount(&server)
@@ -864,7 +866,7 @@ mod tests {
             .and(query_is(&[("per_page", "100"), ("page", "1")]))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(json!({ "total_count": 1, "workflow_runs": runs(1, &sha) })),
+                    .set_body_json(json!({ "total_count": 1, "workflow_runs": runs(1, 1, &sha) })),
             )
             .expect(1)
             .mount(&server)
@@ -898,16 +900,20 @@ mod tests {
     async fn capped(counted: Option<usize>, filter: &WorkflowRunFilter) -> Collected<WorkflowRun> {
         let server = MockServer::start().await;
         let sha = commit('0');
-        let mut page = json!({ "workflow_runs": runs(PAGE_SIZE, &sha) });
-        if let Some(counted) = counted {
-            page["total_count"] = json!(counted);
+        for number in 1..=MAXIMUM_PAGES {
+            let first = (number - 1) * PAGE_SIZE + 1;
+            let mut page = json!({ "workflow_runs": runs(first, PAGE_SIZE, &sha) });
+            if let Some(counted) = counted {
+                page["total_count"] = json!(counted);
+            }
+            Mock::given(method("GET"))
+                .and(path(RUNS))
+                .and(query_param("page", number.to_string()))
+                .respond_with(ResponseTemplate::new(200).set_body_json(page))
+                .expect(1)
+                .mount(&server)
+                .await;
         }
-        Mock::given(method("GET"))
-            .and(path(RUNS))
-            .respond_with(ResponseTemplate::new(200).set_body_json(page))
-            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
-            .mount(&server)
-            .await;
         collect(&stand_in(&server).await, filter).await.unwrap()
     }
 
@@ -951,6 +957,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_run_listed_on_two_pages_is_incomplete_though_as_many_were_read_as_counted() {
+        let server = MockServer::start().await;
+        let sha = commit('2');
+        for (page, first, count) in [("1", 1, PAGE_SIZE), ("2", PAGE_SIZE, 50)] {
+            Mock::given(method("GET"))
+                .and(path(RUNS))
+                .and(query_param("page", page))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    json!({ "total_count": PAGE_SIZE + 50, "workflow_runs": runs(first, count, &sha) }),
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+
+        let listed = collect(&stand_in(&server).await, &WorkflowRunFilter::new())
+            .await
+            .unwrap();
+
+        assert_eq!(listed.items.len(), PAGE_SIZE + 50);
+        assert!(
+            !listed.complete,
+            "a run listed twice moved between pages, and another may have moved past them"
+        );
+    }
+
+    #[tokio::test]
     async fn a_walk_that_ends_short_of_githubs_count_is_incomplete() {
         let server = MockServer::start().await;
         let sha = commit('1');
@@ -958,7 +991,7 @@ mod tests {
             .and(path(RUNS))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(json!({ "total_count": 5, "workflow_runs": runs(3, &sha) })),
+                    .set_body_json(json!({ "total_count": 5, "workflow_runs": runs(1, 3, &sha) })),
             )
             .expect(1)
             .mount(&server)

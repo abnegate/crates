@@ -8,7 +8,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GitHubCheckRunRecord {
     #[serde(default)]
-    id: Option<u64>,
+    pub(super) id: Option<u64>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]

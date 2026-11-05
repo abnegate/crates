@@ -5,7 +5,7 @@ use serde::Deserialize;
 /// returns it, its state kept as GitHub's own word.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GitHubCommitStatusRecord {
-    context: String,
+    pub(super) context: String,
     state: String,
     #[serde(default)]
     description: Option<String>,
