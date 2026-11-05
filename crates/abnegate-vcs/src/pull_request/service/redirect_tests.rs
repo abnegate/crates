@@ -61,12 +61,13 @@ async fn writing(
     write: Method,
     url: Url,
 ) -> PullRequestResult<Response> {
-    answered(
-        service
-            .request(write, url, &token(), ACCEPT)
-            .json(&payload()),
-    )
-    .await
+    service
+        .answered(
+            service
+                .request(write, url, &token(), ACCEPT)
+                .json(&payload()),
+        )
+        .await
 }
 
 /// Every request that reached `route` on `server`.
@@ -319,13 +320,14 @@ async fn a_write_redirected_by_a_status_that_may_change_it_is_refused_and_never_
     }
 
     for redirect in REDIRECTS {
-        let read = answered(service.request(
-            Method::GET,
-            address(&server, &format!("/{redirect}/found")),
-            &token(),
-            ACCEPT,
-        ))
-        .await;
+        let read = service
+            .answered(service.request(
+                Method::GET,
+                address(&server, &format!("/{redirect}/found")),
+                &token(),
+                ACCEPT,
+            ))
+            .await;
         assert!(read.is_ok(), "GET {redirect}: {read:?}");
     }
 
@@ -597,12 +599,13 @@ async fn a_write_whose_body_cannot_be_sent_twice_is_refused_rather_than_sent_on(
         .await;
     let service = stand_in(&server).await;
 
-    let answer = answered(
-        service
-            .request(Method::PUT, address(&server, "/stream"), &token(), ACCEPT)
-            .body(Body::wrap(String::from("sent once"))),
-    )
-    .await;
+    let answer = service
+        .answered(
+            service
+                .request(Method::PUT, address(&server, "/stream"), &token(), ACCEPT)
+                .body(Body::wrap(String::from("sent once"))),
+        )
+        .await;
 
     assert!(refused(&answer), "{answer:?}");
     assert_eq!(arrivals(&server, "/stream").await[0].body, b"sent once");

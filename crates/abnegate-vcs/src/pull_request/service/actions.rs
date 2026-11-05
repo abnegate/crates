@@ -111,7 +111,10 @@ impl PullRequestService {
     /// [`JobLogError::Undirected`]. A redirect within the origin drops the
     /// token too, so the log of a private repository that was renamed, which
     /// GitHub redirects to the new name, is [`JobLogError::Refused`] with
-    /// 404. Both requests together spend the one timeout a request is given.
+    /// 404. Both requests together spend the one timeout a request is given;
+    /// under [`Self::with_retry_after`], it runs from the attempt GitHub
+    /// answered, so neither an attempt answered with a rate limit nor the
+    /// wait after it spends any of it.
     ///
     /// A refusal of the request for the log is reported as any refusal of
     /// this service's is. Where the log is stored, a status other than a
@@ -129,10 +132,12 @@ impl PullRequestService {
         job: NonZeroU64,
         limit: usize,
     ) -> PullRequestResult<JobLog> {
-        let deadline = Instant::now().checked_add(self.timeout);
         let job = job.to_string();
         let url = self.repository_endpoint(repository, &["actions", "jobs", &job, "logs"])?;
-        let response = sent(self.request_on(&self.writer, Method::GET, url, token, ACCEPT)).await?;
+        let (response, sent_at) = self
+            .attempted(self.request_on(&self.writer, Method::GET, url, token, ACCEPT))
+            .await?;
+        let deadline = sent_at.checked_add(self.timeout);
 
         let status = response.status();
         if status.is_success() {
@@ -765,6 +770,72 @@ mod tests {
                 Err(PullRequestError::JobLog(JobLogError::Unreachable))
             ),
             "the store is given only what the first hop left: {refused:?}"
+        );
+    }
+
+    /// The timeout a log read that waits on a rate limit is given: enough for
+    /// two loopback hops, less than the wait.
+    const RETRIED_TIMEOUT: Duration = Duration::from_secs(2);
+
+    /// The longest wait on a rate limit a log read takes.
+    const RETRIED_CEILING: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn a_log_sent_again_after_a_wait_still_has_its_time_to_reach_the_store() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(JOB_LOG))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "3"))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(JOB_LOG))
+            .respond_with(redirect(SIGNED_LOG))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(STORED_LOG))
+            .respond_with(ResponseTemplate::new(200).set_body_string("step one\n"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::addressing(
+            Origin::standing_in_for("github.com", &server.uri()).unwrap(),
+            false,
+            RETRIED_TIMEOUT,
+        )
+        .unwrap()
+        .with_retry_after(RETRIED_CEILING);
+
+        let read = log(&service, LIMIT).await;
+
+        assert!(
+            matches!(&read, Ok(log) if log.content == b"step one\n"),
+            "the store is given the time the answered attempt left: {read:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_log_store_that_limits_the_rate_is_refused_and_not_waited_on() {
+        let server = MockServer::start().await;
+        redirecting(&server, SIGNED_LOG).await;
+        Mock::given(method("GET"))
+            .and(path(STORED_LOG))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await.with_retry_after(RETRIED_CEILING);
+
+        let refused = log(&service, LIMIT).await.unwrap_err();
+
+        assert!(
+            matches!(refused, PullRequestError::JobLog(JobLogError::Refused(429))),
+            "{refused:?}"
         );
     }
 

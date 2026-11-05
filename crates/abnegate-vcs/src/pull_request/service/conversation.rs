@@ -174,7 +174,7 @@ impl PullRequestService {
             &["pulls", &number, "comments", &comment, "replies"],
         )?;
 
-        answered(
+        self.answered(
             self.request(Method::POST, url, token, ACCEPT)
                 .json(&CommentRequest { body }),
         )

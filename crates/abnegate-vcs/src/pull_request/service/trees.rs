@@ -64,7 +64,9 @@ impl PullRequestService {
     ) -> PullRequestResult<Blob> {
         let url = self.repository_endpoint(repository, &["git", "blobs", blob.as_str()])?;
 
-        let response = answered(self.request(Method::GET, url, token, RAW)).await?;
+        let response = self
+            .answered(self.request(Method::GET, url, token, RAW))
+            .await?;
         let declared_past_limit = response
             .content_length()
             .is_some_and(|declared| u64::try_from(limit).is_ok_and(|limit| declared > limit));
