@@ -82,9 +82,9 @@ fn folded_at(bytes: &[u8], index: usize) -> Option<u8> {
         Some(b's')
     } else if through(index + 1).ends_with(KELVIN) {
         Some(b'k')
-    } else if through(index + 2).ends_with(LONG_S)
-        || through(index + 2).ends_with(KELVIN)
-        || through(index + 3).ends_with(KELVIN)
+    } else if through(index + LONG_S.len()).ends_with(LONG_S)
+        || through(index + KELVIN.len() - 1).ends_with(KELVIN)
+        || through(index + KELVIN.len()).ends_with(KELVIN)
     {
         None
     } else {
@@ -324,9 +324,10 @@ mod tests {
     #[test]
     fn other_characters_outside_ascii_do_not_lengthen_a_body() {
         for value in [
-            "npm_install\u{2014}fast",
-            "npm_install\u{142}",
-            "\u{17F}tra\u{DF}e",
+            "npm_install\u{2014}fa\u{17F}t",
+            "\u{17F}k-abc\u{142}defgh",
+            "\u{17F}k-gro\u{DF}stadt",
+            "s\u{212A}-\u{1F600}abcdefgh",
         ] {
             assert!(!contains_credential(value), "{value}");
         }
