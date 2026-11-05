@@ -37,9 +37,10 @@ const NANOSECONDS_PER_MILLISECOND: u32 = 1_000_000;
 /// Each prompt is one `POST` to `/api/embeddings`, which answers with the
 /// model's raw vector, and never to `/api/embed`, which normalises it, so
 /// vectors stored from either side compare equal. A batch keeps up to
-/// [`OllamaEmbeddingConfig::concurrency`] prompts in flight and comes back in
-/// input order. A prompt under 2,000 characters gets the short deadline, and
-/// any longer one the long deadline.
+/// [`OllamaEmbeddingConfig::concurrency`] prompts in flight, starting the
+/// next as soon as any finishes, and comes back in input order. A prompt
+/// under 2,000 characters gets the short deadline, and any longer one the
+/// long deadline.
 ///
 /// A refusal is a [`ProviderError::Api`] holding Ollama's status and its
 /// body, with the configured key and any other credential scrubbed out, so a caller can tell a rejected key, a throttled request
@@ -110,6 +111,14 @@ impl OllamaEmbeddingProvider {
         Ok(response.embedding)
     }
 
+    async fn embed_indexed(
+        &self,
+        index: usize,
+        prompt: &str,
+    ) -> Result<(usize, Vec<f32>), ProviderError> {
+        Ok((index, self.embed_prompt(prompt).await?))
+    }
+
     fn concealed(&self, error: ProviderError) -> ProviderError {
         match (&self.api_key, error) {
             (Some(key), ProviderError::Api { status, message }) => {
@@ -142,11 +151,14 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        stream::iter(0..texts.len())
-            .map(|index| self.embed_prompt(&texts[index]))
-            .buffered(self.concurrency)
-            .try_collect()
-            .await
+        let mut embeddings = vec![Vec::new(); texts.len()];
+        let mut answers = stream::iter(0..texts.len())
+            .map(|index| self.embed_indexed(index, &texts[index]))
+            .buffer_unordered(self.concurrency);
+        while let Some((index, embedding)) = answers.try_next().await? {
+            embeddings[index] = embedding;
+        }
+        Ok(embeddings)
     }
 
     async fn embed_single(&self, text: &str) -> Result<Vec<f32>, ProviderError> {
@@ -207,11 +219,15 @@ fn model_maximum_input_tokens(model: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::time::Instant;
 
     use abnegate_secret::REDACTED;
+    use serde_json::Value;
     use wiremock::Mock;
     use wiremock::MockServer;
+    use wiremock::Request;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::body_partial_json;
     use wiremock::matchers::header;
@@ -223,6 +239,11 @@ mod tests {
     const MODEL: &str = "nomic-embed-text";
     const KEY: &str = concat!("sk-", "ollama-proxy-0123456789abcdef");
     const HANG: Duration = Duration::from_secs(5);
+    const CONCURRENCY: usize = 10;
+    const DELAY: Duration = Duration::from_millis(300);
+    const FAST_DELAY: Duration = Duration::from_millis(50);
+    const SLOW_DELAY: Duration = Duration::from_secs(2);
+    const SLOW: &str = "slow";
 
     fn config(server: &MockServer) -> OllamaEmbeddingConfig {
         OllamaEmbeddingConfig::new(server.uri(), MODEL)
@@ -351,23 +372,93 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(PATH))
-            .respond_with(embedding(&[0.5]).set_delay(Duration::from_millis(300)))
+            .respond_with(embedding(&[0.5]).set_delay(DELAY))
             .mount(&server)
             .await;
-        let provider = provider(config(&server).with_concurrency(10));
+        let provider = provider(config(&server).with_concurrency(CONCURRENCY));
         let started = Instant::now();
 
-        let embeddings = provider.embed(&prompts(20)).await.unwrap();
+        let embeddings = provider.embed(&prompts(CONCURRENCY + 1)).await.unwrap();
 
         let elapsed = started.elapsed();
-        assert_eq!(embeddings.len(), 20);
+        assert_eq!(embeddings.len(), CONCURRENCY + 1);
         assert!(
-            elapsed >= Duration::from_millis(600),
-            "more than 10 prompts were in flight: {elapsed:?}"
+            elapsed >= 2 * DELAY,
+            "more than {CONCURRENCY} prompts were in flight: {elapsed:?}"
         );
         assert!(
             elapsed < Duration::from_secs(3),
             "the prompts did not run in parallel: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slow_first_prompt_does_not_hold_back_the_others() {
+        let server = MockServer::start().await;
+        let arrivals = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&arrivals);
+        Mock::given(method("POST"))
+            .and(path(PATH))
+            .respond_with(move |request: &Request| {
+                let prompt = request.body_json::<Value>().unwrap()["prompt"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                let delay = if prompt == SLOW {
+                    SLOW_DELAY
+                } else {
+                    FAST_DELAY
+                };
+                recorded.lock().unwrap().push((prompt, Instant::now()));
+                embedding(&[0.5]).set_delay(delay)
+            })
+            .mount(&server)
+            .await;
+        let provider = provider(config(&server).with_concurrency(2));
+        let mut texts = vec![SLOW.to_string()];
+        texts.extend(prompts(4));
+        let started = Instant::now();
+
+        let embeddings = provider.embed(&texts).await.unwrap();
+
+        assert_eq!(embeddings.len(), texts.len());
+        let arrivals = arrivals.lock().unwrap();
+        assert_eq!(arrivals.len(), texts.len());
+        for (prompt, arrived) in arrivals.iter() {
+            let waited = arrived.duration_since(started);
+            assert!(
+                waited < SLOW_DELAY / 2,
+                "{prompt} waited {waited:?} for the slow prompt to finish"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_ends_the_batch() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(PATH))
+            .and(body_partial_json(
+                serde_json::json!({ "prompt": "prompt 1" }),
+            ))
+            .respond_with(ResponseTemplate::new(500).set_body_string("model crashed"))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(PATH))
+            .respond_with(embedding(&[0.5]))
+            .mount(&server)
+            .await;
+
+        let error = provider(config(&server))
+            .embed(&prompts(3))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, ProviderError::Api { status: 500, .. }),
+            "{error:?}"
         );
     }
 
