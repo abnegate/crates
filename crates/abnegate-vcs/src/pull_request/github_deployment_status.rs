@@ -3,30 +3,29 @@ use serde::Deserialize;
 
 /// A deployment's status as the GitHub REST API lists it.
 ///
-/// Nothing is required: GitHub sends a state and a time on every status, but
-/// an answer that leaves them out is still the latest one.
+/// Its state, description and time are required, as GitHub sends them on
+/// every status, so an answer that leaves any of them out is unreadable. Where
+/// the deployment can be reached and its output read are the provider's to
+/// give, and are read as not said when GitHub leaves them out or sends `null`.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GitHubDeploymentStatus {
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
+    state: String,
+    description: String,
     #[serde(default)]
     environment_url: Option<String>,
     #[serde(default)]
     log_url: Option<String>,
-    #[serde(default)]
-    created_at: Option<String>,
+    created_at: String,
 }
 
 impl From<GitHubDeploymentStatus> for DeploymentStatus {
     fn from(status: GitHubDeploymentStatus) -> Self {
         Self {
-            state: status.state.unwrap_or_default(),
+            state: status.state,
             description: status.description,
             environment_url: status.environment_url,
             log_url: status.log_url,
-            created_at: status.created_at.unwrap_or_default(),
+            created_at: status.created_at,
         }
     }
 }

@@ -3,16 +3,14 @@ use crate::parse_error::ParseError;
 use crate::pull_request::Page;
 use crate::pull_request::Release;
 use crate::pull_request::github_release::GitHubRelease;
-use crate::pull_request::repository::named;
-use std::num::NonZeroU8;
-use std::num::NonZeroU32;
 
 impl PullRequestService {
     /// Page `page` of `repository`'s releases, most recently published first,
     /// at `per_page` rows a page up to GitHub's hundred.
     ///
     /// Drafts are listed only to a token that can push to the repository. A
-    /// row this crate cannot read, such as one naming no identifier or tag, is
+    /// row that leaves out anything GitHub sends on every release, such as its
+    /// identifier, tag, link or whether it is a draft, is
     /// [`PullRequestError::GitHubApi`], never a page without it.
     pub async fn list_releases(
         &self,
@@ -22,7 +20,7 @@ impl PullRequestService {
         per_page: NonZeroU8,
     ) -> PullRequestResult<Page<Release>> {
         let asked = asked(per_page);
-        let url = self.releases(repository, &[]);
+        let url = self.repository_endpoint(repository, &["releases"])?;
         let rows: Vec<GitHubRelease> = self.get(paged(url, page, asked), token).await?;
         let read = rows.len();
 
@@ -32,34 +30,28 @@ impl PullRequestService {
 
     /// The release published under `tag`.
     ///
-    /// A tag that is empty, `.` or `..`, or that holds a character other than
-    /// an ASCII letter, a digit, `-`, `_` or `.`, is
-    /// [`PullRequestError::Parse`] with [`ParseError::Tag`], and nothing is
-    /// sent. A tag with no release published under it is
-    /// [`PullRequestError::NotFound`].
+    /// The tag is held to the rules a [`BranchName`] is, which are git's own
+    /// for a ref name, so `pkg/v1.2.3` and `v1.0.0+build` are tags, and it
+    /// travels as one path segment, so a `/` in it is sent as `%2F`. A tag
+    /// that breaks those rules, such as one that is empty, holds `..` or a
+    /// control character, is [`PullRequestError::Parse`] with
+    /// [`ParseError::Tag`], and nothing is sent. A tag with no release
+    /// published under it is [`PullRequestError::NotFound`].
     pub async fn fetch_release(
         &self,
         repository: &Repository,
         token: &SecretValue,
         tag: &str,
     ) -> PullRequestResult<Release> {
-        if !named(tag) {
-            return Err(ParseError::Tag(tag.to_string()).into());
-        }
+        BranchName::parse(tag).map_err(|_| ParseError::Tag(tag.to_string()))?;
 
         let release: GitHubRelease = self
-            .get(self.releases(repository, &["tags", tag]), token)
+            .get(
+                self.repository_endpoint(repository, &["releases", "tags", tag])?,
+                token,
+            )
             .await?;
         Ok(Release::from(release))
-    }
-
-    /// The REST endpoint for `repository`'s releases, followed by `rest`.
-    fn releases(&self, repository: &Repository, rest: &[&str]) -> Url {
-        let segments: Vec<&str> = ["repos", repository.owner(), repository.name(), "releases"]
-            .into_iter()
-            .chain(rest.iter().copied())
-            .collect();
-        self.origin.endpoint(&segments)
     }
 }
 
@@ -67,6 +59,7 @@ impl PullRequestService {
 mod tests {
     use super::*;
     use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::Value;
@@ -78,7 +71,6 @@ mod tests {
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
-    use wiremock::matchers::query_param;
 
     const RELEASES: &str = "/repos/acme/project/releases";
 
@@ -92,12 +84,21 @@ mod tests {
         NonZeroU8::new(count).unwrap()
     }
 
+    /// What GitHub sends on every release, without which a row is
+    /// unreadable.
+    const REQUIRED: &[&str] = &["id", "tag_name", "html_url", "draft", "prerelease"];
+
+    fn linked(id: u64, tag: &str) -> Release {
+        Release::new(
+            id,
+            tag,
+            format!("https://github.com/acme/project/releases/tag/{tag}"),
+        )
+    }
+
     fn published(id: u64) -> Release {
-        Release::new(id, format!("v1.{id}.0"))
+        linked(id, &format!("v1.{id}.0"))
             .with_name(format!("Release {id}"))
-            .with_url(format!(
-                "https://github.com/acme/project/releases/tag/v1.{id}.0"
-            ))
             .with_published_at("2026-09-05T00:00:00Z")
     }
 
@@ -118,8 +119,7 @@ mod tests {
             .and(path(RELEASES))
             .and(header("authorization", "Bearer token"))
             .and(header("accept", ACCEPT))
-            .and(query_param("per_page", asked))
-            .and(query_param("page", "2"))
+            .and(query_is(&[("per_page", asked), ("page", "2")]))
             .respond_with(ResponseTemplate::new(200).set_body_json(listed))
             .expect(1)
             .mount(server)
@@ -173,60 +173,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_release_row_with_only_its_identity_is_read() {
+    async fn a_release_with_no_title_or_publication_time_is_read_as_having_none() {
         let server = MockServer::start().await;
-        listing(
-            &server,
-            "5",
-            vec![
-                json!({
-                    "id": 90,
-                    "tag_name": TAG,
-                    "published_at": "2026-09-05T00:00:00Z",
-                    "html_url": "https://github.com/acme/project/releases/tag/v1.4.0",
-                }),
-                json!({ "id": 91, "tag_name": "v1.5.0", "name": null, "published_at": null }),
-            ],
-        )
-        .await;
+        let untitled = linked(91, "v1.5.0");
+        let mut omitted = described(&untitled);
+        omitted.as_object_mut().unwrap().remove("name");
+        omitted.as_object_mut().unwrap().remove("published_at");
+        listing(&server, "5", vec![described(&untitled), omitted]).await;
 
         let listed = list(&server, 5).await.unwrap();
 
-        assert_eq!(
-            listed.items,
-            [
-                Release::new(90, TAG)
-                    .with_url("https://github.com/acme/project/releases/tag/v1.4.0")
-                    .with_published_at("2026-09-05T00:00:00Z"),
-                Release::new(91, "v1.5.0"),
-            ]
-        );
+        assert_eq!(listed.items, [untitled.clone(), untitled]);
     }
 
     #[tokio::test]
-    async fn a_release_row_naming_no_tag_fails_the_whole_page() {
-        let server = MockServer::start().await;
-        listing(
-            &server,
-            "5",
-            vec![described(&published(1)), json!({ "id": 2 })],
-        )
-        .await;
+    async fn a_release_row_missing_what_github_always_sends_fails_the_whole_page() {
+        for required in REQUIRED {
+            let server = MockServer::start().await;
+            let mut row = described(&published(2));
+            row.as_object_mut().unwrap().remove(*required);
+            listing(&server, "5", vec![described(&published(1)), row]).await;
 
-        let failure = list(&server, 5).await.unwrap_err();
+            let failure = list(&server, 5).await.unwrap_err();
 
-        assert!(
-            matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
-            "{failure:?}"
-        );
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+                "{required} missing: {failure:?}"
+            );
+        }
     }
 
     #[tokio::test]
     async fn a_release_is_found_by_its_tag() {
         let server = MockServer::start().await;
-        let release = Release::new(90, TAG)
+        let release = linked(90, TAG)
             .with_name("Version 1.4")
-            .with_url("https://github.com/acme/project/releases/tag/v1.4.0")
             .with_published_at("2026-09-05T00:00:00Z")
             .with_prerelease(true);
         Mock::given(method("GET"))
@@ -244,7 +225,7 @@ mod tests {
     #[tokio::test]
     async fn a_draft_is_read_with_no_publication_time() {
         let server = MockServer::start().await;
-        let draft = Release::new(92, "v2.0.0").with_draft(true);
+        let draft = linked(92, "v2.0.0").with_draft(true);
         Mock::given(method("GET"))
             .and(path(format!("{RELEASES}/tags/v2.0.0")))
             .respond_with(ResponseTemplate::new(200).set_body_json(described(&draft)))
@@ -273,16 +254,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_tag_git_accepts_is_sent_as_one_segment() {
+        for (tag, sent) in [
+            ("pkg/v1.2.3", "pkg%2Fv1.2.3"),
+            ("v1.0.0+build", "v1.0.0+build"),
+            ("release_2026-11", "release_2026-11"),
+        ] {
+            let server = MockServer::start().await;
+            let release = linked(93, tag);
+            Mock::given(method("GET"))
+                .and(path(format!("{RELEASES}/tags/{sent}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(described(&release)))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            assert_eq!(fetch(&server, tag).await.unwrap(), release, "{tag}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_tag_a_request_cannot_name_is_refused_unsent() {
         for tag in [
             "",
             "../x",
             ".",
             "..",
-            "release/v1",
+            "v1..2",
             "v1?draft=true",
             "v 1",
-            "v1%2f",
+            "v1\u{7}",
+            "v1\n",
+            "-v1",
+            "pkg//v1",
+            "v1/",
+            "HEAD",
         ] {
             let server = MockServer::start().await;
             Mock::given(any())

@@ -79,7 +79,7 @@ impl InstallationIssuer {
     ) -> Result<InstallationToken, ApplicationError> {
         let response = self
             .client
-            .post(self.endpoint(installation))
+            .post(self.endpoint(installation)?)
             .header(header::ACCEPT, ACCEPT)
             .header(API_VERSION_HEADER, API_VERSION)
             .bearer_auth(jwt.expose())
@@ -106,10 +106,11 @@ impl InstallationIssuer {
     }
 
     /// Where the token for `installation` is asked for.
-    fn endpoint(&self, installation: InstallationId) -> Url {
+    fn endpoint(&self, installation: InstallationId) -> Result<Url, ApplicationError> {
         let installation = installation.get().to_string();
         self.origin
             .endpoint(&["app", "installations", &installation, "access_tokens"])
+            .map_err(|_| ApplicationError::InvalidOrigin)
     }
 }
 
@@ -164,6 +165,7 @@ mod tests {
                 InstallationIssuer::configured(configured)
                     .unwrap()
                     .endpoint(installation())
+                    .unwrap()
                     .as_str(),
                 expected,
                 "{configured}"
@@ -173,6 +175,7 @@ mod tests {
             InstallationIssuer::new()
                 .unwrap()
                 .endpoint(installation())
+                .unwrap()
                 .as_str(),
             "https://api.github.com/app/installations/67890/access_tokens"
         );

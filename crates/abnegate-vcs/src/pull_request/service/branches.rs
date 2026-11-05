@@ -27,17 +27,9 @@ impl PullRequestService {
         branch: &BranchName,
     ) -> PullRequestResult<()> {
         let reference = branch.reference();
-        let segments: Vec<&str> = ["repos", repository.owner(), repository.name(), "git"]
-            .into_iter()
-            .chain(reference.split('/'))
-            .collect();
-        let response = sent(self.request(
-            Method::DELETE,
-            self.origin.endpoint(&segments),
-            token,
-            ACCEPT,
-        ))
-        .await?;
+        let segments: Vec<&str> = ["git"].into_iter().chain(reference.split('/')).collect();
+        let url = self.repository_endpoint(repository, &segments)?;
+        let response = sent(self.request(Method::DELETE, url, token, ACCEPT)).await?;
 
         let status = response.status();
         if status.is_success() || status == StatusCode::NOT_FOUND {
@@ -70,13 +62,7 @@ impl PullRequestService {
         if reference != HEAD {
             BranchName::parse(reference)?;
         }
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "commits",
-            reference,
-        ]);
+        let url = self.repository_endpoint(repository, &["commits", reference])?;
         let response = sent(self.request(Method::GET, url, token, ACCEPT)).await?;
 
         let status = response.status();

@@ -17,6 +17,10 @@ impl PullRequestService {
     /// conversation the newest are the ones left unread. A page longer than
     /// the 16 MiB this crate reads is [`PullRequestError::GitHubApi`], never
     /// a partial or empty list.
+    ///
+    /// Kept for the callers that already read comments this way. A new caller
+    /// should page through [`Self::list_comments`] instead, which reads every
+    /// comment and the link and time of each.
     pub async fn fetch_issue_comments(
         &self,
         reference: &PullRequestReference,
@@ -26,14 +30,7 @@ impl PullRequestService {
         let repository = reference.repository();
         let comments: Vec<GitHubIssueComment> = self
             .get_all(
-                &[
-                    "repos",
-                    repository.owner(),
-                    repository.name(),
-                    "issues",
-                    &number,
-                    "comments",
-                ],
+                &self.repository_endpoint(repository, &["issues", &number, "comments"])?,
                 token,
             )
             .await?;
@@ -58,14 +55,7 @@ impl PullRequestService {
         let repository = reference.repository();
         let reviews: Vec<GitHubReview> = self
             .get_all(
-                &[
-                    "repos",
-                    repository.owner(),
-                    repository.name(),
-                    "pulls",
-                    &number,
-                    "reviews",
-                ],
+                &self.repository_endpoint(repository, &["pulls", &number, "reviews"])?,
                 token,
             )
             .await?;
@@ -81,6 +71,10 @@ impl PullRequestService {
     /// [`PullRequestError::GitHubApi`] although the comment was posted. A
     /// caller that retries on an error may post it twice, so it should look
     /// for the comment before posting again.
+    ///
+    /// Kept for the callers that already post comments this way. A new caller
+    /// should use [`Self::post_comment`] instead, which returns the comment as
+    /// GitHub recorded it.
     pub async fn post_issue_comment(
         &self,
         reference: &PullRequestReference,
@@ -89,14 +83,7 @@ impl PullRequestService {
     ) -> PullRequestResult<u64> {
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "issues",
-            &number,
-            "comments",
-        ]);
+        let url = self.repository_endpoint(repository, &["issues", &number, "comments"])?;
 
         let posted: GitHubIdentified = self
             .exchange(
@@ -121,7 +108,8 @@ impl PullRequestService {
         body: &str,
     ) -> PullRequestResult<IssueComment> {
         let number = reference.number().to_string();
-        let url = self.issues(reference.repository(), &[&number, "comments"]);
+        let url =
+            self.repository_endpoint(reference.repository(), &["issues", &number, "comments"])?;
 
         let posted: GitHubIssueComment = self
             .exchange(
@@ -153,14 +141,7 @@ impl PullRequestService {
     ) -> PullRequestResult<u64> {
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "pulls",
-            &number,
-            "reviews",
-        ]);
+        let url = self.repository_endpoint(repository, &["pulls", &number, "reviews"])?;
         let review = ReviewRequest {
             commit_id: commit.as_str(),
             body,
@@ -188,16 +169,10 @@ impl PullRequestService {
         let number = reference.number().to_string();
         let comment = comment.to_string();
         let repository = reference.repository();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "pulls",
-            &number,
-            "comments",
-            &comment,
-            "replies",
-        ]);
+        let url = self.repository_endpoint(
+            repository,
+            &["pulls", &number, "comments", &comment, "replies"],
+        )?;
 
         answered(
             self.request(Method::POST, url, token, ACCEPT)

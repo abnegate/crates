@@ -9,12 +9,7 @@ use crate::pull_request::StateFilter;
 use crate::pull_request::github_issue::GitHubIssue;
 use crate::pull_request::github_issue_comment::GitHubIssueComment;
 use crate::pull_request::github_issue_request::GitHubIssueRequest;
-use serde_json::Value;
-use std::num::NonZeroU8;
-use std::num::NonZeroU32;
-
-/// The field GitHub sets on an issue row that is really a pull request.
-const PULL_REQUEST: &str = "pull_request";
+use crate::pull_request::github_issue_row::GitHubIssueRow;
 
 impl PullRequestService {
     /// Page `page` of `repository`'s issues in `state`, newest first, at
@@ -37,20 +32,18 @@ impl PullRequestService {
         per_page: NonZeroU8,
     ) -> PullRequestResult<Page<Issue>> {
         let asked = asked(per_page);
-        let mut url = self.issues(repository, &[]);
+        let mut url = self.repository_endpoint(repository, &["issues"])?;
         url.query_pairs_mut().append_pair("state", state.as_str());
-        let rows: Vec<Value> = self.get(paged(url, page, asked), token).await?;
+        let rows: Vec<GitHubIssueRow> = self.get(paged(url, page, asked), token).await?;
         let read = rows.len();
 
         let issues = rows
             .into_iter()
-            .filter(|row| !names_pull_request(row))
-            .map(|row| {
-                serde_json::from_value::<GitHubIssue>(row)
-                    .map(|issue| issue.within(repository))
-                    .map_err(|_| PullRequestError::GitHubApi(UNREADABLE.to_string()))
+            .filter_map(|row| match row {
+                GitHubIssueRow::PullRequest { .. } => None,
+                GitHubIssueRow::Issue(issue) => Some(issue.within(repository)),
             })
-            .collect::<PullRequestResult<Vec<Issue>>>()?;
+            .collect();
         Ok(Page::after(issues, page, read, asked))
     }
 
@@ -66,7 +59,10 @@ impl PullRequestService {
     ) -> PullRequestResult<Issue> {
         let number = reference.number().to_string();
         let issue: GitHubIssue = self
-            .get(self.issues(reference.repository(), &[&number]), token)
+            .get(
+                self.repository_endpoint(reference.repository(), &["issues", &number])?,
+                token,
+            )
             .await?;
         Ok(issue.within(reference.repository()))
     }
@@ -86,7 +82,8 @@ impl PullRequestService {
     ) -> PullRequestResult<Page<IssueComment>> {
         let asked = asked(per_page);
         let number = reference.number().to_string();
-        let url = self.issues(reference.repository(), &[&number, "comments"]);
+        let url =
+            self.repository_endpoint(reference.repository(), &["issues", &number, "comments"])?;
         let comments: Vec<GitHubIssueComment> = self.get(paged(url, page, asked), token).await?;
         let read = comments.len();
 
@@ -114,9 +111,10 @@ impl PullRequestService {
             ..GitHubIssueRequest::default()
         };
 
+        let url = self.repository_endpoint(repository, &["issues"])?;
         let created: GitHubIssue = self
             .exchange(
-                self.request(Method::POST, self.issues(repository, &[]), token, ACCEPT)
+                self.request(Method::POST, url, token, ACCEPT)
                     .json(&request),
             )
             .await?;
@@ -134,14 +132,10 @@ impl PullRequestService {
         update: &IssueUpdate,
     ) -> PullRequestResult<()> {
         let number = reference.number().to_string();
+        let url = self.repository_endpoint(reference.repository(), &["issues", &number])?;
         answered(
-            self.request(
-                Method::PATCH,
-                self.issues(reference.repository(), &[&number]),
-                token,
-                ACCEPT,
-            )
-            .json(&GitHubIssueRequest::from(update)),
+            self.request(Method::PATCH, url, token, ACCEPT)
+                .json(&GitHubIssueRequest::from(update)),
         )
         .await?;
         Ok(())
@@ -160,21 +154,6 @@ impl PullRequestService {
         )
         .await
     }
-
-    /// The REST endpoint for `repository`'s issues, followed by `rest`.
-    pub(super) fn issues(&self, repository: &Repository, rest: &[&str]) -> Url {
-        let segments: Vec<&str> = ["repos", repository.owner(), repository.name(), "issues"]
-            .into_iter()
-            .chain(rest.iter().copied())
-            .collect();
-        self.origin.endpoint(&segments)
-    }
-}
-
-/// Whether a row GitHub listed among issues is a pull request.
-fn names_pull_request(row: &Value) -> bool {
-    row.get(PULL_REQUEST)
-        .is_some_and(|marker| !marker.is_null())
 }
 
 #[cfg(test)]
@@ -182,8 +161,10 @@ mod tests {
     use super::*;
     use crate::pull_request::Label;
     use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
+    use serde_json::Value;
     use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
@@ -192,9 +173,24 @@ mod tests {
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
-    use wiremock::matchers::query_param;
 
     const SENTINEL: &str = "RAW-SENTINEL";
+
+    const CREATED: &str = "2026-09-01T00:00:00Z";
+
+    const UPDATED: &str = "2026-09-02T00:00:00Z";
+
+    /// What GitHub sends on every issue, without which a row is unreadable.
+    const REQUIRED: &[&str] = &[
+        "number",
+        "title",
+        "state",
+        "html_url",
+        "labels",
+        "comments",
+        "created_at",
+        "updated_at",
+    ];
 
     fn first() -> NonZeroU32 {
         NonZeroU32::MIN
@@ -217,12 +213,16 @@ mod tests {
     }
 
     fn opened(service: &PullRequestService, number: u64) -> Issue {
-        Issue::new(numbered(service, number), format!("Issue {number}"))
-            .with_body(format!("Body {number}"))
-            .with_url(format!("https://github.com/acme/project/issues/{number}"))
-            .with_author("reporter")
-            .with_created_at("2026-09-01T00:00:00Z")
-            .with_updated_at("2026-09-02T00:00:00Z")
+        Issue::new(
+            numbered(service, number),
+            format!("Issue {number}"),
+            format!("https://github.com/acme/project/issues/{number}"),
+            CREATED,
+            UPDATED,
+        )
+        .with_body(format!("Body {number}"))
+        .with_author("reporter")
+        .with_assignees(Vec::<String>::new())
     }
 
     fn described(issue: &Issue) -> Value {
@@ -230,15 +230,15 @@ mod tests {
             "number": issue.reference.number().get(),
             "title": issue.title,
             "body": issue.body,
-            "state": "open",
+            "state": issue.state,
             "html_url": issue.url,
             "user": { "login": issue.author },
             "labels": [],
-            "assignees": [],
+            "assignees": issue.assignees,
             "comments": issue.comments,
             "created_at": issue.created_at,
             "updated_at": issue.updated_at,
-            "closed_at": null,
+            "closed_at": issue.closed_at,
         })
     }
 
@@ -252,21 +252,18 @@ mod tests {
         let service = stand_in(&server).await;
         let issues: Vec<Issue> = (1..=99).map(|number| opened(&service, number)).collect();
         let mut listed: Vec<Value> = issues.iter().map(described).collect();
-        listed.insert(
-            50,
-            json!({
-                "number": 100,
-                "title": "A pull request",
-                "html_url": "https://github.com/acme/project/pull/100",
-                "pull_request": { "url": "https://api.github.com/repos/acme/project/pulls/100" },
-            }),
-        );
+        let mut pull = described(&opened(&service, 100));
+        pull["pull_request"] =
+            json!({ "url": "https://api.github.com/repos/acme/project/pulls/100" });
+        listed.insert(50, pull);
         Mock::given(method("GET"))
             .and(path("/repos/acme/project/issues"))
             .and(header("authorization", "Bearer token"))
-            .and(query_param("state", "open"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[
+                ("state", "open"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
             .respond_with(ResponseTemplate::new(200).set_body_json(listed))
             .expect(1)
             .mount(&server)
@@ -289,19 +286,23 @@ mod tests {
     #[tokio::test]
     async fn pull_request_rows_with_no_issue_fields_are_left_out_and_bodies_kept_whole() {
         let server = MockServer::start().await;
-        let body = "full issue ".repeat(2000);
+        let service = stand_in(&server).await;
+        let tiny = opened(&service, 99).with_body("ok");
+        let bug = opened(&service, 100).with_body("full issue ".repeat(2000));
         let mut listed = vec![json!({ "number": 1, "pull_request": {} }); 98];
-        listed.push(json!({ "number": 99, "title": "Tiny", "body": "ok" }));
-        listed.push(json!({ "number": 100, "title": "Bug", "body": body }));
+        listed.push(described(&tiny));
+        listed.push(described(&bug));
         Mock::given(method("GET"))
             .and(path("/repos/acme/project/issues"))
-            .and(query_param("state", "all"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[
+                ("state", "all"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
             .respond_with(ResponseTemplate::new(200).set_body_json(listed))
             .expect(1)
             .mount(&server)
             .await;
-        let service = stand_in(&server).await;
 
         let listed = service
             .list_issues(
@@ -314,37 +315,32 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            listed,
-            Page::new(
-                vec![
-                    Issue::new(numbered(&service, 99), "Tiny")
-                        .with_body("ok")
-                        .with_state(IssueState::Unknown),
-                    Issue::new(numbered(&service, 100), "Bug")
-                        .with_body(body)
-                        .with_state(IssueState::Unknown),
-                ],
-                Some(page(2)),
-            )
-        );
+        assert_eq!(listed, Page::new(vec![tiny, bug], Some(page(2))));
     }
 
     #[tokio::test]
     async fn a_pull_request_row_is_left_out_before_anything_else_of_it_is_read() {
         let server = MockServer::start().await;
+        let service = stand_in(&server).await;
+        let kept = opened(&service, 4)
+            .with_state(IssueState::Closed)
+            .with_closed_at(UPDATED);
+        let mut unmarked = described(&kept);
+        unmarked["pull_request"] = Value::Null;
         Mock::given(method("GET"))
             .and(path("/repos/acme/project/issues"))
-            .and(query_param("per_page", "2"))
-            .and(query_param("page", "3"))
+            .and(query_is(&[
+                ("state", "open"),
+                ("per_page", "2"),
+                ("page", "3"),
+            ]))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
                 { "title": 7, "labels": SENTINEL, "pull_request": {} },
-                { "number": 4, "title": "Kept", "state": "closed", "pull_request": null },
+                unmarked,
             ])))
             .expect(1)
             .mount(&server)
             .await;
-        let service = stand_in(&server).await;
 
         let listed = service
             .list_issues(
@@ -357,13 +353,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            listed,
-            Page::new(
-                vec![Issue::new(numbered(&service, 4), "Kept").with_state(IssueState::Closed)],
-                Some(page(4)),
-            )
-        );
+        assert_eq!(listed, Page::new(vec![kept], Some(page(4))));
     }
 
     #[tokio::test]
@@ -376,9 +366,11 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/repos/acme/project/issues"))
-                .and(query_param("state", word))
-                .and(query_param("per_page", "100"))
-                .and(query_param("page", "1"))
+                .and(query_is(&[
+                    ("state", word),
+                    ("per_page", "100"),
+                    ("page", "1"),
+                ]))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
                 .expect(1)
                 .mount(&server)
@@ -395,19 +387,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_issue_row_without_a_number_is_an_error_and_never_a_shorter_page() {
-        for row in [
-            json!({ "title": SENTINEL }),
-            json!({ "number": 0, "title": SENTINEL }),
-            json!({ "number": 3, "labels": [{ "color": SENTINEL }] }),
-            json!(SENTINEL),
-        ] {
+    async fn an_issue_row_missing_what_github_always_sends_fails_the_page() {
+        let server = MockServer::start().await;
+        let service = stand_in(&server).await;
+        let whole = described(&opened(&service, 3).with_body(SENTINEL));
+        let mut broken: Vec<Value> = REQUIRED
+            .iter()
+            .map(|required| {
+                let mut row = whole.clone();
+                row.as_object_mut().unwrap().remove(*required);
+                row
+            })
+            .collect();
+        let mut unnumbered = whole.clone();
+        unnumbered["number"] = json!(0);
+        let mut unlabelled = whole.clone();
+        unlabelled["labels"] = json!([{ "color": SENTINEL }]);
+        let mut untitled = whole;
+        untitled["title"] = Value::Null;
+        broken.extend([unnumbered, unlabelled, untitled, json!(SENTINEL)]);
+
+        for row in broken {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/repos/acme/project/issues"))
                 .respond_with(
                     ResponseTemplate::new(200)
-                        .set_body_json(json!([{ "number": 1, "title": "Fine" }, row])),
+                        .set_body_json(json!([described(&opened(&service, 1)), row])),
                 )
                 .expect(1)
                 .mount(&server)
@@ -428,6 +434,46 @@ mod tests {
             assert!(unreadable(&failure), "{row}: {failure:?}");
             assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn what_github_may_leave_out_of_an_issue_is_read_as_not_said() {
+        let server = MockServer::start().await;
+        let service = stand_in(&server).await;
+        let bare = Issue::new(
+            numbered(&service, 6),
+            "Untouched",
+            "https://github.com/acme/project/issues/6",
+            CREATED,
+            UPDATED,
+        );
+        let mut nulled = described(&bare);
+        for optional in ["body", "user", "assignees", "closed_at"] {
+            nulled[optional] = Value::Null;
+        }
+        let mut omitted = nulled.clone();
+        for optional in ["body", "user", "assignees", "closed_at"] {
+            omitted.as_object_mut().unwrap().remove(optional);
+        }
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/issues"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([nulled, omitted])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let listed = service
+            .list_issues(
+                &project(&service),
+                &token(),
+                StateFilter::Open,
+                first(),
+                hundred(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(listed.items, vec![bare.clone(), bare]);
     }
 
     #[tokio::test]
@@ -473,10 +519,12 @@ mod tests {
             issue,
             Issue::new(
                 numbered(&service, 5),
-                "Document how to run the widget checks locally"
+                "Document how to run the widget checks locally",
+                "https://github.com/acme/project/issues/5",
+                CREATED,
+                UPDATED,
             )
             .with_body(body)
-            .with_url("https://github.com/acme/project/issues/5")
             .with_author("reporter")
             .with_labels([
                 Label::new("docs"),
@@ -487,36 +535,30 @@ mod tests {
             ])
             .with_assignees(["octocat"])
             .with_comments(1)
-            .with_created_at("2026-09-01T00:00:00Z")
-            .with_updated_at("2026-09-02T00:00:00Z")
         );
     }
 
     #[tokio::test]
     async fn a_pull_request_read_as_an_issue_says_it_is_one() {
         let server = MockServer::start().await;
+        let service = stand_in(&server).await;
+        let pull = opened(&service, 8).with_pull_request(true);
+        let mut answer = described(&pull);
+        answer["pull_request"] =
+            json!({ "url": "https://api.github.com/repos/acme/project/pulls/8" });
         Mock::given(method("GET"))
             .and(path("/repos/acme/project/issues/8"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({ "number": 8, "pull_request": {} })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(answer))
             .expect(1)
             .mount(&server)
             .await;
-        let service = stand_in(&server).await;
 
         let issue = service
             .fetch_issue(&numbered(&service, 8), &token())
             .await
             .unwrap();
 
-        assert_eq!(
-            issue,
-            Issue::new(numbered(&service, 8), "")
-                .with_state(IssueState::Unknown)
-                .with_pull_request(true)
-        );
+        assert_eq!(issue, pull);
     }
 
     #[tokio::test]
@@ -537,8 +579,7 @@ mod tests {
             Mock::given(method("GET"))
                 .and(path("/repos/acme/project/issues/5/comments"))
                 .and(header("authorization", "Bearer token"))
-                .and(query_param("per_page", "2"))
-                .and(query_param("page", "2"))
+                .and(query_is(&[("per_page", "2"), ("page", "2")]))
                 .respond_with(
                     ResponseTemplate::new(200).set_body_json(
                         comments

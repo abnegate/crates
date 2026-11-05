@@ -9,26 +9,28 @@ use crate::pull_request::Label;
 pub struct Issue {
     /// Where it lives.
     pub reference: IssueReference,
-    /// Its title, or empty when GitHub does not say.
+    /// Its title.
     pub title: String,
     /// What it says, in Markdown and in full, or `None` when it says nothing.
     pub body: Option<String>,
     /// Whether it is still open.
     pub state: IssueState,
-    /// Where it can be read in a browser, or empty when GitHub does not say.
+    /// Where it can be read in a browser.
     pub url: String,
-    /// The login of whoever opened it, or empty when GitHub does not say.
-    pub author: String,
+    /// The login of whoever opened it, or `None` when GitHub does not say,
+    /// as for an account that was deleted.
+    pub author: Option<String>,
     /// The labels on it, in the order GitHub listed them.
     pub labels: Vec<Label>,
-    /// The logins of those it is assigned to.
-    pub assignees: Vec<String>,
+    /// The logins of those it is assigned to, or `None` when GitHub does not
+    /// say.
+    pub assignees: Option<Vec<String>>,
     /// How many comments its conversation holds.
     pub comments: u64,
-    /// When it was opened, as RFC 3339, or empty when GitHub does not say.
+    /// When it was opened, as RFC 3339.
     pub created_at: String,
-    /// When it last changed, as RFC 3339, if GitHub says.
-    pub updated_at: Option<String>,
+    /// When it last changed, as RFC 3339.
+    pub updated_at: String,
     /// When it was closed, as RFC 3339, or `None` while it is open.
     pub closed_at: Option<String>,
     /// Whether it is a pull request rather than an issue.
@@ -36,21 +38,28 @@ pub struct Issue {
 }
 
 impl Issue {
-    /// The open issue at `reference` titled `title`, with nothing else said
-    /// of it.
-    pub fn new(reference: IssueReference, title: impl Into<String>) -> Self {
+    /// The open issue at `reference` titled `title`, readable at `url`,
+    /// opened at `created_at` and last changed at `updated_at`, both as
+    /// RFC 3339, with no labels or comments and nothing else said of it.
+    pub fn new(
+        reference: IssueReference,
+        title: impl Into<String>,
+        url: impl Into<String>,
+        created_at: impl Into<String>,
+        updated_at: impl Into<String>,
+    ) -> Self {
         Self {
             reference,
             title: title.into(),
             body: None,
             state: IssueState::Open,
-            url: String::new(),
-            author: String::new(),
+            url: url.into(),
+            author: None,
             labels: Vec::new(),
-            assignees: Vec::new(),
+            assignees: None,
             comments: 0,
-            created_at: String::new(),
-            updated_at: None,
+            created_at: created_at.into(),
+            updated_at: updated_at.into(),
             closed_at: None,
             pull_request: false,
         }
@@ -70,17 +79,10 @@ impl Issue {
         self
     }
 
-    /// Where it can be read in a browser.
-    #[must_use]
-    pub fn with_url(mut self, url: impl Into<String>) -> Self {
-        self.url = url.into();
-        self
-    }
-
     /// The login of whoever opened it.
     #[must_use]
     pub fn with_author(mut self, author: impl Into<String>) -> Self {
-        self.author = author.into();
+        self.author = Some(author.into());
         self
     }
 
@@ -97,7 +99,7 @@ impl Issue {
         mut self,
         assignees: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
-        self.assignees = assignees.into_iter().map(Into::into).collect();
+        self.assignees = Some(assignees.into_iter().map(Into::into).collect());
         self
     }
 
@@ -105,20 +107,6 @@ impl Issue {
     #[must_use]
     pub fn with_comments(mut self, comments: u64) -> Self {
         self.comments = comments;
-        self
-    }
-
-    /// When it was opened, as RFC 3339.
-    #[must_use]
-    pub fn with_created_at(mut self, created_at: impl Into<String>) -> Self {
-        self.created_at = created_at.into();
-        self
-    }
-
-    /// When it last changed, as RFC 3339.
-    #[must_use]
-    pub fn with_updated_at(mut self, updated_at: impl Into<String>) -> Self {
-        self.updated_at = Some(updated_at.into());
         self
     }
 

@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::fmt;
 
 /// What a git tree entry points at, as GitHub names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum TreeEntryKind {
@@ -13,7 +13,6 @@ pub enum TreeEntryKind {
     /// A submodule, pinned at a commit of another repository.
     Commit,
     /// A kind GitHub gave that this crate does not know yet.
-    #[default]
     #[serde(other)]
     Unknown,
 }
@@ -64,6 +63,5 @@ mod tests {
             serde_json::from_value::<TreeEntryKind>(json!("tag")).unwrap(),
             TreeEntryKind::Unknown
         );
-        assert_eq!(TreeEntryKind::default(), TreeEntryKind::Unknown);
     }
 }

@@ -10,8 +10,7 @@ pub enum IssueState {
     Open,
     /// Closed, as completed or not.
     Closed,
-    /// A state this crate does not recognise, read from any other wire value
-    /// or from none.
+    /// A state this crate does not recognise, read from any other wire value.
     #[serde(other)]
     Unknown,
 }

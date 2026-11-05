@@ -5,8 +5,6 @@ use crate::pull_request::DeploymentStatus;
 use crate::pull_request::Page;
 use crate::pull_request::github_deployment::GitHubDeployment;
 use crate::pull_request::github_deployment_status::GitHubDeploymentStatus;
-use std::num::NonZeroU8;
-use std::num::NonZeroU32;
 
 /// Statuses read per deployment: GitHub lists the newest first, and only it
 /// is kept.
@@ -18,13 +16,15 @@ impl PullRequestService {
     /// hundred, each with the latest status its provider gave.
     ///
     /// Each deployment's status is a read of its own, made one after another
-    /// so a page never bursts past GitHub's secondary rate limit. A row naming
-    /// no identifier or commit is [`PullRequestError::GitHubApi`], one naming a
-    /// commit this crate does not accept is [`PullRequestError::Parse`], and a
-    /// status read that fails, such as one GitHub answers with
-    /// [`PullRequestError::NotFound`], fails the page: never a page without
-    /// the row or its status. Whether each row is of `commit` is the caller's
-    /// to judge, from [`Deployment::sha`].
+    /// so a page never bursts past GitHub's secondary rate limit. A row or a
+    /// status that leaves out anything GitHub sends on every one, such as a
+    /// deployment's identifier, commit or environment or a status's state, is
+    /// [`PullRequestError::GitHubApi`], one naming a commit this crate does
+    /// not accept is [`PullRequestError::Parse`], and a status read that
+    /// fails, such as one GitHub answers with [`PullRequestError::NotFound`],
+    /// fails the page: never a page without the row or its status. Whether
+    /// each row is of `commit` is the caller's to judge, from
+    /// [`Deployment::sha`].
     pub async fn list_deployments(
         &self,
         repository: &Repository,
@@ -34,7 +34,7 @@ impl PullRequestService {
         per_page: NonZeroU8,
     ) -> PullRequestResult<Page<Deployment>> {
         let asked = asked(per_page);
-        let mut url = self.deployments(repository, &[]);
+        let mut url = self.repository_endpoint(repository, &["deployments"])?;
         url.query_pairs_mut().append_pair("sha", commit.as_str());
         let rows: Vec<GitHubDeployment> = self.get(paged(url, page, asked), token).await?;
         let read = rows.len();
@@ -42,8 +42,8 @@ impl PullRequestService {
         let mut deployments = Vec::with_capacity(read);
         for row in rows {
             let id = row.id.to_string();
-            let mut deployment =
-                row.answered_at(self.deployments(repository, &[&id]).to_string())?;
+            let api_url = self.repository_endpoint(repository, &["deployments", &id])?;
+            let mut deployment = row.answered_at(api_url.to_string())?;
             deployment.status = self.latest_status(repository, token, &id).await?;
             deployments.push(deployment);
         }
@@ -58,24 +58,10 @@ impl PullRequestService {
         token: &SecretValue,
         id: &str,
     ) -> PullRequestResult<Option<DeploymentStatus>> {
-        let mut url = self.deployments(repository, &[id, "statuses"]);
+        let mut url = self.repository_endpoint(repository, &["deployments", id, "statuses"])?;
         url.query_pairs_mut().append_pair("per_page", LATEST);
         let statuses: Vec<GitHubDeploymentStatus> = self.get(url, token).await?;
         Ok(statuses.into_iter().next().map(DeploymentStatus::from))
-    }
-
-    /// The REST endpoint for `repository`'s deployments, followed by `rest`.
-    fn deployments(&self, repository: &Repository, rest: &[&str]) -> Url {
-        let segments: Vec<&str> = [
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "deployments",
-        ]
-        .into_iter()
-        .chain(rest.iter().copied())
-        .collect();
-        self.origin.endpoint(&segments)
     }
 }
 
@@ -85,6 +71,7 @@ mod tests {
     use crate::parse_error::ParseError;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::Value;
@@ -95,9 +82,27 @@ mod tests {
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
-    use wiremock::matchers::query_param;
 
     const LISTED: &str = "/repos/acme/project/deployments";
+
+    const CREATED: &str = "2026-09-05T00:00:00Z";
+
+    const UPDATED: &str = "2026-09-05T00:05:00Z";
+
+    /// What GitHub sends on every deployment, without which a row is
+    /// unreadable.
+    const REQUIRED: &[&str] = &[
+        "id",
+        "sha",
+        "ref",
+        "environment",
+        "created_at",
+        "updated_at",
+    ];
+
+    /// What GitHub sends on every status, without which a status is
+    /// unreadable.
+    const REQUIRED_OF_A_STATUS: &[&str] = &["state", "description", "created_at"];
 
     fn statuses(id: u64) -> String {
         format!("{LISTED}/{id}/statuses")
@@ -112,24 +117,53 @@ mod tests {
     }
 
     fn listed(id: u64, sha: &CommitSha) -> Value {
-        json!({ "id": id, "sha": sha.as_str(), "environment": "production" })
+        json!({
+            "id": id,
+            "sha": sha.as_str(),
+            "ref": "main",
+            "environment": "production",
+            "created_at": CREATED,
+            "updated_at": UPDATED,
+            "url": format!("https://api.github.com{LISTED}/{id}"),
+        })
     }
 
-    async fn listing(server: &MockServer, sha: &CommitSha, number: u32, body: Value) {
+    fn pending() -> Value {
+        json!({ "state": "pending", "description": "", "created_at": CREATED })
+    }
+
+    fn deployed(server: &MockServer, id: u64, sha: CommitSha) -> Deployment {
+        Deployment::new(
+            id,
+            sha,
+            "main",
+            "production",
+            CREATED,
+            UPDATED,
+            format!("{}{LISTED}/{id}", server.uri()),
+        )
+    }
+
+    async fn listing(server: &MockServer, sha: &CommitSha, number: u32, per_page: u8, body: Value) {
         Mock::given(method("GET"))
             .and(path(LISTED))
-            .and(query_param("sha", sha.as_str()))
-            .and(query_param("page", number.to_string()))
+            .and(query_is(&[
+                ("sha", sha.as_str()),
+                ("per_page", &per_page.to_string()),
+                ("page", &number.to_string()),
+            ]))
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
             .mount(server)
             .await;
     }
 
-    async fn answering_statuses(server: &MockServer, id: u64, body: Value) {
+    async fn answering_statuses(server: &MockServer, id: u64, body: Value, reads: u64) {
         Mock::given(method("GET"))
             .and(path(statuses(id)))
-            .and(query_param("per_page", "1"))
+            .and(query_is(&[("per_page", LATEST)]))
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(reads)
             .mount(server)
             .await;
     }
@@ -152,25 +186,23 @@ mod tests {
             .await
     }
 
+    fn unreadable(failure: &PullRequestError) -> bool {
+        matches!(failure, PullRequestError::GitHubApi(message) if message == UNREADABLE)
+    }
+
     #[tokio::test]
     async fn a_deployment_carries_the_newest_status_read_one_row_at_a_time() {
         let server = MockServer::start().await;
         let sha = commit('a');
         Mock::given(method("GET"))
             .and(path(LISTED))
-            .and(query_param("sha", sha.as_str()))
-            .and(query_param("per_page", "30"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[
+                ("sha", sha.as_str()),
+                ("per_page", "30"),
+                ("page", "1"),
+            ]))
             .and(header("authorization", "Bearer token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
-                "id": 7,
-                "sha": sha.as_str(),
-                "ref": "main",
-                "environment": "production",
-                "created_at": "2026-09-05T00:00:00Z",
-                "updated_at": "2026-09-05T00:05:00Z",
-                "url": "https://api.github.com/repos/acme/project/deployments/7",
-            }])))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([listed(7, &sha)])))
             .expect(1)
             .mount(&server)
             .await;
@@ -183,26 +215,21 @@ mod tests {
                     "description": "Deployed",
                     "environment_url": "https://project.example",
                     "log_url": "https://ci.example/7",
-                    "created_at": "2026-09-05T00:05:00Z",
+                    "created_at": UPDATED,
                 },
-                { "state": "pending", "created_at": "2026-09-05T00:00:00Z" },
+                pending(),
             ]),
+            1,
         )
         .await;
 
         let listed = listed_page(&server, &sha, 1, 30).await.unwrap();
 
-        let expected = Deployment::new(7, sha, format!("{}{LISTED}/7", server.uri()))
-            .with_reference("main")
-            .with_environment("production")
-            .with_created_at("2026-09-05T00:00:00Z")
-            .with_updated_at("2026-09-05T00:05:00Z")
-            .with_status(
-                DeploymentStatus::new("success", "2026-09-05T00:05:00Z")
-                    .with_description("Deployed")
-                    .with_environment_url("https://project.example")
-                    .with_log_url("https://ci.example/7"),
-            );
+        let expected = deployed(&server, 7, sha).with_status(
+            DeploymentStatus::new("success", "Deployed", UPDATED)
+                .with_environment_url("https://project.example")
+                .with_log_url("https://ci.example/7"),
+        );
         assert_eq!(listed, Page::new(vec![expected], None));
     }
 
@@ -210,23 +237,29 @@ mod tests {
     async fn a_deployment_with_no_status_yet_has_none() {
         let server = MockServer::start().await;
         let sha = commit('b');
-        listing(&server, &sha, 1, json!([listed(3, &sha)])).await;
-        answering_statuses(&server, 3, json!([])).await;
+        listing(&server, &sha, 1, 30, json!([listed(3, &sha)])).await;
+        answering_statuses(&server, 3, json!([]), 1).await;
 
         let listed = listed_page(&server, &sha, 1, 30).await.unwrap();
 
-        assert_eq!(listed.items.len(), 1);
-        assert_eq!(listed.items[0].status, None);
+        assert_eq!(listed, Page::new(vec![deployed(&server, 3, sha)], None));
     }
 
     #[tokio::test]
     async fn a_full_page_is_followed_by_the_next_and_a_short_one_is_the_last() {
         let server = MockServer::start().await;
         let sha = commit('c');
-        listing(&server, &sha, 1, json!([listed(1, &sha), listed(2, &sha)])).await;
-        listing(&server, &sha, 2, json!([listed(3, &sha)])).await;
+        listing(
+            &server,
+            &sha,
+            1,
+            2,
+            json!([listed(1, &sha), listed(2, &sha)]),
+        )
+        .await;
+        listing(&server, &sha, 2, 2, json!([listed(3, &sha)])).await;
         for id in 1..=3 {
-            answering_statuses(&server, id, json!([])).await;
+            answering_statuses(&server, id, json!([]), 1).await;
         }
 
         let first = listed_page(&server, &sha, 1, 2).await.unwrap();
@@ -247,13 +280,7 @@ mod tests {
     async fn rows_asked_for_never_exceed_what_github_sends_a_page() {
         let server = MockServer::start().await;
         let sha = commit('d');
-        Mock::given(method("GET"))
-            .and(path(LISTED))
-            .and(query_param("per_page", PAGE_SIZE.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
-            .expect(1)
-            .mount(&server)
-            .await;
+        listing(&server, &sha, 1, 100, json!([])).await;
 
         let listed = listed_page(&server, &sha, 1, u8::MAX).await.unwrap();
 
@@ -264,13 +291,21 @@ mod tests {
     async fn a_status_github_does_not_find_fails_the_page_rather_than_shortening_it() {
         let server = MockServer::start().await;
         let sha = commit('e');
-        listing(&server, &sha, 1, json!([listed(1, &sha), listed(2, &sha)])).await;
-        answering_statuses(&server, 1, json!([{ "state": "success" }])).await;
+        listing(
+            &server,
+            &sha,
+            1,
+            30,
+            json!([listed(1, &sha), listed(2, &sha)]),
+        )
+        .await;
+        answering_statuses(&server, 1, json!([pending()]), 1).await;
         Mock::given(method("GET"))
             .and(path(statuses(2)))
             .respond_with(
                 ResponseTemplate::new(404).set_body_json(json!({ "message": "Not Found" })),
             )
+            .expect(1)
             .mount(&server)
             .await;
 
@@ -283,31 +318,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_least_github_may_say_of_a_deployment_still_reads() {
+    async fn what_a_provider_may_leave_out_of_a_status_is_read_as_not_said() {
         let server = MockServer::start().await;
         let sha = commit('f');
-        listing(&server, &sha, 1, json!([listed(7, &sha)])).await;
-        answering_statuses(
+        let mut nulled = pending();
+        nulled["environment_url"] = Value::Null;
+        nulled["log_url"] = Value::Null;
+        listing(
             &server,
-            7,
-            json!([{ "state": "pending", "created_at": "2026-09-05T00:00:00Z" }]),
+            &sha,
+            1,
+            30,
+            json!([listed(7, &sha), listed(8, &sha)]),
         )
         .await;
+        answering_statuses(&server, 7, json!([pending()]), 1).await;
+        answering_statuses(&server, 8, json!([nulled]), 1).await;
 
         let listed = listed_page(&server, &sha, 1, 30).await.unwrap();
 
-        let expected = Deployment::new(7, sha, format!("{}{LISTED}/7", server.uri()))
-            .with_environment("production")
-            .with_status(DeploymentStatus::new("pending", "2026-09-05T00:00:00Z"));
-        assert_eq!(listed, Page::new(vec![expected], None));
+        let status = DeploymentStatus::new("pending", "", CREATED);
+        assert_eq!(
+            listed,
+            Page::new(
+                vec![
+                    deployed(&server, 7, sha.clone()).with_status(status.clone()),
+                    deployed(&server, 8, sha).with_status(status),
+                ],
+                None
+            )
+        );
     }
 
     #[tokio::test]
     async fn a_deployment_of_a_commit_this_crate_does_not_accept_is_a_parse_error() {
         let server = MockServer::start().await;
         let sha = commit('0');
-        listing(&server, &sha, 1, json!([{ "id": 7, "sha": "abc" }])).await;
-        answering_statuses(&server, 7, json!([])).await;
+        let mut malformed = listed(7, &sha);
+        malformed["sha"] = json!("abc");
+        listing(&server, &sha, 1, 30, json!([malformed])).await;
+        answering_statuses(&server, 7, json!([]), 0).await;
 
         let refused = listed_page(&server, &sha, 1, 30).await.unwrap_err();
 
@@ -318,19 +368,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_deployment_naming_no_identifier_or_commit_is_unreadable() {
-        for row in [json!({ "sha": "1".repeat(40) }), json!({ "id": 7 })] {
+    async fn a_deployment_missing_what_github_always_sends_is_unreadable() {
+        let sha = commit('1');
+        for required in REQUIRED {
             let server = MockServer::start().await;
-            let sha = commit('1');
-            listing(&server, &sha, 1, json!([row])).await;
-            answering_statuses(&server, 7, json!([])).await;
+            let mut row = listed(7, &sha);
+            row.as_object_mut().unwrap().remove(*required);
+            listing(&server, &sha, 1, 30, json!([listed(6, &sha), row])).await;
+            answering_statuses(&server, 6, json!([]), 0).await;
+            answering_statuses(&server, 7, json!([]), 0).await;
 
             let refused = listed_page(&server, &sha, 1, 30).await.unwrap_err();
 
-            assert!(
-                matches!(&refused, PullRequestError::GitHubApi(message) if message == UNREADABLE),
-                "{row} is unreadable: {refused:?}"
-            );
+            assert!(unreadable(&refused), "{required} missing: {refused:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_status_missing_what_github_always_sends_fails_the_page() {
+        let sha = commit('2');
+        for required in REQUIRED_OF_A_STATUS {
+            let server = MockServer::start().await;
+            let mut status = pending();
+            status.as_object_mut().unwrap().remove(*required);
+            listing(&server, &sha, 1, 30, json!([listed(7, &sha)])).await;
+            answering_statuses(&server, 7, json!([status]), 1).await;
+
+            let refused = listed_page(&server, &sha, 1, 30).await.unwrap_err();
+
+            assert!(unreadable(&refused), "{required} missing: {refused:?}");
         }
     }
 }

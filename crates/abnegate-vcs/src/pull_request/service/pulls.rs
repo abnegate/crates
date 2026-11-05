@@ -11,8 +11,6 @@ use crate::pull_request::github_listed_branch::GitHubListedBranch;
 use crate::pull_request::github_listed_pull::GitHubListedPull;
 use crate::pull_request::github_pull::GitHubPull;
 use crate::pull_request::repository::named;
-use std::num::NonZeroU8;
-use std::num::NonZeroU32;
 
 impl PullRequestService {
     /// Read a pull request back as GitHub describes it now.
@@ -32,13 +30,7 @@ impl PullRequestService {
         let repository = reference.repository();
         let pull: GitHubPull = self
             .get(
-                self.origin.endpoint(&[
-                    "repos",
-                    repository.owner(),
-                    repository.name(),
-                    "pulls",
-                    &number,
-                ]),
+                self.repository_endpoint(repository, &["pulls", &number])?,
                 token,
             )
             .await?;
@@ -65,9 +57,7 @@ impl PullRequestService {
         fork: Option<&str>,
     ) -> PullRequestResult<Option<FoundPullRequest>> {
         let owner = owned(fork.unwrap_or(repository.owner()))?;
-        let mut url =
-            self.origin
-                .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        let mut url = self.repository_endpoint(repository, &["pulls"])?;
         url.query_pairs_mut()
             .append_pair("head", &format!("{owner}:{head}"))
             .append_pair("base", base.as_str())
@@ -141,9 +131,7 @@ impl PullRequestService {
         per_page: NonZeroU8,
     ) -> PullRequestResult<Page<ListedPullRequest>> {
         let asked = asked(per_page);
-        let mut url =
-            self.origin
-                .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        let mut url = self.repository_endpoint(repository, &["pulls"])?;
         url.query_pairs_mut()
             .append_pair("state", state.as_str())
             .append_pair("sort", "updated")
@@ -172,14 +160,7 @@ impl PullRequestService {
         let number = reference.number().to_string();
         let repository = reference.repository();
         self.get_all(
-            &[
-                "repos",
-                repository.owner(),
-                repository.name(),
-                "pulls",
-                &number,
-                "files",
-            ],
+            &self.repository_endpoint(repository, &["pulls", &number, "files"])?,
             token,
         )
         .await
@@ -203,14 +184,7 @@ impl PullRequestService {
         let asked = asked(per_page);
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "pulls",
-            &number,
-            "files",
-        ]);
+        let url = self.repository_endpoint(repository, &["pulls", &number, "files"])?;
         let files: Vec<ChangedFile> = self.get(paged(url, page, asked), token).await?;
         let read = files.len();
         Ok(Page::after(files, page, read, asked))
@@ -240,8 +214,10 @@ fn headed(listed: &GitHubListedBranch, owner: &str, head: &BranchName) -> bool {
         })
 }
 
-/// A pull request found in `repository`, its branches parsed.
+/// A pull request found in `repository`, its branches parsed; one that does
+/// not say whether it is a draft is unreadable.
 fn found(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<FoundPullRequest> {
+    let draft = drafted(&pull)?;
     Ok(FoundPullRequest {
         reference: PullRequestReference::new(repository.clone(), pull.number),
         node_id: pull.node_id,
@@ -250,7 +226,7 @@ fn found(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<F
         head: BranchName::parse(&pull.head.reference)?,
         base: BranchName::parse(&pull.base.reference)?,
         state: pull.state,
-        draft: pull.draft.unwrap_or(false),
+        draft,
         merged: pull.merged_at.is_some_and(|at| !at.is_empty()),
     })
 }
@@ -258,9 +234,7 @@ fn found(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<F
 /// A pull request listed in `repository`, its branches and head commit
 /// parsed; one that does not say whether it is a draft is unreadable.
 fn listed(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<ListedPullRequest> {
-    let draft = pull
-        .draft
-        .ok_or_else(|| PullRequestError::GitHubApi(UNREADABLE.to_string()))?;
+    let draft = drafted(&pull)?;
     Ok(ListedPullRequest {
         reference: PullRequestReference::new(repository.clone(), pull.number),
         node_id: pull.node_id,
@@ -273,6 +247,13 @@ fn listed(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<
         head_sha: pull.head.sha.as_deref().map(CommitSha::parse).transpose()?,
         updated_at: pull.updated_at,
     })
+}
+
+/// Whether a listed pull request is a draft, which a row that does not say
+/// leaves unreadable.
+fn drafted(pull: &GitHubListedPull) -> PullRequestResult<bool> {
+    pull.draft
+        .ok_or_else(|| PullRequestError::GitHubApi(UNREADABLE.to_string()))
 }
 
 /// The pull request GitHub answered with, its branches and commits parsed.
@@ -313,6 +294,7 @@ mod tests {
     use crate::pull_request::PullRequestState;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::seven;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
@@ -320,7 +302,6 @@ mod tests {
     use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
-    use wiremock::Request;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::body_json;
     use wiremock::matchers::header;
@@ -699,25 +680,6 @@ mod tests {
             .collect()
     }
 
-    /// Whether a request's query is exactly `expected`, in any order, with
-    /// nothing added.
-    fn queried(expected: &[(&str, &str)]) -> impl Fn(&Request) -> bool + Send + Sync + 'static {
-        let mut expected: Vec<(String, String)> = expected
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.to_string()))
-            .collect();
-        expected.sort();
-        move |request: &Request| {
-            let mut sent: Vec<(String, String)> = request
-                .url
-                .query_pairs()
-                .map(|(key, value)| (key.into_owned(), value.into_owned()))
-                .collect();
-            sent.sort();
-            sent == expected
-        }
-    }
-
     async fn listing(answer: Vec<Value>) -> MockServer {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -855,14 +817,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_found_pull_request_is_read_with_its_title() {
-        let mut untitled = row(8, "open", "acme:feature", "main");
-        untitled.as_object_mut().unwrap().remove("title");
         let server = listing(vec![row(8, "open", "acme:feature", "main")]).await;
-        let quiet = listing(vec![untitled]).await;
         let service = stand_in(&server).await;
 
         let found = find(&server, None).await.unwrap().unwrap();
-        let unnamed = find(&quiet, None).await.unwrap().unwrap();
 
         assert_eq!(
             found,
@@ -875,7 +833,44 @@ mod tests {
             )
             .with_title("pull request 8")
         );
-        assert_eq!(unnamed.title, "", "a row GitHub gives no title is untitled");
+    }
+
+    #[tokio::test]
+    async fn a_found_row_that_does_not_say_whether_it_is_a_draft_is_unreadable() {
+        let mut undecided = row(8, "open", "acme:feature", "main");
+        undecided.as_object_mut().unwrap().remove("draft");
+        let server = listing(vec![undecided]).await;
+
+        let failure = find(&server, None)
+            .await
+            .expect_err("a row with no draft state must not be read as ready");
+
+        assert!(
+            matches!(&failure, PullRequestError::GitHubApi(message) if message == UNREADABLE),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_listed_row_without_a_title_is_unreadable() {
+        let mut untitled = row(8, "open", "acme:feature", "main");
+        untitled.as_object_mut().unwrap().remove("title");
+        let server = listing(vec![untitled.clone()]).await;
+        let paged = listing(vec![untitled]).await;
+
+        let found = find(&server, None)
+            .await
+            .expect_err("a row with no title must not be read as untitled");
+        let listed = list(&paged, StateFilter::Open, 1, 10)
+            .await
+            .expect_err("a row with no title must not be read as untitled");
+
+        for failure in [found, listed] {
+            assert!(
+                matches!(&failure, PullRequestError::GitHubApi(message) if message == UNREADABLE),
+                "{failure:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -911,7 +906,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(PULLS))
-            .and(queried(&[
+            .and(query_is(&[
                 ("head", "acme:feature"),
                 ("base", "main"),
                 ("state", "all"),
@@ -1103,7 +1098,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(PULLS))
             .and(header("authorization", "Bearer token"))
-            .and(queried(&[
+            .and(query_is(&[
                 ("state", "closed"),
                 ("sort", "updated"),
                 ("direction", "desc"),
@@ -1136,7 +1131,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(PULLS))
-            .and(queried(&[
+            .and(query_is(&[
                 ("state", "all"),
                 ("sort", "updated"),
                 ("direction", "desc"),
@@ -1226,7 +1221,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(FILES))
             .and(header("authorization", "Bearer token"))
-            .and(queried(&[("per_page", "2"), ("page", "1")]))
+            .and(query_is(&[("per_page", "2"), ("page", "1")]))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(json!([file("src/a.rs"), file("src/b.rs")])),
@@ -1236,7 +1231,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path(FILES))
-            .and(queried(&[("per_page", "2"), ("page", "2")]))
+            .and(query_is(&[("per_page", "2"), ("page", "2")]))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([file("src/c.rs")])))
             .expect(1)
             .mount(&server)
@@ -1274,7 +1269,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(FILES))
-            .and(queried(&[("per_page", "100"), ("page", "4")]))
+            .and(query_is(&[("per_page", "100"), ("page", "4")]))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
             .expect(1)
             .mount(&server)

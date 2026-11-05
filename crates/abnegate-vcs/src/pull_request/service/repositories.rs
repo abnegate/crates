@@ -46,14 +46,14 @@ impl PullRequestService {
 
         let organisation = match owner {
             Some(owner) => {
-                let account = login(self.get(self.origin.endpoint(&["user"]), token).await?)?;
+                let account = login(self.get(self.origin.endpoint(&["user"])?, token).await?)?;
                 (!owner.eq_ignore_ascii_case(&account)).then_some(owner)
             }
             None => None,
         };
         let url = match organisation {
-            Some(organisation) => self.origin.endpoint(&["orgs", organisation, "repos"]),
-            None => self.origin.endpoint(&["user", "repos"]),
+            Some(organisation) => self.origin.endpoint(&["orgs", organisation, "repos"])?,
+            None => self.origin.endpoint(&["user", "repos"])?,
         };
         let request = RepositoryRequest {
             name,

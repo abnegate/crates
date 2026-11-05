@@ -64,8 +64,8 @@ impl PullRequestService {
         token: &SecretValue,
         commit: &CommitSha,
     ) -> PullRequestResult<ChecksOutcome> {
-        let runs = self.latest_check_runs(repository, commit);
-        let statuses = self.on_commit(repository, commit, "status");
+        let runs = self.latest_check_runs(repository, commit)?;
+        let statuses = self.on_commit(repository, commit, "status")?;
 
         let (runs, statuses) = tokio::try_join!(
             walk(
@@ -108,7 +108,7 @@ impl PullRequestService {
     ) -> PullRequestResult<Collected<CheckRun>> {
         let runs = walk(
             self,
-            &self.latest_check_runs(repository, commit),
+            &self.latest_check_runs(repository, commit)?,
             token,
             |page: GitHubCheckRuns<GitHubCheckRunRecord>| (page.total_count, page.check_runs),
             read_to_the_end,
@@ -141,7 +141,7 @@ impl PullRequestService {
     ) -> PullRequestResult<Collected<CommitStatus>> {
         let statuses = walk(
             self,
-            &self.on_commit(repository, commit, "status"),
+            &self.on_commit(repository, commit, "status")?,
             token,
             |page: GitHubCombinedStatus<GitHubCommitStatusRecord>| {
                 (page.total_count, page.statuses)
@@ -158,22 +158,24 @@ impl PullRequestService {
 
     /// Where the latest attempt of each check run on `commit` in `repository`
     /// is read.
-    fn latest_check_runs(&self, repository: &Repository, commit: &CommitSha) -> Url {
-        let mut url = self.on_commit(repository, commit, "check-runs");
+    fn latest_check_runs(
+        &self,
+        repository: &Repository,
+        commit: &CommitSha,
+    ) -> PullRequestResult<Url> {
+        let mut url = self.on_commit(repository, commit, "check-runs")?;
         url.query_pairs_mut().append_pair("filter", "latest");
-        url
+        Ok(url)
     }
 
     /// Where `resource` on `commit` in `repository` is read.
-    fn on_commit(&self, repository: &Repository, commit: &CommitSha, resource: &str) -> Url {
-        self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "commits",
-            commit.as_str(),
-            resource,
-        ])
+    fn on_commit(
+        &self,
+        repository: &Repository,
+        commit: &CommitSha,
+        resource: &str,
+    ) -> PullRequestResult<Url> {
+        self.repository_endpoint(repository, &["commits", commit.as_str(), resource])
     }
 }
 

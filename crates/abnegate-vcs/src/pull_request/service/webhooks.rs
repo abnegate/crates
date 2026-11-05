@@ -32,7 +32,7 @@ impl PullRequestService {
         };
         let created: GitHubIdentified = self
             .exchange(
-                self.request(Method::POST, self.hooks(repository, &[]), token, ACCEPT)
+                self.request(Method::POST, self.hooks(repository, &[])?, token, ACCEPT)
                     .json(&request),
             )
             .await?;
@@ -53,7 +53,7 @@ impl PullRequestService {
         answered(
             self.request(
                 Method::PATCH,
-                self.hooks(repository, &[&id, "config"]),
+                self.hooks(repository, &[&id, "config"])?,
                 token,
                 ACCEPT,
             )
@@ -74,7 +74,7 @@ impl PullRequestService {
         let id = id.to_string();
         let response = sent(self.request(
             Method::DELETE,
-            self.hooks(repository, &[&id]),
+            self.hooks(repository, &[&id])?,
             token,
             ACCEPT,
         ))
@@ -87,12 +87,9 @@ impl PullRequestService {
         Err(refusal(response).await)
     }
 
-    fn hooks(&self, repository: &Repository, rest: &[&str]) -> Url {
-        let segments: Vec<&str> = ["repos", repository.owner(), repository.name(), "hooks"]
-            .into_iter()
-            .chain(rest.iter().copied())
-            .collect();
-        self.origin.endpoint(&segments)
+    fn hooks(&self, repository: &Repository, rest: &[&str]) -> PullRequestResult<Url> {
+        let segments: Vec<&str> = ["hooks"].into_iter().chain(rest.iter().copied()).collect();
+        self.repository_endpoint(repository, &segments)
     }
 }
 

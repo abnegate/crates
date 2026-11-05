@@ -50,13 +50,7 @@ impl PullRequestService {
         token: &SecretValue,
         filter: &WorkflowRunFilter,
     ) -> PullRequestResult<Collected<WorkflowRun>> {
-        let mut url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "actions",
-            "runs",
-        ]);
+        let mut url = self.repository_endpoint(repository, &["actions", "runs"])?;
         url.query_pairs_mut().extend_pairs(filter.pairs());
 
         let runs = walk(
@@ -92,14 +86,7 @@ impl PullRequestService {
         let job = job.to_string();
         let answered: GitHubWorkflowJob = self
             .get(
-                self.origin.endpoint(&[
-                    "repos",
-                    repository.owner(),
-                    repository.name(),
-                    "actions",
-                    "jobs",
-                    &job,
-                ]),
+                self.repository_endpoint(repository, &["actions", "jobs", &job])?,
                 token,
             )
             .await?;
@@ -142,23 +129,8 @@ impl PullRequestService {
     ) -> PullRequestResult<JobLog> {
         let deadline = Instant::now().checked_add(self.timeout);
         let job = job.to_string();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "actions",
-            "jobs",
-            &job,
-            "logs",
-        ]);
-        let response = sent(
-            self.writer
-                .request(Method::GET, url)
-                .bearer_auth(token.expose())
-                .header(header::ACCEPT, ACCEPT)
-                .timeout(self.timeout),
-        )
-        .await?;
+        let url = self.repository_endpoint(repository, &["actions", "jobs", &job, "logs"])?;
+        let response = sent(self.request_on(&self.writer, Method::GET, url, token, ACCEPT)).await?;
 
         let status = response.status();
         if status.is_success() {

@@ -68,6 +68,9 @@ pub(super) const GITHUB_API_URL: &str = "https://api.github.com";
 /// The media type GitHub's REST API answers in.
 pub(super) const ACCEPT: &str = "application/vnd.github+json";
 
+/// The media type that asks GitHub for a file's or a blob's bytes as they are.
+pub(super) const RAW: &str = "application/vnd.github.raw+json";
+
 /// Rows GitHub returns per page; its maximum for these collections.
 const PAGE_SIZE: usize = 100;
 
@@ -147,6 +150,8 @@ const GIT_SUFFIX: &str = ".git";
 /// GitHub Enterprise install, reads back how each one was received, and
 /// creates repositories there.
 ///
+/// - Naming what a request is about: [`Self::parse_github_url`],
+///   [`Self::repository_on`] and [`Self::pull_request`].
 /// - Opening: [`Self::get_default_branch`],
 ///   [`Self::pull_request_exists_for_branch`],
 ///   [`Self::create_pull_request`] and [`Self::create_pull_request_from`].
@@ -214,14 +219,17 @@ const GIT_SUFFIX: &str = ".git";
 /// keeps only GitHub's own message, bounded: never the raw answer, and never
 /// the token.
 ///
-/// A paged read takes a hundred rows a page and follows at most ten pages.
-/// Every JSON answer, each page of a paged read included, is read up to
-/// 16 MiB and never parsed in part, so a longer page is
-/// [`PullRequestError::GitHubApi`] rather than a shorter list.
-/// [`Self::fetch_diff`] and [`Self::fetch_file`] read only as far as the limit
-/// their caller passes, and [`Self::fetch_blob`] only as far as the base64
-/// that limit takes, reporting a blob past it as
-/// [`PullRequestError::TooLarge`].
+/// A read that walks every page itself and returns a list, such as
+/// [`Self::fetch_files`] or [`Self::fetch_reviews`], takes a hundred rows a
+/// page and follows at most ten pages. A read that returns a
+/// [`Page`](crate::pull_request::Page) reads only the page asked for, at the
+/// rows a page its caller asks for up to a hundred, and says in
+/// [`Page::next`](crate::pull_request::Page::next) which page follows. Every JSON answer,
+/// each page included, is read up to 16 MiB and never parsed in part, so a
+/// longer page is [`PullRequestError::GitHubApi`] rather than a shorter list.
+/// [`Self::fetch_diff`], [`Self::fetch_file`] and [`Self::fetch_blob`] read
+/// only as far as the limit their caller passes, and [`Self::fetch_blob`]
+/// reports a blob past it as [`PullRequestError::TooLarge`].
 ///
 /// [`Self::merge`] asks through REST first, and only a refusal by branch
 /// protection is asked again through the administrator's GraphQL mutation.
@@ -449,9 +457,7 @@ impl PullRequestService {
         body: &str,
         draft: bool,
     ) -> PullRequestResult<CreatedPullRequest> {
-        let url = self
-            .origin
-            .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        let url = self.repository_endpoint(repository, &["pulls"])?;
         let request = CreateRequest {
             title,
             body,
@@ -489,11 +495,7 @@ impl PullRequestService {
         token: &SecretValue,
     ) -> PullRequestResult<BranchName> {
         let detail: RepositoryDetail = self
-            .get(
-                self.origin
-                    .endpoint(&["repos", repository.owner(), repository.name()]),
-                token,
-            )
+            .get(self.repository_endpoint(repository, &[])?, token)
             .await?;
         Ok(BranchName::parse(&detail.default_branch)?)
     }
@@ -505,15 +507,28 @@ impl PullRequestService {
         token: &SecretValue,
         head: &BranchName,
     ) -> PullRequestResult<Option<String>> {
-        let mut url =
-            self.origin
-                .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        let mut url = self.repository_endpoint(repository, &["pulls"])?;
         url.query_pairs_mut()
             .append_pair("head", &format!("{}:{head}", repository.owner()))
             .append_pair("state", "open");
 
         let open: Vec<GitHubPullRequest> = self.get(url, token).await?;
         Ok(open.into_iter().next().map(|found| found.html_url))
+    }
+
+    /// The REST endpoint for `repository`, followed by `rest`, each segment
+    /// one percent-encoded path segment; one that is empty, `.` or `..` is
+    /// [`PullRequestError::InvalidRepositoryUrl`].
+    pub(super) fn repository_endpoint(
+        &self,
+        repository: &Repository,
+        rest: &[&str],
+    ) -> PullRequestResult<Url> {
+        let segments: Vec<&str> = ["repos", repository.owner(), repository.name()]
+            .into_iter()
+            .chain(rest.iter().copied())
+            .collect();
+        self.origin.endpoint(&segments)
     }
 
     /// A request to `url` that carries `token` and asks for an answer in
@@ -532,6 +547,19 @@ impl PullRequestService {
             true => &self.reader,
             false => &self.writer,
         };
+        self.request_on(client, method, url, token, accept)
+    }
+
+    /// A request to `url` sent by `client`, carrying `token`, asking for an
+    /// answer in `accept`, and given up on after this service's timeout.
+    fn request_on(
+        &self,
+        client: &Client,
+        method: Method,
+        url: Url,
+        token: &SecretValue,
+        accept: &'static str,
+    ) -> RequestBuilder {
         client
             .request(method, url)
             .bearer_auth(token.expose())
@@ -553,15 +581,16 @@ impl PullRequestService {
             .await
     }
 
+    /// Every row `url` lists, a hundred a page for at most ten pages.
     async fn get_all<T: DeserializeOwned>(
         &self,
-        segments: &[&str],
+        url: &Url,
         token: &SecretValue,
     ) -> PullRequestResult<Vec<T>> {
         let mut collected: Vec<T> = Vec::new();
 
         for page in 1..=MAXIMUM_PAGES {
-            let mut url = self.origin.endpoint(segments);
+            let mut url = url.clone();
             url.query_pairs_mut()
                 .append_pair("per_page", &PAGE_SIZE.to_string())
                 .append_pair("page", &page.to_string());
@@ -589,13 +618,7 @@ impl PullRequestService {
         let repository = reference.repository();
         let detail: GitHubPullRequestDetail = self
             .get(
-                self.origin.endpoint(&[
-                    "repos",
-                    repository.owner(),
-                    repository.name(),
-                    "pulls",
-                    &number,
-                ]),
+                self.repository_endpoint(repository, &["pulls", &number])?,
                 token,
             )
             .await?;
@@ -617,20 +640,23 @@ impl PullRequestService {
     ) -> PullRequestResult<PullRequestReception> {
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let pull = [
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "pulls",
-            &number,
-        ];
-
-        let detail: GitHubPullRequestDetail = self.get(self.origin.endpoint(&pull), token).await?;
+        let detail: GitHubPullRequestDetail = self
+            .get(
+                self.repository_endpoint(repository, &["pulls", &number])?,
+                token,
+            )
+            .await?;
         let reviews: Vec<GitHubReview> = self
-            .get_all(&[&pull[..], &["reviews"]].concat(), token)
+            .get_all(
+                &self.repository_endpoint(repository, &["pulls", &number, "reviews"])?,
+                token,
+            )
             .await?;
         let inline: Vec<GitHubComment> = self
-            .get_all(&[&pull[..], &["comments"]].concat(), token)
+            .get_all(
+                &self.repository_endpoint(repository, &["pulls", &number, "comments"])?,
+                token,
+            )
             .await?;
 
         let submitted: Vec<SubmittedReview> = reviews

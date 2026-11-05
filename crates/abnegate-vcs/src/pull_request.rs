@@ -17,21 +17,37 @@
 //! origin serves.
 //!
 //! Every URL a call reaches is built from numbers and validated values: a
-//! [`Repository`] from [`PullRequestService::parse_github_url`], a
-//! [`PullRequestReference`] from [`PullRequestService::pull_request`], a
-//! [`crate::BranchName`], a [`crate::CommitSha`], a [`RepositoryPath`], and a
-//! new repository's owner held to a [`Repository`]'s rules. Each travels
-//! percent-encoded under the configured origin, as path segments or as a query
-//! value: the owner and head branch
+//! [`Repository`] from [`PullRequestService::parse_github_url`] or
+//! [`PullRequestService::repository_on`], a [`PullRequestReference`] from
+//! [`PullRequestService::pull_request`], an [`IssueReference`], a
+//! [`crate::BranchName`], a [`crate::CommitSha`], a [`crate::ObjectId`], a
+//! [`RepositoryPath`], and a new repository's owner held to a
+//! [`Repository`]'s rules. Each travels percent-encoded under the configured
+//! origin, as path segments or as a query value, and a segment that is
+//! empty, `.` or `..` is refused before anything is sent.
+//!
+//! Three values a caller passes as plain text are held to rules before they
+//! travel:
+//!
+//! - the ref [`PullRequestService::resolve_commit`] resolves, held to a
+//!   [`crate::BranchName`]'s rules unless it is `HEAD`, travels as one path
+//!   segment, a `/` in it sent as `%2F`;
+//! - the tag [`PullRequestService::fetch_release`] reads, held to the same
+//!   rules, travels as one path segment the same way;
+//! - the fork owner [`PullRequestService::find_pull_request`] and
+//!   [`PullRequestService::create_pull_request_from`] take, held to a
+//!   [`Repository`] owner's rules, travels with the head branch as the
+//!   `owner:branch` of the `head` query value or JSON field.
+//!
+//! Of the rest, the owner and head branch
 //! [`PullRequestService::pull_request_exists_for_branch`] looks for travel
-//! together as `head`, the commit [`PullRequestService::fetch_file`] reads at
-//! travels as `ref`, and the reference [`PullRequestService::resolve_commit`]
-//! resolves, held to a [`crate::BranchName`]'s rules, travels as one path
-//! segment. So no value, not even a path someone else chose, reaches another
-//! endpoint or adds a parameter. Everything else a call sends, such as a
-//! GraphQL node id, a title or a body, travels in its JSON, never in its URL. What GitHub answers is held to the same types: a branch or commit
-//! this crate does not accept is [`PullRequestError::Parse`], never read as
-//! something else.
+//! together as `head`, and the commit [`PullRequestService::fetch_file`]
+//! reads at travels as `ref`. So no value, not even a path someone else
+//! chose, reaches another endpoint or adds a parameter. Everything else a
+//! call sends, such as a GraphQL node id, a title or a body, travels in its
+//! JSON, never in its URL. What GitHub answers is held to the same types: a
+//! branch or commit this crate does not accept is
+//! [`PullRequestError::Parse`], never read as something else.
 //!
 //! [`PullRequestService::fetch_diff`] and [`PullRequestService::fetch_file`]
 //! read no more of the answer than the byte limit their caller passes, and
@@ -72,7 +88,6 @@ mod error;
 mod excerpt;
 mod file_status;
 mod found;
-mod github_blob;
 mod github_branch;
 mod github_check_conclusion;
 mod github_check_run;
@@ -90,7 +105,9 @@ mod github_deployment_status;
 mod github_identified;
 mod github_issue;
 mod github_issue_comment;
+mod github_issue_pull_request;
 mod github_issue_request;
+mod github_issue_row;
 mod github_label;
 mod github_listed_branch;
 mod github_listed_pull;

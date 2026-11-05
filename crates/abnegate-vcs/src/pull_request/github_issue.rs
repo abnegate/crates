@@ -11,31 +11,26 @@ use std::num::NonZeroU64;
 
 /// An issue, or a pull request read as one, as the GitHub REST API returns it.
 ///
-/// Only its number is required: GitHub sends the rest on every issue, but an
-/// answer that leaves any of it out still names the issue.
+/// What GitHub sends on every issue is required, so an answer that leaves any
+/// of it out is unreadable rather than an issue with something made up in its
+/// place. What GitHub may leave out or send as `null`, an issue's body, author,
+/// assignees and close time, is read as not said.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GitHubIssue {
     number: NonZeroU64,
-    #[serde(default)]
-    title: Option<String>,
+    title: String,
     #[serde(default)]
     body: Option<String>,
-    #[serde(default)]
-    state: Option<IssueState>,
-    #[serde(default)]
-    html_url: Option<String>,
+    state: IssueState,
+    html_url: String,
     #[serde(default)]
     user: Option<GitHubUser>,
-    #[serde(default)]
-    labels: Option<Vec<GitHubLabel>>,
+    labels: Vec<GitHubLabel>,
     #[serde(default)]
     assignees: Option<Vec<GitHubUser>>,
-    #[serde(default)]
-    comments: Option<u64>,
-    #[serde(default)]
-    created_at: Option<String>,
-    #[serde(default)]
-    updated_at: Option<String>,
+    comments: u64,
+    created_at: String,
+    updated_at: String,
     #[serde(default)]
     closed_at: Option<String>,
     #[serde(default)]
@@ -47,25 +42,20 @@ impl GitHubIssue {
     pub(super) fn within(self, repository: &Repository) -> Issue {
         Issue {
             reference: IssueReference::new(repository.clone(), self.number),
-            title: self.title.unwrap_or_default(),
+            title: self.title,
             body: self.body,
-            state: self.state.unwrap_or(IssueState::Unknown),
-            url: self.html_url.unwrap_or_default(),
-            author: self.user.and_then(|user| user.login).unwrap_or_default(),
-            labels: self
-                .labels
-                .unwrap_or_default()
-                .into_iter()
-                .map(Label::from)
-                .collect(),
-            assignees: self
-                .assignees
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|assignee| assignee.login)
-                .collect(),
-            comments: self.comments.unwrap_or_default(),
-            created_at: self.created_at.unwrap_or_default(),
+            state: self.state,
+            url: self.html_url,
+            author: self.user.and_then(|user| user.login),
+            labels: self.labels.into_iter().map(Label::from).collect(),
+            assignees: self.assignees.map(|assignees| {
+                assignees
+                    .into_iter()
+                    .filter_map(|assignee| assignee.login)
+                    .collect()
+            }),
+            comments: self.comments,
+            created_at: self.created_at,
             updated_at: self.updated_at,
             closed_at: self.closed_at,
             pull_request: self.pull_request.is_some(),

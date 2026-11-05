@@ -2,6 +2,7 @@ use super::*;
 use crate::commit_sha::CommitSha;
 use wiremock::Match;
 use wiremock::MockServer;
+use wiremock::Request;
 
 /// Whether an error is the one a refusal has to be reported as.
 pub(super) type Expected = fn(&PullRequestError) -> bool;
@@ -11,7 +12,7 @@ pub(super) type Expected = fn(&PullRequestError) -> bool;
 pub(super) struct ExactQuery(Vec<(String, String)>);
 
 impl Match for ExactQuery {
-    fn matches(&self, request: &wiremock::Request) -> bool {
+    fn matches(&self, request: &Request) -> bool {
         let mut sent: Vec<(String, String)> = request.url.query_pairs().into_owned().collect();
         sent.sort();
         sent == self.0

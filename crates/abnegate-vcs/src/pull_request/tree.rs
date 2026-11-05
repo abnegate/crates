@@ -1,4 +1,4 @@
-use crate::commit_sha::CommitSha;
+use crate::object_id::ObjectId;
 use crate::pull_request::TreeEntry;
 
 /// A git tree as GitHub lists it: its entries, and whether GitHub left any out.
@@ -6,7 +6,7 @@ use crate::pull_request::TreeEntry;
 #[non_exhaustive]
 pub struct Tree {
     /// The tree's own object name.
-    pub sha: CommitSha,
+    pub sha: ObjectId,
     /// Its entries, in the order GitHub listed them.
     pub entries: Vec<TreeEntry>,
     /// Whether GitHub cut the list short, past the most entries or bytes it
@@ -17,7 +17,7 @@ pub struct Tree {
 impl Tree {
     /// The tree `sha` names, holding `entries`, every one of them listed until
     /// [`Self::with_truncated`] says otherwise.
-    pub fn new(sha: CommitSha, entries: Vec<TreeEntry>) -> Self {
+    pub fn new(sha: ObjectId, entries: Vec<TreeEntry>) -> Self {
         Self {
             sha,
             entries,

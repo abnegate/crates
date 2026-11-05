@@ -1,4 +1,4 @@
-use crate::commit_sha::CommitSha;
+use crate::object_id::ObjectId;
 use crate::pull_request::TreeEntryKind;
 
 /// The modes git gives a blob that is a regular file: one not executable, and
@@ -20,7 +20,7 @@ pub struct TreeEntry {
     /// What it points at.
     pub kind: TreeEntryKind,
     /// The object it points at: a blob, a tree, or a submodule's commit.
-    pub sha: CommitSha,
+    pub sha: ObjectId,
     /// The size of a blob in bytes, or `None` for an entry that is not one.
     pub size: Option<u64>,
 }
@@ -32,7 +32,7 @@ impl TreeEntry {
         path: impl Into<String>,
         mode: impl Into<String>,
         kind: TreeEntryKind,
-        sha: CommitSha,
+        sha: ObjectId,
     ) -> Self {
         Self {
             path: path.into(),
@@ -66,7 +66,7 @@ mod tests {
             "entry",
             mode,
             kind,
-            CommitSha::parse(&"a".repeat(40)).unwrap(),
+            ObjectId::parse(&"a".repeat(40)).unwrap(),
         )
     }
 

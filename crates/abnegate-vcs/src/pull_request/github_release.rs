@@ -3,22 +3,21 @@ use serde::Deserialize;
 
 /// A release as the GitHub REST API returns it.
 ///
-/// Only its identifier and tag are required: GitHub sends the rest on every
-/// release, but an answer that leaves any of it out still names the release.
+/// What GitHub sends on every release is required, so an answer that leaves
+/// any of it out is unreadable rather than a release with something made up
+/// in its place. Its title and publication time may be `null`, and are read
+/// as not said.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GitHubRelease {
     id: u64,
     tag_name: String,
     #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
-    html_url: Option<String>,
+    html_url: String,
     #[serde(default)]
     published_at: Option<String>,
-    #[serde(default)]
-    draft: Option<bool>,
-    #[serde(default)]
-    prerelease: Option<bool>,
+    draft: bool,
+    prerelease: bool,
 }
 
 impl From<GitHubRelease> for Release {
@@ -27,10 +26,10 @@ impl From<GitHubRelease> for Release {
             id: release.id,
             tag: release.tag_name,
             name: release.name,
-            url: release.html_url.unwrap_or_default(),
+            url: release.html_url,
             published_at: release.published_at,
-            draft: release.draft.unwrap_or_default(),
-            prerelease: release.prerelease.unwrap_or_default(),
+            draft: release.draft,
+            prerelease: release.prerelease,
         }
     }
 }

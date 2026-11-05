@@ -8,10 +8,9 @@ pub struct Release {
     pub tag: String,
     /// The title it was given, or `None` when it has none.
     pub name: Option<String>,
-    /// Where it can be read in a browser, or empty when GitHub does not say.
+    /// Where it can be read in a browser.
     pub url: String,
-    /// When it was published, as RFC 3339, or `None` while it is a draft or
-    /// when GitHub does not say.
+    /// When it was published, as RFC 3339, or `None` while it is a draft.
     pub published_at: Option<String>,
     /// Whether it is a draft, seen only by those who can push.
     pub draft: bool,
@@ -20,14 +19,14 @@ pub struct Release {
 }
 
 impl Release {
-    /// The published release GitHub identifies by `id` under `tag`, with
-    /// nothing else said of it.
-    pub fn new(id: u64, tag: impl Into<String>) -> Self {
+    /// The release GitHub identifies by `id` under `tag`, readable at `url`,
+    /// neither a draft nor a prerelease, with nothing else said of it.
+    pub fn new(id: u64, tag: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             id,
             tag: tag.into(),
             name: None,
-            url: String::new(),
+            url: url.into(),
             published_at: None,
             draft: false,
             prerelease: false,
@@ -38,13 +37,6 @@ impl Release {
     #[must_use]
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
-        self
-    }
-
-    /// Where it can be read in a browser.
-    #[must_use]
-    pub fn with_url(mut self, url: impl Into<String>) -> Self {
-        self.url = url.into();
         self
     }
 

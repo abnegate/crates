@@ -6,8 +6,8 @@ use std::num::NonZeroU32;
 pub struct Page<T> {
     /// What the page holds, in the order GitHub listed it.
     pub items: Vec<T>,
-    /// The page to ask for next, or `None` when this one held fewer rows than
-    /// were asked for and so was the last.
+    /// The page to ask for next, or `None` when GitHub sent fewer rows than
+    /// were asked for, so this page was the last.
     pub next: Option<NonZeroU32>,
 }
 

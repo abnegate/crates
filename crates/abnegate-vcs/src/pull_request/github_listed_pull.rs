@@ -12,7 +12,6 @@ pub(super) struct GitHubListedPull {
     pub(super) state: PullRequestState,
     pub(super) head: GitHubListedBranch,
     pub(super) base: GitHubListedBranch,
-    #[serde(default)]
     pub(super) title: String,
     #[serde(default)]
     pub(super) draft: Option<bool>,

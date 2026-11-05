@@ -19,6 +19,10 @@ const VERSIONED_REST: &str = "/api/v3";
 /// The segment GraphQL answers at, beside REST or in place of its version.
 const GRAPHQL: &str = "graphql";
 
+/// The segments a URL's path reads as itself or its parent rather than as a
+/// name, which `url` drops rather than encodes.
+const DOT_SEGMENTS: &[&str] = &[".", ".."];
+
 /// The API origin this service addresses, and the repository host it answers for.
 ///
 /// The two are decided together because every request is
@@ -116,12 +120,22 @@ impl Origin {
     /// The origin's URL with `segments` appended, each one percent-encoded as
     /// a single path segment, and never an empty segment where the configured
     /// URL ended in a slash.
-    pub(super) fn endpoint(&self, segments: &[&str]) -> Url {
+    ///
+    /// A segment that is empty, `.` or `..` is
+    /// [`PullRequestError::InvalidRepositoryUrl`]: it would name no segment,
+    /// or the one before it, so the URL would reach another endpoint.
+    pub(super) fn endpoint(&self, segments: &[&str]) -> PullRequestResult<Url> {
+        if segments
+            .iter()
+            .any(|segment| segment.is_empty() || DOT_SEGMENTS.contains(segment))
+        {
+            return Err(PullRequestError::InvalidRepositoryUrl);
+        }
         let mut url = self.url.clone();
         if let Ok(mut path) = url.path_segments_mut() {
             path.pop_if_empty().extend(segments);
         }
-        url
+        Ok(url)
     }
 
     /// Where GitHub's GraphQL API answers for this origin: beside REST on
@@ -189,7 +203,10 @@ mod tests {
         assert!(admitted.answers_for("localhost"));
         assert!(admitted.admits("http") && admitted.admits("https"));
         assert_eq!(
-            admitted.endpoint(&["repos", "acme", "project"]).as_str(),
+            admitted
+                .endpoint(&["repos", "acme", "project"])
+                .unwrap()
+                .as_str(),
             "http://localhost:3000/repos/acme/project"
         );
 
@@ -225,6 +242,7 @@ mod tests {
                 Origin::configured(configured, false)
                     .unwrap()
                     .endpoint(&["repos", "acme", "project"])
+                    .unwrap()
                     .as_str(),
                 "https://github.example.com/api/v3/repos/acme/project"
             );
@@ -233,9 +251,37 @@ mod tests {
             Origin::configured("https://api.github.com/", false)
                 .unwrap()
                 .endpoint(&["repos", "acme", "project"])
+                .unwrap()
                 .as_str(),
             "https://api.github.com/repos/acme/project"
         );
+    }
+
+    #[test]
+    fn an_endpoint_refuses_a_segment_that_is_empty_or_a_dot_segment() {
+        let origin = Origin::configured("https://github.example.com/api/v3", false).unwrap();
+        for refused in ["", ".", ".."] {
+            assert!(
+                matches!(
+                    origin.endpoint(&["repos", "acme", refused, "pulls"]),
+                    Err(PullRequestError::InvalidRepositoryUrl)
+                ),
+                "{refused:?}"
+            );
+        }
+        for (kept, encoded) in [
+            ("...", "..."),
+            (".github", ".github"),
+            ("v1.0.0", "v1.0.0"),
+            ("a/b", "a%2Fb"),
+            ("%2E", "%252E"),
+        ] {
+            assert_eq!(
+                origin.endpoint(&["repos", "acme", kept]).unwrap().as_str(),
+                format!("https://github.example.com/api/v3/repos/acme/{encoded}"),
+                "{kept:?}"
+            );
+        }
     }
 
     #[test]
