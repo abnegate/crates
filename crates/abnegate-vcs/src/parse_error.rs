@@ -25,8 +25,9 @@ pub enum ParseError {
     #[error("Expected an HTTPS GitHub owner/repository URL")]
     RepositoryUrl,
 
-    /// Not a release tag a request can name: one that breaks the rules a
-    /// [`crate::BranchName`] is held to.
+    /// Not a tag name git accepts: one `git check-ref-format` refuses under
+    /// `refs/tags/`, or that `git tag` refuses for being `HEAD` or for being
+    /// led by `-`.
     #[error("Invalid release tag: {0:?}")]
     Tag(String),
 }

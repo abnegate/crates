@@ -72,6 +72,7 @@ pub mod pull_request;
 mod repository_url;
 pub mod resolution;
 pub mod subject;
+mod tag_name;
 mod truncation;
 pub mod worktree;
 

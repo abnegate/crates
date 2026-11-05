@@ -1,8 +1,8 @@
 use super::*;
-use crate::parse_error::ParseError;
 use crate::pull_request::Page;
 use crate::pull_request::Release;
 use crate::pull_request::github_release::GitHubRelease;
+use crate::tag_name::TagName;
 
 impl PullRequestService {
     /// Page `page` of `repository`'s releases, most recently published first,
@@ -30,24 +30,25 @@ impl PullRequestService {
 
     /// The release published under `tag`.
     ///
-    /// The tag is held to the rules a [`BranchName`] is, which are git's own
-    /// for a ref name, so `pkg/v1.2.3` and `v1.0.0+build` are tags, and it
-    /// travels as one path segment, so a `/` in it is sent as `%2F`. A tag
-    /// that breaks those rules, such as one that is empty, holds `..` or a
-    /// control character, is [`PullRequestError::Parse`] with
-    /// [`ParseError::Tag`], and nothing is sent. A tag with no release
-    /// published under it is [`PullRequestError::NotFound`].
+    /// The tag is held to git's own rules for a tag name, so `pkg/v1.2.3`,
+    /// `v1.0.0+build` and `+v1` are tags, and it travels as one path segment,
+    /// so a `/` in it is sent as `%2F`. A tag git refuses, such as one that
+    /// is empty, holds `..` or an ASCII control character, or is led by `-`,
+    /// is [`PullRequestError::Parse`] with
+    /// [`ParseError::Tag`](crate::ParseError::Tag), and nothing is sent. A
+    /// tag with no release published under it is
+    /// [`PullRequestError::NotFound`].
     pub async fn fetch_release(
         &self,
         repository: &Repository,
         token: &SecretValue,
         tag: &str,
     ) -> PullRequestResult<Release> {
-        BranchName::parse(tag).map_err(|_| ParseError::Tag(tag.to_string()))?;
+        let tag = TagName::parse(tag)?;
 
         let release: GitHubRelease = self
             .get(
-                self.repository_endpoint(repository, &["releases", "tags", tag])?,
+                self.repository_endpoint(repository, &["releases", "tags", tag.as_str()])?,
                 token,
             )
             .await?;
@@ -58,6 +59,7 @@ impl PullRequestService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse_error::ParseError;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
@@ -258,6 +260,8 @@ mod tests {
         for (tag, sent) in [
             ("pkg/v1.2.3", "pkg%2Fv1.2.3"),
             ("v1.0.0+build", "v1.0.0+build"),
+            ("+v1", "+v1"),
+            ("@", "@"),
             ("release_2026-11", "release_2026-11"),
         ] {
             let server = MockServer::start().await;

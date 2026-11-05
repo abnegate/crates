@@ -1,16 +1,10 @@
 use crate::parse_error::ParseError;
+use crate::tag_name::TagName;
 use std::fmt;
 use std::str::FromStr;
 
 /// Longest ref name git itself will accept without complaint.
 const MAXIMUM_LENGTH: usize = 255;
-
-/// Characters `git check-ref-format` refuses anywhere in a name, and the space
-/// a command line would split on.
-const FORBIDDEN_CHARACTERS: [char; 8] = ['~', '^', ':', '?', '*', '[', '\\', ' '];
-
-/// The suffix git reserves for its own lock files, refused on any component.
-const LOCK_SUFFIX: &str = ".lock";
 
 /// The namespace a branch lives in.
 pub(crate) const HEADS: &str = "refs/heads/";
@@ -31,23 +25,11 @@ impl BranchName {
     /// `..`, `@{`, `//`, a space, a control character or any of `~^:?*[\`,
     /// or with a component that is empty, starts with `.` or ends in `.lock`.
     pub fn parse(value: &str) -> Result<Self, ParseError> {
-        let refused = value.is_empty()
+        let refused = TagName::refuses(value)
             || value.len() > MAXIMUM_LENGTH
             || RESERVED.contains(&value)
-            || value.starts_with(['-', '+'])
-            || value.starts_with('/')
-            || value.ends_with('/')
-            || value.ends_with('.')
-            || value.contains("..")
-            || value.contains("@{")
-            || value.contains("//")
-            || value.contains(FORBIDDEN_CHARACTERS)
-            || value.chars().any(char::is_control)
-            || value.split('/').any(|component| {
-                component.is_empty()
-                    || component.starts_with('.')
-                    || component.ends_with(LOCK_SUFFIX)
-            });
+            || value.starts_with('+')
+            || value.chars().any(char::is_control);
 
         match refused {
             true => Err(ParseError::BranchName(value.to_string())),

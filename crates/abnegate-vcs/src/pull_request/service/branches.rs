@@ -1,6 +1,8 @@
 use super::*;
 use crate::commit_sha::CommitSha;
+use crate::parse_error::ParseError;
 use crate::pull_request::github_commit::GitHubCommit;
+use crate::tag_name::TagName;
 
 /// What GitHub says when the ref asked to be deleted is not there.
 const ABSENT: &str = "Reference does not exist";
@@ -11,6 +13,10 @@ const UNRESOLVED: &str = "No commit found";
 /// The ref GitHub reads as the tip of a repository's default branch, which no
 /// branch may be named.
 const HEAD: &str = "HEAD";
+
+/// Git's shorthand for `HEAD`, a revision expression rather than a name,
+/// though git accepts it as a tag.
+const CURRENT: &str = "@";
 
 impl PullRequestService {
     /// Delete a branch; one already gone is not an error.
@@ -45,8 +51,11 @@ impl PullRequestService {
     /// The commit `reference` names now: a branch, a tag, a commit given in
     /// full or in part, or `HEAD` for the tip of the default branch.
     ///
-    /// `reference` is held to a branch name's rules, `HEAD` aside, and is
-    /// [`PullRequestError::Parse`] before anything is sent when it breaks them.
+    /// `reference` is held to git's rules for a tag name, which every branch
+    /// name git accepts meets too, `HEAD` aside, and is
+    /// [`PullRequestError::Parse`] with [`ParseError::BranchName`] before
+    /// anything is sent when it breaks them, or when it is `@`, git's
+    /// shorthand for `HEAD`.
     /// It travels as one path segment, so a `/` in it is sent as `%2F`. A
     /// reference GitHub holds no commit for, which it answers with a 404 or
     /// with a 422 saying no commit was found, is [`PullRequestError::NotFound`].
@@ -59,8 +68,9 @@ impl PullRequestService {
         token: &SecretValue,
         reference: &str,
     ) -> PullRequestResult<CommitSha> {
-        if reference != HEAD {
-            BranchName::parse(reference)?;
+        let named = reference == HEAD || (reference != CURRENT && !TagName::refuses(reference));
+        if !named {
+            return Err(ParseError::BranchName(reference.to_string()).into());
         }
         let url = self.repository_endpoint(repository, &["commits", reference])?;
         let response = sent(self.request(Method::GET, url, token, ACCEPT)).await?;
@@ -81,7 +91,6 @@ impl PullRequestService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse_error::ParseError;
     use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
@@ -279,7 +288,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_branch_or_tag_resolves_to_the_commit_it_names() {
-        for (reference, digit) in [("main", 'a'), ("v1.2.3", 'b'), ("HEAD", 'c')] {
+        for (reference, digit) in [("main", 'a'), ("v1.2.3", 'b'), ("HEAD", 'c'), ("+v1", 'd')] {
             let server = resolving(reference, named(digit)).await;
 
             let resolved = resolve(&server, reference).await.expect(reference);
