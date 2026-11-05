@@ -248,7 +248,8 @@ mod tests {
     }
 
     /// `whole` with each thing GitHub always sends on an issue left out or
-    /// spoiled in turn, and an answer that is no issue at all.
+    /// spoiled in turn, with a pull request marker that is no object, and an
+    /// answer that is no issue at all.
     fn damaged(whole: &Value) -> Vec<Value> {
         let mut broken: Vec<Value> = REQUIRED
             .iter()
@@ -264,7 +265,18 @@ mod tests {
         unlabelled["labels"] = json!([{ "color": SENTINEL }]);
         let mut untitled = whole.clone();
         untitled["title"] = Value::Null;
-        broken.extend([unnumbered, unlabelled, untitled, json!(SENTINEL)]);
+        let mut marked_by_array = whole.clone();
+        marked_by_array["pull_request"] = json!([]);
+        let mut marked_by_flag = whole.clone();
+        marked_by_flag["pull_request"] = json!(true);
+        broken.extend([
+            unnumbered,
+            unlabelled,
+            untitled,
+            marked_by_array,
+            marked_by_flag,
+            json!(SENTINEL),
+        ]);
         broken
     }
 

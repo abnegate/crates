@@ -3,10 +3,10 @@ use crate::pull_request::IssueReference;
 use crate::pull_request::IssueState;
 use crate::pull_request::Label;
 use crate::pull_request::Repository;
+use crate::pull_request::github_issue_pull_request::GitHubIssuePullRequest;
 use crate::pull_request::github_label::GitHubLabel;
 use crate::pull_request::github_user::GitHubUser;
 use serde::Deserialize;
-use serde::de::IgnoredAny;
 use std::num::NonZeroU64;
 
 /// An issue, or a pull request read as one, as the GitHub REST API returns it.
@@ -34,7 +34,7 @@ pub(super) struct GitHubIssue {
     #[serde(default)]
     closed_at: Option<String>,
     #[serde(default)]
-    pull_request: Option<IgnoredAny>,
+    pull_request: Option<GitHubIssuePullRequest>,
 }
 
 impl GitHubIssue {
