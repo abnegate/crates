@@ -1,3 +1,4 @@
+use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
 use abnegate_secret::conceal;
 use abnegate_secret::redact;
@@ -13,6 +14,10 @@ pub(crate) const REPORTED_LIMIT: usize = 500;
 pub(crate) const ELLIPSIS: char = '…';
 pub(crate) const UNEXPLAINED: &str = "the endpoint reported an error";
 const MINIMUM_CONCEALED_KEY_LENGTH: usize = 8;
+const TOKEN_SEPARATORS: [char; 16] = [
+    '"', '\'', '`', ',', ';', '(', ')', '[', ']', '{', '}', '<', '>', '=', ':', '\\',
+];
+const TERMINAL_PUNCTUATION: [char; 2] = ['.', '!'];
 const MESSAGE_POINTERS: [&str; 3] = ["/error/message", "/error", "/message"];
 const TENANT_BODY_LIMIT: usize = 64 * 1024;
 
@@ -80,17 +85,57 @@ impl Reporter {
     }
 }
 
-/// `text` with every echo of `key` concealed, or `text` untouched when the
-/// trimmed `key` is shorter than [`MINIMUM_CONCEALED_KEY_LENGTH`] characters.
+/// `text` with every echo of `key` concealed.
 ///
-/// A key that short is a placeholder, such as `x` or `token`, not a secret,
-/// and concealing it would garble the words around it: `len` would turn
-/// "the input length" into "the input [REDACTED]gth".
+/// A trimmed `key` of at least [`MINIMUM_CONCEALED_KEY_LENGTH`] characters is
+/// concealed by [`conceal`], wherever it appears, whole or masked. A shorter
+/// one, such as `sk-1234` or `hunter2`, is concealed only where it stands as
+/// a whole token, so that a placeholder such as `len` or `token` cannot
+/// garble "the input length" or "too many tokens". A blank `key` leaves
+/// `text` untouched.
 pub(crate) fn conceal_key(text: &str, key: &str) -> String {
-    if key.trim().chars().count() < MINIMUM_CONCEALED_KEY_LENGTH {
+    let key = key.trim();
+    if key.is_empty() {
         return text.to_string();
     }
+    if key.chars().count() < MINIMUM_CONCEALED_KEY_LENGTH {
+        return conceal_tokens(text, key);
+    }
     conceal(text, key)
+}
+
+/// `text` with every token that is `key` replaced by [`REDACTED`], and every
+/// separator around it kept as it was.
+fn conceal_tokens(text: &str, key: &str) -> String {
+    let mut concealed = String::with_capacity(text.len());
+    for piece in text.split_inclusive(separates) {
+        let token = piece.strip_suffix(separates).unwrap_or(piece);
+        match echoed(token, key) {
+            Some(punctuation) => {
+                concealed.push_str(REDACTED);
+                concealed.push_str(punctuation);
+            }
+            None => concealed.push_str(token),
+        }
+        concealed.push_str(&piece[token.len()..]);
+    }
+    concealed
+}
+
+/// The [`TERMINAL_PUNCTUATION`] that follows `key` in `token`, empty when
+/// `token` is `key` itself, or `None` when `token` is not an echo of `key`.
+fn echoed<'a>(token: &'a str, key: &str) -> Option<&'a str> {
+    if token == key {
+        return Some("");
+    }
+    token
+        .strip_suffix(TERMINAL_PUNCTUATION)
+        .filter(|stripped| *stripped == key)
+        .map(|stripped| &token[stripped.len()..])
+}
+
+fn separates(character: char) -> bool {
+    character.is_whitespace() || TOKEN_SEPARATORS.contains(&character)
 }
 
 /// At most `limit` bytes of `body`, read chunk by chunk and no further, as
@@ -170,15 +215,62 @@ mod tests {
 
     const CONTEXT_LENGTH: &str = "the input length exceeds the context length";
     const KEY: &str = concat!("sk-", "proxy-master-0123456789");
+    const SHORT_KEY: &str = concat!("sk-", "1234");
+    const LITELLM_REJECTED_KEY: &str = "Authentication Error, Invalid proxy server token passed. Received API Key = sk-1234, Key Hash (Token) =9f86d081884c7d65";
 
     #[test]
-    fn a_short_key_never_mangles_a_message() {
+    fn a_short_key_never_mangles_the_words_around_it() {
         for key in ["x", "token", "len", "  len  "] {
             let reporter = Reporter::new(Trust::Operator, SecretValue::new(key));
 
             let reported = reporter.streamed(&json!({ "message": CONTEXT_LENGTH }));
 
             assert_eq!(reported, CONTEXT_LENGTH, "{key:?} mangled the message");
+        }
+    }
+
+    #[test]
+    fn a_short_key_echoed_whole_is_concealed() {
+        for trust in [Trust::Operator, Trust::Tenant] {
+            let reporter = Reporter::new(trust, SecretValue::new(SHORT_KEY));
+
+            let reported = reporter.streamed(&json!({ "message": LITELLM_REJECTED_KEY }));
+
+            assert_eq!(
+                reported,
+                LITELLM_REJECTED_KEY.replace(SHORT_KEY, REDACTED),
+                "{trust:?}"
+            );
+            assert!(!reported.contains(SHORT_KEY), "{trust:?}: {reported}");
+        }
+
+        let reporter = Reporter::new(Trust::Operator, SecretValue::new("hunter2"));
+
+        let reported = reporter.streamed(&json!({ "message": "the password was hunter2." }));
+
+        assert_eq!(reported, format!("the password was {REDACTED}."));
+    }
+
+    #[test]
+    fn a_short_key_is_concealed_between_any_separators() {
+        let echoed = "key=\"sk-1234\"; (sk-1234) `sk-1234`!\tsk-1234! [sk-1234]:sk-1234\\n";
+
+        let concealed = conceal_key(echoed, &format!("  {SHORT_KEY}  "));
+
+        assert_eq!(concealed, echoed.replace(SHORT_KEY, REDACTED));
+    }
+
+    #[test]
+    fn a_short_key_inside_a_longer_token_is_left_alone() {
+        let text = "sk-12345 xsk-1234 sk-1234.5 sk-1234?";
+
+        assert_eq!(conceal_key(text, SHORT_KEY), text);
+    }
+
+    #[test]
+    fn a_blank_key_leaves_the_text_untouched() {
+        for key in ["", "   "] {
+            assert_eq!(conceal_key(LITELLM_REJECTED_KEY, key), LITELLM_REJECTED_KEY);
         }
     }
 

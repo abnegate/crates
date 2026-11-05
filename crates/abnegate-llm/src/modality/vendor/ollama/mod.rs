@@ -52,12 +52,12 @@ const NANOSECONDS_PER_MILLISECOND: u32 = 1_000_000;
 /// long deadline.
 ///
 /// A refusal is a [`ProviderError::Api`] holding Ollama's status and its
-/// body, with the configured key and any other credential scrubbed out, so a caller can tell a rejected key, a throttled request
-/// or an input past the model's context length apart. The vector is passed
-/// on at whatever width Ollama returns; compare its length with
-/// [`EmbeddingProvider::dimensions`] where the width matters. An empty
-/// vector, which Ollama sends for a model that cannot embed, is refused as
-/// [`ProviderError::Parse`].
+/// body, with the configured key and any other credential scrubbed out, so a
+/// caller can tell a rejected key, a throttled request or an input past the
+/// model's context length apart. The vector is passed on at whatever width
+/// Ollama returns; compare its length with [`EmbeddingProvider::dimensions`]
+/// where the width matters. An empty vector, which Ollama sends for a model
+/// that cannot embed, is refused as [`ProviderError::Parse`].
 #[derive(Debug, Clone)]
 pub struct OllamaEmbeddingProvider {
     url: Url,

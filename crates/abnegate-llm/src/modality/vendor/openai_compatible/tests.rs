@@ -401,6 +401,27 @@ async fn a_key_echoed_in_a_refusal_is_redacted() {
     }
 }
 
+#[tokio::test]
+async fn a_short_key_echoed_in_a_refusal_is_redacted() {
+    let key = concat!("sk-", "1234");
+    let body = format!(
+        r#"{{"error":{{"message":"Authentication Error, Invalid proxy server token passed. Received API Key = {key}, Key Hash (Token) =9f86d081884c7d65","type":"auth_error","param":"None","code":"401"}}}}"#
+    );
+
+    let error = refusal_with_key(401, &body, key).await;
+    let rendered = error.to_string();
+
+    assert!(
+        matches!(error, ProviderError::Api { status: 401, .. }),
+        "{error:?}"
+    );
+    assert!(!rendered.contains(key), "{rendered}");
+    assert!(
+        rendered.contains(&format!("Received API Key = {REDACTED}, Key Hash")),
+        "{rendered}"
+    );
+}
+
 #[test]
 fn a_base_url_that_is_not_http_is_refused() {
     for base_url in ["ftp://example.com/v1", "not a url"] {
