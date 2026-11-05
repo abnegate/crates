@@ -19,6 +19,10 @@ const ROUND: Duration = Duration::from_millis(1);
 #[cfg(not(target_os = "linux"))]
 const BUDGET: Duration = Duration::from_secs(10);
 
+/// The name of the thread that repeats a kill after the group is dropped.
+#[cfg(not(target_os = "linux"))]
+const PURSUIT: &str = "abnegate-vcs-group-kill";
+
 /// The process group a git command and every helper it starts run in, killed
 /// when the command is abandoned -- timed out, or its future dropped -- and
 /// left alone once it has been waited for, since its identifier is then free
@@ -31,11 +35,26 @@ const BUDGET: Duration = Duration::from_secs(10);
 pub(crate) struct Group {
     id: Pid,
     armed: bool,
+    kill: fn(Pid) -> nix::Result<()>,
 }
 
 impl Group {
     pub(crate) fn new(id: Pid) -> Self {
-        Self { id, armed: true }
+        Self {
+            id,
+            armed: true,
+            kill: terminate,
+        }
+    }
+
+    /// A group torn down by `kill` in place of SIGKILL.
+    #[cfg(test)]
+    fn killed_by(id: Pid, kill: fn(Pid) -> nix::Result<()>) -> Self {
+        Self {
+            id,
+            armed: true,
+            kill,
+        }
     }
 
     /// The command was waited for, so nothing is left to tear down.
@@ -43,26 +62,48 @@ impl Group {
         self.armed = false;
     }
 
-    /// Repeat SIGKILL until it finds no live member -- `ESRCH` once the group
-    /// is empty, `EPERM` once only its unreaped zombies are left -- or the
-    /// budget runs out. Outside Linux a group signal reaches only the members
-    /// present when it lands, so a child a member was forking at that instant
-    /// would survive a single kill.
+    /// Repeat the kill on a thread of its own, so a drop returns at once
+    /// however long the group goes on answering. Where no thread can be
+    /// started the kill is repeated here instead, since a member the first
+    /// kill missed would otherwise outlive the group.
     #[cfg(not(target_os = "linux"))]
-    fn kill_until_gone(&self) {
-        let deadline = Instant::now() + BUDGET;
-        while Instant::now() < deadline {
-            std::thread::sleep(ROUND);
-            if killpg(self.id, Signal::SIGKILL).is_err() {
-                return;
-            }
+    fn pursue(&self) {
+        let (id, kill) = (self.id, self.kill);
+        let pursuit = move || kill_until_gone(id, kill);
+        if let Err(error) = std::thread::Builder::new()
+            .name(PURSUIT.to_string())
+            .spawn(pursuit)
+        {
+            tracing::warn!(%error, group = id.as_raw(), "Could not start the Git process group's kill thread");
+            pursuit();
         }
     }
 
     /// Linux restarts a fork that a group signal interrupts, so its child is
     /// never left out of a kill.
     #[cfg(target_os = "linux")]
-    fn kill_until_gone(&self) {}
+    fn pursue(&self) {}
+}
+
+/// SIGKILL to every live member of the group `id`.
+fn terminate(id: Pid) -> nix::Result<()> {
+    killpg(id, Signal::SIGKILL)
+}
+
+/// Repeat `kill` until it finds no live member -- `ESRCH` once the group is
+/// empty, `EPERM` once only its unreaped zombies are left -- or the budget
+/// runs out. Outside Linux a group signal reaches only the members present
+/// when it lands, so a child a member was forking at that instant would
+/// survive a single kill.
+#[cfg(not(target_os = "linux"))]
+fn kill_until_gone(id: Pid, kill: fn(Pid) -> nix::Result<()>) {
+    let deadline = Instant::now() + BUDGET;
+    while Instant::now() < deadline {
+        std::thread::sleep(ROUND);
+        if kill(id).is_err() {
+            return;
+        }
+    }
 }
 
 impl Drop for Group {
@@ -70,8 +111,8 @@ impl Drop for Group {
         if !self.armed {
             return;
         }
-        match killpg(self.id, Signal::SIGKILL) {
-            Ok(()) => self.kill_until_gone(),
+        match (self.kill)(self.id) {
+            Ok(()) => self.pursue(),
             Err(Errno::ESRCH) => {}
             Err(error) => {
                 tracing::warn!(%error, group = self.id.as_raw(), "Could not terminate Git process group");
@@ -85,6 +126,8 @@ mod tests {
     use std::os::unix::process::CommandExt;
     use std::process::Command;
     use std::process::Stdio;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -96,6 +139,18 @@ mod tests {
 
     /// How long the test waits for the group to start or to go.
     const PATIENCE: Duration = Duration::from_secs(60);
+
+    /// How long a drop may take, a tenth of the budget the kill repeats for.
+    const PROMPT: Duration = Duration::from_secs(1);
+
+    /// How many kills [`answering`] has answered.
+    static ANSWERED: AtomicUsize = AtomicUsize::new(0);
+
+    /// A kill answered as a group with a member that cannot die answers it.
+    fn answering(_group: Pid) -> nix::Result<()> {
+        ANSWERED.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 
     /// The members of `group` still running; a zombie runs nothing.
     fn running(group: i32) -> Vec<i32> {
@@ -153,5 +208,24 @@ mod tests {
             let _ = kill(Pid::from_raw(*pid), Signal::SIGKILL);
         }
         assert!(gone, "the group's kill missed {survivors:?}");
+    }
+
+    /// A drop runs where a command was abandoned, often on an async worker,
+    /// so it sends the first kill and leaves the repeats to a thread of their
+    /// own rather than waiting out a group that goes on answering.
+    #[test]
+    fn dropping_a_group_that_still_answers_returns_at_once() {
+        let started = Instant::now();
+        drop(Group::killed_by(Pid::from_raw(i32::MAX), answering));
+        let took = started.elapsed();
+        let answered = ANSWERED.load(Ordering::SeqCst);
+
+        assert!(took < PROMPT, "the drop took {took:?}");
+        assert!(answered > 0, "the drop sent no kill");
+        #[cfg(not(target_os = "linux"))]
+        assert!(
+            eventually(|| ANSWERED.load(Ordering::SeqCst) > answered),
+            "the kill stopped repeating when the drop returned"
+        );
     }
 }
