@@ -65,6 +65,9 @@ const CHECKED: &[(&str, &str)] = &[
     ("", "glpat-abcdefghijklmno."),
     ("", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1 "),
     ("", "\"k\":1,"),
+    ("", "\u{17F}k-a1 "),
+    ("", "token:refresh "),
+    ("", "token:refresh-every-session "),
 ];
 
 /// Inputs that make [`sanitize`] rescan if it can.

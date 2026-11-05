@@ -1,23 +1,29 @@
-use std::borrow::Cow;
-
 use crate::redact::MINIMUM_ENCODED_LENGTH;
+use crate::redact::carries_shaped_secret;
 use crate::redact::character_set::CharacterSet;
 use crate::redact::credential::AWS_ACCESS_KEY;
 use crate::redact::credential::CREDENTIALS;
 use crate::redact::is_high_entropy;
-use crate::redact::redact;
 use crate::work;
+
+/// `ſ`, which Unicode case folding equates with `s`.
+const LONG_S: &[u8] = "\u{17F}".as_bytes();
+/// The Kelvin sign, which Unicode case folding equates with `k`.
+const KELVIN: &[u8] = "\u{212A}".as_bytes();
 
 /// Whether `value` carries a credential anywhere in it.
 ///
 /// Meant for a value that should be a plain name, such as a script, a tool or
 /// a search term, and that is refused rather than echoed into a citation or a
-/// log when it looks like a credential. It is true wherever [`redact`] would
-/// remove something, and errs toward true beyond that: a credential prefix
-/// with enough after it counts even when what follows reads as words, and so
-/// does any run of 32 or more base64 or URL-safe characters that mixes letters
-/// with digits at high entropy, a commit hash included, whether or not an
-/// assignment names it.
+/// log when it looks like a credential. It is true wherever
+/// [`redact`](crate::redact) would remove something, but for a value assigned
+/// to a key word that carries no digit and is shorter than 16 bytes or reads
+/// as words, as the `refresh` of a script named `token:refresh` does. It errs toward true
+/// beyond that: a credential prefix with enough after it counts even when
+/// what follows reads as words, or when it is spelt with `ſ` for `s` or the
+/// Kelvin sign for `k`, and so does any run of 32 or more base64 or URL-safe
+/// characters that mixes letters with digits at high entropy, a commit hash
+/// included, whether or not an assignment names it.
 ///
 /// Time is linear in the length of `value`.
 ///
@@ -28,7 +34,10 @@ use crate::work;
 /// assert!(!contains_credential("cargo-test-all"));
 /// ```
 pub fn contains_credential(value: &str) -> bool {
-    issued_or_high_entropy(value.as_bytes()) || matches!(redact(value), Cow::Owned(_))
+    let bytes = value.as_bytes();
+    issued_or_high_entropy(bytes)
+        || (has_folding(bytes) && issued(&folded(bytes)))
+        || carries_shaped_secret(value)
 }
 
 fn issued_or_high_entropy(bytes: &[u8]) -> bool {
@@ -36,6 +45,47 @@ fn issued_or_high_entropy(bytes: &[u8]) -> bool {
         issued_at(bytes, index) || high_entropy_at(bytes, index)
     })
     .is_some()
+}
+
+fn issued(bytes: &[u8]) -> bool {
+    work::find(bytes, 0, |index| issued_at(bytes, index)).is_some()
+}
+
+fn has_folding(bytes: &[u8]) -> bool {
+    work::find(bytes, 0, |index| {
+        bytes[index..].starts_with(LONG_S) || bytes[index..].starts_with(KELVIN)
+    })
+    .is_some()
+}
+
+/// `bytes` with each [`LONG_S`] and [`KELVIN`] folded to the ASCII letter it
+/// equates with.
+fn folded(bytes: &[u8]) -> Vec<u8> {
+    let mut folded = Vec::new();
+    work::each_index(bytes, |index| {
+        if let Some(byte) = folded_at(bytes, index) {
+            folded.push(byte);
+        }
+    });
+    folded
+}
+
+/// What the byte at `index` folds to: itself, the letter that a folding
+/// character it ends equates with, or nothing when it starts one.
+fn folded_at(bytes: &[u8], index: usize) -> Option<u8> {
+    let through = |end: usize| bytes.get(..end).unwrap_or(&[]);
+    if through(index + 1).ends_with(LONG_S) {
+        Some(b's')
+    } else if through(index + 1).ends_with(KELVIN) {
+        Some(b'k')
+    } else if through(index + 2).ends_with(LONG_S)
+        || through(index + 2).ends_with(KELVIN)
+        || through(index + 3).ends_with(KELVIN)
+    {
+        None
+    } else {
+        Some(bytes[index])
+    }
 }
 
 fn issued_at(bytes: &[u8], index: usize) -> bool {
@@ -207,6 +257,61 @@ mod tests {
     }
 
     #[test]
+    fn a_name_namespaced_by_a_key_word_is_not_a_credential() {
+        for value in [
+            "token:refresh",
+            "token:generate",
+            "tokens:revoke",
+            "secrets:rotate",
+            "access_token:refresh",
+            "api_key:rotate",
+            "signature:verify",
+            "token:refresh-every-session",
+            "Remember to rotate the secret: weekly",
+        ] {
+            assert!(!contains_credential(value), "{value}");
+            assert_ne!(crate::redact(value), value, "redaction still takes it out");
+        }
+    }
+
+    #[test]
+    fn a_value_a_key_word_names_counts_when_shaped_like_a_credential() {
+        for value in [
+            "token:refresh2",
+            "password:P4ssword",
+            "secret: a1b2c3d4",
+            "token:Xq7Lm/Zp+Rt",
+        ] {
+            assert!(contains_credential(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_prefix_spelt_with_a_folding_character_counts() {
+        for value in [
+            concat!("\u{17F}k-", "a1b2c3d4"),
+            concat!("s\u{212A}-", "a1b2c3d4"),
+            concat!("A\u{212A}IA", "a1b2c3d4"),
+            concat!("xoxa-", "Zk\u{17F}q8Lr2Vx7"),
+            concat!("ghp_", "a1b\u{212A}2c3d"),
+            concat!("Remember my key is \u{17F}k-", "proj1234abcd"),
+        ] {
+            assert!(contains_credential(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn other_characters_outside_ascii_do_not_lengthen_a_body() {
+        for value in [
+            "npm_install\u{2014}fast",
+            "npm_install\u{142}",
+            "\u{17F}tra\u{DF}e",
+        ] {
+            assert!(!contains_credential(value), "{value}");
+        }
+    }
+
+    #[test]
     fn reading_a_value_whole_is_linear_in_its_length() {
         for unit in [
             "ghp_a ",
@@ -221,6 +326,30 @@ mod tests {
                 |repetitions| unit.repeat(repetitions),
                 |value| {
                     assert!(!issued_or_high_entropy(value.as_bytes()), "{value}");
+                },
+            );
+        }
+        for unit in ["\u{17F}k-a1 ", "x\u{212A}\u{17F}", "\u{17F}"] {
+            work::assert_linear(
+                LENGTH / unit.len(),
+                |repetitions| unit.repeat(repetitions),
+                |value| {
+                    let bytes = value.as_bytes();
+                    assert!(!(has_folding(bytes) && issued(&folded(bytes))), "{value}");
+                },
+            );
+        }
+        for unit in [
+            "token:refresh ",
+            "secret:abcdefghijklmno ",
+            "token:refresh-every-session ",
+            "token=\"refresh\" ",
+        ] {
+            work::assert_linear(
+                LENGTH / unit.len(),
+                |repetitions| unit.repeat(repetitions),
+                |value| {
+                    assert!(!carries_shaped_secret(value), "{value}");
                 },
             );
         }
