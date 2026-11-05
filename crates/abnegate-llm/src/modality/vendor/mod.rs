@@ -3,7 +3,7 @@
 #[cfg(feature = "anthropic")]
 #[cfg_attr(docsrs, doc(cfg(feature = "anthropic")))]
 pub mod anthropic;
-#[cfg(feature = "ollama")]
+#[cfg(any(feature = "ollama", feature = "openai-compatible"))]
 mod endpoint;
 #[cfg(feature = "fastembed")]
 #[cfg_attr(docsrs, doc(cfg(feature = "fastembed")))]
@@ -19,11 +19,15 @@ pub mod ollama;
 #[cfg(feature = "openai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
 pub mod openai;
+#[cfg(feature = "openai-compatible")]
+#[cfg_attr(docsrs, doc(cfg(feature = "openai-compatible")))]
+pub mod openai_compatible;
 #[cfg(any(
     feature = "anthropic",
     feature = "google",
     feature = "ollama",
-    feature = "openai"
+    feature = "openai",
+    feature = "openai-compatible"
 ))]
 mod transport;
 
@@ -45,3 +49,7 @@ pub use crate::modality::vendor::ollama::OllamaEmbeddingConfig;
 pub use crate::modality::vendor::ollama::OllamaEmbeddingProvider;
 #[cfg(feature = "openai")]
 pub use crate::modality::vendor::openai::OpenAiProvider;
+#[cfg(feature = "openai-compatible")]
+pub use crate::modality::vendor::openai_compatible::OpenAiCompatibleEmbeddingConfig;
+#[cfg(feature = "openai-compatible")]
+pub use crate::modality::vendor::openai_compatible::OpenAiCompatibleEmbeddingProvider;

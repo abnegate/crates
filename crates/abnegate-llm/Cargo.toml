@@ -31,6 +31,7 @@ fastembed = ["dep:fastembed"]
 google = []
 ollama = []
 openai = ["dep:base64", "reqwest/multipart", "tokio/fs"]
+openai-compatible = []
 testing = []
 
 [dependencies]

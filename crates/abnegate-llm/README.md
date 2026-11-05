@@ -17,6 +17,7 @@ locally, and `catalog` browses the model catalogues those choices are made from.
 - `anthropic`: the Anthropic messages client behind `TextProvider`.
 - `google`: the Gemini client behind `TextProvider`.
 - `openai`: the OpenAI client behind the text, image, embedding and transcription traits.
+- `openai-compatible`: `OpenAiCompatibleEmbeddingProvider`, any OpenAI-compatible embeddings endpoint (LiteLLM, vLLM, Ollama's `/v1`, a gateway) behind `EmbeddingProvider`.
 - `fastembed`: local ONNX embeddings behind `EmbeddingProvider`.
 - `ollama`: an Ollama server's native `/api/embeddings` API behind `EmbeddingProvider`.
 - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter catalogues through one `catalog::ModelProvider` trait.

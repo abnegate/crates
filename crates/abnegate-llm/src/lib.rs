@@ -58,6 +58,9 @@
 //! - `google`: the Gemini client behind [`TextProvider`].
 //! - `openai`: the OpenAI client behind the text, image, embedding and
 //!   transcription traits.
+//! - `openai-compatible`: `OpenAiCompatibleEmbeddingProvider`, any
+//!   OpenAI-compatible embeddings endpoint (LiteLLM, vLLM, Ollama's `/v1`, a
+//!   gateway) behind [`EmbeddingProvider`].
 //! - `fastembed`: local ONNX embeddings behind [`EmbeddingProvider`].
 //! - `ollama`: an Ollama server's native `/api/embeddings` API behind
 //!   [`EmbeddingProvider`].
