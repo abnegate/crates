@@ -120,7 +120,15 @@ mod tests {
         }
         let directory = tempfile::TempDir::new().unwrap();
         let planted = directory.path().join("sysctl");
-        std::fs::write(&planted, format!("#!/bin/sh\necho {PLANTED}\n")).unwrap();
+        let marker = directory.path().join("ran");
+        std::fs::write(
+            &planted,
+            format!(
+                "#!/bin/sh\necho ran > '{}'\necho {PLANTED}\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
@@ -136,5 +144,6 @@ mod tests {
             "{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(!marker.exists(), "the sysctl on PATH ran");
     }
 }
