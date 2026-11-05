@@ -17,8 +17,13 @@ const KELVIN: &[u8] = "\u{212A}".as_bytes();
 /// a search term, and that is refused rather than echoed into a citation or a
 /// log when it looks like a credential. It is true wherever
 /// [`redact`](crate::redact) would remove something, but for a value assigned
-/// to a key word that carries no digit and is shorter than 16 bytes or reads
-/// as words, as the `refresh` of a script named `token:refresh` does.
+/// to a key word that reads as a name: one that carries no digit and is
+/// shorter than 16 bytes or reads as words, as the `refresh` of a script named
+/// `token:refresh` does, or one that carries a letter and whose every hyphen-
+/// or underscore-separated part is a word, a number, or a word and a number
+/// side by side, as the `sync-s3` of `secrets:sync-s3` does. So
+/// `password=hunter2` reads as a name, while `password=P4ssword` and
+/// `token:12345678` count.
 ///
 /// It errs toward true beyond that. A widely issued prefix, such as `ghp_`,
 /// `sk-` or `AKIA`, with enough after it counts even when what follows reads
@@ -36,6 +41,8 @@ const KELVIN: &[u8] = "\u{212A}".as_bytes();
 ///
 /// assert!(contains_credential(concat!("ghp_", "0123456789abcdefghij")));
 /// assert!(!contains_credential("cargo-test-all"));
+/// assert!(!contains_credential("signature:sha256"));
+/// assert!(contains_credential("password:P4ssword"));
 /// ```
 pub fn contains_credential(value: &str) -> bool {
     let bytes = value.as_bytes();
@@ -304,11 +311,15 @@ mod tests {
             "access_token:refresh-oauth2",
             "secret_scanning:enable-2fa",
             "token:generate-v2",
+            "signature:hmac-sha256-v2",
             "token:refresh2",
             "password:Summer2024",
+            "password:SUMMER2024",
+            "password:2024Summer",
             "login failed: password=hunter2",
         ] {
             assert!(!contains_credential(value), "{value}");
+            assert_ne!(crate::redact(value), value, "redaction still takes it out");
         }
     }
 
@@ -316,7 +327,11 @@ mod tests {
     fn a_value_a_key_word_names_counts_when_shaped_like_a_credential() {
         for value in [
             "token:12345678",
+            "token:1234-5678",
             "password:s3cr3t-key",
+            "password:SuMmEr2024",
+            "password:SuMmEr-2024",
+            "password:2024sUmmer",
             "password:P4ssword",
             "secret: a1b2c3d4",
             "token:Xq7Lm/Zp+Rt",
@@ -384,6 +399,7 @@ mod tests {
             "secret:abcdefghijklmno ",
             "token:refresh-every-session ",
             "token=\"refresh\" ",
+            "secrets:sync-s3 ",
         ] {
             work::assert_linear(
                 LENGTH / unit.len(),
@@ -393,5 +409,13 @@ mod tests {
                 },
             );
         }
+        let unit = "s3-";
+        work::assert_linear(
+            LENGTH / unit.len(),
+            |repetitions| format!("token:{}", unit.repeat(repetitions)),
+            |value| {
+                assert!(!carries_shaped_secret(value), "{value}");
+            },
+        );
     }
 }

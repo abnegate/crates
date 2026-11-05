@@ -175,7 +175,7 @@ fn spans(text: &str, naming: Naming) -> Vec<(usize, usize)> {
 }
 
 /// Whether [`redact`] would remove something from `text` but a value assigned
-/// to a key word that is not [shaped like a secret](is_secret_shaped).
+/// to a key word that [`Naming::Shaped`] does not [admit](admits).
 fn carries_shaped_secret(text: &str) -> bool {
     !spans(text, Naming::Shaped).is_empty()
 }
@@ -1470,21 +1470,7 @@ mod tests {
                             || word.iter().all(u8::is_ascii_uppercase))
                 })
         };
-        let alphabet = b"aZ-_1";
-        let mut candidates = vec![Vec::new()];
-        for length in 1..=6 {
-            let longer: Vec<Vec<u8>> = candidates
-                .iter()
-                .filter(|candidate| candidate.len() == length - 1)
-                .flat_map(|candidate| {
-                    alphabet
-                        .iter()
-                        .map(move |byte| [candidate.as_slice(), &[*byte]].concat())
-                })
-                .collect();
-            candidates.extend(longer);
-        }
-        for candidate in candidates {
+        for candidate in strings_of(b"aZ-_1", 6) {
             assert_eq!(
                 reads_as_words(&candidate),
                 split(&candidate),
@@ -1492,6 +1478,63 @@ mod tests {
                 String::from_utf8_lossy(&candidate)
             );
         }
+    }
+
+    /// Every string of up to seven bytes drawn from a letter of each case, a
+    /// digit, the separators and a byte that is none of those reads as words
+    /// and numbers exactly when it carries a letter and splitting it at its
+    /// separators leaves nothing but words, numbers, and a word and a number
+    /// side by side.
+    #[test]
+    fn reads_as_words_and_numbers_agrees_with_splitting_into_parts() {
+        let reads_as_part = |part: &[u8]| {
+            let switches = part
+                .windows(2)
+                .filter(|pair| pair[0].is_ascii_digit() != pair[1].is_ascii_digit())
+                .count();
+            let letters: Vec<u8> = part
+                .iter()
+                .copied()
+                .filter(u8::is_ascii_alphabetic)
+                .collect();
+            let tail = letters.get(1..).unwrap_or_default();
+            part.iter().all(u8::is_ascii_alphanumeric)
+                && switches <= 1
+                && (tail.iter().all(u8::is_ascii_lowercase)
+                    || letters.iter().all(u8::is_ascii_uppercase))
+        };
+        let split = |candidate: &[u8]| {
+            candidate.iter().any(u8::is_ascii_alphabetic)
+                && candidate
+                    .split(|byte| matches!(byte, b'-' | b'_'))
+                    .all(reads_as_part)
+        };
+        for candidate in strings_of(b"aZ1-_.", 7) {
+            assert_eq!(
+                reads_as_words_and_numbers(&candidate),
+                split(&candidate),
+                "{:?}",
+                String::from_utf8_lossy(&candidate)
+            );
+        }
+    }
+
+    /// Every string of at most `longest` bytes drawn from `alphabet`.
+    fn strings_of(alphabet: &[u8], longest: usize) -> Vec<Vec<u8>> {
+        let mut strings = vec![Vec::new()];
+        for length in 1..=longest {
+            let longer: Vec<Vec<u8>> = strings
+                .iter()
+                .filter(|string| string.len() == length - 1)
+                .flat_map(|string| {
+                    alphabet
+                        .iter()
+                        .map(move |byte| [string.as_slice(), &[*byte]].concat())
+                })
+                .collect();
+            strings.extend(longer);
+        }
+        strings
     }
 
     #[test]

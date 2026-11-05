@@ -68,6 +68,8 @@ const CHECKED: &[(&str, &str)] = &[
     ("", "\u{17F}k-a1 "),
     ("", "token:refresh "),
     ("", "token:refresh-every-session "),
+    ("", "secrets:sync-s3 "),
+    ("token:", "s3-"),
 ];
 
 /// Inputs that make [`sanitize`] rescan if it can.
