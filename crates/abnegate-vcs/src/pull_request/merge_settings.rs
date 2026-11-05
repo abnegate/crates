@@ -6,8 +6,8 @@ use crate::pull_request::MergeMethod;
 pub struct MergeSettings {
     /// Whether a pull request may be set to merge once it is ready.
     pub auto_merge: bool,
-    /// The methods a pull request may merge with, in the order squash, merge,
-    /// rebase.
+    /// The methods a pull request may merge with, in the order given; as read
+    /// from GitHub, in the order squash, merge, rebase.
     pub methods: Vec<MergeMethod>,
 }
 

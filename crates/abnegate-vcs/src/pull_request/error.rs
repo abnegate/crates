@@ -57,9 +57,10 @@ pub enum PullRequestError {
     #[error("The repository does not allow auto-merge")]
     AutoMergeNotAllowed,
 
-    /// The repository does not allow the merge method asked for.
-    #[error("The repository does not allow this merge method")]
-    MergeMethodNotAllowed,
+    /// The repository does not allow the merge method asked for, for the
+    /// reason given.
+    #[error("The repository does not allow this merge method: {0}")]
+    MergeMethodNotAllowed(String),
 
     /// The pull request has nothing left to wait for, so GitHub will not set it
     /// to merge once it is ready: it can be merged now.

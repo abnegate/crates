@@ -6,6 +6,7 @@ use crate::pull_request::github_merge::GitHubMerge;
 use crate::pull_request::graphql_error::GraphQlError;
 use crate::pull_request::merge_request::MergeRequest;
 use crate::pull_request::service::graphql::FORBIDDEN;
+use crate::pull_request::service::graphql::MODIFIED;
 use crate::pull_request::service::graphql::NO_DATA;
 use crate::pull_request::service::graphql::NOT_FOUND;
 use crate::pull_request::service::graphql::RATE_LIMITED;
@@ -28,11 +29,6 @@ const OID: &str = "/mergePullRequest/pullRequest/mergeCommit/oid";
 /// What GitHub says of a pull request that no longer merges cleanly, which
 /// needs its conflict repaired rather than an administrator's override.
 const NOT_MERGEABLE: &str = "not mergeable";
-
-/// What GitHub says, through REST or GraphQL, of a merge refused because the
-/// head or the base branch changed while it was being made, which a fresh read
-/// retries.
-const MODIFIED: &str = "was modified";
 
 /// What a refused administrator merge adds to branch protection's reason.
 const ADMINISTRATOR_REFUSED: &str = "administrator merge refused";

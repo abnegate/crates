@@ -10,6 +10,7 @@ use crate::pull_request::graphql_error::GraphQlError;
 use crate::pull_request::graphql_merge_settings::GraphQlMergeSettings;
 use crate::pull_request::graphql_query::GraphQlQuery;
 use crate::pull_request::service::graphql::FORBIDDEN;
+use crate::pull_request::service::graphql::MODIFIED;
 use crate::pull_request::service::graphql::NO_DATA;
 use crate::pull_request::service::graphql::NOT_FOUND;
 use crate::pull_request::service::graphql::RATE_LIMITED;
@@ -75,11 +76,13 @@ const MERGE_METHOD: &str = "merge method";
 const NOT_ALLOWED: &str = "not allowed";
 
 /// The merge states GitHub names when a pull request has nothing left to wait
-/// for, as in "Pull request is in clean status".
-const MERGEABLE_NOW: &[&str] = &["clean status", "has_hooks status"];
+/// for, as in "Pull request is in clean status": it merges cleanly, with or
+/// without a pre-receive hook, and only checks that are not required have
+/// failed, if any.
+const MERGEABLE_NOW: &[&str] = &["clean status", "has_hooks status", "unstable status"];
 
 /// What GitHub says of a pull request whose merge state keeps auto-merge from
-/// being set, as in "Pull request is in unstable status".
+/// being set, as in "Pull request is in dirty status".
 const IN_STATUS: &str = "pull request is in";
 
 impl PullRequestService {
@@ -153,8 +156,11 @@ impl PullRequestService {
     /// pull request with nothing left to wait for, which can be merged now
     /// instead, is [`PullRequestError::AlreadyMergeable`], and one whose merge
     /// state otherwise keeps auto-merge from being set is
-    /// [`PullRequestError::NotMergeable`], with GitHub's reason. A token that
-    /// may not set it is [`PullRequestError::Forbidden`].
+    /// [`PullRequestError::NotMergeable`], with GitHub's reason; one GitHub
+    /// names as in unknown status has not had its merge state worked out yet,
+    /// and may be set once it has. A head that moved from the one `request`
+    /// insists on is [`PullRequestError::HeadMoved`]. A token that may not set
+    /// it is [`PullRequestError::Forbidden`].
     pub async fn enable_auto_merge(
         &self,
         node: &str,
@@ -285,9 +291,10 @@ fn enabled(request: GraphQlAutoMergeRequest) -> EnabledAutoMerge {
 /// What the errors GitHub refused to set auto-merge with mean: a spent rate
 /// limit is one; something missing or forbidden is that, whatever GitHub's
 /// words say; a repository that does not allow auto-merge, or the method
-/// asked for, says so; a pull request with nothing left to wait for can be
-/// merged now; one in any other merge state GitHub names is not mergeable as
-/// it stands; and anything else is read as every other GraphQL refusal is.
+/// asked for, says so; a head or base that GitHub says was modified moved; a
+/// pull request with nothing left to wait for can be merged now; one in any
+/// other merge state GitHub names is not mergeable as it stands; and anything
+/// else is read as every other GraphQL refusal is.
 fn auto_merge_refusal(errors: &[GraphQlError]) -> PullRequestError {
     if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
@@ -304,7 +311,10 @@ fn auto_merge_refusal(errors: &[GraphQlError]) -> PullRequestError {
         return PullRequestError::AutoMergeNotAllowed;
     }
     if any(&|message| message.contains(MERGE_METHOD) && message.contains(NOT_ALLOWED)) {
-        return PullRequestError::MergeMethodNotAllowed;
+        return PullRequestError::MergeMethodNotAllowed(messages(errors));
+    }
+    if any(&|message| message.contains(MODIFIED)) {
+        return PullRequestError::HeadMoved;
     }
     if any(&|message| MERGEABLE_NOW.iter().any(|state| message.contains(state))) {
         return PullRequestError::AlreadyMergeable;
@@ -627,7 +637,7 @@ mod tests {
                 refused(json!([{
                     "message": "Merge method merge commits are not allowed on this repository",
                 }])),
-                "MergeMethodNotAllowed",
+                r#"MergeMethodNotAllowed("Merge method merge commits are not allowed on this repository")"#,
             ),
             (
                 refused(json!([{ "message": "Pull request Pull request is in clean status" }])),
@@ -639,7 +649,21 @@ mod tests {
             ),
             (
                 refused(json!([{ "message": "Pull request Pull request is in unstable status" }])),
-                r#"NotMergeable("Pull request Pull request is in unstable status")"#,
+                "AlreadyMergeable",
+            ),
+            (
+                refused(json!([{ "message": "Pull request Pull request is in dirty status" }])),
+                r#"NotMergeable("Pull request Pull request is in dirty status")"#,
+            ),
+            (
+                refused(json!([{ "message": "Pull request Pull request is in unknown status" }])),
+                r#"NotMergeable("Pull request Pull request is in unknown status")"#,
+            ),
+            (
+                refused(json!([{
+                    "message": "Head branch was modified. Review and try the merge again.",
+                }])),
+                "HeadMoved",
             ),
             (
                 refused(json!([{
@@ -780,7 +804,7 @@ mod tests {
         for (kind, expected) in [("FORBIDDEN", "Forbidden"), ("NOT_FOUND", "NotFound")] {
             for message in [
                 "Pull request Pull request is in clean status",
-                "Pull request Pull request is in unstable status",
+                "Pull request Pull request is in dirty status",
             ] {
                 let server =
                     answering(refused(json!([{ "type": kind, "message": message }]))).await;
