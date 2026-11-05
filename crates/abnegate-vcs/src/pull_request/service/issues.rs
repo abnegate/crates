@@ -160,6 +160,7 @@ impl PullRequestService {
 mod tests {
     use super::*;
     use crate::pull_request::Label;
+    use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
@@ -244,6 +245,38 @@ mod tests {
 
     fn unreadable(failure: &PullRequestError) -> bool {
         matches!(failure, PullRequestError::GitHubApi(text) if text == UNREADABLE)
+    }
+
+    /// `whole` with each thing GitHub always sends on an issue left out or
+    /// spoiled in turn, and an answer that is no issue at all.
+    fn damaged(whole: &Value) -> Vec<Value> {
+        let mut broken: Vec<Value> = REQUIRED
+            .iter()
+            .map(|required| {
+                let mut row = whole.clone();
+                row.as_object_mut().unwrap().remove(*required);
+                row
+            })
+            .collect();
+        let mut unnumbered = whole.clone();
+        unnumbered["number"] = json!(0);
+        let mut unlabelled = whole.clone();
+        unlabelled["labels"] = json!([{ "color": SENTINEL }]);
+        let mut untitled = whole.clone();
+        untitled["title"] = Value::Null;
+        broken.extend([unnumbered, unlabelled, untitled, json!(SENTINEL)]);
+        broken
+    }
+
+    /// A comment on issue 5 as GitHub sends it, numbered `id`.
+    fn remark(id: u64) -> Value {
+        json!({
+            "id": id,
+            "user": { "login": "reviewer" },
+            "body": format!("Comment {id}"),
+            "html_url": format!("https://github.com/acme/project/issues/5#issuecomment-{id}"),
+            "created_at": CREATED,
+        })
     }
 
     #[tokio::test]
@@ -390,24 +423,7 @@ mod tests {
     async fn an_issue_row_missing_what_github_always_sends_fails_the_page() {
         let server = MockServer::start().await;
         let service = stand_in(&server).await;
-        let whole = described(&opened(&service, 3).with_body(SENTINEL));
-        let mut broken: Vec<Value> = REQUIRED
-            .iter()
-            .map(|required| {
-                let mut row = whole.clone();
-                row.as_object_mut().unwrap().remove(*required);
-                row
-            })
-            .collect();
-        let mut unnumbered = whole.clone();
-        unnumbered["number"] = json!(0);
-        let mut unlabelled = whole.clone();
-        unlabelled["labels"] = json!([{ "color": SENTINEL }]);
-        let mut untitled = whole;
-        untitled["title"] = Value::Null;
-        broken.extend([unnumbered, unlabelled, untitled, json!(SENTINEL)]);
-
-        for row in broken {
+        for row in damaged(&described(&opened(&service, 3).with_body(SENTINEL))) {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/repos/acme/project/issues"))
@@ -719,5 +735,217 @@ mod tests {
             "{failure:?}"
         );
         assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn an_issue_missing_what_github_always_sends_is_unreadable() {
+        let server = MockServer::start().await;
+        let service = stand_in(&server).await;
+
+        for answer in damaged(&described(&opened(&service, 5).with_body(SENTINEL))) {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/acme/project/issues/5"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&answer))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .fetch_issue(&numbered(&service, 5), &token())
+                .await
+                .unwrap_err();
+
+            assert!(unreadable(&failure), "{answer}: {failure:?}");
+            assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_issue_github_cannot_find_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/issues/5"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "message": "Not Found",
+                "documentation_url": SENTINEL,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .fetch_issue(&numbered(&service, 5), &token())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::NotFound), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn a_comment_github_describes_in_part_fails_the_page() {
+        let whole = remark(2);
+        let mut broken: Vec<Value> = ["id", "html_url", "created_at"]
+            .iter()
+            .map(|required| {
+                let mut row = whole.clone();
+                row.as_object_mut().unwrap().remove(*required);
+                row
+            })
+            .collect();
+        for (field, spoiled) in [
+            ("id", Value::Null),
+            ("id", json!(-1)),
+            ("id", json!(SENTINEL)),
+            ("html_url", Value::Null),
+            ("created_at", Value::Null),
+        ] {
+            let mut row = whole.clone();
+            row[field] = spoiled;
+            broken.push(row);
+        }
+        broken.push(json!(SENTINEL));
+
+        for row in broken {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/acme/project/issues/5/comments"))
+                .and(query_is(&[("per_page", "2"), ("page", "1")]))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!([remark(1), row])))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .list_comments(&numbered(&service, 5), &token(), first(), rows(2))
+                .await
+                .unwrap_err();
+
+            assert!(unreadable(&failure), "{row}: {failure:?}");
+            assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_issue_is_reported_as_what_it_is() {
+        let refusals: [(u16, Value, Expected); 3] = [
+            (
+                410,
+                json!({
+                    "message": "Issues are disabled for this repo",
+                    "documentation_url": SENTINEL,
+                }),
+                |failure| {
+                    matches!(
+                        failure,
+                        PullRequestError::GitHubApi(text)
+                            if text == "GitHub API returned 410 Gone: Issues are disabled for this repo"
+                    )
+                },
+            ),
+            (
+                422,
+                json!({
+                    "message": "Validation Failed",
+                    "errors": [{
+                        "resource": "Issue",
+                        "code": "custom",
+                        "field": "title",
+                        "message": "title is too long (maximum is 256 characters)",
+                    }],
+                    "documentation_url": SENTINEL,
+                }),
+                |failure| {
+                    matches!(
+                        failure,
+                        PullRequestError::GitHubApi(text)
+                            if text == "GitHub API returned 422 Unprocessable Entity: \
+                                        Validation Failed; title is too long (maximum is 256 characters)"
+                    )
+                },
+            ),
+            (
+                404,
+                json!({ "message": "Not Found", "documentation_url": SENTINEL }),
+                |failure| matches!(failure, PullRequestError::NotFound),
+            ),
+        ];
+
+        for (status, answer, expected) in refusals {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/repos/acme/project/issues"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(answer))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .create_issue(&project(&service), &token(), "Issue 12", "Body 12")
+                .await
+                .unwrap_err();
+
+            assert!(expected(&failure), "{status}: {failure:?}");
+            assert!(
+                !format!("{failure} {failure:?}").contains(SENTINEL),
+                "{failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_opened_issue_github_describes_in_part_is_unreadable() {
+        let server = MockServer::start().await;
+        let service = stand_in(&server).await;
+
+        for answer in damaged(&described(&opened(&service, 12).with_body(SENTINEL))) {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/repos/acme/project/issues"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(&answer))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .create_issue(&project(&service), &token(), "Issue 12", "Body 12")
+                .await
+                .unwrap_err();
+
+            assert!(unreadable(&failure), "{answer}: {failure:?}");
+            assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_update_to_an_issue_github_cannot_find_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/acme/project/issues/5"))
+            .and(body_json(json!({ "title": "Renamed" })))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "message": "Not Found",
+                "documentation_url": SENTINEL,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .update_issue(
+                &numbered(&service, 5),
+                &token(),
+                &IssueUpdate::default().with_title("Renamed"),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::NotFound), "{failure:?}");
     }
 }

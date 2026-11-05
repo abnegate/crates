@@ -281,6 +281,8 @@ mod tests {
     use wiremock::matchers::path;
     use wiremock::matchers::query_param_is_missing;
 
+    const SENTINEL: &str = "RAW-SENTINEL";
+
     fn runs(sha: &CommitSha) -> String {
         format!("/repos/acme/project/commits/{sha}/check-runs")
     }
@@ -742,7 +744,7 @@ mod tests {
     /// A check-runs page with no runs, padded to exactly `length` bytes with a
     /// sentinel no error may repeat.
     fn padded(length: usize) -> String {
-        let opening = r#"{"total_count":0,"check_runs":[],"padding":"RAW-SENTINEL"#;
+        let opening = format!(r#"{{"total_count":0,"check_runs":[],"padding":"{SENTINEL}"#);
         let closing = r#""}"#;
         let padding = "x".repeat(length - opening.len() - closing.len());
         format!("{opening}{padding}{closing}")
@@ -776,7 +778,7 @@ mod tests {
             matches!(read, Err(PullRequestError::GitHubApi(ref text)) if text == OVERSIZED),
             "a page too long to read is not an empty one: {read:?}"
         );
-        assert!(!format!("{read:?}").contains("RAW-SENTINEL"), "{read:?}");
+        assert!(!format!("{read:?}").contains(SENTINEL), "{read:?}");
     }
 
     #[tokio::test]
@@ -1145,5 +1147,60 @@ mod tests {
             !read.complete,
             "one status read of two counted is not every status"
         );
+    }
+
+    #[tokio::test]
+    async fn a_status_without_its_context_or_state_fails_the_whole_read() {
+        let whole = json!({
+            "context": "ci/deploy",
+            "state": "success",
+            "description": SENTINEL,
+        });
+        let mut broken: Vec<Value> = ["context", "state"]
+            .iter()
+            .map(|required| {
+                let mut row = whole.clone();
+                row.as_object_mut().unwrap().remove(*required);
+                row
+            })
+            .collect();
+        for (field, spoiled) in [
+            ("context", Value::Null),
+            ("context", json!(7)),
+            ("state", Value::Null),
+            ("state", json!(["success"])),
+        ] {
+            let mut row = whole.clone();
+            row[field] = spoiled;
+            broken.push(row);
+        }
+        broken.push(json!(SENTINEL));
+
+        for row in broken {
+            let server = MockServer::start().await;
+            let sha = commit('9');
+            Mock::given(method("GET"))
+                .and(path(statuses(&sha)))
+                .and(query_is(&[("per_page", "100"), ("page", "1")]))
+                .respond_with(answer(json!({
+                    "total_count": 2,
+                    "statuses": [{ "context": "ci/build", "state": "success" }, row],
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .collect_statuses(&project(&service), &token(), &sha)
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+                "{row}: {failure:?}"
+            );
+            assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+        }
     }
 }
