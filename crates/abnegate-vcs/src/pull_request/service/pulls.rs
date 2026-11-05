@@ -83,6 +83,11 @@ impl PullRequestService {
     /// Open a pull request into `base` from `head` on `fork`'s fork of
     /// `repository`, sent to GitHub as `fork:head`.
     ///
+    /// GitHub reads `fork:head` as `head` on the copy of `repository` that
+    /// `fork` owns, so a `fork` that is `repository`'s own owner names
+    /// `repository` itself: a fork that owner holds of its own repository,
+    /// under another name, as an organisation may, cannot be named here.
+    ///
     /// A `fork` owner GitHub does not allow is
     /// [`PullRequestError::InvalidRepositoryName`], and nothing is sent. One
     /// already open from that head is
