@@ -9,12 +9,13 @@ use crate::pull_request::graphql_automated_repository::GraphQlAutomatedRepositor
 use crate::pull_request::graphql_error::GraphQlError;
 use crate::pull_request::graphql_merge_settings::GraphQlMergeSettings;
 use crate::pull_request::graphql_query::GraphQlQuery;
+use crate::pull_request::service::graphql::FORBIDDEN;
 use crate::pull_request::service::graphql::NO_DATA;
+use crate::pull_request::service::graphql::NOT_FOUND;
 use crate::pull_request::service::graphql::RATE_LIMITED;
 use crate::pull_request::service::graphql::messages;
 use crate::pull_request::service::graphql::rejection;
 use crate::pull_request::service::graphql::reported;
-use serde::de::IgnoredAny;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
@@ -49,6 +50,18 @@ const CONVERT_TO_DRAFT: &str =
 /// Takes the pull request its `id` names out of draft.
 const MARK_READY_FOR_REVIEW: &str = "mutation($id:ID!){\
 markPullRequestReadyForReview(input:{pullRequestId:$id}){clientMutationId}}";
+
+/// Where the answer to [`ENABLE_AUTO_MERGE`] holds what it did.
+const ENABLED: &str = "enablePullRequestAutoMerge";
+
+/// Where the answer to [`DISABLE_AUTO_MERGE`] holds what it did.
+const DISABLED: &str = "disablePullRequestAutoMerge";
+
+/// Where the answer to [`CONVERT_TO_DRAFT`] holds what it did.
+const CONVERTED: &str = "convertPullRequestToDraft";
+
+/// Where the answer to [`MARK_READY_FOR_REVIEW`] holds what it did.
+const MARKED_READY: &str = "markPullRequestReadyForReview";
 
 /// What GitHub says when the repository does not allow auto-merge.
 const AUTO_MERGE_NOT_ALLOWED: &str = "auto merge is not allowed";
@@ -158,10 +171,7 @@ impl PullRequestService {
         if !answer.errors.is_empty() {
             return Err(auto_merge_refusal(&answer.errors));
         }
-        answer
-            .data
-            .map(drop)
-            .ok_or_else(|| PullRequestError::GitHubApi(NO_DATA.to_string()))
+        changed(answer.data.as_ref(), ENABLED)
     }
 
     /// Take auto-merge off a pull request, so it waits to be merged by hand.
@@ -173,7 +183,7 @@ impl PullRequestService {
         node: &str,
         token: &SecretValue,
     ) -> PullRequestResult<()> {
-        self.change(node, token, DISABLE_AUTO_MERGE).await
+        self.change(node, token, DISABLE_AUTO_MERGE, DISABLED).await
     }
 
     /// Turn a pull request back into a draft, which cannot be merged until it
@@ -182,7 +192,7 @@ impl PullRequestService {
     /// `node` is the pull request's GraphQL node id; it travels as a variable,
     /// never inside the mutation.
     pub async fn convert_to_draft(&self, node: &str, token: &SecretValue) -> PullRequestResult<()> {
-        self.change(node, token, CONVERT_TO_DRAFT).await
+        self.change(node, token, CONVERT_TO_DRAFT, CONVERTED).await
     }
 
     /// Take a pull request out of draft, so it can be reviewed and merged.
@@ -194,19 +204,35 @@ impl PullRequestService {
         node: &str,
         token: &SecretValue,
     ) -> PullRequestResult<()> {
-        self.change(node, token, MARK_READY_FOR_REVIEW).await
+        self.change(node, token, MARK_READY_FOR_REVIEW, MARKED_READY)
+            .await
     }
 
-    /// One mutation of the pull request `node` names, which takes nothing else.
+    /// One mutation of the pull request `node` names, which takes nothing
+    /// else and answers with what it did under `field`.
     async fn change(
         &self,
         node: &str,
         token: &SecretValue,
         mutation: &'static str,
+        field: &str,
     ) -> PullRequestResult<()> {
-        self.graphql::<IgnoredAny, _>(token, mutation, &json!({ "id": node }))
-            .await
-            .map(drop)
+        let data: Value = self
+            .graphql(token, mutation, &json!({ "id": node }))
+            .await?;
+        changed(Some(&data), field)
+    }
+}
+
+/// Whether a mutation's answer says what it did under `field`: an answer
+/// that leaves it out or null did nothing this crate can vouch for.
+fn changed(data: Option<&Value>, field: &str) -> PullRequestResult<()> {
+    match data
+        .and_then(|data| data.get(field))
+        .is_some_and(Value::is_object)
+    {
+        true => Ok(()),
+        false => Err(PullRequestError::GitHubApi(NO_DATA.to_string())),
     }
 }
 
@@ -257,13 +283,17 @@ fn enabled(request: GraphQlAutoMergeRequest) -> EnabledAutoMerge {
 }
 
 /// What the errors GitHub refused to set auto-merge with mean: a spent rate
-/// limit is one; a repository that does not allow auto-merge, or the method
+/// limit is one; something missing or forbidden is that, whatever GitHub's
+/// words say; a repository that does not allow auto-merge, or the method
 /// asked for, says so; a pull request with nothing left to wait for can be
 /// merged now; one in any other merge state GitHub names is not mergeable as
 /// it stands; and anything else is read as every other GraphQL refusal is.
 fn auto_merge_refusal(errors: &[GraphQlError]) -> PullRequestError {
     if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
+    }
+    if reported(errors, NOT_FOUND) || reported(errors, FORBIDDEN) {
+        return rejection(errors);
     }
     let said: Vec<String> = errors
         .iter()
@@ -307,10 +337,12 @@ mod tests {
     /// Where every call here is posted.
     const GRAPHQL_PATH: &str = "/graphql";
 
+    /// An answer carrying `data` and no errors.
     fn carrying(data: Value) -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(json!({ "data": data }))
     }
 
+    /// An answer carrying `errors` and no data.
     fn refused(errors: Value) -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(json!({ "data": null, "errors": errors }))
     }
@@ -330,6 +362,7 @@ mod tests {
         server
     }
 
+    /// A server that answers every GraphQL call with `response`.
     async fn answering(response: ResponseTemplate) -> MockServer {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -340,6 +373,8 @@ mod tests {
         server
     }
 
+    /// A repository that allows auto-merge, squash and rebase, holding
+    /// `pull_request`.
     fn repository_with(pull_request: Value) -> Value {
         json!({ "repository": {
             "autoMergeAllowed": true,
@@ -350,6 +385,7 @@ mod tests {
         } })
     }
 
+    /// The variables that name pull request 7.
     fn seven_variables() -> Value {
         json!({ "owner": "acme", "name": "project", "number": 7 })
     }
@@ -510,6 +546,7 @@ mod tests {
         }
     }
 
+    /// GitHub's answer to auto-merge it set.
     fn enabled_answer() -> ResponseTemplate {
         carrying(json!({ "enablePullRequestAutoMerge": { "clientMutationId": null } }))
     }
@@ -709,11 +746,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_change_whose_answer_says_nothing_of_it_is_not_a_change() {
+        for data in [
+            Value::Null,
+            json!({}),
+            json!({ ENABLED: null, DISABLED: null, CONVERTED: null, MARKED_READY: null }),
+        ] {
+            let server =
+                answering(ResponseTemplate::new(200).set_body_json(json!({ "data": data }))).await;
+            let service = stand_in(&server).await;
+
+            for failure in [
+                service
+                    .enable_auto_merge(NODE, &token(), &AutoMerge::new(MergeMethod::Squash))
+                    .await,
+                service.disable_auto_merge(NODE, &token()).await,
+                service.convert_to_draft(NODE, &token()).await,
+                service.mark_ready_for_review(NODE, &token()).await,
+            ]
+            .map(Result::unwrap_err)
+            {
+                assert_eq!(
+                    format!("{failure:?}"),
+                    format!("GitHubApi({NO_DATA:?})"),
+                    "{data}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_forbidden_pull_request_is_that_whatever_its_status_says() {
+        for (kind, expected) in [("FORBIDDEN", "Forbidden"), ("NOT_FOUND", "NotFound")] {
+            for message in [
+                "Pull request Pull request is in clean status",
+                "Pull request Pull request is in unstable status",
+            ] {
+                let server =
+                    answering(refused(json!([{ "type": kind, "message": message }]))).await;
+                let service = stand_in(&server).await;
+
+                let failure = service
+                    .enable_auto_merge(NODE, &token(), &AutoMerge::new(MergeMethod::Squash))
+                    .await
+                    .unwrap_err();
+
+                assert_eq!(format!("{failure:?}"), expected, "{kind}: {message}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn auto_merge_and_drafts_are_posted_under_api_on_an_enterprise_origin() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/graphql"))
-            .respond_with(carrying(json!({ "changed": { "clientMutationId": null } })))
+            .respond_with(carrying(json!({
+                ENABLED: { "clientMutationId": null },
+                DISABLED: { "clientMutationId": null },
+                CONVERTED: { "clientMutationId": null },
+                MARKED_READY: { "clientMutationId": null },
+            })))
             .expect(4)
             .mount(&server)
             .await;
