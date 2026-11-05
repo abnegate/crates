@@ -25,6 +25,8 @@ pub struct OpenAiCompatibleEmbeddingConfig {
     /// `Authorization` header.
     pub api_key: Option<SecretValue>,
     /// The width to ask the model for, sent as `dimensions` only when set.
+    /// Unset, the provider reports a width of 0 until the first answer, and
+    /// that answer's width from then on.
     pub dimensions: Option<u32>,
     /// The most tokens one input may hold, 512 unless set.
     pub maximum_input_tokens: u32,

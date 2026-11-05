@@ -268,6 +268,42 @@ async fn an_unconfigured_width_is_learned_from_the_first_answer() {
 }
 
 #[tokio::test]
+async fn the_width_is_learned_from_the_first_answer_only() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(EMBEDDINGS))
+        .respond_with(answer(json!([item(0, &[0.1, 0.2, 0.3])])))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    serve(&server, answer(json!([item(0, &[0.1, 0.2])]))).await;
+    let learning = provider(OpenAiCompatibleEmbeddingConfig::new(base(&server), MODEL));
+
+    let first = learning.embed(&texts(&["first"])).await.unwrap();
+    let second = learning.embed(&texts(&["second"])).await.unwrap();
+
+    assert_eq!(first[0].len(), 3);
+    assert_eq!(second[0].len(), 2);
+    assert_eq!(learning.dimensions(), 3, "a later answer moved the width");
+}
+
+#[tokio::test]
+async fn an_empty_embedding_is_refused() {
+    let server = MockServer::start().await;
+    serve(&server, answer(json!([item(0, &[0.1]), item(1, &[])]))).await;
+    let provider = provider(OpenAiCompatibleEmbeddingConfig::new(base(&server), MODEL));
+
+    let error = provider
+        .embed(&texts(&["first", "second"]))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ProviderError::Parse { .. }), "{error:?}");
+    assert_eq!(provider.dimensions(), 0, "a refused answer taught a width");
+}
+
+#[tokio::test]
 async fn a_single_text_is_embedded_alone() {
     let server = MockServer::start().await;
     serve(&server, answer(json!([item(0, &[0.5, 0.25])]))).await;

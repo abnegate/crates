@@ -26,6 +26,12 @@ impl Response {
                     item.index
                 ))
             })?;
+            if item.embedding.is_empty() {
+                return Err(ProviderError::parse(format!(
+                    "embedding index {} came back empty",
+                    item.index
+                )));
+            }
             if slot.replace(item.embedding).is_some() {
                 return Err(ProviderError::parse(format!(
                     "embedding index {} came back twice",

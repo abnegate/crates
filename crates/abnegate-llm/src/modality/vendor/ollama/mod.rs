@@ -44,7 +44,9 @@ const NANOSECONDS_PER_MILLISECOND: u32 = 1_000_000;
 /// redacted body, so a caller can tell a rejected key, a throttled request
 /// or an input past the model's context length apart. The vector is passed
 /// on at whatever width Ollama returns; compare its length with
-/// [`EmbeddingProvider::dimensions`] where the width matters.
+/// [`EmbeddingProvider::dimensions`] where the width matters. An empty
+/// vector, which Ollama sends for a model that cannot embed, is refused as
+/// [`ProviderError::Parse`].
 #[derive(Debug, Clone)]
 pub struct OllamaEmbeddingProvider {
     url: Url,
@@ -95,6 +97,12 @@ impl OllamaEmbeddingProvider {
         }
         let body = transport.send(request).await?;
         let response: Response = serde_json::from_value(body).map_err(ProviderError::parse)?;
+        if response.embedding.is_empty() {
+            return Err(ProviderError::parse(format!(
+                "Ollama sent an empty embedding, so {} may not be an embedding model",
+                self.model
+            )));
+        }
         Ok(response.embedding)
     }
 }
@@ -474,6 +482,19 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, ProviderError::Parse { .. }), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_embedding_is_refused() {
+        let server = answering(&[]).await;
+        let provider = provider(config(&server));
+
+        let single = provider.embed_single("hello").await.unwrap_err();
+        let batch = provider.embed(&prompts(2)).await.unwrap_err();
+
+        for error in [single, batch] {
+            assert!(matches!(error, ProviderError::Parse { .. }), "{error:?}");
+        }
     }
 
     #[test]

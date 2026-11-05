@@ -25,6 +25,7 @@ use crate::provider::ProviderError;
 
 const NAME: &str = "openai-compatible";
 const EMBEDDINGS_PATH: &str = "/embeddings";
+const UNLEARNED_DIMENSIONS: u32 = 0;
 
 /// An [`EmbeddingProvider`] over an OpenAI-compatible `/embeddings`
 /// endpoint.
@@ -32,7 +33,13 @@ const EMBEDDINGS_PATH: &str = "/embeddings";
 /// Every batch is one request, and the answer is put back in input order by
 /// each item's `index`. Embeddings are passed on at whatever width the model
 /// returns: nothing is truncated, padded or compared with
-/// [`EmbeddingProvider::dimensions`].
+/// [`EmbeddingProvider::dimensions`]. An empty embedding is refused as
+/// [`ProviderError::Parse`].
+///
+/// Without [`OpenAiCompatibleEmbeddingConfig::dimensions`],
+/// [`EmbeddingProvider::dimensions`] reads 0 until the first answer, then the
+/// width of that answer for as long as the provider lives, so a caller
+/// comparing a later embedding's length against it sees the model change.
 ///
 /// A refusal keeps its HTTP status and the endpoint's own wording, with the
 /// configured key and any other credential scrubbed out, so a caller can tell
@@ -114,7 +121,12 @@ impl EmbeddingProvider for OpenAiCompatibleEmbeddingProvider {
 
         if let Some(embedding) = embeddings.first() {
             let width = u32::try_from(embedding.len()).unwrap_or(u32::MAX);
-            self.received_dimensions.store(width, Ordering::Relaxed);
+            let _ = self.received_dimensions.compare_exchange(
+                UNLEARNED_DIMENSIONS,
+                width,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
         }
         Ok(embeddings)
     }
