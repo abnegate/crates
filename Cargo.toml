@@ -37,6 +37,7 @@ fastembed = { version = "7", default-features = false }
 futures = "0.3"
 getrandom = "0.4"
 hex = "0.4"
+hmac = "0.13"
 image = { version = "0.25", default-features = false }
 keyring = "4"
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-native-tls"] }

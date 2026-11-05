@@ -37,6 +37,9 @@
 //! return an [`Excerpt`] that is never longer than that limit, never ends inside
 //! a character, and says in [`Excerpt::truncated`] whether the text went on;
 //! displayed, a cut excerpt ends with [`Excerpt::MARKER`].
+//!
+//! [`WebhookSignature`] checks that a webhook delivery was signed with the
+//! secret its webhook was registered with, before anything reads it.
 
 mod auto_merge;
 mod automation;
@@ -151,6 +154,7 @@ mod tree_entry_kind;
 mod webhook_configuration;
 mod webhook_event;
 mod webhook_request;
+mod webhook_signature;
 mod workflow_job;
 mod workflow_run;
 mod workflow_run_filter;
@@ -213,6 +217,7 @@ pub use crate::pull_request::tree::Tree;
 pub use crate::pull_request::tree_entry::TreeEntry;
 pub use crate::pull_request::tree_entry_kind::TreeEntryKind;
 pub use crate::pull_request::webhook_event::WebhookEvent;
+pub use crate::pull_request::webhook_signature::WebhookSignature;
 pub use crate::pull_request::workflow_job::WorkflowJob;
 pub use crate::pull_request::workflow_run::WorkflowRun;
 pub use crate::pull_request::workflow_run_filter::WorkflowRunFilter;

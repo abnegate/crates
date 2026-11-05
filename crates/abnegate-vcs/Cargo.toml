@@ -19,16 +19,19 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-github = ["dep:chrono", "dep:reqwest"]
+github = ["dep:chrono", "dep:hex", "dep:hmac", "dep:reqwest", "dep:sha2"]
 testing = []
 
 [dependencies]
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.6" }
 base64 = { workspace = true }
 chrono = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true, optional = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "time"] }
