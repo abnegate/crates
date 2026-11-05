@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-secret/v0.1.5...abnegate-secret/v0.1.6) - 2026-11-05
+
+### Added
+
+- *(secret)* tell whether a value meant to be a plain name carries a credential ([#41](https://github.com/abnegate/crates/pull/41))
+
+### Fixed
+
+- *(secret)* stop contains_credential refusing key-word-namespaced names and missing folded prefixes ([#46](https://github.com/abnegate/crates/pull/46))
+
+### Other
+
+- *(secret)* read the plaintext report in a process no other test shares ([#47](https://github.com/abnegate/crates/pull/47))
+
 ## [0.1.5](https://github.com/abnegate/crates/compare/abnegate-secret/v0.1.4...abnegate-secret/v0.1.5) - 2026-11-03
 
 ### Other
