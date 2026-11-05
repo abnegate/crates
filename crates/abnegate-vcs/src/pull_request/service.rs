@@ -122,7 +122,7 @@ const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
 /// in UTF-8 and up to six as a JSON `\u` escape, so a page of a hundred
 /// comments at GitHub's limit of 65,536 characters each can outgrow it, and
 /// such a page is an error rather than a shorter list.
-const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 
 /// What an answer this crate cannot read is reported as, in place of the
 /// parser's own message, which quotes the answer.

@@ -5,6 +5,7 @@ use crate::pull_request::application::InstallationToken;
 use crate::pull_request::origin::Origin;
 use crate::pull_request::service::ACCEPT;
 use crate::pull_request::service::GITHUB_API_URL;
+use crate::pull_request::service::MAXIMUM_ANSWER_BYTES;
 use crate::pull_request::service::REQUEST_TIMEOUT;
 use crate::pull_request::service::client;
 use crate::pull_request::service::read_prefix;
@@ -12,6 +13,7 @@ use abnegate_secret::SecretValue;
 use reqwest::Client;
 use reqwest::header;
 use reqwest::redirect::Policy;
+use std::time::Duration;
 use url::Url;
 
 /// The REST API version the installation token endpoint is asked under.
@@ -19,10 +21,6 @@ const API_VERSION: &str = "2022-11-28";
 
 /// The header GitHub reads the REST API version a request wants from.
 const API_VERSION_HEADER: &str = "X-GitHub-Api-Version";
-
-/// Most bytes of an installation token answer read; a longer one is
-/// [`ApplicationError::Response`], never parsed in part.
-const MAXIMUM_ANSWER_BYTES: usize = 64 * 1024;
 
 /// Trades a GitHub App's JWT for an installation access token.
 ///
@@ -32,6 +30,11 @@ const MAXIMUM_ANSWER_BYTES: usize = 64 * 1024;
 /// refusal keeps its status and nothing else, since the answer to a refused
 /// authentication routinely quotes what was sent. A request is given 30
 /// seconds from sending to the last byte of its answer.
+///
+/// An answer is read up to the 16 MiB this crate reads of any JSON answer,
+/// which holds the metadata of the 500 repositories a token can be scoped
+/// to many times over; a longer one is [`ApplicationError::Response`], never
+/// parsed in part.
 #[derive(Debug, Clone)]
 pub struct InstallationIssuer {
     client: Client,
@@ -49,7 +52,7 @@ impl InstallationIssuer {
     /// without a trailing slash.
     pub fn configured(url: &str) -> Result<Self, ApplicationError> {
         let origin = Origin::configured(url, false).map_err(|_| ApplicationError::InvalidOrigin)?;
-        Self::addressing(origin, true)
+        Self::addressing(origin, true, REQUEST_TIMEOUT)
     }
 
     /// Ask `url`, over whatever scheme it names.
@@ -61,12 +64,19 @@ impl InstallationIssuer {
     pub fn standing_in_for(url: &str) -> Result<Self, ApplicationError> {
         let origin =
             Origin::standing_in_for("", url).map_err(|_| ApplicationError::InvalidOrigin)?;
-        Self::addressing(origin, false)
+        Self::addressing(origin, false, REQUEST_TIMEOUT)
     }
 
-    fn addressing(origin: Origin, https_only: bool) -> Result<Self, ApplicationError> {
-        let client = client(https_only, REQUEST_TIMEOUT, Policy::none())
-            .map_err(|_| ApplicationError::Client)?;
+    /// Ask `origin` with a client that follows no redirect and gives a
+    /// request up after `timeout`, from sending to the last byte of its
+    /// answer.
+    fn addressing(
+        origin: Origin,
+        https_only: bool,
+        timeout: Duration,
+    ) -> Result<Self, ApplicationError> {
+        let client =
+            client(https_only, timeout, Policy::none()).map_err(|_| ApplicationError::Client)?;
         Ok(Self { client, origin })
     }
 
@@ -118,6 +128,9 @@ impl InstallationIssuer {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -284,6 +297,98 @@ mod tests {
 
         assert!(matches!(error, ApplicationError::Status(302)));
         target.verify().await;
+    }
+
+    /// How many repositories GitHub lets a token request name.
+    const SCOPED_REPOSITORIES: usize = 500;
+
+    /// About as many bytes as GitHub spends describing one repository.
+    const REPOSITORY_BYTES: usize = 7 * 1024;
+
+    #[tokio::test]
+    async fn an_answer_listing_every_repository_a_token_is_scoped_to_yields_a_token() {
+        let server = MockServer::start().await;
+        let repositories: Vec<serde_json::Value> = (1..=SCOPED_REPOSITORIES)
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "full_name": format!("acme/repository-{id}"),
+                    "description": "d".repeat(REPOSITORY_BYTES),
+                })
+            })
+            .collect();
+        let body = json!({
+            "token": "ghs_installationtokenvalue",
+            "expires_at": "2026-01-15T12:00:00Z",
+            "repository_selection": "selected",
+            "repositories": repositories,
+        });
+        Mock::given(method("POST"))
+            .and(path(TOKEN_PATH))
+            .respond_with(ResponseTemplate::new(201).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let token = stand_in(&server)
+            .issue(&jwt(), installation())
+            .await
+            .unwrap();
+
+        assert_eq!(token.secret().expose(), "ghs_installationtokenvalue");
+    }
+
+    /// The timeout the stalled issuer is given.
+    const SHORT_TIMEOUT: Duration = Duration::from_millis(200);
+
+    /// Longer than a stalled issue may take, short of the production timeout.
+    const GUARD: Duration = Duration::from_secs(5);
+
+    /// The start of a token answer that promises more than it sends.
+    const STALLED: &str = "HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{\"token\":";
+
+    /// A loopback stand-in that answers with [`STALLED`] and then holds the
+    /// connection open without sending another byte.
+    async fn stalling() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port to listen on");
+        let address = listener
+            .local_addr()
+            .expect("the address the listener is bound to");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 1024];
+                    while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                        let read = stream.read(&mut buffer).await.unwrap_or_default();
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                    }
+                    let _ = stream.write_all(STALLED.as_bytes()).await;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_stops_arriving_is_given_up_at_the_timeout() {
+        let origin = Origin::standing_in_for("", &stalling().await).unwrap();
+        let issuer = InstallationIssuer::addressing(origin, false, SHORT_TIMEOUT).unwrap();
+
+        let issued = tokio::time::timeout(GUARD, issuer.issue(&jwt(), installation()))
+            .await
+            .expect("the body read is bounded by the issuer's timeout");
+
+        assert!(
+            matches!(issued, Err(ApplicationError::Transport(_))),
+            "{issued:?}"
+        );
     }
 
     #[tokio::test]
