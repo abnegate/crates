@@ -1,11 +1,13 @@
 use crate::git::GitError;
 use crate::git::GitResult;
+#[cfg(unix)]
+use nix::unistd::AccessFlags;
+#[cfg(unix)]
+use nix::unistd::access;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -193,65 +195,103 @@ pub(crate) const DIFF_PREFIX: [&str; 4] =
 /// The name of the program every hardened command runs.
 const GIT: &str = "git";
 
-/// The permission bits of which any one lets someone execute a file.
-#[cfg(unix)]
-const EXECUTABLE: u32 = 0o111;
+/// The variable a command searches for the programs it runs.
+const SEARCH: &str = "PATH";
 
-/// The git every hardened command runs: the first executable `git` in an
-/// [`absolute`] entry of the host's `PATH`, named by its whole path, or `git`
-/// alone where no entry holds one, which then fails to start.
+/// A directory that does not exist, which a hardened command searches when
+/// the host's `PATH` names no absolute one, and under which it names git when
+/// no entry holds one: an empty search path would send `execvp`, git and
+/// every helper git starts to the directory the command runs in.
+const NOWHERE: &str = "/nonexistent";
+
+/// A git command that reads nothing from the host's configuration and runs no
+/// program the repository's configuration names, with the pins and
+/// environment every hardened command runs with. The host's `PATH` is read
+/// once, and the command searches only its [`absolute`] entries.
 ///
-/// A command given a `PATH` of its own and a program to find on it cannot be
+/// Git is named by its whole path, the [`executable`] on those entries. A
+/// command given a `PATH` of its own and a program to find on it cannot be
 /// started with `posix_spawn`: the host forks, and the child searches that
 /// `PATH` before it executes. In a host with many threads that child can
 /// crash before git ever runs, and the command fails as though git had. A
 /// command named by the program's path is spawned whole.
-#[cfg(unix)]
-pub(crate) fn executable() -> PathBuf {
-    found(&std::env::var_os("PATH").unwrap_or_default()).unwrap_or_else(|| PathBuf::from(GIT))
+pub(crate) fn hardened() -> Command {
+    let search = searched();
+    let program = executable(&search);
+    pinned(&program, search)
 }
 
-/// The git every hardened command runs, found on the `PATH` it is given by
-/// the system call that starts it, which forks nothing.
+/// [`hardened`], running `program` in git's place.
+#[cfg(test)]
+pub(crate) fn invoking(program: &Path) -> Command {
+    pinned(program, searched())
+}
+
+/// The [`absolute`] entries of the host's `PATH`, read once.
+fn searched() -> OsString {
+    absolute(&std::env::var_os(SEARCH).unwrap_or_default())
+}
+
+/// `program` with the pins and environment every hardened command runs
+/// with, searching `search` and nothing else.
+fn pinned(program: &Path, search: OsString) -> Command {
+    let mut command = Command::new(program);
+    command
+        .env_clear()
+        .env(SEARCH, search)
+        .envs(ENVIRONMENT)
+        .args(PINS)
+        .stdin(Stdio::null());
+    command
+}
+
+/// The git a hardened command searching `search` runs: the first executable
+/// `git` in an absolute entry, or, where none holds one, a path under
+/// [`NOWHERE`], which fails to spawn with [`std::io::ErrorKind::NotFound`].
+#[cfg(unix)]
+fn executable(search: &OsStr) -> PathBuf {
+    found(search).unwrap_or_else(unfound)
+}
+
+/// The git a hardened command runs, found on the `PATH` it is given by the
+/// system call that starts it, which forks nothing.
 #[cfg(not(unix))]
-pub(crate) fn executable() -> PathBuf {
+fn executable(_search: &OsStr) -> PathBuf {
     PathBuf::from(GIT)
 }
 
-/// The first executable `git` in an [`absolute`] entry of `path`.
+/// The path a hardened command names git by when no entry holds one.
+#[cfg(unix)]
+fn unfound() -> PathBuf {
+    Path::new(NOWHERE).join(GIT)
+}
+
+/// The first executable `git` in an absolute entry of `path`, which is the
+/// one `execvp` would run on the [`absolute`] entries of `path`.
 #[cfg(unix)]
 fn found(path: &OsStr) -> Option<PathBuf> {
-    std::env::split_paths(&absolute(path))
+    std::env::split_paths(path)
+        .filter(|entry| entry.is_absolute())
         .map(|entry| entry.join(GIT))
         .find(|candidate| runnable(candidate))
 }
 
-/// Whether `candidate` is a file someone may execute.
+/// Whether `candidate` is a file this process may execute, by the check
+/// `execvp` makes.
 #[cfg(unix)]
 fn runnable(candidate: &Path) -> bool {
-    std::fs::metadata(candidate)
-        .is_ok_and(|details| details.is_file() && details.permissions().mode() & EXECUTABLE != 0)
+    candidate.is_file() && access(candidate, AccessFlags::X_OK).is_ok()
 }
 
-/// Apply the pins and environment every hardened git command runs with.
-pub(crate) fn harden(command: &mut Command) {
-    command
-        .env_clear()
-        .env(
-            "PATH",
-            absolute(&std::env::var_os("PATH").unwrap_or_default()),
-        )
-        .envs(ENVIRONMENT)
-        .args(PINS)
-        .stdin(Stdio::null());
-}
-
-/// The absolute entries of a `PATH`. A relative or empty entry is resolved
-/// against the directory a command runs in, which for a hardened command is a
-/// repository a run can write, so a `git` there would run instead of git.
+/// The absolute entries of a `PATH`, or [`NOWHERE`] when it has none. A
+/// relative or empty entry is resolved against the directory a command runs
+/// in, which for a hardened command is a repository a run can write, so a
+/// `git` there would run instead of git.
 fn absolute(path: &OsStr) -> OsString {
     std::env::join_paths(std::env::split_paths(path).filter(|entry| entry.is_absolute()))
-        .unwrap_or_default()
+        .ok()
+        .filter(|joined| !joined.is_empty())
+        .unwrap_or_else(|| OsString::from(NOWHERE))
 }
 
 /// Refuse a repository with a symbolic link anywhere under the worktree's
@@ -781,63 +821,189 @@ mod tests {
         );
     }
 
+    /// An empty search path, or one with an empty element, sends `execvp`
+    /// and every helper git starts to the directory the command runs in,
+    /// which a run can write.
+    #[cfg(unix)]
+    #[test]
+    fn a_search_path_with_no_absolute_entry_searches_only_where_nothing_is() {
+        for path in ["", ":", ".", "relative", "relative:"] {
+            let searched: Vec<PathBuf> =
+                std::env::split_paths(&absolute(OsStr::new(path))).collect();
+
+            assert!(
+                !searched.is_empty() && searched.iter().all(|entry| entry.is_absolute()),
+                "{path:?} searches {searched:?}"
+            );
+            assert_eq!(searched, vec![PathBuf::from(NOWHERE)], "{path:?}");
+            assert_eq!(found(OsStr::new(path)), None, "{path:?}");
+        }
+    }
+
+    /// Where no entry holds git, the command names a git that cannot exist,
+    /// rather than a bare name `execvp` would look for where it runs.
+    #[cfg(unix)]
+    #[test]
+    fn git_no_entry_holds_is_named_where_nothing_is() {
+        let named = executable(OsStr::new(""));
+
+        assert_eq!(named, unfound());
+        assert!(named.is_absolute(), "{}", named.display());
+        assert!(!named.exists(), "{}", named.display());
+    }
+
+    /// `directory` named relative to the directory the tests run in.
+    #[cfg(unix)]
+    fn from_here(directory: &Path) -> PathBuf {
+        let here = std::env::current_dir().unwrap();
+        let mut relative: PathBuf = here.components().skip(1).map(|_| "..").collect();
+        relative.push(directory.strip_prefix("/").unwrap());
+        relative
+    }
+
     /// Git is found where `execvp` would find it on the hardened `PATH`:
-    /// the first absolute entry holding a `git` file someone may execute.
+    /// the first absolute entry holding a `git` file this process may
+    /// execute. A relative entry holding one is passed over.
     #[cfg(unix)]
     #[test]
     fn git_is_the_first_executable_one_an_absolute_entry_holds() {
+        use std::os::unix::fs::PermissionsExt;
+
         let root = tempfile::tempdir().unwrap();
-        let entry = |name: &str| {
+        let entry = |name: &str, mode: Option<u32>| {
             let directory = root.path().join(name);
             std::fs::create_dir(&directory).unwrap();
+            if let Some(mode) = mode {
+                std::fs::write(directory.join(GIT), "").unwrap();
+                std::fs::set_permissions(
+                    directory.join(GIT),
+                    std::fs::Permissions::from_mode(mode),
+                )
+                .unwrap();
+            }
             directory
         };
-        let missing = entry("missing");
-        let unexecutable = entry("unexecutable");
-        std::fs::write(unexecutable.join(GIT), "").unwrap();
-        let nested = entry("nested");
+        let relative = from_here(&entry("relative", Some(0o700)));
+        assert!(
+            relative.is_relative() && runnable(&relative.join(GIT)),
+            "{} names no git this process may run",
+            relative.display()
+        );
+        let missing = entry("missing", None);
+        let unexecutable = entry("unexecutable", Some(0o600));
+        let nested = entry("nested", None);
         std::fs::create_dir(nested.join(GIT)).unwrap();
-        let first = entry("first");
-        let second = entry("second");
-        for directory in [&first, &second] {
-            std::fs::write(directory.join(GIT), "").unwrap();
-            std::fs::set_permissions(directory.join(GIT), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
+        let mut entries = vec![relative, missing, unexecutable, nested];
+        if !nix::unistd::geteuid().is_root() {
+            entries.push(entry("others", Some(0o001)));
         }
-        let relative = Path::new("relative");
-        let joined =
-            std::env::join_paths([relative, &missing, &unexecutable, &nested, &first, &second])
-                .unwrap();
+        let first = entry("first", Some(0o700));
+        let second = entry("second", Some(0o700));
+        entries.extend([first.clone(), second]);
 
-        assert_eq!(found(&joined), Some(first.join(GIT)));
-        assert_eq!(found(&std::env::join_paths([&missing]).unwrap()), None);
+        assert_eq!(
+            found(&std::env::join_paths(&entries).unwrap()),
+            Some(first.join(GIT))
+        );
     }
 
-    /// A hardened command that names git by a bare name while setting a
-    /// `PATH` of its own is forked rather than spawned, and its child can
-    /// crash before git starts in a host with many threads.
+    /// Set in the re-run of a test that needs its own `PATH`.
+    #[cfg(unix)]
+    const CHILD: &str = "ABNEGATE_VCS_TEST_CHILD";
+
+    /// Names the directory the re-run's command runs in.
+    #[cfg(unix)]
+    const PLANTED: &str = "ABNEGATE_VCS_TEST_PLANTED";
+
+    /// A host whose `PATH` holds no absolute entry with git starts no git at
+    /// all, not the `git` a run planted in the directory a command runs in.
     #[cfg(unix)]
     #[test]
-    fn every_hardened_command_names_git_by_its_whole_path() {
-        for command in [
-            crate::git::GitService::hardened().as_std(),
-            crate::git::GitService::connected(
-                &crate::repository_url::RepositoryUrl::parse("https://github.com/owner/repository")
-                    .unwrap(),
-                None,
-            )
-            .as_std(),
+    fn a_git_planted_where_a_command_runs_is_not_run() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const NAME: &str = "git::hardening::tests::a_git_planted_where_a_command_runs_is_not_run";
+        if std::env::var(CHILD).as_deref() == Ok(NAME) {
+            let directory = PathBuf::from(std::env::var_os(PLANTED).expect("the parent plants it"));
+            let started = hardened().current_dir(directory).status();
+            assert!(
+                matches!(&started, Err(error) if error.kind() == std::io::ErrorKind::NotFound),
+                "{started:?}"
+            );
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let ran = directory.path().join("ran");
+        let planted = directory.path().join(GIT);
+        std::fs::write(
+            &planted,
+            format!("#!/bin/sh\necho ran > '{}'\n", ran.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        for path in ["", ":", ".", "relative"] {
+            let output = Command::new(std::env::current_exe().expect("the test binary"))
+                .args(["--exact", NAME, "--nocapture"])
+                .env(CHILD, NAME)
+                .env(PLANTED, directory.path())
+                .env(SEARCH, path)
+                .output()
+                .expect("the child runs");
+
+            let printed = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && printed.contains("1 passed"),
+                "{path:?}: {printed}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!ran.exists(), "a PATH of {path:?} ran the planted git");
+        }
+    }
+
+    /// Every hardened command is built by [`hardened`]: git named by the
+    /// path it found, the search path it read, and the pins first.
+    #[cfg(unix)]
+    #[test]
+    fn every_hardened_command_is_the_one_builder_s() {
+        let built = hardened();
+        let program = Path::new(built.get_program());
+        assert!(program.is_absolute(), "{}", program.display());
+        assert!(runnable(program), "{}", program.display());
+        let search = |command: &Command| {
+            command
+                .get_envs()
+                .find(|(key, _)| *key == SEARCH)
+                .and_then(|(_, value)| value.map(OsStr::to_os_string))
+        };
+        let remote =
+            crate::repository_url::RepositoryUrl::parse("https://github.com/owner/repository")
+                .unwrap();
+
+        for (name, command) in [
+            ("hardened", crate::git::GitService::hardened().as_std()),
+            (
+                "connected",
+                crate::git::GitService::connected(&remote, None).as_std(),
+            ),
+            ("local", &crate::worktree::local(Path::new("."))),
+            ("origin", &crate::git::GitService::origin_listing()),
         ] {
-            let program = Path::new(command.get_program());
-            assert!(program.is_absolute(), "{}", program.display());
-            assert!(runnable(program), "{}", program.display());
+            assert_eq!(command.get_program(), built.get_program(), "{name}");
+            assert_eq!(search(command), search(&built), "{name}");
+            assert!(
+                command
+                    .get_args()
+                    .take(PINS.len())
+                    .eq(PINS.iter().map(OsStr::new)),
+                "{name}"
+            );
         }
     }
 
     #[test]
     fn every_hardened_command_carries_the_pins_and_environment() {
-        let mut command = Command::new("git");
-        harden(&mut command);
+        let command = hardened();
         let arguments: Vec<String> = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())

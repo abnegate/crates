@@ -16,10 +16,11 @@ use crate::git::PINS;
 use crate::git::REPOSITORY_ENVIRONMENT;
 use crate::git::RemoteHead;
 use crate::git::authentication::authenticate;
-use crate::git::executable;
 #[cfg(unix)]
 use crate::git::group::Group;
-use crate::git::harden;
+use crate::git::hardened;
+#[cfg(test)]
+use crate::git::invoking;
 use crate::git::refused;
 use crate::repository_url::RepositoryUrl;
 use abnegate_secret::SecretValue;
@@ -256,14 +257,19 @@ impl GitService {
     /// A git invocation that reads nothing from the host's configuration and
     /// runs no program the repository's configuration names.
     pub(crate) fn hardened() -> Command {
-        Self::invoking(&executable())
+        Self::supervised(hardened())
     }
 
     /// A git invocation hardened as [`Self::hardened`] is, that runs
     /// `program`.
+    #[cfg(test)]
     pub(crate) fn invoking(program: &Path) -> Command {
-        let mut command = Command::new(program);
-        harden(command.as_std_mut());
+        Self::supervised(invoking(program))
+    }
+
+    /// `command`, run with no output kept and killed when it is dropped.
+    fn supervised(command: std::process::Command) -> Command {
+        let mut command = Command::from(command);
         command
             .stdout(Stdio::null())
             .stderr(Stdio::null())

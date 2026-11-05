@@ -550,7 +550,12 @@ impl ConflictService {
     /// A hardened command bound to the throwaway repository and work tree by
     /// path, so nothing in the checkout decides which repository it reads.
     fn bound(&self, layout: &Layout) -> Command {
-        let mut command = self.command(layout);
+        self.binding(GitService::hardened(), layout)
+    }
+
+    /// [`Self::bound`] for `command`, a hardened git invocation.
+    fn binding(&self, command: Command, layout: &Layout) -> Command {
+        let mut command = self.identified(command, layout);
         command
             .arg(prefixed("--git-dir=", &layout.git))
             .arg(prefixed("--work-tree=", &layout.checkout));
@@ -560,7 +565,11 @@ impl ConflictService {
     /// A hardened command with the repair's identity and an empty home
     /// outside everything the repair can write.
     fn command(&self, layout: &Layout) -> Command {
-        let mut command = GitService::hardened();
+        self.identified(GitService::hardened(), layout)
+    }
+
+    /// [`Self::command`] for `command`, a hardened git invocation.
+    fn identified(&self, mut command: Command, layout: &Layout) -> Command {
         command
             .current_dir(&layout.checkout)
             .env("HOME", &layout.home)
@@ -817,8 +826,12 @@ mod tests {
             std::fs::Permissions::from_mode(0o700),
         )
         .unwrap();
+        let root = TempDir::new().unwrap();
+        let layout = Layout::under(root.path());
+        layout.create().unwrap();
         let service = ConflictService::new();
-        let mut command = GitService::invoking(&fixture.path().join("git"));
+        let mut command =
+            service.binding(GitService::invoking(&fixture.path().join("git")), &layout);
         command.env("FIXTURE", fixture.path());
 
         let operation = tokio::spawn(async move { service.execute(&mut command).await });

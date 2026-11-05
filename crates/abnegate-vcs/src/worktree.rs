@@ -32,10 +32,9 @@ use crate::git::GITLINK_MODE;
 use crate::git::IGNORE_SUBMODULES;
 use crate::git::LOCATING;
 use crate::git::WorktreeEntry;
-use crate::git::executable;
 #[cfg(unix)]
 use crate::git::group::Group;
-use crate::git::harden;
+use crate::git::hardened;
 use crate::git::refused;
 pub use crate::worktree::unfinished::Unfinished;
 use std::io::Read;
@@ -92,9 +91,8 @@ const TRACKED_STATUS: [&str; 5] = [
 /// [`crate::git::GitService`] commands run with, that additionally may use no
 /// transport at all, so nothing here can reach the network -- not even a lazy
 /// fetch of an object the clone lacks -- and needs no timeout.
-fn local(repository: &Path) -> Command {
-    let mut command = Command::new(executable());
-    harden(&mut command);
+pub(crate) fn local(repository: &Path) -> Command {
+    let mut command = hardened();
     command
         .env("GIT_ALLOW_PROTOCOL", "")
         .current_dir(repository)
@@ -1343,18 +1341,6 @@ mod tests {
         assert!(unfinished(&checkout, &[]).is_err());
         assert!(repository_of(&checkout).is_err());
         assert!(remove(&repositories.checkout(&path)).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_local_command_names_git_by_its_whole_path() {
-        let command = local(Path::new("."));
-
-        assert!(
-            Path::new(command.get_program()).is_absolute(),
-            "{:?}",
-            command.get_program()
-        );
     }
 
     #[test]

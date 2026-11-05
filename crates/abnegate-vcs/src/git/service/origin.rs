@@ -38,21 +38,25 @@ impl GitService {
     /// is handed. A caller that can await runs it on the blocking pool.
     pub fn configured_origin(file: &Path) -> GitResult<Option<String>> {
         let configuration = regular(file)?;
-        let mut command = std::process::Command::new(executable());
-        harden(&mut command);
-        let output = command
-            .env("GIT_ALLOW_PROTOCOL", "")
-            .current_dir("/")
-            .args(ORIGIN_LISTING)
-            .stdin(configuration)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()?;
+        let output = Self::origin_listing().stdin(configuration).output()?;
         match output.status.code() {
             Some(0) => sole_origin(&output.stdout).map(Some),
             Some(NOT_SET) => Ok(None),
             _ => Err(Self::failed("config", &output)),
         }
+    }
+
+    /// A hardened git that lists the [`ORIGIN_LISTING`] of the configuration
+    /// it reads on standard input, reaching no transport and no repository.
+    pub(crate) fn origin_listing() -> std::process::Command {
+        let mut command = hardened();
+        command
+            .env("GIT_ALLOW_PROTOCOL", "")
+            .current_dir("/")
+            .args(ORIGIN_LISTING)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
     }
 }
 
