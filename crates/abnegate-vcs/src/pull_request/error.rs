@@ -52,6 +52,21 @@ pub enum PullRequestError {
     #[error("The pull request's head moved since it was read")]
     HeadMoved,
 
+    /// The repository does not allow auto-merge, so a pull request in it
+    /// cannot be set to merge once it is ready.
+    #[error("The repository does not allow auto-merge")]
+    AutoMergeNotAllowed,
+
+    /// The repository does not allow the merge method asked for, for the
+    /// reason given.
+    #[error("The repository does not allow this merge method: {0}")]
+    MergeMethodNotAllowed(String),
+
+    /// The pull request has nothing left to wait for, so GitHub will not set it
+    /// to merge once it is ready: it can be merged now.
+    #[error("The pull request can be merged now")]
+    AlreadyMergeable,
+
     /// The request did not complete, or its answer could not be read.
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),

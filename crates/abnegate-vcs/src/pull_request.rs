@@ -4,15 +4,17 @@
 //! Only the `github` feature builds this module. [`PullRequestService`] opens a
 //! pull request when a task completes with code changes; reads it back with
 //! its files, its diff and the checks on its head; takes part in its review
-//! through conversation comments, reviews and review threads; merges it; and
-//! reads back when it merged, how many rounds of review it took, who approved
-//! it, and what the reviewers actually said. It also creates a repository for a
-//! new project and reads a file from one, and registers, re-signs and removes
-//! the webhooks a repository delivers its events through. It talks to GitHub's
-//! REST API, and to its GraphQL API for review threads and an administrator's
-//! merge. It addresses GitHub's own API by default and a GitHub Enterprise
-//! origin when one is configured; either way it only answers for repositories
-//! on the host that origin serves.
+//! through conversation comments, reviews and review threads; moves it in and
+//! out of draft; sets it to merge once it is ready; merges it; and reads back
+//! when it merged, how many rounds of review it took, who approved it, and
+//! what the reviewers actually said. It also creates a repository for a new
+//! project and reads a file from one, and registers, re-signs and removes the
+//! webhooks a repository delivers its events through. It talks to GitHub's
+//! REST API, and to its GraphQL API for review threads, an administrator's
+//! merge, auto-merge, drafts and a repository's merge settings. It addresses
+//! GitHub's own API by default and a GitHub Enterprise origin when one is
+//! configured; either way it only answers for repositories on the host that
+//! origin serves.
 //!
 //! Every URL a call reaches is built from numbers and validated values: a
 //! [`Repository`] from [`PullRequestService::parse_github_url`], a
@@ -36,6 +38,8 @@
 //! a character, and says in [`Excerpt::truncated`] whether the text went on;
 //! displayed, a cut excerpt ends with [`Excerpt::MARKER`].
 
+mod auto_merge;
+mod automation;
 mod changed_file;
 mod checks_outcome;
 mod comment_request;
@@ -44,6 +48,7 @@ mod created;
 mod created_repository;
 mod description;
 mod detail;
+mod enabled_auto_merge;
 mod error;
 mod excerpt;
 mod file_status;
@@ -67,8 +72,12 @@ mod github_review;
 mod github_status_state;
 mod github_user;
 mod graphql_actor;
+mod graphql_auto_merge_request;
+mod graphql_automated_repository;
+mod graphql_automation;
 mod graphql_connection;
 mod graphql_error;
+mod graphql_merge_settings;
 mod graphql_page_info;
 mod graphql_pull_request;
 mod graphql_query;
@@ -80,6 +89,7 @@ mod graphql_thread_comment;
 mod issue_comment;
 mod merge_method;
 mod merge_request;
+mod merge_settings;
 mod mergeability;
 mod mergeable_state;
 mod merged;
@@ -104,12 +114,15 @@ mod webhook_configuration;
 mod webhook_event;
 mod webhook_request;
 
+pub use crate::pull_request::auto_merge::AutoMerge;
+pub use crate::pull_request::automation::PullRequestAutomation;
 pub use crate::pull_request::changed_file::ChangedFile;
 pub use crate::pull_request::checks_outcome::ChecksOutcome;
 pub use crate::pull_request::created::CreatedPullRequest;
 pub use crate::pull_request::created_repository::CreatedRepository;
 pub use crate::pull_request::description::Description;
 pub use crate::pull_request::detail::PullRequestDetail;
+pub use crate::pull_request::enabled_auto_merge::EnabledAutoMerge;
 pub use crate::pull_request::error::PullRequestError;
 pub use crate::pull_request::error::PullRequestResult;
 pub use crate::pull_request::excerpt::Excerpt;
@@ -118,6 +131,7 @@ pub use crate::pull_request::github_branch::GitHubBranch;
 pub use crate::pull_request::github_pull_request::GitHubPullRequest;
 pub use crate::pull_request::issue_comment::IssueComment;
 pub use crate::pull_request::merge_method::MergeMethod;
+pub use crate::pull_request::merge_settings::MergeSettings;
 pub use crate::pull_request::mergeability::Mergeability;
 pub use crate::pull_request::mergeable_state::MergeableState;
 pub use crate::pull_request::merged::MergedPullRequest;

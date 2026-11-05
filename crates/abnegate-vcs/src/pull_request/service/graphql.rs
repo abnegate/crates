@@ -14,6 +14,11 @@ pub(super) const NOT_FOUND: &str = "NOT_FOUND";
 /// The kind GitHub's GraphQL API names something the token may not do with.
 pub(super) const FORBIDDEN: &str = "FORBIDDEN";
 
+/// What GitHub says, through REST or GraphQL, of a merge or auto-merge
+/// refused because the head or the base branch changed under it, which a
+/// fresh read retries.
+pub(super) const MODIFIED: &str = "was modified";
+
 /// What a refusal GitHub named no kind for says ahead of GitHub's own words.
 const REFUSED: &str = "GitHub's GraphQL API refused";
 
@@ -62,7 +67,7 @@ impl PullRequestService {
 /// The refusal a set of GraphQL errors names: a spent rate limit ahead of
 /// anything missing, anything missing ahead of anything forbidden, and
 /// GitHub's own words for the rest.
-fn rejection(errors: &[GraphQlError]) -> PullRequestError {
+pub(super) fn rejection(errors: &[GraphQlError]) -> PullRequestError {
     if reported(errors, RATE_LIMITED) {
         return PullRequestError::RateLimited;
     }
