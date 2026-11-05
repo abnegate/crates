@@ -7,6 +7,9 @@ use sha2::Sha256;
 /// What GitHub writes before the hex digest in [`WebhookSignature::HEADER`].
 const PREFIX: &str = "sha256=";
 
+/// How many bytes an HMAC-SHA256 digest holds.
+const DIGEST_BYTES: usize = 32;
+
 /// The HMAC-SHA256 digest GitHub signs a webhook delivery's body with, read
 /// from its [`WebhookSignature::HEADER`].
 ///
@@ -14,9 +17,10 @@ const PREFIX: &str = "sha256=";
 /// delivery whose signature [`WebhookSignature::verifies`] came from someone
 /// who holds that secret, and its body is the one they signed. The comparison
 /// takes the same time however many bytes match, so how long a refusal takes
-/// says nothing about the digest that would have been accepted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebhookSignature(Vec<u8>);
+/// says nothing about the digest that would have been accepted. It has no
+/// `==`, which would not take the same time.
+#[derive(Debug, Clone)]
+pub struct WebhookSignature([u8; DIGEST_BYTES]);
 
 impl WebhookSignature {
     /// The header GitHub sends a delivery's signature in.
@@ -24,14 +28,21 @@ impl WebhookSignature {
 
     /// The digest in a [`WebhookSignature::HEADER`] value, or `None` when the
     /// value does not start with `sha256=`, spelled in lowercase, or what
-    /// follows is not hex. The hex digits themselves may be in either case.
+    /// follows is not the 64 hex digits of a SHA-256 digest. The hex digits
+    /// themselves may be in either case.
     pub fn parse(value: &str) -> Option<Self> {
         let digest = value.strip_prefix(PREFIX)?;
-        hex::decode(digest).ok().map(Self)
+        let mut bytes = [0; DIGEST_BYTES];
+        hex::decode_to_slice(digest, &mut bytes).ok()?;
+        Some(Self(bytes))
     }
 
-    /// Whether this is the digest of `body` keyed with `secret`.
+    /// Whether this is the digest of `body` keyed with `secret`. An empty
+    /// `secret` verifies nothing, since anyone can key a digest with it.
     pub fn verifies(&self, secret: &SecretValue, body: &[u8]) -> bool {
+        if secret.expose().is_empty() {
+            return false;
+        }
         Hmac::<Sha256>::new_from_slice(secret.expose().as_bytes())
             .map(|mac| mac.chain_update(body).verify_slice(&self.0).is_ok())
             .unwrap_or(false)
@@ -85,22 +96,41 @@ mod tests {
 
     #[test]
     fn a_digest_that_is_not_hex_does_not_parse() {
-        assert_eq!(WebhookSignature::parse("sha256=invalid"), None);
-        assert_eq!(WebhookSignature::parse("sha256=abc"), None);
+        assert!(WebhookSignature::parse("sha256=invalid").is_none());
+        assert!(WebhookSignature::parse("sha256=abc").is_none());
+        let header = signed(&secret(), BODY);
+        let unhex = format!("{}zz", &header[..header.len() - 2]);
+        assert!(
+            WebhookSignature::parse(&unhex).is_none(),
+            "a digest of the right length must still be hex"
+        );
+    }
+
+    #[test]
+    fn a_digest_of_the_wrong_length_does_not_parse() {
+        let digest = &signed(&secret(), BODY)[PREFIX.len()..];
+
+        for refused in [
+            PREFIX.to_string(),
+            format!("{PREFIX}{digest}00"),
+            format!("{PREFIX}{}", &digest[..digest.len() - 2]),
+        ] {
+            assert!(WebhookSignature::parse(&refused).is_none(), "{refused}");
+        }
     }
 
     #[test]
     fn a_digest_without_its_prefix_does_not_parse() {
-        assert_eq!(WebhookSignature::parse("abcdef1234567890"), None);
+        assert!(WebhookSignature::parse("abcdef1234567890").is_none());
         let header = signed(&secret(), BODY);
-        assert_eq!(WebhookSignature::parse(&header[PREFIX.len()..]), None);
+        assert!(WebhookSignature::parse(&header[PREFIX.len()..]).is_none());
     }
 
     #[test]
     fn a_prefix_spelled_in_uppercase_does_not_parse() {
         let header = signed(&secret(), BODY).replacen(PREFIX, "SHA256=", 1);
 
-        assert_eq!(WebhookSignature::parse(&header), None);
+        assert!(WebhookSignature::parse(&header).is_none());
     }
 
     #[test]
@@ -112,12 +142,29 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_digest_does_not_verify() {
+    fn a_truncated_digest_is_refused() {
         let header = signed(&secret(), BODY);
         let truncated = &header[..header.len() - 2];
-        let signature = WebhookSignature::parse(truncated).unwrap();
 
-        assert!(!signature.verifies(&secret(), BODY));
+        assert!(
+            WebhookSignature::parse(truncated).is_none(),
+            "a digest one byte short does not parse"
+        );
+        assert!(!WebhookSignature::verify(truncated, &secret(), BODY));
+    }
+
+    #[test]
+    fn an_empty_secret_verifies_nothing() {
+        let empty = SecretValue::new("");
+        let header = signed(&empty, BODY);
+
+        assert!(
+            !WebhookSignature::parse(&header)
+                .unwrap()
+                .verifies(&empty, BODY),
+            "a digest anyone can key proves nothing about who sent it"
+        );
+        assert!(!WebhookSignature::verify(&header, &empty, BODY));
     }
 
     #[test]
