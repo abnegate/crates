@@ -1,7 +1,8 @@
 //! A backstop for the walk rule in `src/work/source.rs`, which refuses the
 //! walks it can recognise in the scanners' source and no more: this times
-//! [`redact`] and [`sanitize`] on the inputs most likely to make them rescan,
-//! so a walk the rule misses still fails if it grows faster than its input.
+//! [`redact`], [`contains_credential`] and [`sanitize`] on the inputs most
+//! likely to make them rescan, so a walk the rule misses still fails if it
+//! grows faster than its input.
 //! Run it in a release build, as CI does:
 //!
 //! ```sh
@@ -12,6 +13,7 @@ use std::hint::black_box;
 use std::time::Duration;
 use std::time::Instant;
 
+use abnegate_secret::contains_credential;
 use abnegate_secret::redact;
 use abnegate_secret::sanitize;
 
@@ -53,6 +55,18 @@ const REDACTED: &[(&str, &str)] = &[
     ("", "\""),
 ];
 
+/// Inputs that make [`contains_credential`] rescan if it can, none of which
+/// carries a credential, so that the scan reads all of each.
+const CHECKED: &[(&str, &str)] = &[
+    ("", "ghp_a "),
+    ("", "sk_a1."),
+    ("", "a1b2c3d "),
+    ("", "hf_abcdefghijklmnopqrstuvwxyzabc."),
+    ("", "glpat-abcdefghijklmno."),
+    ("", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1 "),
+    ("", "\"k\":1,"),
+];
+
 /// Inputs that make [`sanitize`] rescan if it can.
 const SANITIZED: &[(&str, &str)] = &[
     ("", "\u{1b}]"),
@@ -70,6 +84,7 @@ const SANITIZED: &[(&str, &str)] = &[
 fn each_scanner_takes_time_linear_in_its_input() {
     let failures = [
         failures("redact", redacting, REDACTED),
+        failures("contains_credential", checking, CHECKED),
         failures("sanitize", sanitizing, SANITIZED),
     ]
     .concat();
@@ -82,6 +97,10 @@ fn each_scanner_takes_time_linear_in_its_input() {
 
 fn redacting(text: &str) {
     black_box(redact(black_box(text)));
+}
+
+fn checking(text: &str) {
+    black_box(contains_credential(black_box(text)));
 }
 
 fn sanitizing(text: &str) {

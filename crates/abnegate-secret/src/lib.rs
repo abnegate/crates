@@ -6,8 +6,9 @@
 //! [`SecretValue`] holds a credential without letting it reach a log line by
 //! accident, `encrypt_value` wraps one in an `ENC[v1:...]` envelope for
 //! storage, [`redact`] scrubs credentials out of text on its way back to a
-//! model, [`conceal`] removes one known key however a provider echoes it, and
-//! [`sanitize`] scrubs text that has been through a terminal.
+//! model, [`contains_credential`] tells whether a value meant to be a plain
+//! name carries one, [`conceal`] removes one known key however a provider
+//! echoes it, and [`sanitize`] scrubs text that has been through a terminal.
 //!
 //! ```
 //! use abnegate_secret::redact;
@@ -86,6 +87,7 @@ pub use crate::key::read_key_file;
 pub use crate::key::write_key_file;
 pub use crate::optional::OptionalSecretExtension;
 pub use crate::redact::REDACTED;
+pub use crate::redact::contains_credential;
 pub use crate::redact::redact;
 pub use crate::sanitize::sanitize;
 pub use crate::sanitize::sanitize_owned;

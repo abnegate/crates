@@ -144,7 +144,7 @@ pub(super) const ALLOWED: &[Allowance] = &[
     },
     Allowance {
         file: "redact/credential.rs",
-        code: "if !bytes.get(index..body)?.eq_ignore_ascii_case(prefix) {",
+        code: "bytes.get(index..body)?.eq_ignore_ascii_case(prefix).then_some(body)",
         walks: "a slice as long as a credential's prefix, from the constant table",
     },
     Allowance {
@@ -162,6 +162,12 @@ pub(super) const ALLOWED: &[Allowance] = &[
         file: "redact/credential.rs",
         code: "let lead = credentials[index].prefix.as_bytes()[0].to_ascii_lowercase();",
         walks: "the first byte of a credential's prefix, at compile time",
+    },
+    Allowance {
+        file: "redact/detection.rs",
+        code: "(index == 0 || !bytes[index - 1].is_ascii_alphanumeric()) \
+               && CREDENTIALS.iter().chain([&AWS_ACCESS_KEY]).any(|credential| credential.starts_at(bytes, index))",
+        walks: "the constant table of credential families and one family more",
     },
     Allowance {
         file: "sanitize.rs",
