@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.6...abnegate-vcs/v0.1.7) - 2026-11-05
+
+### Added
+
+- *(vcs)* set pull requests to merge once ready and move them in and out of draft
+
+### Fixed
+
+- *(vcs)* read an unstable or moved pull request's auto-merge refusal as what it is
+- *(vcs)* trust a change only when github's answer says it made it
+
 ## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.5...abnegate-vcs/v0.1.6) - 2026-11-03
 
 ### Added
