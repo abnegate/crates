@@ -159,7 +159,7 @@ const GIT_SUFFIX: &str = ".git";
 ///   [`Self::fetch_statuses`].
 /// - Reviewing: [`Self::fetch_issue_comments`], [`Self::post_issue_comment`],
 ///   [`Self::fetch_reviews`], [`Self::submit_review`],
-///   [`Self::fetch_review_threads`],
+///   [`Self::fetch_review_threads`], [`Self::collect_review_threads`],
 ///   [`Self::reply_to_review_comment`] and [`Self::resolve_review_thread`].
 /// - Merging: [`Self::merge`], then [`Self::delete_branch`].
 /// - Merging once ready: [`Self::fetch_merge_settings`],
