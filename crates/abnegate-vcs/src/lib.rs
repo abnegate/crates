@@ -44,7 +44,9 @@
 //!   pull requests on GitHub or a GitHub Enterprise install, sets them to
 //!   merge once they are ready and moves them in and out of draft, reads back
 //!   how each one was received, and creates repositories there and registers their
-//!   webhooks, over the REST and GraphQL APIs.
+//!   webhooks, over the REST and GraphQL APIs; and
+//!   `pull_request::WebhookSignature`, which checks that a webhook delivery was
+//!   signed with the secret its webhook was registered with.
 //! - `github-app`: `github`, plus `pull_request::Claims`, which signs the JWT
 //!   that authenticates as a GitHub App, `pull_request::Issuer`, which trades
 //!   it for an installation access token, and `pull_request::TokenCache`,
@@ -164,9 +166,6 @@ pub use crate::pull_request::Issue;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::IssueComment;
-#[cfg(feature = "github-app")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
-pub use crate::pull_request::Issuer;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::IssueReference;
@@ -176,6 +175,9 @@ pub use crate::pull_request::IssueState;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::IssueUpdate;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::Issuer;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::JobLog;

@@ -21,12 +21,9 @@ impl PullRequestService {
         page: NonZeroU32,
         per_page: NonZeroU8,
     ) -> PullRequestResult<Page<Release>> {
-        let asked = usize::from(per_page.get()).min(PAGE_SIZE);
-        let mut url = self.releases(repository, &[]);
-        url.query_pairs_mut()
-            .append_pair("per_page", &asked.to_string())
-            .append_pair("page", &page.to_string());
-        let rows: Vec<GitHubRelease> = self.get(url, token).await?;
+        let asked = asked(per_page);
+        let url = self.releases(repository, &[]);
+        let rows: Vec<GitHubRelease> = self.get(paged(url, page, asked), token).await?;
         let read = rows.len();
 
         let releases = rows.into_iter().map(Release::from).collect();

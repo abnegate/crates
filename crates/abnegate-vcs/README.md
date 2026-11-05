@@ -24,7 +24,7 @@ to take `--ref-format` for `init` and `clone`.
 
 ## Features
 
-- `github`: `PullRequestService`, which opens, reads, checks, reviews and merges pull requests on GitHub or a GitHub Enterprise install, sets them to merge once they are ready and moves them in and out of draft, reads back how each one was received, and creates repositories there and registers their webhooks, over the REST and GraphQL APIs.
+- `github`: `PullRequestService`, which opens, reads, checks, reviews and merges pull requests on GitHub or a GitHub Enterprise install, sets them to merge once they are ready and moves them in and out of draft, reads back how each one was received, and creates repositories there and registers their webhooks, over the REST and GraphQL APIs; and `WebhookSignature`, which checks that a webhook delivery was signed with the secret its webhook was registered with.
 - `github-app`: `github`, plus what authenticating as a GitHub App installation takes: `Claims` signs the RS256 JWT that proves the caller is the App, `Issuer` trades it for an installation access token without ever following a redirect, and `TokenCache` holds each installation's token until it comes within five minutes of expiring.
 - `testing`: `RepositoryUrl::local`, `PullRequestService::standing_in_for` and, with `github-app`, `Issuer::standing_in_for`, which reach a repository on the local disk or a mock API server; only a test should enable it.
 

@@ -33,13 +33,10 @@ impl PullRequestService {
         page: NonZeroU32,
         per_page: NonZeroU8,
     ) -> PullRequestResult<Page<Deployment>> {
-        let asked = usize::from(per_page.get()).min(PAGE_SIZE);
+        let asked = asked(per_page);
         let mut url = self.deployments(repository, &[]);
-        url.query_pairs_mut()
-            .append_pair("sha", commit.as_str())
-            .append_pair("per_page", &asked.to_string())
-            .append_pair("page", &page.to_string());
-        let rows: Vec<GitHubDeployment> = self.get(url, token).await?;
+        url.query_pairs_mut().append_pair("sha", commit.as_str());
+        let rows: Vec<GitHubDeployment> = self.get(paged(url, page, asked), token).await?;
         let read = rows.len();
 
         let mut deployments = Vec::with_capacity(read);

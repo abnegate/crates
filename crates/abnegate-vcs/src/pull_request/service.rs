@@ -31,6 +31,8 @@ use reqwest::header;
 use reqwest::header::HeaderMap;
 use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
+use std::num::NonZeroU8;
+use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -900,6 +902,20 @@ async fn refusal(response: Response) -> PullRequestError {
         Ok(refusal) => unexpected(status, &refusal),
         Err(failure) => failure,
     }
+}
+
+/// The rows to ask for when `per_page` are wanted: never more than GitHub
+/// sends.
+fn asked(per_page: NonZeroU8) -> usize {
+    usize::from(per_page.get()).min(PAGE_SIZE)
+}
+
+/// `url` asking for page `page` of `asked` rows.
+fn paged(mut url: Url, page: NonZeroU32, asked: usize) -> Url {
+    url.query_pairs_mut()
+        .append_pair("per_page", &asked.to_string())
+        .append_pair("page", &page.to_string());
+    url
 }
 
 /// `text` cut to [`MAXIMUM_ERROR_BYTES`], never inside a character.
