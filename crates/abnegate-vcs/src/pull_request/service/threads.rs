@@ -1425,14 +1425,18 @@ mod tests {
         ResponseTemplate::new(200).set_body_bytes(vec![b' '; MAXIMUM_ANSWER_BYTES + 1])
     }
 
-    fn firsts(received: &[Request]) -> Vec<Value> {
+    fn variables(received: &[Request], name: &str) -> Vec<Value> {
         received
             .iter()
             .map(|request| {
                 let sent: Value = serde_json::from_slice(&request.body).unwrap();
-                sent["variables"]["first"].clone()
+                sent["variables"][name].clone()
             })
             .collect()
+    }
+
+    fn firsts(received: &[Request]) -> Vec<Value> {
+        variables(received, "first")
     }
 
     #[tokio::test]
@@ -1472,6 +1476,48 @@ mod tests {
             firsts(&server.received_requests().await.unwrap()),
             [json!(100), json!(50), json!(50)],
             "the halved size is kept for the pages after it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_page_larger_than_the_crate_reads_is_asked_for_again_from_the_same_cursor() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(asked(None)))
+            .respond_with(page(json!([thread("PRRT_1")]), true, Some("Y3Vyc29yOjE=")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(asked(Some("Y3Vyc29yOjE="))))
+            .respond_with(oversized())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(sent(THREADS, 50, Some("Y3Vyc29yOjE="))))
+            .respond_with(page(json!([thread("PRRT_2")]), false, None))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let collected = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert!(collected.complete);
+        assert_eq!(identifiers(&collected.items), ["PRRT_1", "PRRT_2"]);
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(firsts(&received), [json!(100), json!(100), json!(50)]);
+        assert_eq!(
+            variables(&received, "after"),
+            [Value::Null, json!("Y3Vyc29yOjE="), json!("Y3Vyc29yOjE=")],
+            "the halved page starts from the cursor the oversized one was asked from"
         );
     }
 
