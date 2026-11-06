@@ -2848,6 +2848,23 @@ async fn a_listing_out_of_time_does_not_claim_there_are_no_files() {
     );
 }
 
+/// A directory locked against reading that is opened again once this is
+/// dropped, so the tree around it can be removed however its test ends.
+struct Locked<'path>(&'path Path);
+
+impl<'path> Locked<'path> {
+    fn lock(directory: &'path Path) -> Self {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o000)).unwrap();
+        Self(directory)
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+    }
+}
+
 /// A recursive listing left out a subtree it could not read without a word,
 /// so what it listed passed for the whole tree.
 #[tokio::test]
@@ -2858,9 +2875,8 @@ async fn a_listing_says_when_part_of_the_tree_could_not_be_read() {
     let closed = directory.path().join("closed");
     fs::create_dir(&closed).unwrap();
     fs::write(closed.join(SECRET_FILE), "").unwrap();
-    fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).unwrap();
+    let _locked = Locked::lock(&closed);
     if fs::read_dir(&closed).is_ok() {
-        fs::set_permissions(&closed, fs::Permissions::from_mode(0o755)).unwrap();
         eprintln!("skipping: {} stayed readable", closed.display());
         return;
     }
@@ -2872,7 +2888,6 @@ async fn a_listing_says_when_part_of_the_tree_could_not_be_read() {
             &context,
         )
         .await;
-    fs::set_permissions(&closed, fs::Permissions::from_mode(0o755)).unwrap();
 
     assert_eq!(
         listed.expect("a listing").output.unwrap(),
@@ -2908,7 +2923,8 @@ async fn read_file_returns_text_without_its_invisible_formatting_characters() {
     );
 }
 
-#[cfg(target_os = "macos")]
+/// Whether an `rg` lies on this process's `PATH`, which the search hands
+/// to the `rg` it starts.
 fn ripgrep_installed() -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|directory| directory.join("rg").is_file())
@@ -2964,10 +2980,50 @@ async fn a_ripgrep_match_is_withheld_by_identity() {
     assert!(!searched.contains("auth.json"), "{searched}");
 }
 
+/// ripgrep never follows a link, so it reports each match under the path
+/// it walked, and here no denied entry spells that path: the state is denied
+/// only through a link to it in the workspace. Only the identity the entry
+/// leads to withholds the match. The files carry an extension the walk never
+/// reads, so a match in the output is one ripgrep found.
+#[tokio::test]
+async fn a_ripgrep_match_is_withheld_by_the_identity_a_link_leads_to() {
+    if !ripgrep_installed() {
+        eprintln!("skipping: ripgrep is not installed");
+        return;
+    }
+    let shared = shared();
+    symlinked(&shared.workspace, "alias", &shared.state);
+    fs::write(shared.workspace.join("own.log"), OTHER_SECRET).unwrap();
+    fs::write(shared.home.join("leak.log"), OTHER_SECRET).unwrap();
+    let context = ToolContext {
+        unrestricted: true,
+        denied: vec![shared.workspace.join("alias")],
+        environment: ToolContext::default().environment,
+        ..create_test_context(&shared.workspace)
+    };
+
+    let searched = SearchCodeTool
+        .execute(
+            serde_json::json!({
+                "pattern": OTHER_SECRET,
+                "path": shared.root,
+                "case_sensitive": true
+            }),
+            &context,
+        )
+        .await
+        .expect("the directory around the state searches")
+        .output
+        .unwrap();
+
+    assert!(searched.contains("own.log"), "{searched}");
+    assert!(!searched.contains("leak.log"), "{searched}");
+    assert!(!searched.contains("auth.json"), "{searched}");
+}
+
 /// A link inside the working directory names the denied state under a path
 /// no denied entry spells, so listing or searching through it is refused as
 /// the state itself is, and a walk of the tree around it does not follow it in.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_listing_through_a_link_into_denied_state_is_refused() {
     let shared = shared();
