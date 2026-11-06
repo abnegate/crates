@@ -3,7 +3,8 @@ use serde::Deserialize;
 use crate::parser::claude::cli_content_block::CliContentBlock;
 use crate::parser::claude::cli_usage::CliUsage;
 
-/// The `message` an `assistant` event carries.
+/// The `message` an `assistant` event carries, or a `user` event: the
+/// results of the agent's tool calls.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[non_exhaustive]
 pub struct CliMessage {
@@ -25,7 +26,9 @@ impl CliMessage {
             .iter()
             .filter_map(|block| match block {
                 CliContentBlock::Text { text } => Some(text.as_str()),
-                CliContentBlock::ToolUse { .. } | CliContentBlock::Other => None,
+                CliContentBlock::ToolUse { .. }
+                | CliContentBlock::ToolResult { .. }
+                | CliContentBlock::Other => None,
             })
             .collect()
     }

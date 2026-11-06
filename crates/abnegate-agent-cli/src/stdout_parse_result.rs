@@ -22,7 +22,8 @@ pub struct StdoutParseResult {
     /// The agent's final answer, apart from the narration in
     /// [`text`](StdoutParseResult::text), when it reported one.
     pub answer: Option<String>,
-    /// Tools the agent ran for itself. Reported, never replayed.
+    /// Tools the main agent ran for itself. Reported, never replayed. A
+    /// subagent's calls are not among them.
     pub tools: Vec<ToolCall>,
     /// The last token counts reported, cache reads and writes counted as
     /// prompt.
@@ -70,8 +71,10 @@ pub struct StdoutParseResult {
 impl StdoutParseResult {
     /// Fold one event in. Prose and tool calls accumulate, the first failure,
     /// a limit's included, and the first credit window are kept, a window
-    /// report replaces the last one on the same window, and every other
-    /// field takes the latest value reported.
+    /// report replaces the last one on the same window, a tool's
+    /// [output](AgentEvent::Output) and news of a
+    /// [subagent](AgentEvent::Subagent) are left to the stream, and every
+    /// other field takes the latest value reported.
     pub fn record(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Text(chunk) => self.text.push_str(&chunk),
@@ -114,6 +117,7 @@ impl StdoutParseResult {
                 self.credits.get_or_insert(window);
             }
             AgentEvent::Occupancy(occupancy) => self.occupancy = Some(occupancy),
+            AgentEvent::Output(_) | AgentEvent::Subagent(_) => {}
         }
     }
 

@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::parser::claude::lenient;
+use crate::parser::lenient;
 
 /// What a `result` event's `modelUsage` reports for one model the turn ran
 /// on.

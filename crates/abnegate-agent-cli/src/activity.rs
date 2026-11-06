@@ -46,21 +46,31 @@ const BACKTICK: char = '`';
 /// let hidden = ToolCall::function("toolu_02", "mcp__host__search", "{}");
 /// assert_eq!(activity(&hidden, &["mcp__host__"]), None);
 /// ```
-pub fn activity(call: &ToolCall, hidden: &[&str]) -> Option<String> {
+pub fn activity(call: &ToolCall, hidden_prefixes: &[&str]) -> Option<String> {
     let name = &call.function.name;
-    if hidden.iter().any(|prefix| name.starts_with(prefix)) {
+    if hidden(name, hidden_prefixes) {
         return None;
     }
-    Some(match subject(&call.function.arguments) {
-        Some(subject) => format!("- {name} {}\n", code_span(&subject)),
-        None => format!("- {name}\n"),
-    })
+    Some(line(name, subject(&call.function.arguments).as_deref()))
 }
 
-/// The subject is cut only once it is sanitized: a credential cut in half no
-/// longer looks like one, and a carriage return left in would end the line
-/// the code span has to stay on.
-fn subject(arguments: &str) -> Option<String> {
+/// Whether a call of tool `name` is left out of what a reader is shown.
+pub(crate) fn hidden(name: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| name.starts_with(prefix))
+}
+
+/// The list item for a call of tool `name` about `subject`.
+pub(crate) fn line(name: &str, subject: Option<&str>) -> String {
+    match subject {
+        Some(subject) => format!("- {name} {}\n", code_span(subject)),
+        None => format!("- {name}\n"),
+    }
+}
+
+/// What a call with `arguments` was about. The subject is cut only once it
+/// is sanitized: a credential cut in half no longer looks like one, and a
+/// carriage return left in would end the line the code span has to stay on.
+pub(crate) fn subject(arguments: &str) -> Option<String> {
     let arguments: Value = serde_json::from_str(arguments).ok()?;
     let text = SUBJECTS.iter().find_map(|key| {
         arguments

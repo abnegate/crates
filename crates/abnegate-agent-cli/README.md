@@ -151,9 +151,10 @@ context the account cannot fund is limited in Claude's own words after
 `CREDITS_REQUIRED` or `LONG_CONTEXT_CREDITS_REQUIRED`, or fails after
 `CREDITS_UNCONFIRMED` when Claude could not look the credits up. A failed
 result with status 429, or in a limit's words, is a limit too, unless its
-status is 401. A subagent's lines contribute only the tools it calls: its
-words, token counts and refusals stay in its own conversation, and the main
-agent answers without them.
+status is 401. A subagent's words, token counts and refusals stay in its own
+conversation, and the main agent answers without them; the calls it makes are
+steps of its run rather than the main agent's tools (see
+[Tool output and subagents](#tool-output-and-subagents)).
 
 A successful result's text is the turn's final answer, `AgentEvent::Answer`,
 yielded just before `AgentEvent::Finished` and kept in
@@ -181,6 +182,48 @@ use abnegate_llm::ToolCall;
 
 let call = ToolCall::function("toolu_01", "Bash", r#"{"command":"git status"}"#);
 assert_eq!(activity(&call, &[]).as_deref(), Some("- Bash `git status`\n"));
+```
+
+## Tool output and subagents
+
+What one of the agent's own tool calls printed, once the call finishes, is an
+`AgentEvent::Output`: the call, the text, and whether it worked (a Claude tool
+result not marked an error, a Codex command that exited zero). News of a
+subagent the agent started for itself, through Claude's Agent tool (Task in
+older releases) or Codex's collaboration tools, is an `AgentEvent::Subagent`,
+one `Subagent` update per line that says something new about it: its start,
+its progress and model, each of its own calls as a `SubagentStep`, and how it
+ended, as a `SubagentStatus`. A field an update leaves `None` did not change. A
+background subagent's news can come after the event that ends the turn.
+
+Both are yielded by `CliProvider::stream` only. Neither is folded into a
+`StdoutParseResult`, and neither counts toward the output limit, which
+measures the agent's prose. Every word they carry, a tool's output, a
+subagent's description, summary, error and each step's subject, is sanitized
+and scrubbed of the run's secrets before it is yielded. Nothing renders them:
+a caller that lists a subagent's calls as it lists the main agent's renders
+each step itself, with `Subagent::activity` for instance, and counts it toward
+whatever budget it keeps.
+
+A subagent's own calls, and those of every agent nested inside it, are steps
+of the subagent the main agent started, so they are no longer
+`AgentEvent::Tool` events and no longer appear in `StdoutParseResult::tools`,
+which holds the main agent's calls alone. A call by an agent no known subagent
+descends from, such as a forked skill's, stays the main agent's.
+
+```rust
+use abnegate_agent_cli::AgentEvent;
+
+fn shown(event: &AgentEvent) -> Option<String> {
+    match event {
+        AgentEvent::Subagent(update) => update.activity(&["mcp__host__"]),
+        AgentEvent::Output(output) if !output.succeeded => {
+            Some(format!("{} failed\n", output.call.function.name))
+        }
+        _ => None,
+    }
+}
+# let _ = shown;
 ```
 
 ## Limits and windows

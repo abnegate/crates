@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
-/// One block of an `assistant` event's `message.content`.
+/// One block of the `message.content` of an `assistant` event, or of the
+/// `user` event that hands the model back what its tools printed.
 ///
 /// A variant may gain a field in a minor release, so a pattern outside this
 /// crate ends in `..`:
@@ -38,6 +39,22 @@ pub enum CliContentBlock {
         /// The call's arguments, `null` when absent.
         #[serde(default)]
         input: serde_json::Value,
+    },
+    /// What one of the agent's own tool calls printed, handed back to the
+    /// model in a `user` event.
+    #[serde(rename = "tool_result")]
+    #[non_exhaustive]
+    ToolResult {
+        /// The identifier of the call it answers.
+        #[serde(default)]
+        tool_use_id: String,
+        /// What the tool printed: a string, or a list of blocks of which the
+        /// text ones say anything. `null` when absent.
+        #[serde(default)]
+        content: serde_json::Value,
+        /// Whether the call failed.
+        #[serde(default)]
+        is_error: bool,
     },
     /// Any other kind of block, such as thinking, which is ignored.
     #[serde(other)]
@@ -93,8 +110,38 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_result_block_is_read_with_or_without_its_content_and_flag() {
+        let block: CliContentBlock = serde_json::from_str(
+            r#"{"type":"tool_result","tool_use_id":"toolu_01","content":"fn main() {}","is_error":true}"#,
+        )
+        .expect("a tool result block");
+        let CliContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = block
+        else {
+            panic!("expected a tool result, got {block:?}");
+        };
+        assert_eq!(tool_use_id, "toolu_01");
+        assert_eq!(content, "fn main() {}");
+        assert!(is_error);
+
+        let block: CliContentBlock =
+            serde_json::from_str(r#"{"type":"tool_result"}"#).expect("a tool result block");
+        assert_eq!(
+            block,
+            CliContentBlock::ToolResult {
+                tool_use_id: String::new(),
+                content: serde_json::Value::Null,
+                is_error: false,
+            }
+        );
+    }
+
+    #[test]
     fn every_other_block_type_is_other() {
-        for kind in ["thinking", "tool_result", "image", "some_future_type"] {
+        for kind in ["thinking", "image", "some_future_type"] {
             let json = format!(r#"{{"type":"{kind}","data":"whatever"}}"#);
             let block: CliContentBlock = serde_json::from_str(&json).expect("a block");
             assert_eq!(block, CliContentBlock::Other, "{kind}");
