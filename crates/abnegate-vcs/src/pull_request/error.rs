@@ -35,8 +35,9 @@ pub enum PullRequestError {
     #[error("GitHub's rate limit is exhausted until it resets")]
     #[non_exhaustive]
     QuotaExhausted {
-        /// What GitHub said of the limit, including when it resets.
-        rate_limit: RateLimit,
+        /// What GitHub said of the limit, including when it resets, boxed so
+        /// that every other error stays small.
+        rate_limit: Box<RateLimit>,
     },
 
     /// What was asked for does not exist, or the token cannot see it.
@@ -122,7 +123,9 @@ impl PullRequestError {
     /// GitHub's rate limit for the token is spent until it resets, as
     /// `rate_limit` says.
     pub fn quota_exhausted(rate_limit: RateLimit) -> Self {
-        Self::QuotaExhausted { rate_limit }
+        Self::QuotaExhausted {
+            rate_limit: Box::new(rate_limit),
+        }
     }
 }
 

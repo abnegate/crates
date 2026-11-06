@@ -407,6 +407,70 @@ async fn a_write_a_307_or_308_sends_elsewhere_on_the_origin_arrives_there_once_a
     }
 }
 
+/// A write a 307 or 308 sends on, that is then answered with a rate limit
+/// worth waiting on, is sent again from where it was first sent, so the
+/// redirect is followed again and the write arrives whole both times.
+#[tokio::test]
+async fn a_redirected_write_answered_with_a_rate_limit_is_sent_again_from_the_start() {
+    let server = MockServer::start().await;
+    for status in KEEPING {
+        for write in WRITES {
+            let from = format!("/limited/{status}/{write}");
+            let to = format!("{TARGETS}{from}");
+            Mock::given(path(&from))
+                .respond_with(redirecting(status, format!("{}{to}", server.uri())))
+                .mount(&server)
+                .await;
+            Mock::given(path(&to))
+                .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            Mock::given(path(&to))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "at": to })))
+                .mount(&server)
+                .await;
+        }
+    }
+    let service = stand_in(&server)
+        .await
+        .with_retry_after(Duration::from_secs(60));
+
+    for status in KEEPING {
+        for write in WRITES {
+            let from = format!("/limited/{status}/{write}");
+            let to = format!("{TARGETS}{from}");
+
+            let answer = writing(&service, write.clone(), address(&server, &from))
+                .await
+                .unwrap_or_else(|failure| panic!("{write} {status}: {failure:?}"));
+
+            let answer: Value = decode(answer).await.unwrap();
+            assert_eq!(answer, json!({ "at": to }), "{write} {status}");
+            assert_eq!(
+                arrivals(&server, &from).await.len(),
+                2,
+                "{write} {status} is sent again from where it was first sent"
+            );
+            let landed = arrivals(&server, &to).await;
+            assert_eq!(
+                landed.len(),
+                2,
+                "{write} {status} follows the redirect on both attempts"
+            );
+            for arrival in &landed {
+                assert_eq!(arrival.method, write, "{status} keeps the method");
+                assert_eq!(
+                    arrival.body_json::<Value>().unwrap(),
+                    payload(),
+                    "{write} {status} keeps the body"
+                );
+            }
+        }
+    }
+}
+
 /// Another origin is another port, another host name, even one that reaches
 /// the same server, or another scheme.
 #[tokio::test]

@@ -79,13 +79,19 @@ impl RateLimit {
     pub(super) fn from_headers(headers: &HeaderMap) -> Self {
         Self {
             limit: count(headers, LIMIT),
-            remaining: count(headers, REMAINING),
+            remaining: remaining(headers),
             used: count(headers, USED),
             reset: count(headers, RESET)
                 .and_then(|seconds| UNIX_EPOCH.checked_add(Duration::from_secs(seconds))),
             resource: text(headers, RESOURCE).map(str::to_string),
         }
     }
+}
+
+/// The requests `headers` say are left in the window, read as
+/// [`RateLimit::from_headers`] reads them, so `+0` and `00` are 0 as well.
+pub(super) fn remaining(headers: &HeaderMap) -> Option<u64> {
+    count(headers, REMAINING)
 }
 
 /// The whole number `name` holds in `headers`.
@@ -208,6 +214,20 @@ mod tests {
             let read = RateLimit::from_headers(&headers(&[(RESOURCE, resource.clone())]));
 
             assert_eq!(read.resource, None, "{resource:?}");
+        }
+    }
+
+    #[test]
+    fn a_count_with_a_sign_or_leading_zeros_is_read_as_its_number() {
+        for written in [value("+0"), value("00")] {
+            let headers = headers(&[(REMAINING, written.clone())]);
+
+            assert_eq!(remaining(&headers), Some(0), "{written:?}");
+            assert_eq!(
+                RateLimit::from_headers(&headers).remaining,
+                Some(0),
+                "{written:?}"
+            );
         }
     }
 

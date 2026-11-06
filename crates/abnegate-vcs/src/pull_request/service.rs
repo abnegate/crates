@@ -98,9 +98,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Redirects within the origin a request follows before it stops.
 const MAXIMUM_REDIRECTS: usize = 10;
 
-/// The header GitHub's secondary rate limit says how long to wait in.
-const RETRY_AFTER: &str = "retry-after";
-
 /// What GitHub says of a spent rate limit on a 403 that carries no header
 /// saying so.
 const RATE_LIMIT: &str = "rate limit";
@@ -661,6 +658,12 @@ impl PullRequestService {
             ),
             again,
         ) {
+            tracing::debug!(
+                status = %response.status(),
+                ?delay,
+                "Waiting out a rate limit before sending the request again"
+            );
+            drop(response);
             tokio::time::sleep(delay).await;
             at = Instant::now();
             response = transported(again).await?;
@@ -975,7 +978,7 @@ fn classified(status: StatusCode, headers: &HeaderMap) -> Option<PullRequestErro
     let exhausted = headers
         .get(rate_limit::REMAINING)
         .is_some_and(|remaining| remaining.as_bytes() == b"0")
-        || headers.contains_key(RETRY_AFTER);
+        || headers.contains_key(header::RETRY_AFTER);
     match status {
         StatusCode::UNAUTHORIZED => Some(PullRequestError::AuthenticationFailed),
         StatusCode::TOO_MANY_REQUESTS => Some(PullRequestError::RateLimited),
@@ -996,21 +999,18 @@ fn pause(
     ceiling: Duration,
     now: SystemTime,
 ) -> Option<Duration> {
-    if !limits_the_rate(status) || exhausted(status, headers).is_some() {
+    if !limits_the_rate(status) || rate_limit::remaining(headers) == Some(0) {
         return None;
     }
-    let delay = RetryAfter::from_header(headers.get(RETRY_AFTER)?.to_str().ok()?, now)?;
+    let delay = RetryAfter::from_header(headers.get(header::RETRY_AFTER)?.to_str().ok()?, now)?;
     (delay <= ceiling).then_some(delay)
 }
 
 /// What GitHub said of the rate limit, when `status` and `headers` say it
 /// spent the window: a 403 or 429 with no requests left.
 fn exhausted(status: StatusCode, headers: &HeaderMap) -> Option<RateLimit> {
-    if !limits_the_rate(status) {
-        return None;
-    }
-    let rate_limit = RateLimit::from_headers(headers);
-    (rate_limit.remaining == Some(0)).then_some(rate_limit)
+    (limits_the_rate(status) && rate_limit::remaining(headers) == Some(0))
+        .then(|| RateLimit::from_headers(headers))
 }
 
 /// Whether `status` is one GitHub answers a rate limit with.
@@ -2383,7 +2383,10 @@ mod tests {
         let now = UNIX_EPOCH + Duration::from_secs(SIXTH_OF_NOVEMBER_1994);
         let answer = |retry_after: &'static str, remaining: Option<&'static str>| {
             let mut headers = HeaderMap::new();
-            headers.insert(RETRY_AFTER, header::HeaderValue::from_static(retry_after));
+            headers.insert(
+                header::RETRY_AFTER,
+                header::HeaderValue::from_static(retry_after),
+            );
             if let Some(remaining) = remaining {
                 headers.insert(
                     rate_limit::REMAINING,
@@ -2404,6 +2407,11 @@ mod tests {
                 answer("Sun, 06 Nov 1994 08:49:01 GMT", None),
                 Some(ceiling),
             ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                answer("0", None),
+                Some(Duration::ZERO),
+            ),
             (StatusCode::TOO_MANY_REQUESTS, answer("2", None), None),
             (StatusCode::SERVICE_UNAVAILABLE, answer("0", None), None),
             (StatusCode::TOO_MANY_REQUESTS, answer("0", Some("0")), None),
@@ -2414,6 +2422,17 @@ mod tests {
                 "{status} {headers:?}"
             );
         }
+
+        assert_eq!(
+            pause(
+                StatusCode::TOO_MANY_REQUESTS,
+                &answer("18446744073709551616", None),
+                Duration::MAX,
+                now,
+            ),
+            Some(Duration::MAX),
+            "a wait past what a duration holds is as long as one can be"
+        );
     }
 
     const VERSION: &str = "2026-03-10";
