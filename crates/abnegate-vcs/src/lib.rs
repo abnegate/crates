@@ -43,8 +43,9 @@
 //! - `github`: `pull_request`, which opens, reads, checks, reviews and merges
 //!   pull requests on GitHub or a GitHub Enterprise install, sets them to
 //!   merge once they are ready and moves them in and out of draft, reads back
-//!   how each one was received, and creates repositories there and registers their
-//!   webhooks, over the REST and GraphQL APIs; and
+//!   how each one was received, lists a repository's branches, and creates
+//!   repositories there and registers their webhooks, over the REST and
+//!   GraphQL APIs; and
 //!   `pull_request::WebhookSignature`, which checks that a webhook delivery was
 //!   signed with the secret its webhook was registered with.
 //! - `github-app`: `github`, plus `pull_request::ApplicationClaims`, which
@@ -110,6 +111,9 @@ pub use crate::pull_request::AutoMerge;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Blob;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Branch;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ChangedFile;
