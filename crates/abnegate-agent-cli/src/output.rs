@@ -6,7 +6,7 @@ const OMITTED: &str = "bytes left out";
 
 /// What one of the agent's own tool calls printed once it finished, and
 /// whether it worked: the text the agent read back, which it never streams
-/// as prose.
+/// as prose. Like every event, it has no serialized form.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Output {

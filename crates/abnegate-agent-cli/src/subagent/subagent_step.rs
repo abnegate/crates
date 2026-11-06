@@ -4,7 +4,8 @@ use serde::Serialize;
 use crate::subagent::step_status::StepStatus;
 
 /// One of a subagent's own tool calls, a step of the subagent's run rather
-/// than a call of the main agent's.
+/// than a call of the main agent's. It serializes, so a caller can keep the
+/// steps of a subagent's run as a record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SubagentStep {
