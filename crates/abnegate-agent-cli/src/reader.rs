@@ -22,6 +22,7 @@ use crate::paragraphs::Paragraphs;
 use crate::parser;
 use crate::parser::Turn;
 use crate::scrubber::Scrubber;
+use crate::settings::DEFAULT_TOOL_OUTPUT_LIMIT;
 use crate::stdout_parse_result::StdoutParseResult;
 use crate::subagent::Subagent;
 use crate::verdict::Verdict;
@@ -36,11 +37,14 @@ const BUFFER: usize = 8 * 1024;
 /// run cannot do without, which fails it: a tool call or result the size of
 /// a file costs nothing, but a result or prose that cannot be read does.
 ///
-/// Only the prose counts against the output limit. The rest of the stream,
-/// tool results included, is parsed and dropped, so however long a run goes
-/// on it costs no more memory than its answer. What a tool printed and news
-/// of a subagent are handed on and never kept, their text scrubbed of the
-/// run's secrets first.
+/// Only the prose counts against the output limit. The reader keeps only
+/// the run's answer, the main agent's tool calls and what the result
+/// reports; the rest of the stream is parsed and dropped. What a tool printed
+/// and news of a subagent are handed on and never kept, their text scrubbed
+/// of the run's secrets first, and a tool's output then cut to the tool
+/// output limit. What is handed on waits in the stream until it is read, so a
+/// caller that falls behind holds every event it has not read yet, each tool
+/// output no longer than that limit.
 ///
 /// A [partial message](AgentKind::partial) is counted but never journaled: a
 /// secret streamed across several pieces matches none of them, while the
@@ -68,6 +72,7 @@ pub(crate) struct Reader {
     lines: Lines,
     limiter: OutputLimiter,
     limit: usize,
+    printed: usize,
     journal: Journal,
     prose: Sink,
     scrubber: Scrubber,
@@ -99,6 +104,7 @@ impl Reader {
             lines: Lines::new(line_limit),
             limiter: OutputLimiter::new(output_limit),
             limit: output_limit,
+            printed: DEFAULT_TOOL_OUTPUT_LIMIT,
             journal,
             prose,
             scrubber,
@@ -115,6 +121,12 @@ impl Reader {
     /// Hand each event on to `forward` as it is read, when given.
     pub(crate) fn forwarding(mut self, forward: Option<mpsc::UnboundedSender<AgentEvent>>) -> Self {
         self.forward = forward;
+        self
+    }
+
+    /// Hand on at most `limit` bytes of what one tool printed.
+    pub(crate) fn printing(mut self, limit: usize) -> Self {
+        self.printed = limit;
         self
     }
 
@@ -238,7 +250,7 @@ impl Reader {
                 }
                 AgentEvent::Output(mut output) => {
                     scrub(&self.scrubber, &mut output.text);
-                    AgentEvent::Output(output)
+                    AgentEvent::Output(output.truncated(self.printed))
                 }
                 AgentEvent::Subagent(subagent) => {
                     AgentEvent::Subagent(scrubbed(&self.scrubber, subagent))

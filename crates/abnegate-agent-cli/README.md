@@ -264,12 +264,17 @@ background subagent's news can come after the event that ends the turn.
 
 Both are yielded by `CliProvider::stream` only. Neither is folded into a
 `StdoutParseResult`, and neither counts toward the output limit, which
-measures the agent's prose. Every word they carry, a tool's output, a
-subagent's description, summary, error and each step's subject, is sanitized
-and scrubbed of the run's secrets before it is yielded. Nothing renders them:
-a caller that lists a subagent's calls as it lists the main agent's renders
-each step itself, with `Subagent::activity` for instance, and counts it toward
-whatever budget it keeps.
+measures the agent's prose. Every word they carry is scrubbed of the run's
+secrets before it is yielded; a subagent's description, summary, error and
+each step's subject are sanitized too, while a tool's output is otherwise
+handed on as it printed it, and the call an `AgentEvent::Output` names keeps
+its arguments unscrubbed, as `AgentEvent::Tool` does. Since every event waits
+in the stream until it is read, a tool's output keeps at most
+`CliSettings::tool_output_limit` bytes (`DEFAULT_TOOL_OUTPUT_LIMIT`, 64 KiB):
+its start and its end, around a line saying how much was left out. Nothing
+renders either event: a caller that lists a subagent's calls as it lists the
+main agent's renders each step itself, with `Subagent::activity` for
+instance, and counts it toward whatever budget it keeps.
 
 A subagent's own calls, and those of every agent nested inside it, are steps
 of the subagent the main agent started, so they are no longer

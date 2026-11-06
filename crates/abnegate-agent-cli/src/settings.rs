@@ -34,6 +34,11 @@ pub const DEFAULT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 /// One event is a JSON object holding at most a turn's worth of text.
 pub const DEFAULT_LINE_LIMIT: usize = 1024 * 1024;
 
+/// Enough of what a tool printed to read its outcome by, start and end, and
+/// little enough that a stream nobody keeps up with holds no file's worth of
+/// it per call.
+pub const DEFAULT_TOOL_OUTPUT_LIMIT: usize = 64 * 1024;
+
 /// Room for every line of a long session, and a bound on a runaway one's
 /// share of the disk.
 pub const DEFAULT_JOURNAL_LIMIT: u64 = 64 * 1024 * 1024;
@@ -241,6 +246,13 @@ pub struct CliSettings {
     /// unless it is the result or prose the run cannot do without, which
     /// makes the stream malformed.
     pub line_limit: usize,
+    /// Bytes of what one of the agent's tools printed kept in an
+    /// [`AgentEvent::Output`](crate::AgentEvent::Output). Longer text keeps
+    /// its start and its end, each at most half the limit and cut on a
+    /// character boundary, around a line saying how many bytes were left
+    /// out. Each such event waits in the stream until it is read, so this
+    /// bounds what one tool call costs a caller that falls behind.
+    pub tool_output_limit: usize,
     /// Set in the child's environment on top of what it is given from the
     /// host, so an explicit value always wins. Every value is treated as a
     /// secret and scrubbed from whatever the run writes down, as written,
@@ -523,6 +535,7 @@ impl Default for CliSettings {
             timeout: DEFAULT_TIMEOUT,
             output_limit: DEFAULT_OUTPUT_LIMIT,
             line_limit: DEFAULT_LINE_LIMIT,
+            tool_output_limit: DEFAULT_TOOL_OUTPUT_LIMIT,
             environment: BTreeMap::new(),
             variables: BTreeMap::new(),
             allowed: BTreeSet::new(),
@@ -587,6 +600,13 @@ impl CliSettings {
     /// Allow one event `limit` bytes. See [`CliSettings::line_limit`].
     pub fn with_line_limit(mut self, limit: usize) -> Self {
         self.line_limit = limit;
+        self
+    }
+
+    /// Hand on `limit` bytes of what one tool printed. See
+    /// [`CliSettings::tool_output_limit`].
+    pub fn with_tool_output_limit(mut self, limit: usize) -> Self {
+        self.tool_output_limit = limit;
         self
     }
 
@@ -1051,6 +1071,7 @@ mod tests {
     use super::DEFAULT_LINE_LIMIT;
     use super::DEFAULT_OUTPUT_LIMIT;
     use super::DEFAULT_TIMEOUT;
+    use super::DEFAULT_TOOL_OUTPUT_LIMIT;
     use super::READ_ONLY_TOOLS;
     use super::WEB_TOOLS;
     use crate::cleanup::Cleanup;
@@ -1162,6 +1183,7 @@ mod tests {
         assert_eq!(settings.timeout, Duration::from_secs(30));
         assert_eq!(settings.output_limit, DEFAULT_OUTPUT_LIMIT);
         assert_eq!(settings.line_limit, DEFAULT_LINE_LIMIT);
+        assert_eq!(settings.tool_output_limit, DEFAULT_TOOL_OUTPUT_LIMIT);
     }
 
     #[test]
@@ -1173,6 +1195,7 @@ mod tests {
             .with_permissions(["Edit"])
             .with_output_limit(1024)
             .with_line_limit(256)
+            .with_tool_output_limit(128)
             .with_schema("{}")
             .with_instructions("Be terse.")
             .with_working_directory("/w")
@@ -1186,6 +1209,7 @@ mod tests {
         assert_eq!(settings.permissions, ["Read", "Edit"]);
         assert_eq!(settings.output_limit, 1024);
         assert_eq!(settings.line_limit, 256);
+        assert_eq!(settings.tool_output_limit, 128);
         assert_eq!(settings.schema.as_deref(), Some("{}"));
         assert_eq!(settings.instructions.as_deref(), Some("Be terse."));
         assert_eq!(settings.working_directory, Some(PathBuf::from("/w")));

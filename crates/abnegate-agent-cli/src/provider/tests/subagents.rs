@@ -111,6 +111,51 @@ async fn what_a_tool_printed_is_streamed_and_never_counted_toward_the_output_lim
     assert_eq!(execution.stdout.tools.len(), 1);
 }
 
+/// A stream nobody keeps up with holds every event it has not yielded, so
+/// what one tool printed is cut to the run's tool output limit, keeping the
+/// start and the end a caller reads its outcome by. The text is scrubbed
+/// before it is cut, so a cut through a secret leaves none of it behind.
+#[tokio::test]
+async fn what_a_tool_printed_past_its_limit_is_cut_after_it_is_scrubbed() {
+    let link = "https://example.com/acme/widgets/pull/7";
+    let printed = format!(
+        "{}{PLACEHOLDER}{}{link}",
+        "x".repeat(90),
+        "y".repeat(4 * 1024)
+    );
+    let lines = [
+        json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "gh pr create"}}]}, "parent_tool_use_id": null}),
+        json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": printed}]}}),
+        json!({"type": "result", "subtype": "success", "is_error": false}),
+    ]
+    .map(|line| line.to_string());
+    let directory = TempDir::new().expect("a temporary directory");
+    let recording = directory.path().join("recording.jsonl");
+    std::fs::write(&recording, format!("{}\n", lines.join("\n"))).expect("the recording");
+    let script = format!(
+        "sed \"s/{PLACEHOLDER}/$DB_PASSWORD/g\" '{}'",
+        recording.display()
+    );
+    let settings = settings(&directory, &script)
+        .with_credential(Credential::key("DB_PASSWORD", SECRET))
+        .with_tool_output_limit(200);
+    let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+    let (events, failure, _) = collected(streamed(&provider, &[Message::user("hi")]).await).await;
+
+    assert!(failure.is_none(), "{failure:?}");
+    let outputs = outputs(&events);
+    assert_eq!(outputs.len(), 1, "{events:?}");
+    let text = &outputs[0].text;
+    let (head, rest) = text.split_once('\n').expect("a cut text");
+    let (marker, tail) = rest.split_once('\n').expect("a cut text");
+    assert_eq!(head, format!("{}[REDACTED]", "x".repeat(90)));
+    assert!(!text.contains("correct"), "{text}");
+    assert_eq!(marker, "[4035 bytes left out]");
+    assert_eq!(tail.len(), 100);
+    assert!(tail.ends_with(link), "{tail}");
+}
+
 /// Every update the parser reads reaches the stream as it arrives, the
 /// background subagent's news after the turn's first result among them,
 /// and none of a subagent's own calls is one of the main agent's.

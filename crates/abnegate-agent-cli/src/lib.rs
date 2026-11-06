@@ -285,6 +285,7 @@ pub use crate::settings::DEFAULT_JOURNAL_LIMIT;
 pub use crate::settings::DEFAULT_LINE_LIMIT;
 pub use crate::settings::DEFAULT_OUTPUT_LIMIT;
 pub use crate::settings::DEFAULT_TIMEOUT;
+pub use crate::settings::DEFAULT_TOOL_OUTPUT_LIMIT;
 pub use crate::settings::READ_ONLY_OPTIONS;
 pub use crate::settings::READ_ONLY_SWITCHES;
 pub use crate::settings::READ_ONLY_TOOLS;
