@@ -8,11 +8,13 @@ use crate::login::claude::Refusal;
 
 /// Why a sign-in step failed.
 ///
-/// No variant carries a credential, a response body or anything the request
-/// sent: a refusal is its status and the [`Refusal`] its OAuth `error` code
-/// names, and a transport failure has every value the request carried
-/// scrubbed from it. A CLI's own words have its one-time code, every secret
-/// it was given and anything shaped like a credential redacted from them.
+/// The HTTP client's errors never carry a credential, a response body or
+/// anything the request sent: a refusal is its status and the [`Refusal`] its
+/// OAuth `error` code names, and a transport failure has every value the
+/// request carried scrubbed from it. A CLI's failure is passed on in its own
+/// words, which may quote what a server told it, after its one-time code,
+/// every secret it was given and anything shaped like a credential are
+/// redacted from them.
 ///
 /// A variant may gain a field in a minor release, so a pattern outside this
 /// crate ends in `..`:

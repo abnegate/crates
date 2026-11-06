@@ -187,11 +187,11 @@ when a wait on it is abandoned, such as by a timeout. `cancel`, dropping the
 and killing what is left of it after a grace period, and remove the staging
 directory, unless codex had already saved a login there: a stopped codex that
 exits cleanly leaving an `auth.json` that names an account resolves `outcome`
-to its `Staging` all the same. `Staging::promote` moves the login into a home in one rename,
-`codex::signed_in` says whether a home holds one, and `Account` reads whose
-ChatGPT login it is, its `key` telling one login from another.
-`DeviceLogin::logout` runs `codex logout` against a home, and `Limits` bounds
-how long each stage may take.
+to its `Staging` all the same. `Staging::promote` moves the login into a home
+in one rename, `codex::signed_in` says whether a home holds one, and
+`Account` reads whose ChatGPT login it is, its `key` telling one login from
+another. `DeviceLogin::logout` runs `codex logout` against a home, and
+`Limits` bounds how long each stage may take.
 
 `login::Status::check` asks either CLI whether it is signed in, labelled with
 its plan or how it signed in, and `Status::check_within` does so within a
@@ -203,10 +203,11 @@ with a password, which are scrubbed from every reason a step fails with.
 Nothing is stored for you: `Tokens` serialise their secrets in plaintext, so
 seal them before they reach storage, and a staged codex login is codex's own
 `auth.json`, to promote or read and keep however you keep credentials. A
-`LoginError` never repeats a response body or anything the request sent; a
-refusal is its HTTP status and the `Refusal` its OAuth error names, and a
-CLI's own words have its one-time code and anything shaped like a credential
-redacted.
+`LoginError` from the HTTP client never repeats a response body or anything
+the request sent: a refusal is its HTTP status and the `Refusal` its OAuth
+error names. A CLI's failure is passed on in its own words, which may quote a
+server, after its one-time code, its secrets and anything shaped like a
+credential are redacted.
 
 ## Features
 
