@@ -247,15 +247,16 @@ fn missing(errors: &[GraphQlError], path: &[&str]) -> bool {
     })
 }
 
-/// Whether GitHub said no page follows the one that ended at `page`.
+/// Whether GitHub said no page follows the one that ended at `page`, rather
+/// than that one does or nothing at all.
 fn last(page: Option<&GraphQlPageInfo>) -> bool {
-    page.is_some_and(|page| !page.has_next_page)
+    page.and_then(|page| page.has_next_page) == Some(false)
 }
 
 /// The cursor to read the next page after: the one a page ended at, when
 /// GitHub says another page follows and that cursor moved on from `after`.
 fn next_cursor(page: Option<GraphQlPageInfo>, after: Option<&str>) -> Option<String> {
-    page.filter(|page| page.has_next_page)
+    page.filter(|page| page.has_next_page == Some(true))
         .and_then(|page| page.end_cursor)
         .filter(|cursor| after != Some(cursor.as_str()))
 }
@@ -1341,5 +1342,44 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(format!("{failure:?}"), format!("GitHubApi({UNREADABLE:?})"));
+    }
+
+    #[tokio::test]
+    async fn a_null_comment_page_flag_reads_the_thread_with_its_comments_incomplete() {
+        let mut unflagged = thread("PRRT_1");
+        unflagged["comments"]["pageInfo"] = json!({ "hasNextPage": null });
+
+        let collected = read_alone(unflagged).await;
+
+        assert!(!collected.items[0].comments_complete);
+        assert!(collected.complete);
+    }
+
+    #[tokio::test]
+    async fn a_null_thread_page_flag_ends_the_walk_short_of_every_thread() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "repository": { "pullRequest": {
+                    "number": 7,
+                    "reviewThreads": {
+                        "pageInfo": { "hasNextPage": null, "endCursor": "Y3Vyc29yOjE=" },
+                        "nodes": [thread("PRRT_1")],
+                    },
+                } } },
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let collected = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert!(!collected.complete);
+        assert_eq!(identifiers(&collected.items), ["PRRT_1"]);
     }
 }
