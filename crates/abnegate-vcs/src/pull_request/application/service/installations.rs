@@ -32,9 +32,8 @@ impl ApplicationService {
     ) -> Result<Installation, ApplicationError> {
         let installation = installation.get().to_string();
         let url = self.endpoint(&["app", "installations", &installation])?;
-        let wire: GitHubInstallation =
-            parsed(&answered(self.authorized(Method::GET, url, jwt)).await?)?;
-        Installation::try_from(wire)
+        let body = answered(self.authorized(Method::GET, url, jwt)).await?;
+        parsed::<GitHubInstallation>(&body)?.try_into()
     }
 
     /// Page `page` of the App's installations, in the order GitHub lists
@@ -60,7 +59,7 @@ impl ApplicationService {
         let installations = rows
             .into_iter()
             .map(Installation::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<_, _>>()?;
         Ok(Page::after(installations, page, read, asked))
     }
 

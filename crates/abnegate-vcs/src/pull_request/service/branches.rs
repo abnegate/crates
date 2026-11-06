@@ -114,7 +114,7 @@ impl PullRequestService {
         let branches = rows
             .into_iter()
             .map(GitHubRepositoryBranch::branch)
-            .collect::<PullRequestResult<Vec<Branch>>>()?;
+            .collect::<Result<_, _>>()?;
         Ok(Page::after(branches, page, read, asked))
     }
 }
