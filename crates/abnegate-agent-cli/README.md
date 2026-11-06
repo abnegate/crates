@@ -155,9 +155,28 @@ written is read, however far behind the run fell, and the run stops once the
 output goes quiet 3 seconds into the drain, or 10 seconds into it while a
 process outside the group keeps writing, keeping what it read.
 
+## Login
+
+With the `login` feature, `login::claude` signs Claude Code in the way
+`claude setup-token` does. `Authorization::new` draws a PKCE verifier and
+state and builds the link to open; claude.com shows the code to paste, read
+with `Code::parse`, or sends the browser to a loopback listener at
+`http://localhost:<port>/callback`, whose query `Reply::read` reads. A
+`Client` exchanges the code for `Tokens` and renews them. `Endpoints` holds
+the OAuth client and its URLs, the claude CLI's own by default; each URL is
+checked as it is set, refusing link-local and cloud metadata targets but not
+loopback or LAN hosts. The client goes through no proxy, follows no redirect
+and names itself `abnegate-agent-cli/<version>`.
+
+Nothing is stored for you: `Tokens` serialise their secrets in plaintext, so
+seal them before they reach storage. A `LoginError` never repeats a response
+body or anything the request sent; a refusal is its HTTP status and the
+`Refusal` its OAuth error names.
+
 ## Features
 
-None.
+- `login`: the `login` module, which signs an agent's CLI in: `login::claude`
+  runs Claude's PKCE sign-in and hands back its `Tokens`.
 
 ## Usage
 

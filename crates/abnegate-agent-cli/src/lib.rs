@@ -151,6 +151,11 @@
 //! words and then the `errors` it lists, a line apiece, and in its subtype
 //! only when it gave neither.
 //!
+//! The `login` feature adds the `login` module, which signs an agent's CLI in
+//! on someone's behalf: `login::claude` runs the PKCE sign-in
+//! `claude setup-token` runs and hands back the tokens for the caller to
+//! store as it sees fit.
+//!
 //! # Platform support
 //!
 //! Unix only, like the process-group handling it borrows from
@@ -170,6 +175,9 @@ mod execution_error;
 mod kind;
 mod lines;
 pub mod log;
+#[cfg(feature = "login")]
+#[cfg_attr(docsrs, doc(cfg(feature = "login")))]
+pub mod login;
 pub mod mcp;
 mod outcome;
 mod overlong_error;
