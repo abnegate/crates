@@ -38,9 +38,10 @@ const SHELL_NAME: &str = "sh";
 /// same way, as generated variables its `env_http_headers` names.
 ///
 /// Every call to the server's tools is approved in advance, with
-/// `default_tools_approval_mode = "approve"`: `codex exec` has nobody to ask,
-/// and a call it would otherwise stop to ask about is decided by whoever
-/// serves the tool. The server's [`tools`](McpServer::tools) become its
+/// `default_tools_approval_mode = "approve"`, unless the server is
+/// [supervised](McpServer::supervised): `codex exec` has nobody to ask, and a
+/// call it would otherwise stop to ask about is decided by whoever serves the
+/// tool. The server's [`tools`](McpServer::tools) become its
 /// `enabled_tools`, always when it is
 /// [exclusive](McpServer::exclusive), and its timeouts, whether it is
 /// [required](McpServer::required) and whether its tools are listed
@@ -101,8 +102,8 @@ impl<'server> CodexServer<'server> {
     }
 
     /// `table` with the server's tools and its settings for Codex: the tool
-    /// list, the timeouts, the approval mode, whether it is required, and
-    /// where its tools are listed.
+    /// list, the timeouts, the approval mode unless it is supervised, whether
+    /// it is required, and where its tools are listed.
     fn settings(&self, table: InlineTable) -> InlineTable {
         let server = self.server;
         let mut table = table;
@@ -115,7 +116,9 @@ impl<'server> CodexServer<'server> {
         if let Some(timeout) = server.startup_timeout {
             table = table.with_integer(STARTUP_TIMEOUT, seconds(timeout));
         }
-        table = table.with_text(APPROVAL_MODE, APPROVE);
+        if !server.supervised {
+            table = table.with_text(APPROVAL_MODE, APPROVE);
+        }
         if server.required {
             table = table.with_boolean(REQUIRED, true);
         }
@@ -386,8 +389,8 @@ mod tests {
     }
 
     /// `codex exec` has nobody to ask, so every server's calls are approved
-    /// in advance and decided by whoever serves them, whatever else the
-    /// server sets.
+    /// in advance by default and decided by whoever serves them, whatever
+    /// else the server sets.
     #[test]
     fn every_server_is_approved_in_advance() {
         for server in [
@@ -412,7 +415,36 @@ mod tests {
         }
     }
 
-    /// Each option set in code becomes a key of its own, timeouts in whole
+    /// A supervised server is given no approval mode, so Codex decides each
+    /// call to its tools by its own rules, and nothing else it sets changes.
+    #[test]
+    fn a_supervised_server_is_never_approved_in_advance() {
+        let server = McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_tools(["a"])
+            .exclusive()
+            .require()
+            .eager()
+            .supervise();
+        let mut placeholders = Placeholders::under("TEST");
+
+        let arguments = CodexServer::new(&server).arguments("host", &mut placeholders);
+
+        assert_eq!(
+            arguments[1],
+            r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp", "enabled_tools" = ["a"], "required" = true, "omit_tools_from" = ["deferred"] }"#
+        );
+
+        let stdio = McpServer::command("uvx", ["server"])
+            .with_environment("KEY", SECRET)
+            .supervise();
+        let arguments = CodexServer::new(&stdio).arguments("tools", &mut placeholders);
+        assert!(
+            !arguments[1].contains("default_tools_approval_mode"),
+            "{arguments:?}"
+        );
+    }
+
+    /// Each option becomes a key of its own, timeouts in whole
     /// seconds rounded up, and none appears unless it is set.
     #[test]
     fn the_options_set_in_code_reach_codex_as_keys_of_their_own() {

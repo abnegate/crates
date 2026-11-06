@@ -49,7 +49,11 @@ every other remote server, not from them.
 
 No agent is passed a permission-bypass flag, and nothing is approved in advance
 but what the settings allow and the tools of the MCP servers a Codex run is
-given, which `codex exec` has nobody to ask about. Claude's own tools keep
+given, which `codex exec` has nobody to ask about: every call to an attached
+server's tools is approved with its `default_tools_approval_mode = "approve"`,
+unless the server is supervised (`McpServer::supervise`, or `"supervised": true`
+in a configuration document), which leaves each call to Codex's own approval
+rules as before. Claude's own tools keep
 Claude's own permission checks. Codex's do not: `codex exec` never asks for
 approval, so only its sandbox confines them, whichever one
 `CliSettings::with_sandbox`, the user's configuration or a `--sandbox` argument
@@ -169,12 +173,35 @@ otherwise. An isolated read-only run loads no settings at all, where it would
 load the user's, and keeps every flag that confines it. Codex ignores it, so a
 host can set it on every run.
 
-An `McpServer` built in code also takes options no configuration document
-carries, which never reach Claude's file or a log: `with_tool_timeout` (Codex's
+An `McpServer` also takes options Claude's own MCP entry has no key for, which
+never reach Claude's file or a log: `with_tool_timeout` (Codex's
 `tool_timeout_sec`, and for Claude the longest of the run's servers as
 `MCP_TOOL_TIMEOUT` and `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`),
-`with_startup_timeout`, `require` and `eager` (Codex only), and `exclusive`,
-which holds a server to exactly the tools it names, none when it names none.
+`with_startup_timeout`, `require`, `eager` and `supervise` (Codex only), and
+`exclusive`, which holds a server to exactly the tools it names, none when it
+names none. A configuration document carries each only when it is set:
+`tool_timeout_sec` and `startup_timeout_sec` as a number of seconds (also read
+as `tool_timeout_seconds` and `startup_timeout_seconds`), and `required`,
+`eager`, `exclusive` and `supervised` as `true`, so a server written out and
+read back keeps every option.
+
+```json
+{
+  "mcpServers": {
+    "host": {
+      "type": "http",
+      "url": "http://127.0.0.1:8421/mcp",
+      "tools": ["read_file", "run_command"],
+      "exclusive": true,
+      "tool_timeout_sec": 1800,
+      "startup_timeout_sec": 30,
+      "required": true,
+      "eager": true,
+      "supervised": true
+    }
+  }
+}
+```
 
 ```rust
 use std::time::Duration;
