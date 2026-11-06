@@ -51,6 +51,52 @@ sandbox confines them, whichever one `CliSettings::with_sandbox`, the user's
 configuration or a `--sandbox` argument names, and `danger-full-access` confines
 nothing.
 
+## Models and effort
+
+`AgentKind::models` lists the models offered for an agent, in the order it
+ranks them, and `AgentKind::named_only` the ones among them that run on usage
+credits beyond the plan's allowance, to run only when a person names one.
+`AgentKind::knows` tells whether an agent can run a model: one of Claude's
+aliases or a full `claude-` name, or one of Codex's offered models or a `gpt-`
+name. A run is still given whatever model its caller names, since a Codex run
+can be pointed at a local model, so a host that offers only what the agent
+knows checks a model with it first. `AgentKind::label` is how a model is shown
+to a person.
+
+`CliSettings::with_effort` sets how hard the agent thinks, as Claude's
+`--effort` or Codex's `-c model_reasoning_effort="<effort>"`. It is passed only
+when the run's model takes it, as `AgentKind::efforts` lists, so
+`ReasoningEffort::Auto`, `ReasoningEffort::Off`, and any level on a model whose
+efforts are not known leave it to the agent. A run given an effort refuses a
+caller argument that would set another.
+
+```rust,no_run
+use abnegate_agent_cli::AgentKind;
+use abnegate_agent_cli::CliProvider;
+use abnegate_agent_cli::CliSettings;
+use abnegate_llm::ReasoningEffort;
+
+let model = "opus";
+assert!(AgentKind::Claude.knows(model));
+let settings = CliSettings::default().with_effort(ReasoningEffort::High);
+let provider = CliProvider::agent(AgentKind::Claude, settings);
+```
+
+## Sign-in variables
+
+Besides the `abnegate_exec::DEFAULT_ENVIRONMENT` names and the locale
+categories, the agent inherits `SHELL`, `XDG_RUNTIME_DIR`, `SSL_CERT_DIR` and
+`NODE_EXTRA_CA_CERTS` from this process. `CliSettings::refuse_credentials`
+refuses every variable any agent signs in with (`AgentKind::credentials`),
+however `CliSettings::allow` names it or `CliSettings::inherit_environment`
+passes it, and a stdio MCP server's reference to one reads as set but empty,
+unless a secret is bound to the server under that name. Only the agent's own
+sign-in still passes, when its credential is inherited and the host's are not
+withheld. It is off by default, since a caller may allow another agent's key on
+purpose, for a stdio MCP server the agent starts, say; a host that hands every
+run its sign-in itself, and passes an operator's list of variables through,
+turns it on.
+
 ## Cleanup
 
 The agent leads a process group of its own. Once it exits, or is stopped, the
@@ -116,6 +162,26 @@ yielded just before `AgentEvent::Finished` and kept in
 or all the prose when the agent gave none, and is what `complete` returns. A
 failed result, such as `error_max_turns`, fails in its words and then the
 `errors` it lists, a line apiece, and in its subtype only when it gave neither.
+
+## Prose and activity
+
+Each block of an agent's prose after the first, an `AgentEvent::Text`, starts
+with a paragraph break, `\n\n`, so the blocks read apart when they are joined,
+as the prose a run folds is; the final answer, `AgentEvent::Answer`, is left as
+the agent gave it. `activity` is the markdown list item a reader can be shown
+for a tool the agent ran for itself: its name and, in a code span, the first
+line of what the call was about, sanitized of control sequences and
+credentials and cut to 80 characters. A call whose name starts with one of the
+hidden prefixes, such as the tools of an MCP server the host renders itself,
+has no line.
+
+```rust
+use abnegate_agent_cli::activity;
+use abnegate_llm::ToolCall;
+
+let call = ToolCall::function("toolu_01", "Bash", r#"{"command":"git status"}"#);
+assert_eq!(activity(&call, &[]).as_deref(), Some("- Bash `git status`\n"));
+```
 
 ## Limits and windows
 
