@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/abnegate/crates/compare/abnegate-secret/v0.1.6...abnegate-secret/v0.1.7) - 2026-11-06
+
+### Added
+
+- *(secret)* derive master keys from passphrases and read pre-envelope values ([#49](https://github.com/abnegate/crates/pull/49))
+
 ## [0.1.6](https://github.com/abnegate/crates/compare/abnegate-secret/v0.1.5...abnegate-secret/v0.1.6) - 2026-11-05
 
 ### Added
