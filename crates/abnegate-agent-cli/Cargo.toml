@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-login = ["dep:abnegate-http", "dep:base64", "dep:nix", "dep:regex", "dep:reqwest", "dep:sha2", "chrono/serde"]
+login = ["dep:abnegate-http", "dep:base64", "dep:nix", "dep:regex", "dep:reqwest", "dep:sha2", "dep:urlencoding", "chrono/serde"]
 
 [dependencies]
 abnegate-exec = { path = "../abnegate-exec", version = "0.1.11" }
@@ -43,6 +43,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 tracing = { workspace = true }
+urlencoding = { workspace = true, optional = true }
 
 [dev-dependencies]
 nix = { workspace = true, features = ["process"] }

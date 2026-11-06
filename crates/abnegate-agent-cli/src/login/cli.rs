@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
+use reqwest::Url;
 
 use crate::login::LoginError;
 
@@ -15,8 +16,8 @@ use crate::login::LoginError;
 /// are settings such as `PATH`. A [secret](Self::with_secret), such as a
 /// proxy URL that carries a password or an API key, is set the same way,
 /// wins over a variable of the same name, and has its value scrubbed from the
-/// reason of every [`LoginError`] the step returns, whatever the CLI repeats
-/// of it.
+/// reason of every [`LoginError`] the step returns: as it was given and, when
+/// it is a URL, as the URL normalised and its password, encoded or decoded.
 ///
 /// `Debug` names every variable and shows none of their values.
 ///
@@ -103,20 +104,45 @@ impl Cli {
         }
     }
 
-    /// `text` with every secret this CLI is given redacted, the longest
-    /// first, so no part of one survives in place of a shorter one inside it.
+    /// `text` with every form of every secret this CLI is given redacted, the
+    /// longest first, so no part of one survives in place of a shorter one
+    /// inside it.
     pub(crate) fn scrub(&self, text: String) -> String {
         let mut secrets = self
             .secrets
             .values()
-            .map(SecretValue::expose)
+            .flat_map(|secret| forms(secret.expose()))
             .filter(|secret| !secret.is_empty())
             .collect::<Vec<_>>();
-        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+        secrets.sort_by(|one, other| other.len().cmp(&one.len()).then_with(|| one.cmp(other)));
+        secrets.dedup();
         secrets
             .into_iter()
-            .fold(text, |text, secret| text.replace(secret, REDACTED))
+            .fold(text, |text, secret| text.replace(&secret, REDACTED))
     }
+}
+
+/// `secret` as given, and when it is a URL with a host, as a CLI that parsed
+/// it would repeat it: normalised, with and without a trailing slash, and its
+/// password alone, percent-encoded and decoded.
+fn forms(secret: &str) -> Vec<String> {
+    let mut forms = vec![secret.to_string()];
+    let Ok(url) = Url::parse(secret) else {
+        return forms;
+    };
+    if !url.has_host() {
+        return forms;
+    }
+    let normalised = url.as_str();
+    forms.push(normalised.to_string());
+    forms.push(normalised.trim_end_matches('/').to_string());
+    if let Some(password) = url.password() {
+        forms.push(password.to_string());
+        if let Ok(decoded) = urlencoding::decode(password) {
+            forms.push(decoded.into_owned());
+        }
+    }
+    forms
 }
 
 impl fmt::Debug for Cli {
@@ -202,6 +228,20 @@ mod tests {
                 assert!(!shown.contains(secret), "{secret}: {shown}");
             }
             assert!(shown.contains("could not reach [REDACTED]"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_secret_url_is_scrubbed_however_the_cli_repeats_it() {
+        let cli = Cli::new("/usr/local/bin/codex")
+            .with_secret("HTTPS_PROXY", "HTTP://user:p%40ss-word@Proxy.Example:8080");
+        let said = "proxy http://user:p%40ss-word@proxy.example:8080/ refused, \
+                    as did http://user:p%40ss-word@proxy.example:8080 for user p@ss-word";
+
+        let scrubbed = cli.scrub(said.to_string());
+
+        for secret in ["p%40ss-word", "p@ss-word", "proxy.example"] {
+            assert!(!scrubbed.contains(secret), "{secret}: {scrubbed}");
         }
     }
 }
