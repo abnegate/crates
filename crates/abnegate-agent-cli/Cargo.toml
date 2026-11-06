@@ -23,6 +23,7 @@ abnegate-llm = { path = "../abnegate-llm", version = "0.1.10" }
 abnegate-secret = { path = "../abnegate-secret", version = "0.1.7" }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }

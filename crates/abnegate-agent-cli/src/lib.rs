@@ -34,7 +34,12 @@
 //! [`CliProvider::execute_prompt`] and [`CliProvider::stream_prompt`] send a
 //! prompt's bytes unchanged instead of a flattened conversation, so Claude
 //! reads a leading slash command as one; nothing in such a prompt is
-//! escaped. A run can start the agent's own [`Session`] under an id of the
+//! escaped. A conversation whose messages carry
+//! [images](abnegate_llm::Message::images) hands them over too: Claude reads
+//! it as one stream-json message whose content blocks carry the images, and
+//! Codex opens each from a temporary file its command line names, as
+//! [`CliProvider::execute`] describes; a conversation without any is still
+//! the flattened prompt alone, byte for byte. A run can start the agent's own [`Session`] under an id of the
 //! caller's choosing or resume one, and confine Codex to a [`CodexSandbox`];
 //! a session's file can be [found](Session::locate) in one home and
 //! [carried](Session::carry) into another, so a run signed in there resumes
@@ -196,6 +201,8 @@ mod environment;
 mod event;
 mod execution;
 mod execution_error;
+mod image;
+mod input;
 mod kind;
 mod lines;
 pub mod log;
@@ -236,6 +243,10 @@ pub use crate::delivery::Delivery;
 pub use crate::event::AgentEvent;
 pub use crate::execution::Execution;
 pub use crate::execution_error::ExecutionError;
+pub use crate::image::Image;
+pub use crate::image::Rejection;
+pub use crate::input::Limits;
+pub use crate::input::Undeliverable;
 pub use crate::kind::AgentKind;
 pub use crate::lines::Lines;
 pub use crate::log::EXECUTION_LOG_PREVIEW_LIMIT;
@@ -290,6 +301,7 @@ pub use crate::subagent::StepStatus;
 pub use crate::subagent::Subagent;
 pub use crate::subagent::SubagentStatus;
 pub use crate::subagent::SubagentStep;
+pub use crate::transcript::Part;
 pub use crate::tripwire::Tripwire;
 
 /// Stands between an agent's own report of a failure and the end of its

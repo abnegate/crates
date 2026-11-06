@@ -14,6 +14,7 @@ use crate::attachments::Attachments;
 use crate::codex_sandbox::CodexSandbox;
 use crate::delivery::Delivery;
 use crate::event::AgentEvent;
+use crate::input::Input;
 use crate::mcp::McpServer;
 use crate::mcp::qualified;
 use crate::mcp::serving;
@@ -27,6 +28,16 @@ use crate::settings::READ_ONLY_TOOLS;
 use crate::settings::WEB_TOOLS;
 
 const MODEL: &str = "--model";
+const CLAUDE_STREAMING: &[&str] = &["--verbose", "--output-format", "stream-json"];
+const CLAUDE_STRUCTURED: &[&str] = &[
+    "--verbose",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+];
+const CODEX_STREAMING: &[&str] = &["exec", "--json", "--skip-git-repo-check"];
+const CODEX_IMAGE: &str = "--image";
 /// Claude's flag naming how hard it thinks.
 pub(crate) const EFFORT: &str = "--effort";
 /// The Codex configuration key naming how hard it thinks.
@@ -321,8 +332,22 @@ impl AgentKind {
         options: Vec<String>,
         session: Option<&Session>,
     ) -> Vec<String> {
+        self.invocation_with(model, options, session, &Input::default())
+    }
+
+    /// [`AgentKind::invocation_in`] handed `input`: Claude reads its stdin
+    /// as a stream-json message when `input` is one, and Codex is pointed at
+    /// each of its image files, every `--image=<path>` joined by `=` so the
+    /// flag's many values cannot swallow the prompt flag after them.
+    pub(crate) fn invocation_with(
+        self,
+        model: Option<&str>,
+        options: Vec<String>,
+        session: Option<&Session>,
+        input: &Input,
+    ) -> Vec<String> {
         let mut arguments: Vec<String> = self
-            .streaming()
+            .streaming(input.structured)
             .iter()
             .map(|argument| (*argument).to_string())
             .collect();
@@ -335,6 +360,15 @@ impl AgentKind {
 
         if let Some(session) = session {
             arguments.extend(self.continuation(session));
+        }
+
+        if self == Self::Codex {
+            arguments.extend(
+                input
+                    .images
+                    .iter()
+                    .map(|path| format!("{CODEX_IMAGE}{INLINE_VALUE}{}", path.display())),
+            );
         }
 
         arguments.push(self.prompt().to_string());
@@ -510,10 +544,11 @@ impl AgentKind {
         vec![flag.to_string(), session.id.clone()]
     }
 
-    fn streaming(self) -> &'static [&'static str] {
-        match self {
-            Self::Claude => &["--verbose", "--output-format", "stream-json"],
-            Self::Codex => &["exec", "--json", "--skip-git-repo-check"],
+    fn streaming(self, structured: bool) -> &'static [&'static str] {
+        match (self, structured) {
+            (Self::Claude, false) => CLAUDE_STREAMING,
+            (Self::Claude, true) => CLAUDE_STRUCTURED,
+            (Self::Codex, _) => CODEX_STREAMING,
         }
     }
 
@@ -748,6 +783,7 @@ impl fmt::Display for AgentKind {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::path::PathBuf;
 
     use abnegate_llm::Capabilities;
     use abnegate_llm::ProviderError;
@@ -760,6 +796,7 @@ mod tests {
     use crate::codex_sandbox::CodexSandbox;
     use crate::delivery::Delivery;
     use crate::event::AgentEvent;
+    use crate::input::Input;
     use crate::mcp::McpServer;
     use crate::session::Session;
     use crate::settings::CliSettings;
@@ -983,6 +1020,96 @@ mod tests {
                 "sonnet",
                 "--print",
             ]
+        );
+    }
+
+    fn carrying(images: &[&str], structured: bool) -> Input {
+        Input {
+            structured,
+            images: images.iter().map(PathBuf::from).collect(),
+            ..Input::default()
+        }
+    }
+
+    #[test]
+    fn claude_reads_a_stream_json_message_only_when_handed_one() {
+        assert_eq!(
+            AgentKind::Claude.invocation_with(Some("opus"), Vec::new(), None, &carrying(&[], true)),
+            [
+                "--verbose",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--model",
+                "opus",
+                "--print",
+            ]
+        );
+        assert_eq!(
+            AgentKind::Claude.invocation_with(
+                Some("opus"),
+                Vec::new(),
+                None,
+                &carrying(&[], false)
+            ),
+            AgentKind::Claude.arguments(Some("opus")),
+        );
+    }
+
+    #[test]
+    fn codex_names_each_image_just_before_its_prompt_whether_or_not_it_resumes() {
+        let input = carrying(&["/tmp/images-a/1.png", "/tmp/images-a/2.jpg"], false);
+        for session in [None, Some(Session::resumed("thread-1"))] {
+            let arguments =
+                AgentKind::Codex.invocation_with(Some("o3"), Vec::new(), session.as_ref(), &input);
+
+            assert_eq!(
+                arguments[arguments.len() - 3..],
+                [
+                    "--image=/tmp/images-a/1.png",
+                    "--image=/tmp/images-a/2.jpg",
+                    "-",
+                ],
+                "{arguments:?}"
+            );
+            if session.is_some() {
+                let resume = arguments.iter().position(|argument| argument == "resume");
+                assert!(
+                    resume
+                        < arguments
+                            .iter()
+                            .position(|argument| argument.starts_with("--image=")),
+                    "a resumed turn's images belong to resume: {arguments:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn claude_is_never_handed_an_image_flag() {
+        for structured in [false, true] {
+            let arguments = AgentKind::Claude.invocation_with(
+                Some("opus"),
+                Vec::new(),
+                None,
+                &carrying(&["/tmp/images-a/1.png"], structured),
+            );
+
+            assert!(
+                !arguments
+                    .iter()
+                    .any(|argument| argument.contains("--image")),
+                "{arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_never_reads_its_prompt_as_stream_json() {
+        assert_eq!(
+            AgentKind::Codex.invocation_with(Some("o3"), Vec::new(), None, &carrying(&[], true)),
+            AgentKind::Codex.arguments(Some("o3")),
         );
     }
 

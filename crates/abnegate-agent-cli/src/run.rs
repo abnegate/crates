@@ -8,6 +8,7 @@ use abnegate_llm::ExitStatus;
 use abnegate_llm::ProviderError;
 use serde_json::json;
 use tempfile::NamedTempFile;
+use tempfile::TempDir;
 use tokio::process::Child;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -73,6 +74,9 @@ pub(crate) struct Run {
     pub(crate) _mcp: Option<McpAttachment>,
     /// Held only so the instructions file the agent reads outlives it.
     pub(crate) _instructions: Option<NamedTempFile>,
+    /// Held only so the image files the agent opens outlive it, and are
+    /// removed once the run ends.
+    pub(crate) _images: Option<TempDir>,
 }
 
 impl Run {

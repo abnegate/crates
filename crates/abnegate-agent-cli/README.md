@@ -13,7 +13,8 @@ would have returned when the run failed. `CliProvider::execute_prompt` and
 `CliProvider::stream_prompt` write a prompt's bytes to stdin unchanged, with no
 role label, trimming or escaping, so Claude reads a leading slash command such
 as `/issue ENG-42` as one; text the caller does not control belongs in a
-conversation, whose role labels are escaped. A run can start the agent's own
+conversation, whose role labels are escaped. A conversation's images reach
+Claude in a stream-json message and Codex as files (see [Images](#images)). A run can start the agent's own
 `Session` under an id of the caller's choosing, or resume one, and
 `Session::carry` moves a session's file into another home. A Claude or Codex
 run can attach MCP servers and withhold the agent's own tools, and a Claude run
@@ -327,6 +328,57 @@ the run's model in `models_cache.json` is taken, cut to its effective share,
 with no fill. A stream yields it last, after the event that ended the turn;
 `execute` and `complete` fold it in with the rest. A run that timed out, was
 stopped, was dropped or tripped the tripwire reads no rollout.
+
+## Images
+
+A conversation whose messages carry images (`Message::images`, data URLs or
+web addresses) hands them to the agent with the text. `transcript::parts`
+renders such a conversation as `transcript::render` does, with each message's
+images after the message they came with, a `Part::Image` marked current when it
+is on the last user message; `render` and `render_tail` still return the text
+alone, unchanged. Claude reads the turn as one stream-json user message
+(`--input-format stream-json`) whose content blocks carry each image as base64
+or a url; Codex reads the text on stdin, each image marked where it was sent as
+`[Image 1]` and on, and opens the images from temporary files named by
+`--image=<path>`, which are removed when the run ends. A conversation without
+any image is still the rendering alone, written to stdin byte for byte, so
+`execute_prompt` and `stream_prompt` keep delivering a slash command as one.
+
+`Image::parse` reads a base64 data URL of a PNG, JPEG, GIF or WebP image, its
+media type in any case and its base64 wrapped or unpadded, and checks the bytes
+begin as an image of one of those types does, sending them as the type they
+are; an `http` or `https` address is a link. An image on the message being
+answered that cannot be sent fails the run before the agent starts, as an
+`Undeliverable` naming the agent and the `Rejection`. One on an earlier message
+is noted in its place instead, so a conversation whose history holds such an
+image keeps working: a link (which may have died, and Codex cannot open), data
+that does not decode to the image it claims, one over the 10 MB of base64 an
+image may be, and, keeping the newest first, any past the 100 images or the
+request bytes `Limits::CLAUDE` allows one Claude request, its text sized as the
+JSON it is sent as. Once one image is crowded out, every older one is too.
+
+```rust
+use abnegate_agent_cli::Image;
+use abnegate_agent_cli::Part;
+use abnegate_agent_cli::transcript;
+use abnegate_llm::Message;
+
+const PNG: &str = "data:image/png;base64,iVBORw0KGgo=";
+
+let mut message = Message::user("What does this show?");
+message.images = vec![PNG.to_string()];
+let conversation = [message];
+
+assert_eq!(transcript::render(&conversation), "User:\nWhat does this show?");
+assert_eq!(
+    transcript::parts(&conversation),
+    [Part::text("User:\nWhat does this show?"), Part::image(PNG, true)]
+);
+assert!(matches!(
+    Image::parse(PNG),
+    Ok(Image::Inline { media_type: "image/png", .. })
+));
+```
 
 ## Sessions
 

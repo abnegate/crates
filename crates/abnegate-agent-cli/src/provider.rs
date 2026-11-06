@@ -33,6 +33,7 @@ use crate::environment::Environment;
 use crate::event::AgentEvent;
 use crate::execution::Execution;
 use crate::execution_error::ExecutionError;
+use crate::input::Input;
 use crate::kind::AgentKind;
 use crate::log::EXECUTION_LOG_PREVIEW_LIMIT;
 use crate::log::ExecutionLogFiles;
@@ -49,7 +50,6 @@ use crate::scrubber::Scrubber;
 use crate::settings::CliSettings;
 use crate::spawned::Spawned;
 use crate::stdout_parse_result::StdoutParseResult;
-use crate::transcript;
 
 const NO_DIAGNOSTICS: &str = "the agent produced no diagnostics";
 const UNFINISHED: &str = "the agent exited without completing its event stream";
@@ -135,20 +135,34 @@ impl CliProvider {
     /// reports where its logs are, with every line read before it failed
     /// flushed to them.
     ///
-    /// The conversation reaches the agent as [`transcript::render`] flattens
-    /// it, every message under its role's label;
-    /// [`CliProvider::execute_prompt`] sends a prompt as written.
+    /// The conversation reaches the agent as
+    /// [`transcript::render`](crate::transcript::render) flattens it, every
+    /// message under its role's label, byte for byte as
+    /// [`CliProvider::execute_prompt`] would send that rendering, unless a
+    /// message carries [images](Message::images). Then Claude reads the
+    /// conversation's [parts](crate::transcript::parts) as one stream-json
+    /// message (`--input-format stream-json`), the images as base64 or url
+    /// content blocks, and Codex reads the text on stdin, each image marked
+    /// where it was sent, and opens the images from files it is pointed at
+    /// with `--image`, which are removed when the run ends. An image on an
+    /// earlier message that cannot be sent, such as a link Codex cannot open
+    /// or one past what one Claude request carries ([`Limits::CLAUDE`]), is
+    /// noted in its place instead; once one image is crowded out, every
+    /// older one is too. One on the last user message that cannot be sent
+    /// fails the run, as an [`Undeliverable`], before the agent starts.
+    ///
+    /// [`Limits::CLAUDE`]: crate::Limits::CLAUDE
+    /// [`Undeliverable`]: crate::Undeliverable
     pub async fn execute(
         &self,
         request: CompletionRequest<'_>,
         label: &str,
     ) -> Result<Execution, ExecutionError> {
-        self.execute_prompt(
-            Some(request.model),
-            transcript::render(request.messages),
-            label,
-        )
-        .await
+        let input = self.input(request.messages)?;
+        self.start(Some(request.model), input, label, None)
+            .await?
+            .finish()
+            .await
     }
 
     /// [`CliProvider::execute`] with `prompt` written to the agent's stdin
@@ -159,14 +173,15 @@ impl CliProvider {
     /// Since nothing in `prompt` is escaped, a line in it that reads as a
     /// role label such as `Assistant:` reaches the agent as one. Text the
     /// caller does not control belongs in a conversation sent through
-    /// [`CliProvider::execute`], which [`transcript::render`] escapes.
+    /// [`CliProvider::execute`], which
+    /// [`transcript::render`](crate::transcript::render) escapes.
     pub async fn execute_prompt(
         &self,
         model: Option<&str>,
         prompt: impl Into<String>,
         label: &str,
     ) -> Result<Execution, ExecutionError> {
-        self.start(model, prompt.into(), label, None)
+        self.start(model, Input::raw(prompt.into()), label, None)
             .await?
             .finish()
             .await
@@ -203,13 +218,16 @@ impl CliProvider {
     /// still runs, read or not, stops it, every process it forked and
     /// everything carrying the run's [marker](CliSettings::marker).
     ///
+    /// The conversation reaches the agent as [`CliProvider::execute`] hands
+    /// it over, its images included.
+    ///
     /// Call it within a Tokio runtime, which runs that task.
     pub async fn stream(
         &self,
         request: CompletionRequest<'_>,
     ) -> Result<AgentStream, ProviderError> {
-        self.stream_prompt(Some(request.model), transcript::render(request.messages))
-            .await
+        let input = self.input(request.messages)?;
+        self.stream_input(Some(request.model), input).await
     }
 
     /// [`CliProvider::stream`] with `prompt` written to the agent's stdin as
@@ -222,10 +240,16 @@ impl CliProvider {
         model: Option<&str>,
         prompt: impl Into<String>,
     ) -> Result<AgentStream, ProviderError> {
+        self.stream_input(model, Input::raw(prompt.into())).await
+    }
+
+    async fn stream_input(
+        &self,
+        model: Option<&str>,
+        input: Input,
+    ) -> Result<AgentStream, ProviderError> {
         let (forward, mut events) = mpsc::unbounded_channel();
-        let run = self
-            .start(model, prompt.into(), &self.name, Some(forward))
-            .await?;
+        let run = self.start(model, input, &self.name, Some(forward)).await?;
         let name = self.name.clone();
         let mut finishing = JoinSet::new();
         finishing.spawn(run.finish());
@@ -249,12 +273,20 @@ impl CliProvider {
         }))
     }
 
-    /// Spawn the agent on `prompt` with the reading of its output under way,
+    /// `messages` as this provider's agent is handed them, or the reason an
+    /// image the turn was sent with cannot reach it.
+    fn input(&self, messages: &[Message]) -> Result<Input, ExecutionError> {
+        Input::conversation(self.agent, messages).map_err(|error| {
+            ExecutionError::new(ProviderError::agent(&self.name, &error.to_string()), None)
+        })
+    }
+
+    /// Spawn the agent on `input` with the reading of its output under way,
     /// forwarding each event read to `events` when given.
     async fn start(
         &self,
         model: Option<&str>,
-        prompt: String,
+        input: Input,
         label: &str,
         events: Option<mpsc::UnboundedSender<AgentEvent>>,
     ) -> Result<Run, ExecutionError> {
@@ -280,9 +312,14 @@ impl CliProvider {
         if let Some(effort) = self.settings.effort {
             options.extend(self.agent.effort_arguments(model, effort));
         }
-        let arguments = self
-            .agent
-            .invocation_in(model, options, self.settings.session.as_ref());
+        let arguments =
+            self.agent
+                .invocation_with(model, options, self.settings.session.as_ref(), &input);
+        let Input {
+            stdin: prompt,
+            directory: images,
+            ..
+        } = input;
         let marker = self
             .settings
             .marker
@@ -431,6 +468,7 @@ impl CliProvider {
             forward,
             _mcp: mcp,
             _instructions: instructions,
+            _images: images,
         })
     }
 
@@ -679,6 +717,7 @@ mod tests {
     use crate::test_support::running;
     use crate::test_support::untokened;
 
+    mod images;
     mod lifecycle;
     mod occupancy;
     mod subagents;
