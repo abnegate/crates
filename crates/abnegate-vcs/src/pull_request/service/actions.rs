@@ -101,9 +101,10 @@ impl PullRequestService {
     /// `limit` is the caller's bound on the buffer it is handed: however long
     /// the log, no more than `limit` bytes of it are held.
     ///
-    /// GitHub answers the request for a log, which carries the token, with
-    /// the log itself or with a redirect to where it stores it, under an
-    /// address it signs. That redirect is followed once, and without the
+    /// The request for a log carries the token, or none for an empty token
+    /// under [`Self::with_anonymous_reads`]. GitHub answers it with the log
+    /// itself or with a redirect to where it stores it, under an address it
+    /// signs. That redirect is followed once, and without the
     /// token, only to this service's own origin or over HTTPS, on its default
     /// port, to a host GitHub stores logs on or one under it, and never to an
     /// address that carries credentials; anywhere else is

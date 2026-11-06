@@ -243,9 +243,12 @@ const GIT_SUFFIX: &str = ".git";
 /// no requests are left in the window is
 /// [`PullRequestError::QuotaExhausted`] instead.
 /// Outside a merge, the errors GitHub's GraphQL API reports map onto the same
-/// variants where GitHub names their kind. Of a refusal's answer, an error
-/// keeps only GitHub's own message, bounded: never the raw answer, and never
-/// the token.
+/// variants where GitHub names their kind, and a review-thread read reports
+/// [`PullRequestError::RepositoryNotFound`] or
+/// [`PullRequestError::PullRequestNotFound`] where GitHub says which of the two
+/// is missing; [`PullRequestError::is_not_found`] is `true` for either. Of a
+/// refusal's answer, an error keeps only GitHub's own message, bounded: never
+/// the raw answer, and never the token.
 ///
 /// A read that walks every page itself and returns a list, such as
 /// [`Self::fetch_files`] or [`Self::fetch_reviews`], takes a hundred rows a
