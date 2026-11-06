@@ -2,12 +2,18 @@ use super::*;
 use crate::commit_sha::CommitSha;
 use crate::pull_request::IssueComment;
 use crate::pull_request::IssueReference;
+use crate::pull_request::ReviewComment;
 use crate::pull_request::ReviewEvent;
 use crate::pull_request::ReviewRecord;
 use crate::pull_request::comment_request::CommentRequest;
 use crate::pull_request::github_identified::GitHubIdentified;
 use crate::pull_request::github_issue_comment::GitHubIssueComment;
+use crate::pull_request::github_review_comment::GitHubReviewComment;
 use crate::pull_request::review_request::ReviewRequest;
+
+/// What an answer about a review comment other than the one asked for is
+/// reported as.
+const ANOTHER_COMMENT: &str = "GitHub answered with a review comment other than the one asked for";
 
 impl PullRequestService {
     /// Every comment on a pull request's conversation, where review bots leave
@@ -154,6 +160,40 @@ impl PullRequestService {
         Ok(submitted.id)
     }
 
+    /// The review comment GitHub identifies as `comment`, whole, so long as it
+    /// was left on the pull request `reference` names.
+    ///
+    /// A comment GitHub cannot find is [`PullRequestError::NotFound`], and so
+    /// is one GitHub places on another pull request or in another repository,
+    /// or on no pull request at all. A repository that has been renamed or
+    /// transferred since `reference` was named is answered for under its new
+    /// name, so its comments are [`PullRequestError::NotFound`] too until
+    /// `reference` names it as it is now. An answer about a comment other than
+    /// `comment` is [`PullRequestError::GitHubApi`].
+    pub async fn fetch_review_comment(
+        &self,
+        reference: &PullRequestReference,
+        token: &SecretValue,
+        comment: u64,
+    ) -> PullRequestResult<ReviewComment> {
+        let identifier = comment.to_string();
+        let url =
+            self.repository_endpoint(reference.repository(), &["pulls", "comments", &identifier])?;
+
+        let answer: GitHubReviewComment = self.get(url, token).await?;
+        if answer.id != comment {
+            return Err(PullRequestError::GitHubApi(ANOTHER_COMMENT.to_string()));
+        }
+        if !answer
+            .pull_request_url
+            .as_deref()
+            .is_some_and(|url| belongs(url, reference))
+        {
+            return Err(PullRequestError::NotFound);
+        }
+        Ok(ReviewComment::from(answer))
+    }
+
     /// Answer the review comment GitHub identifies as `comment`, in its own
     /// thread.
     ///
@@ -180,6 +220,29 @@ impl PullRequestService {
         )
         .await?;
         Ok(())
+    }
+}
+
+/// Whether `url`, GitHub's REST address of a pull request, ends in the
+/// owner, name and number `reference` names, on whatever host and under
+/// whatever prefix it is served.
+fn belongs(url: &str, reference: &PullRequestReference) -> bool {
+    let Ok(url) = Url::parse(url) else {
+        return false;
+    };
+    let Some(segments) = url.path_segments() else {
+        return false;
+    };
+    let segments: Vec<&str> = segments.collect();
+    let repository = reference.repository();
+    let number = reference.number().to_string();
+    match segments.as_slice() {
+        [.., "repos", owner, name, "pulls", last] => {
+            owner.eq_ignore_ascii_case(repository.owner())
+                && name.eq_ignore_ascii_case(repository.name())
+                && *last == number
+        }
+        _ => false,
     }
 }
 
@@ -223,6 +286,10 @@ mod tests {
     use wiremock::matchers::query_param;
 
     const SENTINEL: &str = "RAW-SENTINEL";
+
+    const REVIEW_COMMENT_PATH: &str = "/repos/acme/project/pulls/comments/99";
+
+    const PULL_REQUEST_URL: &str = "https://api.github.com/repos/acme/project/pulls/7";
 
     fn written(id: u64, author: &str, body: &str) -> IssueComment {
         IssueComment {
@@ -779,5 +846,176 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(failure, PullRequestError::NotFound), "{failure:?}");
+    }
+
+    fn remarked() -> ReviewComment {
+        ReviewComment::new(
+            99,
+            "review-bot",
+            "handle the empty cart",
+            "https://github.com/acme/project/pull/7#discussion_r99",
+            "2026-09-20T10:00:00Z",
+        )
+        .with_path("src/cart.ts")
+    }
+
+    fn placed(pull_request_url: &str) -> Value {
+        let comment = remarked();
+        json!({
+            "id": comment.id,
+            "user": { "login": comment.author },
+            "body": comment.body,
+            "path": comment.path,
+            "html_url": comment.url,
+            "created_at": comment.created_at,
+            "pull_request_url": pull_request_url,
+        })
+    }
+
+    async fn read_answered_with(answer: ResponseTemplate) -> PullRequestResult<ReviewComment> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(REVIEW_COMMENT_PATH))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(answer)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        service
+            .fetch_review_comment(&seven(&service), &token(), 99)
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_review_comment_is_read_whole_by_its_id() {
+        let comment =
+            read_answered_with(ResponseTemplate::new(200).set_body_json(placed(PULL_REQUEST_URL)))
+                .await
+                .unwrap();
+
+        assert_eq!(comment, remarked());
+    }
+
+    #[tokio::test]
+    async fn a_review_comment_missing_its_author_body_or_file_is_read_as_empty() {
+        let mut answer = placed(PULL_REQUEST_URL);
+        answer["user"] = Value::Null;
+        answer["body"] = Value::Null;
+        answer.as_object_mut().unwrap().remove("path");
+
+        let comment = read_answered_with(ResponseTemplate::new(200).set_body_json(answer))
+            .await
+            .unwrap();
+
+        let expected = remarked();
+        assert_eq!(
+            comment,
+            ReviewComment::new(99, "", "", expected.url, expected.created_at)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_review_comment_github_cannot_find_is_not_found() {
+        let failure = read_answered_with(ResponseTemplate::new(404).set_body_json(json!({
+            "message": "Not Found",
+            "documentation_url": SENTINEL,
+        })))
+        .await
+        .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::NotFound), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_about_another_review_comment_is_an_error() {
+        let mut answer = placed(PULL_REQUEST_URL);
+        answer["id"] = json!(100);
+
+        let failure = read_answered_with(ResponseTemplate::new(200).set_body_json(answer))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::GitHubApi(ref text) if text == ANOTHER_COMMENT),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_review_comment_on_another_pull_request_or_repository_is_not_found() {
+        for elsewhere in [
+            "https://api.github.com/repos/acme/project/pulls/70",
+            "https://api.github.com/repos/acme/project/pulls/17",
+            "https://api.github.com/repos/acme/other/pulls/7",
+            "https://api.github.com/repos/other/project/pulls/7",
+        ] {
+            let failure =
+                read_answered_with(ResponseTemplate::new(200).set_body_json(placed(elsewhere)))
+                    .await
+                    .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::NotFound),
+                "{elsewhere}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_review_comment_naming_no_pull_request_is_not_found() {
+        let mut absent = placed(PULL_REQUEST_URL);
+        absent.as_object_mut().unwrap().remove("pull_request_url");
+        let mut null = placed(PULL_REQUEST_URL);
+        null["pull_request_url"] = Value::Null;
+
+        for answer in [absent, null] {
+            let failure =
+                read_answered_with(ResponseTemplate::new(200).set_body_json(answer.clone()))
+                    .await
+                    .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::NotFound),
+                "{answer}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_review_comment_belongs_to_its_pull_request_in_any_case_and_on_any_host() {
+        for home in [
+            "https://api.github.com/repos/ACME/Project/pulls/7",
+            "https://ghe.example/api/v3/repos/acme/project/pulls/7",
+        ] {
+            let comment =
+                read_answered_with(ResponseTemplate::new(200).set_body_json(placed(home)))
+                    .await
+                    .unwrap();
+
+            assert_eq!(comment, remarked(), "{home}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_an_address_ending_in_the_pull_request_s_own_segments_belongs() {
+        let server = MockServer::start().await;
+        let reference = seven(&stand_in(&server).await);
+
+        for stranger in [
+            "",
+            "not an address",
+            "https://github.com/acme/project/pull/7",
+            "https://api.github.com/repos/acme/project/pulls/7/",
+            "https://api.github.com/repos/acme/project/pulls/7/files",
+            "https://api.github.com/repos/acme/project/pulls/07",
+            "https://api.github.com/repos/acme/project/issues/7",
+            "https://api.github.com/acme/project/pulls/7",
+            "https://api.github.com/repos/acme/project-two/pulls/7",
+        ] {
+            assert!(!belongs(stranger, &reference), "{stranger}");
+        }
+        assert!(belongs(PULL_REQUEST_URL, &reference));
     }
 }
