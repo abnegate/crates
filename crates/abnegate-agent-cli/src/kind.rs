@@ -11,9 +11,12 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::attachments::Attachments;
+use crate::codex_sandbox::CodexSandbox;
 use crate::delivery::Delivery;
 use crate::event::AgentEvent;
 use crate::mcp::McpServer;
+use crate::mcp::qualified;
+use crate::mcp::serving;
 use crate::parser;
 use crate::parser::Turn;
 use crate::session::Session;
@@ -35,9 +38,14 @@ const APPEND_SYSTEM_PROMPT_FILE: &str = "--append-system-prompt-file";
 const ALLOWED_TOOLS: &str = "--allowedTools";
 const TOOLS: &str = "--tools";
 const TOOL_SEPARATOR: &str = ",";
+const NO_TOOLS: &str = "";
 const RESTRICTED: &str = "--restricted";
 const SETTING_SOURCES: &str = "--setting-sources";
 const USER_SETTINGS: &str = "user";
+const NO_SETTINGS: &str = "";
+const SETTINGS: &str = "--settings";
+const CROSS_SESSION_REFUSED: &str = r#"{"crossSessionInbound":"refuse"}"#;
+const PERMISSION_PROMPT_TOOL: &str = "--permission-prompt-tool";
 const PERMISSION_MODE: &str = "--permission-mode";
 const DENY_UNLISTED: &str = "dontAsk";
 const PERMISSION_PROMPTS: &str = "--permission-prompts";
@@ -47,6 +55,7 @@ const RESUME: &str = "--resume";
 const CODEX_RESUME: &str = "resume";
 const SANDBOX: &str = "--sandbox";
 const CONFIGURATION: &str = "-c";
+const DISABLE: &str = "--disable";
 const SANDBOX_MODE: &str = "sandbox_mode";
 const FLAG: &str = "-";
 const INLINE_VALUE: char = '=';
@@ -60,6 +69,25 @@ const CODEX_STRICT_MCP: &[&str] = &[
     "apps",
     "--disable",
     "plugins",
+];
+
+/// The Codex features that bring tools of the agent's own, which a run that
+/// [withholds](CliSettings::withhold_tools) them disables.
+const CODEX_TOOL_FEATURES: &[&str] = &[
+    "shell_tool",
+    "view_image",
+    "goals",
+    "sleep_tool",
+    "image_generation",
+];
+
+/// The Codex tools no feature names, switched off as configuration by a run
+/// that [withholds](CliSettings::withhold_tools) them: subagents, the web
+/// search and questions to the user.
+const CODEX_TOOL_SETTINGS: &[&str] = &[
+    "agents.enabled=false",
+    r#"web_search="disabled""#,
+    "tools.experimental_request_user_input.enabled=false",
 ];
 
 /// The one rule a read-only run allows its file tools under: a read of
@@ -318,8 +346,9 @@ impl AgentKind {
     /// configuration when any server attaches, whose servers' tools join the
     /// allowed set, and the file holding the settings' instructions, which
     /// must be given when there are any. For Codex, `attachments` carries the
-    /// `-c` overrides that attach the servers instead. A read-only run, and
-    /// any run whose settings configure an enabled MCP server, attached or
+    /// `-c` overrides that attach the servers instead. A read-only run, a run
+    /// that [withholds](CliSettings::withhold_tools) the agent's own tools,
+    /// and any run whose settings configure an enabled MCP server, attached or
     /// not, loads MCP servers from that configuration alone: with none
     /// attached, it loads none, never the user's or the repository's own. A
     /// Codex run does so by ignoring the user's whole `config.toml`, see
@@ -330,10 +359,13 @@ impl AgentKind {
     /// schema would not be the run the caller asked for. So is a caller
     /// argument choosing what the settings' session or sandbox already chose.
     ///
-    /// Codex runs in the settings' [sandbox](CliSettings::sandbox) with
-    /// `--sandbox`, or, resuming a [session](CliSettings::session), as the
-    /// `sandbox_mode` it would otherwise read from its configuration, since
-    /// `codex exec resume` takes no `--sandbox`.
+    /// Codex runs in the settings' [sandbox](CliSettings::sandbox), or
+    /// `read-only` when its own tools are
+    /// [withheld](CliSettings::withhold_tools), with `--sandbox`, or,
+    /// resuming a [session](CliSettings::session), as the `sandbox_mode` it
+    /// would otherwise read from its configuration, since `codex exec
+    /// resume` takes no `--sandbox`. Each flag is given once, however many
+    /// settings call for it.
     pub fn options(
         self,
         settings: &CliSettings,
@@ -351,6 +383,7 @@ impl AgentKind {
                         ALLOWED_TOOLS,
                     ),
                     (settings.read_only, TOOLS),
+                    (settings.permission_prompt.is_some(), PERMISSION_PROMPT_TOOL),
                 ]
                 .into_iter()
                 .find_map(|(requested, flag)| requested.then_some(flag));
@@ -360,11 +393,18 @@ impl AgentKind {
                     )));
                 }
                 let mut options = Vec::new();
-                if !settings.mcp.is_empty() {
+                if !settings.mcp.is_empty() || settings.withhold_tools {
                     options.extend(CODEX_STRICT_MCP.iter().map(|option| option.to_string()));
                 }
+                if settings.withhold_tools {
+                    options.extend(repeated(DISABLE, CODEX_TOOL_FEATURES));
+                    options.extend(repeated(CONFIGURATION, CODEX_TOOL_SETTINGS));
+                }
                 options.extend(attachments.mcp_overrides.iter().cloned());
-                if let Some(sandbox) = settings.sandbox {
+                let sandbox = settings
+                    .sandbox
+                    .or(settings.withhold_tools.then_some(CodexSandbox::ReadOnly));
+                if let Some(sandbox) = sandbox {
                     let resumed = settings
                         .session
                         .as_ref()
@@ -381,6 +421,17 @@ impl AgentKind {
                 options.extend(settings.arguments.iter().cloned());
                 Ok(options)
             }
+        }
+    }
+
+    /// The name this agent's model calls `server`'s tool `tool` by, as its
+    /// tool list spells it: `mcp__<server>__<tool>`, with every character of
+    /// either name but letters, digits, `_` and `-` replaced by `_`. For
+    /// [`CliSettings::with_permission_prompt`], or to recognise a call to a
+    /// tool of the host's own among the agent's.
+    pub fn tool(self, server: &str, tool: &str) -> String {
+        match self {
+            Self::Claude | Self::Codex => qualified(server, tool),
         }
     }
 
@@ -488,6 +539,7 @@ fn claude_options(
     if settings.read_only {
         refuse_unconfined(&settings.arguments)?;
     }
+    let prompt = permission_prompt(settings, mcp.is_some())?;
     let allowed = allowed_tools(settings, mcp.is_some())?;
 
     let mut options = Vec::new();
@@ -495,15 +547,33 @@ fn claude_options(
         options.push(MCP_CONFIG.to_string());
         options.push(path.display().to_string());
     }
-    if mcp.is_some() || settings.read_only || !settings.mcp.is_empty() {
+    if mcp.is_some() || settings.read_only || settings.withhold_tools || !settings.mcp.is_empty() {
         options.push(STRICT_MCP_CONFIG.to_string());
     }
+    if settings.isolated {
+        options.extend(
+            [
+                SETTING_SOURCES,
+                NO_SETTINGS,
+                SETTINGS,
+                CROSS_SESSION_REFUSED,
+            ]
+            .map(str::to_string),
+        );
+    }
     if settings.read_only {
-        options.extend([RESTRICTED, SETTING_SOURCES, USER_SETTINGS, TOOLS].map(str::to_string));
+        options.push(RESTRICTED.to_string());
+        if !settings.isolated {
+            options.extend([SETTING_SOURCES, USER_SETTINGS].map(str::to_string));
+        }
+        options.push(TOOLS.to_string());
         options.push(available_tools(settings));
         options.extend(
             [PERMISSION_MODE, DENY_UNLISTED, PERMISSION_PROMPTS, NOBODY].map(str::to_string),
         );
+    }
+    if settings.withhold_tools {
+        options.extend([TOOLS, NO_TOOLS].map(str::to_string));
     }
     if let Some(schema) = &settings.schema {
         options.push(JSON_SCHEMA.to_string());
@@ -521,7 +591,44 @@ fn claude_options(
         options.push(ALLOWED_TOOLS.to_string());
         options.push(tool);
     }
+    if let Some(tool) = prompt {
+        options.push(PERMISSION_PROMPT_TOOL.to_string());
+        options.push(tool.to_string());
+    }
     Ok(options)
+}
+
+/// The tool Claude asks for permission, or none when the settings name
+/// none. One whose server does not attach to the run is refused: Claude
+/// would have nowhere to ask, and would deny every use of its tools.
+fn permission_prompt(
+    settings: &CliSettings,
+    attached: bool,
+) -> Result<Option<&str>, ProviderError> {
+    let Some(tool) = settings.permission_prompt.as_deref() else {
+        return Ok(None);
+    };
+    let served = serving(tool).is_some_and(|server| {
+        attached
+            && settings
+                .mcp
+                .attachable(AgentKind::Claude)
+                .any(|(name, _)| name == server)
+    });
+    if !served {
+        return Err(ProviderError::config(format!(
+            "{PERMISSION_PROMPT_TOOL} must name a tool of an MCP server attached to the run"
+        )));
+    }
+    Ok(Some(tool))
+}
+
+/// `flag value` for each of `values`, as Codex takes a repeated flag.
+fn repeated(flag: &str, values: &[&str]) -> Vec<String> {
+    values
+        .iter()
+        .flat_map(|value| [flag.to_string(), (*value).to_string()])
+        .collect()
 }
 
 /// The rules allowed without asking: the permissions, the web tools when
@@ -1752,5 +1859,416 @@ mod tests {
                 "{agent}: {events:?}"
             );
         }
+    }
+
+    /// The host's server, as a host serving the agent its tools attaches it.
+    fn host() -> McpServer {
+        McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_header("Authorization", "Bearer ${HOST_MCP_TOKEN}")
+            .with_secret("HOST_MCP_TOKEN", "host-token-marker")
+            .with_tools(["read_file", "run_command"])
+            .exclusive()
+    }
+
+    const CLAUDE_ISOLATION: [&str; 4] = [
+        "--setting-sources",
+        "",
+        "--settings",
+        r#"{"crossSessionInbound":"refuse"}"#,
+    ];
+
+    const CODEX_WITHHELD: [&str; 21] = [
+        "--ignore-user-config",
+        "--disable",
+        "apps",
+        "--disable",
+        "plugins",
+        "--disable",
+        "shell_tool",
+        "--disable",
+        "view_image",
+        "--disable",
+        "goals",
+        "--disable",
+        "sleep_tool",
+        "--disable",
+        "image_generation",
+        "-c",
+        "agents.enabled=false",
+        "-c",
+        r#"web_search="disabled""#,
+        "-c",
+        "tools.experimental_request_user_input.enabled=false",
+    ];
+
+    #[test]
+    fn each_agent_names_a_hosts_tool_the_way_its_tool_list_does() {
+        for agent in AgentKind::ALL {
+            assert_eq!(
+                agent.tool("host", "read_file"),
+                "mcp__host__read_file",
+                "{agent}"
+            );
+            assert_eq!(agent.tool("host", "list.files"), "mcp__host__list_files");
+            assert_eq!(agent.tool("host", ""), "mcp__host__");
+        }
+    }
+
+    /// A Claude run withholding its own tools is given none of them and only
+    /// the attached servers, each flag once, and none of a read-only run's
+    /// extras, fresh or resumed.
+    #[test]
+    fn a_claude_run_withholding_its_tools_is_given_only_the_attached_servers() {
+        let settings = CliSettings::default()
+            .withhold_tools()
+            .with_mcp_server("host", host());
+        let attachments = Attachments::default().with_mcp(Path::new("/tmp/mcp-1.json"));
+        let options = AgentKind::Claude
+            .options(&settings, &attachments)
+            .expect("options");
+        let expected = [
+            "--mcp-config",
+            "/tmp/mcp-1.json",
+            "--strict-mcp-config",
+            "--tools",
+            "",
+            "--allowedTools",
+            "mcp__host__read_file",
+            "--allowedTools",
+            "mcp__host__run_command",
+        ];
+        assert_eq!(options, expected);
+
+        let resumed = settings
+            .clone()
+            .with_session(Session::resumed(CLAUDE_SESSION));
+        let options = AgentKind::Claude
+            .options(&resumed, &attachments)
+            .expect("options");
+        let arguments =
+            AgentKind::Claude.invocation_in(Some("opus"), options, resumed.session.as_ref());
+        let mut whole = vec!["--verbose", "--output-format", "stream-json"];
+        whole.extend(expected);
+        whole.extend(["--model", "opus", "--resume", CLAUDE_SESSION, "--print"]);
+        assert_eq!(arguments, whole);
+
+        let unserved = AgentKind::Claude
+            .options(
+                &CliSettings::default().withhold_tools(),
+                &Attachments::default(),
+            )
+            .expect("options");
+        assert_eq!(unserved, ["--strict-mcp-config", "--tools", ""]);
+    }
+
+    /// A Codex run withholding its own tools loads only the servers it is
+    /// given, runs without its own tools and in the read-only sandbox, each
+    /// flag once, whether or not a server or the read-only sandbox is also
+    /// configured: `--sandbox` on a fresh run, and `sandbox_mode` on a
+    /// resumed one.
+    #[test]
+    fn a_codex_run_withholding_its_tools_is_read_only_and_given_each_flag_once() {
+        let overrides = [
+            "-c".to_string(),
+            r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp" }"#.to_string(),
+        ];
+        for served in [false, true] {
+            for sandboxed in [false, true] {
+                let mut settings = CliSettings::default().withhold_tools();
+                if served {
+                    settings = settings.with_mcp_server("host", host());
+                }
+                if sandboxed {
+                    settings = settings.with_sandbox(CodexSandbox::ReadOnly);
+                }
+                let attachments = match served {
+                    true => Attachments::default().with_mcp_overrides(&overrides),
+                    false => Attachments::default(),
+                };
+                let mut given: Vec<&str> = CODEX_WITHHELD.to_vec();
+                given.extend(attachments.mcp_overrides.iter().map(String::as_str));
+
+                let fresh = AgentKind::Codex
+                    .options(&settings, &attachments)
+                    .expect("options");
+                let mut expected = given.clone();
+                expected.extend(["--sandbox", "read-only"]);
+                assert_eq!(fresh, expected, "served {served}, sandboxed {sandboxed}");
+
+                let resumed = settings
+                    .clone()
+                    .with_session(Session::resumed(CODEX_THREAD));
+                let options = AgentKind::Codex
+                    .options(&resumed, &attachments)
+                    .expect("options");
+                let arguments = AgentKind::Codex.invocation_in(
+                    Some("gpt-6-sol"),
+                    options,
+                    resumed.session.as_ref(),
+                );
+                let mut whole = vec!["exec", "--json", "--skip-git-repo-check"];
+                whole.extend(given.iter().copied());
+                whole.extend([
+                    "-c",
+                    r#"sandbox_mode="read-only""#,
+                    "--model",
+                    "gpt-6-sol",
+                    "resume",
+                    CODEX_THREAD,
+                    "-",
+                ]);
+                assert_eq!(arguments, whole, "served {served}, sandboxed {sandboxed}");
+            }
+        }
+    }
+
+    /// Every isolated Claude run loads no settings file and refuses other
+    /// sessions, whatever else it is given, and every flag stays once.
+    #[test]
+    fn every_isolated_claude_run_loads_no_settings_file_and_refuses_other_sessions() {
+        let attachments = Attachments::default().with_mcp(Path::new("/tmp/mcp-1.json"));
+        for settings in [
+            CliSettings::default(),
+            CliSettings::default().with_permissions(["Bash"]),
+            CliSettings::default().read_only(),
+            CliSettings::default().withhold_tools(),
+            CliSettings::default()
+                .with_mcp_server("host", host())
+                .with_permission_prompt("host", "approve_tool_call"),
+            CliSettings::default()
+                .withhold_tools()
+                .with_mcp_server("host", host()),
+        ] {
+            let settings = settings.isolate();
+            let options = AgentKind::Claude
+                .options(&settings, &attachments)
+                .expect("options");
+
+            assert_eq!(flagged(&options, "--setting-sources"), [""], "{options:?}");
+            assert_eq!(
+                flagged(&options, "--settings"),
+                [r#"{"crossSessionInbound":"refuse"}"#],
+                "{options:?}"
+            );
+            assert!(
+                options.windows(4).any(|window| window == CLAUDE_ISOLATION),
+                "{options:?}"
+            );
+            assert_eq!(
+                options
+                    .iter()
+                    .filter(|option| *option == "--strict-mcp-config")
+                    .count(),
+                1,
+                "{options:?}"
+            );
+        }
+    }
+
+    /// Isolation wins over a read-only run's user settings, and leaves every
+    /// flag that confines it as it was.
+    #[test]
+    fn an_isolated_read_only_run_loads_no_settings_and_stays_confined() {
+        let read_only = CliSettings::default().read_only();
+        let confined = AgentKind::Claude
+            .options(&read_only, &Attachments::default())
+            .expect("options");
+        assert_eq!(
+            confined,
+            [
+                "--strict-mcp-config",
+                "--restricted",
+                "--setting-sources",
+                "user",
+                "--tools",
+                "Read,Grep,Glob",
+                "--permission-mode",
+                "dontAsk",
+                "--permission-prompts",
+                "none",
+                "--allowedTools",
+                "Read(./**)",
+            ]
+        );
+
+        let isolated = AgentKind::Claude
+            .options(&read_only.isolate(), &Attachments::default())
+            .expect("options");
+        assert_eq!(
+            isolated,
+            [
+                "--strict-mcp-config",
+                "--setting-sources",
+                "",
+                "--settings",
+                r#"{"crossSessionInbound":"refuse"}"#,
+                "--restricted",
+                "--tools",
+                "Read,Grep,Glob",
+                "--permission-mode",
+                "dontAsk",
+                "--permission-prompts",
+                "none",
+                "--allowedTools",
+                "Read(./**)",
+            ]
+        );
+    }
+
+    #[test]
+    fn isolation_has_no_effect_on_codex() {
+        let overrides = [
+            "-c".to_string(),
+            r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp" }"#.to_string(),
+        ];
+        for settings in [
+            CliSettings::default(),
+            CliSettings::default().withhold_tools(),
+            CliSettings::default()
+                .with_mcp_server("host", host())
+                .with_sandbox(CodexSandbox::WorkspaceWrite),
+        ] {
+            let attachments = Attachments::default().with_mcp_overrides(&overrides);
+            let plain = invoked_with(AgentKind::Codex, &settings, &attachments);
+            let isolated = invoked_with(AgentKind::Codex, &settings.isolate(), &attachments);
+            assert_eq!(isolated, plain);
+            assert!(
+                !isolated
+                    .iter()
+                    .any(|argument| argument == "--setting-sources" || argument == "--settings"),
+                "{isolated:?}"
+            );
+        }
+    }
+
+    fn invoked_with(
+        agent: AgentKind,
+        settings: &CliSettings,
+        attachments: &Attachments<'_>,
+    ) -> Vec<String> {
+        let options = agent.options(settings, attachments).expect("options");
+        agent.invocation_in(Some("model"), options, settings.session.as_ref())
+    }
+
+    /// Claude's permission mode and who answers its prompts are a read-only
+    /// run's alone: no other run is told either, so a question still goes
+    /// where its permission prompt sends it.
+    #[test]
+    fn no_run_but_a_read_only_one_is_told_a_permission_mode_or_who_answers_prompts() {
+        let attachments = Attachments::default().with_mcp(Path::new("/tmp/mcp-1.json"));
+        for settings in [
+            CliSettings::default(),
+            CliSettings::default().withhold_tools(),
+            CliSettings::default().isolate(),
+            CliSettings::default().with_mcp_server("host", host()),
+            CliSettings::default()
+                .with_mcp_server("host", host())
+                .with_permission_prompt("host", "approve_tool_call")
+                .isolate(),
+            CliSettings::default()
+                .withhold_tools()
+                .with_mcp_server("host", host())
+                .isolate(),
+        ] {
+            let options = AgentKind::Claude
+                .options(&settings, &attachments)
+                .expect("options");
+            for flag in ["--permission-mode", "--permission-prompts", "--restricted"] {
+                assert!(!options.iter().any(|option| option == flag), "{options:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn claude_asks_the_attached_server_before_using_a_tool_it_does_not_allow() {
+        let settings = CliSettings::default()
+            .with_mcp_server("host", host())
+            .with_permission_prompt("host", "approve_tool_call");
+
+        let options = AgentKind::Claude
+            .options(
+                &settings,
+                &Attachments::default().with_mcp(Path::new("/tmp/mcp-1.json")),
+            )
+            .expect("options");
+
+        assert_eq!(
+            options,
+            [
+                "--mcp-config",
+                "/tmp/mcp-1.json",
+                "--strict-mcp-config",
+                "--allowedTools",
+                "mcp__host__read_file",
+                "--allowedTools",
+                "mcp__host__run_command",
+                "--permission-prompt-tool",
+                "mcp__host__approve_tool_call",
+            ]
+        );
+    }
+
+    /// With the server it names absent, Claude would have nowhere to ask and
+    /// would deny every use of its own tools, so the run is refused.
+    #[test]
+    fn a_permission_prompt_on_a_server_that_does_not_attach_is_refused() {
+        let attached = Attachments::default().with_mcp(Path::new("/tmp/mcp-1.json"));
+        for (settings, attachments) in [
+            (
+                CliSettings::default().with_permission_prompt("host", "approve_tool_call"),
+                Attachments::default(),
+            ),
+            (
+                CliSettings::default()
+                    .with_mcp_server("host", host())
+                    .with_permission_prompt("host", "approve_tool_call"),
+                Attachments::default(),
+            ),
+            (
+                CliSettings::default()
+                    .with_mcp_server("host", host())
+                    .with_mcp_server("relay", host())
+                    .with_permission_prompt("other", "approve_tool_call"),
+                attached,
+            ),
+            (
+                CliSettings::default()
+                    .with_mcp_server("host", host().disable())
+                    .with_mcp_server("relay", host())
+                    .with_permission_prompt("host", "approve_tool_call"),
+                attached,
+            ),
+            (
+                CliSettings {
+                    permission_prompt: Some("Bash".to_string()),
+                    ..CliSettings::default().with_mcp_server("host", host())
+                },
+                attached,
+            ),
+        ] {
+            let error = AgentKind::Claude
+                .options(&settings, &attachments)
+                .expect_err("a refusal");
+            assert!(
+                matches!(&error, ProviderError::Config { detail, .. } if detail.contains("--permission-prompt-tool")),
+                "{settings:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_refuses_a_permission_prompt_it_has_no_flag_for() {
+        let settings = CliSettings::default()
+            .with_mcp_server("host", host())
+            .with_permission_prompt("host", "approve_tool_call");
+
+        let error = AgentKind::Codex
+            .options(&settings, &Attachments::default())
+            .expect_err("a refusal");
+
+        assert!(
+            matches!(&error, ProviderError::Unsupported { detail, .. } if detail.contains("--permission-prompt-tool")),
+            "{error:?}"
+        );
     }
 }

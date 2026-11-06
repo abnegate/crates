@@ -677,6 +677,7 @@ mod tests {
     use crate::test_support::captured_logs;
     use crate::test_support::delegated;
     use crate::test_support::running;
+    use crate::test_support::untokened;
 
     mod lifecycle;
     mod occupancy;
@@ -4911,5 +4912,284 @@ echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. T
             error.to_string().contains(REFUSAL),
             "lost the agent's wording: {error}"
         );
+    }
+
+    /// A stand-in for Claude that records its arguments, its environment and
+    /// the MCP configuration file it is given, then answers as `claude
+    /// --print` does.
+    fn recording_claude(arguments: &Path, environment: &Path, file: &Path) -> String {
+        format!(
+            r#"printf '%s\n' "$@" > '{arguments}'
+env > '{environment}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then cp "$2" '{file}'; fi
+  shift
+done
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"done"}}'"#,
+            arguments = arguments.display(),
+            environment = environment.display(),
+            file = file.display(),
+        )
+    }
+
+    const HOST_TOKEN: &str = "host-turn-notarealtoken";
+
+    /// The host's server as a host that serves its agent every tool it may
+    /// use attaches it: one remote endpoint, signed in with a token of the
+    /// run's own, offering exactly the tools named, waiting as long as a
+    /// turn on a call, required, and listed up front.
+    fn host_server() -> McpServer {
+        McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_header("Authorization", "Bearer ${HOST_MCP_TOKEN}")
+            .with_secret("HOST_MCP_TOKEN", HOST_TOKEN)
+            .with_tools(["a", "b"])
+            .exclusive()
+            .with_tool_timeout(Duration::from_secs(1800))
+            .with_startup_timeout(Duration::from_secs(30))
+            .require()
+            .eager()
+    }
+
+    /// What a run of `agent` on `model` under `given` was started with: its
+    /// arguments, with the rendered file's path as `<file>` and the
+    /// generated variables' token as `TOKEN`, the file's contents, and the
+    /// child's environment.
+    async fn golden(
+        agent: AgentKind,
+        model: &str,
+        given: impl FnOnce(CliSettings) -> CliSettings,
+    ) -> (
+        Vec<String>,
+        Option<String>,
+        std::collections::BTreeMap<String, String>,
+    ) {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let recorded = directory.path().join("environment");
+        let copied = directory.path().join("mcp.json");
+        let script = match agent {
+            AgentKind::Claude => recording_claude(&captured, &recorded, &copied),
+            AgentKind::Codex => recording_codex(&captured, &recorded),
+        };
+        let provider = CliProvider::agent(agent, given(settings(&directory, &script)));
+
+        let execution = provider
+            .execute_prompt(Some(model), "hi", "golden")
+            .await
+            .expect("an execution");
+        assert_eq!(execution.status, ExitStatus::Code(0), "{execution:?}");
+
+        let mut arguments = recorded_arguments(&captured);
+        if let Some(at) = arguments
+            .iter()
+            .position(|argument| argument == "--mcp-config")
+        {
+            arguments[at + 1] = "<file>".to_string();
+        }
+        let arguments = arguments
+            .iter()
+            .map(|argument| untokened(argument))
+            .collect();
+        let file = std::fs::read_to_string(&copied)
+            .ok()
+            .map(|file| untokened(&file));
+        let environment = recorded_environment(&recorded)
+            .into_iter()
+            .map(|(variable, value)| (untokened(&variable), value))
+            .collect();
+        (arguments, file, environment)
+    }
+
+    const GOLDEN_FILE: &str = r#"{
+  "mcpServers": {
+    "host": {
+      "headers": {
+        "Authorization": "${ABNEGATE_MCP_TOKEN_0}"
+      },
+      "type": "http",
+      "url": "http://127.0.0.1:9/mcp"
+    }
+  }
+}"#;
+
+    const GOLDEN_OVERRIDE: &str = r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp", "env_http_headers" = { "Authorization" = "ABNEGATE_MCP_TOKEN_0" }, "enabled_tools" = ["a", "b"], "tool_timeout_sec" = 1800, "startup_timeout_sec" = 30, "default_tools_approval_mode" = "approve", "required" = true, "omit_tools_from" = ["deferred"] }"#;
+
+    /// Everything a host-shaped server attached as `host` gives each agent,
+    /// with the agent's own tools granted and withheld, pinned whole.
+    ///
+    /// Each flag and key has its counterpart in what a host driving the
+    /// CLIs itself would pass: isolation, strict MCP loading, the server and
+    /// its exact tools, the permission prompt on a granted Claude run, the
+    /// tool timeout in both of Claude's variables, and for Codex the strict
+    /// configuration, every withheld tool, the read-only sandbox and each of
+    /// the server's keys. The only differences are in how the same thing is
+    /// written:
+    ///
+    /// - Claude reads the server from a private file whose path is passed,
+    ///   not from inline JSON;
+    /// - each allowed tool gets an `--allowedTools` of its own, not one comma
+    ///   list;
+    /// - the token reaches the server through a generated variable, which
+    ///   the file's header refers to for Claude and `env_http_headers` names
+    ///   for Codex, not through a fixed variable and `bearer_token_env_var`;
+    /// - Codex is given the server as one inline table, not one `-c` per key;
+    /// - the options come after the streaming flags and before the model,
+    ///   and Codex's server after its own flags and before its sandbox.
+    #[tokio::test]
+    async fn a_host_shaped_server_reaches_each_agent_exactly_as_pinned() {
+        let isolation = [
+            "--setting-sources",
+            "",
+            "--settings",
+            r#"{"crossSessionInbound":"refuse"}"#,
+        ];
+        let allowed = [
+            "--allowedTools",
+            "mcp__host__a",
+            "--allowedTools",
+            "mcp__host__b",
+        ];
+
+        let (granted, file, environment) = golden(AgentKind::Claude, "opus", |settings| {
+            settings
+                .isolate()
+                .with_mcp_server("host", host_server())
+                .with_permission_prompt("host", "approve_tool_call")
+        })
+        .await;
+        let mut expected = vec![
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--mcp-config",
+            "<file>",
+            "--strict-mcp-config",
+        ];
+        expected.extend(isolation);
+        expected.extend(allowed);
+        expected.extend([
+            "--permission-prompt-tool",
+            "mcp__host__approve_tool_call",
+            "--model",
+            "opus",
+            "--print",
+        ]);
+        assert_eq!(granted, expected);
+        assert_eq!(file.as_deref(), Some(GOLDEN_FILE));
+        for (variable, value) in [
+            ("MCP_TOOL_TIMEOUT", "1800000"),
+            ("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT", "1800000"),
+            ("DISABLE_AUTOUPDATER", "1"),
+            ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+            ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+        ] {
+            assert_eq!(
+                environment.get(variable).map(String::as_str),
+                Some(value),
+                "{variable}"
+            );
+        }
+        let bearer = format!("Bearer {HOST_TOKEN}");
+        assert_eq!(
+            environment.get("ABNEGATE_MCP_TOKEN_0").map(String::as_str),
+            Some(bearer.as_str())
+        );
+        assert!(
+            !environment.contains_key("HOST_MCP_TOKEN"),
+            "{environment:?}"
+        );
+
+        let (withheld, file, _) = golden(AgentKind::Claude, "opus", |settings| {
+            settings
+                .isolate()
+                .withhold_tools()
+                .with_mcp_server("host", host_server())
+        })
+        .await;
+        let mut expected = vec![
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--mcp-config",
+            "<file>",
+            "--strict-mcp-config",
+        ];
+        expected.extend(isolation);
+        expected.extend(["--tools", ""]);
+        expected.extend(allowed);
+        expected.extend(["--model", "opus", "--print"]);
+        assert_eq!(withheld, expected);
+        assert_eq!(file.as_deref(), Some(GOLDEN_FILE));
+
+        let strict = [
+            "--ignore-user-config",
+            "--disable",
+            "apps",
+            "--disable",
+            "plugins",
+        ];
+        let (granted, file, environment) = golden(AgentKind::Codex, "gpt-6-sol", |settings| {
+            settings
+                .isolate()
+                .with_mcp_server("host", host_server())
+                .with_sandbox(CodexSandbox::WorkspaceWrite)
+        })
+        .await;
+        let mut expected = vec!["exec", "--json", "--skip-git-repo-check"];
+        expected.extend(strict);
+        expected.extend([
+            "-c",
+            GOLDEN_OVERRIDE,
+            "--sandbox",
+            "workspace-write",
+            "--model",
+            "gpt-6-sol",
+            "-",
+        ]);
+        assert_eq!(granted, expected);
+        assert_eq!(file, None);
+        assert_eq!(
+            environment.get("ABNEGATE_MCP_TOKEN_0").map(String::as_str),
+            Some(bearer.as_str())
+        );
+        for variable in ["MCP_TOOL_TIMEOUT", "DISABLE_AUTOUPDATER"] {
+            assert!(!environment.contains_key(variable), "{variable}");
+        }
+
+        let (withheld, _, _) = golden(AgentKind::Codex, "gpt-6-sol", |settings| {
+            settings
+                .isolate()
+                .withhold_tools()
+                .with_mcp_server("host", host_server())
+        })
+        .await;
+        let mut expected = vec!["exec", "--json", "--skip-git-repo-check"];
+        expected.extend(strict);
+        expected.extend([
+            "--disable",
+            "shell_tool",
+            "--disable",
+            "view_image",
+            "--disable",
+            "goals",
+            "--disable",
+            "sleep_tool",
+            "--disable",
+            "image_generation",
+            "-c",
+            "agents.enabled=false",
+            "-c",
+            r#"web_search="disabled""#,
+            "-c",
+            "tools.experimental_request_user_input.enabled=false",
+            "-c",
+            GOLDEN_OVERRIDE,
+            "--sandbox",
+            "read-only",
+            "--model",
+            "gpt-6-sol",
+            "-",
+        ]);
+        assert_eq!(withheld, expected);
     }
 }

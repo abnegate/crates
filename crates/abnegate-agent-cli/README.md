@@ -45,8 +45,9 @@ which its tools and stdio servers can read too, so binding keeps a secret from
 every other remote server, not from them.
 
 No agent is passed a permission-bypass flag, and nothing is approved in advance
-but what the settings allow. Claude's own tools keep Claude's own permission
-checks. Codex's do not: `codex exec` never asks for approval, so only its
+but what the settings allow and the tools of the MCP servers a Codex run is
+given, which `codex exec` has nobody to ask about. Claude's own tools keep
+Claude's own permission checks. Codex's do not: `codex exec` never asks for approval, so only its
 sandbox confines them, whichever one `CliSettings::with_sandbox`, the user's
 configuration or a `--sandbox` argument names, and `danger-full-access` confines
 nothing.
@@ -133,6 +134,68 @@ let settings = CliSettings::default()
     .with_cleanup(Cleanup::Always)
     .with_marker("MY_APPLICATION_RUN")
     .with_registry(GroupRegistry::global());
+```
+
+## Tools and isolation
+
+`CliSettings::withhold_tools` takes the agent's own tools away, for a host that
+serves it every tool it may use over MCP and decides each call where it runs:
+Claude is given `--tools ""` and loads only the attached servers, and Codex
+loads no user configuration, plugin or app, runs without its shell, image,
+goal, sleep, subagent, web-search and question tools, and runs in the
+`read-only` sandbox (`-c sandbox_mode="read-only"` on a resumed session). It is
+refused beside `CliSettings::read_only`, any other sandbox, the web or a
+permission that is not an MCP tool's, and so is a caller argument that would
+hand a tool back or choose the sandbox, such as `--tools`, `--enable`,
+`--sandbox`, `--profile` or a `-c` override of `features`.
+
+`CliSettings::with_permission_prompt(server, tool)` sends each question Claude
+would ask before using one of its own tools to an attached server's tool, with
+`--permission-prompt-tool`, so the host answers it under its own approval
+rules. `AgentKind::tool` spells the name a model calls such a tool by,
+`mcp__<server>__<tool>`.
+
+`CliSettings::isolate` runs Claude apart from whatever the host configured for
+it: no settings file loads (`--setting-sources ""`), no other session may
+message it, and it is given `DISABLE_AUTOUPDATER=1`,
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` unless `CliSettings::with_variable` says
+otherwise. An isolated read-only run loads no settings at all, where it would
+load the user's, and keeps every flag that confines it. Codex ignores it, so a
+host can set it on every run.
+
+An `McpServer` built in code also takes options no configuration document
+carries, which never reach Claude's file or a log: `with_tool_timeout` (Codex's
+`tool_timeout_sec`, and for Claude the longest of the run's servers as
+`MCP_TOOL_TIMEOUT` and `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`),
+`with_startup_timeout`, `require` and `eager` (Codex only), and `exclusive`,
+which holds a server to exactly the tools it names, none when it names none.
+
+```rust
+use std::time::Duration;
+
+use abnegate_agent_cli::AgentKind;
+use abnegate_agent_cli::CliSettings;
+use abnegate_agent_cli::McpServer;
+
+# let token = String::new();
+let host = McpServer::remote("http://127.0.0.1:8421/mcp")
+    .with_header("Authorization", "Bearer ${HOST_MCP_TOKEN}")
+    .with_secret("HOST_MCP_TOKEN", token)
+    .with_tools(["read_file", "run_command"])
+    .exclusive()
+    .with_tool_timeout(Duration::from_secs(1800))
+    .with_startup_timeout(Duration::from_secs(30))
+    .require()
+    .eager();
+let settings = CliSettings::default()
+    .isolate()
+    .with_mcp_server("host", host)
+    .with_permission_prompt("host", "approve_tool_call");
+assert_eq!(
+    AgentKind::Claude.tool("host", "read_file"),
+    "mcp__host__read_file"
+);
 ```
 
 ## Claude turns

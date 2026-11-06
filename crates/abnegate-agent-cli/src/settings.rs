@@ -19,6 +19,8 @@ use crate::kind::EFFORT;
 use crate::kind::REASONING_EFFORT;
 use crate::mcp::McpConfig;
 use crate::mcp::McpServer;
+use crate::mcp::mcp_rule;
+use crate::mcp::qualified;
 use crate::session::Session;
 use crate::tripwire::Tripwire;
 
@@ -82,6 +84,32 @@ const CODEX_SANDBOX_FLAGS: &[&str] = &[
 /// Codex's flags overriding one configuration value, given as `key=value`.
 const CODEX_CONFIGURATION_FLAGS: &[&str] = &["-c", "--config"];
 
+/// The caller [argument](CliSettings::arguments) that turns a Codex feature
+/// back on, which a run that [withholds](CliSettings::withhold_tools) the
+/// agent's own tools refuses.
+const CODEX_TOOL_FLAGS: &[&str] = &["--enable"];
+
+/// The caller [argument](CliSettings::arguments) that names Claude's
+/// built-in tools, which a run that [withholds](CliSettings::withhold_tools)
+/// them refuses.
+const CLAUDE_TOOL_FLAGS: &[&str] = &["--tools"];
+
+/// The caller [arguments](CliSettings::arguments) that choose which
+/// settings Claude loads, which an [isolated](CliSettings::isolated) run
+/// refuses.
+const CLAUDE_ISOLATION_FLAGS: &[&str] = &["--setting-sources", "--settings"];
+
+/// The Codex configuration tables a run that
+/// [withholds](CliSettings::withhold_tools) the agent's own tools refuses a
+/// `-c` override of, whole or in part: the features, which turn tools on,
+/// and the tools' own settings.
+const CODEX_TOOL_TABLES: &[&str] = &["features", "tools"];
+
+/// The Codex configuration keys a run that
+/// [withholds](CliSettings::withhold_tools) the agent's own tools refuses a
+/// `-c` override of: subagents and the web search.
+const CODEX_TOOL_KEYS: &[&str] = &["agents", "agents.enabled", "web_search"];
+
 /// The configuration key naming Codex's sandbox, at the top level or in a
 /// profile.
 const SANDBOX_MODE_KEY: &str = "sandbox_mode";
@@ -89,9 +117,11 @@ const SANDBOX_MODE_KEY: &str = "sandbox_mode";
 /// The configuration key choosing the profile Codex reads its settings from.
 const PROFILE_KEY: &str = "profile";
 
-const SESSION: &str = "session";
-const SANDBOX: &str = "sandbox";
-const EFFORT_SETTING: &str = "effort";
+const SESSION: &str = "given its own session";
+const SANDBOX: &str = "given its own sandbox";
+const EFFORT_SETTING: &str = "given its own effort";
+const WITHHELD: &str = "withholding the agent's own tools";
+const ISOLATED: &str = "isolated from the host's settings";
 const KEY_SEPARATOR: char = '.';
 const KEY_QUOTES: [char; 2] = ['"', '\''];
 const LONG_FLAG: &str = "--";
@@ -345,6 +375,63 @@ pub struct CliSettings {
     pub instructions: Option<String>,
     /// Tools the agent may use without asking. Claude only.
     pub permissions: Vec<String>,
+    /// Withhold the agent's own tools, so that it can call the tools of the
+    /// MCP servers attached in [`mcp`](CliSettings::mcp) and nothing else.
+    /// Off by default.
+    ///
+    /// For a host that serves the agent every tool it may use and decides
+    /// each call where it runs: the agent's own tools run as the host's user,
+    /// reaching every file that user can, and nothing the host sees gates
+    /// them.
+    ///
+    /// Claude is given no built-in tool, with `--tools ""`, and loads only
+    /// the attached MCP servers, with `--strict-mcp-config`. Codex loads no
+    /// user configuration, plugin or app, as when servers are configured, and
+    /// also runs without its shell, image viewing and generation, goals,
+    /// sleep, subagents, web search and questions to the user, in the
+    /// `read-only` [sandbox](CliSettings::sandbox): `--sandbox read-only`, or
+    /// on a resumed [session](CliSettings::session) its `sandbox_mode`.
+    ///
+    /// Refused together with [`read_only`](CliSettings::read_only), with a
+    /// sandbox other than [`CodexSandbox::ReadOnly`], with a
+    /// [permission prompt](CliSettings::permission_prompt), and on Claude
+    /// with [`web`](CliSettings::web) or a permission that is not an MCP
+    /// tool's. So is a caller [argument](CliSettings::arguments) that would
+    /// give a tool back or choose the sandbox: Claude's `--tools`, and every
+    /// argument a run given its own sandbox refuses, Codex's `--enable`, and
+    /// a `-c` override of `features`, `tools`, `agents`, `agents.enabled`
+    /// or `web_search`.
+    pub withhold_tools: bool,
+    /// The MCP tool Claude asks, with `--permission-prompt-tool`, whether it
+    /// may use a tool its permissions do not allow, named as the model calls
+    /// it: see [`AgentKind::tool`](crate::AgentKind::tool). `None` leaves
+    /// such a use to Claude's permission mode. Claude only.
+    ///
+    /// The question goes to whoever serves the tool, which answers it, so a
+    /// run can use its own tools under the host's approval rather than stop
+    /// on a question nobody can answer. Refused unless the server it names
+    /// attaches to the run, and on a [read-only](CliSettings::read_only) run
+    /// or one that [withholds](CliSettings::withhold_tools) the agent's own
+    /// tools, which have nothing to ask about.
+    pub permission_prompt: Option<String>,
+    /// Run Claude apart from anything the host configured for it: no
+    /// settings file loads, the user's included, with `--setting-sources ""`,
+    /// and no other session may message this one, with
+    /// `--settings {"crossSessionInbound":"refuse"}`. The run is also given
+    /// `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+    /// and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, so it neither updates
+    /// itself, nor phones home, nor remembers across runs, unless
+    /// [`variables`](CliSettings::variables) or
+    /// [`environment`](CliSettings::environment) set them otherwise. Off by
+    /// default.
+    ///
+    /// A [read-only](CliSettings::read_only) run, which loads only the
+    /// user's settings, loads none once isolated too. A caller
+    /// [argument](CliSettings::arguments) choosing settings,
+    /// `--setting-sources` or `--settings`, is refused. Codex has no such
+    /// settings, so a Codex run ignores it, and a host can set it on every
+    /// run whichever agent runs it.
+    pub isolated: bool,
     /// Confine the run to an allowlist, so it cannot change the workspace or
     /// read outside it however it is asked to. Claude only.
     ///
@@ -449,6 +536,9 @@ impl Default for CliSettings {
             schema: None,
             instructions: None,
             permissions: Vec::new(),
+            withhold_tools: false,
+            permission_prompt: None,
+            isolated: false,
             read_only: false,
             web: false,
             mcp: McpConfig::default(),
@@ -638,6 +728,25 @@ impl CliSettings {
         self
     }
 
+    /// Opt in to [`CliSettings::withhold_tools`].
+    pub fn withhold_tools(mut self) -> Self {
+        self.withhold_tools = true;
+        self
+    }
+
+    /// Ask `server`'s tool `tool` whether Claude may use a tool its
+    /// permissions do not allow. See [`CliSettings::permission_prompt`].
+    pub fn with_permission_prompt(mut self, server: &str, tool: &str) -> Self {
+        self.permission_prompt = Some(qualified(server, tool));
+        self
+    }
+
+    /// Opt in to [`CliSettings::isolated`].
+    pub fn isolate(mut self) -> Self {
+        self.isolated = true;
+        self
+    }
+
     /// Allow exactly [`READ_ONLY_TOOLS`], replacing any permission set so
     /// far, and hold the run to [`CliSettings::read_only`]. Named MCP tools
     /// may be allowed afterwards with [`CliSettings::with_permissions`], and
@@ -704,11 +813,13 @@ impl CliSettings {
         self
     }
 
-    /// Refuse a [session](CliSettings::session) the agent would misread, and
-    /// a caller [argument](CliSettings::arguments) with which `agent` would
-    /// choose what the session, the [sandbox](CliSettings::sandbox) or the
-    /// [effort](CliSettings::effort) already chose, naming the flag but never
-    /// its value.
+    /// Refuse a [session](CliSettings::session) the agent would misread,
+    /// settings that contradict each other, and a caller
+    /// [argument](CliSettings::arguments) with which `agent` would choose
+    /// what the session, the [sandbox](CliSettings::sandbox), the
+    /// [effort](CliSettings::effort), [withheld tools](CliSettings::withhold_tools)
+    /// or [isolation](CliSettings::isolated) already chose, naming the flag
+    /// but never its value.
     pub(crate) fn refuse_conflicts(&self, agent: AgentKind) -> Result<(), ProviderError> {
         if let Some(session) = &self.session
             && (session.id.is_empty() || session.id.starts_with(FLAG))
@@ -726,30 +837,34 @@ impl CliSettings {
                 "claude pins a session only by a UUID; resume one named otherwise",
             ));
         }
-        let (session_flags, sandbox_flags, effort_flags, configuration_flags): (
-            &[&str],
-            &[&str],
-            &[&str],
-            &[&str],
-        ) = match agent {
-            AgentKind::Claude => (CLAUDE_SESSION_FLAGS, &[], &[EFFORT], &[]),
-            AgentKind::Codex => (
-                CODEX_SESSION_FLAGS,
-                CODEX_SANDBOX_FLAGS,
-                &[],
-                CODEX_CONFIGURATION_FLAGS,
-            ),
+        self.refuse_contradictions(agent)?;
+        let flags = |claude: &'static [&'static str], codex: &'static [&'static str]| match agent {
+            AgentKind::Claude => claude,
+            AgentKind::Codex => codex,
         };
+        let sandbox_flags = flags(&[], CODEX_SANDBOX_FLAGS);
+        let configuration_flags = flags(&[], CODEX_CONFIGURATION_FLAGS);
         let chosen = [
-            (self.session.is_some(), session_flags, SESSION),
+            (
+                self.session.is_some(),
+                flags(CLAUDE_SESSION_FLAGS, CODEX_SESSION_FLAGS),
+                SESSION,
+            ),
             (self.sandbox.is_some(), sandbox_flags, SANDBOX),
-            (self.effort.is_some(), effort_flags, EFFORT_SETTING),
+            (self.effort.is_some(), flags(&[EFFORT], &[]), EFFORT_SETTING),
+            (self.withhold_tools, sandbox_flags, WITHHELD),
+            (
+                self.withhold_tools,
+                flags(CLAUDE_TOOL_FLAGS, CODEX_TOOL_FLAGS),
+                WITHHELD,
+            ),
+            (self.isolated, flags(CLAUDE_ISOLATION_FLAGS, &[]), ISOLATED),
         ];
         for (index, argument) in self.arguments.iter().enumerate() {
-            for (_, flags, setting) in chosen.iter().filter(|(given, ..)| *given) {
+            for (_, flags, reason) in chosen.iter().filter(|(given, ..)| *given) {
                 if let Some(flag) = flags.iter().find(|flag| names(argument, flag)) {
                     return Err(ProviderError::config(format!(
-                        "a run given its own {setting} cannot pass {flag}"
+                        "a run {reason} cannot pass {flag}"
                     )));
                 }
             }
@@ -765,17 +880,71 @@ impl CliSettings {
                         effort_key(assignment),
                         EFFORT_SETTING,
                     ),
+                    (self.withhold_tools, sandbox_key(assignment), WITHHELD),
+                    (self.withhold_tools, tool_key(assignment), WITHHELD),
                 ];
-                for (_, key, setting) in configured.iter().filter(|(given, ..)| *given) {
+                for (_, key, reason) in configured.iter().filter(|(given, ..)| *given) {
                     if let Some(key) = key {
                         return Err(ProviderError::config(format!(
-                            "a run given its own {setting} cannot pass {flag} {key}"
+                            "a run {reason} cannot pass {flag} {key}"
                         )));
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    /// Refuse settings that ask `agent` for two things it cannot both do:
+    /// [withheld tools](CliSettings::withhold_tools) beside a read-only run,
+    /// a sandbox other than read-only, a
+    /// [permission prompt](CliSettings::permission_prompt), and on Claude the
+    /// web or a permission that is not an MCP tool's; and a permission prompt
+    /// on a read-only run.
+    fn refuse_contradictions(&self, agent: AgentKind) -> Result<(), ProviderError> {
+        let unconfined = self
+            .sandbox
+            .is_some_and(|sandbox| sandbox != CodexSandbox::ReadOnly);
+        let claude = agent == AgentKind::Claude;
+        let unserved = self
+            .permissions
+            .iter()
+            .any(|permission| !mcp_rule(permission));
+        let prompted = self.permission_prompt.is_some();
+        let contradiction = [
+            (
+                self.withhold_tools && self.read_only,
+                "withhold the agent's own tools and be read-only",
+            ),
+            (
+                self.withhold_tools && unconfined,
+                "withhold the agent's own tools and run them in a sandbox other than read-only",
+            ),
+            (
+                self.withhold_tools && prompted,
+                "withhold the agent's own tools and ask whether it may use them",
+            ),
+            (
+                claude && self.withhold_tools && self.web,
+                "withhold the agent's own tools and allow the web",
+            ),
+            (
+                claude && self.withhold_tools && unserved,
+                "withhold the agent's own tools and allow one that is not an MCP tool",
+            ),
+            (
+                self.read_only && prompted,
+                "be read-only and ask whether the agent may use a tool it does not allow",
+            ),
+        ]
+        .into_iter()
+        .find_map(|(given, contradiction)| given.then_some(contradiction));
+        match contradiction {
+            Some(contradiction) => Err(ProviderError::config(format!(
+                "a run cannot both {contradiction}"
+            ))),
+            None => Ok(()),
+        }
     }
 }
 
@@ -814,6 +983,19 @@ fn sandbox_key(setting: &str) -> Option<&str> {
     (last_segment(key) == SANDBOX_MODE_KEY || unquoted == PROFILE_KEY).then_some(key)
 }
 
+/// The key of a `key=value` configuration override when it would give Codex
+/// back a tool a run withholds: anything under [`CODEX_TOOL_TABLES`], or one
+/// of [`CODEX_TOOL_KEYS`].
+fn tool_key(setting: &str) -> Option<&str> {
+    let key = configuration_key(setting);
+    let segments: Vec<&str> = key.split(KEY_SEPARATOR).map(unquoted).collect();
+    let path = segments.join(".");
+    let table = segments
+        .first()
+        .is_some_and(|segment| CODEX_TOOL_TABLES.contains(segment));
+    (table || CODEX_TOOL_KEYS.contains(&path.as_str())).then_some(key)
+}
+
 /// The key of a `key=value` configuration override when it sets Codex's
 /// [reasoning effort](REASONING_EFFORT), at the top level or in a profile.
 fn effort_key(setting: &str) -> Option<&str> {
@@ -831,11 +1013,12 @@ fn configuration_key(setting: &str) -> &str {
 
 /// The last dotted segment of a configuration `key`, unquoted.
 fn last_segment(key: &str) -> &str {
-    key.rsplit(KEY_SEPARATOR)
-        .next()
-        .unwrap_or(key)
-        .trim()
-        .trim_matches(KEY_QUOTES)
+    unquoted(key.rsplit(KEY_SEPARATOR).next().unwrap_or(key))
+}
+
+/// One dotted `segment` of a configuration key, trimmed and unquoted.
+fn unquoted(segment: &str) -> &str {
+    segment.trim().trim_matches(KEY_QUOTES)
 }
 
 /// Whether `id` is a UUID in its hyphenated form, as `--session-id` takes it.
@@ -897,6 +1080,9 @@ mod tests {
         assert!(settings.schema.is_none());
         assert!(settings.instructions.is_none());
         assert!(settings.permissions.is_empty());
+        assert!(!settings.withhold_tools);
+        assert!(settings.permission_prompt.is_none());
+        assert!(!settings.isolated);
         assert!(!settings.read_only);
         assert!(!settings.web);
         assert!(settings.mcp.is_empty());
@@ -1351,6 +1537,244 @@ mod tests {
                 "-c",
             ]);
         assert!(settings.refuse_conflicts(AgentKind::Codex).is_ok());
+    }
+
+    #[test]
+    fn withheld_tools_a_permission_prompt_and_isolation_are_kept_as_given() {
+        let settings = CliSettings::default()
+            .withhold_tools()
+            .isolate()
+            .with_permission_prompt("host", "approve_tool_call");
+
+        assert!(settings.withhold_tools);
+        assert!(settings.isolated);
+        assert_eq!(
+            settings.permission_prompt.as_deref(),
+            Some("mcp__host__approve_tool_call")
+        );
+        assert_eq!(
+            CliSettings::default()
+                .with_permission_prompt("host.relay", "approve tool")
+                .permission_prompt
+                .as_deref(),
+            Some("mcp__host_relay__approve_tool")
+        );
+    }
+
+    #[test]
+    fn a_codex_run_withholding_its_tools_refuses_an_argument_choosing_the_sandbox() {
+        for (arguments, flag) in [
+            (&["--sandbox", "danger-full-access"][..], "--sandbox"),
+            (&["--sandbox=danger-full-access"], "--sandbox"),
+            (&["-s", "danger-full-access"], "-s"),
+            (&["-sdanger-full-access"], "-s"),
+            (&["--full-auto"], "--full-auto"),
+            (&["--approve-for-me"], "--approve-for-me"),
+            (
+                &["--dangerously-bypass-approvals-and-sandbox"],
+                "--dangerously-bypass-approvals-and-sandbox",
+            ),
+            (&["--profile", "unconfined"], "--profile"),
+            (&["--profile=unconfined"], "--profile"),
+            (&["-p", "unconfined"], "-p"),
+        ] {
+            refused_once_given(
+                AgentKind::Codex,
+                arguments,
+                CliSettings::withhold_tools,
+                &format!("tools cannot pass {flag}"),
+            );
+        }
+    }
+
+    #[test]
+    fn a_codex_run_withholding_its_tools_refuses_a_configuration_override_choosing_the_sandbox() {
+        for (arguments, refused) in [
+            (
+                &["-c", r#"sandbox_mode="danger-full-access""#][..],
+                "-c sandbox_mode",
+            ),
+            (
+                &[r#"--config=sandbox_mode="workspace-write""#],
+                "--config sandbox_mode",
+            ),
+            (
+                &["-c", r#"profiles.open.sandbox_mode="danger-full-access""#],
+                "-c profiles.open.sandbox_mode",
+            ),
+            (&["-c", r#"profile="open""#], "-c profile"),
+        ] {
+            refused_once_given(
+                AgentKind::Codex,
+                arguments,
+                CliSettings::withhold_tools,
+                refused,
+            );
+        }
+    }
+
+    #[test]
+    fn a_codex_run_withholding_its_tools_refuses_an_argument_giving_one_back() {
+        for (arguments, refused) in [
+            (&["--enable", "shell_tool"][..], "--enable"),
+            (&["--enable=web_search_request"], "--enable"),
+            (
+                &["-c", "features.shell_tool=true"],
+                "-c features.shell_tool",
+            ),
+            (
+                &["--config", r#""features"."view_image"=true"#],
+                r#"--config "features"."view_image""#,
+            ),
+            (&["-c", "features={ goals = true }"], "-c features"),
+            (&["-c", "agents.enabled=true"], "-c agents.enabled"),
+            (&["-cagents={ enabled = true }"], "-c agents"),
+            (&["-c", r#"web_search="live""#], "-c web_search"),
+            (
+                &["--config=tools.experimental_request_user_input.enabled=true"],
+                "--config tools.experimental_request_user_input.enabled",
+            ),
+            (&["-c", "tools={}"], "-c tools"),
+        ] {
+            refused_once_given(
+                AgentKind::Codex,
+                arguments,
+                CliSettings::withhold_tools,
+                refused,
+            );
+        }
+
+        let settings = CliSettings::default().withhold_tools().with_arguments([
+            "-c",
+            r#"model="o3""#,
+            "-c",
+            "agents.max_threads=2",
+            "-c",
+            "web_search_extra=1",
+            "--enabled-later",
+        ]);
+        assert!(settings.refuse_conflicts(AgentKind::Codex).is_ok());
+    }
+
+    #[test]
+    fn a_claude_run_withholding_its_tools_refuses_an_argument_naming_them() {
+        for arguments in [
+            &["--tools", "Bash"][..],
+            &["--tools=Bash,Edit"],
+            &["--tools"],
+        ] {
+            refused_once_given(
+                AgentKind::Claude,
+                arguments,
+                CliSettings::withhold_tools,
+                "tools cannot pass --tools",
+            );
+        }
+
+        let settings = CliSettings::default()
+            .withhold_tools()
+            .with_arguments(["--tools-are-not-this-flag", "-c"]);
+        assert!(settings.refuse_conflicts(AgentKind::Claude).is_ok());
+    }
+
+    #[test]
+    fn an_isolated_claude_run_refuses_an_argument_choosing_its_settings() {
+        for (arguments, flag) in [
+            (&["--setting-sources", "user"][..], "--setting-sources"),
+            (&["--setting-sources=user,project"], "--setting-sources"),
+            (&["--settings", "{}"], "--settings"),
+            (&["--settings=/etc/claude.json"], "--settings"),
+        ] {
+            refused_once_given(
+                AgentKind::Claude,
+                arguments,
+                CliSettings::isolate,
+                &format!("settings cannot pass {flag}"),
+            );
+        }
+
+        let codex = CliSettings::default()
+            .isolate()
+            .with_arguments(["--settings", "{}"]);
+        assert!(
+            codex.refuse_conflicts(AgentKind::Codex).is_ok(),
+            "isolation has no effect on codex"
+        );
+    }
+
+    /// Refuse `settings` on `agent` as asking for two things at once,
+    /// naming `contradiction`.
+    fn contradictory(agent: AgentKind, settings: CliSettings, contradiction: &str) {
+        let error = settings
+            .refuse_conflicts(agent)
+            .expect_err("a contradiction");
+        assert!(
+            matches!(&error, ProviderError::Config { detail, .. } if detail.ends_with(contradiction)),
+            "{agent}: {error:?}"
+        );
+    }
+
+    #[test]
+    fn withheld_tools_are_refused_beside_whatever_would_hand_one_back() {
+        for agent in AgentKind::ALL {
+            contradictory(
+                *agent,
+                CliSettings::default().withhold_tools().read_only(),
+                "withhold the agent's own tools and be read-only",
+            );
+            for sandbox in [CodexSandbox::WorkspaceWrite, CodexSandbox::DangerFullAccess] {
+                contradictory(
+                    *agent,
+                    CliSettings::default()
+                        .withhold_tools()
+                        .with_sandbox(sandbox),
+                    "run them in a sandbox other than read-only",
+                );
+            }
+            contradictory(
+                *agent,
+                CliSettings::default()
+                    .withhold_tools()
+                    .with_permission_prompt("host", "approve_tool_call"),
+                "withhold the agent's own tools and ask whether it may use them",
+            );
+        }
+        contradictory(
+            AgentKind::Claude,
+            CliSettings::default().withhold_tools().allow_web(),
+            "withhold the agent's own tools and allow the web",
+        );
+        for permission in ["Bash", "Read", "mcp__host,Bash"] {
+            contradictory(
+                AgentKind::Claude,
+                CliSettings::default()
+                    .withhold_tools()
+                    .with_permissions([permission]),
+                "allow one that is not an MCP tool",
+            );
+        }
+
+        let served = CliSettings::default()
+            .withhold_tools()
+            .with_sandbox(CodexSandbox::ReadOnly);
+        assert!(served.refuse_conflicts(AgentKind::Codex).is_ok());
+        let served = CliSettings::default()
+            .withhold_tools()
+            .with_permissions(["mcp__host", "mcp__relay__read_file"]);
+        assert!(served.refuse_conflicts(AgentKind::Claude).is_ok());
+    }
+
+    #[test]
+    fn a_read_only_run_refuses_a_permission_prompt() {
+        for agent in AgentKind::ALL {
+            contradictory(
+                *agent,
+                CliSettings::default()
+                    .read_only()
+                    .with_permission_prompt("host", "approve_tool_call"),
+                "be read-only and ask whether the agent may use a tool it does not allow",
+            );
+        }
     }
 
     #[test]

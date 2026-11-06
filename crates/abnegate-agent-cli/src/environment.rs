@@ -60,6 +60,19 @@ pub(crate) const INHERITED: &[&str] = &[
     "NODE_EXTRA_CA_CERTS",
 ];
 
+/// What an [isolated](CliSettings::isolated) Claude run is given unless the
+/// caller sets otherwise: no update of itself, no traffic it can do
+/// without, and no memory carried from one run to the next.
+const ISOLATION_DEFAULTS: &[(&str, &str)] = &[
+    ("DISABLE_AUTOUPDATER", "1"),
+    ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+    ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+];
+
+/// Claude Code's waits on a call to an MCP tool, in milliseconds: the whole
+/// call, and the time it may go without hearing from the server.
+const TOOL_TIMEOUTS: &[&str] = &["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"];
+
 /// The child's environment: an allowlist of host variables, the
 /// [locale](LOCALE) categories, the caller's allowed names and the agent's
 /// own configuration variables, or the whole host
@@ -76,8 +89,9 @@ pub(crate) const INHERITED: &[&str] = &[
 /// bypass list is a secret, since a proxy URL, say, can carry a password.
 ///
 /// Explicit values go on in rising precedence: the agent's sign-in
-/// variables from the host when its credential is inherited, the caller's
-/// public variables and then its secret ones, the credential, and last the
+/// variables from the host when its credential is inherited, the
+/// [defaults] a Claude run is given for its isolation and its MCP
+/// tools' timeout, the caller's public variables and then its secret ones, the credential, and last the
 /// values an MCP configuration moved out of its file, under generated names
 /// no caller can know. A stdio server's references are resolved against the
 /// secrets bound to it first, and then what the child is given before those,
@@ -143,10 +157,13 @@ impl Environment {
                 environment.pass(variable, host);
             }
         }
-        for (variable, value) in &settings.variables {
+        for (variable, value) in defaults(agent, settings, mcp.is_some())
+            .into_iter()
+            .chain(settings.variables.clone())
+        {
             environment
                 .variables
-                .insert(variable.clone(), SecretValue::new(value.as_str()));
+                .insert(variable, SecretValue::new(value));
         }
         for (variable, value) in &settings.environment {
             environment.set(variable, value.clone());
@@ -178,7 +195,15 @@ impl Environment {
         settings: &CliSettings,
         host: &dyn Fn(&str) -> Option<OsString>,
     ) {
-        let public = |name: &str| harmless(name) || settings.variables.contains_key(name);
+        let defaulted: Vec<String> = defaults(agent, settings, true)
+            .into_iter()
+            .map(|(variable, _)| variable)
+            .collect();
+        let public = |name: &str| {
+            harmless(name)
+                || settings.variables.contains_key(name)
+                || defaulted.iter().any(|variable| variable == name)
+        };
         let lookup = |name: &str| {
             if withheld(agent, settings, name) {
                 return Some(String::new());
@@ -320,6 +345,41 @@ impl Environment {
     }
 }
 
+/// What a Claude run is given before the caller's own variables, which
+/// override it, none of it secret: the [isolation defaults](ISOLATION_DEFAULTS)
+/// when the run is [isolated](CliSettings::isolated), and, when `attached`,
+/// the longest [tool timeout](crate::McpServer::tool_timeout) of the servers
+/// attached to it as both of Claude Code's [waits](TOOL_TIMEOUTS) on a tool.
+/// Codex is given neither.
+fn defaults(agent: AgentKind, settings: &CliSettings, attached: bool) -> Vec<(String, String)> {
+    if agent != AgentKind::Claude {
+        return Vec::new();
+    }
+    let mut defaults: Vec<(String, String)> = Vec::new();
+    if settings.isolated {
+        defaults.extend(
+            ISOLATION_DEFAULTS
+                .iter()
+                .map(|(variable, value)| ((*variable).to_string(), (*value).to_string())),
+        );
+    }
+    let timeout = settings
+        .mcp
+        .attachable(agent)
+        .filter(|_| attached)
+        .filter_map(|(_, server)| server.tool_timeout)
+        .max();
+    if let Some(timeout) = timeout {
+        let milliseconds = timeout.as_millis().to_string();
+        defaults.extend(
+            TOOL_TIMEOUTS
+                .iter()
+                .map(|variable| ((*variable).to_string(), milliseconds.clone())),
+        );
+    }
+    defaults
+}
+
 /// Whether `variable` is one the child is given from the host by default,
 /// none of which holds anything secret.
 fn harmless(variable: &str) -> bool {
@@ -426,6 +486,7 @@ impl fmt::Debug for Environment {
 mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsString;
+    use std::time::Duration;
 
     use abnegate_llm::Credential;
     use abnegate_secret::SecretValue;
@@ -1780,5 +1841,164 @@ mod tests {
         let debug = format!("{environment:?}");
         assert!(!debug.contains("hunter2"), "{debug}");
         assert!(!debug.contains(concat!("sk-ant-", "host-key")), "{debug}");
+    }
+
+    const ISOLATION: [(&str, &str); 3] = [
+        ("DISABLE_AUTOUPDATER", "1"),
+        ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+        ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+    ];
+
+    const TIMEOUTS: [&str; 2] = ["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"];
+
+    /// An isolated Claude run neither updates itself, nor phones home, nor
+    /// remembers across runs, unless the caller says otherwise, and none of
+    /// it is a secret, so a log keeps every `1` it holds.
+    #[test]
+    fn an_isolated_claude_run_is_given_its_defaults_and_the_caller_overrides_them() {
+        let environment = Environment::new(
+            AgentKind::Claude,
+            &CliSettings::default().isolate(),
+            None,
+            &host(),
+        );
+        let variables = set(&environment);
+        for (name, value) in ISOLATION {
+            assert_eq!(variables[name].as_deref(), Some(value), "{name}");
+        }
+        assert!(
+            !exposed(&environment).iter().any(|secret| secret == "1"),
+            "{:?}",
+            exposed(&environment)
+        );
+
+        let settings = CliSettings::default()
+            .isolate()
+            .with_variable("DISABLE_AUTOUPDATER", "0")
+            .with_environment("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0");
+        let variables = set(&Environment::new(
+            AgentKind::Claude,
+            &settings,
+            None,
+            &host(),
+        ));
+        assert_eq!(variables["DISABLE_AUTOUPDATER"].as_deref(), Some("0"));
+        assert_eq!(
+            variables["CLAUDE_CODE_DISABLE_AUTO_MEMORY"].as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            variables["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"].as_deref(),
+            Some("1")
+        );
+
+        for (agent, settings) in [
+            (AgentKind::Claude, CliSettings::default()),
+            (AgentKind::Codex, CliSettings::default().isolate()),
+        ] {
+            let variables = set(&Environment::new(agent, &settings, None, &host()));
+            for (name, _) in ISOLATION {
+                assert!(!variables.contains_key(name), "{agent}: {name}");
+            }
+        }
+    }
+
+    /// Claude Code has one wait on an MCP tool for every server, so a run is
+    /// given the longest any attached server asks for, in milliseconds, in
+    /// both of its variables, which the caller can still override.
+    #[test]
+    fn a_claude_run_waits_on_its_mcp_tools_as_long_as_its_longest_server_asks() {
+        let settings = CliSettings::default()
+            .with_mcp_server(
+                "host",
+                McpServer::remote("http://127.0.0.1:9/mcp")
+                    .with_tool_timeout(Duration::from_secs(1800)),
+            )
+            .with_mcp_server(
+                "relay",
+                McpServer::remote("http://127.0.0.1:9/relay")
+                    .with_tool_timeout(Duration::from_millis(90_500)),
+            )
+            .with_mcp_server(
+                "slow",
+                McpServer::remote("http://127.0.0.1:9/slow")
+                    .with_tool_timeout(Duration::from_secs(3600))
+                    .disable(),
+            )
+            .with_mcp_server("plain", McpServer::remote("http://127.0.0.1:9/plain"));
+        let attachment = attached(&settings);
+        let environment =
+            Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
+
+        let variables = set(&environment);
+        for name in TIMEOUTS {
+            assert_eq!(variables[name].as_deref(), Some("1800000"), "{name}");
+        }
+        assert!(
+            !exposed(&environment)
+                .iter()
+                .any(|secret| secret == "1800000"),
+            "a timeout is no secret"
+        );
+
+        let overridden = settings.clone().with_variable("MCP_TOOL_TIMEOUT", "60000");
+        let variables = set(&Environment::new(
+            AgentKind::Claude,
+            &overridden,
+            Some(&attachment),
+            &host(),
+        ));
+        assert_eq!(variables["MCP_TOOL_TIMEOUT"].as_deref(), Some("60000"));
+        assert_eq!(
+            variables["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"].as_deref(),
+            Some("1800000")
+        );
+
+        let unattached = set(&Environment::new(
+            AgentKind::Claude,
+            &settings,
+            None,
+            &host(),
+        ));
+        let codex = set(&Environment::new(
+            AgentKind::Codex,
+            &settings,
+            None,
+            &host(),
+        ));
+        let untimed = CliSettings::default()
+            .with_mcp_server("plain", McpServer::remote("http://127.0.0.1:9/plain"));
+        let untimed_attachment = attached(&untimed);
+        let untimed = set(&Environment::new(
+            AgentKind::Claude,
+            &untimed,
+            Some(&untimed_attachment),
+            &host(),
+        ));
+        for variables in [unattached, codex, untimed] {
+            for name in TIMEOUTS {
+                assert!(!variables.contains_key(name), "{name}: {variables:?}");
+            }
+        }
+    }
+
+    /// A stdio server that refers to a default it is given reads it as
+    /// public, so the `1` it holds is never scrubbed from every log line.
+    #[test]
+    fn a_stdio_reference_to_a_default_never_makes_it_a_secret() {
+        let settings = CliSettings::default().isolate().with_mcp_server(
+            "notes",
+            McpServer::command("notes-server", ["mcp"])
+                .with_environment("NOTES_QUIET", "${DISABLE_AUTOUPDATER}"),
+        );
+        let attachment = attached(&settings);
+        let environment =
+            Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
+
+        assert!(
+            !exposed(&environment).iter().any(|secret| secret == "1"),
+            "{:?}",
+            exposed(&environment)
+        );
     }
 }
