@@ -2896,3 +2896,163 @@ async fn a_listing_says_when_part_of_the_tree_could_not_be_read() {
         format!("open/{LEAF}\n[listing stopped early: some files could not be read]")
     );
 }
+
+/// Tool output is sanitized, so the model reads a file without its invisible
+/// formatting characters: an emoji's variation selector and a Persian word's
+/// zero-width non-joiner are gone from what it sees, and a patch or rewrite
+/// built from that text does not carry them.
+#[tokio::test]
+async fn read_file_returns_text_without_its_invisible_formatting_characters() {
+    let directory = tempdir().unwrap();
+    let content = "\u{2764}\u{FE0F} \u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}\n";
+    let note = directory.path().join("note.txt");
+    fs::write(&note, content).unwrap();
+    let context = create_test_context(directory.path());
+
+    let result = ReadFileTool
+        .execute(serde_json::json!({"path": "note.txt"}), &context)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.output.as_deref(),
+        Some("\u{2764} \u{645}\u{6CC}\u{62E}\u{648}\u{627}\u{647}\u{645}\n")
+    );
+    assert_eq!(
+        fs::read_to_string(&note).unwrap(),
+        content,
+        "reading leaves the file itself untouched"
+    );
+}
+
+fn ripgrep_installed() -> bool {
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| directory.join("rg").is_file())
+    })
+}
+
+/// ripgrep walks the tree itself and reports each match under the path it
+/// took, so a match is held to the check a file the walker opened would be.
+/// Here the state root is denied in another case than the one on disk, which
+/// is the one ripgrep prints. The files carry an extension the walk never
+/// reads, so a match in the output is one ripgrep found.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_ripgrep_match_is_withheld_by_identity() {
+    if !ripgrep_installed() {
+        eprintln!("skipping: ripgrep is not installed");
+        return;
+    }
+    let shared = shared();
+    let folded = PathBuf::from(shared.state.to_string_lossy().to_uppercase());
+    if !folded.exists() {
+        eprintln!(
+            "skipping: {} is on a case-sensitive filesystem",
+            shared.state.display()
+        );
+        return;
+    }
+    fs::write(shared.workspace.join("own.log"), OTHER_SECRET).unwrap();
+    fs::write(shared.home.join("leak.log"), OTHER_SECRET).unwrap();
+    let context = ToolContext {
+        unrestricted: true,
+        denied: vec![folded],
+        environment: ToolContext::default().environment,
+        ..create_test_context(&shared.workspace)
+    };
+
+    let searched = SearchCodeTool
+        .execute(
+            serde_json::json!({
+                "pattern": OTHER_SECRET,
+                "path": shared.root,
+                "case_sensitive": true
+            }),
+            &context,
+        )
+        .await
+        .expect("the directory around the state searches")
+        .output
+        .unwrap();
+
+    assert!(searched.contains("own.log"), "{searched}");
+    assert!(!searched.contains("leak.log"), "{searched}");
+    assert!(!searched.contains("auth.json"), "{searched}");
+}
+
+/// A link inside the working directory names the denied state under a path
+/// no denied entry spells, so listing or searching through it is refused as
+/// the state itself is, and a walk of the tree around it does not follow it in.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_listing_through_a_link_into_denied_state_is_refused() {
+    let shared = shared();
+    symlinked(&shared.workspace, "home", &shared.home);
+    let link = shared.workspace.join("home");
+    fs::write(shared.workspace.join("own.rs"), OTHER_SECRET).unwrap();
+    let context = ToolContext {
+        environment: ToolContext::default().environment,
+        ..denying_context(&shared)
+    };
+
+    for path in [shared.state.clone(), shared.home.clone(), link.clone()] {
+        for recursive in [false, true] {
+            let listed = ListFilesTool
+                .execute(
+                    serde_json::json!({"path": path, "recursive": recursive}),
+                    &context,
+                )
+                .await;
+            off_limits(
+                listed,
+                &format!("list_files {} recursive {recursive}", path.display()),
+            );
+        }
+        let searched = SearchCodeTool
+            .execute(
+                serde_json::json!({"pattern": OTHER_SECRET, "path": path}),
+                &context,
+            )
+            .await;
+        off_limits(searched, &format!("search_code {}", path.display()));
+    }
+    let read = ReadFileTool
+        .execute(serde_json::json!({"path": "home/auth.json"}), &context)
+        .await;
+    off_limits(read, "read_file through the link");
+
+    let listed = ListFilesTool
+        .execute(
+            serde_json::json!({"path": shared.root, "recursive": true}),
+            &context,
+        )
+        .await
+        .expect("the directory around the state lists")
+        .output
+        .unwrap();
+    assert!(listed.contains("own.rs"), "{listed}");
+    assert!(!listed.contains("auth.json"), "{listed}");
+
+    let searched = SearchCodeTool
+        .execute(
+            serde_json::json!({"pattern": OTHER_SECRET, "path": shared.root}),
+            &context,
+        )
+        .await
+        .expect("the directory around the state searches")
+        .output
+        .unwrap();
+    assert!(searched.contains("own.rs"), "{searched}");
+    assert!(!searched.contains("auth.json"), "{searched}");
+
+    let (walked, _) = search_tree(
+        &shared.root.canonicalize().unwrap(),
+        OTHER_SECRET,
+        true,
+        MAXIMUM_SEARCH_RESULTS,
+        &context,
+    );
+    let walked = walked.join("\n");
+    assert!(walked.contains("own.rs"), "{walked}");
+    assert!(!walked.contains("auth.json"), "{walked}");
+}
