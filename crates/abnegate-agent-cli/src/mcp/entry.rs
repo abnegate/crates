@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use abnegate_secret::SecretValue;
 use serde::Deserialize;
@@ -20,6 +21,12 @@ const TOOLS: &[&str] = &["tools"];
 const WORKING_DIRECTORY: &[&str] = &["cwd", "working_directory"];
 const INHERIT_ENVIRONMENT: &[&str] = &["inherit_environment"];
 const DISABLED: &[&str] = &["disabled"];
+const TOOL_TIMEOUT: &[&str] = &["tool_timeout_sec", "tool_timeout_seconds"];
+const STARTUP_TIMEOUT: &[&str] = &["startup_timeout_sec", "startup_timeout_seconds"];
+const REQUIRED: &[&str] = &["required"];
+const EAGER: &[&str] = &["eager"];
+const EXCLUSIVE: &[&str] = &["exclusive"];
+const SUPERVISED: &[&str] = &["supervised"];
 
 const TOOL_NAME: &str = "name";
 
@@ -29,6 +36,7 @@ const TEXTS: &str = "a list of strings";
 const TEXT_MAP: &str = "an object of strings";
 const TOOL_LIST: &str = "a list of tool names, or of objects each with a `name`";
 const FLAG: &str = "true or false";
+const SECONDS: &str = "a number of seconds";
 const ONCE: &str = "given under one name";
 
 /// One server's entry in an MCP configuration document, read field by field
@@ -61,11 +69,12 @@ impl<'document> Entry<'document> {
             working_directory: self.text(WORKING_DIRECTORY)?.map(PathBuf::from),
             inherit_environment: self.flag(INHERIT_ENVIRONMENT)?,
             disabled: self.flag(DISABLED)?,
-            tool_timeout: None,
-            startup_timeout: None,
-            required: false,
-            eager: false,
-            exclusive: false,
+            tool_timeout: self.seconds(TOOL_TIMEOUT)?,
+            startup_timeout: self.seconds(STARTUP_TIMEOUT)?,
+            required: self.flag(REQUIRED)?,
+            eager: self.flag(EAGER)?,
+            exclusive: self.flag(EXCLUSIVE)?,
+            supervised: self.flag(SUPERVISED)?,
         })
     }
 
@@ -130,6 +139,23 @@ impl<'document> Entry<'document> {
         }
     }
 
+    /// A wait given as a non-negative number of seconds, whole or not.
+    fn seconds(&self, names: &[&'static str]) -> Result<Option<Duration>, Mismatch> {
+        let Some(value) = self.value(names)?.filter(|value| !value.is_null()) else {
+            return Ok(None);
+        };
+        value
+            .as_u64()
+            .map(Duration::from_secs)
+            .or_else(|| {
+                value
+                    .as_f64()
+                    .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+            })
+            .map(Some)
+            .ok_or(Mismatch::new(Some(names[0]), SECONDS))
+    }
+
     /// The transport named, any name this crate does not attach over
     /// reading as [`McpTransport::Unsupported`].
     fn transport(&self) -> Result<Option<McpTransport>, Mismatch> {
@@ -166,6 +192,7 @@ impl<'document> Entry<'document> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use abnegate_secret::SecretValue;
     use serde_json::json;
@@ -192,7 +219,13 @@ mod tests {
             "cwd": "/srv/notes",
             "inherit_environment": true,
             "disabled": false,
-            "timeout": 30000
+            "timeout": 30000,
+            "tool_timeout_sec": 1800,
+            "startup_timeout_sec": 2.5,
+            "required": true,
+            "eager": true,
+            "exclusive": true,
+            "supervised": true
         }))
         .expect("a server");
 
@@ -211,6 +244,12 @@ mod tests {
         assert_eq!(server.working_directory, Some(PathBuf::from("/srv/notes")));
         assert!(server.inherit_environment);
         assert!(!server.disabled);
+        assert_eq!(server.tool_timeout, Some(Duration::from_secs(1800)));
+        assert_eq!(server.startup_timeout, Some(Duration::from_millis(2500)));
+        assert!(server.required);
+        assert!(server.eager);
+        assert!(server.exclusive);
+        assert!(server.supervised);
     }
 
     #[test]
@@ -243,6 +282,18 @@ mod tests {
             ),
             (json!({"cwd": false}), "cwd", "a string"),
             (json!({"disabled": "yes"}), "disabled", "true or false"),
+            (json!({"exclusive": null}), "exclusive", "true or false"),
+            (json!({"supervised": 1}), "supervised", "true or false"),
+            (
+                json!({"tool_timeout_sec": "1800"}),
+                "tool_timeout_sec",
+                "a number of seconds",
+            ),
+            (
+                json!({"startup_timeout_seconds": -30}),
+                "startup_timeout_sec",
+                "a number of seconds",
+            ),
             (
                 json!({"args": [], "arguments": []}),
                 "args",

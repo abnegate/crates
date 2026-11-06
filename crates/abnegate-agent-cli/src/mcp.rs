@@ -34,7 +34,9 @@
 //! names a CLI gives them: `list.files` enables a tool the server calls
 //! `list.files`, where `list_files` enables nothing, and Claude refuses the
 //! first. Its [working directory](McpServer::working_directory) becomes its
-//! `cwd`.
+//! `cwd`. Every call to its tools is approved in advance, with
+//! `default_tools_approval_mode = "approve"`, since `codex exec` has nobody
+//! to ask, unless the server is [supervised](McpServer::supervised).
 //!
 //! The file holds no literal environment or header value. Each environment
 //! and header value, and each URL, stdio command or argument that refers to

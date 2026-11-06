@@ -10,6 +10,7 @@ use abnegate_secret::redact;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
 use serde::de::Error;
 use serde_json::Map;
 use serde_json::Value;
@@ -63,8 +64,13 @@ const NAME_PUNCTUATION: [char; 2] = [UNDERSCORE, '-'];
 ///
 /// Reads and writes the `mcpServers` entry shape: `args`, `env` and `cwd` on
 /// the wire, each also read under its full name here, and never the
-/// [`secrets`](McpServer::secrets). A value of the wrong type is reported by
-/// the field holding it and never quoted, since it may still be a secret.
+/// [`secrets`](McpServer::secrets). The options Claude Code's entry has no
+/// key for are written only when set: `tool_timeout_sec` and
+/// `startup_timeout_sec` as a number of seconds, each also read as
+/// `tool_timeout_seconds` and `startup_timeout_seconds`, and `required`,
+/// `eager`, `exclusive` and `supervised` as `true`. A value of the wrong type
+/// is reported by the field holding it and never quoted, since it may still
+/// be a secret.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct McpServer {
@@ -138,8 +144,9 @@ pub struct McpServer {
     /// them: the server's own name for each, with every character but
     /// letters, digits, `_` and `-` replaced by `_`. Empty allows every tool
     /// the server offers, unless the server is
-    /// [exclusive](McpServer::exclusive). A launcher that starts the server itself offers a
-    /// model only the tools this allows: see [`McpServer::allows`].
+    /// [exclusive](McpServer::exclusive). A launcher that starts the server
+    /// itself offers a model only the tools this allows: see
+    /// [`McpServer::allows`].
     pub tools: Vec<String>,
     /// The directory a stdio server starts in, or wherever its launcher
     /// chooses when unset.
@@ -173,28 +180,35 @@ pub struct McpServer {
     /// milliseconds, which [`CliSettings::with_variable`](crate::CliSettings::with_variable)
     /// overrides.
     ///
-    /// Like every option below it, it is set in code alone: it is never read
-    /// from or written to a configuration document, never part of the file
-    /// Claude Code is given, and never part of a log view of the server.
-    #[serde(skip)]
+    /// A configuration document holds it as `tool_timeout_sec`, a number of
+    /// seconds, whole when it can be. Like every option below it, it never
+    /// reaches the file Claude Code is given or a log view of the server.
+    #[serde(
+        rename = "tool_timeout_sec",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "seconds"
+    )]
     pub tool_timeout: Option<Duration>,
     /// How long Codex waits for this server to start, as the server's
     /// `startup_timeout_sec`, rounded up to whole seconds. `None` leaves it
     /// to Codex. Claude Code has no such setting, so a Claude run ignores
-    /// it. Set in code alone, like [`tool_timeout`](McpServer::tool_timeout).
-    #[serde(skip)]
+    /// it. A configuration document holds it as `startup_timeout_sec`, a
+    /// number of seconds, like [`tool_timeout`](McpServer::tool_timeout).
+    #[serde(
+        rename = "startup_timeout_sec",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "seconds"
+    )]
     pub startup_timeout: Option<Duration>,
     /// Fail a Codex run that cannot start this server, rather than run it
     /// without, as the server's `required`. Claude Code has no such setting,
-    /// so a Claude run ignores it. Set in code alone, like
-    /// [`tool_timeout`](McpServer::tool_timeout).
-    #[serde(skip)]
+    /// so a Claude run ignores it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
     /// List this server's tools to the model up front rather than behind a
     /// tool search, as Codex's `omit_tools_from = ["deferred"]`. Claude Code
-    /// has no such setting, so a Claude run ignores it. Set in code alone,
-    /// like [`tool_timeout`](McpServer::tool_timeout).
-    #[serde(skip)]
+    /// has no such setting, so a Claude run ignores it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub eager: bool,
     /// Hold the server to exactly [`tools`](McpServer::tools), even when the
     /// list is empty: an empty list then allows none of the server's tools
@@ -202,9 +216,23 @@ pub struct McpServer {
     /// server's `enabled_tools`, so it offers the model no other tool of the
     /// server's, and a Claude run allows no tool of the server's without
     /// asking that the list does not name, though the model can still see
-    /// them. Set in code alone, like [`tool_timeout`](McpServer::tool_timeout).
-    #[serde(skip)]
+    /// them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub exclusive: bool,
+    /// Leave each call to this server's tools to Codex's own approval rules
+    /// rather than approving every one in advance.
+    ///
+    /// By default a Codex run approves every call to an attached server's
+    /// tools in advance, with the server's
+    /// `default_tools_approval_mode = "approve"`, since `codex exec` has
+    /// nobody to ask and whoever serves a tool can decide each call itself.
+    /// A supervised server is given no approval mode, so Codex decides each
+    /// call by its own default, and a call that default would stop to ask
+    /// about has nobody to answer it. A Claude run is unchanged by it: what
+    /// Claude Code runs without asking is what [`tools`](McpServer::tools)
+    /// allows, through `--allowedTools`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub supervised: bool,
 }
 
 impl<'de> Deserialize<'de> for McpServer {
@@ -351,6 +379,12 @@ impl McpServer {
     /// Opt in to [`McpServer::exclusive`].
     pub fn exclusive(mut self) -> Self {
         self.exclusive = true;
+        self
+    }
+
+    /// Opt in to [`McpServer::supervised`].
+    pub fn supervise(mut self) -> Self {
+        self.supervised = true;
         self
     }
 
@@ -715,6 +749,16 @@ fn logged(text: &str) -> String {
         })
         .collect();
     redact(&masked).into_owned()
+}
+
+/// `timeout` as a configuration document holds it: a number of seconds,
+/// whole when it can be.
+fn seconds<S: Serializer>(timeout: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error> {
+    match timeout {
+        Some(timeout) if timeout.subsec_nanos() == 0 => serializer.serialize_u64(timeout.as_secs()),
+        Some(timeout) => serializer.serialize_f64(timeout.as_secs_f64()),
+        None => serializer.serialize_none(),
+    }
 }
 
 fn masked(values: &BTreeMap<String, SecretValue>) -> Value {
@@ -1425,48 +1469,103 @@ mod tests {
             .with_startup_timeout(Duration::from_secs(30))
             .require()
             .eager()
-            .exclusive();
+            .exclusive()
+            .supervise();
         assert_eq!(server.tool_timeout, Some(Duration::from_secs(1800)));
         assert_eq!(server.startup_timeout, Some(Duration::from_secs(30)));
         assert!(server.required);
         assert!(server.eager);
         assert!(server.exclusive);
+        assert!(server.supervised);
 
         let plain = McpServer::remote("http://127.0.0.1:9/mcp");
         assert_eq!(plain.tool_timeout, None);
         assert_eq!(plain.startup_timeout, None);
-        assert!(!plain.required && !plain.eager && !plain.exclusive);
+        assert!(!plain.required && !plain.eager && !plain.exclusive && !plain.supervised);
     }
 
-    /// The options set in code alone are never written to a document, never
-    /// read from one, and never part of the log view.
+    /// Every option survives a document's round trip, written under its own
+    /// key with each wait in seconds, while the log view stays as it was.
     #[test]
-    fn the_options_set_in_code_never_reach_a_document_or_a_log() {
+    fn every_option_survives_a_round_trip_through_a_document() {
         let plain = McpServer::remote("http://127.0.0.1:9/mcp").with_tools(["a"]);
         let optioned = plain
             .clone()
             .with_tool_timeout(Duration::from_secs(1800))
-            .with_startup_timeout(Duration::from_secs(30))
+            .with_startup_timeout(Duration::from_millis(29_500))
             .require()
             .eager()
-            .exclusive();
+            .exclusive()
+            .supervise();
+
+        let written = serde_json::to_value(&optioned).expect("serialisable");
 
         assert_eq!(
-            serde_json::to_value(&optioned).expect("serialisable"),
-            serde_json::to_value(&plain).expect("serialisable")
+            written,
+            json!({
+                "url": "http://127.0.0.1:9/mcp",
+                "args": [],
+                "command": null,
+                "env": {},
+                "headers": {},
+                "tools": ["a"],
+                "tool_timeout_sec": 1800,
+                "startup_timeout_sec": 29.5,
+                "required": true,
+                "eager": true,
+                "exclusive": true,
+                "supervised": true,
+            })
         );
+        let read: McpServer = serde_json::from_value(written).expect("a server");
+        assert_eq!(read, optioned);
         assert_eq!(optioned.redacted(), plain.redacted());
+    }
 
+    /// An exclusive server naming no tool allows none, and reads back as
+    /// one, never as a server that allows every tool.
+    #[test]
+    fn an_exclusive_server_naming_no_tool_reads_back_allowing_none() {
+        let written = serde_json::to_string(&http().exclusive()).expect("serialisable");
+
+        let read: McpServer = serde_json::from_str(&written).expect("a server");
+
+        assert!(read.exclusive);
+        assert!(read.tools.is_empty());
+        assert!(!read.allows("anything"));
+        assert!(read.allowed_tools("docs").is_empty());
+    }
+
+    /// A wait reads as whole or fractional seconds, under its full name too,
+    /// and anything but a number of seconds names its field.
+    #[test]
+    fn a_wait_reads_as_a_number_of_seconds() {
         let read: McpServer = serde_json::from_value(json!({
             "url": "http://127.0.0.1:9/mcp",
-            "tool_timeout": 5,
-            "startup_timeout": 5,
-            "required": true,
-            "eager": true,
-            "exclusive": true,
+            "tool_timeout_seconds": 0.25,
+            "startup_timeout_sec": 30,
         }))
         .expect("a server");
-        assert_eq!(read, McpServer::remote("http://127.0.0.1:9/mcp"));
+        assert_eq!(read.tool_timeout, Some(Duration::from_millis(250)));
+        assert_eq!(read.startup_timeout, Some(Duration::from_secs(30)));
+
+        for (entry, field) in [
+            (json!({"tool_timeout_sec": "30"}), "tool_timeout_sec"),
+            (json!({"tool_timeout_sec": -1}), "tool_timeout_sec"),
+            (
+                json!({"startup_timeout_seconds": true}),
+                "startup_timeout_sec",
+            ),
+            (
+                json!({"tool_timeout_sec": 1, "tool_timeout_seconds": 1}),
+                "tool_timeout_sec",
+            ),
+        ] {
+            let error = serde_json::from_value::<McpServer>(entry.clone())
+                .expect_err("a mismatch")
+                .to_string();
+            assert!(error.contains(&format!("`{field}`")), "{entry}: {error}");
+        }
     }
 
     /// An exclusive server allows exactly the tools it names, so naming none

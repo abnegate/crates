@@ -1134,11 +1134,11 @@ mod tests {
         assert!(config.allowed_tools(AgentKind::Codex).is_empty());
     }
 
-    /// The options set in code alone change nothing in the file Claude Code
-    /// is given or in the log view: every byte of each is the same with and
-    /// without them, but the generated variables' token.
+    /// The options Claude Code's entry has no key for change nothing in the
+    /// file it is given or in the log view: every byte of each is the same
+    /// with and without them, but the generated variables' token.
     #[test]
-    fn the_claude_file_is_byte_identical_with_and_without_the_options_set_in_code() {
+    fn the_claude_file_is_byte_identical_with_and_without_every_option() {
         let remote = McpServer::remote("http://127.0.0.1:9/mcp")
             .with_header("Authorization", "Bearer ${HOST_MCP_TOKEN}")
             .with_secret("HOST_MCP_TOKEN", "host-token-marker")
@@ -1150,7 +1150,8 @@ mod tests {
                     .with_startup_timeout(Duration::from_secs(30))
                     .require()
                     .eager()
-                    .exclusive(),
+                    .exclusive()
+                    .supervise(),
                 false => server,
             };
             McpConfig::default()
@@ -1171,10 +1172,38 @@ mod tests {
             optioned.redacted(AgentKind::Claude),
             plain.redacted(AgentKind::Claude)
         );
-        assert_eq!(
-            serde_json::to_string(&optioned).expect("serialisable"),
-            serde_json::to_string(&plain).expect("serialisable")
+    }
+
+    /// A configuration written out and read back holds the same servers,
+    /// every option included, so an exclusive server naming no tool still
+    /// allows none of them.
+    #[test]
+    fn a_configuration_survives_a_round_trip_with_every_option() {
+        let config = McpConfig::default()
+            .with_server(
+                "host",
+                McpServer::remote("http://127.0.0.1:9/mcp")
+                    .with_header("Authorization", "Bearer ${HOST_MCP_TOKEN}")
+                    .with_tools(["a", "b"])
+                    .with_tool_timeout(Duration::from_secs(1800))
+                    .with_startup_timeout(Duration::from_secs(30))
+                    .require()
+                    .eager()
+                    .exclusive()
+                    .supervise(),
+            )
+            .with_server("closed", appwrite().exclusive());
+
+        let written = serde_json::to_string(&config).expect("serialisable");
+        let read: McpConfig = serde_json::from_str(&written).expect("a round trip");
+
+        assert_eq!(read, config);
+        assert!(
+            read.allowed_tools(AgentKind::Claude)
+                .iter()
+                .all(|rule| !rule.contains("closed"))
         );
+        assert!(!read.servers["closed"].allows("list_projects"));
     }
 
     #[test]
