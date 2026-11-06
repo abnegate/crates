@@ -55,11 +55,14 @@ impl Category {
     /// least `threshold` and lead the best other category by at least
     /// `minimum_margin`. That runner-up counts whether or not it clears
     /// `threshold` itself, and with a single category the margin is the
-    /// winner's own score. Equal scores rank by name, so the answer never
-    /// depends on the order of `categories`.
+    /// winner's own score. Equal scores between categories rank by name, so the
+    /// winning name, score and margin never depend on the order of
+    /// `categories`. Among equally close exemplars of the winning category, the
+    /// first one is returned.
     ///
-    /// `None` when `embedding` is empty, when no exemplar scores a finite
-    /// similarity, or when the winner misses either bar.
+    /// An exemplar whose length differs from `embedding`'s, or whose
+    /// similarity is not finite, is skipped. `None` when `embedding` is empty,
+    /// when every exemplar is skipped, or when the winner misses either bar.
     ///
     /// ```
     /// use abnegate_learn::Category;
@@ -89,6 +92,9 @@ impl Category {
         let mut leader: Option<(&'a Self, f64)> = None;
         let mut runner_up: Option<(&'a Self, f64)> = None;
         for category in categories {
+            if category.embedding.len() != embedding.len() {
+                continue;
+            }
             let score = cosine_similarity(embedding, &category.embedding);
             if !score.is_finite() {
                 continue;
@@ -343,6 +349,25 @@ mod tests {
             Category::nearest_with_margin(&[1.0, 0.0, 0.0], &references(), THRESHOLD, MARGIN)
                 .is_none(),
             "a vector of another dimension must not be scored against these references"
+        );
+    }
+
+    #[test]
+    fn an_exemplar_of_another_dimension_is_skipped() {
+        let categories = [
+            Category::new("timeout", vec![1.0, 0.0]),
+            Category::new("network", vec![1.0, 0.0, 0.0]),
+        ];
+        let found = Category::nearest_with_margin(&[-1.0, 0.0], &categories, -1.0, -1.0)
+            .expect("timeout is the only scorable category");
+        assert_eq!(
+            found.category.name, "timeout",
+            "an exemplar from another model must not win on its default score"
+        );
+        assert!((found.score + 1.0).abs() < TOLERANCE);
+        assert!(
+            (found.margin + 1.0).abs() < TOLERANCE,
+            "an exemplar from another model must not stand as runner-up"
         );
     }
 
