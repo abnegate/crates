@@ -655,12 +655,12 @@ impl PullRequestService {
         self.origin.endpoint(&segments)
     }
 
-    /// A request to `url` that carries `token` and asks for an answer in
-    /// `accept`, sent by the client for reads when it is one and by the
-    /// client for writes otherwise, and given up on after this service's
-    /// timeout, which a write sent on after a redirect spends rather than
-    /// starts again; or, for an empty token, why it cannot be sent, as
-    /// [`Self::request_on`] decides.
+    /// A request to `url` that carries `token` unless it is empty and asks
+    /// for an answer in `accept`, sent by the client for reads when it is one
+    /// and by the client for writes otherwise, and given up on after this
+    /// service's timeout, which a write sent on after a redirect spends
+    /// rather than starts again; or, for an empty token that may not go
+    /// without one, why it cannot be sent, as [`Self::request_on`] decides.
     fn request(
         &self,
         method: Method,
@@ -678,8 +678,8 @@ impl PullRequestService {
     /// A request to `url` sent by `client`, carrying `token` unless it is
     /// empty, asking for an answer in `accept`, naming the API version this
     /// service was given if any, and given up on after this service's
-    /// timeout; or, for an empty token, why it cannot be sent, as
-    /// [`Self::credential`] decides.
+    /// timeout; or, for an empty token that may not go without one, why it
+    /// cannot be sent, as [`Self::credential`] decides.
     fn request_on(
         &self,
         client: &Client,
