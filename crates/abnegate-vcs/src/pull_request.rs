@@ -189,6 +189,10 @@ mod workflow_run;
 mod workflow_run_filter;
 
 #[cfg(feature = "github-app")]
+pub use crate::pull_request::application::Account;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::AccountType;
+#[cfg(feature = "github-app")]
 pub use crate::pull_request::application::ApplicationClaims;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::ApplicationError;
@@ -197,11 +201,15 @@ pub use crate::pull_request::application::ApplicationId;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::ApplicationService;
 #[cfg(feature = "github-app")]
+pub use crate::pull_request::application::Installation;
+#[cfg(feature = "github-app")]
 pub use crate::pull_request::application::InstallationId;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::InstallationIssuer;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::InstallationToken;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::RepositorySelection;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::TokenCache;
 pub use crate::pull_request::auto_merge::AutoMerge;

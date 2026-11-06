@@ -70,7 +70,7 @@ impl InstallationToken {
 
 /// The instant an RFC 3339 timestamp names, or `None` when it names none or
 /// one this platform's clock cannot hold.
-fn instant(timestamp: &str) -> Option<SystemTime> {
+pub(super) fn instant(timestamp: &str) -> Option<SystemTime> {
     let parsed = DateTime::parse_from_rfc3339(timestamp).ok()?;
     let seconds = parsed.timestamp();
     let fraction = Duration::from_nanos(u64::from(parsed.timestamp_subsec_nanos()));
