@@ -604,4 +604,35 @@ mod pull_requests {
             "{refused:?}"
         );
     }
+
+    #[tokio::test]
+    async fn a_public_repository_is_read_without_a_token_under_anonymous_reads() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "default_branch": "trunk" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::standing_in_for("github.com", &server.uri())
+            .unwrap()
+            .with_anonymous_reads();
+        let repository = service
+            .parse_github_url("https://github.com/acme/project")
+            .unwrap();
+
+        let branch = service
+            .get_default_branch(&repository, &SecretValue::new(""))
+            .await
+            .unwrap();
+
+        assert_eq!(branch, BranchName::parse("trunk").unwrap());
+        let received = server.received_requests().await.unwrap();
+        assert!(
+            !received[0].headers.contains_key("authorization"),
+            "an anonymous read carries no authorization"
+        );
+    }
 }

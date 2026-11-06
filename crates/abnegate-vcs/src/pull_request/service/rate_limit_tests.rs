@@ -361,6 +361,7 @@ async fn a_body_that_can_be_sent_only_once_is_not_sent_again() {
         .sent(
             service
                 .request(Method::PUT, url, &token(), ACCEPT)
+                .unwrap()
                 .body(Body::wrap(String::from("sent once"))),
         )
         .await

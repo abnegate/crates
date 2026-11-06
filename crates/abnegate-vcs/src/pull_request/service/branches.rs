@@ -39,7 +39,7 @@ impl PullRequestService {
         let segments: Vec<&str> = ["git"].into_iter().chain(reference.split('/')).collect();
         let url = self.repository_endpoint(repository, &segments)?;
         let response = self
-            .sent(self.request(Method::DELETE, url, token, ACCEPT))
+            .sent(self.request(Method::DELETE, url, token, ACCEPT)?)
             .await?;
 
         let status = response.status();
@@ -79,7 +79,7 @@ impl PullRequestService {
         }
         let url = self.repository_endpoint(repository, &["commits", reference])?;
         let response = self
-            .sent(self.request(Method::GET, url, token, ACCEPT))
+            .sent(self.request(Method::GET, url, token, ACCEPT)?)
             .await?;
 
         let status = response.status();

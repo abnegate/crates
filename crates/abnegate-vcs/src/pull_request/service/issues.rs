@@ -114,7 +114,7 @@ impl PullRequestService {
         let url = self.repository_endpoint(repository, &["issues"])?;
         let created: GitHubIssue = self
             .exchange(
-                self.request(Method::POST, url, token, ACCEPT)
+                self.request(Method::POST, url, token, ACCEPT)?
                     .json(&request),
             )
             .await?;
@@ -134,7 +134,7 @@ impl PullRequestService {
         let number = reference.number().to_string();
         let url = self.repository_endpoint(reference.repository(), &["issues", &number])?;
         self.answered(
-            self.request(Method::PATCH, url, token, ACCEPT)
+            self.request(Method::PATCH, url, token, ACCEPT)?
                 .json(&GitHubIssueRequest::from(update)),
         )
         .await?;
