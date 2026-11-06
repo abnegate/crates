@@ -78,6 +78,7 @@ mod pull_requests {
     use abnegate_vcs::ChecksOutcome;
     use abnegate_vcs::CommitSha;
     use abnegate_vcs::Description;
+    use abnegate_vcs::DiffSide;
     use abnegate_vcs::IssueComment;
     use abnegate_vcs::MergeMethod;
     use abnegate_vcs::MergeSettings;
@@ -88,6 +89,7 @@ mod pull_requests {
     use abnegate_vcs::PullRequestDetail;
     use abnegate_vcs::PullRequestError;
     use abnegate_vcs::PullRequestService;
+    use abnegate_vcs::ReviewComment;
     use abnegate_vcs::ReviewRecord;
     use abnegate_vcs::ReviewState;
     use abnegate_vcs::ReviewThreadCount;
@@ -372,14 +374,17 @@ mod pull_requests {
             .and(path("/graphql"))
             .and(header("authorization", "Bearer token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": { "repository": { "pullRequest": { "reviewThreads": {
-                    "pageInfo": { "hasNextPage": false, "endCursor": null },
-                    "nodes": [
-                        { "id": "PRRT_1", "isResolved": true },
-                        { "id": "PRRT_2", "isResolved": false },
-                        { "id": "PRRT_3", "isResolved": false },
-                    ],
-                } } } },
+                "data": { "repository": { "pullRequest": {
+                    "number": 7,
+                    "reviewThreads": {
+                        "pageInfo": { "hasNextPage": false, "endCursor": null },
+                        "nodes": [
+                            { "id": "PRRT_1", "isResolved": true },
+                            { "id": "PRRT_2", "isResolved": false },
+                            { "id": "PRRT_3", "isResolved": false },
+                        ],
+                    },
+                } } },
             })))
             .expect(1)
             .mount(&server)
@@ -419,39 +424,52 @@ mod pull_requests {
             .and(path("/graphql"))
             .and(header("authorization", "Bearer token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": { "repository": { "pullRequest": { "reviewThreads": {
-                    "pageInfo": { "hasNextPage": false, "endCursor": null },
-                    "nodes": [
-                        {
-                            "id": "PRRT_1",
-                            "isResolved": true,
-                            "isOutdated": false,
-                            "path": "src/cart.ts",
-                            "line": 12,
-                            "comments": { "nodes": [{
-                                "databaseId": 99,
-                                "body": "handle the empty cart",
-                                "url": "https://github.com/acme/project/pull/7#discussion_r99",
-                                "createdAt": "2026-09-20T10:00:00Z",
-                                "author": { "login": "review-bot" },
-                            }] },
-                        },
-                        {
-                            "id": "PRRT_2",
-                            "isResolved": false,
-                            "isOutdated": true,
-                            "path": null,
-                            "line": null,
-                            "comments": { "nodes": [{
-                                "databaseId": null,
-                                "body": "why the second total?",
-                                "url": "https://github.com/acme/project/pull/7#discussion_r100",
-                                "createdAt": "2026-09-21T09:30:00Z",
-                                "author": null,
-                            }] },
-                        },
-                    ],
-                } } } },
+                "data": { "repository": { "pullRequest": {
+                    "number": 7,
+                    "reviewThreads": {
+                        "pageInfo": { "hasNextPage": false, "endCursor": null },
+                        "nodes": [
+                            {
+                                "id": "PRRT_1",
+                                "isResolved": true,
+                                "isOutdated": false,
+                                "path": "src/cart.ts",
+                                "line": 12,
+                                "startLine": 10,
+                                "originalLine": 12,
+                                "originalStartLine": 10,
+                                "diffSide": "RIGHT",
+                                "comments": {
+                                    "pageInfo": { "hasNextPage": false },
+                                    "nodes": [{
+                                        "databaseId": 99,
+                                        "body": "handle the empty cart",
+                                        "url": "https://github.com/acme/project/pull/7#discussion_r99",
+                                        "createdAt": "2026-09-20T10:00:00Z",
+                                        "author": { "login": "review-bot" },
+                                    }],
+                                },
+                            },
+                            {
+                                "id": "PRRT_2",
+                                "isResolved": false,
+                                "isOutdated": true,
+                                "path": null,
+                                "line": null,
+                                "comments": {
+                                    "pageInfo": { "hasNextPage": true },
+                                    "nodes": [{
+                                        "databaseId": null,
+                                        "body": "why the second total?",
+                                        "url": "https://github.com/acme/project/pull/7#discussion_r100",
+                                        "createdAt": "2026-09-21T09:30:00Z",
+                                        "author": null,
+                                    }],
+                                },
+                            },
+                        ],
+                    },
+                } } },
             })))
             .expect(1)
             .mount(&server)
@@ -496,7 +514,11 @@ mod pull_requests {
                 )
                 .with_resolved(true)
                 .with_path("src/cart.ts")
-                .with_line(12),
+                .with_line(12)
+                .with_start_line(10)
+                .with_original_line(12)
+                .with_original_start_line(10)
+                .with_side(DiffSide::Right),
                 ReviewThreadRecord::new(
                     "PRRT_2",
                     vec![ThreadComment::new(
@@ -507,8 +529,52 @@ mod pull_requests {
                         "2026-09-21T09:30:00Z",
                     )],
                 )
-                .with_outdated(true),
+                .with_outdated(true)
+                .with_comments_complete(false),
             ]
+        );
+    }
+
+    /// A caller reads one review comment whole by the id a thread names, and
+    /// builds the comment it expects the way this crate reads it back.
+    #[tokio::test]
+    async fn a_review_comment_reads_back_as_the_value_a_caller_builds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/pulls/comments/99"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 99,
+                "user": { "login": "review-bot" },
+                "body": "handle the empty cart",
+                "path": "src/cart.ts",
+                "html_url": "https://github.com/acme/project/pull/7#discussion_r99",
+                "created_at": "2026-09-20T10:00:00Z",
+                "pull_request_url": format!("{}/repos/acme/project/pulls/7", server.uri()),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::standing_in_for("github.com", &server.uri()).unwrap();
+        let reference = service
+            .pull_request("https://github.com/acme/project/pull/7")
+            .unwrap();
+
+        let comment = service
+            .fetch_review_comment(&reference, &SecretValue::new("token"), 99)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            comment,
+            ReviewComment::new(
+                99,
+                "review-bot",
+                "handle the empty cart",
+                "https://github.com/acme/project/pull/7#discussion_r99",
+                "2026-09-20T10:00:00Z",
+            )
+            .with_path("src/cart.ts")
         );
     }
 
@@ -602,6 +668,37 @@ mod pull_requests {
         assert!(
             matches!(refused, PullRequestError::AlreadyMergeable),
             "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_public_repository_is_read_without_a_token_under_anonymous_reads() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "default_branch": "trunk" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::standing_in_for("github.com", &server.uri())
+            .unwrap()
+            .with_anonymous_reads();
+        let repository = service
+            .parse_github_url("https://github.com/acme/project")
+            .unwrap();
+
+        let branch = service
+            .get_default_branch(&repository, &SecretValue::new(""))
+            .await
+            .unwrap();
+
+        assert_eq!(branch, BranchName::parse("trunk").unwrap());
+        let received = server.received_requests().await.unwrap();
+        assert!(
+            !received[0].headers.contains_key("authorization"),
+            "an anonymous read carries no authorization"
         );
     }
 }

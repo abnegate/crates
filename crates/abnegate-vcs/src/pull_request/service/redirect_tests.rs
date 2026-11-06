@@ -65,6 +65,7 @@ async fn writing(
         .answered(
             service
                 .request(write, url, &token(), ACCEPT)
+                .unwrap()
                 .json(&payload()),
         )
         .await
@@ -123,7 +124,7 @@ async fn a_redirect_to_another_origin_is_returned_rather_than_followed() {
         "a redirect to another origin must not be followed"
     );
     assert!(
-        matches!(result, Err(PullRequestError::GitHubApi(_))),
+        matches!(result, Err(PullRequestError::Refused { status: 301, .. })),
         "the unfollowed redirect is an answer GitHub gave: {result:?}"
     );
 }
@@ -174,7 +175,7 @@ async fn a_redirect_loop_within_the_origin_stops_after_ten_hops() {
         .await;
 
     assert!(
-        matches!(result, Err(PullRequestError::GitHubApi(_))),
+        matches!(result, Err(PullRequestError::Refused { status: 301, .. })),
         "the last unfollowed redirect is an answer GitHub gave: {result:?}"
     );
     assert_eq!(
@@ -218,7 +219,7 @@ async fn a_redirect_within_the_origin_is_not_followed_out_of_it() {
         "a hop within the origin does not make the next one out of it followable"
     );
     assert!(
-        matches!(result, Err(PullRequestError::GitHubApi(_))),
+        matches!(result, Err(PullRequestError::Refused { status: 301, .. })),
         "the unfollowed redirect is an answer GitHub gave: {result:?}"
     );
 }
@@ -321,12 +322,16 @@ async fn a_write_redirected_by_a_status_that_may_change_it_is_refused_and_never_
 
     for redirect in REDIRECTS {
         let read = service
-            .answered(service.request(
-                Method::GET,
-                address(&server, &format!("/{redirect}/found")),
-                &token(),
-                ACCEPT,
-            ))
+            .answered(
+                service
+                    .request(
+                        Method::GET,
+                        address(&server, &format!("/{redirect}/found")),
+                        &token(),
+                        ACCEPT,
+                    )
+                    .unwrap(),
+            )
             .await;
         assert!(read.is_ok(), "GET {redirect}: {read:?}");
     }
@@ -667,6 +672,7 @@ async fn a_write_whose_body_cannot_be_sent_twice_is_refused_rather_than_sent_on(
         .answered(
             service
                 .request(Method::PUT, address(&server, "/stream"), &token(), ACCEPT)
+                .unwrap()
                 .body(Body::wrap(String::from("sent once"))),
         )
         .await;

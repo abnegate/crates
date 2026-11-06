@@ -32,7 +32,7 @@ impl ApplicationService {
     ) -> Result<Installation, ApplicationError> {
         let installation = installation.get().to_string();
         let url = self.endpoint(&["app", "installations", &installation])?;
-        let body = answered(self.authorized(Method::GET, url, jwt)).await?;
+        let body = answered(self.authorized(Method::GET, url, jwt)?).await?;
         parsed::<GitHubInstallation>(&body)?.try_into()
     }
 
@@ -53,7 +53,7 @@ impl ApplicationService {
         let asked = asked(per_page);
         let url = paged(self.endpoint(&["app", "installations"])?, page, asked);
         let rows: Vec<GitHubInstallation> =
-            parsed(&answered(self.authorized(Method::GET, url, jwt)).await?)?;
+            parsed(&answered(self.authorized(Method::GET, url, jwt)?).await?)?;
         let read = rows.len();
 
         let installations = rows
@@ -76,7 +76,7 @@ impl ApplicationService {
     ) -> Result<(), ApplicationError> {
         let installation = installation.get().to_string();
         let url = self.endpoint(&["app", "installations", &installation])?;
-        acknowledged(self.authorized(Method::DELETE, url, jwt)).await
+        acknowledged(self.authorized(Method::DELETE, url, jwt)?).await
     }
 }
 

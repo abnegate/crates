@@ -43,6 +43,8 @@ use tokio::time::Instant;
 use url::Url;
 
 mod actions;
+#[cfg(test)]
+mod anonymous_tests;
 mod automation;
 mod branches;
 mod checks;
@@ -59,6 +61,8 @@ mod pulls;
 mod rate_limit_tests;
 #[cfg(test)]
 mod redirect_tests;
+#[cfg(test)]
+mod refusal_tests;
 mod releases;
 mod repositories;
 mod threads;
@@ -102,7 +106,7 @@ const MAXIMUM_REDIRECTS: usize = 10;
 /// saying so.
 const RATE_LIMIT: &str = "rate limit";
 
-/// Most of GitHub's own words carried into [`PullRequestError::GitHubApi`].
+/// Most of GitHub's own words carried into an error.
 const MAXIMUM_ERROR_BYTES: usize = 1024;
 
 /// What joins GitHub's words when several are carried on one line.
@@ -121,7 +125,14 @@ const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
 /// The bound counts bytes, not characters. A character takes up to four bytes
 /// in UTF-8 and up to six as a JSON `\u` escape, so a page of a hundred
 /// comments at GitHub's limit of 65,536 characters each can outgrow it, and
-/// such a page is an error rather than a shorter list.
+/// such a page is an error rather than a shorter list. A page of review
+/// threads holds up to a hundred threads with up to a hundred comments each,
+/// so it can outgrow the bound sooner still; such a page is asked for again
+/// at half as many threads, down to one, and the page after it at twice the
+/// size it was read at, back up to a hundred, within a walk of at most a
+/// thousand threads and seventy requests. Only a page of one thread that still
+/// outgrows it is [`PullRequestError::GitHubApi`] with [`OVERSIZED`], never a
+/// partial list.
 pub(super) const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 
 /// What an answer this crate cannot read is reported as, in place of the
@@ -169,7 +180,8 @@ const GIT_SUFFIX: &str = ".git";
 /// - Reviewing: [`Self::fetch_issue_comments`], [`Self::post_issue_comment`],
 ///   [`Self::fetch_reviews`], [`Self::submit_review`],
 ///   [`Self::fetch_review_threads`], [`Self::collect_review_threads`],
-///   [`Self::reply_to_review_comment`] and [`Self::resolve_review_thread`].
+///   [`Self::fetch_review_comment`], [`Self::reply_to_review_comment`] and
+///   [`Self::resolve_review_thread`].
 /// - Merging: [`Self::merge`], then [`Self::delete_branch`].
 /// - Merging once ready: [`Self::fetch_merge_settings`],
 ///   [`Self::fetch_automation`], [`Self::enable_auto_merge`] and
@@ -204,9 +216,10 @@ const GIT_SUFFIX: &str = ".git";
 /// body; a redirect to another origin, which would carry the token there; one
 /// whose `Location` is missing or cannot be read; one past the tenth hop; one
 /// that answers once the write's time is spent; and any redirect of a write
-/// whose body can be sent only once. [`Self::fetch_job_log`] alone follows
-/// one redirect off the origin, without the token, to where GitHub stores
-/// logs.
+/// whose body can be sent only once. A redirect a read does not follow is
+/// [`PullRequestError::Refused`] with its status. [`Self::fetch_job_log`]
+/// alone follows one redirect off the origin, without the token, to where
+/// GitHub stores logs.
 ///
 /// A request is given 30 seconds from when it is first sent to the last byte
 /// of its answer, and every hop of a redirect spends them rather than starting
@@ -220,22 +233,42 @@ const GIT_SUFFIX: &str = ".git";
 /// No request is sent again after a rate limit, until
 /// [`Self::with_retry_after`] waits once for one that says how long to wait.
 ///
-/// A status that says what it means on its own is reported as that: 401 as
+/// Every request carries the token it is given as a bearer token. An empty
+/// token is never sent: a request given one is
+/// [`PullRequestError::AuthenticationFailed`], unsent, until
+/// [`Self::with_anonymous_reads`] sends a read without one. Even then, a
+/// request that is not a read, meaning every write and every GraphQL call,
+/// is [`PullRequestError::AuthenticationRequired`], unsent.
+///
+/// A status that says what it means on its own is reported as that: 401, a
+/// token GitHub did not accept or a read it would not answer without one, as
 /// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
 /// rate limit as [`PullRequestError::RateLimited`], any other 403 as
 /// [`PullRequestError::Forbidden`], and 404 as [`PullRequestError::NotFound`],
 /// except that [`Self::delete_branch`] and [`Self::delete_webhook`] read a 404
 /// as already gone. Under [`Self::with_retry_after`], a 403 or 429 that says
 /// no requests are left in the window is
-/// [`PullRequestError::QuotaExhausted`] instead.
+/// [`PullRequestError::QuotaExhausted`] instead. A status none of these
+/// names, and that the method does not read for itself, such as a 409, a 422
+/// that is not a duplicate or a 5xx, is [`PullRequestError::Refused`] with
+/// that status.
 /// Outside a merge, the errors GitHub's GraphQL API reports map onto the same
-/// variants where GitHub names their kind. Of a refusal's answer, an error
-/// keeps only GitHub's own message, bounded: never the raw answer, and never
-/// the token.
+/// variants where GitHub names their kind, and a review-thread read reports
+/// [`PullRequestError::RepositoryNotFound`] or
+/// [`PullRequestError::PullRequestNotFound`] where GitHub says which of the two
+/// is missing; [`PullRequestError::is_not_found`] is `true` for either. Of a
+/// refusal's answer, an error keeps only GitHub's own message and details,
+/// sanitised and bounded, with anything shaped like a credential redacted, and
+/// never the raw answer. The crate adds nothing from the request itself, but
+/// GitHub's words may repeat parts of it, as a 422 naming the branches it
+/// found no commits between does.
 ///
 /// A read that walks every page itself and returns a list, such as
 /// [`Self::fetch_files`] or [`Self::fetch_reviews`], takes a hundred rows a
-/// page and follows at most ten pages. A read that returns a
+/// page and follows at most ten pages. A review-thread read instead stops
+/// once it has asked for a thousand threads, halving a page too large to read
+/// and growing the next back towards a hundred, and once it has sent seventy
+/// requests, the pages it asked for again included. A read that returns a
 /// [`Page`](crate::pull_request::Page) reads only the page asked for, at the
 /// rows a page its caller asks for up to a hundred, and says in
 /// [`Page::next`](crate::pull_request::Page::next) which page follows. Every JSON answer,
@@ -263,6 +296,7 @@ pub struct PullRequestService {
     timeout: Duration,
     api_version: Option<String>,
     retry_ceiling: Option<Duration>,
+    anonymous: bool,
 }
 
 impl PullRequestService {
@@ -313,6 +347,7 @@ impl PullRequestService {
             timeout,
             api_version: None,
             retry_ceiling: None,
+            anonymous: false,
         })
     }
 
@@ -357,6 +392,46 @@ impl PullRequestService {
     #[must_use]
     pub fn with_retry_after(mut self, ceiling: Duration) -> Self {
         self.retry_ceiling = Some(ceiling);
+        self
+    }
+
+    /// Send a read given an empty token without one, so that a public
+    /// repository can be read with no token at all.
+    ///
+    /// A read is a GET: every REST read, and the request for a job's log. It
+    /// is sent with no `Authorization` header, still asking in the media type
+    /// and naming the API version it would with a token, and GitHub answers
+    /// it as it answers anyone, under the lower rate limit it gives those it
+    /// cannot name. A read of a private repository, or of one that does not
+    /// exist, is then [`PullRequestError::NotFound`].
+    ///
+    /// Anything else given an empty token, meaning every write and every
+    /// GraphQL call, review threads included, is
+    /// [`PullRequestError::AuthenticationRequired`], unsent, because GitHub
+    /// answers none of them without one. A token that is not empty is sent
+    /// as it is without this.
+    ///
+    /// Without it, an empty token is taken for a token that is missing by
+    /// mistake, and every request given one is
+    /// [`PullRequestError::AuthenticationFailed`], unsent.
+    ///
+    /// ```no_run
+    /// use abnegate_secret::SecretValue;
+    /// use abnegate_vcs::PullRequestService;
+    ///
+    /// # async fn read() -> Result<(), Box<dyn std::error::Error>> {
+    /// let service = PullRequestService::new()?.with_anonymous_reads();
+    /// let repository = service.parse_github_url("https://github.com/rust-lang/rust")?;
+    /// let branch = service
+    ///     .get_default_branch(&repository, &SecretValue::new(""))
+    ///     .await?;
+    /// println!("{branch}");
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn with_anonymous_reads(mut self) -> Self {
+        self.anonymous = true;
         self
     }
 
@@ -530,7 +605,7 @@ impl PullRequestService {
 
         let response = self
             .sent(
-                self.request(Method::POST, url, token, ACCEPT)
+                self.request(Method::POST, url, token, ACCEPT)?
                     .json(&request),
             )
             .await?;
@@ -594,18 +669,19 @@ impl PullRequestService {
         self.origin.endpoint(&segments)
     }
 
-    /// A request to `url` that carries `token` and asks for an answer in
-    /// `accept`, sent by the client for reads when it is one and by the
-    /// client for writes otherwise, and given up on after this service's
-    /// timeout, which a write sent on after a redirect spends rather than
-    /// starts again.
+    /// A request to `url` that carries `token` unless it is empty and asks
+    /// for an answer in `accept`, sent by the client for reads when it is one
+    /// and by the client for writes otherwise, and given up on after this
+    /// service's timeout, which a write sent on after a redirect spends
+    /// rather than starts again; or, for an empty token that may not go
+    /// without one, why it cannot be sent, as [`Self::request_on`] decides.
     fn request(
         &self,
         method: Method,
         url: Url,
         token: &SecretValue,
         accept: &'static str,
-    ) -> RequestBuilder {
+    ) -> PullRequestResult<RequestBuilder> {
         let client = match reads(&method) {
             true => &self.reader,
             false => &self.writer,
@@ -613,9 +689,11 @@ impl PullRequestService {
         self.request_on(client, method, url, token, accept)
     }
 
-    /// A request to `url` sent by `client`, carrying `token`, asking for an
-    /// answer in `accept`, naming the API version this service was given if
-    /// any, and given up on after this service's timeout.
+    /// A request to `url` sent by `client`, carrying `token` unless it is
+    /// empty, asking for an answer in `accept`, naming the API version this
+    /// service was given if any, and given up on after this service's
+    /// timeout; or, for an empty token that may not go without one, why it
+    /// cannot be sent, as [`Self::credential`] decides.
     fn request_on(
         &self,
         client: &Client,
@@ -623,15 +701,39 @@ impl PullRequestService {
         url: Url,
         token: &SecretValue,
         accept: &'static str,
-    ) -> RequestBuilder {
+    ) -> PullRequestResult<RequestBuilder> {
+        let credential = self.credential(&method, token)?;
         let request = client
             .request(method, url)
-            .bearer_auth(token.expose())
             .header(header::ACCEPT, accept)
             .timeout(self.timeout);
-        match &self.api_version {
+        let request = match credential {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        };
+        Ok(match &self.api_version {
             Some(version) => request.header(API_VERSION, version.as_str()),
             None => request,
+        })
+    }
+
+    /// The bearer token a `method` request given `token` carries: `token`
+    /// itself unless it is empty, and none for an empty token's read under
+    /// [`Self::with_anonymous_reads`]. Any other request given an empty token
+    /// is [`PullRequestError::AuthenticationRequired`] under it, and
+    /// [`PullRequestError::AuthenticationFailed`] without it.
+    fn credential<'token>(
+        &self,
+        method: &Method,
+        token: &'token SecretValue,
+    ) -> PullRequestResult<Option<&'token str>> {
+        if !token.is_empty() {
+            return Ok(Some(token.expose()));
+        }
+        match (self.anonymous, reads(method)) {
+            (true, true) => Ok(None),
+            (true, false) => Err(PullRequestError::AuthenticationRequired),
+            (false, _) => Err(PullRequestError::AuthenticationFailed),
         }
     }
 
@@ -701,7 +803,7 @@ impl PullRequestService {
         url: Url,
         token: &SecretValue,
     ) -> PullRequestResult<T> {
-        self.exchange(self.request(Method::GET, url, token, ACCEPT))
+        self.exchange(self.request(Method::GET, url, token, ACCEPT)?)
             .await
     }
 
@@ -1022,14 +1124,10 @@ fn limits_the_rate(status: StatusCode) -> bool {
     )
 }
 
-/// A refusal no status explains, named by its status and GitHub's own words.
+/// A refusal no status explains, named by its status and GitHub's own words,
+/// which come from its answer alone and never from the request.
 fn unexpected(status: StatusCode, refusal: &GitHubRefusal) -> PullRequestError {
-    let summary = refusal.summary();
-    let returned = returned(status);
-    PullRequestError::GitHubApi(match summary.is_empty() {
-        true => returned,
-        false => format!("{returned}: {summary}"),
-    })
+    PullRequestError::refused(status.as_u16(), refusal.summary())
 }
 
 /// An answer named by its status alone.
@@ -1777,9 +1875,10 @@ mod tests {
                 ),
                 |failure| matches!(failure, PullRequestError::PullRequestAlreadyExists(_)),
             ),
-            (ResponseTemplate::new(500), |failure| {
-                matches!(failure, PullRequestError::GitHubApi(_))
-            }),
+            (
+                ResponseTemplate::new(500),
+                |failure| matches!(failure, PullRequestError::Refused { status: 500, message } if message.is_empty()),
+            ),
         ];
         for (response, expected) in refusals {
             let server = MockServer::start().await;
@@ -2021,14 +2120,16 @@ mod tests {
     /// keeps.
     #[tokio::test]
     async fn an_error_names_github_s_message_and_never_its_raw_body() {
-        for (body, expected) in [
+        for (body, words, expected) in [
             (
                 r#"{"message":"boom","documentation_url":"RAW-SENTINEL"}"#,
-                "GitHub API returned 500 Internal Server Error: boom",
+                "boom",
+                "GitHub answered with status 500: boom",
             ),
             (
                 "<html>RAW-SENTINEL</html>",
-                "GitHub API returned 500 Internal Server Error",
+                "",
+                "GitHub answered with status 500 Internal Server Error",
             ),
         ] {
             let server = MockServer::start().await;
@@ -2044,10 +2145,13 @@ mod tests {
                 .unwrap_err();
 
             assert!(
-                matches!(failure, PullRequestError::GitHubApi(ref text) if text == expected),
+                matches!(
+                    failure,
+                    PullRequestError::Refused { status: 500, ref message } if message == words
+                ),
                 "{failure:?}"
             );
-            assert_eq!(failure.to_string(), format!("GitHub API error: {expected}"));
+            assert_eq!(failure.to_string(), expected);
             assert!(
                 !format!("{failure:?}").contains("RAW-SENTINEL"),
                 "{failure:?}"
@@ -2080,7 +2184,7 @@ mod tests {
 
         assert_eq!(
             failure.to_string(),
-            "GitHub API error: GitHub API returned 422 Unprocessable Entity: \
+            "GitHub answered with status 422: \
              Validation Failed; No commits between main and feature"
         );
         assert!(

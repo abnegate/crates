@@ -14,8 +14,8 @@ impl PullRequestService {
     /// The token needs admin access to the repository, or the
     /// `admin:repo_hook` scope; without it GitHub answers
     /// [`PullRequestError::NotFound`] or [`PullRequestError::Forbidden`]. A
-    /// webhook already delivering to `url` is refused by GitHub as
-    /// [`PullRequestError::GitHubApi`] rather than registered twice.
+    /// webhook already delivering to `url` is refused by GitHub with a 422, as
+    /// [`PullRequestError::Refused`], rather than registered twice.
     pub async fn create_webhook(
         &self,
         repository: &Repository,
@@ -32,7 +32,7 @@ impl PullRequestService {
         };
         let created: GitHubIdentified = self
             .exchange(
-                self.request(Method::POST, self.hooks(repository, &[])?, token, ACCEPT)
+                self.request(Method::POST, self.hooks(repository, &[])?, token, ACCEPT)?
                     .json(&request),
             )
             .await?;
@@ -56,7 +56,7 @@ impl PullRequestService {
                 self.hooks(repository, &[&id, "config"])?,
                 token,
                 ACCEPT,
-            )
+            )?
             .json(&WebhookConfiguration::new(url, secret)),
         )
         .await?;
@@ -78,7 +78,7 @@ impl PullRequestService {
                 self.hooks(repository, &[&id])?,
                 token,
                 ACCEPT,
-            ))
+            )?)
             .await?;
 
         let status = response.status();
@@ -101,7 +101,6 @@ mod tests {
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::json;
-    use std::mem::discriminant;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -173,7 +172,10 @@ mod tests {
                     "message": "Validation Failed",
                     "errors": [{ "message": "Hook already exists on this repository" }],
                 })),
-                PullRequestError::GitHubApi(String::new()),
+                PullRequestError::refused(
+                    422,
+                    "Validation Failed; Hook already exists on this repository",
+                ),
             ),
         ] {
             let server = MockServer::start().await;
@@ -195,11 +197,7 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            assert_eq!(
-                discriminant(&failure),
-                discriminant(&expected),
-                "{expected:?}: {failure:?}"
-            );
+            assert_eq!(format!("{failure:?}"), format!("{expected:?}"));
             assert!(!format!("{failure:?}").contains(SIGNING), "{failure:?}");
         }
     }

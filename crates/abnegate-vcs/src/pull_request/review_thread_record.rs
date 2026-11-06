@@ -1,6 +1,8 @@
+use crate::pull_request::DiffSide;
 use crate::pull_request::ThreadComment;
 
-/// One review thread on a pull request's diff, with every comment in it.
+/// One review thread on a pull request's diff, with the first hundred comments
+/// in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ReviewThreadRecord {
@@ -14,14 +16,27 @@ pub struct ReviewThreadRecord {
     pub path: Option<String>,
     /// The line it was left on, if that line is still in the diff.
     pub line: Option<u32>,
-    /// Its comments, oldest first.
+    /// The first line of the range it was left on, when it spans several
+    /// and that range is still in the diff.
+    pub start_line: Option<u32>,
+    /// The line it was left on in the diff it was written against.
+    pub original_line: Option<u32>,
+    /// The first line of the range it was left on in the diff it was written
+    /// against, when it spans several.
+    pub original_start_line: Option<u32>,
+    /// The side of the diff it was left on.
+    pub side: DiffSide,
+    /// Its comments, oldest first: at most the first hundred.
     pub comments: Vec<ThreadComment>,
+    /// Whether [`Self::comments`] is every comment in the thread: `false`
+    /// when GitHub said more follow, or did not say.
+    pub comments_complete: bool,
 }
 
 impl ReviewThreadRecord {
     /// The thread GitHub's node identifier `id` names, holding `comments`,
-    /// oldest first: unresolved, on lines that have not changed since, and on
-    /// no file or line GitHub says.
+    /// oldest first and every comment in it: unresolved, on lines that have
+    /// not changed since, and on no file, line or side GitHub says.
     pub fn new(id: impl Into<String>, comments: Vec<ThreadComment>) -> Self {
         Self {
             id: id.into(),
@@ -29,7 +44,12 @@ impl ReviewThreadRecord {
             outdated: false,
             path: None,
             line: None,
+            start_line: None,
+            original_line: None,
+            original_start_line: None,
+            side: DiffSide::Unknown,
             comments,
+            comments_complete: true,
         }
     }
 
@@ -60,6 +80,43 @@ impl ReviewThreadRecord {
         self.line = Some(line);
         self
     }
+
+    /// The first line of the range it was left on, while that range is still
+    /// in the diff.
+    #[must_use]
+    pub fn with_start_line(mut self, line: u32) -> Self {
+        self.start_line = Some(line);
+        self
+    }
+
+    /// The line it was left on in the diff it was written against.
+    #[must_use]
+    pub fn with_original_line(mut self, line: u32) -> Self {
+        self.original_line = Some(line);
+        self
+    }
+
+    /// The first line of the range it was left on in the diff it was written
+    /// against.
+    #[must_use]
+    pub fn with_original_start_line(mut self, line: u32) -> Self {
+        self.original_start_line = Some(line);
+        self
+    }
+
+    /// The side of the diff it was left on.
+    #[must_use]
+    pub fn with_side(mut self, side: DiffSide) -> Self {
+        self.side = side;
+        self
+    }
+
+    /// Whether its comments are every comment in the thread.
+    #[must_use]
+    pub fn with_comments_complete(mut self, complete: bool) -> Self {
+        self.comments_complete = complete;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -80,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn a_thread_built_from_its_identifier_is_unresolved_current_and_on_no_line() {
+    fn a_thread_built_from_its_identifier_is_unresolved_current_complete_and_on_no_line() {
         assert_eq!(
             opened(),
             ReviewThreadRecord {
@@ -89,6 +146,10 @@ mod tests {
                 outdated: false,
                 path: None,
                 line: None,
+                start_line: None,
+                original_line: None,
+                original_start_line: None,
+                side: DiffSide::Unknown,
                 comments: vec![ThreadComment {
                     database_id: Some(99),
                     author: "review-bot".to_string(),
@@ -96,6 +157,7 @@ mod tests {
                     url: "https://github.com/acme/project/pull/7#discussion_r99".to_string(),
                     created_at: "2026-09-20T10:00:00Z".to_string(),
                 }],
+                comments_complete: true,
             }
         );
     }
@@ -127,6 +189,41 @@ mod tests {
             opened().with_line(12),
             ReviewThreadRecord {
                 line: Some(12),
+                ..opened()
+            }
+        );
+        assert_eq!(
+            opened().with_start_line(10),
+            ReviewThreadRecord {
+                start_line: Some(10),
+                ..opened()
+            }
+        );
+        assert_eq!(
+            opened().with_original_line(14),
+            ReviewThreadRecord {
+                original_line: Some(14),
+                ..opened()
+            }
+        );
+        assert_eq!(
+            opened().with_original_start_line(11),
+            ReviewThreadRecord {
+                original_start_line: Some(11),
+                ..opened()
+            }
+        );
+        assert_eq!(
+            opened().with_side(DiffSide::Left),
+            ReviewThreadRecord {
+                side: DiffSide::Left,
+                ..opened()
+            }
+        );
+        assert_eq!(
+            opened().with_comments_complete(false),
+            ReviewThreadRecord {
+                comments_complete: false,
                 ..opened()
             }
         );

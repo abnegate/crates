@@ -85,7 +85,10 @@ impl PullRequestService {
         };
 
         let response = self
-            .sent(self.request(Method::PUT, url, token, ACCEPT).json(&request))
+            .sent(
+                self.request(Method::PUT, url, token, ACCEPT)?
+                    .json(&request),
+            )
             .await?;
 
         let status = response.status();
@@ -763,13 +766,9 @@ mod tests {
             (
                 noisy(500),
                 true,
-                r#"GitHubApi("GitHub API returned 500 Internal Server Error: Changes must be made through a pull request.")"#,
+                r#"Refused { status: 500, message: "Changes must be made through a pull request." }"#,
             ),
-            (
-                silent(502),
-                true,
-                r#"GitHubApi("GitHub API returned 502 Bad Gateway")"#,
-            ),
+            (silent(502), true, r#"Refused { status: 502, message: "" }"#),
         ] {
             let server = MockServer::start().await;
             Mock::given(method("PUT"))
@@ -912,12 +911,11 @@ mod tests {
         for (graphql, expected) in [
             (
                 refusing(500, "Server Error"),
-                r#"GitHubApi("GitHub API returned 500 Internal Server Error: Server Error")"#
-                    .to_string(),
+                r#"Refused { status: 500, message: "Server Error" }"#.to_string(),
             ),
             (
                 ResponseTemplate::new(502).set_body_string("<p>Bad gateway</p>"),
-                r#"GitHubApi("GitHub API returned 502 Bad Gateway")"#.to_string(),
+                r#"Refused { status: 502, message: "" }"#.to_string(),
             ),
             (
                 ResponseTemplate::new(200).set_body_string("not an answer"),
