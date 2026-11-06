@@ -128,9 +128,11 @@ const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
 /// such a page is an error rather than a shorter list. A page of review
 /// threads holds up to a hundred threads with up to a hundred comments each,
 /// so it can outgrow the bound sooner still; such a page is asked for again
-/// at half as many threads, down to one, and only a page of one thread that
-/// still outgrows it is [`PullRequestError::GitHubApi`] with [`OVERSIZED`],
-/// never a partial list.
+/// at half as many threads, down to one, and the page after it at twice the
+/// size it was read at, back up to a hundred, within a walk of at most a
+/// thousand threads and seventy requests. Only a page of one thread that still
+/// outgrows it is [`PullRequestError::GitHubApi`] with [`OVERSIZED`], never a
+/// partial list.
 pub(super) const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 
 /// What an answer this crate cannot read is reported as, in place of the
@@ -264,8 +266,9 @@ const GIT_SUFFIX: &str = ".git";
 /// A read that walks every page itself and returns a list, such as
 /// [`Self::fetch_files`] or [`Self::fetch_reviews`], takes a hundred rows a
 /// page and follows at most ten pages. A review-thread read instead stops
-/// once it has asked for a thousand threads, however small halving left its
-/// pages. A read that returns a
+/// once it has asked for a thousand threads, halving a page too large to read
+/// and growing the next back towards a hundred, and once it has sent seventy
+/// requests, the pages it asked for again included. A read that returns a
 /// [`Page`](crate::pull_request::Page) reads only the page asked for, at the
 /// rows a page its caller asks for up to a hundred, and says in
 /// [`Page::next`](crate::pull_request::Page::next) which page follows. Every JSON answer,

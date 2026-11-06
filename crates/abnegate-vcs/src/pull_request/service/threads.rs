@@ -56,6 +56,17 @@ const PULL_REQUEST_PATH: &[&str] = &["repository", "pullRequest"];
 /// a page at.
 const MAXIMUM_THREADS: usize = PAGE_SIZE * MAXIMUM_PAGES;
 
+/// Sizes halving asks a page of review threads for, from [`PAGE_SIZE`] down
+/// to one: a hundred, fifty, twenty-five, twelve, six, three and one.
+const PAGE_SIZES: usize = PAGE_SIZE.ilog2() as usize + 1;
+
+/// Requests a walk sends before it stops, a page asked for again included:
+/// as many as [`MAXIMUM_PAGES`] pages each halved through every one of
+/// [`PAGE_SIZES`] would send, so a thread too heavy to read beside its
+/// neighbours shortens the walk rather than turning it into a request a
+/// thread.
+const MAXIMUM_REQUESTS: usize = MAXIMUM_PAGES * PAGE_SIZES;
+
 /// What a page of review threads GitHub answered for another pull request,
 /// or for one it did not number, is reported as.
 const ANOTHER_PULL_REQUEST: &str =
@@ -84,16 +95,22 @@ impl PullRequestService {
     /// and stops once its pages have asked for a thousand threads in all, the
     /// reach of the ten pages of a hundred every paged read keeps to. A page
     /// asks for a hundred threads; one whose answer is larger than the 16 MiB
-    /// this crate reads is asked for again at half as many, down to one, and
-    /// every later page is asked for at that smaller size, so a walk that
-    /// halved takes more pages to reach the same thousand. A page asked for
-    /// again does not count towards the thousand; the last page asks only for
-    /// what is left of it. Each thread carries at most its first hundred
-    /// comments, and says in [`ReviewThreadRecord::comments_complete`] whether
-    /// that is all of them; a thread met twice is kept once.
+    /// this crate reads is asked for again from the same cursor at half as
+    /// many, down to one, and each page read after it asks for twice as many
+    /// as the one before, back up to a hundred, so only the pages near a heavy
+    /// thread stay small. A page asked for again does not count towards the
+    /// thousand; the last page asks only for what is left of it. However its
+    /// pages were sized, the walk sends at most seventy requests, those asked
+    /// for again included, as many as ten pages each halved from a hundred
+    /// down to one would; one that reaches them stops where it is, keeping the
+    /// threads already read, even when the page it was halving had yet to
+    /// fit. Each thread carries at most its first hundred comments, and says
+    /// in [`ReviewThreadRecord::comments_complete`] whether that is all of
+    /// them; a thread met twice is kept once.
     ///
     /// A pull request with more than a thousand threads reads as its first
-    /// thousand, and the list does not say that more were left;
+    /// thousand, or fewer when the walk spent its seventy requests first, and
+    /// the list does not say that more were left;
     /// [`Self::collect_review_threads`] reads the same and says whether that
     /// is every thread.
     ///
@@ -121,15 +138,15 @@ impl PullRequestService {
     ///
     /// [`Collected::complete`] is `true` only when the last page read was one
     /// GitHub said no page follows. It is `false` when the walk stopped at a
-    /// thousand threads while GitHub said another page follows, when such a
-    /// page named no cursor or handed back the cursor it was just given, or
-    /// when a page said nothing of what follows it, since a thread not reached
-    /// may be the one still unresolved. It speaks for the threads alone: a thread
-    /// carries at most its first hundred comments either way, and
-    /// [`ReviewThreadRecord::comments_complete`] says whether those are all of
-    /// them. Pages are asked for at a hundred threads, halved as
-    /// [`Self::fetch_review_threads`] halves them while an answer is larger
-    /// than this crate reads. A failure is the one
+    /// thousand threads or at seventy requests while GitHub said another page
+    /// follows, when such a page named no cursor or handed back the cursor it
+    /// was just given, or when a page said nothing of what follows it, since a
+    /// thread not reached may be the one still unresolved. It speaks for the
+    /// threads alone: a thread carries at most its first hundred comments
+    /// either way, and [`ReviewThreadRecord::comments_complete`] says whether
+    /// those are all of them. Pages are asked for at a hundred threads, halved
+    /// while an answer is larger than this crate reads and grown back after,
+    /// as [`Self::fetch_review_threads`] sizes them. A failure is the one
     /// [`Self::fetch_review_threads`] reports, including
     /// [`PullRequestError::RepositoryNotFound`],
     /// [`PullRequestError::PullRequestNotFound`] and a page that names
@@ -151,9 +168,10 @@ impl PullRequestService {
     /// are resolved, without reading a comment in any of them.
     ///
     /// Reads the threads [`Self::collect_review_threads`] would, page by page,
-    /// stopping at the same thousand threads and halving a page whose answer
-    /// is larger than this crate reads the same way, counting a thread met
-    /// twice once, and fails the same way it does:
+    /// stopping at the same thousand threads or seventy requests and halving a
+    /// page whose answer is larger than this crate reads and growing the next
+    /// back the same way, counting a thread met twice once, and fails the same
+    /// way it does:
     /// [`PullRequestError::RepositoryNotFound`] and
     /// [`PullRequestError::PullRequestNotFound`] tell a hidden repository from
     /// a missing pull request, [`PullRequestError::is_not_found`] is `true`
@@ -193,13 +211,18 @@ impl PullRequestService {
         let mut after: Option<String> = None;
         let mut first = PAGE_SIZE;
         let mut remaining = MAXIMUM_THREADS;
+        let mut requests = 0;
         let mut complete = false;
 
-        while remaining > 0 {
+        'walk: while remaining > 0 {
             let (answer, asked): (
                 GraphQlQuery<GraphQlRepository<GraphQlPullRequest<T>>>,
                 usize,
             ) = loop {
+                if requests == MAXIMUM_REQUESTS {
+                    break 'walk;
+                }
+                requests += 1;
                 let asked = first.min(remaining);
                 let read = self
                     .graphql_refusing(
@@ -225,6 +248,7 @@ impl PullRequestService {
                 }
             };
             remaining -= asked;
+            first = (asked * 2).min(PAGE_SIZE);
             let pull_request = answer
                 .repository
                 .ok_or(PullRequestError::RepositoryNotFound)?
@@ -1476,7 +1500,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
-            .and(body_json(sent(THREADS, 50, Some("Y3Vyc29yOjE="))))
+            .and(body_json(asked(Some("Y3Vyc29yOjE="))))
             .respond_with(page(json!([thread("PRRT_2")]), false, None))
             .expect(1)
             .mount(&server)
@@ -1492,8 +1516,8 @@ mod tests {
         assert_eq!(identifiers(&collected.items), ["PRRT_1", "PRRT_2"]);
         assert_eq!(
             firsts(&server.received_requests().await.unwrap()),
-            [json!(100), json!(50), json!(50)],
-            "the halved size is kept for the pages after it"
+            [json!(100), json!(50), json!(100)],
+            "the page after a halved one asks for twice as many"
         );
     }
 
@@ -1545,7 +1569,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .respond_with(oversized())
-            .expect(7)
+            .expect(u64::try_from(PAGE_SIZES).unwrap())
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
@@ -1570,15 +1594,24 @@ mod tests {
         total: usize,
         node: fn(&str) -> Value,
     ) -> impl Fn(&Request) -> ResponseTemplate + Send + Sync + 'static {
+        heavy_before(total, largest, total, node)
+    }
+
+    fn heavy_before(
+        heavy: usize,
+        largest: usize,
+        total: usize,
+        node: fn(&str) -> Value,
+    ) -> impl Fn(&Request) -> ResponseTemplate + Send + Sync + 'static {
         move |request: &Request| {
             let sent: Value = serde_json::from_slice(&request.body).unwrap();
             let first = usize::try_from(sent["variables"]["first"].as_u64().unwrap()).unwrap();
-            if first > largest {
-                return oversized();
-            }
             let offset = sent["variables"]["after"]
                 .as_str()
                 .map_or(0, |cursor| cursor.parse::<usize>().unwrap());
+            if offset < heavy && first > largest {
+                return oversized();
+            }
             let end = offset + first.min(total - offset);
             page(
                 (offset..end)
@@ -1596,7 +1629,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .respond_with(halving_above(50, 750, thread))
-            .expect(16)
+            .expect(30)
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
@@ -1609,9 +1642,15 @@ mod tests {
         assert!(collected.complete);
         assert_eq!(collected.items.len(), 750);
         assert_eq!(collected.items[749].id, "PRRT_749");
-        let mut expected = vec![json!(100)];
-        expected.extend(vec![json!(50); 15]);
-        assert_eq!(firsts(&server.received_requests().await.unwrap()), expected);
+        assert_eq!(
+            firsts(&server.received_requests().await.unwrap()),
+            [100, 50]
+                .repeat(15)
+                .into_iter()
+                .map(|first| json!(first))
+                .collect::<Vec<_>>(),
+            "every page grows back to a hundred and is halved again to fifty"
+        );
     }
 
     #[tokio::test]
@@ -1620,7 +1659,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .respond_with(halving_above(50, 5000, thread))
-            .expect(21)
+            .expect(39)
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
@@ -1640,7 +1679,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
-            .respond_with(halving_above(12, 5000, thread))
+            .respond_with(heavy_before(12, 12, 5000, thread))
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
@@ -1652,10 +1691,109 @@ mod tests {
 
         assert!(!collected.complete);
         assert_eq!(collected.items.len(), MAXIMUM_THREADS);
-        let mut expected = vec![json!(100), json!(50), json!(25)];
-        expected.extend(vec![json!(12); 83]);
-        expected.push(json!(4));
+        let mut expected = [100, 50, 25, 12, 24, 48, 96]
+            .map(|first| json!(first))
+            .to_vec();
+        expected.extend(vec![json!(100); 8]);
+        expected.push(json!(20));
         assert_eq!(firsts(&server.received_requests().await.unwrap()), expected);
+    }
+
+    #[tokio::test]
+    async fn the_page_after_a_halved_one_asks_for_twice_as_many_up_to_a_hundred() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(heavy_before(12, 12, 300, thread))
+            .expect(9)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let collected = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert!(collected.complete);
+        assert_eq!(collected.items.len(), 300);
+        assert_eq!(collected.items[299].id, "PRRT_299");
+        assert_eq!(
+            firsts(&server.received_requests().await.unwrap()),
+            [100, 50, 25, 12, 24, 48, 96, 100, 100].map(|first| json!(first)),
+            "pages past the heavy thread double back to a hundred and no further"
+        );
+    }
+
+    fn ladder_to_the_request_cap() -> Vec<Value> {
+        let mut expected = [100, 50, 25, 12, 6, 3, 1]
+            .map(|first| json!(first))
+            .to_vec();
+        while expected.len() < MAXIMUM_REQUESTS {
+            expected.push(json!(2));
+            expected.push(json!(1));
+        }
+        expected.truncate(MAXIMUM_REQUESTS);
+        expected
+    }
+
+    fn read_at_one(sizes: &[Value]) -> usize {
+        sizes.iter().filter(|first| **first == json!(1)).count()
+    }
+
+    #[tokio::test]
+    async fn a_walk_with_a_heavy_thread_on_every_page_stops_at_the_request_cap() {
+        assert_eq!(MAXIMUM_REQUESTS, 70, "the thread reads document seventy");
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(halving_above(1, 5000, thread))
+            .expect(u64::try_from(MAXIMUM_REQUESTS).unwrap())
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let collected = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        let expected = ladder_to_the_request_cap();
+        assert_eq!(
+            expected.last(),
+            Some(&json!(2)),
+            "the cap falls while a page is being halved"
+        );
+        assert!(!collected.complete);
+        assert_eq!(collected.items.len(), read_at_one(&expected));
+        assert_eq!(
+            collected.items.last().map(|thread| thread.id.as_str()),
+            Some("PRRT_31")
+        );
+        assert_eq!(firsts(&server.received_requests().await.unwrap()), expected);
+    }
+
+    #[tokio::test]
+    async fn counting_a_walk_with_a_heavy_thread_on_every_page_stops_at_the_request_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(halving_above(1, 5000, |id| state(id, false)))
+            .expect(u64::try_from(MAXIMUM_REQUESTS).unwrap())
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let count = service
+            .fetch_review_thread_counts(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        let read = read_at_one(&ladder_to_the_request_cap());
+        assert_eq!(
+            count,
+            ReviewThreadCount::new(u32::try_from(read).unwrap(), 0, false)
+        );
     }
 
     #[tokio::test]
@@ -1664,7 +1802,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .respond_with(halving_above(50, 5000, |id| state(id, false)))
-            .expect(21)
+            .expect(39)
             .mount(&server)
             .await;
         let service = stand_in(&server).await;
