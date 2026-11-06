@@ -17,7 +17,8 @@ const SUBJECTS: &[&str] = &[
 
 const SUBJECT_LENGTH: usize = 80;
 
-const ELLIPSIS: char = '\u{2026}';
+/// What ends a subject cut short.
+pub(crate) const ELLIPSIS: char = '\u{2026}';
 
 const BACKTICK: char = '`';
 

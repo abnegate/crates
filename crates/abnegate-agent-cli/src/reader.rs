@@ -10,6 +10,7 @@ use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+use crate::activity::ELLIPSIS;
 use crate::drain::Drain;
 use crate::event::AgentEvent;
 use crate::kind::AgentKind;
@@ -325,10 +326,20 @@ fn scrub(scrubber: &Scrubber, text: &mut String) {
     }
 }
 
+/// `text`, cut short as a subject is, with whatever `scrubber` removes from
+/// it removed, a piece of a secret left at the cut included.
+fn scrub_cut(scrubber: &Scrubber, text: &mut String) {
+    if let Cow::Owned(scrubbed) = scrubber.scrub_cut(text, ELLIPSIS) {
+        *text = scrubbed;
+    }
+}
+
 /// `subagent`, with every word it carries scrubbed.
 fn scrubbed(scrubber: &Scrubber, mut subagent: Subagent) -> Subagent {
+    if let Some(description) = &mut subagent.description {
+        scrub_cut(scrubber, description);
+    }
     let words = [
-        &mut subagent.description,
         &mut subagent.kind,
         &mut subagent.model,
         &mut subagent.last_tool,
@@ -341,7 +352,7 @@ fn scrubbed(scrubber: &Scrubber, mut subagent: Subagent) -> Subagent {
     if let Some(step) = &mut subagent.step {
         scrub(scrubber, &mut step.name);
         if let Some(subject) = &mut step.subject {
-            scrub(scrubber, subject);
+            scrub_cut(scrubber, subject);
         }
     }
     subagent
@@ -355,13 +366,20 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio::sync::watch;
 
+    use abnegate_secret::SecretValue;
+
     use super::Reader;
+    use super::scrubbed;
+    use crate::activity::subject;
     use crate::kind::AgentKind;
     use crate::log::Journal;
     use crate::log::Sink;
     use crate::scrubber::Scrubber;
     use crate::settings::DEFAULT_LINE_LIMIT;
     use crate::settings::DEFAULT_OUTPUT_LIMIT;
+    use crate::subagent::StepStatus;
+    use crate::subagent::Subagent;
+    use crate::subagent::SubagentStep;
     use crate::test_support::ESCAPED_PROCESS;
     use crate::test_support::PATIENCE;
     use crate::test_support::kill_escaped;
@@ -374,6 +392,34 @@ mod tests {
 
     /// A reader still behind when the run gave up on the output closing
     /// stopped at once, losing everything the agent wrote before it exited.
+    /// A subject is cut before the run's secrets are known to it, so the
+    /// cut can leave the start of one, which the reader then removes.
+    #[test]
+    fn a_piece_of_a_secret_a_subjects_cut_left_is_never_handed_on() {
+        const TOKEN: &str = "relay-token-0123456789abcdef0123456789abcdef";
+        let scrubber = Scrubber::new([SecretValue::new(TOKEN)]);
+        let command = format!(
+            "deploy --target staging --region eu-west-1 --verbose --dry-run --name {TOKEN} --wait"
+        );
+        let cut =
+            subject(&serde_json::json!({ "command": command }).to_string()).expect("a subject");
+        assert!(cut.ends_with("--name relay-toke\u{2026}"), "{cut}");
+        let step = SubagentStep::new("toolu_02", "Bash", StepStatus::Running).with_subject(cut);
+        let update = Subagent::new("toolu_01")
+            .with_description(format!("{}\u{2026}", &TOKEN[..20]))
+            .with_step(step);
+
+        let handed = scrubbed(&scrubber, update);
+
+        let subject = handed
+            .step
+            .and_then(|step| step.subject)
+            .expect("a subject");
+        assert!(subject.ends_with("--name \u{2026}"), "{subject}");
+        let description = handed.description.expect("a description");
+        assert_eq!(description, "\u{2026}");
+    }
+
     #[tokio::test]
     async fn what_the_agent_wrote_before_the_drain_started_is_read_to_its_end() {
         let directory = TempDir::new().expect("a temporary directory");
