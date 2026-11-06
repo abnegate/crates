@@ -228,6 +228,53 @@ fn a_user_event_read_as_a_stream_event_is_paired_like_its_line() {
     );
 }
 
+/// Two subagents answered in one message share one report, which is the
+/// account of only the call its task was started by.
+#[test]
+fn a_report_beside_several_results_is_only_its_own_calls() {
+    let second = "toolu_02Agent";
+    let mut other = delegated("haiku");
+    other["message"]["content"][0]["id"] = second.into();
+    let mut answers = json!({
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": AGENT_CALL, "content": "First.", "is_error": false},
+            {"type": "tool_result", "tool_use_id": second, "content": "Second.", "is_error": false},
+        ]},
+        "parent_tool_use_id": null,
+        "session_id": "6f1",
+    });
+    answers["tool_use_result"] = json!({
+        "status": "completed",
+        "agentId": "t2",
+        "resolvedModel": "claude-haiku-4-5",
+        "totalToolUseCount": 4,
+    });
+    let started = task(
+        "task_started",
+        json!({"task_id": "t2", "tool_use_id": second, "task_type": "local_agent"}),
+    );
+    let lines = [
+        delegated("sonnet").to_string(),
+        other.to_string(),
+        started,
+        answers.to_string(),
+    ];
+
+    let events = interpret_all(&stream(&lines));
+
+    let first = last_update(&events, AGENT_CALL).expect("the first subagent's ending");
+    assert_eq!(first.model, None, "{first:?}");
+    assert_eq!(first.tool_uses, None, "{first:?}");
+    let owned = last_update(&events, second).expect("the second subagent's ending");
+    assert_eq!(
+        owned.model.as_deref(),
+        Some("claude-haiku-4-5"),
+        "{owned:?}"
+    );
+    assert_eq!(owned.tool_uses, Some(4), "{owned:?}");
+}
+
 #[test]
 fn a_foreground_subagent_is_followed_from_its_call_through_its_steps_to_its_report() {
     let events = interpret_all(SUBAGENTS_STREAM);

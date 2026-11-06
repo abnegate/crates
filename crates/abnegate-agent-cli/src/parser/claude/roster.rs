@@ -114,15 +114,26 @@ impl Roster {
     /// Each of `results`, a call's id, what it printed and whether it failed,
     /// as the [`Output`] of the call it answers, after what it says of the
     /// subagent the call was a step of or started. `report` is the tool's
-    /// account of the call, a subagent's report when it started one. A result
-    /// no call is known for is ignored.
+    /// account of the call, a subagent's report when it started one: the
+    /// account of the only result, or, among several, of the one call the
+    /// report's task is known to have been started by, and of none when it
+    /// is not known. A result no call is known for is ignored.
     pub(crate) fn returned(
         &mut self,
         results: impl IntoIterator<Item = (String, Value, bool)>,
         report: Option<&Report>,
         events: &mut Vec<AgentEvent>,
     ) {
+        let results: Vec<(String, Value, bool)> = results.into_iter().collect();
+        let owner = match results.as_slice() {
+            [(id, _, _)] => Some(id.clone()),
+            _ => report
+                .and_then(|report| report.task.as_ref())
+                .and_then(|task| self.tasks.get(task))
+                .cloned(),
+        };
         for (id, content, failed) in results {
+            let report = report.filter(|_| owner.as_deref() == Some(id.as_str()));
             let Some(call) = self.calls.remove(&id) else {
                 continue;
             };
