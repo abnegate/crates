@@ -1,7 +1,7 @@
 //! An image a message carries, read from the URL it was attached by.
 
+mod image_error;
 mod media_type;
-mod rejection;
 mod signature;
 
 use std::borrow::Cow;
@@ -15,7 +15,7 @@ use base64::engine::general_purpose::GeneralPurposeConfig;
 use crate::image::media_type::MediaType;
 use crate::image::signature::Signature;
 
-pub use crate::image::rejection::Rejection;
+pub use crate::image::image_error::ImageError;
 
 const DATA_SCHEME: &str = "data:";
 const BASE64_SUFFIX: &str = ";base64";
@@ -71,28 +71,28 @@ impl<'a> Image<'a> {
     ///
     /// # Errors
     ///
-    /// [`Rejection::Unsupported`] for a data URL of any other type,
-    /// [`Rejection::Malformed`] for one that does not decode to such an
-    /// image, and [`Rejection::Unreachable`] for any other address.
-    pub fn parse(url: &'a str) -> Result<Self, Rejection> {
+    /// [`ImageError::Unsupported`] for a data URL of any other type,
+    /// [`ImageError::Malformed`] for one that does not decode to such an
+    /// image, and [`ImageError::Unreachable`] for any other address.
+    pub fn parse(url: &'a str) -> Result<Self, ImageError> {
         if let Some(rest) = url.strip_prefix(DATA_SCHEME) {
-            let (header, data) = rest.split_once(',').ok_or(Rejection::Malformed)?;
+            let (header, data) = rest.split_once(',').ok_or(ImageError::Malformed)?;
             let declared = header
                 .strip_suffix(BASE64_SUFFIX)
-                .ok_or(Rejection::Malformed)?;
+                .ok_or(ImageError::Malformed)?;
             if !MEDIA_TYPES
                 .iter()
                 .any(|known| known.name.eq_ignore_ascii_case(declared))
             {
-                return Err(Rejection::Unsupported);
+                return Err(ImageError::Unsupported);
             }
             let bytes = LENIENT
                 .decode(compact(data).as_bytes())
-                .map_err(|_| Rejection::Malformed)?;
+                .map_err(|_| ImageError::Malformed)?;
             let actual = MEDIA_TYPES
                 .iter()
                 .find(|known| known.holds(&bytes))
-                .ok_or(Rejection::Malformed)?;
+                .ok_or(ImageError::Malformed)?;
             return Ok(Self::Inline {
                 media_type: actual.name,
                 extension: actual.extension,
@@ -102,7 +102,7 @@ impl<'a> Image<'a> {
         if LINK_SCHEMES.iter().any(|scheme| url.starts_with(scheme)) {
             return Ok(Self::Linked(url));
         }
-        Err(Rejection::Unreachable)
+        Err(ImageError::Unreachable)
     }
 }
 
@@ -121,7 +121,7 @@ fn compact(data: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::Image;
-    use super::Rejection;
+    use super::ImageError;
 
     const PNG_BYTES: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -206,27 +206,30 @@ mod tests {
 
     #[test]
     fn an_image_no_agent_can_be_shown_says_why() {
-        for (url, rejection) in [
+        for (url, error) in [
             (
                 "/api/artifacts/workspace/chat/message/generated.png",
-                Rejection::Unreachable,
+                ImageError::Unreachable,
             ),
-            ("ftp://example.test/shot.png", Rejection::Unreachable),
-            ("data:image/svg+xml;base64,PHN2Zz4=", Rejection::Unsupported),
-            ("data:text/plain;base64,aGk=", Rejection::Unsupported),
-            ("data:image/png,not-base64", Rejection::Malformed),
-            ("data:image/png;base64,", Rejection::Malformed),
-            ("data:image/png;base64,!!!!", Rejection::Malformed),
-            ("data:image/png;base64,aGVsbG8=", Rejection::Malformed),
+            ("ftp://example.test/shot.png", ImageError::Unreachable),
+            (
+                "data:image/svg+xml;base64,PHN2Zz4=",
+                ImageError::Unsupported,
+            ),
+            ("data:text/plain;base64,aGk=", ImageError::Unsupported),
+            ("data:image/png,not-base64", ImageError::Malformed),
+            ("data:image/png;base64,", ImageError::Malformed),
+            ("data:image/png;base64,!!!!", ImageError::Malformed),
+            ("data:image/png;base64,aGVsbG8=", ImageError::Malformed),
         ] {
-            assert_eq!(Image::parse(url), Err(rejection), "{url}");
+            assert_eq!(Image::parse(url), Err(error), "{url}");
         }
     }
 
     #[test]
-    fn a_rejection_names_no_host_of_its_own() {
+    fn an_image_error_names_no_host_of_its_own() {
         assert_eq!(
-            Rejection::Unreachable.to_string(),
+            ImageError::Unreachable.to_string(),
             "it is neither inline data nor a web address the agent can open"
         );
     }
