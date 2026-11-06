@@ -1,8 +1,8 @@
-use crate::branch_name::BranchName;
 use crate::pull_request::Repository;
 use crate::pull_request::application::ApplicationError;
 use crate::pull_request::application::InstalledRepository;
 use crate::pull_request::github_user::GitHubUser;
+use crate::remote_branch_name::RemoteBranchName;
 use serde::Deserialize;
 
 /// One repository an installation can reach, as GitHub lists it. Its
@@ -24,15 +24,16 @@ impl TryFrom<GitHubInstalledRepository> for InstalledRepository {
 
     /// The repository GitHub listed, or [`ApplicationError::Response`] when
     /// its owner has no login, its owner or name is not one GitHub allows,
-    /// or its default branch is not a branch git would accept.
+    /// or its default branch is not a name `git check-ref-format` accepts
+    /// under `refs/heads/`.
     fn try_from(repository: GitHubInstalledRepository) -> Result<Self, Self::Error> {
         let owner = repository.owner.login.ok_or(ApplicationError::Response)?;
         let named =
             Repository::new(&owner, &repository.name).map_err(|_| ApplicationError::Response)?;
-        let default_branch = BranchName::parse(&repository.default_branch)
+        let default_branch = RemoteBranchName::parse(&repository.default_branch)
             .map_err(|_| ApplicationError::Response)?;
         Ok(
-            Self::new(repository.id, &named, default_branch, repository.html_url)
+            Self::new(repository.id, named, default_branch, repository.html_url)
                 .with_private(repository.private)
                 .with_archived(repository.archived),
         )
@@ -42,6 +43,7 @@ impl TryFrom<GitHubInstalledRepository> for InstalledRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse_error::ParseError;
     use serde_json::Value;
     use serde_json::json;
 
@@ -101,22 +103,22 @@ mod tests {
 
         let expected = InstalledRepository::new(
             1296269,
-            &Repository::new("acme", "project").unwrap(),
-            BranchName::parse("main").unwrap(),
+            Repository::new("acme", "project").unwrap(),
+            RemoteBranchName::parse("main").unwrap(),
             "https://github.com/acme/project",
         )
         .with_private(true);
         assert_eq!(repository, expected);
-        assert_eq!(repository.full_name, "acme/project");
-        assert!(repository.private);
-        assert!(!repository.archived);
+        assert_eq!(repository.full_name(), "acme/project");
+        assert!(repository.private());
+        assert!(!repository.archived());
     }
 
     #[test]
     fn an_archived_repository_stays_archived() {
         let repository = installed(with("archived", json!(true))).unwrap();
 
-        assert!(repository.archived);
+        assert!(repository.archived());
     }
 
     #[test]
@@ -139,8 +141,22 @@ mod tests {
 
     #[test]
     fn a_default_branch_git_would_refuse_is_refused() {
-        for branch in ["-x", "HEAD"] {
+        for branch in ["", "a..b", "a b", "dir/.hidden", "branch.lock"] {
             assert_refused(with("default_branch", json!(branch)), branch);
+        }
+    }
+
+    #[test]
+    fn a_default_branch_a_command_line_would_misread_is_read_as_github_spells_it() {
+        for branch in ["+release", "-dash", "HEAD"] {
+            let repository = installed(with("default_branch", json!(branch))).expect(branch);
+
+            assert_eq!(repository.default_branch().as_str(), branch);
+            assert_eq!(
+                repository.default_branch().to_branch_name(),
+                Err(ParseError::BranchName(branch.to_string())),
+                "{branch:?} reached a command line"
+            );
         }
     }
 

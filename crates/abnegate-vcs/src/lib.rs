@@ -43,7 +43,8 @@
 //! - `github`: `pull_request`, which opens, reads, checks, reviews and merges
 //!   pull requests on GitHub or a GitHub Enterprise install, sets them to
 //!   merge once they are ready and moves them in and out of draft, reads back
-//!   how each one was received, lists a repository's branches, and creates
+//!   how each one was received, lists a repository's branches, each named by
+//!   a [`RemoteBranchName`] as GitHub spells it, and creates
 //!   repositories there and registers their webhooks, over the REST and
 //!   GraphQL APIs; and
 //!   `pull_request::WebhookSignature`, which checks that a webhook delivery was
@@ -73,6 +74,7 @@ mod parse_error;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub mod pull_request;
+mod remote_branch_name;
 mod repository_url;
 pub mod resolution;
 pub mod subject;
@@ -327,6 +329,7 @@ pub use crate::pull_request::minutes_between;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::tally;
+pub use crate::remote_branch_name::RemoteBranchName;
 pub use crate::repository_url::RepositoryUrl;
 pub use crate::resolution::ConflictSide;
 pub use crate::resolution::ResolutionVerdict;

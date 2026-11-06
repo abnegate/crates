@@ -47,7 +47,11 @@
 //! call sends, such as a GraphQL node id, a title or a body, travels in its
 //! JSON, never in its URL. What GitHub answers is held to the same types: a
 //! branch or commit this crate does not accept is
-//! [`PullRequestError::Parse`], never read as something else.
+//! [`PullRequestError::Parse`], never read as something else. A branch
+//! GitHub lists is named by a [`crate::RemoteBranchName`], which keeps names
+//! such as `+release` that a [`crate::BranchName`] refuses, so one such
+//! branch never fails a page; it reaches a git command line only through
+//! [`crate::RemoteBranchName::to_branch_name`].
 //!
 //! [`PullRequestService::fetch_diff`] and [`PullRequestService::fetch_file`]
 //! read no more of the answer than the byte limit their caller passes, and

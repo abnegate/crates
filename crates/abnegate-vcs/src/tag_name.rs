@@ -1,12 +1,6 @@
 #[cfg(feature = "github")]
 use crate::parse_error::ParseError;
-
-/// Characters `git check-ref-format` refuses anywhere in a ref name, the
-/// space among them.
-const FORBIDDEN_CHARACTERS: &[char] = &['~', '^', ':', '?', '*', '[', '\\', ' '];
-
-/// The suffix git reserves for its own lock files, refused on any component.
-const LOCK_SUFFIX: &str = ".lock";
+use crate::remote_branch_name::RemoteBranchName;
 
 /// The name `git tag` refuses, since git reads it as the checked-out commit.
 const HEAD: &str = "HEAD";
@@ -36,18 +30,7 @@ impl TagName {
     /// character or any of `~^:?*[\` and the space, or with a component that
     /// starts with `.` or ends in `.lock`.
     pub(crate) fn refuses(value: &str) -> bool {
-        value.is_empty()
-            || value == HEAD
-            || value.starts_with(['-', '/'])
-            || value.ends_with(['/', '.'])
-            || value.contains("..")
-            || value.contains("@{")
-            || value.contains("//")
-            || value.contains(FORBIDDEN_CHARACTERS)
-            || value.chars().any(|character| character.is_ascii_control())
-            || value
-                .split('/')
-                .any(|component| component.starts_with('.') || component.ends_with(LOCK_SUFFIX))
+        RemoteBranchName::refuses(value) || value == HEAD || value.starts_with('-')
     }
 
     /// The name as git spells it.

@@ -95,10 +95,13 @@ impl PullRequestService {
     ///
     /// A row that leaves out anything GitHub sends on every branch, its name,
     /// the commit at its tip or whether it is protected, is
-    /// [`PullRequestError::GitHubApi`], never a page without it. A name or
-    /// commit this crate does not accept, such as a branch named `HEAD` or a
-    /// tip named by anything but a full commit, is
-    /// [`PullRequestError::Parse`] for the whole page.
+    /// [`PullRequestError::GitHubApi`], never a page without it. A name
+    /// `git check-ref-format` refuses, such as `a..b`, or a tip named by
+    /// anything but a full commit, is [`PullRequestError::Parse`] for the
+    /// whole page. A name only a command line would misread, such as
+    /// `+release` or `-dash`, is listed as GitHub spells it, a
+    /// [`crate::RemoteBranchName`] that
+    /// [`crate::RemoteBranchName::to_branch_name`] refuses.
     pub async fn list_branches(
         &self,
         repository: &Repository,
@@ -128,6 +131,7 @@ mod tests {
     use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
+    use crate::remote_branch_name::RemoteBranchName;
     use serde_json::Value;
     use serde_json::json;
     use std::mem::discriminant;
@@ -493,7 +497,11 @@ mod tests {
     }
 
     fn tip(name: &str, digit: char, protected: bool) -> Branch {
-        Branch::new(BranchName::parse(name).unwrap(), commit(digit), protected)
+        Branch::new(
+            RemoteBranchName::parse(name).unwrap(),
+            commit(digit),
+            protected,
+        )
     }
 
     fn described(branch: &Branch) -> Value {
@@ -593,8 +601,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_branch_name_this_crate_refuses_fails_the_whole_page() {
-        for name in ["-x", "HEAD", "a..b"] {
+    async fn a_branch_name_a_command_line_would_misread_is_listed_with_the_rest() {
+        let server = MockServer::start().await;
+        let branches = vec![
+            tip("main", 'a', true),
+            tip("+release", 'b', false),
+            tip("-dash", 'c', false),
+        ];
+        listed(&server, "3", branches.iter().map(described).collect()).await;
+
+        let page_read = list(&server, 3).await.unwrap();
+
+        assert_eq!(page_read, Page::new(branches, Some(page(3))));
+        for (branch, name) in page_read.items[1..].iter().zip(["+release", "-dash"]) {
+            assert_eq!(branch.name.as_str(), name);
+            assert_eq!(
+                branch.name.to_branch_name(),
+                Err(ParseError::BranchName(name.to_string())),
+                "{name:?} reached a command line"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_branch_name_git_refuses_fails_the_whole_page() {
+        for name in ["", "a..b", "a b", "dir/.hidden", "branch.lock"] {
             let server = MockServer::start().await;
             listed(
                 &server,

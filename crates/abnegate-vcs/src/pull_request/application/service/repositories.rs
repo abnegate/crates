@@ -23,8 +23,9 @@ impl ApplicationService {
     /// never by the `total_count` it sends beside them. A row this crate
     /// cannot read, such as one that leaves out whether it is private, names
     /// an owner or repository GitHub does not allow, or defaults to a branch
-    /// git would refuse, is [`ApplicationError::Response`], never a page
-    /// without it.
+    /// `git check-ref-format` would refuse, is [`ApplicationError::Response`],
+    /// never a page without it. A default branch only a command line would
+    /// misread, such as `+release`, is listed as GitHub spells it.
     pub async fn list_installation_repositories(
         &self,
         token: &SecretValue,
@@ -53,7 +54,6 @@ impl ApplicationService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::branch_name::BranchName;
     use crate::pull_request::Repository;
     use crate::pull_request::application::API_VERSION;
     use crate::pull_request::application::API_VERSION_HEADER;
@@ -63,6 +63,7 @@ mod tests {
     use crate::pull_request::application::service::fixtures::token;
     use crate::pull_request::service::ACCEPT;
     use crate::pull_request::service::MAXIMUM_ANSWER_BYTES;
+    use crate::remote_branch_name::RemoteBranchName;
     use serde_json::Value;
     use serde_json::json;
     use wiremock::Mock;
@@ -89,11 +90,15 @@ mod tests {
     }
 
     fn installed(id: u64) -> InstalledRepository {
+        defaulting_to(id, "main")
+    }
+
+    fn defaulting_to(id: u64, default_branch: &str) -> InstalledRepository {
         let name = format!("project-{id}");
         InstalledRepository::new(
             id,
-            &Repository::new("acme", &name).unwrap(),
-            BranchName::parse("main").unwrap(),
+            Repository::new("acme", &name).unwrap(),
+            RemoteBranchName::parse(default_branch).unwrap(),
             format!("https://github.com/acme/{name}"),
         )
         .with_private(id.is_multiple_of(2))
@@ -101,21 +106,21 @@ mod tests {
 
     fn described(repository: &InstalledRepository) -> Value {
         json!({
-            "id": repository.id,
+            "id": repository.id(),
             "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
-            "name": repository.name,
-            "full_name": repository.full_name,
+            "name": repository.name(),
+            "full_name": repository.full_name(),
             "owner": {
-                "login": repository.owner,
+                "login": repository.owner(),
                 "id": 1,
                 "type": "Organization",
                 "site_admin": false
             },
-            "private": repository.private,
-            "archived": repository.archived,
-            "html_url": repository.html_url,
-            "default_branch": repository.default_branch.as_str(),
-            "visibility": if repository.private { "private" } else { "public" },
+            "private": repository.private(),
+            "archived": repository.archived(),
+            "html_url": repository.html_url(),
+            "default_branch": repository.default_branch().as_str(),
+            "visibility": if repository.private() { "private" } else { "public" },
             "permissions": { "admin": false, "push": true, "pull": true }
         })
     }
@@ -215,14 +220,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_default_branch_a_command_line_would_misread_does_not_fail_the_page() {
+        let server = MockServer::start().await;
+        let repositories = vec![defaulting_to(1, "+release"), defaulting_to(2, "-dash")];
+        listing(
+            &server,
+            "2",
+            answer(2, repositories.iter().map(described).collect()),
+        )
+        .await;
+
+        let listed = list(&stand_in(&server), 2).await.unwrap();
+
+        assert_eq!(listed, Page::new(repositories, Some(page(3))));
+        assert_eq!(listed.items[0].default_branch().as_str(), "+release");
+        assert_eq!(listed.items[1].default_branch().as_str(), "-dash");
+    }
+
+    #[tokio::test]
     async fn a_row_this_crate_cannot_read_fails_the_whole_page() {
         let mut refused_owner = described(&installed(2));
         refused_owner["owner"] = json!({ "login": "acme/other" });
         let mut without_private = described(&installed(2));
         without_private.as_object_mut().unwrap().remove("private");
+        let mut refused_branch = described(&installed(2));
+        refused_branch["default_branch"] = json!("a..b");
         for (case, row) in [
             ("a refused owner", refused_owner),
             ("a missing private flag", without_private),
+            ("a default branch git refuses", refused_branch),
         ] {
             let server = MockServer::start().await;
             listing(&server, "2", answer(2, vec![described(&installed(1)), row])).await;

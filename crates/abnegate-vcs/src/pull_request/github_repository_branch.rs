@@ -1,8 +1,8 @@
-use crate::branch_name::BranchName;
 use crate::commit_sha::CommitSha;
 use crate::pull_request::Branch;
 use crate::pull_request::PullRequestResult;
 use crate::pull_request::github_commit::GitHubCommit;
+use crate::remote_branch_name::RemoteBranchName;
 use serde::Deserialize;
 
 /// A branch as the GitHub REST API lists a repository's branches.
@@ -18,11 +18,12 @@ pub(super) struct GitHubRepositoryBranch {
 }
 
 impl GitHubRepositoryBranch {
-    /// The branch this row describes; a name or commit this crate does not
-    /// accept is [`crate::pull_request::PullRequestError::Parse`].
+    /// The branch this row describes; a name `git check-ref-format` refuses,
+    /// or a commit this crate does not accept, is
+    /// [`crate::pull_request::PullRequestError::Parse`].
     pub(super) fn branch(self) -> PullRequestResult<Branch> {
         Ok(Branch::new(
-            BranchName::parse(&self.name)?,
+            RemoteBranchName::parse(&self.name)?,
             CommitSha::parse(&self.commit.sha)?,
             self.protected,
         ))
