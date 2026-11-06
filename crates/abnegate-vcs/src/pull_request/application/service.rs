@@ -71,7 +71,9 @@ impl ApplicationService {
     /// Ask the origin an operator configured, as [`Self::configured`] does,
     /// or a plain HTTP one, such as a GitHub Enterprise install on a private
     /// network, which is then reached over plain HTTP. An HTTPS origin is
-    /// still reached over HTTPS alone.
+    /// still reached over HTTPS alone. Over plain HTTP every JWT and token
+    /// sent, and the private key and secrets a manifest conversion answers
+    /// with, cross the network unencrypted.
     pub fn configured_allowing_http(url: &str) -> Result<Self, ApplicationError> {
         let origin = Origin::configured(url, true).map_err(|_| ApplicationError::InvalidOrigin)?;
         let https_only = !origin.plain();
