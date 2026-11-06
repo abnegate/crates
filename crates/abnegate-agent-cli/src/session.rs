@@ -169,7 +169,24 @@ impl Session {
         if agent == AgentKind::Codex {
             return Ok(());
         }
-        let found = self.stored(agent, home)?;
+        if !named(&self.id) {
+            return Err(SessionError::Invalid {
+                id: self.id.clone(),
+            });
+        }
+        let projects = home.join(PROJECTS);
+        let copies = every_copy(home, &self.id).map_err(|source| SessionError::Filesystem {
+            path: projects,
+            source,
+        })?;
+        let found = copies
+            .iter()
+            .max_by_key(|(_, modified)| *modified)
+            .map(|(relative, _)| relative.clone())
+            .ok_or_else(|| SessionError::Missing {
+                agent,
+                id: self.id.clone(),
+            })?;
         let relative = claude(work, &self.id);
         let path = home.join(&relative);
         let source = home.join(&found);
@@ -181,12 +198,7 @@ impl Session {
                     source,
                 })?;
         }
-        let projects = home.join(PROJECTS);
-        let copies = every_copy(home, &self.id).map_err(|source| SessionError::Filesystem {
-            path: projects,
-            source,
-        })?;
-        for (copy, _) in copies {
+        for (copy, _) in copies.into_iter().filter(|(copy, _)| *copy != found) {
             let copy = home.join(copy);
             if !same_file(&copy, &path) {
                 fs::remove_file(&copy)
@@ -316,7 +328,8 @@ fn every_copy(home: &Path, id: &str) -> io::Result<Vec<Found>> {
 }
 
 /// What each folder in Claude's `projects` says of a copy of session `id`:
-/// the copy and when it was written, or nothing when it holds none.
+/// the copy and when it was written, or nothing when it holds none or is
+/// no folder of its own, a link to one included.
 fn readings(home: &Path, id: &str) -> io::Result<Vec<io::Result<Option<Found>>>> {
     if !named(id) {
         return Ok(Vec::new());
@@ -328,8 +341,12 @@ fn readings(home: &Path, id: &str) -> io::Result<Vec<io::Result<Option<Found>>>>
     };
     Ok(folders
         .map(|folder| {
+            let folder = folder?;
+            if !folder.file_type()?.is_dir() {
+                return Ok(None);
+            }
             let relative = Path::new(PROJECTS)
-                .join(folder?.file_name())
+                .join(folder.file_name())
                 .join(format!("{id}{EXTENSION}"));
             let metadata = match fs::symlink_metadata(home.join(&relative)) {
                 Ok(metadata) => metadata,
@@ -869,6 +886,71 @@ mod tests {
             "{moved:?}"
         );
         assert!(stale.exists());
+    }
+
+    /// The newest copy is the session, so a move that cannot read a folder
+    /// the newest may sit in moves nothing rather than an older copy.
+    #[test]
+    fn a_move_that_cannot_read_every_folder_moves_nothing() {
+        let homes = Homes::new();
+        let older = TempDir::new().unwrap();
+        let older = homes
+            .from
+            .path()
+            .join(folder(older.path()))
+            .join(format!("{CLAUDE_ID}{EXTENSION}"));
+        fs::create_dir_all(older.parent().unwrap()).unwrap();
+        fs::write(&older, b"older").unwrap();
+        age(&older);
+        let newest = TempDir::new().unwrap();
+        let unreadable = homes.from.path().join(folder(newest.path()));
+        fs::create_dir_all(&unreadable).unwrap();
+        fs::write(
+            unreadable.join(format!("{CLAUDE_ID}{EXTENSION}")),
+            TRANSCRIPT,
+        )
+        .unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let moved = homes.relocate(AgentKind::Claude, homes.work.path(), CLAUDE_ID);
+
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            matches!(moved, Err(SessionError::Filesystem { .. })),
+            "{moved:?}"
+        );
+        assert!(
+            older.exists(),
+            "an older copy was moved in the newest one's place"
+        );
+        assert!(!homes.from.path().join(homes.claude()).exists());
+    }
+
+    /// A link in Claude's projects folder is no folder of its own and never
+    /// holds a copy, so even one that cannot be followed stops no move.
+    #[test]
+    fn a_link_in_the_projects_folder_stops_no_move() {
+        let homes = Homes::new();
+        let elsewhere = TempDir::new().unwrap();
+        let stale = homes
+            .from
+            .path()
+            .join(folder(elsewhere.path()))
+            .join(format!("{CLAUDE_ID}{EXTENSION}"));
+        fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        fs::write(&stale, TRANSCRIPT).unwrap();
+        let looped = homes.from.path().join(PROJECTS).join("looped");
+        std::os::unix::fs::symlink(&looped, &looped).unwrap();
+
+        homes
+            .relocate(AgentKind::Claude, homes.work.path(), CLAUDE_ID)
+            .unwrap();
+
+        assert_eq!(
+            fs::read(homes.from.path().join(homes.claude())).unwrap(),
+            TRANSCRIPT
+        );
+        assert!(!stale.exists());
     }
 
     #[test]
