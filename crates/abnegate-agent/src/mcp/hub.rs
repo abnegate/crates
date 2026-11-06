@@ -317,17 +317,22 @@ mod tests {
 
     /// A server's cancellation no longer fails the call in flight: rmcp routes
     /// it by the call's lifecycle, so a server that cancels and never answers
-    /// is ended by the command timeout instead of hanging the call.
+    /// is ended by the command timeout instead of hanging the call. The server
+    /// says when it has received the call and sent its cancellation, so the
+    /// timeout is known to have ended a call that reached it.
     #[tokio::test]
     async fn a_call_the_server_cancels_and_never_answers_times_out() {
         let (server_stream, client_stream) = tokio::io::duplex(64 * 1024);
+        let (cancelled, mut reached) = tokio::sync::oneshot::channel::<()>();
 
         let server_task = tokio::spawn(async move {
+            let mut cancelled = Some(cancelled);
             let mut server = IntoTransport::<RoleServer, _, _>::into_transport(server_stream);
             while let Some(message) = server.receive().await {
                 let ClientJsonRpcMessage::Request(request) = message else {
                     continue;
                 };
+                let called = matches!(request.request, ClientRequest::CallToolRequest(_));
                 let reply = match request.request {
                     ClientRequest::InitializeRequest(_) => ServerJsonRpcMessage::response(
                         InitializeResult::default().into(),
@@ -352,6 +357,9 @@ mod tests {
                     _ => continue,
                 };
                 server.send(reply).await.expect("server send");
+                if called && let Some(cancelled) = cancelled.take() {
+                    let _ = cancelled.send(());
+                }
             }
         });
 
@@ -382,6 +390,10 @@ mod tests {
         .expect("the command timeout must end a call the server cancelled and never answered")
         .expect("execute silent__hang");
 
+        assert!(
+            reached.try_recv().is_ok(),
+            "the server must have received the call and sent its cancellation before the call timed out"
+        );
         assert!(!result.success, "{result:?}");
         assert!(
             result
