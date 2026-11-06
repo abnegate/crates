@@ -24,23 +24,23 @@ use std::collections::HashSet;
 const RESOLVE: &str =
     "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
 
-/// Reads the page of a pull request's review threads that follows the cursor
-/// `after`, and the number of the pull request GitHub answered for, each
-/// thread with the lines and side it was left on and its first hundred
+/// Reads the page of `first` of a pull request's review threads that follows
+/// the cursor `after`, and the number of the pull request GitHub answered for,
+/// each thread with the lines and side it was left on and its first hundred
 /// comments.
-const THREADS: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){\
+const THREADS: &str = "query($owner:String!,$name:String!,$number:Int!,$first:Int!,$after:String){\
 repository(owner:$owner,name:$name){pullRequest(number:$number){number \
-reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}\
+reviewThreads(first:$first,after:$after){pageInfo{hasNextPage endCursor}\
 nodes{id isResolved isOutdated path line startLine originalLine originalStartLine diffSide \
 comments(first:100){pageInfo{hasNextPage}\
 nodes{databaseId body url createdAt author{login}}}}}}}}";
 
-/// Reads the page of a pull request's review threads that follows the cursor
-/// `after`, and the number of the pull request GitHub answered for, each
-/// thread with only whether it is resolved.
-const COUNTS: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){\
+/// Reads the page of `first` of a pull request's review threads that follows
+/// the cursor `after`, and the number of the pull request GitHub answered for,
+/// each thread with only whether it is resolved.
+const COUNTS: &str = "query($owner:String!,$name:String!,$number:Int!,$first:Int!,$after:String){\
 repository(owner:$owner,name:$name){pullRequest(number:$number){number \
-reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}\
+reviewThreads(first:$first,after:$after){pageInfo{hasNextPage endCursor}\
 nodes{id isResolved}}}}}";
 
 /// Where in a review thread query GitHub reports the repository it could not
@@ -76,7 +76,10 @@ impl PullRequestService {
     ///
     /// Follows GitHub's cursor a page at a time until GitHub says no page
     /// follows, names no cursor, or hands back the cursor it was just given,
-    /// and stops at the page limit every paged read keeps to. Each thread
+    /// and stops at the page limit every paged read keeps to. A page asks for
+    /// a hundred threads; one whose answer is larger than the 16 MiB this
+    /// crate reads is asked for again at half as many, down to one, and every
+    /// later page is asked for at that smaller size. Each thread
     /// carries at most its first hundred comments, and says in
     /// [`ReviewThreadRecord::comments_complete`] whether that is all of them;
     /// a thread met twice is kept once.
@@ -88,9 +91,9 @@ impl PullRequestService {
     /// [`PullRequestError::NotFound`].
     /// [`PullRequestError::is_not_found`] is `true` for all three. Every page
     /// must name the pull request asked for: one that names another, or none,
-    /// is [`PullRequestError::GitHubApi`]. A page longer than the 16 MiB this
-    /// crate reads is [`PullRequestError::GitHubApi`] too. Either way the read
-    /// fails whole, never with a partial or empty list.
+    /// is [`PullRequestError::GitHubApi`]. A page of one thread still larger
+    /// than the 16 MiB this crate reads is [`PullRequestError::GitHubApi`] too.
+    /// Either way the read fails whole, never with a partial or empty list.
     /// [`Self::collect_review_threads`] reads the same and says whether that
     /// is every thread.
     pub async fn fetch_review_threads(
@@ -113,8 +116,11 @@ impl PullRequestService {
     /// the one still unresolved. It speaks for the threads alone: a thread
     /// carries at most its first hundred comments either way, and
     /// [`ReviewThreadRecord::comments_complete`] says whether those are all of
-    /// them. A failure is the one [`Self::fetch_review_threads`] reports,
-    /// including [`PullRequestError::RepositoryNotFound`],
+    /// them. Pages are asked for at a hundred threads, halved as
+    /// [`Self::fetch_review_threads`] halves them while an answer is larger
+    /// than this crate reads. A failure is the one
+    /// [`Self::fetch_review_threads`] reports, including
+    /// [`PullRequestError::RepositoryNotFound`],
     /// [`PullRequestError::PullRequestNotFound`] and a page that names
     /// another pull request, never a partial list.
     pub async fn collect_review_threads(
@@ -133,8 +139,9 @@ impl PullRequestService {
     /// How many of a pull request's review threads are open, and how many
     /// are resolved, without reading a comment in any of them.
     ///
-    /// Reads the threads [`Self::collect_review_threads`] would, page by page
-    /// and with the same limit, counting a thread met twice once, and fails
+    /// Reads the threads [`Self::collect_review_threads`] would, page by page,
+    /// with the same limit and the same halving of a page whose answer is
+    /// larger than this crate reads, counting a thread met twice once, and fails
     /// the same way it does: [`PullRequestError::RepositoryNotFound`] and
     /// [`PullRequestError::PullRequestNotFound`] tell a hidden repository from
     /// a missing pull request, [`PullRequestError::is_not_found`] is `true`
@@ -172,22 +179,34 @@ impl PullRequestService {
         let mut threads: Vec<T> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut after: Option<String> = None;
+        let mut first = PAGE_SIZE;
         let mut complete = false;
 
         for _ in 0..MAXIMUM_PAGES {
-            let answer: GraphQlQuery<GraphQlRepository<GraphQlPullRequest<T>>> = self
-                .graphql_refusing(
-                    token,
-                    query,
-                    &json!({
-                        "owner": repository.owner(),
-                        "name": repository.name(),
-                        "number": number,
-                        "after": after,
-                    }),
-                    thread_rejection,
-                )
-                .await?;
+            let answer: GraphQlQuery<GraphQlRepository<GraphQlPullRequest<T>>> = loop {
+                let read = self
+                    .graphql_refusing(
+                        token,
+                        query,
+                        &json!({
+                            "owner": repository.owner(),
+                            "name": repository.name(),
+                            "number": number,
+                            "first": first,
+                            "after": after,
+                        }),
+                        thread_rejection,
+                    )
+                    .await;
+                match read {
+                    Err(PullRequestError::GitHubApi(ref message))
+                        if message == OVERSIZED && first > 1 =>
+                    {
+                        first /= 2;
+                    }
+                    read => break read?,
+                }
+            };
             let pull_request = answer
                 .repository
                 .ok_or(PullRequestError::RepositoryNotFound)?
@@ -335,20 +354,21 @@ mod tests {
     }
 
     fn asked(after: Option<&str>) -> Value {
-        sent(THREADS, after)
+        sent(THREADS, PAGE_SIZE, after)
     }
 
     fn counted(after: Option<&str>) -> Value {
-        sent(COUNTS, after)
+        sent(COUNTS, PAGE_SIZE, after)
     }
 
-    fn sent(query: &str, after: Option<&str>) -> Value {
+    fn sent(query: &str, first: usize, after: Option<&str>) -> Value {
         json!({
             "query": query,
             "variables": {
                 "owner": "acme",
                 "name": "project",
                 "number": 7,
+                "first": first,
                 "after": after,
             },
         })
@@ -1381,5 +1401,85 @@ mod tests {
 
         assert!(!collected.complete);
         assert_eq!(identifiers(&collected.items), ["PRRT_1"]);
+    }
+
+    fn oversized() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_bytes(vec![b' '; MAXIMUM_ANSWER_BYTES + 1])
+    }
+
+    fn firsts(received: &[Request]) -> Vec<Value> {
+        received
+            .iter()
+            .map(|request| {
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                sent["variables"]["first"].clone()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_page_larger_than_the_crate_reads_is_asked_for_again_at_half_the_size() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(asked(None)))
+            .respond_with(oversized())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(sent(THREADS, 50, None)))
+            .respond_with(page(json!([thread("PRRT_1")]), true, Some("Y3Vyc29yOjE=")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(sent(THREADS, 50, Some("Y3Vyc29yOjE="))))
+            .respond_with(page(json!([thread("PRRT_2")]), false, None))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let collected = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert!(collected.complete);
+        assert_eq!(identifiers(&collected.items), ["PRRT_1", "PRRT_2"]);
+        assert_eq!(
+            firsts(&server.received_requests().await.unwrap()),
+            [json!(100), json!(50), json!(50)],
+            "the halved size is kept for the pages after it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_of_one_thread_larger_than_the_crate_reads_fails_the_read() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(oversized())
+            .expect(7)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::GitHubApi(ref text) if text == OVERSIZED),
+            "{failure:?}"
+        );
+        assert_eq!(
+            firsts(&server.received_requests().await.unwrap()),
+            [100, 50, 25, 12, 6, 3, 1].map(|first| json!(first)),
+        );
     }
 }

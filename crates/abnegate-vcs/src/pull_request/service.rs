@@ -124,9 +124,11 @@ const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
 /// in UTF-8 and up to six as a JSON `\u` escape, so a page of a hundred
 /// comments at GitHub's limit of 65,536 characters each can outgrow it, and
 /// such a page is an error rather than a shorter list. A page of review
-/// threads holds a hundred threads with up to a hundred comments each, so it
-/// can outgrow the bound sooner still; such a page is
-/// [`PullRequestError::GitHubApi`] with [`OVERSIZED`], never a partial list.
+/// threads holds up to a hundred threads with up to a hundred comments each,
+/// so it can outgrow the bound sooner still; such a page is asked for again
+/// at half as many threads, down to one, and only a page of one thread that
+/// still outgrows it is [`PullRequestError::GitHubApi`] with [`OVERSIZED`],
+/// never a partial list.
 pub(super) const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 
 /// What an answer this crate cannot read is reported as, in place of the
