@@ -257,12 +257,12 @@ pub use crate::pull_request::PullRequestService;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::PullRequestState;
-#[cfg(feature = "github-app")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
-pub use crate::pull_request::RegisteredApplication;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::RateLimit;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::RegisteredApplication;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Release;
