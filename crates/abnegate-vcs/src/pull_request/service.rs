@@ -989,12 +989,12 @@ async fn refusal(response: Response) -> PullRequestError {
 
 /// The rows to ask for when `per_page` are wanted: never more than GitHub
 /// sends.
-fn asked(per_page: NonZeroU8) -> usize {
+pub(super) fn asked(per_page: NonZeroU8) -> usize {
     usize::from(per_page.get()).min(PAGE_SIZE)
 }
 
 /// `url` asking for page `page` of `asked` rows.
-fn paged(mut url: Url, page: NonZeroU32, asked: usize) -> Url {
+pub(super) fn paged(mut url: Url, page: NonZeroU32, asked: usize) -> Url {
     url.query_pairs_mut()
         .append_pair("per_page", &asked.to_string())
         .append_pair("page", &page.to_string());

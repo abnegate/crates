@@ -63,7 +63,8 @@
 //! `ApplicationClaims` signs the JWT that proves the caller is the App,
 //! `InstallationIssuer` trades it for an installation access token, and
 //! `TokenCache` holds each installation's token until it comes within five
-//! minutes of expiring.
+//! minutes of expiring. `ApplicationService` registers an App from its
+//! manifest and lists its installations and the repositories they reach.
 
 #[cfg(feature = "github-app")]
 mod application;
@@ -193,6 +194,8 @@ pub use crate::pull_request::application::ApplicationClaims;
 pub use crate::pull_request::application::ApplicationError;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::ApplicationId;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::ApplicationService;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::InstallationId;
 #[cfg(feature = "github-app")]

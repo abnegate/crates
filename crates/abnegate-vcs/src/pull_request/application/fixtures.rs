@@ -1,6 +1,16 @@
+use std::future::pending;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+
+/// The timeout a stalled request is given.
+pub(super) const SHORT_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Longer than a stalled request may take, short of the production timeout.
+pub(super) const GUARD: Duration = Duration::from_secs(5);
 
 /// A throwaway RSA key, generated for these tests and used nowhere else.
 ///
@@ -50,4 +60,34 @@ VFEunMWqDJLFwl01THIuVzLDtX938cmeMZMcys+n74ZNoA9W6Pv9P2GVQsbnnZV4
 /// on a JWT's times or a token's expiry cannot flake.
 pub(super) fn at(seconds: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
+}
+
+/// A loopback stand-in that reads each request's head, answers with
+/// `answer`, which may be nothing at all, and then holds the connection open
+/// without sending another byte.
+pub(super) async fn stalling(answer: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port to listen on");
+    let address = listener
+        .local_addr()
+        .expect("the address the listener is bound to");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).await.unwrap_or_default();
+                    if read == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let _ = stream.write_all(answer.as_bytes()).await;
+                pending::<()>().await;
+            });
+        }
+    });
+    format!("http://{address}")
 }

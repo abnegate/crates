@@ -50,12 +50,15 @@
 //! - `github-app`: `github`, plus `pull_request::ApplicationClaims`, which
 //!   signs the JWT that authenticates as a GitHub App,
 //!   `pull_request::InstallationIssuer`, which trades it for an installation
-//!   access token, and `pull_request::TokenCache`, which holds each
-//!   installation's token until it nears expiry.
+//!   access token, `pull_request::TokenCache`, which holds each
+//!   installation's token until it nears expiry, and
+//!   `pull_request::ApplicationService`, which registers an App from its
+//!   manifest and lists its installations and their repositories.
 //! - `testing`: `RepositoryUrl::local`,
 //!   `pull_request::PullRequestService::standing_in_for` and, with
-//!   `github-app`, `pull_request::InstallationIssuer::standing_in_for`, which
-//!   reach a repository on the local disk or a mock API server. Nothing a
+//!   `github-app`, `pull_request::InstallationIssuer::standing_in_for` and
+//!   `pull_request::ApplicationService::standing_in_for`, which reach a
+//!   repository on the local disk or a mock API server. Nothing a
 //!   caller configures produces any of them, so only a test should enable it.
 
 mod branch_name;
@@ -104,6 +107,9 @@ pub use crate::pull_request::ApplicationError;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::ApplicationId;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::ApplicationService;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::AutoMerge;

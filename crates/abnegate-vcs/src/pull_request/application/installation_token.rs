@@ -1,4 +1,5 @@
 use crate::pull_request::application::ApplicationError;
+use crate::pull_request::application::service::parsed;
 use abnegate_secret::SecretValue;
 use chrono::DateTime;
 use serde::Deserialize;
@@ -40,8 +41,7 @@ impl InstallationToken {
     /// Any failure is [`ApplicationError::Response`] alone, since the answer
     /// that failed to parse is the one that may hold the token.
     pub(super) fn parse(body: &[u8]) -> Result<Self, ApplicationError> {
-        let payload: Payload =
-            serde_json::from_slice(body).map_err(|_| ApplicationError::Response)?;
+        let payload: Payload = parsed(body)?;
         if payload.token.expose().is_empty() {
             return Err(ApplicationError::Response);
         }
