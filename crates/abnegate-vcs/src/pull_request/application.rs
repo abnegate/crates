@@ -47,6 +47,7 @@ mod installed_repository;
 mod registered_application;
 mod repository_selection;
 mod service;
+mod timestamp;
 mod token_cache;
 
 pub use crate::pull_request::application::account::Account;

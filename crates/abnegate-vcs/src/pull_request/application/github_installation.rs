@@ -5,7 +5,7 @@ use crate::pull_request::application::Installation;
 use crate::pull_request::application::InstallationId;
 use crate::pull_request::application::RepositorySelection;
 use crate::pull_request::application::github_account::GitHubAccount;
-use crate::pull_request::application::installation_token::instant;
+use crate::pull_request::application::timestamp::instant;
 use serde::Deserialize;
 
 /// One installation of a GitHub App, as it arrives.
