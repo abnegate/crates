@@ -89,8 +89,8 @@ impl Input {
 /// API would refuse fails every turn that resends the history, and a link may
 /// have died since it was attached. Images are kept newest first until one
 /// passes the request's limits, and every older one is noted. An image is
-/// decoded only once it is known to fit: one past the request's images or
-/// room, or whose base64 alone is larger than one image may be, is refused
+/// decoded only once it is known to fit: one past the request's images, or
+/// whose base64 alone is larger than one image or the room left, is refused
 /// unread.
 fn claude(parts: &[Part], limits: ImageLimits) -> Result<String, InputError> {
     let mut room = limits.request_bytes.saturating_sub(text_bytes(parts));
@@ -102,12 +102,16 @@ fn claude(parts: &[Part], limits: ImageLimits) -> Result<String, InputError> {
         let Part::Image { url, current } = part else {
             continue;
         };
+        let encoded = encoded_length(url);
         let unread = if allowed == 0 {
             Some(ImageError::Excess)
         } else if crowded {
             Some(ImageError::Crowded)
-        } else if encoded_length(url).is_some_and(|size| size > limits.image_bytes) {
+        } else if encoded.is_some_and(|size| size > limits.image_bytes) {
             Some(ImageError::Oversized)
+        } else if encoded.is_some_and(|size| size > room) {
+            crowded = true;
+            Some(ImageError::Crowded)
         } else {
             None
         };
@@ -706,6 +710,12 @@ mod tests {
             claude_within(&parts, ImageLimits::CLAUDE),
             Err(ImageError::Malformed)
         );
+
+        let crowded = ImageLimits {
+            request_bytes: text_bytes(&parts) + 16,
+            ..ImageLimits::CLAUDE
+        };
+        assert_eq!(claude_within(&parts, crowded), Err(ImageError::Crowded));
     }
 
     #[test]
