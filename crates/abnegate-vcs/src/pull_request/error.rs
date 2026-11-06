@@ -32,8 +32,10 @@ pub enum PullRequestError {
         /// GitHub's own words about it: the message and the details its JSON
         /// answer listed, with anything shaped like a credential redacted, on
         /// one line and bounded. Empty where the answer carried neither or was
-        /// not GitHub's JSON, since the raw answer never reaches an error, and
-        /// never taken from the request.
+        /// not GitHub's JSON, since the raw answer never reaches an error. The
+        /// crate adds nothing from the request itself, but GitHub's words may
+        /// repeat parts of it, such as the branches a 422 found no commits
+        /// between.
         message: String,
     },
 

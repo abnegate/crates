@@ -256,8 +256,10 @@ const GIT_SUFFIX: &str = ".git";
 /// [`PullRequestError::PullRequestNotFound`] where GitHub says which of the two
 /// is missing; [`PullRequestError::is_not_found`] is `true` for either. Of a
 /// refusal's answer, an error keeps only GitHub's own message and details,
-/// sanitised and bounded: never the raw answer, and never anything from the
-/// request, the token included.
+/// sanitised and bounded, with anything shaped like a credential redacted, and
+/// never the raw answer. The crate adds nothing from the request itself, but
+/// GitHub's words may repeat parts of it, as a 422 naming the branches it
+/// found no commits between does.
 ///
 /// A read that walks every page itself and returns a list, such as
 /// [`Self::fetch_files`] or [`Self::fetch_reviews`], takes a hundred rows a
