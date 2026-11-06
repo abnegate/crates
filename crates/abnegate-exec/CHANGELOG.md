@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.10...abnegate-exec/v0.1.11) - 2026-11-06
+
+### Other
+
+- updated the following local packages: abnegate-secret
+
 ## [0.1.10](https://github.com/abnegate/crates/compare/abnegate-exec/v0.1.9...abnegate-exec/v0.1.10) - 2026-11-05
 
 ### Other
