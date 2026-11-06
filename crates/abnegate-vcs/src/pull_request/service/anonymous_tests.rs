@@ -181,14 +181,16 @@ async fn an_empty_tokens_repository_is_refused_unsent_before_its_owner_is_looked
     untouched(&server).await;
     let service = anonymous(&server).await;
 
-    let created = service
-        .create_repository(&empty(), Some("acme"), "project", "", true)
-        .await;
+    for owner in [Some("acme"), None] {
+        let created = service
+            .create_repository(&empty(), owner, "project", "", true)
+            .await;
 
-    assert!(
-        matches!(created, Err(PullRequestError::AuthenticationRequired)),
-        "{created:?}"
-    );
+        assert!(
+            matches!(created, Err(PullRequestError::AuthenticationRequired)),
+            "{owner:?}: {created:?}"
+        );
+    }
 }
 
 #[tokio::test]

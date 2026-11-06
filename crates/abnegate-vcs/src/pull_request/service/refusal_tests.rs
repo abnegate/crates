@@ -64,6 +64,8 @@ async fn opening(response: ResponseTemplate) -> PullRequestError {
         .expect_err("a refusal is not a pull request")
 }
 
+/// Whether `failure` is [`PullRequestError::Refused`] with exactly `status`
+/// and `message`.
 fn refused_with(failure: &PullRequestError, status: u16, message: &str) -> bool {
     matches!(
         failure,
@@ -94,6 +96,23 @@ async fn a_redirect_a_read_does_not_follow_is_refused_with_its_status() {
     assert_eq!(
         failure.to_string(),
         "GitHub answered with status 304 Not Modified"
+    );
+}
+
+#[tokio::test]
+async fn a_request_github_cannot_parse_is_refused_with_its_status() {
+    let failure = opening(
+        ResponseTemplate::new(400).set_body_json(json!({ "message": "Problems parsing JSON" })),
+    )
+    .await;
+
+    assert!(
+        refused_with(&failure, 400, "Problems parsing JSON"),
+        "{failure:?}"
+    );
+    assert_eq!(
+        failure.to_string(),
+        "GitHub answered with status 400: Problems parsing JSON"
     );
 }
 
