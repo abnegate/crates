@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -86,8 +85,8 @@ impl Status {
         let status =
             match Output::capture(Process::command(cli, arguments), executable, limit).await {
                 Ok(output) => match agent {
-                    AgentKind::Claude => claude(&output, executable),
-                    AgentKind::Codex => codex(&output, executable),
+                    AgentKind::Claude => claude(&output, cli),
+                    AgentKind::Codex => codex(&output, cli),
                 },
                 Err(error) => Err(error),
             };
@@ -97,10 +96,11 @@ impl Status {
 
 /// `claude auth status` prints its JSON whether or not it is signed in, and
 /// exits 1 when it is not.
-fn claude(output: &Output, executable: &Path) -> Result<Status, LoginError> {
+fn claude(output: &Output, cli: &Cli) -> Result<Status, LoginError> {
+    let executable = cli.executable();
     let status = match serde_json::from_str::<Value>(&output.stdout) {
         Ok(status) => status,
-        Err(_) if !output.status.success() => return Err(output.failed(executable)),
+        Err(_) if !output.status.success() => return Err(output.failed(cli)),
         Err(error) => {
             return Err(LoginError::Unreadable {
                 reason: format!(
@@ -131,11 +131,11 @@ fn claude(output: &Output, executable: &Path) -> Result<Status, LoginError> {
 
 /// `codex login status` also exits 1 for a corrupt login or a missing home,
 /// so only its own words tell signed out from broken.
-fn codex(output: &Output, executable: &Path) -> Result<Status, LoginError> {
+fn codex(output: &Output, cli: &Cli) -> Result<Status, LoginError> {
     match output.status.code() {
         Some(0) => Ok(labelled(true, method(&output.stderr))),
         Some(1) if output.stderr.contains(SIGNED_OUT) => Ok(Status::new(false)),
-        _ => Err(output.failed(executable)),
+        _ => Err(output.failed(cli)),
     }
 }
 
@@ -167,6 +167,7 @@ fn method(stderr: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use std::os::unix::process::ExitStatusExt;
+    use std::path::Path;
     use std::process::ExitStatus;
 
     use tempfile::TempDir;
@@ -205,8 +206,8 @@ mod tests {
         }
     }
 
-    fn cli() -> &'static Path {
-        Path::new("/usr/local/bin/cli")
+    fn cli() -> Cli {
+        Cli::new("/usr/local/bin/cli")
     }
 
     fn signed_in(label: Option<&str>) -> Status {
@@ -219,7 +220,7 @@ mod tests {
 
     #[test]
     fn claude_signed_in_to_claude_ai_is_labelled_with_its_plan() {
-        let status = claude(&output(0, CLAUDE_SIGNED_IN, b""), cli()).expect("claude's status");
+        let status = claude(&output(0, CLAUDE_SIGNED_IN, b""), &cli()).expect("claude's status");
 
         assert_eq!(status, signed_in(Some("Claude Team")));
         assert!(
@@ -231,14 +232,14 @@ mod tests {
     fn a_claude_plan_the_cli_does_not_name_has_no_label() {
         let printed = String::from_utf8_lossy(CLAUDE_SIGNED_IN).replace(r#""team""#, r#""free""#);
 
-        let status = claude(&output(0, printed.as_bytes(), b""), cli()).expect("claude's status");
+        let status = claude(&output(0, printed.as_bytes(), b""), &cli()).expect("claude's status");
 
         assert_eq!(status, signed_in(None));
     }
 
     #[test]
     fn claude_signed_out_has_no_label() {
-        let status = claude(&output(1, CLAUDE_SIGNED_OUT, b""), cli()).expect("claude's status");
+        let status = claude(&output(1, CLAUDE_SIGNED_OUT, b""), &cli()).expect("claude's status");
 
         assert_eq!(status, signed_out());
     }
@@ -246,7 +247,7 @@ mod tests {
     #[test]
     fn claude_signed_in_with_a_token_or_a_key_has_no_plan_to_show() {
         for printed in [CLAUDE_TOKEN, CLAUDE_KEY] {
-            let status = claude(&output(0, printed, b""), cli()).expect("claude's status");
+            let status = claude(&output(0, printed, b""), &cli()).expect("claude's status");
 
             assert_eq!(status, signed_in(None));
         }
@@ -254,19 +255,19 @@ mod tests {
 
     #[test]
     fn claude_output_that_is_not_its_status_is_an_error() {
-        let crashed = claude(&output(2, b"", b"TypeError: undefined\n"), cli());
+        let crashed = claude(&output(2, b"", b"TypeError: undefined\n"), &cli());
         assert!(
             matches!(&crashed, Err(LoginError::Failed { reason, .. }) if reason == "TypeError: undefined"),
             "{crashed:?}"
         );
 
-        let garbled = claude(&output(0, b"Logged in\n", b""), cli());
+        let garbled = claude(&output(0, b"Logged in\n", b""), &cli());
         assert!(
             matches!(garbled, Err(LoginError::Unreadable { .. })),
             "{garbled:?}"
         );
 
-        let incomplete = claude(&output(0, b"{\"authMethod\":\"none\"}", b""), cli());
+        let incomplete = claude(&output(0, b"{\"authMethod\":\"none\"}", b""), &cli());
         assert!(
             matches!(incomplete, Err(LoginError::Unreadable { .. })),
             "{incomplete:?}"
@@ -275,14 +276,14 @@ mod tests {
 
     #[test]
     fn codex_signed_in_with_chatgpt_is_labelled_chatgpt() {
-        let status = codex(&output(0, b"", CODEX_CHATGPT), cli()).expect("codex's status");
+        let status = codex(&output(0, b"", CODEX_CHATGPT), &cli()).expect("codex's status");
 
         assert_eq!(status, signed_in(Some("ChatGPT")));
     }
 
     #[test]
     fn codex_signed_in_with_a_key_is_never_labelled_with_the_key() {
-        let status = codex(&output(0, b"", CODEX_KEY), cli()).expect("codex's status");
+        let status = codex(&output(0, b"", CODEX_KEY), &cli()).expect("codex's status");
 
         assert_eq!(status, signed_in(Some("API key")));
         assert!(String::from_utf8_lossy(CODEX_KEY).contains("sk-"));
@@ -291,7 +292,7 @@ mod tests {
     #[test]
     fn codex_not_logged_in_is_signed_out() {
         for printed in [CODEX_SIGNED_OUT, CODEX_LOGGED_OUT] {
-            let status = codex(&output(1, b"", printed), cli()).expect("codex's status");
+            let status = codex(&output(1, b"", printed), &cli()).expect("codex's status");
 
             assert_eq!(status, signed_out());
         }
@@ -300,7 +301,7 @@ mod tests {
     #[test]
     fn codex_failing_for_any_other_reason_is_an_error_not_signed_out() {
         for printed in [CODEX_CORRUPT, CODEX_UNCONFIGURED] {
-            let status = codex(&output(1, b"", printed), cli());
+            let status = codex(&output(1, b"", printed), &cli());
 
             let expected = String::from_utf8_lossy(printed).trim().to_string();
             assert!(

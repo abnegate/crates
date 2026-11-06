@@ -13,6 +13,7 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use crate::login::Cli;
 use crate::login::LoginError;
 use crate::login::process::Process;
 
@@ -74,20 +75,21 @@ impl Output {
         })
     }
 
-    pub(crate) fn failed(&self, executable: &Path) -> LoginError {
-        failure(executable, &self.stderr, self.status)
+    pub(crate) fn failed(&self, cli: &Cli) -> LoginError {
+        failure(cli, &self.stderr, self.status)
     }
 }
 
-/// The CLI's own words for why it failed, with anything shaped like a
-/// credential redacted, or how it exited when it gave none.
-pub(crate) fn failure(executable: &Path, stderr: &str, status: ExitStatus) -> LoginError {
-    let stripped = strip(stderr);
-    let words = stripped.trim();
+/// The CLI's own words for why it failed, with `cli`'s secrets scrubbed
+/// before anything else shaped like a credential is redacted, or how it
+/// exited when it gave none.
+pub(crate) fn failure(cli: &Cli, stderr: &str, status: ExitStatus) -> LoginError {
+    let scrubbed = cli.scrub(strip(stderr).into_owned());
+    let words = scrubbed.trim();
     let reason = if words.is_empty() {
         format!(
             "{} exited with {status} and gave no reason",
-            executable.display()
+            cli.executable().display()
         )
     } else {
         redact(words).into_owned()
@@ -237,7 +239,7 @@ mod tests {
 
         let key = "sk-proj-Q7vR2mX9kL4pN8sT1wY6zB3cF5hJ0dGa";
         let error = failure(
-            Path::new("/usr/local/bin/codex"),
+            &Cli::new("/usr/local/bin/codex"),
             &format!("Error: the key {key} was refused\n"),
             ExitStatus::from_raw(1 << 8),
         );
@@ -247,5 +249,29 @@ mod tests {
         };
         assert!(!reason.contains(key), "{reason}");
         assert!(reason.starts_with("Error: the key"), "{reason}");
+    }
+
+    #[test]
+    fn a_secret_is_scrubbed_whole_before_anything_else_is_redacted() {
+        use std::os::unix::process::ExitStatusExt;
+
+        const PROXY: &str = "http://user:hunter2@proxy.example:8080";
+        assert_ne!(
+            redact(PROXY),
+            PROXY,
+            "the generic redaction no longer rewrites part of the proxy"
+        );
+        let cli = Cli::new("/usr/local/bin/codex").with_secret("HTTPS_PROXY", PROXY);
+
+        let error = failure(
+            &cli,
+            &format!("Error: could not reach {PROXY}\n"),
+            ExitStatus::from_raw(1 << 8),
+        );
+
+        let LoginError::Failed { reason, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(reason, "Error: could not reach [REDACTED]");
     }
 }

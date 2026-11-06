@@ -105,7 +105,7 @@ impl Cli {
 
     /// `text` with every secret this CLI is given redacted, the longest
     /// first, so no part of one survives in place of a shorter one inside it.
-    fn scrub(&self, text: String) -> String {
+    pub(crate) fn scrub(&self, text: String) -> String {
         let mut secrets = self
             .secrets
             .values()

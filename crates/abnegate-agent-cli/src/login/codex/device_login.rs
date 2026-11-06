@@ -108,7 +108,7 @@ impl DeviceLogin {
         if output.status.success() {
             Ok(())
         } else {
-            Err(self.cli.scrubbed(output.failed(executable)))
+            Err(self.cli.scrubbed(output.failed(&self.cli)))
         }
     }
 

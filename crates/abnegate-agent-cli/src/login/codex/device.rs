@@ -135,7 +135,7 @@ impl Device {
 
         let prompt = match read(&mut stdout, deadline, limits.prompt).await {
             Ok(Some(prompt)) => prompt,
-            Ok(None) => return Err(ended(&mut process, stderr, deadline, executable).await),
+            Ok(None) => return Err(ended(&mut process, stderr, deadline, cli).await),
             Err(error) => {
                 process.stop().await;
                 stderr.abort();
@@ -246,10 +246,10 @@ async fn ended(
     process: &mut Process,
     stderr: JoinHandle<String>,
     deadline: Instant,
-    executable: &Path,
+    cli: &Cli,
 ) -> LoginError {
     match timeout_at(deadline, process.wait()).await {
-        Ok(Ok(status)) => failure(executable, &collect(stderr).await, status),
+        Ok(Ok(status)) => failure(cli, &collect(stderr).await, status),
         Ok(Err(error)) => {
             process.stop().await;
             stderr.abort();
@@ -290,7 +290,7 @@ async fn watch(
                 stderr.abort();
                 staging.saved()
             }
-            Ok(status) => Err(concealed(failure(cli.executable(), &collect(stderr).await, status), &prompt)),
+            Ok(status) => Err(concealed(failure(&cli, &collect(stderr).await, status), &prompt)),
             Err(error) => {
                 stderr.abort();
                 Err(unreadable(&format!("codex could not be waited for: {error}")))
