@@ -39,11 +39,12 @@
 //! it as one stream-json message whose content blocks carry the images, and
 //! Codex opens each from a temporary file its command line names, as
 //! [`CliProvider::execute`] describes; a conversation without any is still
-//! the flattened prompt alone, byte for byte. A run can start the agent's own [`Session`] under an id of the
-//! caller's choosing or resume one, and confine Codex to a [`CodexSandbox`];
-//! a session's file can be [found](Session::locate) in one home and
-//! [carried](Session::carry) into another, so a run signed in there resumes
-//! it. A Claude or Codex run can attach [`mcp`] servers and
+//! the flattened prompt alone, byte for byte. A run can start the agent's
+//! own [`Session`] under an id of the caller's choosing or resume one, and
+//! confine Codex to a [`CodexSandbox`]; a session's file can be
+//! [found](Session::locate) in one home and [carried](Session::carry) into
+//! another, so a run signed in there resumes it. A Claude or Codex run can
+//! attach [`mcp`] servers and
 //! [withhold](CliSettings::withhold_tools) the agent's own tools, leaving it
 //! only theirs. A Claude run can restrict its tools, be confined to reading
 //! its working directory with [`CliSettings::read_only`],
@@ -154,16 +155,15 @@
 //! agent's words alone, with the end of the agent's stderr in
 //! [`Execution::stderr`]. A Claude stream that ends on a refused window with
 //! no line after it fails as an agent failure in the same words, not as a
-//! limit. A Claude turn that
-//! reports how much of a plan's window is spent yields an
-//! [`AgentEvent::Window`], kept by name in [`StdoutParseResult::windows`],
-//! under the name Claude streams it with and its
-//! [`WindowKind`](abnegate_llm::WindowKind). A failure the agent reported is followed by
-//! [`STDERR_HEADING`] and the last whole lines of its stderr that fit in
-//! 1 KiB, since some agents give the reason only there, so a caller splits on
-//! the heading to read the agent's words alone. An agent that exits with no
-//! report of its own fails with the end of its stderr, and a run stopped for
-//! prose past its output limit fails with a message starting with
+//! limit. A Claude turn that reports how much of a plan's window is spent
+//! yields an [`AgentEvent::Window`], kept by name in
+//! [`StdoutParseResult::windows`], under the name Claude streams it with and
+//! its [`WindowKind`](abnegate_llm::WindowKind). A failure the agent reported
+//! is followed by [`STDERR_HEADING`] and the last whole lines of its stderr
+//! that fit in 1 KiB, since some agents give the reason only there, so a caller
+//! splits on the heading to read the agent's words alone. An agent that exits
+//! with no report of its own fails with the end of its stderr, and a run
+//! stopped for prose past its output limit fails with a message starting with
 //! [`PROSE_EXCEEDED`].
 //!
 //! A Claude turn's failure begins with a marker ahead of those words when
