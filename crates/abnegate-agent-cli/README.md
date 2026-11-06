@@ -148,9 +148,11 @@ loads no user configuration, plugin or app, runs without its shell, image,
 goal, sleep, subagent, web-search and question tools, and runs in the
 `read-only` sandbox (`-c sandbox_mode="read-only"` on a resumed session). It is
 refused beside `CliSettings::read_only`, any other sandbox, the web or a
-permission that is not an MCP tool's, and so is a caller argument that would
-hand a tool back or choose the sandbox, such as `--tools`, `--enable`,
-`--sandbox`, `--profile` or a `-c` override of `features`.
+permission that is not an MCP tool's. Every caller argument off an allowlist
+is refused too: Claude passes only what a read-only run passes, and Codex only
+flags such as `--ephemeral`, `--oss` or `--output-schema` and a `-c` override
+of the model, its provider or how its reasoning reads, never `--enable`,
+`--profile`, `--sandbox` or a `-c` override of `features` or `mcp_servers`.
 
 `CliSettings::with_permission_prompt(server, tool)` sends each question Claude
 would ask before using one of its own tools to an attached server's tool, with

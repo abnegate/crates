@@ -22,8 +22,6 @@ use crate::parser;
 use crate::parser::Turn;
 use crate::session::Session;
 use crate::settings::CliSettings;
-use crate::settings::READ_ONLY_OPTIONS;
-use crate::settings::READ_ONLY_SWITCHES;
 use crate::settings::READ_ONLY_TOOLS;
 use crate::settings::WEB_TOOLS;
 
@@ -68,7 +66,6 @@ const SANDBOX: &str = "--sandbox";
 const CONFIGURATION: &str = "-c";
 const DISABLE: &str = "--disable";
 const SANDBOX_MODE: &str = "sandbox_mode";
-const FLAG: &str = "-";
 const INLINE_VALUE: char = '=';
 
 /// What makes a Codex run load only the MCP servers its caller configured:
@@ -391,7 +388,9 @@ impl AgentKind {
     /// A setting this agent has no flag for is refused rather than dropped,
     /// since a run that silently ignored its tool restrictions or its answer
     /// schema would not be the run the caller asked for. So is a caller
-    /// argument choosing what the settings' session or sandbox already chose.
+    /// argument choosing what the settings already chose, or one a
+    /// read-only run or a run withholding the agent's own tools does not
+    /// allow: see [`CliSettings::arguments`].
     ///
     /// Codex runs in the settings' [sandbox](CliSettings::sandbox), or
     /// `read-only` when its own tools are
@@ -571,9 +570,6 @@ fn claude_options(
             AgentKind::Claude
         )));
     }
-    if settings.read_only {
-        refuse_unconfined(&settings.arguments)?;
-    }
     let prompt = permission_prompt(settings, mcp.is_some())?;
     let allowed = allowed_tools(settings, mcp.is_some())?;
 
@@ -733,45 +729,6 @@ fn available_tools(settings: &CliSettings) -> String {
         .chain(WEB_TOOLS.iter().copied().filter(|_| settings.web))
         .collect::<Vec<_>>()
         .join(TOOL_SEPARATOR)
-}
-
-/// Refuse every caller argument a read-only run has not been told is safe,
-/// naming the flag but never its value.
-fn refuse_unconfined(arguments: &[String]) -> Result<(), ProviderError> {
-    let mut remaining = arguments.iter();
-    while let Some(argument) = remaining.next() {
-        let (flag, inline) = match argument.split_once(INLINE_VALUE) {
-            Some((flag, value)) => (flag, Some(value)),
-            None => (argument.as_str(), None),
-        };
-        if !flag.starts_with(FLAG) {
-            return Err(ProviderError::config(
-                "a read-only run cannot pass a positional argument",
-            ));
-        }
-        let option = READ_ONLY_OPTIONS.contains(&flag);
-        let passes = match inline {
-            Some(_) => option,
-            None if option => {
-                if !remaining
-                    .next()
-                    .is_some_and(|value| !value.starts_with(FLAG))
-                {
-                    return Err(ProviderError::config(format!(
-                        "a read-only run cannot pass {flag} without a value"
-                    )));
-                }
-                true
-            }
-            None => READ_ONLY_SWITCHES.contains(&flag),
-        };
-        if !passes {
-            return Err(ProviderError::config(format!(
-                "a read-only run cannot pass {flag}"
-            )));
-        }
-    }
-    Ok(())
 }
 
 impl fmt::Display for AgentKind {
@@ -2086,6 +2043,86 @@ mod tests {
             )
             .expect("options");
         assert_eq!(unserved, ["--strict-mcp-config", "--tools", ""]);
+    }
+
+    /// A run withholding the agent's own tools passes a caller argument only
+    /// from its allowlist, after every flag of the crate's own, and refuses
+    /// any other before the agent starts.
+    #[test]
+    fn a_run_withholding_its_tools_passes_only_the_arguments_on_its_allowlist() {
+        for (agent, refused) in [
+            (AgentKind::Claude, &["--mcp-config", "/tmp/mcp.json"][..]),
+            (AgentKind::Claude, &["--plugin-dir=/tmp/plugin"]),
+            (AgentKind::Claude, &["--dangerously-skip-permissions"]),
+            (
+                AgentKind::Codex,
+                &["-c", r#"mcp_servers.shell.command="sh""#],
+            ),
+            (AgentKind::Codex, &["--dangerously-bypass-hook-trust"]),
+        ] {
+            let settings = CliSettings::default()
+                .withhold_tools()
+                .with_arguments(refused.iter().copied());
+            let error = agent
+                .options(&settings, &Attachments::default())
+                .expect_err("a refusal");
+            assert!(
+                matches!(&error, ProviderError::Config { detail, .. }
+                    if detail.starts_with("a run withholding the agent's own tools cannot pass")),
+                "{agent} {refused:?}: {error:?}"
+            );
+        }
+
+        for (agent, allowed) in [
+            (
+                AgentKind::Claude,
+                &["--effort", "high", "--no-session-persistence"][..],
+            ),
+            (
+                AgentKind::Codex,
+                &["--ephemeral", "-c", "model_reasoning_summary=auto"],
+            ),
+        ] {
+            let settings = CliSettings::default()
+                .withhold_tools()
+                .with_arguments(allowed.iter().copied());
+            let options = agent
+                .options(&settings, &Attachments::default())
+                .expect("options");
+            let allowed: Vec<String> = allowed
+                .iter()
+                .map(|argument| argument.to_string())
+                .collect();
+            assert!(options.ends_with(&allowed), "{agent}: {options:?}");
+        }
+    }
+
+    /// Claude reads its stdin and writes its stdout in formats the run
+    /// chooses, a stream-json message when it carries an image, so a caller
+    /// choosing either is refused whatever the run carries.
+    #[test]
+    fn claude_refuses_an_argument_choosing_the_format_of_its_streams() {
+        for arguments in [
+            &["--input-format", "text"][..],
+            &["--input-format=stream-json"],
+            &["--output-format", "json"],
+        ] {
+            let settings = CliSettings::default().with_arguments(arguments.iter().copied());
+            let error = AgentKind::Claude
+                .options(&settings, &Attachments::default())
+                .expect_err("a refusal");
+            assert!(
+                matches!(&error, ProviderError::Config { .. }),
+                "{arguments:?}: {error:?}"
+            );
+        }
+        let codex = AgentKind::Codex
+            .options(
+                &CliSettings::default().with_arguments(["--input-format", "text"]),
+                &Attachments::default(),
+            )
+            .expect("options");
+        assert_eq!(codex, ["--input-format", "text"]);
     }
 
     /// A Codex run withholding its own tools loads only the servers it is
