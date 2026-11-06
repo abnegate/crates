@@ -1,9 +1,12 @@
 //! The coding agent CLIs this crate knows how to drive.
 
+mod catalogue;
+
 use std::fmt;
 
 use abnegate_llm::Capabilities;
 use abnegate_llm::ProviderError;
+use abnegate_llm::ReasoningEffort;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -21,6 +24,10 @@ use crate::settings::READ_ONLY_TOOLS;
 use crate::settings::WEB_TOOLS;
 
 const MODEL: &str = "--model";
+/// Claude's flag naming how hard it thinks.
+pub(crate) const EFFORT: &str = "--effort";
+/// The Codex configuration key naming how hard it thinks.
+pub(crate) const REASONING_EFFORT: &str = "model_reasoning_effort";
 const MCP_CONFIG: &str = "--mcp-config";
 const STRICT_MCP_CONFIG: &str = "--strict-mcp-config";
 const JSON_SCHEMA: &str = "--json-schema";
@@ -97,6 +104,76 @@ impl AgentKind {
             .iter()
             .copied()
             .find(|agent| agent.as_str() == name)
+    }
+
+    /// The models offered for this agent, in the order the agent ranks them.
+    pub fn models(self) -> &'static [&'static str] {
+        match self {
+            Self::Claude => catalogue::CLAUDE_MODELS,
+            Self::Codex => catalogue::CODEX_MODELS,
+        }
+    }
+
+    /// The offered [models](AgentKind::models) that run on usage credits
+    /// beyond the plan's allowance, so run one only when a person names it.
+    pub fn named_only(self) -> &'static [&'static str] {
+        match self {
+            Self::Claude => catalogue::CLAUDE_NAMED_ONLY,
+            Self::Codex => &[],
+        }
+    }
+
+    /// Whether this agent can run `model`, ignoring surrounding whitespace:
+    /// for Claude, one of its aliases in any case or a full `claude-` model
+    /// name; for Codex, one of its offered models or a `gpt-` model name.
+    ///
+    /// An agent sends a name it does not recognise to its API unchanged, and
+    /// the run fails there. A run is still given whatever model its caller
+    /// names, since a Codex run can be pointed at a local model such as
+    /// `qwen2.5:7b-instruct`: a host that offers only what the agent knows
+    /// checks a model with this first.
+    pub fn knows(self, model: &str) -> bool {
+        let model = model.trim();
+        if !catalogue::plausible(model) {
+            return false;
+        }
+        match self {
+            Self::Claude => catalogue::claude_alias(model) || catalogue::claude_model(model),
+            Self::Codex => {
+                catalogue::CODEX_MODELS.contains(&model) || catalogue::codex_model(model)
+            }
+        }
+    }
+
+    /// The reasoning efforts this agent takes for `model`, ignoring
+    /// surrounding whitespace: none for a model whose efforts are not
+    /// verified, since neither agent checks an effort before sending it to
+    /// its API. With no model, or a blank one, what the model the agent
+    /// picks takes: for Claude, its default model's; for Codex, only what
+    /// every offered model takes. [`ReasoningEffort::Auto`] and
+    /// [`ReasoningEffort::Off`] are never listed.
+    pub fn efforts(self, model: Option<&str>) -> &'static [ReasoningEffort] {
+        let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
+            return match self {
+                Self::Claude => catalogue::CLAUDE_EFFORTS,
+                Self::Codex => catalogue::CODEX_SHARED_EFFORTS,
+            };
+        };
+        match self {
+            Self::Claude if catalogue::claude_effortful(model) => catalogue::CLAUDE_EFFORTS,
+            Self::Claude => &[],
+            Self::Codex => catalogue::codex_efforts(model),
+        }
+    }
+
+    /// How `model` is shown to a person: Claude's aliases capitalised, every
+    /// other name as the agent spells it.
+    pub fn label(self, model: &str) -> String {
+        let alias = model.trim().to_ascii_lowercase();
+        match self {
+            Self::Claude if catalogue::claude_alias(&alias) => catalogue::capitalised(&alias),
+            Self::Claude | Self::Codex => model.to_string(),
+        }
     }
 
     /// The command looked up on `PATH` unless the settings override it.
@@ -304,6 +381,33 @@ impl AgentKind {
                 options.extend(settings.arguments.iter().cloned());
                 Ok(options)
             }
+        }
+    }
+
+    /// The flags setting `effort` for a run of `model`, the model it is
+    /// actually given, or nothing when that model does not take it: Claude's
+    /// `--effort <effort>`, and Codex's `-c model_reasoning_effort="<effort>"`.
+    /// See [`AgentKind::efforts`].
+    pub(crate) fn effort_arguments(
+        self,
+        model: Option<&str>,
+        effort: ReasoningEffort,
+    ) -> Vec<String> {
+        if !self.efforts(model).contains(&effort) {
+            tracing::debug!(
+                agent = %self,
+                model,
+                effort = effort.as_str(),
+                "the model does not take this effort, so the agent chooses its own"
+            );
+            return Vec::new();
+        }
+        match self {
+            Self::Claude => vec![EFFORT.to_string(), effort.as_str().to_string()],
+            Self::Codex => vec![
+                CONFIGURATION.to_string(),
+                format!(r#"{REASONING_EFFORT}="{}""#, effort.as_str()),
+            ],
         }
     }
 
@@ -540,8 +644,11 @@ mod tests {
 
     use abnegate_llm::Capabilities;
     use abnegate_llm::ProviderError;
+    use abnegate_llm::ReasoningEffort;
 
     use super::AgentKind;
+    use super::EFFORT;
+    use super::REASONING_EFFORT;
     use crate::attachments::Attachments;
     use crate::codex_sandbox::CodexSandbox;
     use crate::delivery::Delivery;
@@ -549,6 +656,144 @@ mod tests {
     use crate::mcp::McpServer;
     use crate::session::Session;
     use crate::settings::CliSettings;
+    use crate::test_support::captured_logs;
+
+    fn mentions_effort(arguments: &[String]) -> bool {
+        arguments.iter().any(|argument| {
+            argument == EFFORT || argument.starts_with(&format!("{REASONING_EFFORT}="))
+        })
+    }
+
+    #[test]
+    fn claude_is_told_its_effort_with_its_own_flag() {
+        assert_eq!(
+            AgentKind::Claude.effort_arguments(Some("opus"), ReasoningEffort::Max),
+            ["--effort", "max"]
+        );
+        assert_eq!(
+            AgentKind::Claude.effort_arguments(None, ReasoningEffort::XHigh),
+            ["--effort", "xhigh"]
+        );
+    }
+
+    #[test]
+    fn codex_is_told_its_effort_as_a_quoted_setting() {
+        assert_eq!(
+            AgentKind::Codex.effort_arguments(Some("gpt-6-sol"), ReasoningEffort::Ultra),
+            ["-c", r#"model_reasoning_effort="ultra""#]
+        );
+        assert_eq!(
+            AgentKind::Codex.effort_arguments(None, ReasoningEffort::High),
+            ["-c", r#"model_reasoning_effort="high""#]
+        );
+    }
+
+    #[test]
+    fn an_effort_the_model_does_not_take_is_never_sent() {
+        for (agent, model, effort) in [
+            (AgentKind::Codex, Some("gpt-5.5"), ReasoningEffort::Ultra),
+            (AgentKind::Codex, Some("gpt-5.5"), ReasoningEffort::Max),
+            (AgentKind::Codex, Some("gpt-6-luna"), ReasoningEffort::Ultra),
+            (AgentKind::Codex, None, ReasoningEffort::Max),
+            (AgentKind::Codex, Some("gpt-7"), ReasoningEffort::Ultra),
+            (AgentKind::Codex, Some("gpt-4o"), ReasoningEffort::XHigh),
+            (AgentKind::Codex, Some("gpt-4o"), ReasoningEffort::Low),
+            (AgentKind::Codex, Some("o3"), ReasoningEffort::Ultra),
+            (
+                AgentKind::Codex,
+                Some("qwen2.5:7b-instruct"),
+                ReasoningEffort::Low,
+            ),
+            (
+                AgentKind::Claude,
+                Some("claude-opus-4-8"),
+                ReasoningEffort::Max,
+            ),
+            (
+                AgentKind::Claude,
+                Some("claude-sonnet-5[1m]"),
+                ReasoningEffort::Low,
+            ),
+            (AgentKind::Claude, Some("opus"), ReasoningEffort::Ultra),
+            (AgentKind::Claude, None, ReasoningEffort::Ultra),
+            (AgentKind::Claude, Some("haiku"), ReasoningEffort::Max),
+            (AgentKind::Claude, Some("haiku"), ReasoningEffort::Low),
+        ] {
+            assert!(
+                agent.effort_arguments(model, effort).is_empty(),
+                "{agent} on {model:?} was sent {effort:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_haiku_run_is_never_told_an_effort() {
+        for model in [
+            "haiku",
+            "HAIKU",
+            " haiku ",
+            "claude-haiku-4-5",
+            "claude-haiku-4-5-20251001",
+        ] {
+            for effort in ReasoningEffort::ALL.iter().copied() {
+                assert!(
+                    AgentKind::Claude
+                        .effort_arguments(Some(model), effort)
+                        .is_empty(),
+                    "claude on {model:?} was sent {effort:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auto_and_off_leave_the_effort_to_the_agent() {
+        for agent in AgentKind::ALL {
+            for model in [None, agent.models().first().copied()] {
+                for effort in [ReasoningEffort::Auto, ReasoningEffort::Off] {
+                    assert!(
+                        agent.effort_arguments(model, effort).is_empty(),
+                        "{agent} on {model:?} was sent {effort:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_effort_an_agent_offers_reaches_it() {
+        for agent in AgentKind::ALL {
+            for model in agent.models() {
+                for effort in agent.efforts(Some(model)) {
+                    let arguments = agent.effort_arguments(Some(model), *effort);
+                    assert!(
+                        mentions_effort(&arguments),
+                        "{agent} on {model} was not sent {effort:?}: {arguments:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_dropped_effort_is_logged_with_the_model_it_was_dropped_for() {
+        for (agent, model) in [
+            (AgentKind::Claude, "claude-opus-4-8"),
+            (AgentKind::Codex, "qwen2.5:7b-instruct"),
+        ] {
+            let (arguments, logs) =
+                captured_logs(|| agent.effort_arguments(Some(model), ReasoningEffort::High));
+
+            assert!(arguments.is_empty(), "{agent} on {model}: {arguments:?}");
+            assert!(
+                logs.contains("the model does not take this effort"),
+                "{agent} on {model}: {logs}"
+            );
+            assert!(logs.contains(&format!("agent={agent}")), "{logs}");
+            assert!(logs.contains(model), "{logs}");
+            assert!(logs.contains("effort=\"high\""), "{logs}");
+        }
+    }
 
     #[test]
     fn the_prompt_is_never_placed_on_the_command_line() {

@@ -9,11 +9,14 @@ use std::time::Duration;
 use abnegate_exec::GroupRegistry;
 use abnegate_llm::Credential;
 use abnegate_llm::ProviderError;
+use abnegate_llm::ReasoningEffort;
 use abnegate_secret::SecretValue;
 
 use crate::cleanup::Cleanup;
 use crate::codex_sandbox::CodexSandbox;
 use crate::kind::AgentKind;
+use crate::kind::EFFORT;
+use crate::kind::REASONING_EFFORT;
 use crate::mcp::McpConfig;
 use crate::mcp::McpServer;
 use crate::session::Session;
@@ -86,6 +89,9 @@ const SANDBOX_MODE_KEY: &str = "sandbox_mode";
 /// The configuration key choosing the profile Codex reads its settings from.
 const PROFILE_KEY: &str = "profile";
 
+const SESSION: &str = "session";
+const SANDBOX: &str = "sandbox";
+const EFFORT_SETTING: &str = "effort";
 const KEY_SEPARATOR: char = '.';
 const KEY_QUOTES: [char; 2] = ['"', '\''];
 const LONG_FLAG: &str = "--";
@@ -286,6 +292,22 @@ pub struct CliSettings {
     /// credential, [`variables`](CliSettings::variables) or
     /// [`environment`](CliSettings::environment).
     pub withhold_host_credentials: bool,
+    /// Refuse every variable any [agent](crate::AgentKind::ALL)
+    /// [signs in with](crate::AgentKind::credentials) from the host, however
+    /// it is [allowed](CliSettings::allowed) or
+    /// [inherited](CliSettings::inherit_environment), and read a stdio MCP
+    /// server's reference to one as set but empty, unless a secret is bound
+    /// to the server under that name. Only the agent's own sign-in still
+    /// passes, when its [credential](CliSettings::credential) is inherited
+    /// and the host's are not
+    /// [withheld](CliSettings::withhold_host_credentials).
+    ///
+    /// Off by default, since a caller may allow another agent's key on
+    /// purpose, for a stdio MCP server the agent starts, say. For a host
+    /// that hands every run its sign-in itself and must never pass one of
+    /// its own by name, as an operator's list of variables to pass through
+    /// can.
+    pub refuse_credentials: bool,
     /// Extra flags passed through verbatim, after the streaming flags and
     /// before the model. Nothing here is checked against the agent, except
     /// in a [read-only](CliSettings::read_only) run, which refuses anything
@@ -305,6 +327,16 @@ pub struct CliSettings {
     /// sandbox, or a `-c` override of `sandbox_mode` or `profile`. Codex
     /// only.
     pub sandbox: Option<CodexSandbox>,
+    /// How hard the agent thinks: Claude's `--effort`, or Codex's
+    /// `model_reasoning_effort`. It is passed only when the model the run is
+    /// given takes it, as [`AgentKind::efforts`](crate::AgentKind::efforts)
+    /// lists, so [`ReasoningEffort::Auto`], [`ReasoningEffort::Off`], and
+    /// any level on a model whose efforts are not known, leave it to the
+    /// agent. `None` leaves it to the agent too. A run given one refuses a
+    /// caller [argument](CliSettings::arguments) that would set it instead:
+    /// Claude's `--effort`, or a Codex `-c` override of
+    /// `model_reasoning_effort`.
+    pub effort: Option<ReasoningEffort>,
     /// A JSON schema the final answer must satisfy. Claude only.
     pub schema: Option<String>,
     /// Appended to the agent's own system prompt, through a private
@@ -409,9 +441,11 @@ impl Default for CliSettings {
             allowed: BTreeSet::new(),
             inherit_environment: false,
             withhold_host_credentials: false,
+            refuse_credentials: false,
             arguments: Vec::new(),
             session: None,
             sandbox: None,
+            effort: None,
             schema: None,
             instructions: None,
             permissions: Vec::new(),
@@ -543,6 +577,12 @@ impl CliSettings {
         self
     }
 
+    /// Opt in to [`CliSettings::refuse_credentials`].
+    pub fn refuse_credentials(mut self) -> Self {
+        self.refuse_credentials = true;
+        self
+    }
+
     /// Append `arguments` to the flags passed through verbatim. See
     /// [`CliSettings::arguments`].
     pub fn with_arguments<I>(mut self, arguments: I) -> Self
@@ -563,6 +603,13 @@ impl CliSettings {
     /// Run Codex's own tools in `sandbox`. See [`CliSettings::sandbox`].
     pub fn with_sandbox(mut self, sandbox: CodexSandbox) -> Self {
         self.sandbox = Some(sandbox);
+        self
+    }
+
+    /// Think at `effort`, where the run's model takes it. See
+    /// [`CliSettings::effort`].
+    pub fn with_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.effort = Some(effort);
         self
     }
 
@@ -659,8 +706,9 @@ impl CliSettings {
 
     /// Refuse a [session](CliSettings::session) the agent would misread, and
     /// a caller [argument](CliSettings::arguments) with which `agent` would
-    /// choose what the session or the [sandbox](CliSettings::sandbox)
-    /// already chose, naming the flag but never its value.
+    /// choose what the session, the [sandbox](CliSettings::sandbox) or the
+    /// [effort](CliSettings::effort) already chose, naming the flag but never
+    /// its value.
     pub(crate) fn refuse_conflicts(&self, agent: AgentKind) -> Result<(), ProviderError> {
         if let Some(session) = &self.session
             && (session.id.is_empty() || session.id.starts_with(FLAG))
@@ -678,18 +726,24 @@ impl CliSettings {
                 "claude pins a session only by a UUID; resume one named otherwise",
             ));
         }
-        let (session_flags, sandbox_flags, configuration_flags): (&[&str], &[&str], &[&str]) =
-            match agent {
-                AgentKind::Claude => (CLAUDE_SESSION_FLAGS, &[], &[]),
-                AgentKind::Codex => (
-                    CODEX_SESSION_FLAGS,
-                    CODEX_SANDBOX_FLAGS,
-                    CODEX_CONFIGURATION_FLAGS,
-                ),
-            };
+        let (session_flags, sandbox_flags, effort_flags, configuration_flags): (
+            &[&str],
+            &[&str],
+            &[&str],
+            &[&str],
+        ) = match agent {
+            AgentKind::Claude => (CLAUDE_SESSION_FLAGS, &[], &[EFFORT], &[]),
+            AgentKind::Codex => (
+                CODEX_SESSION_FLAGS,
+                CODEX_SANDBOX_FLAGS,
+                &[],
+                CODEX_CONFIGURATION_FLAGS,
+            ),
+        };
         let chosen = [
-            (self.session.is_some(), session_flags, "session"),
-            (self.sandbox.is_some(), sandbox_flags, "sandbox"),
+            (self.session.is_some(), session_flags, SESSION),
+            (self.sandbox.is_some(), sandbox_flags, SANDBOX),
+            (self.effort.is_some(), effort_flags, EFFORT_SETTING),
         ];
         for (index, argument) in self.arguments.iter().enumerate() {
             for (_, flags, setting) in chosen.iter().filter(|(given, ..)| *given) {
@@ -699,15 +753,25 @@ impl CliSettings {
                     )));
                 }
             }
-            if self.sandbox.is_none() {
-                continue;
-            }
             let next = self.arguments.get(index + 1).map(String::as_str);
             for flag in configuration_flags {
-                if let Some(key) = value(argument, flag, next).and_then(sandbox_key) {
-                    return Err(ProviderError::config(format!(
-                        "a run given its own sandbox cannot pass {flag} {key}"
-                    )));
+                let Some(assignment) = value(argument, flag, next) else {
+                    continue;
+                };
+                let configured = [
+                    (self.sandbox.is_some(), sandbox_key(assignment), SANDBOX),
+                    (
+                        self.effort.is_some(),
+                        effort_key(assignment),
+                        EFFORT_SETTING,
+                    ),
+                ];
+                for (_, key, setting) in configured.iter().filter(|(given, ..)| *given) {
+                    if let Some(key) = key {
+                        return Err(ProviderError::config(format!(
+                            "a run given its own {setting} cannot pass {flag} {key}"
+                        )));
+                    }
                 }
             }
         }
@@ -745,18 +809,33 @@ fn value<'a>(argument: &'a str, flag: &str, next: Option<&'a str>) -> Option<&'a
 /// sandbox: [`SANDBOX_MODE_KEY`] at the top level or in a profile, or the
 /// [`PROFILE_KEY`] whose settings Codex reads.
 fn sandbox_key(setting: &str) -> Option<&str> {
-    let key = setting
+    let key = configuration_key(setting);
+    let unquoted = key.trim_matches(KEY_QUOTES);
+    (last_segment(key) == SANDBOX_MODE_KEY || unquoted == PROFILE_KEY).then_some(key)
+}
+
+/// The key of a `key=value` configuration override when it sets Codex's
+/// [reasoning effort](REASONING_EFFORT), at the top level or in a profile.
+fn effort_key(setting: &str) -> Option<&str> {
+    let key = configuration_key(setting);
+    (last_segment(key) == REASONING_EFFORT).then_some(key)
+}
+
+/// The key a `key=value` configuration override sets, as written.
+fn configuration_key(setting: &str) -> &str {
+    setting
         .split_once(INLINE_VALUE)
         .map_or(setting, |(key, _)| key)
-        .trim();
-    let last = key
-        .rsplit(KEY_SEPARATOR)
+        .trim()
+}
+
+/// The last dotted segment of a configuration `key`, unquoted.
+fn last_segment(key: &str) -> &str {
+    key.rsplit(KEY_SEPARATOR)
         .next()
         .unwrap_or(key)
         .trim()
-        .trim_matches(KEY_QUOTES);
-    let unquoted = key.trim_matches(KEY_QUOTES);
-    (last == SANDBOX_MODE_KEY || unquoted == PROFILE_KEY).then_some(key)
+        .trim_matches(KEY_QUOTES)
 }
 
 /// Whether `id` is a UUID in its hyphenated form, as `--session-id` takes it.
@@ -781,6 +860,7 @@ mod tests {
     use abnegate_exec::GroupRegistry;
     use abnegate_llm::Credential;
     use abnegate_llm::ProviderError;
+    use abnegate_llm::ReasoningEffort;
     use abnegate_secret::SecretValue;
 
     use super::CliSettings;
@@ -809,9 +889,11 @@ mod tests {
         assert!(settings.allowed.is_empty());
         assert!(!settings.inherit_environment);
         assert!(!settings.withhold_host_credentials);
+        assert!(!settings.refuse_credentials);
         assert!(settings.arguments.is_empty());
         assert!(settings.session.is_none());
         assert!(settings.sandbox.is_none());
+        assert!(settings.effort.is_none());
         assert!(settings.schema.is_none());
         assert!(settings.instructions.is_none());
         assert!(settings.permissions.is_empty());
@@ -1029,6 +1111,85 @@ mod tests {
         let settings = CliSettings::default().with_sandbox(CodexSandbox::WorkspaceWrite);
         assert_eq!(settings.sandbox, Some(CodexSandbox::WorkspaceWrite));
         assert!(settings.refuse_conflicts(AgentKind::Codex).is_ok());
+    }
+
+    #[test]
+    fn an_effort_and_refused_credentials_are_kept_as_given() {
+        let settings = CliSettings::default()
+            .with_effort(ReasoningEffort::Max)
+            .refuse_credentials();
+
+        assert_eq!(settings.effort, Some(ReasoningEffort::Max));
+        assert!(settings.refuse_credentials);
+        assert!(!settings.withhold_host_credentials);
+        for agent in AgentKind::ALL {
+            assert!(settings.refuse_conflicts(*agent).is_ok(), "{agent}");
+        }
+    }
+
+    #[test]
+    fn a_claude_run_given_an_effort_refuses_an_argument_setting_another() {
+        for arguments in [&["--effort", "low"][..], &["--effort=low"], &["--effort"]] {
+            refused_once_given(
+                AgentKind::Claude,
+                arguments,
+                |settings| settings.with_effort(ReasoningEffort::High),
+                "cannot pass --effort",
+            );
+        }
+
+        let settings = CliSettings::default()
+            .with_effort(ReasoningEffort::High)
+            .with_arguments(["--effort-budget", "1", "-c"]);
+        assert!(settings.refuse_conflicts(AgentKind::Claude).is_ok());
+    }
+
+    #[test]
+    fn a_codex_run_given_an_effort_refuses_a_configuration_override_setting_another() {
+        for (arguments, refused) in [
+            (
+                &["-c", r#"model_reasoning_effort="low""#][..],
+                "-c model_reasoning_effort",
+            ),
+            (
+                &[r#"-cmodel_reasoning_effort="low""#],
+                "-c model_reasoning_effort",
+            ),
+            (
+                &["--config", "model_reasoning_effort=low"],
+                "--config model_reasoning_effort",
+            ),
+            (
+                &["--config=model_reasoning_effort=low"],
+                "--config model_reasoning_effort",
+            ),
+            (
+                &["-c", r#"profiles.deep."model_reasoning_effort"="high""#],
+                r#"-c profiles.deep."model_reasoning_effort""#,
+            ),
+        ] {
+            refused_once_given(
+                AgentKind::Codex,
+                arguments,
+                |settings| settings.with_effort(ReasoningEffort::Max),
+                refused,
+            );
+        }
+
+        let settings = CliSettings::default()
+            .with_effort(ReasoningEffort::Max)
+            .with_arguments([
+                "--effort",
+                "high",
+                "-c",
+                "model_reasoning_summary=auto",
+                "-c",
+                r#"sandbox_mode="read-only""#,
+            ]);
+        assert!(
+            settings.refuse_conflicts(AgentKind::Codex).is_ok(),
+            "codex has no --effort, and only the effort is chosen"
+        );
     }
 
     /// Refuse `arguments` once `given` is set on settings carrying them, and

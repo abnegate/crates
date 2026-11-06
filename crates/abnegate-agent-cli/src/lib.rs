@@ -51,7 +51,8 @@
 //! its name.
 //!
 //! The agent is given the
-//! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names, the
+//! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names,
+//! `SHELL`, `XDG_RUNTIME_DIR`, `SSL_CERT_DIR` and `NODE_EXTRA_CA_CERTS`, the
 //! locale categories (`LC_CTYPE`, `LC_TIME` and the rest), the names
 //! [`CliSettings::allow`] adds, a proxy among them with
 //! [`CliSettings::with_proxy_variables`], and its own configuration
@@ -66,7 +67,10 @@
 //! [`CliSettings::withhold_host_credentials`] keeps this process's own
 //! sign-in from it whichever way it is given: no agent's sign-in variable,
 //! no [cloud sign-in](CLOUD_CREDENTIALS), and no agent's configuration
-//! variable it was not allowed by name. Every value it is handed is scrubbed
+//! variable it was not allowed by name. [`CliSettings::refuse_credentials`]
+//! keeps every agent's sign-in variable from it, however it is allowed or
+//! inherited, except its own when it signs in with the host's. Every value
+//! it is handed is scrubbed
 //! from what the run writes down, as written, JSON-escaped or
 //! percent-encoded, except the allowlisted names, its configuration
 //! variables, the public variables, the proxy bypass list and whatever it

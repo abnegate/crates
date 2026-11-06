@@ -1,0 +1,9 @@
+{
+  "version": "2.1.278",
+  "models": [
+    { "alias": "sonnet", "efforts": ["low", "medium", "high", "xhigh", "max"] },
+    { "alias": "opus", "efforts": ["low", "medium", "high", "xhigh", "max"] },
+    { "alias": "haiku", "efforts": [] },
+    { "alias": "fable", "efforts": ["low", "medium", "high", "xhigh", "max"] }
+  ]
+}

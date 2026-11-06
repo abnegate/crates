@@ -268,10 +268,13 @@ impl CliProvider {
         if let Some(instructions) = &instructions {
             attachments = attachments.with_instructions(instructions.path());
         }
-        let options = self
+        let mut options = self
             .agent
             .options(&self.settings, &attachments)
             .map_err(|error| ExecutionError::new(error, None))?;
+        if let Some(effort) = self.settings.effort {
+            options.extend(self.agent.effort_arguments(model, effort));
+        }
         let arguments = self
             .agent
             .invocation_in(model, options, self.settings.session.as_ref());
@@ -621,6 +624,7 @@ mod tests {
     use abnegate_llm::Message;
     use abnegate_llm::ProviderError;
     use abnegate_llm::ProviderKind;
+    use abnegate_llm::ReasoningEffort;
     use abnegate_llm::RequestOptions;
     use abnegate_llm::WindowKind;
     use abnegate_secret::SecretValue;
@@ -635,6 +639,8 @@ mod tests {
     use crate::PROSE_EXCEEDED;
     use crate::STDERR_HEADING;
     use crate::agent_stream::AgentStream;
+    use crate::codex_sandbox::CodexSandbox;
+    use crate::environment::INHERITED;
     use crate::environment::LOCALE;
     use crate::event::AgentEvent;
     use crate::execution::Execution;
@@ -1003,6 +1009,214 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
                 .position(|argument| argument == "--model")
                 .map(|at| arguments[at + 1].as_str());
             assert_eq!(named, expected, "{model:?}: {arguments:?}");
+        }
+    }
+
+    /// The arguments `agent` is started with on `model`, run with `given`
+    /// applied to a recording agent's settings.
+    async fn started_with(
+        agent: AgentKind,
+        model: Option<&str>,
+        given: impl FnOnce(CliSettings) -> CliSettings,
+    ) -> Vec<String> {
+        let directory = TempDir::new().expect("a temporary directory");
+        let (settings, _, arguments) = recorder(&directory);
+        let provider = CliProvider::agent(agent, given(settings));
+
+        provider
+            .execute_prompt(model, "hi", "effort")
+            .await
+            .expect("an execution");
+
+        recorded(&arguments).lines().map(str::to_string).collect()
+    }
+
+    fn effort_flags(arguments: &[String]) -> Vec<&str> {
+        arguments
+            .iter()
+            .enumerate()
+            .filter(|(_, argument)| {
+                *argument == "--effort" || argument.starts_with("model_reasoning_effort=")
+            })
+            .flat_map(|(at, argument)| match argument.as_str() {
+                "--effort" => [Some("--effort"), arguments.get(at + 1).map(String::as_str)],
+                _ => [
+                    at.checked_sub(1)
+                        .and_then(|before| arguments.get(before))
+                        .map(String::as_str),
+                    Some(argument),
+                ],
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_effort_a_run_is_given_reaches_the_agent_when_its_model_takes_it() {
+        for (agent, model, effort, expected) in [
+            (
+                AgentKind::Claude,
+                Some("opus"),
+                ReasoningEffort::Max,
+                &["--effort", "max"][..],
+            ),
+            (
+                AgentKind::Claude,
+                None,
+                ReasoningEffort::XHigh,
+                &["--effort", "xhigh"],
+            ),
+            (
+                AgentKind::Claude,
+                Some("  "),
+                ReasoningEffort::Low,
+                &["--effort", "low"],
+            ),
+            (
+                AgentKind::Codex,
+                Some("gpt-6-sol"),
+                ReasoningEffort::Ultra,
+                &["-c", r#"model_reasoning_effort="ultra""#],
+            ),
+            (AgentKind::Claude, Some("haiku"), ReasoningEffort::Low, &[]),
+            (
+                AgentKind::Claude,
+                Some("claude-opus-4-8"),
+                ReasoningEffort::Max,
+                &[],
+            ),
+            (AgentKind::Claude, Some("opus"), ReasoningEffort::Auto, &[]),
+            (AgentKind::Codex, None, ReasoningEffort::Off, &[]),
+            (
+                AgentKind::Codex,
+                Some("qwen2.5:7b-instruct"),
+                ReasoningEffort::High,
+                &[],
+            ),
+        ] {
+            let arguments =
+                started_with(agent, model, |settings| settings.with_effort(effort)).await;
+
+            assert_eq!(
+                effort_flags(&arguments),
+                expected,
+                "{agent} on {model:?} at {effort:?}: {arguments:?}"
+            );
+            if agent == AgentKind::Codex {
+                assert!(
+                    !arguments.contains(&"--effort".to_string()),
+                    "{arguments:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_given_no_effort_sends_none() {
+        for agent in AgentKind::ALL {
+            let model = agent.models().first().copied();
+            let arguments = started_with(*agent, model, |settings| settings).await;
+
+            assert!(
+                effort_flags(&arguments).is_empty(),
+                "{agent}: {arguments:?}"
+            );
+        }
+    }
+
+    /// The crate never second-guesses the model a caller names: a local
+    /// model Codex reaches through its own provider configuration is passed
+    /// as written, and only the effort it is not known to take is held back.
+    #[tokio::test]
+    async fn a_local_codex_model_still_reaches_the_agent_verbatim() {
+        let arguments = started_with(
+            AgentKind::Codex,
+            Some(" qwen2.5:7b-instruct "),
+            |settings| settings.with_effort(ReasoningEffort::High),
+        )
+        .await;
+
+        let model = arguments
+            .iter()
+            .position(|argument| argument == "--model")
+            .map(|at| arguments[at + 1].as_str());
+        assert_eq!(model, Some("qwen2.5:7b-instruct"), "{arguments:?}");
+        assert!(effort_flags(&arguments).is_empty(), "{arguments:?}");
+    }
+
+    #[tokio::test]
+    async fn a_resumed_codex_run_keeps_its_effort() {
+        let id = "019b2c41-0000-7000-8000-000000000001";
+        let arguments = started_with(AgentKind::Codex, Some("gpt-6-sol"), |settings| {
+            settings
+                .with_session(Session::resumed(id))
+                .with_sandbox(CodexSandbox::WorkspaceWrite)
+                .with_effort(ReasoningEffort::Ultra)
+        })
+        .await;
+
+        assert_eq!(
+            arguments,
+            [
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "-c",
+                r#"sandbox_mode="workspace-write""#,
+                "-c",
+                r#"model_reasoning_effort="ultra""#,
+                "--model",
+                "gpt-6-sol",
+                "resume",
+                id,
+                "-",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_only_claude_run_carries_its_effort() {
+        let arguments = started_with(AgentKind::Claude, Some("sonnet"), |settings| {
+            settings.read_only().with_effort(ReasoningEffort::High)
+        })
+        .await;
+
+        assert_eq!(
+            effort_flags(&arguments),
+            ["--effort", "high"],
+            "{arguments:?}"
+        );
+        assert!(
+            arguments.contains(&"--restricted".to_string()),
+            "{arguments:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_given_an_effort_refuses_a_caller_flag_setting_another() {
+        for (agent, arguments) in [
+            (AgentKind::Claude, &["--effort", "low"][..]),
+            (AgentKind::Codex, &["-c", "model_reasoning_effort=low"]),
+        ] {
+            let directory = TempDir::new().expect("a temporary directory");
+            let (settings, _, recorded) = recorder(&directory);
+            let provider = CliProvider::agent(
+                agent,
+                settings
+                    .with_arguments(arguments.iter().copied())
+                    .with_effort(ReasoningEffort::High),
+            );
+
+            let error = provider
+                .execute_prompt(None, "hi", "effort")
+                .await
+                .expect_err("a refusal");
+
+            assert!(
+                matches!(&*error.error, ProviderError::Config { detail, .. } if detail.contains("effort")),
+                "{agent}: {error:?}"
+            );
+            assert!(!recorded.exists(), "{agent} was started anyway");
         }
     }
 
@@ -1942,6 +2156,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         for name in &names {
             assert!(
                 DEFAULT_ENVIRONMENT.contains(&name.as_str())
+                    || INHERITED.contains(&name.as_str())
                     || AgentKind::Claude.configuration().contains(&name.as_str())
                     || shell.contains(&name.as_str())
                     || LOCALE.contains(&name.as_str())
