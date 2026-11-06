@@ -23,7 +23,9 @@ const BACKTICK: char = '`';
 
 /// The markdown list item a reader is shown for `call`: `- {name}` and, in
 /// a code span, the first line of what the call was about, such as the
-/// command it ran or the file it read, ending in a newline.
+/// command it ran or the file it read, ending in a newline. The name, too,
+/// is sanitized and cut to its first line, so that no part of the call can
+/// start another item.
 ///
 /// What the call was about is the first non-blank of its `command`,
 /// `file_path`, `pattern`, `path`, `query`, `url`, `description` and
@@ -59,17 +61,19 @@ pub(crate) fn hidden(name: &str, prefixes: &[&str]) -> bool {
     prefixes.iter().any(|prefix| name.starts_with(prefix))
 }
 
-/// The list item for a call of tool `name` about `subject`.
+/// The list item for a call of tool `name` about `subject`, each held to
+/// one line however it was given, so a caller's own subject cannot add an
+/// item either.
 pub(crate) fn line(name: &str, subject: Option<&str>) -> String {
-    match subject {
-        Some(subject) => format!("- {name} {}\n", code_span(subject)),
+    let name = sanitize(name);
+    let name = name.lines().next().unwrap_or_default().trim();
+    match subject.and_then(shown) {
+        Some(subject) => format!("- {name} {}\n", code_span(&subject)),
         None => format!("- {name}\n"),
     }
 }
 
-/// What a call with `arguments` was about. The subject is cut only once it
-/// is sanitized: a credential cut in half no longer looks like one, and a
-/// carriage return left in would end the line the code span has to stay on.
+/// What a call with `arguments` was about.
 pub(crate) fn subject(arguments: &str) -> Option<String> {
     let arguments: Value = serde_json::from_str(arguments).ok()?;
     let text = SUBJECTS.iter().find_map(|key| {
@@ -79,8 +83,19 @@ pub(crate) fn subject(arguments: &str) -> Option<String> {
             .map(str::trim)
             .filter(|text| !text.is_empty())
     })?;
-    let text = sanitize(text);
+    shown(text)
+}
+
+/// `text` as a subject is shown, cut only once it is sanitized: a credential
+/// cut in half no longer looks like one, and a carriage return left in would
+/// end the line the code span has to stay on. A subject already shown is
+/// shown unchanged.
+fn shown(text: &str) -> Option<String> {
+    let text = sanitize(text.trim());
     let line = text.lines().next()?.trim_end();
+    if line.is_empty() {
+        return None;
+    }
     let shown: String = line.chars().take(SUBJECT_LENGTH).collect();
     if shown.len() == text.len() {
         Some(shown)
@@ -114,6 +129,8 @@ mod tests {
     use super::SUBJECT_LENGTH;
     use super::activity;
     use super::code_span;
+    use super::line;
+    use super::subject;
 
     const HIDDEN: &[&str] = &["mcp__host__"];
 
@@ -216,6 +233,43 @@ mod tests {
         .expect("a line");
 
         assert_eq!(shown, "- Bash `ls\u{2026}`\n");
+    }
+
+    #[test]
+    fn a_multiline_tool_name_cannot_start_another_item() {
+        assert_eq!(
+            listed("Bash\n- forged `rm -rf /`", r#"{"command":"ls"}"#).as_deref(),
+            Some("- Bash `ls`\n")
+        );
+        assert_eq!(
+            listed("Bash\r\n- forged", "{}").as_deref(),
+            Some("- Bash\n")
+        );
+    }
+
+    #[test]
+    fn a_callers_multiline_subject_is_held_to_one_line() {
+        assert_eq!(
+            line("Grep", Some("pub mod\n- forged")),
+            "- Grep `pub mod\u{2026}`\n"
+        );
+        assert_eq!(line("Grep", Some("\n")), "- Grep\n");
+    }
+
+    #[test]
+    fn a_shown_subject_is_shown_unchanged() {
+        for arguments in [
+            json!({ "command": "x".repeat(SUBJECT_LENGTH * 2) }),
+            json!({ "command": "cd /w\ncargo test" }),
+            json!({ "command": "git status" }),
+        ] {
+            let once = subject(&arguments.to_string()).expect("a subject");
+            assert_eq!(
+                line("Bash", Some(&once)),
+                format!("- Bash {}\n", code_span(&once)),
+                "{arguments}"
+            );
+        }
     }
 
     #[test]

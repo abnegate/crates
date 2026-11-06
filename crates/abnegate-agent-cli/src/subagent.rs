@@ -291,4 +291,18 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn a_step_given_a_multiline_subject_or_name_is_still_one_item() {
+        let mut step = SubagentStep::new("toolu_02", "Bash\n- forged", StepStatus::Running);
+        step.subject = Some("ls\n- forged `x`".to_string());
+
+        assert_eq!(
+            Subagent::new("toolu_01")
+                .with_step(step)
+                .activity(&[])
+                .as_deref(),
+            Some("- Bash `ls\u{2026}`\n")
+        );
+    }
 }
