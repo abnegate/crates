@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.8...abnegate-vcs/v0.1.9) - 2026-11-06
+
+### Added
+
+- *(vcs)* wait once on a rate limit's retry-after and report an exhausted quota ([#53](https://github.com/abnegate/crates/pull/53))
+- *(vcs)* count review threads without reading their comments ([#54](https://github.com/abnegate/crates/pull/54))
+- *(vcs)* GitHub actions, releases, deployments, issues, trees, checks, webhooks and github-app ([#51](https://github.com/abnegate/crates/pull/51))
+
 ## [0.1.8](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.7...abnegate-vcs/v0.1.8) - 2026-11-05
 
 ### Added
