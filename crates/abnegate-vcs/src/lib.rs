@@ -182,6 +182,9 @@ pub use crate::pull_request::InstallationIssuer;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::InstallationToken;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::InstalledRepository;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Issue;

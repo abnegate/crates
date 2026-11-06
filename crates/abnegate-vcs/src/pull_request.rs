@@ -209,6 +209,8 @@ pub use crate::pull_request::application::InstallationIssuer;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::InstallationToken;
 #[cfg(feature = "github-app")]
+pub use crate::pull_request::application::InstalledRepository;
+#[cfg(feature = "github-app")]
 pub use crate::pull_request::application::RepositorySelection;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::TokenCache;
